@@ -22,47 +22,31 @@ type Message struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-func main() {
-	natsURL := os.Getenv("NATS_URL")
-	if natsURL == "" {
-		natsURL = nats.DefaultURL
-	}
-
-	nc, err := nats.Connect(natsURL)
-	if err != nil {
-		log.Fatalf("Failed to connect to NATS: %v", err)
-	}
-	defer nc.Close()
-
+// StartRouter sets up the JetStream stream, consumer, and starts routing
+// messages from chat.messages to per-room core NATS subjects. It returns
+// a stop function and any error encountered during setup.
+func StartRouter(ctx context.Context, nc *nats.Conn) (stop func(), err error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
-		log.Fatalf("Failed to create JetStream context: %v", err)
+		return nil, fmt.Errorf("create jetstream context: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Ensure the stream exists. Create it if it doesn't.
 	stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     "CHAT",
 		Subjects: []string{"chat.messages"},
 	})
 	if err != nil {
-		log.Fatalf("Failed to create/update stream: %v", err)
+		return nil, fmt.Errorf("create/update stream: %w", err)
 	}
 
-	// Create a durable consumer so we resume from where we left off across restarts.
 	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:   "room-router",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
-		log.Fatalf("Failed to create consumer: %v", err)
+		return nil, fmt.Errorf("create consumer: %w", err)
 	}
 
-	log.Println("Starting JetStream room router...")
-
-	// Consume messages and route them to per-room core NATS subjects.
 	cctx, err := cons.Consume(func(msg jetstream.Msg) {
 		var chatMsg Message
 		if err := json.Unmarshal(msg.Data(), &chatMsg); err != nil {
@@ -82,11 +66,35 @@ func main() {
 		log.Printf("Routed message from user %s to %s", chatMsg.UserID, subject)
 	})
 	if err != nil {
-		log.Fatalf("Failed to start consumer: %v", err)
+		return nil, fmt.Errorf("start consumer: %w", err)
 	}
-	defer cctx.Stop()
 
-	// Wait for shutdown signal.
+	return cctx.Stop, nil
+}
+
+func main() {
+	natsURL := os.Getenv("NATS_URL")
+	if natsURL == "" {
+		natsURL = nats.DefaultURL
+	}
+
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to NATS: %v", err)
+	}
+	defer nc.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	log.Println("Starting JetStream room router...")
+
+	stop, err := StartRouter(ctx, nc)
+	if err != nil {
+		log.Fatalf("Failed to start router: %v", err)
+	}
+	defer stop()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
