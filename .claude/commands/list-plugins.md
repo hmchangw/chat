@@ -1,0 +1,1 @@
+Read the file `.claude/settings.json` and list all enabled plugins from the `enabledPlugins` field. Format the output as a numbered list with each plugin name on its own line. If no plugins are enabled, say "No plugins are currently enabled."
