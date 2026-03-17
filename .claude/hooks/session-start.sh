@@ -7,5 +7,8 @@ fi
 
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 
+# Install superpowers plugin
+claude plugin install superpowers@superpowers-marketplace --scope project
+
 # Download Go module dependencies
 go mod download
