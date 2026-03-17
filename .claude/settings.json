@@ -12,6 +12,6 @@
     ]
   },
   "enabledPlugins": {
-    "superpowers@superpowers-marketplace": true
+    "obra/superpowers": true
   }
 }
