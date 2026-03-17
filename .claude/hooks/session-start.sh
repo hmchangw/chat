@@ -7,6 +7,9 @@ fi
 
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 
+# Add superpowers marketplace (if not already added)
+claude plugin marketplace add obra/superpowers-marketplace 2>/dev/null || true
+
 # Install superpowers plugin
 claude plugin install superpowers@superpowers-marketplace --scope project
 
