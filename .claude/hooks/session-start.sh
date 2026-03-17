@@ -7,8 +7,9 @@ fi
 
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 
-# Install superpowers plugin
-claude plugin install obra/superpowers --scope project
+# Register the superpowers marketplace and install plugin
+claude plugin marketplace add obra/superpowers-marketplace --scope project
+claude plugin install superpowers@superpowers-marketplace --scope project
 
 # Download Go module dependencies
 go mod download
