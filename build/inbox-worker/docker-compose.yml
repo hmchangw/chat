@@ -1,0 +1,25 @@
+services:
+  nats:
+    image: nats:2.11-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--http_port", "8222"]
+
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+
+  inbox-worker:
+    build:
+      context: ../..
+      dockerfile: inbox-worker/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+    depends_on:
+      - nats
+      - mongodb
