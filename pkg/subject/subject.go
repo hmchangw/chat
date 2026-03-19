@@ -1,6 +1,27 @@
 package subject
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// ParseUserRoomSubject extracts userID and roomID from subjects matching
+// the pattern "chat.user.{userID}.*.room.{roomID}.…".
+// Returns userID, roomID, and ok=true on success.
+func ParseUserRoomSubject(subj string) (userID, roomID string, ok bool) {
+	parts := strings.Split(subj, ".")
+	if len(parts) < 5 || parts[0] != "chat" || parts[1] != "user" {
+		return "", "", false
+	}
+	userID = parts[2]
+	// Find "room" token after user position
+	for i := 3; i < len(parts)-1; i++ {
+		if parts[i] == "room" {
+			return userID, parts[i+1], true
+		}
+	}
+	return "", "", false
+}
 
 // --- Specific subject builders ---
 

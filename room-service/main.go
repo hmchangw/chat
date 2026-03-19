@@ -23,6 +23,8 @@ type config struct {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
@@ -69,12 +71,12 @@ func main() {
 	}
 
 	inviteSubj := subject.MemberInviteWildcard(cfg.SiteID)
-	if _, err := nc.Subscribe(inviteSubj, handler.NatsHandleInvite); err != nil {
+	if _, err := nc.QueueSubscribe(inviteSubj, "room-service", handler.NatsHandleInvite); err != nil {
 		slog.Error("subscribe invite failed", "error", err)
 		os.Exit(1)
 	}
 
-	slog.Info("room-gatekeeper running", "site", cfg.SiteID)
+	slog.Info("room-service running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx,
 		func(ctx context.Context) error { nc.Drain(); return nil },

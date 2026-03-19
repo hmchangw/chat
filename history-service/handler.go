@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/nats-io/nats.go"
 )
 
@@ -23,13 +23,11 @@ func NewHandler(store HistoryStore) *Handler {
 // NatsHandleHistory handles NATS request/reply for message history.
 // Subject: chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history
 func (h *Handler) NatsHandleHistory(msg *nats.Msg) {
-	parts := strings.Split(msg.Subject, ".")
-	if len(parts) < 8 {
+	userID, roomID, ok := subject.ParseUserRoomSubject(msg.Subject)
+	if !ok {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
-	userID := parts[2]
-	roomID := parts[5]
 
 	resp, err := h.handleHistory(userID, roomID, msg.Data)
 	if err != nil {
@@ -40,17 +38,17 @@ func (h *Handler) NatsHandleHistory(msg *nats.Msg) {
 }
 
 func (h *Handler) handleHistory(userID, roomID string, data []byte) ([]byte, error) {
-	var req model.HistoryRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
 	ctx := context.Background()
 
-	// Verify subscription
+	// Verify subscription before unmarshalling request data for performance
 	sub, err := h.store.GetSubscription(ctx, userID, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("not subscribed: %w", err)
+	}
+
+	var req model.HistoryRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
 	since := sub.SharedHistorySince

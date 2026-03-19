@@ -48,6 +48,32 @@ func TestSubjectBuilders(t *testing.T) {
 	}
 }
 
+func TestParseUserRoomSubject(t *testing.T) {
+	tests := []struct {
+		name           string
+		subj           string
+		wantUserID     string
+		wantRoomID     string
+		wantOK         bool
+	}{
+		{"invite", "chat.user.u1.request.room.r1.site-a.member.invite", "u1", "r1", true},
+		{"history", "chat.user.u1.request.room.r1.site-a.msg.history", "u1", "r1", true},
+		{"msg_send", "chat.user.u1.room.r1.site-a.msg.send", "u1", "r1", true},
+		{"too_short", "chat.user.u1", "", "", false},
+		{"no_room", "chat.user.u1.request.foo.bar", "", "", false},
+		{"bad_prefix", "foo.user.u1.room.r1", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			uid, rid, ok := subject.ParseUserRoomSubject(tt.subj)
+			if ok != tt.wantOK || uid != tt.wantUserID || rid != tt.wantRoomID {
+				t.Errorf("ParseUserRoomSubject(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tt.subj, uid, rid, ok, tt.wantUserID, tt.wantRoomID, tt.wantOK)
+			}
+		})
+	}
+}
+
 func TestWildcardPatterns(t *testing.T) {
 	tests := []struct {
 		name string

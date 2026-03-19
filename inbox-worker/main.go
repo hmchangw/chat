@@ -45,6 +45,8 @@ func (s *mongoInboxStore) UpsertRoom(ctx context.Context, room model.Room) error
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)

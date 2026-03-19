@@ -7,25 +7,33 @@ import (
 	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"go.uber.org/mock/gomock"
 )
 
 func TestHandler_HandleHistory_Success(t *testing.T) {
-	store := NewMemoryStore()
+	ctrl := gomock.NewController(t)
+	store := NewMockHistoryStore(ctrl)
+
 	joinTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "u1", "r1").
+		Return(&model.Subscription{
+			UserID: "u1", RoomID: "r1", Role: model.RoleMember,
+			SharedHistorySince: joinTime,
+		}, nil)
 
-	store.subscriptions = append(store.subscriptions, model.Subscription{
-		UserID: "u1", RoomID: "r1", Role: model.RoleMember,
-		SharedHistorySince: joinTime,
-	})
-
-	base := joinTime
-	for i := 0; i < 5; i++ {
-		store.messages = append(store.messages, model.Message{
+	var msgs []model.Message
+	for i := 4; i >= 0; i-- {
+		msgs = append(msgs, model.Message{
 			ID: fmt.Sprintf("m%d", i), RoomID: "r1", UserID: "u1",
 			Content:   fmt.Sprintf("msg-%d", i),
-			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+			CreatedAt: joinTime.Add(time.Duration(i) * time.Minute),
 		})
 	}
+	// Handler requests limit+1 (4) to detect hasMore
+	store.EXPECT().
+		ListMessages(gomock.Any(), "r1", joinTime, gomock.Any(), 4).
+		Return(msgs[:4], nil) // return 4 messages → hasMore=true
 
 	h := &Handler{store: store}
 
@@ -48,7 +56,13 @@ func TestHandler_HandleHistory_Success(t *testing.T) {
 }
 
 func TestHandler_HandleHistory_NotSubscribed(t *testing.T) {
-	store := NewMemoryStore()
+	ctrl := gomock.NewController(t)
+	store := NewMockHistoryStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "u1", "r1").
+		Return(nil, fmt.Errorf("subscription not found"))
+
 	h := &Handler{store: store}
 
 	req := model.HistoryRequest{RoomID: "r1", Limit: 10}
@@ -61,19 +75,24 @@ func TestHandler_HandleHistory_NotSubscribed(t *testing.T) {
 }
 
 func TestHandler_HandleHistory_SharedHistorySinceFilter(t *testing.T) {
-	store := NewMemoryStore()
+	ctrl := gomock.NewController(t)
+	store := NewMockHistoryStore(ctrl)
+
 	joinTime := time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC)
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "u1", "r1").
+		Return(&model.Subscription{
+			UserID: "u1", RoomID: "r1",
+			SharedHistorySince: joinTime,
+		}, nil)
 
-	store.subscriptions = append(store.subscriptions, model.Subscription{
-		UserID: "u1", RoomID: "r1", SharedHistorySince: joinTime,
-	})
-
-	// Messages before and after join
-	store.messages = append(store.messages,
-		model.Message{ID: "m1", RoomID: "r1", CreatedAt: time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)}, // before join
-		model.Message{ID: "m2", RoomID: "r1", CreatedAt: time.Date(2026, 1, 1, 4, 0, 0, 0, time.UTC)}, // after join
-		model.Message{ID: "m3", RoomID: "r1", CreatedAt: time.Date(2026, 1, 1, 5, 0, 0, 0, time.UTC)}, // after join
-	)
+	// Only messages after join should be returned by the store
+	store.EXPECT().
+		ListMessages(gomock.Any(), "r1", joinTime, gomock.Any(), 101).
+		Return([]model.Message{
+			{ID: "m3", RoomID: "r1", CreatedAt: time.Date(2026, 1, 1, 5, 0, 0, 0, time.UTC)},
+			{ID: "m2", RoomID: "r1", CreatedAt: time.Date(2026, 1, 1, 4, 0, 0, 0, time.UTC)},
+		}, nil)
 
 	h := &Handler{store: store}
 	req := model.HistoryRequest{RoomID: "r1", Limit: 100}

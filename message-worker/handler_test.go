@@ -3,18 +3,26 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
-	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"go.uber.org/mock/gomock"
 )
 
 func TestHandler_ProcessMessage_Success(t *testing.T) {
-	store := NewMemoryStore()
-	store.subscriptions = append(store.subscriptions, model.Subscription{
-		UserID: "u1", RoomID: "r1", Role: model.RoleMember,
-	})
-	store.rooms = append(store.rooms, model.Room{ID: "r1", Name: "general"})
+	ctrl := gomock.NewController(t)
+	store := NewMockMessageStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "u1", "r1").
+		Return(&model.Subscription{UserID: "u1", RoomID: "r1", Role: model.RoleMember}, nil)
+	store.EXPECT().
+		SaveMessage(gomock.Any(), gomock.Any()).
+		Return(nil)
+	store.EXPECT().
+		UpdateRoomLastMessage(gomock.Any(), "r1", gomock.Any()).
+		Return(nil)
 
 	var published []publishedMsg
 	publisher := func(subj string, data []byte) error {
@@ -32,7 +40,6 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify reply contains created message
 	var msg model.Message
 	if err := json.Unmarshal(reply, &msg); err != nil {
 		t.Fatalf("unmarshal reply: %v", err)
@@ -43,15 +50,19 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 	if msg.ID == "" {
 		t.Error("message ID should be set")
 	}
-
-	// Verify fanout was published
 	if len(published) == 0 {
 		t.Fatal("expected fanout publish")
 	}
 }
 
 func TestHandler_ProcessMessage_NotSubscribed(t *testing.T) {
-	store := NewMemoryStore() // no subscriptions
+	ctrl := gomock.NewController(t)
+	store := NewMockMessageStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "u1", "r1").
+		Return(nil, fmt.Errorf("subscription not found"))
+
 	h := &Handler{store: store, siteID: "site-a", publish: func(string, []byte) error { return nil }}
 
 	req := model.SendMessageRequest{RoomID: "r1", Content: "hello", RequestID: "req-1"}
@@ -67,6 +78,3 @@ type publishedMsg struct {
 	subj string
 	data []byte
 }
-
-// Satisfy the compiler: time is used in store_test.go but we need it here too
-var _ = time.Now

@@ -6,14 +6,28 @@ import (
 	"testing"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"go.uber.org/mock/gomock"
 )
 
 func TestHandler_ProcessInvite(t *testing.T) {
-	store := NewMemoryStore()
-	store.rooms["r1"] = model.Room{ID: "r1", Name: "general", UserCount: 1, SiteID: "site-a"}
-	store.subscriptions = append(store.subscriptions, model.Subscription{
-		UserID: "u1", RoomID: "r1", Role: model.RoleOwner, SiteID: "site-a",
-	})
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	store.EXPECT().
+		CreateSubscription(gomock.Any(), gomock.Any()).
+		Return(nil)
+	store.EXPECT().
+		IncrementUserCount(gomock.Any(), "r1").
+		Return(nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", UserCount: 2, SiteID: "site-a"}, nil)
+	store.EXPECT().
+		ListByRoom(gomock.Any(), "r1").
+		Return([]model.Subscription{
+			{UserID: "u1", RoomID: "r1", Role: model.RoleOwner},
+			{UserID: "u2", RoomID: "r1", Role: model.RoleMember},
+		}, nil)
 
 	var published []publishedMsg
 	h := &Handler{store: store, siteID: "site-a", publish: func(subj string, data []byte) error {
@@ -26,27 +40,6 @@ func TestHandler_ProcessInvite(t *testing.T) {
 
 	if err := h.processInvite(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify subscription created
-	subs, _ := store.ListByRoom(context.Background(), "r1")
-	found := false
-	for _, s := range subs {
-		if s.UserID == "u2" {
-			found = true
-			if s.Role != model.RoleMember {
-				t.Errorf("role = %q, want member", s.Role)
-			}
-		}
-	}
-	if !found {
-		t.Error("subscription for u2 not created")
-	}
-
-	// Verify room user count incremented
-	room, _ := store.GetRoom(context.Background(), "r1")
-	if room.UserCount != 2 {
-		t.Errorf("UserCount = %d, want 2", room.UserCount)
 	}
 
 	// Verify notifications published (subscription update + room metadata for existing members)

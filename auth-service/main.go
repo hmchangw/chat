@@ -21,6 +21,8 @@ type config struct {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)

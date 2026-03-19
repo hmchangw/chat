@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/nats-io/nats.go"
 )
 
@@ -25,15 +26,16 @@ func NewHandler(store RoomStore, siteID string, maxRoomSize int, publishToStream
 	return &Handler{store: store, siteID: siteID, maxRoomSize: maxRoomSize, publishToStream: publishToStream}
 }
 
-// RegisterCRUD registers NATS request/reply handlers for room CRUD.
+// RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
 func (h *Handler) RegisterCRUD(nc *nats.Conn) error {
-	if _, err := nc.Subscribe("chat.rooms.create", h.natsCreateRoom); err != nil {
+	const queue = "room-service"
+	if _, err := nc.QueueSubscribe("chat.rooms.create", queue, h.natsCreateRoom); err != nil {
 		return err
 	}
-	if _, err := nc.Subscribe("chat.rooms.list", h.natsListRooms); err != nil {
+	if _, err := nc.QueueSubscribe("chat.rooms.list", queue, h.natsListRooms); err != nil {
 		return err
 	}
-	if _, err := nc.Subscribe("chat.rooms.get.*", h.natsGetRoom); err != nil {
+	if _, err := nc.QueueSubscribe("chat.rooms.get.*", queue, h.natsGetRoom); err != nil {
 		return err
 	}
 	return nil
@@ -70,7 +72,7 @@ func (h *Handler) natsGetRoom(msg *nats.Msg) {
 
 // NatsHandleInvite handles invite authorization requests.
 func (h *Handler) NatsHandleInvite(msg *nats.Msg) {
-	resp, err := h.handleInvite(context.Background(), msg.Data)
+	resp, err := h.handleInvite(context.Background(), msg.Subject, msg.Data)
 	if err != nil {
 		natsutil.ReplyError(msg, err.Error())
 		return
@@ -117,14 +119,15 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 	return json.Marshal(room)
 }
 
-func (h *Handler) handleInvite(ctx context.Context, data []byte) ([]byte, error) {
-	var req model.InviteMemberRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	// Extract userID and roomID from the subject before unmarshalling for performance.
+	inviterID, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid invite subject: %s", subj)
 	}
 
-	// Verify inviter is owner
-	sub, err := h.store.GetSubscription(ctx, req.InviterID, req.RoomID)
+	// Verify inviter is owner (cheap DB lookup before expensive unmarshal)
+	sub, err := h.store.GetSubscription(ctx, inviterID, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("inviter not found: %w", err)
 	}
@@ -133,12 +136,18 @@ func (h *Handler) handleInvite(ctx context.Context, data []byte) ([]byte, error)
 	}
 
 	// Check room size
-	room, err := h.store.GetRoom(ctx, req.RoomID)
+	room, err := h.store.GetRoom(ctx, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("room not found: %w", err)
 	}
 	if room.UserCount >= h.maxRoomSize {
 		return nil, fmt.Errorf("room is at maximum capacity (%d)", h.maxRoomSize)
+	}
+
+	// Only unmarshal after authorization checks pass
+	var req model.InviteMemberRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
 	// Publish to ROOMS stream for room-worker processing

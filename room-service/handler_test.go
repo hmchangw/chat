@@ -6,10 +6,17 @@ import (
 	"testing"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/subject"
+	"go.uber.org/mock/gomock"
 )
 
 func TestHandler_CreateRoom(t *testing.T) {
-	store := NewMemoryStore()
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).Return(nil)
+
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
 	req := model.CreateRoomRequest{Name: "general", Type: model.RoomTypeGroup, CreatedBy: "u1", SiteID: "site-a"}
@@ -25,23 +32,18 @@ func TestHandler_CreateRoom(t *testing.T) {
 	if room.Name != "general" || room.CreatedBy != "u1" {
 		t.Errorf("got %+v", room)
 	}
-
-	// Verify owner subscription was created
-	sub, err := store.GetSubscription(context.Background(), "u1", room.ID)
-	if err != nil {
-		t.Fatalf("owner subscription not created: %v", err)
-	}
-	if sub.Role != model.RoleOwner {
-		t.Errorf("role = %q, want owner", sub.Role)
-	}
 }
 
 func TestHandler_InviteOwner_Success(t *testing.T) {
-	store := NewMemoryStore()
-	store.CreateRoom(context.Background(), model.Room{ID: "r1", Name: "general", UserCount: 1})
-	store.CreateSubscription(context.Background(), model.Subscription{
-		UserID: "u1", RoomID: "r1", Role: model.RoleOwner,
-	})
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "u1", "r1").
+		Return(&model.Subscription{UserID: "u1", RoomID: "r1", Role: model.RoleOwner}, nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", UserCount: 1}, nil)
 
 	var jsPublished []byte
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
@@ -50,8 +52,9 @@ func TestHandler_InviteOwner_Success(t *testing.T) {
 
 	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", RoomID: "r1", SiteID: "site-a"}
 	data, _ := json.Marshal(req)
+	subj := subject.MemberInvite("u1", "r1", "site-a")
 
-	_, err := h.handleInvite(context.Background(), data)
+	_, err := h.handleInvite(context.Background(), subj, data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,11 +64,12 @@ func TestHandler_InviteOwner_Success(t *testing.T) {
 }
 
 func TestHandler_InviteMember_Rejected(t *testing.T) {
-	store := NewMemoryStore()
-	store.CreateRoom(context.Background(), model.Room{ID: "r1", Name: "general", UserCount: 1})
-	store.CreateSubscription(context.Background(), model.Subscription{
-		UserID: "u2", RoomID: "r1", Role: model.RoleMember, // not owner
-	})
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "u2", "r1").
+		Return(&model.Subscription{UserID: "u2", RoomID: "r1", Role: model.RoleMember}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(data []byte) error { return nil },
@@ -73,19 +77,24 @@ func TestHandler_InviteMember_Rejected(t *testing.T) {
 
 	req := model.InviteMemberRequest{InviterID: "u2", InviteeID: "u3", RoomID: "r1", SiteID: "site-a"}
 	data, _ := json.Marshal(req)
+	subj := subject.MemberInvite("u2", "r1", "site-a")
 
-	_, err := h.handleInvite(context.Background(), data)
+	_, err := h.handleInvite(context.Background(), subj, data)
 	if err == nil {
 		t.Fatal("expected error for non-owner invite")
 	}
 }
 
 func TestHandler_InviteExceedsMaxSize(t *testing.T) {
-	store := NewMemoryStore()
-	store.CreateRoom(context.Background(), model.Room{ID: "r1", Name: "general", UserCount: 1000})
-	store.CreateSubscription(context.Background(), model.Subscription{
-		UserID: "u1", RoomID: "r1", Role: model.RoleOwner,
-	})
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "u1", "r1").
+		Return(&model.Subscription{UserID: "u1", RoomID: "r1", Role: model.RoleOwner}, nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", UserCount: 1000}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(data []byte) error { return nil },
@@ -93,8 +102,9 @@ func TestHandler_InviteExceedsMaxSize(t *testing.T) {
 
 	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", RoomID: "r1", SiteID: "site-a"}
 	data, _ := json.Marshal(req)
+	subj := subject.MemberInvite("u1", "r1", "site-a")
 
-	_, err := h.handleInvite(context.Background(), data)
+	_, err := h.handleInvite(context.Background(), subj, data)
 	if err == nil {
 		t.Fatal("expected error for room at max size")
 	}

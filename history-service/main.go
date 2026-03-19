@@ -24,6 +24,8 @@ type config struct {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
@@ -54,7 +56,7 @@ func main() {
 	handler := NewHandler(store)
 
 	histSubj := subject.MsgHistoryWildcard(cfg.SiteID)
-	if _, err := nc.Subscribe(histSubj, handler.NatsHandleHistory); err != nil {
+	if _, err := nc.QueueSubscribe(histSubj, "history-service", handler.NatsHandleHistory); err != nil {
 		slog.Error("subscribe failed", "error", err)
 		os.Exit(1)
 	}
