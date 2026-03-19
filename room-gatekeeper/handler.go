@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -58,7 +58,6 @@ func (h *Handler) natsListRooms(msg *nats.Msg) {
 }
 
 func (h *Handler) natsGetRoom(msg *nats.Msg) {
-	// Subject: chat.rooms.get.{roomID}
 	parts := strings.Split(msg.Subject, ".")
 	roomID := parts[len(parts)-1]
 	room, err := h.store.GetRoom(context.Background(), roomID)
@@ -112,7 +111,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		JoinedAt:           now,
 	}
 	if err := h.store.CreateSubscription(ctx, sub); err != nil {
-		log.Printf("create owner subscription: %v", err)
+		slog.Warn("create owner subscription failed", "error", err)
 	}
 
 	return json.Marshal(room)

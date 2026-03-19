@@ -3,9 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 	callout "github.com/synadia-io/callout.go"
@@ -13,53 +14,55 @@ import (
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
+type config struct {
+	NatsURL        string `env:"NATS_URL"          envDefault:"nats://localhost:4222"`
+	NatsCreds      string `env:"NATS_CREDS"`
+	AuthSigningKey string `env:"AUTH_SIGNING_KEY,required"`
+}
+
 func main() {
-	natsURL := envOrDefault("NATS_URL", nats.DefaultURL)
-	credsPath := os.Getenv("NATS_CREDS")
-	signingKeySeed := os.Getenv("AUTH_SIGNING_KEY")
-
-	if signingKeySeed == "" {
-		log.Fatal("AUTH_SIGNING_KEY is required")
-	}
-
-	// Parse the account signing key from the seed.
-	signingKP, err := nkeys.FromSeed([]byte(signingKeySeed))
+	cfg, err := env.ParseAs[config]()
 	if err != nil {
-		log.Fatalf("parse signing key: %v", err)
+		slog.Error("parse config", "error", err)
+		os.Exit(1)
 	}
 
-	// Connect to NATS with optional credentials file.
+	signingKP, err := nkeys.FromSeed([]byte(cfg.AuthSigningKey))
+	if err != nil {
+		slog.Error("parse signing key failed", "error", err)
+		os.Exit(1)
+	}
+
 	var opts []nats.Option
-	if credsPath != "" {
-		opts = append(opts, nats.UserCredentials(credsPath))
+	if cfg.NatsCreds != "" {
+		opts = append(opts, nats.UserCredentials(cfg.NatsCreds))
 	}
 	opts = append(opts, nats.Name("auth-service"))
 
-	nc, err := nats.Connect(natsURL, opts...)
+	nc, err := nats.Connect(cfg.NatsURL, opts...)
 	if err != nil {
-		log.Fatalf("nats connect: %v", err)
+		slog.Error("nats connect failed", "error", err)
+		os.Exit(1)
 	}
 	defer nc.Close()
-	log.Printf("connected to NATS at %s", natsURL)
+	slog.Info("connected to NATS", "url", cfg.NatsURL)
 
-	// Create the auth handler with a real token verifier.
 	// TODO: Replace SSOTokenVerifier with actual SSO implementation.
 	verifier := &SSOTokenVerifier{}
 	handler := NewAuthHandler(verifier, signingKP)
 
-	// Register the auth callout service.
 	svc, err := callout.NewAuthorizationService(nc,
 		callout.Authorizer(handler.Authorizer()),
 		callout.ResponseSignerKey(signingKP),
 	)
 	if err != nil {
-		log.Fatalf("create auth callout service: %v", err)
+		slog.Error("create auth callout service failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("auth callout service started")
+	slog.Info("auth callout service started")
 
-	// Graceful shutdown.
 	shutdown.Wait(context.Background(), func(ctx context.Context) error {
-		log.Println("stopping auth callout service...")
+		slog.Info("stopping auth callout service")
 		if err := svc.Stop(); err != nil {
 			return fmt.Errorf("stop callout service: %w", err)
 		}
@@ -74,14 +77,5 @@ type SSOTokenVerifier struct{}
 
 func (v *SSOTokenVerifier) Verify(token string) (string, error) {
 	// TODO: Implement actual SSO token verification.
-	// This should validate the token against the SSO provider and
-	// return the authenticated username.
 	return "", fmt.Errorf("SSO token verification not implemented")
-}
-
-func envOrDefault(key, defaultVal string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return defaultVal
 }

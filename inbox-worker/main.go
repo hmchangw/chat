@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
-	"time"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
@@ -17,6 +17,13 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
+
+type config struct {
+	NatsURL  string `env:"NATS_URL"  envDefault:"nats://localhost:4222"`
+	SiteID   string `env:"SITE_ID"   envDefault:"default"`
+	MongoURI string `env:"MONGO_URI" envDefault:"mongodb://localhost:27017"`
+	MongoDB  string `env:"MONGO_DB"  envDefault:"chat"`
+}
 
 // mongoInboxStore implements InboxStore using MongoDB.
 type mongoInboxStore struct {
@@ -37,106 +44,77 @@ func (s *mongoInboxStore) UpsertRoom(ctx context.Context, room model.Room) error
 	return err
 }
 
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 func main() {
-	natsURL := envOrDefault("NATS_URL", nats.DefaultURL)
-	siteID := envOrDefault("SITE_ID", "default")
-	mongoURI := envOrDefault("MONGO_URI", "mongodb://localhost:27017")
-	mongoDB := envOrDefault("MONGO_DB", "chat")
+	cfg, err := env.ParseAs[config]()
+	if err != nil {
+		slog.Error("parse config", "error", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
-	// --- MongoDB ---
-	mongoClient, err := mongoutil.Connect(ctx, mongoURI)
+	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
 	if err != nil {
-		log.Fatalf("mongo: %v", err)
+		slog.Error("mongo connect failed", "error", err)
+		os.Exit(1)
 	}
-	db := mongoClient.Database(mongoDB)
+	db := mongoClient.Database(cfg.MongoDB)
 	store := &mongoInboxStore{
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
 	}
 
-	// --- NATS ---
-	nc, err := nats.Connect(natsURL)
+	nc, err := nats.Connect(cfg.NatsURL)
 	if err != nil {
-		log.Fatalf("nats connect: %v", err)
+		slog.Error("nats connect failed", "error", err)
+		os.Exit(1)
 	}
 
 	js, err := jetstream.New(nc)
 	if err != nil {
-		log.Fatalf("jetstream: %v", err)
+		slog.Error("jetstream init failed", "error", err)
+		os.Exit(1)
 	}
 
-	// --- Ensure INBOX stream exists ---
-	// The INBOX stream is configured with Sources from remote OUTBOX streams.
-	// Stream creation with sources is typically done by infrastructure/provisioning.
-	// Here we just ensure the stream exists for the consumer to attach to.
-	inboxCfg := stream.Inbox(siteID)
-	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	inboxCfg := stream.Inbox(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: inboxCfg.Name,
-	})
-	if err != nil {
-		log.Fatalf("create inbox stream: %v", err)
+	}); err != nil {
+		slog.Error("create inbox stream failed", "error", err)
+		os.Exit(1)
 	}
 
-	// --- Create pull consumer ---
 	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, jetstream.ConsumerConfig{
 		Durable:   "inbox-worker",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
-		log.Fatalf("create consumer: %v", err)
+		slog.Error("create consumer failed", "error", err)
+		os.Exit(1)
 	}
 
-	// --- Publisher wraps *nats.Conn ---
 	publisher := &natsPublisher{nc: nc}
-
 	handler := NewHandler(store, publisher)
 
-	log.Printf("inbox-worker started (site=%s)", siteID)
-
-	// --- Consume loop ---
-	go func() {
-		for {
-			msgs, err := cons.Fetch(10, jetstream.FetchMaxWait(5*time.Second))
-			if err != nil {
-				if err == context.Canceled {
-					return
-				}
-				log.Printf("fetch: %v", err)
-				continue
-			}
-			for msg := range msgs.Messages() {
-				if err := handler.HandleEvent(ctx, msg.Data()); err != nil {
-					log.Printf("handle error: %v", err)
-					msg.Nak()
-					continue
-				}
-				msg.Ack()
-			}
-			if msgs.Error() != nil {
-				log.Printf("fetch iteration error: %v", msgs.Error())
-			}
+	cctx, err := cons.Consume(func(msg jetstream.Msg) {
+		if err := handler.HandleEvent(ctx, msg.Data()); err != nil {
+			slog.Error("handle event failed", "error", err)
+			msg.Nak()
+			return
 		}
-	}()
+		msg.Ack()
+	})
+	if err != nil {
+		slog.Error("consume failed", "error", err)
+		os.Exit(1)
+	}
 
-	// --- Graceful shutdown ---
+	slog.Info("inbox-worker started", "site", cfg.SiteID)
+
 	shutdown.Wait(ctx,
-		func(ctx context.Context) error {
-			nc.Close()
-			return nil
-		},
-		func(ctx context.Context) error {
-			mongoutil.Disconnect(ctx, mongoClient)
-			return nil
-		},
+		func(ctx context.Context) error { cctx.Stop(); return nil },
+		func(ctx context.Context) error { nc.Drain(); return nil },
+		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }
 

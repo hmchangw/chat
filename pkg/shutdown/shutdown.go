@@ -2,7 +2,7 @@ package shutdown
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,11 +13,11 @@ func Wait(ctx context.Context, shutdownFuncs ...func(context.Context) error) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	log.Println("shutting down...")
+	slog.Info("shutting down...")
 
 	for _, fn := range shutdownFuncs {
 		if err := fn(ctx); err != nil {
-			log.Printf("shutdown error: %v", err)
+			slog.Error("shutdown error", "error", err)
 		}
 	}
 }

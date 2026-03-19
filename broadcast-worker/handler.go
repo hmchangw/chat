@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -33,22 +33,18 @@ func NewHandler(rooms RoomLookup, pub Publisher) *Handler {
 }
 
 // HandleMessage processes a single JetStream message payload.
-// It unmarshals the MessageEvent, looks up the room, publishes a
-// RoomMetadataUpdateEvent, and fans the message out to the appropriate
-// stream subjects based on the room type.
 func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
 		return fmt.Errorf("unmarshal message event: %w", err)
 	}
 
-	// --- Look up room ---
 	room, err := h.rooms.GetRoom(ctx, evt.RoomID)
 	if err != nil {
 		return fmt.Errorf("get room %s: %w", evt.RoomID, err)
 	}
 
-	// --- Publish RoomMetadataUpdateEvent ---
+	// Publish RoomMetadataUpdateEvent
 	metaEvt := model.RoomMetadataUpdateEvent{
 		RoomID:        room.ID,
 		Name:          room.Name,
@@ -67,7 +63,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("publish metadata update: %w", err)
 	}
 
-	// --- Fan out message based on room type ---
+	// Fan out message based on room type
 	evtData, err := natsutil.MarshalResponse(evt)
 	if err != nil {
 		return fmt.Errorf("marshal message event: %w", err)
@@ -89,13 +85,12 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		for _, sub := range subs {
 			subj := subject.UserMsgStream(sub.UserID)
 			if err := h.pub.Publish(subj, evtData); err != nil {
-				log.Printf("failed to publish to user %s stream: %v", sub.UserID, err)
-				// Continue publishing to remaining members.
+				slog.Error("publish to user stream failed", "error", err, "userID", sub.UserID)
 			}
 		}
 
 	default:
-		log.Printf("unknown room type %q for room %s, skipping fan-out", room.Type, room.ID)
+		slog.Warn("unknown room type, skipping fan-out", "type", room.Type, "roomID", room.ID)
 	}
 
 	return nil

@@ -2,7 +2,7 @@ package cassutil
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -18,7 +18,7 @@ func Connect(hosts []string, keyspace string) (*gocql.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cassandra connect: %w", err)
 	}
-	log.Printf("connected to Cassandra keyspace %q", keyspace)
+	slog.Info("connected to Cassandra", "keyspace", keyspace)
 	return session, nil
 }
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,7 +36,6 @@ func NewHandler(store InboxStore, pub Publisher) *Handler {
 }
 
 // HandleEvent processes a single JetStream message payload.
-// It unmarshals the OutboxEvent and dispatches based on Type.
 func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 	var evt model.OutboxEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
@@ -49,15 +48,11 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 	case "room_sync":
 		return h.handleRoomSync(ctx, evt)
 	default:
-		log.Printf("inbox-worker: unknown event type %q, skipping", evt.Type)
+		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
 	}
 }
 
-// handleMemberAdded processes a member_added event:
-// 1. Unmarshal Payload as InviteMemberRequest
-// 2. Create a local Subscription document in the store
-// 3. Publish a SubscriptionUpdateEvent to notify the user
 func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) error {
 	var invite model.InviteMemberRequest
 	if err := json.Unmarshal(evt.Payload, &invite); err != nil {
@@ -92,17 +87,12 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) 
 
 	subj := subject.SubscriptionUpdate(invite.InviteeID)
 	if err := h.pub.Publish(subj, updateData); err != nil {
-		log.Printf("failed to publish subscription update for user %s: %v", invite.InviteeID, err)
-		// Don't return error — the subscription was already persisted.
-		// The user will discover it on next reconnect/refresh.
+		slog.Error("publish subscription update failed", "error", err, "userID", invite.InviteeID)
 	}
 
 	return nil
 }
 
-// handleRoomSync processes a room_sync event:
-// 1. Unmarshal Payload as Room
-// 2. Upsert room metadata in local store
 func (h *Handler) handleRoomSync(ctx context.Context, evt model.OutboxEvent) error {
 	var room model.Room
 	if err := json.Unmarshal(evt.Payload, &room); err != nil {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -29,7 +29,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	// Extract userID and roomID from subject: chat.user.{userID}.room.{roomID}.{siteID}.msg.send
 	parts := strings.Split(msg.Subject(), ".")
 	if len(parts) < 7 {
-		log.Printf("invalid subject: %s", msg.Subject())
+		slog.Warn("invalid subject", "subject", msg.Subject())
 		msg.Ack()
 		return
 	}
@@ -40,8 +40,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	ctx := context.Background()
 	replyData, err := h.processMessage(ctx, userID, roomID, siteID, msg.Data())
 	if err != nil {
-		log.Printf("process message error: %v", err)
-		// Reply with error if there's a reply subject in headers
+		slog.Error("process message failed", "error", err, "userID", userID, "roomID", roomID)
 		msg.Ack()
 		return
 	}
@@ -50,7 +49,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	if reqID := getRequestID(msg.Data()); reqID != "" {
 		respSubj := subject.UserResponse(userID, reqID)
 		if err := h.publish(respSubj, replyData); err != nil {
-			log.Printf("reply publish error: %v", err)
+			slog.Error("reply publish failed", "error", err, "subject", respSubj)
 		}
 	}
 
@@ -84,7 +83,7 @@ func (h *Handler) processMessage(ctx context.Context, userID, roomID, siteID str
 		return nil, fmt.Errorf("save message: %w", err)
 	}
 	if err := h.store.UpdateRoomLastMessage(ctx, roomID, now); err != nil {
-		log.Printf("update room last message: %v", err)
+		slog.Warn("update room last message failed", "error", err, "roomID", roomID)
 	}
 
 	// Publish fanout event
@@ -92,7 +91,7 @@ func (h *Handler) processMessage(ctx context.Context, userID, roomID, siteID str
 	evtData, _ := json.Marshal(evt)
 	fanoutSubj := subject.Fanout(siteID, roomID, msg.ID)
 	if err := h.publish(fanoutSubj, evtData); err != nil {
-		log.Printf("fanout publish error: %v", err)
+		slog.Error("fanout publish failed", "error", err, "subject", fanoutSubj)
 	}
 
 	// Return message as reply

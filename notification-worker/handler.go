@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -32,8 +32,6 @@ func NewHandler(members MemberLookup, pub Publisher) *Handler {
 }
 
 // HandleMessage processes a single JetStream message payload.
-// It unmarshals the MessageEvent, looks up room members, and publishes
-// a NotificationEvent to every member except the message sender.
 func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
@@ -64,8 +62,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		}
 		subj := subject.Notification(sub.UserID)
 		if err := h.pub.Publish(subj, notifData); err != nil {
-			log.Printf("failed to publish notification to %s: %v", sub.UserID, err)
-			// Continue notifying other members; don't fail the whole batch.
+			slog.Error("publish notification failed", "error", err, "userID", sub.UserID)
 		}
 	}
 

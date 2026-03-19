@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,7 +24,7 @@ func NewHandler(store SubscriptionStore, siteID string, publish func(string, []b
 
 func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	if err := h.processInvite(context.Background(), msg.Data()); err != nil {
-		log.Printf("process invite error: %v", err)
+		slog.Error("process invite failed", "error", err)
 	}
 	msg.Ack()
 }
@@ -53,7 +53,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 
 	// Increment room user count
 	if err := h.store.IncrementUserCount(ctx, req.RoomID); err != nil {
-		log.Printf("increment user count: %v", err)
+		slog.Warn("increment user count failed", "error", err, "roomID", req.RoomID)
 	}
 
 	// If invitee is on different site, publish outbox event
@@ -67,7 +67,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 		outboxData, _ := json.Marshal(outbox)
 		outboxSubj := subject.Outbox(h.siteID, req.SiteID, "member_added")
 		if err := h.publish(outboxSubj, outboxData); err != nil {
-			log.Printf("outbox publish: %v", err)
+			slog.Error("outbox publish failed", "error", err)
 		}
 	}
 

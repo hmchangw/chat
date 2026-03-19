@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
@@ -12,38 +13,49 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+type config struct {
+	NatsURL  string `env:"NATS_URL"  envDefault:"nats://localhost:4222"`
+	SiteID   string `env:"SITE_ID"   envDefault:"site-local"`
+	MongoURI string `env:"MONGO_URI" envDefault:"mongodb://localhost:27017"`
+	MongoDB  string `env:"MONGO_DB"  envDefault:"chat"`
+}
+
 func main() {
-	natsURL := envOr("NATS_URL", nats.DefaultURL)
-	siteID := envOr("SITE_ID", "site-local")
-	mongoURI := envOr("MONGO_URI", "mongodb://localhost:27017")
-	mongoDB := envOr("MONGO_DB", "chat")
+	cfg, err := env.ParseAs[config]()
+	if err != nil {
+		slog.Error("parse config", "error", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
-	nc, err := nats.Connect(natsURL)
+	nc, err := nats.Connect(cfg.NatsURL)
 	if err != nil {
-		log.Fatalf("nats: %v", err)
+		slog.Error("nats connect failed", "error", err)
+		os.Exit(1)
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
-		log.Fatalf("jetstream: %v", err)
+		slog.Error("jetstream init failed", "error", err)
+		os.Exit(1)
 	}
 
-	mongoClient, err := mongoutil.Connect(ctx, mongoURI)
+	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
 	if err != nil {
-		log.Fatalf("mongo: %v", err)
+		slog.Error("mongo connect failed", "error", err)
+		os.Exit(1)
 	}
 
-	streamCfg := stream.Rooms(siteID)
-	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	streamCfg := stream.Rooms(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: streamCfg.Name, Subjects: streamCfg.Subjects,
-	})
-	if err != nil {
-		log.Fatalf("create stream: %v", err)
+	}); err != nil {
+		slog.Error("create stream failed", "error", err)
+		os.Exit(1)
 	}
 
-	store := NewMongoStore(mongoClient.Database(mongoDB))
-	handler := NewHandler(store, siteID, func(subj string, data []byte) error {
+	store := NewMongoStore(mongoClient.Database(cfg.MongoDB))
+	handler := NewHandler(store, cfg.SiteID, func(subj string, data []byte) error {
 		return nc.Publish(subj, data)
 	})
 
@@ -51,21 +63,21 @@ func main() {
 		Durable: "room-worker", AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
-		log.Fatalf("create consumer: %v", err)
+		slog.Error("create consumer failed", "error", err)
+		os.Exit(1)
 	}
-	cons.Consume(handler.HandleJetStreamMsg)
 
-	log.Printf("room-worker running (site=%s)", siteID)
+	cctx, err := cons.Consume(handler.HandleJetStreamMsg)
+	if err != nil {
+		slog.Error("consume failed", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("room-worker running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx,
+		func(ctx context.Context) error { cctx.Stop(); return nil },
 		func(ctx context.Context) error { nc.Drain(); return nil },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

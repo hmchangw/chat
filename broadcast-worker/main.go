@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
-	"time"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
@@ -15,6 +15,13 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
+
+type config struct {
+	NatsURL  string `env:"NATS_URL"  envDefault:"nats://localhost:4222"`
+	SiteID   string `env:"SITE_ID"   envDefault:"default"`
+	MongoURI string `env:"MONGO_URI" envDefault:"mongodb://localhost:27017"`
+	MongoDB  string `env:"MONGO_DB"  envDefault:"chat"`
+}
 
 // mongoRoomLookup implements RoomLookup using MongoDB.
 type mongoRoomLookup struct {
@@ -47,104 +54,78 @@ func (m *mongoRoomLookup) ListSubscriptions(ctx context.Context, roomID string) 
 	return subs, nil
 }
 
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 func main() {
-	natsURL := envOrDefault("NATS_URL", nats.DefaultURL)
-	siteID := envOrDefault("SITE_ID", "default")
-	mongoURI := envOrDefault("MONGO_URI", "mongodb://localhost:27017")
-	mongoDB := envOrDefault("MONGO_DB", "chat")
+	cfg, err := env.ParseAs[config]()
+	if err != nil {
+		slog.Error("parse config", "error", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
-	// --- MongoDB ---
-	mongoClient, err := mongoutil.Connect(ctx, mongoURI)
+	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
 	if err != nil {
-		log.Fatalf("mongo: %v", err)
+		slog.Error("mongo connect failed", "error", err)
+		os.Exit(1)
 	}
-	db := mongoClient.Database(mongoDB)
+	db := mongoClient.Database(cfg.MongoDB)
 	roomLookup := &mongoRoomLookup{
 		roomCol: db.Collection("rooms"),
 		subCol:  db.Collection("subscriptions"),
 	}
 
-	// --- NATS ---
-	nc, err := nats.Connect(natsURL)
+	nc, err := nats.Connect(cfg.NatsURL)
 	if err != nil {
-		log.Fatalf("nats connect: %v", err)
+		slog.Error("nats connect failed", "error", err)
+		os.Exit(1)
 	}
 
 	js, err := jetstream.New(nc)
 	if err != nil {
-		log.Fatalf("jetstream: %v", err)
+		slog.Error("jetstream init failed", "error", err)
+		os.Exit(1)
 	}
 
-	// --- Ensure FANOUT stream exists ---
-	fanoutCfg := stream.Fanout(siteID)
-	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	fanoutCfg := stream.Fanout(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     fanoutCfg.Name,
 		Subjects: fanoutCfg.Subjects,
-	})
-	if err != nil {
-		log.Fatalf("create fanout stream: %v", err)
+	}); err != nil {
+		slog.Error("create fanout stream failed", "error", err)
+		os.Exit(1)
 	}
 
-	// --- Create pull consumer ---
 	cons, err := js.CreateOrUpdateConsumer(ctx, fanoutCfg.Name, jetstream.ConsumerConfig{
 		Durable:   "broadcast-worker",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
-		log.Fatalf("create consumer: %v", err)
+		slog.Error("create consumer failed", "error", err)
+		os.Exit(1)
 	}
 
-	// --- Publisher wraps *nats.Conn ---
 	publisher := &natsPublisher{nc: nc}
-
 	handler := NewHandler(roomLookup, publisher)
 
-	log.Printf("broadcast-worker started (site=%s)", siteID)
-
-	// --- Consume loop ---
-	go func() {
-		for {
-			msgs, err := cons.Fetch(10, jetstream.FetchMaxWait(5*time.Second))
-			if err != nil {
-				if err == context.Canceled {
-					return
-				}
-				log.Printf("fetch: %v", err)
-				continue
-			}
-			for msg := range msgs.Messages() {
-				if err := handler.HandleMessage(ctx, msg.Data()); err != nil {
-					log.Printf("handle error: %v", err)
-					msg.Nak()
-					continue
-				}
-				msg.Ack()
-			}
-			if msgs.Error() != nil {
-				log.Printf("fetch iteration error: %v", msgs.Error())
-			}
+	cctx, err := cons.Consume(func(msg jetstream.Msg) {
+		if err := handler.HandleMessage(ctx, msg.Data()); err != nil {
+			slog.Error("handle message failed", "error", err)
+			msg.Nak()
+			return
 		}
-	}()
+		msg.Ack()
+	})
+	if err != nil {
+		slog.Error("consume failed", "error", err)
+		os.Exit(1)
+	}
 
-	// --- Graceful shutdown ---
+	slog.Info("broadcast-worker started", "site", cfg.SiteID)
+
 	shutdown.Wait(ctx,
-		func(ctx context.Context) error {
-			nc.Close()
-			return nil
-		},
-		func(ctx context.Context) error {
-			mongoutil.Disconnect(ctx, mongoClient)
-			return nil
-		},
+		func(ctx context.Context) error { cctx.Stop(); return nil },
+		func(ctx context.Context) error { nc.Drain(); return nil },
+		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }
 

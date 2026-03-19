@@ -2,7 +2,7 @@ package natsutil
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/nats-io/nats.go"
@@ -24,12 +24,12 @@ func ReplyJSON(msg *nats.Msg, v any) {
 		return
 	}
 	if err := msg.Respond(data); err != nil {
-		log.Printf("reply failed: %v", err)
+		slog.Error("reply failed", "error", err)
 	}
 }
 
 func ReplyError(msg *nats.Msg, errMsg string) {
 	if err := msg.Respond(MarshalError(errMsg)); err != nil {
-		log.Printf("error reply failed: %v", err)
+		slog.Error("error reply failed", "error", err)
 	}
 }
