@@ -86,6 +86,3 @@ func (h *Handler) handleHistory(userID, roomID string, data []byte) ([]byte, err
 	}
 	return json.Marshal(resp)
 }
-
-// Ensure log is used (imported for NatsHandleHistory side effects)
-var _ = log.Printf
