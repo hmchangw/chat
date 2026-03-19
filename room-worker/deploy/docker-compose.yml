@@ -11,25 +11,15 @@ services:
     ports:
       - "27017:27017"
 
-  cassandra:
-    image: cassandra:5
-    ports:
-      - "9042:9042"
-    environment:
-      - CASSANDRA_CLUSTER_NAME=chat-dev
-
-  history-service:
+  room-worker:
     build:
       context: ../..
-      dockerfile: history-service/Dockerfile
+      dockerfile: room-worker/deploy/Dockerfile
     environment:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
-      - CASSANDRA_HOSTS=cassandra
-      - CASSANDRA_KEYSPACE=chat
     depends_on:
       - nats
       - mongodb
-      - cassandra

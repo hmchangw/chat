@@ -11,10 +11,10 @@ services:
     ports:
       - "27017:27017"
 
-  notification-worker:
+  broadcast-worker:
     build:
       context: ../..
-      dockerfile: notification-worker/Dockerfile
+      dockerfile: broadcast-worker/deploy/Dockerfile
     environment:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local

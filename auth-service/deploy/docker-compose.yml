@@ -6,21 +6,13 @@ services:
       - "8222:8222"
     command: ["--jetstream", "--http_port", "8222"]
 
-  mongodb:
-    image: mongo:8
-    ports:
-      - "27017:27017"
-
-  room-gatekeeper:
+  auth-service:
     build:
       context: ../..
-      dockerfile: room-gatekeeper/Dockerfile
+      dockerfile: auth-service/deploy/Dockerfile
     environment:
       - NATS_URL=nats://nats:4222
-      - SITE_ID=site-local
-      - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
-      - MAX_ROOM_SIZE=1000
+      - NATS_CREDS=/run/secrets/nats.creds
+      - AUTH_SIGNING_KEY=${AUTH_SIGNING_KEY}
     depends_on:
       - nats
-      - mongodb

@@ -11,15 +11,16 @@ services:
     ports:
       - "27017:27017"
 
-  room-worker:
+  room-service:
     build:
       context: ../..
-      dockerfile: room-worker/Dockerfile
+      dockerfile: room-service/deploy/Dockerfile
     environment:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
+      - MAX_ROOM_SIZE=1000
     depends_on:
       - nats
       - mongodb

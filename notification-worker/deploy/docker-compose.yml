@@ -11,10 +11,10 @@ services:
     ports:
       - "27017:27017"
 
-  inbox-worker:
+  notification-worker:
     build:
       context: ../..
-      dockerfile: inbox-worker/Dockerfile
+      dockerfile: notification-worker/deploy/Dockerfile
     environment:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
