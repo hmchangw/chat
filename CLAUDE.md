@@ -1,5 +1,66 @@
 # Project Guidelines
 
+## Section 3: Go Coding Standards
+
+### Naming
+
+- **Packages**: Short, lowercase, single-word. No underscores or mixedCaps (e.g., `natsutil`, `mongoutil`).
+- **Interfaces**: Name by what they do, not what they are. Use the `-er` suffix for single-method interfaces. For store interfaces, use `<Domain>Store` (e.g., `RoomStore`, `MessageStore`, `HistoryStore`).
+- **Constructors**: Use `New<Type>` (e.g., `NewMongoStore`, `NewHandler`).
+- **Exported vs unexported**: Export types and functions that other packages consume. Keep handler/store implementations unexported when only used within the service.
+
+### Error Handling
+
+- **Always wrap with context**: Use `fmt.Errorf("short description: %w", err)`. The description should say what the current function was trying to do, not what failed underneath.
+  ```go
+  // Good
+  return fmt.Errorf("create room: %w", err)
+
+  // Bad
+  return err
+  return fmt.Errorf("error: %w", err)
+  ```
+- **Never ignore errors silently**. If you intentionally discard an error, add a comment explaining why.
+- **Error responses**: Use `model.ErrorResponse` (`{"error": "message"}`) for all NATS reply errors via `natsutil.ReplyError`.
+
+### Interfaces & Dependency Injection
+
+- **Define interfaces in the consumer**, not the implementer. Each service defines its own store interface in `store.go` with only the methods it needs.
+- **Accept interfaces, return structs**. Constructors return concrete types; callers assign to interface variables.
+- **Handler structs hold dependencies** injected via constructor:
+  ```go
+  type Handler struct {
+      store RoomStore
+      nc    *nats.Conn
+      site  string
+  }
+  ```
+
+### Struct Tags
+
+- **All model structs** get both `json` and `bson` tags for JSON serialization and MongoDB storage.
+- **Use `_id` for MongoDB primary keys**: `bson:"_id"` mapped to the `ID` field.
+  ```go
+  type Room struct {
+      ID   string `json:"id" bson:"_id"`
+      Name string `json:"name" bson:"name"`
+  }
+  ```
+
+### Logging
+
+- **Structured logging**: Always use `log/slog` with JSON format for structured logging. Never use `fmt.Println`, `log.Println`, or text-format loggers.
+
+### Code Organization (Per Service)
+
+- `main.go` — Config parsing, dependency wiring, startup, graceful shutdown
+- `handler.go` — Request/message handling logic
+- `store.go` — Store interface definition + `//go:generate mockgen` directive
+- `store_mongo.go` / `store_real.go` — Store implementation
+- `handler_test.go` — Unit tests with mocked store
+- `integration_test.go` — Integration tests with testcontainers (tagged `//go:build integration`)
+- `mock_store_test.go` — Generated mocks (do not edit manually)
+
 ## Section 7: API & HTTP Standards
 
 ### HTTP Server
