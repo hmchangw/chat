@@ -314,10 +314,20 @@ chat/
 ## Section 9: Configuration & Environment
 
 - **Source**: All configuration comes from environment variables. No config files (YAML, TOML, JSON) unless there's a strong reason.
-- **Loading**: Read environment variables in `main.go` at startup. Parse them into a typed `Config` struct. Pass the struct (or its fields) to constructors — services and handlers never read `os.Getenv` directly.
-- **Validation**: Validate all required config at startup. If a required variable is missing or invalid, log the error and exit immediately with a non-zero exit code. Fail fast — don't let the service start in a broken state.
+- **Library**: Use [`caarlos0/env`](https://github.com/caarlos0/env) to parse environment variables into a typed `Config` struct. Never use `os.Getenv` directly in service code.
+- **Loading**: Define a `Config` struct in `main.go` with `env` struct tags. Call `env.Parse(&cfg)` at startup. Pass the struct (or its fields) to constructors — services and handlers never read environment variables directly.
+  ```go
+  type Config struct {
+      NatsURL  string `env:"NATS_URL,required"`
+      MongoURI string `env:"MONGO_URI,required"`
+      MongoDB  string `env:"MONGO_DB" envDefault:"chat"`
+      SiteID   string `env:"SITE_ID,required"`
+      Port     int    `env:"PORT" envDefault:"8080"`
+  }
+  ```
+- **Defaults**: Always provide `envDefault` for non-critical config (e.g., port, database name, log level). Never default secrets or connection strings — mark them `required` instead.
+- **Validation**: If `env.Parse` returns an error (missing required vars, type mismatch), log the error and exit immediately with a non-zero exit code. Fail fast — don't let the service start in a broken state.
 - **Naming**: Use `SCREAMING_SNAKE_CASE` for environment variable names. Prefix with the service name for service-specific vars (e.g., `AUTH_SERVICE_PORT`, `HISTORY_SERVICE_CASSANDRA_HOSTS`). Use unprefixed names for shared vars (e.g., `NATS_URL`, `MONGO_URI`).
-- **Defaults**: Provide sensible defaults for non-critical config (e.g., port, log level). Never default secrets or connection strings — require them explicitly.
 - **Secrets**: Secrets (tokens, keys, passwords) come from environment variables. Never hardcode them. Never log them. In production, inject via the orchestrator's secret management (e.g., Kubernetes Secrets).
 - **`.env` files**: Use `.env` files for local development only. Add `.env` to `.gitignore`. Never commit `.env` files.
 
