@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/nats-io/nats.go"
@@ -15,10 +18,11 @@ import (
 )
 
 type config struct {
-	NatsURL  string `env:"NATS_URL"  envDefault:"nats://localhost:4222"`
-	SiteID   string `env:"SITE_ID"   envDefault:"site-local"`
-	MongoURI string `env:"MONGO_URI" envDefault:"mongodb://localhost:27017"`
-	MongoDB  string `env:"MONGO_DB"  envDefault:"chat"`
+	NatsURL    string `env:"NATS_URL"    envDefault:"nats://localhost:4222"`
+	SiteID     string `env:"SITE_ID"     envDefault:"site-local"`
+	MongoURI   string `env:"MONGO_URI"   envDefault:"mongodb://localhost:27017"`
+	MongoDB    string `env:"MONGO_DB"    envDefault:"chat"`
+	MaxWorkers int    `env:"MAX_WORKERS" envDefault:"100"`
 }
 
 func main() {
@@ -70,16 +74,50 @@ func main() {
 		os.Exit(1)
 	}
 
-	cctx, err := cons.Consume(handler.HandleJetStreamMsg)
+	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
-		slog.Error("consume failed", "error", err)
+		slog.Error("messages failed", "error", err)
 		os.Exit(1)
 	}
 
+	sem := make(chan struct{}, cfg.MaxWorkers)
+	var wg sync.WaitGroup
+
+	go func() {
+		for {
+			msg, err := iter.Next()
+			if err != nil {
+				return
+			}
+			sem <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+				handler.HandleJetStreamMsg(msg)
+			}()
+		}
+	}()
+
 	slog.Info("room-worker running", "site", cfg.SiteID)
 
-	shutdown.Wait(ctx,
-		func(ctx context.Context) error { cctx.Stop(); return nil },
+	shutdown.Wait(ctx, 25*time.Second,
+		func(ctx context.Context) error {
+			iter.Stop()
+			return nil
+		},
+		func(ctx context.Context) error {
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
+			}
+		},
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)

@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 
@@ -118,8 +120,16 @@ func main() {
 
 	slog.Info("inbox-worker started", "site", cfg.SiteID)
 
-	shutdown.Wait(ctx,
-		func(ctx context.Context) error { cctx.Stop(); return nil },
+	shutdown.Wait(ctx, 25*time.Second,
+		func(ctx context.Context) error {
+			cctx.Drain()
+			select {
+			case <-cctx.Closed():
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("consumer drain timed out: %w", ctx.Err())
+			}
+		},
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)

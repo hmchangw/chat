@@ -188,7 +188,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 ### NATS & Messaging
 - Use `github.com/nats-io/nats.go` for core and `github.com/nats-io/nats.go/jetstream` for JetStream
 - Connect in `main.go` — on failure, log and exit immediately, don't retry at startup
-- Use `nc.Drain()` for graceful shutdown — register in `shutdown.Wait`
+- Use `iter.Stop()` + `wg.Wait()` + `nc.Drain()` for graceful shutdown — see "JetStream Consumer Pattern" and "Graceful Shutdown" sections
 - All NATS payloads are JSON — use `encoding/json` with typed structs from `pkg/model`
 - Use NATS request/reply for synchronous operations; `nc.QueueSubscribe` with service name as queue group
 - Use `natsutil.ReplyJSON` for success responses, `natsutil.ReplyError` for errors
@@ -248,6 +248,15 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Always enable JetStream (`--jetstream`) and HTTP monitoring (`--http_port 8222`) for NATS
 - Each service also has `<service>/deploy/azure-pipelines.yml` for CI/CD
 
+### JetStream Consumer Pattern
+- Choose the pattern based on the service's throughput needs:
+  - **High-throughput** (`cons.Messages()` + semaphore): Pull iterator with a channel-based semaphore (`chan struct{}`) sized by `cfg.MaxWorkers` (from `MAX_WORKERS` env var, default `100`), `PullMaxMessages(2 * cfg.MaxWorkers)`, and `sync.WaitGroup` to track in-flight goroutines
+  - **Sequential** (`cons.Consume()`): Callback-based sequential processing for lower-volume streams where concurrency is unnecessary
+- Match the pattern already used by the service being modified — don't mix patterns within a single consumer
+- Follow existing worker services (`message-worker`, `broadcast-worker`, etc.) as reference implementations
+
 ### Graceful Shutdown
 - Use `pkg/shutdown.Wait` in every service's `main.go`
-- Cleanup order: drain NATS first, then disconnect databases
+- JetStream workers cleanup order: `iter.Stop()` → `wg.Wait()` (with timeout) → `nc.Drain()` → disconnect databases
+- HTTP services cleanup order: `nc.Drain()` → disconnect databases
+- Shutdown timeout (25s) must be less than Kubernetes `terminationGracePeriodSeconds` (30s)

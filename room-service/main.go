@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/nats-io/nats.go"
@@ -79,7 +80,7 @@ func main() {
 
 	slog.Info("room-service running", "site", cfg.SiteID)
 
-	shutdown.Wait(ctx,
+	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
