@@ -6,10 +6,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
@@ -43,7 +44,7 @@ func TestMongoStore_Integration(t *testing.T) {
 
 	// Test CreateSubscription
 	sub := model.Subscription{ID: "s1", UserID: "u1", RoomID: "r1", Role: model.RoleOwner}
-	if err := store.CreateSubscription(ctx, sub); err != nil {
+	if err := store.CreateSubscription(ctx, &sub); err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
 

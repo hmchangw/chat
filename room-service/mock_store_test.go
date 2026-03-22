@@ -42,7 +42,7 @@ func (m *MockRoomStore) EXPECT() *MockRoomStoreMockRecorder {
 }
 
 // CreateRoom mocks base method.
-func (m *MockRoomStore) CreateRoom(ctx context.Context, room model.Room) error {
+func (m *MockRoomStore) CreateRoom(ctx context.Context, room *model.Room) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "CreateRoom", ctx, room)
 	ret0, _ := ret[0].(error)
@@ -56,7 +56,7 @@ func (mr *MockRoomStoreMockRecorder) CreateRoom(ctx, room any) *gomock.Call {
 }
 
 // CreateSubscription mocks base method.
-func (m *MockRoomStore) CreateSubscription(ctx context.Context, sub model.Subscription) error {
+func (m *MockRoomStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "CreateSubscription", ctx, sub)
 	ret0, _ := ret[0].(error)

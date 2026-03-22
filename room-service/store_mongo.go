@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 type MongoStore struct {
@@ -21,7 +22,7 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	}
 }
 
-func (s *MongoStore) CreateRoom(ctx context.Context, room model.Room) error {
+func (s *MongoStore) CreateRoom(ctx context.Context, room *model.Room) error {
 	_, err := s.rooms.InsertOne(ctx, room)
 	return err
 }
@@ -55,7 +56,7 @@ func (s *MongoStore) GetSubscription(ctx context.Context, userID, roomID string)
 	return &sub, nil
 }
 
-func (s *MongoStore) CreateSubscription(ctx context.Context, sub model.Subscription) error {
+func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
 	_, err := s.subscriptions.InsertOne(ctx, sub)
 	return err
 }

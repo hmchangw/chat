@@ -1,8 +1,12 @@
-.PHONY: lint test test-integration generate build
+.PHONY: lint fmt test test-integration generate build
 
-# Run go vet and staticcheck on all packages
+# Run golangci-lint (includes go vet, staticcheck, errcheck, goimports, etc.)
 lint:
-	go vet ./...
+	golangci-lint run ./...
+
+# Run goimports via golangci-lint to format all .go files
+fmt:
+	golangci-lint fmt ./...
 
 # Run all unit tests with race detector (excludes integration tests)
 test:

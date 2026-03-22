@@ -82,10 +82,10 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 			return fmt.Errorf("list subscriptions for DM room %s: %w", room.ID, err)
 		}
 
-		for _, sub := range subs {
-			subj := subject.UserMsgStream(sub.UserID)
+		for i := range subs {
+			subj := subject.UserMsgStream(subs[i].UserID)
 			if err := h.pub.Publish(subj, evtData); err != nil {
-				slog.Error("publish to user stream failed", "error", err, "userID", sub.UserID)
+				slog.Error("publish to user stream failed", "error", err, "userID", subs[i].UserID)
 			}
 		}
 

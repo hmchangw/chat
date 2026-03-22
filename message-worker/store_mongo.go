@@ -6,9 +6,10 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/hmchangw/chat/pkg/model"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 type MongoStore struct {
@@ -34,7 +35,7 @@ func (s *MongoStore) GetSubscription(ctx context.Context, userID, roomID string)
 	return &sub, nil
 }
 
-func (s *MongoStore) SaveMessage(ctx context.Context, msg model.Message) error {
+func (s *MongoStore) SaveMessage(ctx context.Context, msg *model.Message) error {
 	return s.cassSession.Query(
 		`INSERT INTO messages (room_id, created_at, id, user_id, content) VALUES (?, ?, ?, ?, ?)`,
 		msg.RoomID, msg.CreatedAt, msg.ID, msg.UserID, msg.Content,

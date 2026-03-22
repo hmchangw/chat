@@ -6,9 +6,10 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/hmchangw/chat/pkg/model"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 type RealStore struct {

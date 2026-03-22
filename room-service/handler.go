@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
+
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
-	"github.com/nats-io/nats.go"
 )
 
 type Handler struct {
@@ -47,7 +48,9 @@ func (h *Handler) natsCreateRoom(msg *nats.Msg) {
 		natsutil.ReplyError(msg, err.Error())
 		return
 	}
-	msg.Respond(resp)
+	if err := msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
 }
 
 func (h *Handler) natsListRooms(msg *nats.Msg) {
@@ -77,7 +80,9 @@ func (h *Handler) NatsHandleInvite(msg *nats.Msg) {
 		natsutil.ReplyError(msg, err.Error())
 		return
 	}
-	msg.Respond(resp)
+	if err := msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
 }
 
 func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, error) {
@@ -98,7 +103,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		UpdatedAt: now,
 	}
 
-	if err := h.store.CreateRoom(ctx, room); err != nil {
+	if err := h.store.CreateRoom(ctx, &room); err != nil {
 		return nil, fmt.Errorf("create room: %w", err)
 	}
 
@@ -112,7 +117,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		SharedHistorySince: now,
 		JoinedAt:           now,
 	}
-	if err := h.store.CreateSubscription(ctx, sub); err != nil {
+	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
 		slog.Warn("create owner subscription failed", "error", err)
 	}
 

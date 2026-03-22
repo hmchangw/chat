@@ -8,11 +8,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {

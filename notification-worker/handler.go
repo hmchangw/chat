@@ -56,13 +56,13 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 
 	senderID := evt.Message.UserID
 
-	for _, sub := range subs {
-		if sub.UserID == senderID {
+	for i := range subs {
+		if subs[i].UserID == senderID {
 			continue
 		}
-		subj := subject.Notification(sub.UserID)
+		subj := subject.Notification(subs[i].UserID)
 		if err := h.pub.Publish(subj, notifData); err != nil {
-			slog.Error("publish notification failed", "error", err, "userID", sub.UserID)
+			slog.Error("publish notification failed", "error", err, "userID", subs[i].UserID)
 		}
 	}
 

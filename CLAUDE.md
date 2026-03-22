@@ -42,7 +42,8 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 
 | Command | Description |
 |---------|-------------|
-| `make lint` | Run `go vet ./...` and linter |
+| `make lint` | Run `golangci-lint` (includes `go vet`, `staticcheck`, `errcheck`, `goimports`, etc.) |
+| `make fmt` | Run `goimports` via `golangci-lint fmt` to format all `.go` files |
 | `make test` | Run all unit tests with race detector |
 | `make test SERVICE=<name>` | Run unit tests for a single service |
 | `make test-integration` | Run all integration tests (requires Docker) |

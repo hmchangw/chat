@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"testing"
 
+	"go.uber.org/mock/gomock"
+
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
-	"go.uber.org/mock/gomock"
 )
 
 func TestHandler_CreateRoom(t *testing.T) {

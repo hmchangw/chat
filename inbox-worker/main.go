@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/caarlos0/env/v11"
+
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
@@ -31,12 +32,12 @@ type mongoInboxStore struct {
 	roomCol *mongo.Collection
 }
 
-func (s *mongoInboxStore) CreateSubscription(ctx context.Context, sub model.Subscription) error {
+func (s *mongoInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
 	_, err := s.subCol.InsertOne(ctx, sub)
 	return err
 }
 
-func (s *mongoInboxStore) UpsertRoom(ctx context.Context, room model.Room) error {
+func (s *mongoInboxStore) UpsertRoom(ctx context.Context, room *model.Room) error {
 	filter := bson.M{"_id": room.ID}
 	update := bson.M{"$set": room}
 	opts := options.UpdateOne().SetUpsert(true)
@@ -101,10 +102,14 @@ func main() {
 	cctx, err := cons.Consume(func(msg jetstream.Msg) {
 		if err := handler.HandleEvent(ctx, msg.Data()); err != nil {
 			slog.Error("handle event failed", "error", err)
-			msg.Nak()
+			if err := msg.Nak(); err != nil {
+				slog.Error("failed to nak message", "error", err)
+			}
 			return
 		}
-		msg.Ack()
+		if err := msg.Ack(); err != nil {
+			slog.Error("failed to ack message", "error", err)
+		}
 	})
 	if err != nil {
 		slog.Error("consume failed", "error", err)
@@ -115,7 +120,7 @@ func main() {
 
 	shutdown.Wait(ctx,
 		func(ctx context.Context) error { cctx.Stop(); return nil },
-		func(ctx context.Context) error { nc.Drain(); return nil },
+		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }

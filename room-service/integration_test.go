@@ -6,10 +6,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
@@ -40,7 +41,7 @@ func TestMongoStore_Integration(t *testing.T) {
 
 	// Test CreateRoom and GetRoom
 	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup, SiteID: "site-a", CreatedBy: "u1", UserCount: 1}
-	if err := store.CreateRoom(ctx, room); err != nil {
+	if err := store.CreateRoom(ctx, &room); err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
 	got, err := store.GetRoom(ctx, "r1")
@@ -52,7 +53,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test ListRooms
-	store.CreateRoom(ctx, model.Room{ID: "r2", Name: "random", Type: model.RoomTypeGroup})
+	store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeGroup})
 	rooms, err := store.ListRooms(ctx)
 	if err != nil {
 		t.Fatalf("ListRooms: %v", err)
@@ -63,7 +64,7 @@ func TestMongoStore_Integration(t *testing.T) {
 
 	// Test CreateSubscription and GetSubscription
 	sub := model.Subscription{ID: "s1", UserID: "u1", RoomID: "r1", Role: model.RoleOwner}
-	if err := store.CreateSubscription(ctx, sub); err != nil {
+	if err := store.CreateSubscription(ctx, &sub); err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
 	gotSub, err := store.GetSubscription(ctx, "u1", "r1")

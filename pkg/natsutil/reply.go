@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/nats-io/nats.go"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func MarshalResponse(v any) ([]byte, error) {
