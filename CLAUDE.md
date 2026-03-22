@@ -51,8 +51,6 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 | `make generate SERVICE=<name>` | Regenerate mocks for a single service |
 | `make build SERVICE=<name>` | Build a single service binary |
 
-**Workflow rule:** ALWAYS run `make lint` and `make test` before committing. If either fails, fix before committing.
-
 ## Section 3: Coding Rules
 
 ### Naming
@@ -85,6 +83,10 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Always use `log/slog` with JSON format — never `fmt.Println`, `log.Println`, or text-format loggers
 - Structured fields as key-value pairs, never interpolated strings
 - Never log tokens, passwords, or full message bodies
+
+### Request Logging & Tracing
+- HTTP services (Gin): use middleware that logs method, path, status code, latency, and request ID per request
+- Generate or extract a unique request/correlation ID at the entry point (HTTP middleware or NATS message handler), propagate via `context.Context`, include in all log lines
 
 ### Concurrency
 - Never use `time.Sleep` for goroutine synchronization — use proper sync primitives (channels, `sync.WaitGroup`, `sync.Mutex`)
@@ -133,14 +135,13 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 
 ### General
 - Run `make generate` before testing if store interfaces changed
-- ALWAYS run `make lint` and `make test` before committing
 - ALWAYS use the `-race` flag in testing — use `go test -race` to catch data races (the Makefile handles this)
 
 ## Section 5: Workflow Guardrails
 
 ### Before Committing
-- ALWAYS run `make lint` and `make test` — if either fails, fix before committing
 - Run `make generate` first if store interfaces were changed
+- Lint and tests are enforced by a pre-commit hook — fix failures before retrying
 
 ### Before Editing
 - Always read a file before modifying it — understand existing code before suggesting changes
@@ -173,7 +174,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - NEVER commit `.env` files
 - NEVER log tokens, passwords, or full message bodies
 - NEVER put test helpers in production code — `_test.go` files only
-- NEVER skip `make lint` and `make test` before committing
+- NEVER skip pre-commit hook failures — fix lint/test issues before committing
 - NEVER use `time.Sleep` for goroutine synchronization — use proper sync primitives (channels, `sync.WaitGroup`, `sync.Mutex`)
 - NEVER launch goroutines without a clear termination path — avoid goroutine leaks
 - NEVER compare errors by string — use `errors.Is` and `errors.As`
@@ -193,6 +194,21 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Define all stream configs in `pkg/stream/stream.go` with name pattern `<STREAM>_<siteID>`
 - Use durable consumers named after the service
 - Use `js.CreateOrUpdateStream` at startup — it's idempotent
+
+### NATS Subject Naming
+- Dot-delimited hierarchical subjects — use `pkg/subject` builders, never raw `fmt.Sprintf`
+- User-scoped: `chat.user.{userID}.…`
+- Room-scoped: `chat.room.{roomID}.…`
+- Fanout: `fanout.{siteID}.{roomID}.{msgID}`
+- Outbox: `outbox.{siteID}.to.{destSiteID}.{eventType}`
+- Wildcards: `*` for single-token, `>` for multi-token tail — define patterns in `pkg/subject`
+
+### JetStream Streams
+- `MESSAGES_{siteID}` — User message submissions
+- `FANOUT_{siteID}` — Broadcast messages for fan-out
+- `ROOMS_{siteID}` — Member invite requests
+- `OUTBOX_{siteID}` — Cross-site outbound events
+- `INBOX_{siteID}` — Cross-site inbound events (sourced from remote OUTBOX)
 
 ### MongoDB
 - Driver: `go.mongodb.org/mongo-driver/v2`
