@@ -20,13 +20,12 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-const maxWorkers = 100
-
 type config struct {
-	NatsURL  string `env:"NATS_URL"  envDefault:"nats://localhost:4222"`
-	SiteID   string `env:"SITE_ID"   envDefault:"default"`
-	MongoURI string `env:"MONGO_URI" envDefault:"mongodb://localhost:27017"`
-	MongoDB  string `env:"MONGO_DB"  envDefault:"chat"`
+	NatsURL    string `env:"NATS_URL"    envDefault:"nats://localhost:4222"`
+	SiteID     string `env:"SITE_ID"     envDefault:"default"`
+	MongoURI   string `env:"MONGO_URI"   envDefault:"mongodb://localhost:27017"`
+	MongoDB    string `env:"MONGO_DB"    envDefault:"chat"`
+	MaxWorkers int    `env:"MAX_WORKERS" envDefault:"100"`
 }
 
 // mongoRoomLookup implements RoomLookup using MongoDB.
@@ -115,13 +114,13 @@ func main() {
 	publisher := &natsPublisher{nc: nc}
 	handler := NewHandler(roomLookup, publisher)
 
-	iter, err := cons.Messages(jetstream.PullMaxMessages(maxWorkers))
+	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
 		slog.Error("messages failed", "error", err)
 		os.Exit(1)
 	}
 
-	sem := make(chan struct{}, maxWorkers)
+	sem := make(chan struct{}, cfg.MaxWorkers)
 	var wg sync.WaitGroup
 
 	go func() {

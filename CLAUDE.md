@@ -188,7 +188,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 ### NATS & Messaging
 - Use `github.com/nats-io/nats.go` for core and `github.com/nats-io/nats.go/jetstream` for JetStream
 - Connect in `main.go` — on failure, log and exit immediately, don't retry at startup
-- Use `nc.Drain()` for graceful shutdown — register in `shutdown.Wait`
+- Use `iter.Stop()` + `wg.Wait()` + `nc.Drain()` for graceful shutdown — see "JetStream Consumer Pattern" and "Graceful Shutdown" sections
 - All NATS payloads are JSON — use `encoding/json` with typed structs from `pkg/model`
 - Use NATS request/reply for synchronous operations; `nc.QueueSubscribe` with service name as queue group
 - Use `natsutil.ReplyJSON` for success responses, `natsutil.ReplyError` for errors
@@ -248,6 +248,43 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Always enable JetStream (`--jetstream`) and HTTP monitoring (`--http_port 8222`) for NATS
 - Each service also has `<service>/deploy/azure-pipelines.yml` for CI/CD
 
+### JetStream Consumer Pattern
+- Use `cons.Messages()` with a pull iterator — never `cons.Consume()` callback
+- Use a channel-based semaphore (`chan struct{}`) to limit concurrent workers, sized by `cfg.MaxWorkers` (from `MAX_WORKERS` env var, default `100`)
+- Set `PullMaxMessages(2 * cfg.MaxWorkers)` to keep the client buffer ahead of processing capacity
+- Use `sync.WaitGroup` to track in-flight goroutines for graceful drain
+- Pattern for consuming messages:
+
+```go
+iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
+sem := make(chan struct{}, cfg.MaxWorkers)
+var wg sync.WaitGroup
+
+go func() {
+    for {
+        msg, err := iter.Next()
+        if err != nil {
+            return // iter.Stop() was called
+        }
+        sem <- struct{}{} // acquire worker slot
+        wg.Add(1)
+        go func() {
+            defer func() {
+                <-sem // release worker slot
+                wg.Done()
+            }()
+            // process msg, then msg.Ack() or msg.Nak()
+        }()
+    }
+}()
+```
+
 ### Graceful Shutdown
 - Use `pkg/shutdown.Wait` in every service's `main.go`
-- Cleanup order: drain NATS first, then disconnect databases
+- Cleanup order for JetStream workers:
+  1. `iter.Stop()` — stop fetching new messages from the iterator
+  2. `wg.Wait()` — wait for all in-flight worker goroutines to finish (with timeout)
+  3. `nc.Drain()` — drain the NATS connection
+  4. Disconnect databases (MongoDB, Cassandra)
+- Cleanup order for HTTP services: drain NATS first, then disconnect databases
+- The shutdown timeout (25s) must be less than the Kubernetes `terminationGracePeriodSeconds` (default 30s) to allow graceful completion before forced kill

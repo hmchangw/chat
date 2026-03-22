@@ -19,8 +19,6 @@ import (
 	"github.com/hmchangw/chat/pkg/stream"
 )
 
-const maxWorkers = 100
-
 type config struct {
 	NatsURL           string `env:"NATS_URL"           envDefault:"nats://localhost:4222"`
 	SiteID            string `env:"SITE_ID"            envDefault:"site-local"`
@@ -28,6 +26,7 @@ type config struct {
 	MongoDB           string `env:"MONGO_DB"           envDefault:"chat"`
 	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
 	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
+	MaxWorkers        int    `env:"MAX_WORKERS"        envDefault:"100"`
 }
 
 func main() {
@@ -88,13 +87,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	iter, err := cons.Messages(jetstream.PullMaxMessages(maxWorkers))
+	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
 		slog.Error("messages failed", "error", err)
 		os.Exit(1)
 	}
 
-	sem := make(chan struct{}, maxWorkers)
+	sem := make(chan struct{}, cfg.MaxWorkers)
 	var wg sync.WaitGroup
 
 	go func() {
