@@ -13,8 +13,12 @@ claude plugin marketplace add obra/superpowers-marketplace 2>/dev/null || true
 # Install superpowers plugin
 claude plugin install superpowers@superpowers-marketplace --scope project
 
+# Ensure ~/go/bin is on PATH for go install'd tools
+export PATH="${HOME}/go/bin:${PATH}"
+
 # Install Go tools
 go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+go install go.uber.org/mock/mockgen@latest
 
 # Download Go module dependencies
 go mod download
