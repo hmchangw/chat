@@ -1,5 +1,7 @@
 .PHONY: lint fmt test test-integration generate build
 
+# Makefile for the distributed multi-site chat system.
+
 # Run golangci-lint (includes go vet, staticcheck, errcheck, goimports, etc.)
 lint:
 	golangci-lint run ./...

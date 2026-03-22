@@ -16,8 +16,7 @@ claude plugin install superpowers@superpowers-marketplace --scope project
 # Ensure ~/go/bin is on PATH for go install'd tools
 export PATH="${HOME}/go/bin:${PATH}"
 
-# Install Go tools
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+# Install Go tools (golangci-lint v2 is pre-installed at /usr/local/bin)
 go install go.uber.org/mock/mockgen@latest
 
 # Download Go module dependencies
