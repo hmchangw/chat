@@ -249,42 +249,14 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Each service also has `<service>/deploy/azure-pipelines.yml` for CI/CD
 
 ### JetStream Consumer Pattern
-- Use `cons.Messages()` with a pull iterator — never `cons.Consume()` callback
-- Use a channel-based semaphore (`chan struct{}`) to limit concurrent workers, sized by `cfg.MaxWorkers` (from `MAX_WORKERS` env var, default `100`)
+- Use `cons.Messages()` pull iterator — never `cons.Consume()` callback
+- Limit concurrency with a channel-based semaphore (`chan struct{}`) sized by `cfg.MaxWorkers` (from `MAX_WORKERS` env var, default `100`)
 - Set `PullMaxMessages(2 * cfg.MaxWorkers)` to keep the client buffer ahead of processing capacity
-- Use `sync.WaitGroup` to track in-flight goroutines for graceful drain
-- Pattern for consuming messages:
-
-```go
-iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
-sem := make(chan struct{}, cfg.MaxWorkers)
-var wg sync.WaitGroup
-
-go func() {
-    for {
-        msg, err := iter.Next()
-        if err != nil {
-            return // iter.Stop() was called
-        }
-        sem <- struct{}{} // acquire worker slot
-        wg.Add(1)
-        go func() {
-            defer func() {
-                <-sem // release worker slot
-                wg.Done()
-            }()
-            // process msg, then msg.Ack() or msg.Nak()
-        }()
-    }
-}()
-```
+- Track in-flight goroutines with `sync.WaitGroup` for graceful drain
+- Follow the existing worker services (`message-worker`, `broadcast-worker`, etc.) as reference implementations
 
 ### Graceful Shutdown
 - Use `pkg/shutdown.Wait` in every service's `main.go`
-- Cleanup order for JetStream workers:
-  1. `iter.Stop()` — stop fetching new messages from the iterator
-  2. `wg.Wait()` — wait for all in-flight worker goroutines to finish (with timeout)
-  3. `nc.Drain()` — drain the NATS connection
-  4. Disconnect databases (MongoDB, Cassandra)
-- Cleanup order for HTTP services: drain NATS first, then disconnect databases
-- The shutdown timeout (25s) must be less than the Kubernetes `terminationGracePeriodSeconds` (default 30s) to allow graceful completion before forced kill
+- JetStream workers cleanup order: `iter.Stop()` → `wg.Wait()` (with timeout) → `nc.Drain()` → disconnect databases
+- HTTP services cleanup order: `nc.Drain()` → disconnect databases
+- Shutdown timeout (25s) must be less than Kubernetes `terminationGracePeriodSeconds` (30s)
