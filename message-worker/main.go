@@ -7,20 +7,21 @@ import (
 	"strings"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 type config struct {
-	NatsURL          string `env:"NATS_URL"           envDefault:"nats://localhost:4222"`
-	SiteID           string `env:"SITE_ID"            envDefault:"site-local"`
-	MongoURI         string `env:"MONGO_URI"          envDefault:"mongodb://localhost:27017"`
-	MongoDB          string `env:"MONGO_DB"           envDefault:"chat"`
-	CassandraHosts   string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
+	NatsURL           string `env:"NATS_URL"           envDefault:"nats://localhost:4222"`
+	SiteID            string `env:"SITE_ID"            envDefault:"site-local"`
+	MongoURI          string `env:"MONGO_URI"          envDefault:"mongodb://localhost:27017"`
+	MongoDB           string `env:"MONGO_DB"           envDefault:"chat"`
+	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
 	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
 }
 
@@ -92,7 +93,7 @@ func main() {
 
 	shutdown.Wait(ctx,
 		func(ctx context.Context) error { cctx.Stop(); return nil },
-		func(ctx context.Context) error { nc.Drain(); return nil },
+		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 	)

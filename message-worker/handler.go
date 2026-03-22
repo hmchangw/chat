@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 type Handler struct {
@@ -30,7 +31,9 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	parts := strings.Split(msg.Subject(), ".")
 	if len(parts) < 7 {
 		slog.Warn("invalid subject", "subject", msg.Subject())
-		msg.Ack()
+		if err := msg.Ack(); err != nil {
+			slog.Error("failed to ack message", "error", err)
+		}
 		return
 	}
 	userID := parts[2]
@@ -41,7 +44,9 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	replyData, err := h.processMessage(ctx, userID, roomID, siteID, msg.Data())
 	if err != nil {
 		slog.Error("process message failed", "error", err, "userID", userID, "roomID", roomID)
-		msg.Ack()
+		if err := msg.Ack(); err != nil {
+			slog.Error("failed to ack message", "error", err)
+		}
 		return
 	}
 
@@ -53,7 +58,9 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 		}
 	}
 
-	msg.Ack()
+	if err := msg.Ack(); err != nil {
+		slog.Error("failed to ack message", "err", err)
+	}
 }
 
 func (h *Handler) processMessage(ctx context.Context, userID, roomID, siteID string, data []byte) ([]byte, error) {
@@ -79,7 +86,7 @@ func (h *Handler) processMessage(ctx context.Context, userID, roomID, siteID str
 	}
 
 	// Persist
-	if err := h.store.SaveMessage(ctx, msg); err != nil {
+	if err := h.store.SaveMessage(ctx, &msg); err != nil {
 		return nil, fmt.Errorf("save message: %w", err)
 	}
 	if err := h.store.UpdateRoomLastMessage(ctx, roomID, now); err != nil {

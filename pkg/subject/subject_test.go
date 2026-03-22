@@ -50,11 +50,11 @@ func TestSubjectBuilders(t *testing.T) {
 
 func TestParseUserRoomSubject(t *testing.T) {
 	tests := []struct {
-		name           string
-		subj           string
-		wantUserID     string
-		wantRoomID     string
-		wantOK         bool
+		name       string
+		subj       string
+		wantUserID string
+		wantRoomID string
+		wantOK     bool
 	}{
 		{"invite", "chat.user.u1.request.room.r1.site-a.member.invite", "u1", "r1", true},
 		{"history", "chat.user.u1.request.room.r1.site-a.msg.history", "u1", "r1", true},

@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"go.uber.org/mock/gomock"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func TestHandler_ProcessMessage_Success(t *testing.T) {

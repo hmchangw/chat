@@ -6,11 +6,12 @@ import (
 	"os"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 type config struct {
@@ -79,7 +80,7 @@ func main() {
 
 	shutdown.Wait(ctx,
 		func(ctx context.Context) error { cctx.Stop(); return nil },
-		func(ctx context.Context) error { nc.Drain(); return nil },
+		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }

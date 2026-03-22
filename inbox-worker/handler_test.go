@@ -18,23 +18,23 @@ type stubInboxStore struct {
 	rooms         []model.Room
 }
 
-func (s *stubInboxStore) CreateSubscription(ctx context.Context, sub model.Subscription) error {
+func (s *stubInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.subscriptions = append(s.subscriptions, sub)
+	s.subscriptions = append(s.subscriptions, *sub)
 	return nil
 }
 
-func (s *stubInboxStore) UpsertRoom(ctx context.Context, room model.Room) error {
+func (s *stubInboxStore) UpsertRoom(ctx context.Context, room *model.Room) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i, r := range s.rooms {
-		if r.ID == room.ID {
-			s.rooms[i] = room
+	for i := range s.rooms {
+		if s.rooms[i].ID == room.ID {
+			s.rooms[i] = *room
 			return nil
 		}
 	}
-	s.rooms = append(s.rooms, room)
+	s.rooms = append(s.rooms, *room)
 	return nil
 }
 

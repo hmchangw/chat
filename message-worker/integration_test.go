@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/testcontainers/testcontainers-go/modules/cassandra"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
@@ -99,7 +100,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	// Test SaveMessage
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	msg := model.Message{ID: "m1", RoomID: "r1", UserID: "u1", Content: "hello", CreatedAt: now}
-	if err := store.SaveMessage(ctx, msg); err != nil {
+	if err := store.SaveMessage(ctx, &msg); err != nil {
 		t.Fatalf("SaveMessage: %v", err)
 	}
 

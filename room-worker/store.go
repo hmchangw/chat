@@ -9,7 +9,7 @@ import (
 //go:generate mockgen -destination=mock_store_test.go -package=main . SubscriptionStore
 
 type SubscriptionStore interface {
-	CreateSubscription(ctx context.Context, sub model.Subscription) error
+	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 	IncrementUserCount(ctx context.Context, roomID string) error
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)

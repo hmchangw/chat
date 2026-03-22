@@ -3,8 +3,9 @@ package natsutil_test
 import (
 	"testing"
 
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/nats-io/nats.go"
+
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 func TestHeaderCarrier(t *testing.T) {

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/nats-io/nats.go"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
-	"github.com/nats-io/nats.go"
 )
 
 type Handler struct {
@@ -34,7 +36,9 @@ func (h *Handler) NatsHandleHistory(msg *nats.Msg) {
 		natsutil.ReplyError(msg, err.Error())
 		return
 	}
-	msg.Respond(resp)
+	if err := msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
 }
 
 func (h *Handler) handleHistory(userID, roomID string, data []byte) ([]byte, error) {

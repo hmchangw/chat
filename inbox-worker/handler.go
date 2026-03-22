@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -15,8 +16,8 @@ import (
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {
-	CreateSubscription(ctx context.Context, sub model.Subscription) error
-	UpsertRoom(ctx context.Context, room model.Room) error
+	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+	UpsertRoom(ctx context.Context, room *model.Room) error
 }
 
 // Publisher abstracts NATS publishing so the handler is testable.
@@ -70,7 +71,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) 
 		JoinedAt:           now,
 	}
 
-	if err := h.store.CreateSubscription(ctx, sub); err != nil {
+	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
 		return fmt.Errorf("create subscription: %w", err)
 	}
 
@@ -99,7 +100,7 @@ func (h *Handler) handleRoomSync(ctx context.Context, evt model.OutboxEvent) err
 		return fmt.Errorf("unmarshal room_sync payload: %w", err)
 	}
 
-	if err := h.store.UpsertRoom(ctx, room); err != nil {
+	if err := h.store.UpsertRoom(ctx, &room); err != nil {
 		return fmt.Errorf("upsert room: %w", err)
 	}
 

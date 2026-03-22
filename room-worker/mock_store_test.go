@@ -42,7 +42,7 @@ func (m *MockSubscriptionStore) EXPECT() *MockSubscriptionStoreMockRecorder {
 }
 
 // CreateSubscription mocks base method.
-func (m *MockSubscriptionStore) CreateSubscription(ctx context.Context, sub model.Subscription) error {
+func (m *MockSubscriptionStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "CreateSubscription", ctx, sub)
 	ret0, _ := ret[0].(error)

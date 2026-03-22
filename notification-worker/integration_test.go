@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {

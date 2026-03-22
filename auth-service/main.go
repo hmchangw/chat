@@ -23,16 +23,21 @@ type config struct {
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
+	if err := run(); err != nil {
+		slog.Error("fatal error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
-		slog.Error("parse config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("parse config: %w", err)
 	}
 
 	signingKP, err := nkeys.FromSeed([]byte(cfg.AuthSigningKey))
 	if err != nil {
-		slog.Error("parse signing key failed", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("parse signing key: %w", err)
 	}
 
 	var opts []nats.Option
@@ -43,8 +48,7 @@ func main() {
 
 	nc, err := nats.Connect(cfg.NatsURL, opts...)
 	if err != nil {
-		slog.Error("nats connect failed", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("nats connect: %w", err)
 	}
 	defer nc.Close()
 	slog.Info("connected to NATS", "url", cfg.NatsURL)
@@ -58,8 +62,7 @@ func main() {
 		callout.ResponseSignerKey(signingKP),
 	)
 	if err != nil {
-		slog.Error("create auth callout service failed", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("create auth callout service: %w", err)
 	}
 	slog.Info("auth callout service started")
 
@@ -68,9 +71,10 @@ func main() {
 		if err := svc.Stop(); err != nil {
 			return fmt.Errorf("stop callout service: %w", err)
 		}
-		nc.Close()
 		return nil
 	})
+
+	return nil
 }
 
 // SSOTokenVerifier implements TokenVerifier using actual SSO validation.

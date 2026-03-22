@@ -58,7 +58,7 @@ func (mr *MockMessageStoreMockRecorder) GetSubscription(ctx, userID, roomID any)
 }
 
 // SaveMessage mocks base method.
-func (m *MockMessageStore) SaveMessage(ctx context.Context, msg model.Message) error {
+func (m *MockMessageStore) SaveMessage(ctx context.Context, msg *model.Message) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SaveMessage", ctx, msg)
 	ret0, _ := ret[0].(error)

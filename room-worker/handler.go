@@ -7,9 +7,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 type Handler struct {
@@ -26,7 +27,9 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	if err := h.processInvite(context.Background(), msg.Data()); err != nil {
 		slog.Error("process invite failed", "error", err)
 	}
-	msg.Ack()
+	if err := msg.Ack(); err != nil {
+		slog.Error("failed to ack message", "err", err)
+	}
 }
 
 func (h *Handler) processInvite(ctx context.Context, data []byte) error {
@@ -47,7 +50,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 		SharedHistorySince: now,
 		JoinedAt:           now,
 	}
-	if err := h.store.CreateSubscription(ctx, sub); err != nil {
+	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
 		return err
 	}
 
@@ -74,7 +77,9 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 	// Notify invitee: subscription update
 	subEvt := model.SubscriptionUpdateEvent{UserID: req.InviteeID, Subscription: sub, Action: "added"}
 	subEvtData, _ := json.Marshal(subEvt)
-	h.publish(subject.SubscriptionUpdate(req.InviteeID), subEvtData)
+	if err := h.publish(subject.SubscriptionUpdate(req.InviteeID), subEvtData); err != nil {
+		slog.Error("subscription update publish failed", "error", err)
+	}
 
 	// Notify all existing members: room metadata changed
 	room, err := h.store.GetRoom(ctx, req.RoomID)
@@ -88,8 +93,10 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 		metaData, _ := json.Marshal(metaEvt)
 
 		members, _ := h.store.ListByRoom(ctx, req.RoomID)
-		for _, m := range members {
-			h.publish(subject.RoomMetadataChanged(m.UserID), metaData)
+		for i := range members {
+			if err := h.publish(subject.RoomMetadataChanged(members[i].UserID), metaData); err != nil {
+				slog.Error("room metadata publish failed", "error", err, "userID", members[i].UserID)
+			}
 		}
 	}
 
