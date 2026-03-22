@@ -249,11 +249,11 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Each service also has `<service>/deploy/azure-pipelines.yml` for CI/CD
 
 ### JetStream Consumer Pattern
-- Use `cons.Messages()` pull iterator — never `cons.Consume()` callback
-- Limit concurrency with a channel-based semaphore (`chan struct{}`) sized by `cfg.MaxWorkers` (from `MAX_WORKERS` env var, default `100`)
-- Set `PullMaxMessages(2 * cfg.MaxWorkers)` to keep the client buffer ahead of processing capacity
-- Track in-flight goroutines with `sync.WaitGroup` for graceful drain
-- Follow the existing worker services (`message-worker`, `broadcast-worker`, etc.) as reference implementations
+- Choose the pattern based on the service's throughput needs:
+  - **High-throughput** (`cons.Messages()` + semaphore): Pull iterator with a channel-based semaphore (`chan struct{}`) sized by `cfg.MaxWorkers` (from `MAX_WORKERS` env var, default `100`), `PullMaxMessages(2 * cfg.MaxWorkers)`, and `sync.WaitGroup` to track in-flight goroutines
+  - **Sequential** (`cons.Consume()`): Callback-based sequential processing for lower-volume streams where concurrency is unnecessary
+- Match the pattern already used by the service being modified — don't mix patterns within a single consumer
+- Follow existing worker services (`message-worker`, `broadcast-worker`, etc.) as reference implementations
 
 ### Graceful Shutdown
 - Use `pkg/shutdown.Wait` in every service's `main.go`
