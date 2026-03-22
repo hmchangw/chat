@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/nats-io/nats.go"
@@ -66,7 +67,7 @@ func run() error {
 	}
 	slog.Info("auth callout service started")
 
-	shutdown.Wait(context.Background(), func(ctx context.Context) error {
+	shutdown.Wait(context.Background(), 25*time.Second, func(ctx context.Context) error {
 		slog.Info("stopping auth callout service")
 		if err := svc.Stop(); err != nil {
 			return fmt.Errorf("stop callout service: %w", err)
