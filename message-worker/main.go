@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -17,6 +18,8 @@ import (
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
+
+const maxWorkers = 100
 
 type config struct {
 	NatsURL           string `env:"NATS_URL"           envDefault:"nats://localhost:4222"`
@@ -85,22 +88,48 @@ func main() {
 		os.Exit(1)
 	}
 
-	cctx, err := cons.Consume(handler.HandleJetStreamMsg)
+	iter, err := cons.Messages(jetstream.PullMaxMessages(maxWorkers))
 	if err != nil {
-		slog.Error("consume failed", "error", err)
+		slog.Error("messages failed", "error", err)
 		os.Exit(1)
 	}
+
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+
+	go func() {
+		for {
+			msg, err := iter.Next()
+			if err != nil {
+				return
+			}
+			sem <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+				handler.HandleJetStreamMsg(msg)
+			}()
+		}
+	}()
 
 	slog.Info("message-worker running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error {
-			cctx.Drain()
+			iter.Stop()
+			return nil
+		},
+		func(ctx context.Context) error {
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
 			select {
-			case <-cctx.Closed():
+			case <-done:
 				return nil
 			case <-ctx.Done():
-				return fmt.Errorf("consumer drain timed out: %w", ctx.Err())
+				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
 		},
 		func(ctx context.Context) error { return nc.Drain() },

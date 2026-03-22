@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -18,6 +19,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
+
+const maxWorkers = 100
 
 type config struct {
 	NatsURL  string `env:"NATS_URL"  envDefault:"nats://localhost:4222"`
@@ -112,33 +115,57 @@ func main() {
 	publisher := &natsPublisher{nc: nc}
 	handler := NewHandler(roomLookup, publisher)
 
-	cctx, err := cons.Consume(func(msg jetstream.Msg) {
-		if err := handler.HandleMessage(ctx, msg.Data()); err != nil {
-			slog.Error("handle message failed", "error", err)
-			if err := msg.Nak(); err != nil {
-				slog.Error("failed to nak message", "error", err)
-			}
-			return
-		}
-		if err := msg.Ack(); err != nil {
-			slog.Error("failed to ack message", "error", err)
-		}
-	})
+	iter, err := cons.Messages(jetstream.PullMaxMessages(maxWorkers))
 	if err != nil {
-		slog.Error("consume failed", "error", err)
+		slog.Error("messages failed", "error", err)
 		os.Exit(1)
 	}
+
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+
+	go func() {
+		for {
+			msg, err := iter.Next()
+			if err != nil {
+				return
+			}
+			sem <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+				if err := handler.HandleMessage(ctx, msg.Data()); err != nil {
+					slog.Error("handle message failed", "error", err)
+					if err := msg.Nak(); err != nil {
+						slog.Error("failed to nak message", "error", err)
+					}
+					return
+				}
+				if err := msg.Ack(); err != nil {
+					slog.Error("failed to ack message", "error", err)
+				}
+			}()
+		}
+	}()
 
 	slog.Info("broadcast-worker started", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error {
-			cctx.Drain()
+			iter.Stop()
+			return nil
+		},
+		func(ctx context.Context) error {
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
 			select {
-			case <-cctx.Closed():
+			case <-done:
 				return nil
 			case <-ctx.Done():
-				return fmt.Errorf("consumer drain timed out: %w", ctx.Err())
+				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
 		},
 		func(ctx context.Context) error { return nc.Drain() },
