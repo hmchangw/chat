@@ -36,7 +36,7 @@ For each room displayed in the client's sidebar, the client subscribes to:
 | Subject | Direction | Publisher | Purpose |
 |---------|-----------|-----------|---------|
 | `chat.room.{roomID}.stream.msg` | Server → Client | broadcast-worker | Group room message delivery |
-| `chat.room.{roomID}.event.metadata.update` | Server → Client | broadcast-worker | Room metadata: name, user count, lastMessageAt, lastMentionAt |
+| `chat.room.{roomID}.event.metadata.update` | Server → Client | broadcast-worker | Room metadata: name, user count, lastMessageAt |
 | `chat.room.{roomID}.event.typing` | Client → Client | Client (via NATS) | Typing indicators for the active room |
 
 Clients subscribe to `chat.room.{roomID}.event.typing` only for the **currently opened room** (not all sidebar rooms) to minimize traffic. When the user switches rooms, the client unsubscribes from the old room's typing subject and subscribes to the new one.
@@ -51,20 +51,64 @@ For each user visible in the UI (room member list, DM list, etc.), the client su
 
 Clients dynamically subscribe/unsubscribe to presence subjects as users appear/disappear from the viewport.
 
-### 4. Sidebar Badge Model (Client-Side Derivation)
+### 4. Sidebar Badge Model
 
-Unread and mention badges are **derived client-side** from room metadata events — no separate badge subjects needed. broadcast-worker publishes `RoomMetadataUpdateEvent` to `chat.room.{roomID}.event.metadata.update` containing `lastMessageAt` and `lastMentionAt`. The client compares these against the user's locally cached `lastSeenAt` timestamp for each room.
+Badges use two separate mechanisms: **unread** badges derive from room metadata events, while **mention** badges derive from the message stream itself.
 
-| Badge | Field in `RoomMetadataUpdateEvent` | Client Logic |
-|-------|-------------------------------------|-------------|
-| **Bold room name** (unread) | `lastMessageAt` | `lastMessageAt > lastSeenAt` |
-| **Mention indicator** (`@`) | `lastMentionAt` | `lastMentionAt > lastSeenAt` |
+#### Unread Badge (Bold Room Name)
 
-**Mentions in message payload:** message-worker resolves mentions at storage time, embedding `mentionedUserIDs` in the `Message` model. broadcast-worker reads this field to update `lastMentionAt` in the room metadata event. Clients viewing the active room can also highlight mentioned messages using this field.
+broadcast-worker publishes `RoomMetadataUpdateEvent` to `chat.room.{roomID}.event.metadata.update` containing `lastMessageAt`. The client compares this against the user's locally cached `lastSeenAt` timestamp for each room.
 
-**Desktop banner notifications:** notification-worker sends a `NotificationEvent` to `chat.user.{userID}.notification` for immediate desktop banners (including mention notifications). This is an interrupt-style notification, separate from the persistent badge state above.
+| Badge | Source | Client Logic |
+|-------|--------|-------------|
+| **Bold room name** (unread) | `lastMessageAt` in `RoomMetadataUpdateEvent` | `lastMessageAt > lastSeenAt` |
 
-**Reconnect:** On reconnect, clients fetch message history for the active room and can re-derive mention state from `mentionedUserIDs` in the messages. For sidebar rooms, the subscription list response includes `lastSeenAt` per room, and the next metadata event restores badge state.
+#### Mention Badge (`@`) — Hybrid: Client-Derived Online + Server-Tracked Reconnect
+
+A room-scoped `lastMentionAt` field cannot work for mention badges — it would be visible to ALL clients in the room, making it impossible for any individual client to determine whether *they* were mentioned. Instead, mentions use a hybrid approach modeled after how Slack and Matrix handle this:
+
+**While online (client-derived):**
+
+Clients already subscribe to `chat.room.{roomID}.stream.msg` for every sidebar room and `chat.user.{userID}.stream.msg` for DMs. When a message arrives, the client checks the `mentionedUserIDs` field in the `Message` payload:
+
+1. If the logged-in user's ID is in `mentionedUserIDs` → show `@` badge
+2. If `"all"` or `"here"` is in `mentionedUserIDs` → show `@` badge
+3. Otherwise → no mention badge for this message
+
+The client maintains a local per-room `hasMention` flag. It is set when a matching mention arrives and cleared when the user opens the room (advancing `lastSeenAt`).
+
+This requires zero additional subjects, zero extra publishes, and zero write amplification — the data is already in the message payload the client receives.
+
+**On reconnect (server-tracked):**
+
+When offline, clients miss messages on non-active sidebar rooms. To restore mention badge state on reconnect, the server tracks mention counts per-user-per-room:
+
+1. **broadcast-worker** — when processing a message with non-empty `mentionedUserIDs`, atomically increments `mentionCountSinceLastSeen` on the `Subscription` record in MongoDB for each mentioned user (expanding `"all"`/`"here"` to the full member list)
+2. **Subscription list response** (`chat.rooms.list`) — includes `mentionCountSinceLastSeen` per room, allowing the client to restore `@` badges without fetching message history for every sidebar room
+3. **Mark as read** — when the user opens a room, the client sends a read-position update (advancing `lastSeenAt`); the server resets `mentionCountSinceLastSeen` to `0` for that user+room
+
+**Comparison with production systems:**
+
+| System | Online Mention Detection | Reconnect/Bootstrap | Read Position |
+|--------|--------------------------|---------------------|---------------|
+| **Slack** | Server pushes via WebSocket | Bootstrap payload includes per-channel unread + mention counts | Per-user per-channel `last_read` cursor (`conversations.mark` API) |
+| **Matrix** | Server evaluates push rules per event per user | `/sync` returns `highlight_count` per room | Per-user per-room read receipt marker |
+| **Discord** | Server tracks per-user per-channel | Red badge with mention count at startup | Per-user per-channel read state |
+| **This system** | Client derives from `mentionedUserIDs` in message stream | `mentionCountSinceLastSeen` in subscription list response | Per-user per-room `lastSeenAt` on `Subscription` |
+
+**Why not a user-scoped mention subject?** An alternative would have broadcast-worker publish per-user mention events (e.g., `chat.user.{userID}.event.room.mention`). This adds N publishes per mention (one per mentioned user), with severe write amplification for `@all`/`@here` in large rooms. Since clients already receive the message with `mentionedUserIDs`, this extra subject provides no benefit while online. The server-tracked `mentionCountSinceLastSeen` handles the reconnect case without any additional NATS subjects.
+
+#### Desktop Banner Notifications
+
+notification-worker sends a `NotificationEvent` to `chat.user.{userID}.notification` for immediate desktop banners (including mention notifications). This is an interrupt-style notification, separate from the persistent badge state above.
+
+#### Reconnect Badge Restoration
+
+On reconnect:
+1. Client fetches subscription list via `chat.rooms.list` — response includes `lastSeenAt` and `mentionCountSinceLastSeen` per room
+2. For each sidebar room: if `mentionCountSinceLastSeen > 0`, show `@` badge
+3. Client re-subscribes to room streams and resumes client-side mention detection
+4. For the active room, client fetches message history and can highlight individual mentioned messages using `mentionedUserIDs` in each message
 
 ### 5. Client Publishes
 
@@ -95,10 +139,11 @@ On reconnect, clients use NATS request/reply to fetch missed data. All request s
 ### Reconnect Flow
 
 1. Client detects reconnect event from NATS connection
-2. Client calls `chat.rooms.list` (or a subscription list endpoint) to get current room list
-3. Client re-subscribes to all room subjects for rooms in sidebar
-4. For the **currently active room**, client calls `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history` with the last known message timestamp to fetch missed messages
-5. Client resumes receiving real-time events
+2. Client calls `chat.rooms.list` (or a subscription list endpoint) to get current room list — response includes `lastSeenAt` and `mentionCountSinceLastSeen` per room
+3. Client restores badges: bold room name if `lastMessageAt > lastSeenAt`; `@` badge if `mentionCountSinceLastSeen > 0`
+4. Client re-subscribes to all room subjects for rooms in sidebar
+5. For the **currently active room**, client calls `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history` with the last known message timestamp to fetch missed messages
+6. Client resumes receiving real-time events and client-side mention detection
 
 ## Backend-Only Subjects (JetStream)
 
@@ -244,8 +289,7 @@ Client A (sender)                    NATS                         Client B (rece
     |                                  |--- pub: chat.room.R1          |
     |                                  |        .event.metadata        |
     |                                  |        .update --------------->|
-    |                                  |   (lastMessageAt,             |
-    |                                  |    lastMentionAt)             |
+    |                                  |   (lastMessageAt)             |
     |                                  |                               |
     |                        notification-worker                       |
     |                                  |                               |
@@ -267,7 +311,13 @@ Client                              NATS                        Services
   |-- sub: chat.user.{userID}.> ---->|                             |
   |                                   |                             |
   |-- req: chat.rooms.list --------->|-----> room-service          |
-  |<-- resp: [room1, room2, ...] ----|<-----                       |
+  |<-- resp: [rooms + lastSeenAt    -|<-----                       |
+  |    + mentionCountSinceLastSeen]  |                             |
+  |                                   |                             |
+  |-- (restore badges:               |                             |
+  |    bold if lastMessageAt >       |                             |
+  |    lastSeenAt; @ badge if        |                             |
+  |    mentionCount > 0)             |                             |
   |                                   |                             |
   |-- sub: chat.room.R1.stream.msg ->|                             |
   |-- sub: chat.room.R1.event.* ---->|                             |
@@ -277,5 +327,6 @@ Client                              NATS                        Services
   |-- req: msg.history (active room)->|-----> history-service       |
   |<-- resp: [missed messages] ------|<-----                       |
   |                                   |                             |
-  |-- (resume real-time) ----------->|                             |
+  |-- (resume real-time + mention -->|                             |
+  |    detection from msg stream)    |                             |
 ```
