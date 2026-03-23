@@ -121,9 +121,26 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Test helpers belong in `_test.go` files only — NEVER put test helpers in production code
 - Shared test utilities used by multiple packages may live in a dedicated `pkg/testutil/` package (only imported by test files)
 
+### Test-Driven Development (TDD)
+- ALL new code MUST follow the Red-Green-Refactor TDD cycle — no exceptions
+- The TDD cycle for every task:
+  1. **Red:** Write comprehensive tests FIRST in `*_test.go` — run them and confirm they FAIL (implementation doesn't exist yet)
+  2. **Green:** Write the minimum implementation to make all tests PASS
+  3. **Refactor:** Clean up the implementation while keeping tests green
+  4. **Commit:** Commit with a descriptive message after tests pass
+- Never write implementation code before its corresponding tests exist
+- Never skip the Red phase — if tests pass before implementation, the tests are wrong or testing the wrong thing
+- Tests must cover: happy path, error paths, edge cases (empty collections, boundary conditions), and invalid input
+- For handler tests: test each NATS/HTTP handler method with table-driven tests covering all documented scenarios
+- For store tests: integration tests with testcontainers cover store implementations
+
 ### Coverage
-- Aim for meaningful coverage of business logic and edge cases — not vanity percentages
-- Cover error paths and boundary conditions, not just happy paths
+- **Minimum 80% code coverage** is REQUIRED for all packages — code below this threshold MUST NOT be merged
+- **Target 90%+ coverage** for core business logic: handlers, store implementations, and shared `pkg/` packages
+- Cover error paths and boundary conditions, not just happy paths — meaningful coverage, not vanity percentages
+- Use `go test -coverprofile=coverage.out` and `go tool cover -func=coverage.out` to verify coverage percentages
+- Every handler method must have tests for: valid input, invalid/malformed input, store errors, and edge cases
+- Every exported function in `pkg/` must have corresponding test cases
 
 ### Integration Tests
 - All integration tests use `//go:build integration` build tag
@@ -157,6 +174,22 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Include `deploy/Dockerfile`, `deploy/azure-pipelines.yml`, and `deploy/docker-compose.yml`
 - Follow the per-service file organization (`main.go`, `handler.go`, `store.go`, etc.)
 
+### TDD Workflow (Red-Green-Refactor)
+Follow this exact sequence for every new feature, handler, or function:
+1. **Write tests first** — create `*_test.go` with all test cases before any implementation
+2. **Run tests — expect FAIL** — confirm tests fail because the implementation doesn't exist yet (`make test SERVICE=<name>`)
+3. **Write implementation** — create the minimum code to make tests pass
+4. **Run tests — expect PASS** — all tests must pass with race detector (`make test SERVICE=<name>`)
+5. **Run lint** — ensure code passes `make lint`
+6. **Verify coverage** — check that coverage meets thresholds (80%+ minimum, 90%+ for core logic)
+7. **Commit** — commit with a descriptive message
+
+This applies to:
+- New handler methods (`handler.go` + `handler_test.go`)
+- New store methods (`store_mongo.go`/`store_cassandra.go` + `integration_test.go`)
+- New shared packages (`pkg/<name>/*.go` + `pkg/<name>/*_test.go`)
+- Bug fixes (write a failing test that reproduces the bug, then fix it)
+
 ### When Writing Code
 - Verify compilation after changes — don't leave broken code
 - Keep changes minimal and focused — don't refactor unrelated code
@@ -182,6 +215,9 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - NEVER expose raw internal errors to clients — sanitize errors at service boundaries, return user-safe messages
 - NEVER name packages `utils`, `helpers`, `common`, or `base` — use descriptive names that convey specific functionality
 - NEVER ignore the `-race` flag in testing — use `go test -race` to catch data races
+- NEVER write implementation code before writing its tests — TDD Red-Green-Refactor is mandatory
+- NEVER skip the Red phase of TDD — always confirm tests fail before writing implementation
+- NEVER merge code with less than 80% test coverage — verify with `go tool cover`
 
 ## Section 7: Project-Specific Patterns
 
