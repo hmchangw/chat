@@ -190,6 +190,10 @@ This applies to:
 - New shared packages (`pkg/<name>/*.go` + `pkg/<name>/*_test.go`)
 - Bug fixes (write a failing test that reproduces the bug, then fix it)
 
+### Before Merging
+- NEVER merge code directly into `master` or `main` — always create a pull request for review before merging
+- All changes must go through a PR workflow with proper code review, regardless of size
+
 ### When Writing Code
 - Verify compilation after changes — don't leave broken code
 - Keep changes minimal and focused — don't refactor unrelated code
@@ -218,6 +222,7 @@ This applies to:
 - NEVER write implementation code before writing its tests — TDD Red-Green-Refactor is mandatory
 - NEVER skip the Red phase of TDD — always confirm tests fail before writing implementation
 - NEVER merge code with less than 80% test coverage — verify with `go tool cover`
+- NEVER merge code directly into `master` or `main` — always create a PR for review first
 
 ## Section 7: Project-Specific Patterns
 
