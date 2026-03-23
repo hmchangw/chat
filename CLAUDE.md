@@ -174,26 +174,6 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Include `deploy/Dockerfile`, `deploy/azure-pipelines.yml`, and `deploy/docker-compose.yml`
 - Follow the per-service file organization (`main.go`, `handler.go`, `store.go`, etc.)
 
-### TDD Workflow (Red-Green-Refactor)
-Follow this exact sequence for every new feature, handler, or function:
-1. **Write tests first** — create `*_test.go` with all test cases before any implementation
-2. **Run tests — expect FAIL** — confirm tests fail because the implementation doesn't exist yet (`make test SERVICE=<name>`)
-3. **Write implementation** — create the minimum code to make tests pass
-4. **Run tests — expect PASS** — all tests must pass with race detector (`make test SERVICE=<name>`)
-5. **Run lint** — ensure code passes `make lint`
-6. **Verify coverage** — check that coverage meets thresholds (80%+ minimum, 90%+ for core logic)
-7. **Commit** — commit with a descriptive message
-
-This applies to:
-- New handler methods (`handler.go` + `handler_test.go`)
-- New store methods (`store_mongo.go`/`store_cassandra.go` + `integration_test.go`)
-- New shared packages (`pkg/<name>/*.go` + `pkg/<name>/*_test.go`)
-- Bug fixes (write a failing test that reproduces the bug, then fix it)
-
-### Before Merging
-- NEVER merge code directly into `master` or `main` — always create a pull request for review before merging
-- All changes must go through a PR workflow with proper code review, regardless of size
-
 ### When Writing Code
 - Verify compilation after changes — don't leave broken code
 - Keep changes minimal and focused — don't refactor unrelated code
