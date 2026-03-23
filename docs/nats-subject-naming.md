@@ -24,7 +24,7 @@ On connect, every client subscribes to `chat.user.{userID}.>`. This single wildc
 | Subject | Direction | Publisher | Purpose |
 |---------|-----------|-----------|---------|
 | `chat.user.{userID}.stream.msg` | Server → Client | broadcast-worker | DM message delivery |
-| `chat.user.{userID}.notification` | Server → Client | notification-worker | New message notifications |
+| `chat.user.{userID}.notification` | Server → Client | notification-worker | Desktop banner notification (new message alert) |
 | `chat.user.{userID}.event.subscription.update` | Server → Client | room-worker, inbox-worker | Room added/removed from user's list |
 | `chat.user.{userID}.event.room.metadata.update` | Server → Client | room-worker | Room metadata changed (for rooms in sidebar) |
 | `chat.user.{userID}.response.{requestID}` | Server → Client | message-worker | Async acknowledgment of message send |
@@ -36,7 +36,7 @@ For each room displayed in the client's sidebar, the client subscribes to:
 | Subject | Direction | Publisher | Purpose |
 |---------|-----------|-----------|---------|
 | `chat.room.{roomID}.stream.msg` | Server → Client | broadcast-worker | Group room message delivery |
-| `chat.room.{roomID}.event.metadata.update` | Server → Client | broadcast-worker | Room name/avatar/topic changes |
+| `chat.room.{roomID}.event.metadata.update` | Server → Client | broadcast-worker | Room metadata: name, user count, lastMessageAt, lastMentionAt |
 | `chat.room.{roomID}.event.typing` | Client → Client | Client (via NATS) | Typing indicators for the active room |
 
 Clients subscribe to `chat.room.{roomID}.event.typing` only for the **currently opened room** (not all sidebar rooms) to minimize traffic. When the user switches rooms, the client unsubscribes from the old room's typing subject and subscribes to the new one.
@@ -51,7 +51,22 @@ For each user visible in the UI (room member list, DM list, etc.), the client su
 
 Clients dynamically subscribe/unsubscribe to presence subjects as users appear/disappear from the viewport.
 
-### 4. Client Publishes
+### 4. Sidebar Badge Model (Client-Side Derivation)
+
+Unread and mention badges are **derived client-side** from room metadata events — no separate badge subjects needed. broadcast-worker publishes `RoomMetadataUpdateEvent` to `chat.room.{roomID}.event.metadata.update` containing `lastMessageAt` and `lastMentionAt`. The client compares these against the user's locally cached `lastSeenAt` timestamp for each room.
+
+| Badge | Field in `RoomMetadataUpdateEvent` | Client Logic |
+|-------|-------------------------------------|-------------|
+| **Bold room name** (unread) | `lastMessageAt` | `lastMessageAt > lastSeenAt` |
+| **Mention indicator** (`@`) | `lastMentionAt` | `lastMentionAt > lastSeenAt` |
+
+**Mentions in message payload:** message-worker resolves mentions at storage time, embedding `mentionedUserIDs` in the `Message` model. broadcast-worker reads this field to update `lastMentionAt` in the room metadata event. Clients viewing the active room can also highlight mentioned messages using this field.
+
+**Desktop banner notifications:** notification-worker sends a `NotificationEvent` to `chat.user.{userID}.notification` for immediate desktop banners (including mention notifications). This is an interrupt-style notification, separate from the persistent badge state above.
+
+**Reconnect:** On reconnect, clients fetch message history for the active room and can re-derive mention state from `mentionedUserIDs` in the messages. For sidebar rooms, the subscription list response includes `lastSeenAt` per room, and the next metadata event restores badge state.
+
+### 5. Client Publishes
 
 Clients publish to subjects under their own `chat.user.{userID}.>` namespace:
 
@@ -216,7 +231,8 @@ Client A (sender)                    NATS                         Client B (rece
     |                          [MESSAGES stream]                       |
     |                                  |                               |
     |                          message-worker                          |
-    |                          (store + fanout)                        |
+    |                    (store msg + resolve mentions                  |
+    |                     + publish to fanout)                          |
     |                                  |                               |
     |                          [FANOUT stream]                         |
     |                                  |                               |
@@ -225,10 +241,17 @@ Client A (sender)                    NATS                         Client B (rece
     |<-- sub: chat.user.A             |--- pub: chat.room.R1          |
     |        .response.{reqID} -------|        .stream.msg ---------->|
     |                                  |                               |
+    |                                  |--- pub: chat.room.R1          |
+    |                                  |        .event.metadata        |
+    |                                  |        .update --------------->|
+    |                                  |   (lastMessageAt,             |
+    |                                  |    lastMentionAt)             |
+    |                                  |                               |
     |                        notification-worker                       |
     |                                  |                               |
     |                                  |--- pub: chat.user.B          |
     |                                  |        .notification ------->|
+    |                                  |   (desktop banner)            |
     |                                  |                               |
     |--- pub: chat.room.R1            |                               |
     |        .event.typing ---------->|-------- (direct relay) ------>|
