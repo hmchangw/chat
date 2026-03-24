@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -16,13 +17,13 @@ import (
 )
 
 type Handler struct {
-	store   MessageStore
-	siteID  string
-	publish func(subj string, data []byte) error
+	store      MessageStore
+	siteID     string
+	publishMsg func(msg *nats.Msg) error
 }
 
-func NewHandler(store MessageStore, siteID string, publish func(string, []byte) error) *Handler {
-	return &Handler{store: store, siteID: siteID, publish: publish}
+func NewHandler(store MessageStore, siteID string, publishMsg func(*nats.Msg) error) *Handler {
+	return &Handler{store: store, siteID: siteID, publishMsg: publishMsg}
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
@@ -53,7 +54,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	// Publish reply to sender's response subject
 	if reqID := getRequestID(msg.Data()); reqID != "" {
 		respSubj := subject.UserResponse(userID, reqID)
-		if err := h.publish(respSubj, replyData); err != nil {
+		if err := h.publishMsg(&nats.Msg{Subject: respSubj, Data: replyData}); err != nil {
 			slog.Error("reply publish failed", "error", err, "subject", respSubj)
 		}
 	}
@@ -93,11 +94,16 @@ func (h *Handler) processMessage(ctx context.Context, userID, roomID, siteID str
 		slog.Warn("update room last message failed", "error", err, "roomID", roomID)
 	}
 
-	// Publish fanout event
+	// Publish fanout event with Nats-Msg-Id for JetStream dedup
 	evt := model.MessageEvent{Message: msg, RoomID: roomID, SiteID: siteID}
 	evtData, _ := json.Marshal(evt)
-	fanoutSubj := subject.Fanout(siteID, roomID, msg.ID)
-	if err := h.publish(fanoutSubj, evtData); err != nil {
+	fanoutSubj := subject.Fanout(siteID, roomID)
+	fanoutMsg := &nats.Msg{
+		Subject: fanoutSubj,
+		Data:    evtData,
+		Header:  nats.Header{"Nats-Msg-Id": []string{msg.ID}},
+	}
+	if err := h.publishMsg(fanoutMsg); err != nil {
 		slog.Error("fanout publish failed", "error", err, "subject", fanoutSubj)
 	}
 

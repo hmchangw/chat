@@ -157,9 +157,11 @@ Stream wildcard: `chat.user.*.room.*.{siteID}.msg.>`
 
 | Subject Pattern | Publisher | Consumer | Purpose |
 |-----------------|-----------|----------|---------|
-| `fanout.{siteID}.{roomID}.{msgID}` | message-worker | broadcast-worker, notification-worker | Stored message ready for delivery |
+| `fanout.{siteID}.{roomID}` | message-worker | broadcast-worker, notification-worker | Stored message ready for delivery |
 
 Stream wildcard: `fanout.{siteID}.>`
+
+Deduplication: message-worker sets the `Nats-Msg-Id` header to the message ID on each publish. JetStream uses this for server-side dedup, keeping `msgID` out of the subject and bounding subject cardinality to the number of rooms rather than the number of messages.
 
 ### ROOMS Stream (`ROOMS_{siteID}`)
 
@@ -216,7 +218,7 @@ All client publishes — message sends, member invites, room CRUD requests, typi
 | `RoomsList(userID)` | `chat.user.{userID}.request.rooms.list` |
 | `RoomsGet(userID, roomID)` | `chat.user.{userID}.request.rooms.get.{roomID}` |
 | `Outbox(siteID, destSiteID, eventType)` | `outbox.{siteID}.to.{destSiteID}.{eventType}` |
-| `Fanout(siteID, roomID, msgID)` | `fanout.{siteID}.{roomID}.{msgID}` |
+| `Fanout(siteID, roomID)` | `fanout.{siteID}.{roomID}` |
 
 ### New Builders (to be added)
 

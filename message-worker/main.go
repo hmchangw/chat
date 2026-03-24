@@ -65,9 +65,7 @@ func main() {
 	}
 
 	store := NewMongoStore(db, cassSession)
-	handler := NewHandler(store, cfg.SiteID, func(subj string, data []byte) error {
-		return nc.Publish(subj, data)
-	})
+	handler := NewHandler(store, cfg.SiteID, nc.PublishMsg)
 
 	streamCfg := stream.Messages(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{

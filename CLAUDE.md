@@ -198,7 +198,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Dot-delimited hierarchical subjects — use `pkg/subject` builders, never raw `fmt.Sprintf`
 - User-scoped: `chat.user.{userID}.…`
 - Room-scoped: `chat.room.{roomID}.…`
-- Fanout: `fanout.{siteID}.{roomID}.{msgID}`
+- Fanout: `fanout.{siteID}.{roomID}`
 - Outbox: `outbox.{siteID}.to.{destSiteID}.{eventType}`
 - Wildcards: `*` for single-token, `>` for multi-token tail — define patterns in `pkg/subject`
 

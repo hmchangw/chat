@@ -73,8 +73,8 @@ func Outbox(siteID, destSiteID, eventType string) string {
 	return fmt.Sprintf("outbox.%s.to.%s.%s", siteID, destSiteID, eventType)
 }
 
-func Fanout(siteID, roomID, msgID string) string {
-	return fmt.Sprintf("fanout.%s.%s.%s", siteID, roomID, msgID)
+func Fanout(siteID, roomID string) string {
+	return fmt.Sprintf("fanout.%s.%s", siteID, roomID)
 }
 
 // --- Room CRUD request builders ---
