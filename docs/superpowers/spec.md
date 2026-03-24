@@ -71,13 +71,53 @@ Site A                              Site B
   |                                room_sync -> upsert room metadata
 ```
 
-### 3.3 Room Invitation Flow
+### 3.3 User Login & NATS Connection (Auth Callout)
+
+```
+Client (browser/mobile)
+    |
+    | 1. Authenticate with SSO provider (OAuth/OIDC)
+    |    -> receives SSO token
+    |
+    | 2. Connect to NATS with SSO token in ConnectOptions.Token
+    |
+    v
+NATS Server
+    |
+    | 3. NATS triggers auth_callout for unauthenticated connection
+    |
+    v
+auth-service (callout handler)
+    |
+    | 4. Extract token from AuthorizationRequest.ConnectOptions.Token
+    | 5. Verify token with SSO provider (TokenVerifier.Verify)
+    | 6. On success: build UserClaims JWT with scoped permissions
+    |      Pub.Allow: chat.user.{username}.>, _INBOX.>
+    |      Sub.Allow: chat.user.{username}.>, chat.room.>, _INBOX.>
+    |      Expires: 2 hours
+    | 7. Sign JWT with account signing key
+    | 8. Return signed JWT to NATS server
+    |
+    v
+NATS Server
+    |
+    | 9. NATS accepts connection with scoped permissions
+    |
+    v
+Client (connected)
+    |
+    | 10. Subscribe to chat.user.{userID}.> (personal wildcard)
+    | 11. Subscribe to chat.room.{roomID}.* for each sidebar room
+    | 12. Ready for real-time messaging
+```
+
+### 3.4 Room Invitation Flow
 
 ```
 Client
   |--- req: member.invite
   v
-room-gatekeeper
+room-service
   | validate inviter is owner
   | check room capacity
   | publish to ROOMS stream
@@ -88,6 +128,47 @@ room-gatekeeper
                      | publish SubscriptionUpdateEvent to invitee
                      | publish RoomMetadataUpdateEvent to all members
                      | if cross-site: publish OutboxEvent
+```
+
+### 3.5 Message History (Including Cross-Site Federation)
+
+```
+Client (Site A)
+    |
+    | req: chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history
+    |
+    v
+history-service (Site A)
+    |
+    | 1. Verify user subscription in MongoDB
+    | 2. Check room's siteID
+    |
+    +--- Room is LOCAL (siteID == local site) ---+
+    |                                             |
+    | 3a. Query local Cassandra                   |
+    |     WHERE room_id = ? AND created_at > ?    |
+    |     (bounded by sharedHistorySince)         |
+    | 4a. Return HistoryResponse to client        |
+    |                                             |
+    +--- Room is REMOTE (siteID != local site) --+
+    |                                             |
+    | 3b. Forward request to remote site's        |
+    |     history-service via NATS request/reply  |
+    |                                             |
+    v                                             |
+history-service (Site B - room's home site)       |
+    |                                             |
+    | 4b. Query local Cassandra for room messages |
+    | 5b. Return HistoryResponse                  |
+    |                                             |
+    v                                             |
+history-service (Site A)                          |
+    |                                             |
+    | 6b. Relay response back to client           |
+    +---------------------------------------------+
+    |
+    v
+Client receives paginated message history
 ```
 
 ---
@@ -201,7 +282,7 @@ Roles: `"owner"`, `"member"`
 |--------|----------------|-----------|----------|
 | `MESSAGES_{siteID}` | `chat.user.*.room.*.{siteID}.msg.>` | Client | message-worker |
 | `FANOUT_{siteID}` | `fanout.{siteID}.>` | message-worker | broadcast-worker, notification-worker |
-| `ROOMS_{siteID}` | `chat.user.*.request.room.*.{siteID}.member.>` | room-gatekeeper | room-worker |
+| `ROOMS_{siteID}` | `chat.user.*.request.room.*.{siteID}.member.>` | room-service | room-worker |
 | `OUTBOX_{siteID}` | `outbox.{siteID}.>` | room-worker, broadcast-worker | Remote INBOX |
 | `INBOX_{siteID}` | *(sourced from remote OUTBOX)* | Remote sites | inbox-worker |
 
@@ -248,9 +329,9 @@ All client publishes are under `chat.user.{userID}.>`:
 | Subject | Responder | Purpose |
 |---------|-----------|---------|
 | `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history` | history-service | Fetch message history |
-| `chat.user.{userID}.request.rooms.create` | room-gatekeeper | Create room |
-| `chat.user.{userID}.request.rooms.list` | room-gatekeeper | List user's rooms |
-| `chat.user.{userID}.request.rooms.get.{roomID}` | room-gatekeeper | Get room details |
+| `chat.user.{userID}.request.rooms.create` | room-service | Create room |
+| `chat.user.{userID}.request.rooms.list` | room-service | List user's rooms |
+| `chat.user.{userID}.request.rooms.get.{roomID}` | room-service | Get room details |
 
 ### 6.4 Backend-Only Subjects
 
@@ -326,7 +407,7 @@ All client publishes are under `chat.user.{userID}.>`:
 **Consumer**: Durable `"notification-worker"` on `FANOUT_{siteID}` (independent from broadcast-worker)
 **Design**: Sender exclusion. Partial failure tolerance: continues notifying remaining members on individual publish failure.
 
-### 7.5 Room Gatekeeper (`room-gatekeeper/`)
+### 7.5 Room Service (`room-service/`)
 
 **Purpose**: Handles room CRUD via NATS request/reply and authorizes member invitations.
 
@@ -412,8 +493,8 @@ All client publishes are under `chat.user.{userID}.>`:
 
 | Collection | Primary Key | Purpose | Used By |
 |------------|-------------|---------|---------|
-| `rooms` | `_id` (UUID) | Room metadata | room-gatekeeper, room-worker, broadcast-worker, inbox-worker |
-| `subscriptions` | `_id` (UUID) | User-room membership | message-worker, broadcast-worker, notification-worker, room-gatekeeper, room-worker, inbox-worker, history-service |
+| `rooms` | `_id` (UUID) | Room metadata | room-service, room-worker, broadcast-worker, inbox-worker |
+| `subscriptions` | `_id` (UUID) | User-room membership | message-worker, broadcast-worker, notification-worker, room-service, room-worker, inbox-worker, history-service |
 
 **Subscription indexes**: `{userId, roomId}` (unique), `{roomId}` (for member lookups)
 
@@ -502,7 +583,7 @@ All services use `pkg/shutdown.Wait` with a 25-second timeout (below Kubernetes'
 ### 13.2 CI/CD (Azure Pipelines)
 
 **Validate stage** (all branches + PRs):
-1. `go vet ./...`
+1. `golangci-lint run ./...` (includes `go vet`, `staticcheck`, `errcheck`, `goimports`, etc.)
 2. Test shared packages with coverage
 3. Test all services with coverage
 4. Build all services
@@ -520,27 +601,7 @@ Per-service `docker-compose.yml` files in `build/<service>/` include only requir
 
 ---
 
-## 14. Implementation Order
-
-| Phase | Plan | Service | Dependencies |
-|-------|------|---------|-------------|
-| 1 | Plan 1 | Foundation (`pkg/`) | None |
-| 2 | Plan 2 | auth-service | Plan 1 |
-| 3 | Plan 3 | message-worker | Plan 1 |
-| 4 | Plan 4 | broadcast-worker | Plan 1 |
-| 5 | Plan 5 | notification-worker | Plan 1 |
-| 6 | Plan 6 | room-gatekeeper | Plan 1 |
-| 7 | Plan 7 | room-worker | Plan 1 |
-| 8 | Plan 8 | inbox-worker | Plan 1 |
-| 9 | Plan 9 | history-service | Plan 1 |
-| 10 | Plan 10 | CI/CD & Local Dev | Plans 1-9 |
-| 11 | Plan 11 | Graceful Shutdown | Plans 1-9 |
-
-Plans 2-9 can be implemented in parallel after Plan 1 is complete. Plan 10 and 11 are applied after all services exist.
-
----
-
-## 15. Key Design Decisions
+## 14. Key Design Decisions
 
 1. **Event-driven over synchronous**: Services communicate via JetStream streams, enabling independent scaling and fault isolation. Only CRUD operations use request/reply.
 
