@@ -73,8 +73,22 @@ func Outbox(siteID, destSiteID, eventType string) string {
 	return fmt.Sprintf("outbox.%s.to.%s.%s", siteID, destSiteID, eventType)
 }
 
-func Fanout(siteID, roomID, msgID string) string {
-	return fmt.Sprintf("fanout.%s.%s.%s", siteID, roomID, msgID)
+func Fanout(siteID, roomID string) string {
+	return fmt.Sprintf("fanout.%s.%s", siteID, roomID)
+}
+
+// --- Room CRUD request builders ---
+
+func RoomsCreate(userID string) string {
+	return fmt.Sprintf("chat.user.%s.request.rooms.create", userID)
+}
+
+func RoomsList(userID string) string {
+	return fmt.Sprintf("chat.user.%s.request.rooms.list", userID)
+}
+
+func RoomsGet(userID, roomID string) string {
+	return fmt.Sprintf("chat.user.%s.request.rooms.get.%s", userID, roomID)
 }
 
 // --- Wildcard patterns for subscriptions ---
@@ -97,4 +111,16 @@ func FanoutWildcard(siteID string) string {
 
 func OutboxWildcard(siteID string) string {
 	return fmt.Sprintf("outbox.%s.>", siteID)
+}
+
+func RoomsCreateWildcard() string {
+	return "chat.user.*.request.rooms.create"
+}
+
+func RoomsListWildcard() string {
+	return "chat.user.*.request.rooms.list"
+}
+
+func RoomsGetWildcard() string {
+	return "chat.user.*.request.rooms.get.*"
 }

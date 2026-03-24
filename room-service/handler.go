@@ -30,13 +30,13 @@ func NewHandler(store RoomStore, siteID string, maxRoomSize int, publishToStream
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
 func (h *Handler) RegisterCRUD(nc *nats.Conn) error {
 	const queue = "room-service"
-	if _, err := nc.QueueSubscribe("chat.rooms.create", queue, h.natsCreateRoom); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomsCreateWildcard(), queue, h.natsCreateRoom); err != nil {
 		return err
 	}
-	if _, err := nc.QueueSubscribe("chat.rooms.list", queue, h.natsListRooms); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomsListWildcard(), queue, h.natsListRooms); err != nil {
 		return err
 	}
-	if _, err := nc.QueueSubscribe("chat.rooms.get.*", queue, h.natsGetRoom); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
 		return err
 	}
 	return nil

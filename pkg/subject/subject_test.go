@@ -36,8 +36,14 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.u1.notification"},
 		{"Outbox", subject.Outbox("site-a", "site-b", "member_added"),
 			"outbox.site-a.to.site-b.member_added"},
-		{"Fanout", subject.Fanout("site-a", "r1", "m1"),
-			"fanout.site-a.r1.m1"},
+		{"Fanout", subject.Fanout("site-a", "r1"),
+			"fanout.site-a.r1"},
+		{"RoomsCreate", subject.RoomsCreate("u1"),
+			"chat.user.u1.request.rooms.create"},
+		{"RoomsList", subject.RoomsList("u1"),
+			"chat.user.u1.request.rooms.list"},
+		{"RoomsGet", subject.RoomsGet("u1", "r1"),
+			"chat.user.u1.request.rooms.get.r1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -90,6 +96,12 @@ func TestWildcardPatterns(t *testing.T) {
 			"fanout.site-a.>"},
 		{"OutboxWild", subject.OutboxWildcard("site-a"),
 			"outbox.site-a.>"},
+		{"RoomsCreateWild", subject.RoomsCreateWildcard(),
+			"chat.user.*.request.rooms.create"},
+		{"RoomsListWild", subject.RoomsListWildcard(),
+			"chat.user.*.request.rooms.list"},
+		{"RoomsGetWild", subject.RoomsGetWildcard(),
+			"chat.user.*.request.rooms.get.*"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

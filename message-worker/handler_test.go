@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/nats-io/nats.go"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -25,13 +26,13 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 		UpdateRoomLastMessage(gomock.Any(), "r1", gomock.Any()).
 		Return(nil)
 
-	var published []publishedMsg
-	publisher := func(subj string, data []byte) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
+	var published []*nats.Msg
+	publisher := func(msg *nats.Msg) error {
+		published = append(published, msg)
 		return nil
 	}
 
-	h := &Handler{store: store, siteID: "site-a", publish: publisher}
+	h := &Handler{store: store, siteID: "site-a", publishMsg: publisher}
 
 	req := model.SendMessageRequest{RoomID: "r1", Content: "hello", RequestID: "req-1"}
 	data, _ := json.Marshal(req)
@@ -64,7 +65,7 @@ func TestHandler_ProcessMessage_NotSubscribed(t *testing.T) {
 		GetSubscription(gomock.Any(), "u1", "r1").
 		Return(nil, fmt.Errorf("subscription not found"))
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(string, []byte) error { return nil }}
+	h := &Handler{store: store, siteID: "site-a", publishMsg: func(*nats.Msg) error { return nil }}
 
 	req := model.SendMessageRequest{RoomID: "r1", Content: "hello", RequestID: "req-1"}
 	data, _ := json.Marshal(req)
@@ -73,9 +74,4 @@ func TestHandler_ProcessMessage_NotSubscribed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsubscribed user")
 	}
-}
-
-type publishedMsg struct {
-	subj string
-	data []byte
 }
