@@ -19,5 +19,8 @@ export PATH="${HOME}/go/bin:${PATH}"
 # Install Go tools (golangci-lint v2 is pre-installed at /usr/local/bin)
 go install go.uber.org/mock/mockgen@latest
 
-# Download Go module dependencies
-go mod download
+# Download Go module dependencies and pre-populate source cache
+# go mod download fetches .mod/.info but not full source zips
+# go vet forces download of all source needed by golangci-lint typecheck
+GOPROXY=https://proxy.golang.org,direct go mod download
+GOPROXY=https://proxy.golang.org,direct go vet ./... || true
