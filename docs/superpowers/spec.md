@@ -386,12 +386,12 @@ All client publishes are under `chat.user.{userID}.>`:
 2. Look up room in MongoDB
 3. Publish `RoomMetadataUpdateEvent` to `chat.room.{roomID}.event.metadata.update`
 4. **Group room**: Publish message to `chat.room.{roomID}.stream.msg`
-5. **DM room**: Look up members, publish to `chat.user.{userID}.stream.msg` for each member
+5. **DM room**: Look up the other member (exclude sender), publish to `chat.user.{userID}.stream.msg`
 
 **Dependencies**: NATS + JetStream, MongoDB
 **Key Interface**: `RoomLookup` — `GetRoom`, `ListSubscriptions`
 **Consumer**: Durable `"broadcast-worker"` on `FANOUT_{siteID}`
-**Design**: Metadata always published before message fan-out. Partial failure tolerance for DM: if one member's publish fails, continues to remaining members.
+**Design**: Metadata always published before message fan-out.
 
 ### 7.4 Notification Worker (`notification-worker/`)
 
