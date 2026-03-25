@@ -34,11 +34,15 @@ history-service/
 │   ├── config/
 │   │   └── config.go              # Config struct with embedded sub-configs
 │   ├── service/
-│   │   ├── service.go             # Repository interfaces, HistoryService struct, New(), Register()
-│   │   ├── messages.go            # 4 handler method implementations
+│   │   ├── service.go             # Repository interfaces, HistoryService struct, New()
+│   │   ├── messages.go            # 4 transport-agnostic handler methods
 │   │   ├── messages_test.go       # Unit tests with mocked repositories
 │   │   └── mocks/
 │   │       └── mock_store.go      # Generated mocks (mockgen)
+│   ├── natshandler/
+│   │   ├── handler.go             # NATSHandler struct, Register(), NATS-to-service glue
+│   │   ├── utils.go               # Subject parsing, generic request handler wrapper
+│   │   └── utils_test.go          # Unit tests for utils
 │   ├── cassrepo/
 │   │   ├── repository.go          # CassandraRepository implementing service.MessageRepository
 │   │   ├── utils.go               # Page[T], Query builder, ScanPage[T] — pagination toolkit
@@ -108,7 +112,8 @@ type SubscriptionRepository interface {
     GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error)
 }
 
-// HistoryService handles NATS request/reply for message history.
+// HistoryService handles message history queries. Transport-agnostic — accepts
+// parsed Go structs and returns Go structs. NATS plumbing lives in natshandler.
 type HistoryService struct {
     messages      MessageRepository
     subscriptions SubscriptionRepository
@@ -117,30 +122,24 @@ type HistoryService struct {
 func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
     return &HistoryService{messages: msgs, subscriptions: subs}
 }
-
-// Register wires all NATS subscriptions for history endpoints.
-func (s *HistoryService) Register(nc *nats.Conn, siteID string) error {
-    // QueueSubscribe for each of the 4 endpoints
-}
 ```
 
 #### `messages.go` — Handler implementations
 
-Four methods on `*HistoryService`, each handling a NATS request:
+Four methods on `*HistoryService`. Each accepts a context + userID + parsed request struct, returns a response struct + error. No NATS dependency — pure business logic.
 
-1. **`LoadHistory`** — Messages before a cursor timestamp, paginated backwards. Validates user subscription, checks `SharedHistorySince`, returns `HistoryResponse` with `HasMore`.
+1. **`LoadHistory(ctx, userID, req) (*HistoryResponse, error)`** — Messages before a cursor timestamp, paginated backwards. Validates user subscription, checks `SharedHistorySince`, returns `HistoryResponse` with `HasMore`.
 
-2. **`LoadNextMessages`** — Messages after a cursor timestamp, paginated forwards. Same subscription validation. Returns messages in chronological order.
+2. **`LoadNextMessages(ctx, userID, req) (*HistoryResponse, error)`** — Messages after a cursor timestamp, paginated forwards. Same subscription validation. Returns messages in chronological order.
 
-3. **`LoadSurroundingMessages`** — Given a timestamp anchor, returns N messages before and N after. Used for "jump to message" scenarios.
+3. **`LoadSurroundingMessages(ctx, userID, req) (*SurroundingMessagesResponse, error)`** — Given a timestamp anchor, returns N messages before and N after. Used for "jump to message" scenarios.
 
-4. **`GetMessageByID`** — Single message lookup by ID within a room. Validates subscription access.
+4. **`GetMessageByID(ctx, userID, req) (*Message, error)`** — Single message lookup by ID within a room. Validates subscription access.
 
 All handlers follow the pattern:
-- Unmarshal NATS request payload
 - Validate subscription access via `SubscriptionRepository`
 - Query messages via `MessageRepository`
-- Reply with `natsutil.ReplyJSON` or `natsutil.ReplyError`
+- Return typed response or wrapped error
 
 #### `mocks/mock_store.go` — Generated
 
@@ -150,7 +149,58 @@ All handlers follow the pattern:
 
 Directive lives on `service.go`. Generated file is never edited manually. The mocks live in a separate `mocks` package — tests use `package service_test` (external test package) and import from `mocks`.
 
-### 3. New Model Types (`pkg/model/history.go`)
+### 3. NATS Handler (`internal/natshandler/`)
+
+The transport layer — bridges NATS messages to the service layer.
+
+#### `handler.go` — Registration and NATS glue
+
+```go
+// Handler wraps the HistoryService and registers NATS subscriptions.
+type Handler struct {
+    svc    *service.HistoryService
+    siteID string
+}
+
+func New(svc *service.HistoryService, siteID string) *Handler {
+    return &Handler{svc: svc, siteID: siteID}
+}
+
+// Register wires all 4 NATS queue subscriptions. Uses existing pkg/subject
+// builders for subject patterns and the service name as queue group.
+func (h *Handler) Register(nc *nats.Conn) error {
+    queueGroup := "history-service"
+    nc.QueueSubscribe(subject.HistoryRequestAll(h.siteID), queueGroup, h.handleLoadHistory)
+    nc.QueueSubscribe(subject.NextMessagesRequestAll(h.siteID), queueGroup, h.handleLoadNextMessages)
+    nc.QueueSubscribe(subject.SurroundingMessagesRequestAll(h.siteID), queueGroup, h.handleLoadSurroundingMessages)
+    nc.QueueSubscribe(subject.GetMessageRequestAll(h.siteID), queueGroup, h.handleGetMessageByID)
+    return nil
+}
+```
+
+Each `handle*` method follows the same pattern:
+1. Extract `userID` and `roomID` from the NATS subject tokens using `ParseSubjectTokens`
+2. Unmarshal the request payload into the typed model struct
+3. Call the corresponding `HistoryService` method with parsed args
+4. Reply via `natsutil.ReplyJSON` on success or `natsutil.ReplyError` with a sanitized message on failure
+
+#### `utils.go` — Reusable NATS abstractions
+
+```go
+// ParseSubjectTokens extracts named tokens from a NATS subject given a pattern.
+// Pattern uses {name} placeholders: "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history"
+// Returns a map: {"userID": "abc", "roomID": "xyz", "siteID": "site-1"}
+func ParseSubjectTokens(subject, pattern string) (map[string]string, error)
+
+// HandleRequest is a generic helper that eliminates unmarshal/reply boilerplate.
+// It unmarshals the NATS message payload into Req, calls the handler func,
+// and replies with the result or an error.
+func HandleRequest[Req, Resp any](msg *nats.Msg, handlerFn func(ctx context.Context, req Req) (*Resp, error))
+```
+
+`HandleRequest` reduces each NATS handler to: extract subject tokens + call `HandleRequest` with a closure that invokes the service method. Keeps the individual handlers very short.
+
+### 4. New Model Types (`pkg/model/history.go`)
 
 The existing `HistoryRequest`/`HistoryResponse` cover `LoadHistory`. New types needed:
 
@@ -184,7 +234,7 @@ type GetMessageRequest struct {
 
 `LoadNextMessages` reuses `HistoryResponse` (same shape: messages + hasMore). `GetMessageByID` returns a single `Message`.
 
-### 4. Cassandra Pagination Toolkit (`internal/cassrepo/utils.go`)
+### 5. Cassandra Pagination Toolkit (`internal/cassrepo/utils.go`)
 
 Custom types with builder pattern for Cassandra pagination.
 
@@ -221,7 +271,7 @@ func ScanPage[T any](q *Query, scan Scanner[T]) (*Page[T], error)
 
 `ScanPage` iterates the query result, calls the scanner for each row, captures the page state from the iterator, and sets `HasMore` based on whether a page state exists.
 
-### 5. MongoDB Helpers (`internal/mongorepo/utils.go`)
+### 6. MongoDB Helpers (`internal/mongorepo/utils.go`)
 
 Thin generic wrappers that eliminate decode boilerplate:
 
@@ -233,7 +283,7 @@ func FindOne[T any](ctx context.Context, col *mongo.Collection, filter bson.D) (
 func FindMany[T any](ctx context.Context, col *mongo.Collection, filter bson.D, opts ...options.Lister[options.FindOptions]) ([]T, error)
 ```
 
-### 6. Repository Implementations
+### 7. Repository Implementations
 
 #### Cassandra (`internal/cassrepo/repository.go`)
 
@@ -268,7 +318,7 @@ func (r *Repository) GetSubscription(ctx context.Context, userID, roomID string)
 
 Uses `FindOne[model.Subscription]` from utils.
 
-### 7. `cmd/main.go`
+### 8. `cmd/main.go`
 
 Follows the established startup + graceful shutdown pattern:
 
@@ -278,16 +328,20 @@ Follows the established startup + graceful shutdown pattern:
 4. Connect Cassandra via `cassutil.Connect` — fail fast on error
 5. Create `cassrepo.NewRepository(session)`, `mongorepo.NewRepository(db)`
 6. Create `service.New(cassRepo, mongoRepo)`
-7. Call `svc.Register(nc, cfg.SiteID)`
+7. Create `natshandler.New(svc, cfg.SiteID)` and call `handler.Register(nc)`
 8. `shutdown.Wait()` — cleanup order: `nc.Drain()` → `mongoutil.Disconnect()` → `cassutil.Close()`
 
-### 8. Testing Strategy
+### 9. Testing Strategy
 
 #### Unit Tests (`messages_test.go`)
 - Table-driven tests for all 4 handlers
 - Mock both `MessageRepository` and `SubscriptionRepository` via generated mocks
 - Test cases per handler: valid request, missing subscription, store error, edge cases (empty results, boundary timestamps)
 - Use `testify/assert` and `testify/require`
+
+#### NATS Handler Utils Tests (`natshandler/utils_test.go`)
+- Unit tests for `ParseSubjectTokens` — valid subjects, mismatched patterns, edge cases
+- Unit tests for `HandleRequest` — valid payload, malformed JSON, handler error propagation
 
 #### Cassandra Utils Tests (`utils_test.go`)
 - Unit tests for `Query` builder (verify state after chaining)
@@ -308,7 +362,7 @@ Follows the established startup + graceful shutdown pattern:
 - `setupMongo(t)` helper
 - Tests: insert test subscriptions, verify `GetSubscription` returns correct data and handles missing records
 
-### 9. NATS Subjects
+### 10. NATS Subjects
 
 The 4 endpoints need subject patterns. Currently only `HistoryRequest` exists in `pkg/subject`. The new subjects follow the established naming convention:
 
@@ -328,6 +382,9 @@ Corresponding wildcard subjects for `QueueSubscribe` also need to be added to `p
 - `history-service/internal/service/messages.go`
 - `history-service/internal/service/messages_test.go`
 - `history-service/internal/service/mocks/mock_store.go`
+- `history-service/internal/natshandler/handler.go`
+- `history-service/internal/natshandler/utils.go`
+- `history-service/internal/natshandler/utils_test.go`
 - `history-service/internal/cassrepo/repository.go`
 - `history-service/internal/cassrepo/utils.go`
 - `history-service/internal/cassrepo/utils_test.go`
