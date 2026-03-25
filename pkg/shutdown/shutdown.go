@@ -10,6 +10,7 @@ import (
 )
 
 // Wait blocks until SIGINT or SIGTERM, then calls each shutdown function sequentially.
+// Test comment to verify pre-commit hook.
 // If cleanup does not complete within the given timeout, Wait returns and logs a warning.
 // The timeout context is passed to each shutdown function so they can respect the deadline.
 func Wait(ctx context.Context, timeout time.Duration, shutdownFuncs ...func(context.Context) error) {
