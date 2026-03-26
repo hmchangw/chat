@@ -7,7 +7,9 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -147,3 +149,43 @@ func TestEncode_NonDeterminism(t *testing.T) {
 	assert.False(t, bytes.Equal(r1.Nonce, r1.EphemeralPublicKey[:12]),
 		"nonce must not equal first 12 bytes of ephemeral public key")
 }
+
+func TestEncode_RandReaderErrors(t *testing.T) {
+	privKey, err := ecdh.P256().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pubKeyBytes := privKey.PublicKey().Bytes()
+
+	t.Run("ephemeral key generation fails", func(t *testing.T) {
+		result, err := encode("hello", pubKeyBytes, &failReader{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "generating ephemeral key")
+		assert.Nil(t, result)
+	})
+
+	t.Run("nonce generation fails", func(t *testing.T) {
+		// P-256 GenerateKey reads 32+ bytes (may retry via rejection sampling).
+		// We loop with increasing byte limits until ephemeral key generation succeeds
+		// but the nonce generation hits the failReader.
+		// - limit too small: key gen fails with "generating ephemeral key" → increase limit
+		// - limit just right: key gen succeeds, nonce gen fails → "generating nonce"
+		// - limit too large: both succeed → increase limit (encErr == nil, result != nil)
+		var encErr error
+		for limit := int64(32); limit <= 4096; limit += 32 {
+			r := io.MultiReader(io.LimitReader(rand.Reader, limit), &failReader{})
+			_, encErr = encode("hello", pubKeyBytes, r)
+			if encErr != nil && strings.Contains(encErr.Error(), "generating nonce") {
+				break
+			}
+		}
+		require.Error(t, encErr)
+		assert.Contains(t, encErr.Error(), "generating nonce")
+	})
+}
+
+// failReader is an io.Reader that always returns an error.
+type failReader struct{}
+
+func (f *failReader) Read(_ []byte) (int, error) {
+	return 0, errors.New("injected read failure")
+}
+
