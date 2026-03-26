@@ -96,7 +96,7 @@ func Load() (Config, error) {
 }
 ```
 
-No env prefix on embedded structs — env var names stay consistent with the rest of the repo. Connection strings (`NATS_URL`, `MONGO_URI`, `CASSANDRA_HOSTS`) are required with no defaults — fail fast if missing.
+No env prefix on embedded structs — env var names stay consistent with the rest of the repo. Connection strings (`NATS_URL`, `MONGO_URI`, `CASSANDRA_HOSTS`) are required with no defaults — fail fast if missing. **Note:** Existing services use `envDefault` for connection strings (e.g., `envDefault:"nats://localhost:4222"`). This spec follows CLAUDE.md's rule ("never default connection strings") as an intentional improvement. For local dev, use `docker-compose.yml` or a `.env` file.
 
 ### 2. Service Layer (`internal/service/`)
 
@@ -229,37 +229,32 @@ func (h *Handler) Register(nc *nats.Conn) error {
 ```
 
 Each `handle*` method follows the same pattern:
-1. Extract `userID` and `roomID` from the NATS subject tokens using `ParseSubjectTokens`
+1. Extract `userID` and `roomID` from the NATS subject using `subject.ParseUserRoomSubject` (already exists in `pkg/subject`)
 2. Unmarshal the request payload into the typed model struct
 3. Call the corresponding `HistoryService` method with parsed args
-4. Reply via `natsutil.ReplyJSON` on success or `natsutil.ReplyError` with a sanitized message on failure
+4. Reply via `natsutil.ReplyJSON` on success or `natsutil.ReplyError` with a sanitized error message on failure
 
 #### `utils.go` — Reusable NATS abstractions
 
 ```go
-// ParseSubjectTokens extracts named tokens from a NATS subject given a pattern.
-// Pattern uses {name} placeholders: "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history"
-// Returns a map: {"userID": "abc", "roomID": "xyz", "siteID": "site-1"}
-func ParseSubjectTokens(subject, pattern string) (map[string]string, error)
-
 // HandleRequest is a generic helper that eliminates unmarshal/reply boilerplate.
 // It unmarshals the NATS message payload into Req, calls the handler func,
-// and replies with the result or an error.
+// and replies with the result via natsutil.ReplyJSON or natsutil.ReplyError.
 func HandleRequest[Req, Resp any](msg *nats.Msg, handlerFn func(ctx context.Context, req Req) (*Resp, error))
 ```
 
-`HandleRequest` reduces each NATS handler to: extract subject tokens + call `HandleRequest` with a closure that invokes the service method. Keeps the individual handlers very short.
+`HandleRequest` reduces each NATS handler to: parse subject via `subject.ParseUserRoomSubject` + call `HandleRequest` with a closure that invokes the service method. Keeps the individual handlers very short. Uses existing `pkg/subject` and `pkg/natsutil` — no custom subject parsing needed.
 
 ### 4. New Model Types (`pkg/model/history.go`)
 
-The existing `HistoryRequest`/`HistoryResponse` will be replaced with more precise types. All new model types:
+The existing `HistoryRequest`/`HistoryResponse` will be replaced with more precise types. (Verified: only used within history-service files being deleted — no cross-service impact.) All new model types:
 
 ```go
 // LoadHistoryRequest is the payload for loading message history before a timestamp.
 type LoadHistoryRequest struct {
     RoomID   string `json:"roomId"   bson:"roomId"`
     Before   string `json:"before"   bson:"before"`   // RFC3339Nano cursor — fetch messages before this
-    Limit    int    `json:"limit"    bson:"limit"`     // default 20
+    Limit    int    `json:"limit"    bson:"limit"`     // default 50
     LastSeen string `json:"lastSeen" bson:"lastSeen"`  // RFC3339Nano — last message seen by user
 }
 
@@ -274,7 +269,7 @@ type LoadHistoryResponse struct {
 type LoadNextMessagesRequest struct {
     RoomID string `json:"roomId" bson:"roomId"`
     After  string `json:"after"  bson:"after"`  // RFC3339Nano cursor — fetch messages after this (empty for latest)
-    Limit  int    `json:"limit"  bson:"limit"`  // default 20
+    Limit  int    `json:"limit"  bson:"limit"`  // default 50
 }
 
 // LoadNextMessagesResponse is the response for LoadNextMessages.
@@ -382,8 +377,8 @@ func (c *Collection[T]) FindByID(ctx context.Context, id string) (*T, error) {
 
 // FindMany returns all documents matching the filter decoded into []T.
 // Returns an empty slice (not nil) when no documents match.
-func (c *Collection[T]) FindMany(ctx context.Context, filter bson.D, opts ...options.Lister[options.FindOptions]) ([]T, error) {
-    cursor, err := c.col.Find(ctx, filter, opts...)
+func (c *Collection[T]) FindMany(ctx context.Context, filter bson.D) ([]T, error) {
+    cursor, err := c.col.Find(ctx, filter)
     if err != nil {
         return nil, fmt.Errorf("querying %s: %w", c.name, err)
     }
@@ -476,8 +471,7 @@ Follows the established startup + graceful shutdown pattern:
 - Use `testify/assert` and `testify/require`
 
 #### NATS Handler Utils Tests (`natshandler/utils_test.go`)
-- Unit tests for `ParseSubjectTokens` — valid subjects, mismatched patterns, edge cases
-- Unit tests for `HandleRequest` — valid payload, malformed JSON, handler error propagation
+- Unit tests for `HandleRequest` — valid payload, malformed JSON, handler error propagation, nil response handling
 
 #### Cassandra Utils Tests (`utils_test.go`)
 - Unit tests for `Query` builder (verify state after chaining)
@@ -564,6 +558,7 @@ Corresponding per-user builder functions (for client-side publishing):
 - `pkg/model/history.go` — replace `HistoryRequest`/`HistoryResponse` with `LoadHistoryRequest`, `LoadHistoryResponse`, `LoadNextMessagesRequest`, `LoadNextMessagesResponse`, `LoadSurroundingMessagesRequest`, `LoadSurroundingMessagesResponse`, `GetMessageByIDRequest`
 - `pkg/subject/subject.go` — add new subject builders for `next`, `surrounding`, `get`
 - `Makefile` — add per-service build path override for history-service: `./history-service/cmd/` instead of `./history-service/`. `make test SERVICE=history-service` uses `./$(SERVICE)/...` which recurses into `cmd/` and `internal/` correctly — no change needed for test/generate targets.
+- `history-service/deploy/Dockerfile` — update build path from `./history-service/` to `./history-service/cmd/`
 
 **Unchanged:**
 - `deploy/` directory stays as-is
