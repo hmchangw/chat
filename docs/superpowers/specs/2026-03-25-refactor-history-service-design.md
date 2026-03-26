@@ -9,7 +9,7 @@ Refactor `history-service` from its current flat, pre-generated structure into a
 - Clean folder structure with clear separation of concerns
 - Proper dependency injection via interfaces defined in the consumer
 - Reusable Cassandra pagination toolkit (generic `Page[T]`, query builder)
-- Lightweight MongoDB generic helpers (`FindOne[T]`, `FindMany[T]`)
+- Generic MongoDB `Collection[T]` abstraction with type-safe methods
 - Comprehensive tests: unit tests with mocks for service layer, integration tests with testcontainers for repositories
 - Solid foundation for future development
 
@@ -54,7 +54,7 @@ history-service/
 │   │   └── integration_test.go    # Integration tests with testcontainers
 │   └── mongorepo/
 │       ├── repository.go          # MongoRepository implementing service.SubscriptionRepository
-│       ├── utils.go               # Generic FindOne[T], FindMany[T] helpers
+│       ├── utils.go               # Generic Collection[T] with FindOne, FindByID, FindMany, Raw
 │       ├── utils_test.go          # Unit tests for helpers
 │       └── integration_test.go    # Integration tests with testcontainers
 ├── deploy/
@@ -111,11 +111,13 @@ type MessageRepository interface {
     // GetMessagesAfter returns messages in a room after `after`, ordered oldest-first.
     // Used by LoadNextMessages. If `after` is zero, returns the latest messages.
     GetMessagesAfter(ctx context.Context, roomID string, after time.Time, limit int) ([]model.Message, error)
-    // GetSurroundingMessages looks up a message by ID, derives roomID and createdAt,
-    // then returns messages before and after it. Central message included in `after` slice.
-    GetSurroundingMessages(ctx context.Context, messageID string, limit int) (before []model.Message, after []model.Message, err error)
-    // GetMessageByID returns a single message by its ID.
-    GetMessageByID(ctx context.Context, messageID string) (*model.Message, error)
+    // GetSurroundingMessages fetches the message by ID within the given room,
+    // then returns messages before and after its createdAt. Central message included in `after` slice.
+    // roomID is required because Cassandra's partition key is room_id.
+    GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) (before []model.Message, after []model.Message, err error)
+    // GetMessageByID returns a single message by its ID within a room.
+    // roomID is required because Cassandra's partition key is room_id.
+    GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error)
 }
 
 // SubscriptionRepository defines MongoDB-backed subscription lookups.
@@ -139,36 +141,43 @@ func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
 
 Four methods on `*HistoryService`. Each accepts a context + userID + parsed request struct, returns a response struct + error. No NATS dependency — pure business logic.
 
+**Timestamp parsing:** Request structs use `string` for timestamp fields (`Before`, `After`, `LastSeen`). Each handler method parses these into `time.Time` via `time.Parse(time.RFC3339Nano, ...)` with proper error handling. Empty string means "no cursor" (e.g., empty `Before` defaults to `time.Now().UTC()`, empty `After` means "get latest messages").
+
+**Default limit:** All endpoints use a default limit of **50** when `limit <= 0` (consistent with existing behavior).
+
 **`SharedHistorySince` enforcement:** Every endpoint must respect the subscription's `SharedHistorySince` timestamp — users must never see messages from before their access window. This is enforced at the **service layer** (not the repo). The service fetches the subscription from MongoDB, extracts `SharedHistorySince`, and passes it as the `since` lower bound to Cassandra queries. For single-message lookups, the service checks `message.CreatedAt >= sub.SharedHistorySince` after fetching. No caching of subscriptions currently — every request hits MongoDB. (Caching is a future optimization.)
 
 1. **`LoadHistory(ctx, userID, req) (*LoadHistoryResponse, error)`** — Messages before a cursor timestamp, paginated backwards.
+   - Parses `req.Before` → `before time.Time` (defaults to `time.Now().UTC()` if empty)
+   - Parses `req.LastSeen` → `lastSeen time.Time` (zero if empty — means all messages are "read")
    - Fetches subscription → extracts `SharedHistorySince` as `since` lower bound
    - Calls `GetMessagesBefore(ctx, roomID, since, before, limit+1)`
-   - Determines `hasMore` from limit+1 trick
+   - Determines `hasMore` from limit+1 trick (fetched limit+1, return limit)
    - Scans loaded batch for `firstUnread`: first message where `createdAt > lastSeen`
-   - Request params: `roomID`, `before` (timestamp cursor), `limit` (default 20), `lastSeen` (last seen timestamp)
+   - Request params: `roomID`, `before` (timestamp cursor), `limit` (default 50), `lastSeen` (last seen timestamp)
    - Returns: `messages`, `firstUnread` (nil if none in batch), `hasMore`
 
 2. **`LoadNextMessages(ctx, userID, req) (*LoadNextMessagesResponse, error)`** — Messages after a cursor timestamp, paginated forwards.
+   - Parses `req.After` → `after time.Time` (if empty, returns latest messages — repo handles zero time)
    - Fetches subscription → extracts `SharedHistorySince`
    - If `after` is before `SharedHistorySince`, clamps it to `SharedHistorySince` (prevents requesting messages outside access window)
-   - Calls `GetMessagesAfter(ctx, roomID, after, limit)`
-   - Request params: `roomID`, `after` (timestamp cursor, empty for latest), `limit` (default 20)
-   - Returns: `messages` array
+   - Calls `GetMessagesAfter(ctx, roomID, after, limit+1)` — uses limit+1 trick for `hasMore`
+   - Request params: `roomID`, `after` (timestamp cursor, empty for latest), `limit` (default 50)
+   - Returns: `messages` array, `hasMore`
 
 3. **`LoadSurroundingMessages(ctx, userID, req) (*LoadSurroundingMessagesResponse, error)`** — Messages around a central message.
-   - Calls repo `GetSurroundingMessages(ctx, messageID, limit)` which internally: fetches the message by ID → gets `roomID` + `createdAt` → queries before/after
-   - Service then fetches subscription using `userID` + the `roomID` from the message
+   - Fetches subscription using `userID` + `req.RoomID`
+   - Calls repo `GetSurroundingMessages(ctx, roomID, messageID, limit)` — repo fetches the message by ID, gets `createdAt`, queries before/after within the room
    - Validates `centralMessage.CreatedAt >= sub.SharedHistorySince` — denies access if the central message is outside the access window
    - Filters out any returned messages where `createdAt < SharedHistorySince` (edge case: surrounding query may return messages from before the user's access window)
-   - Request params: `messageID`, `limit` (total including central message)
+   - Request params: `roomID`, `messageID`, `limit` (total including central message)
    - Returns: `before` and `after` message arrays (central message included in `after`)
 
 4. **`GetMessageByID(ctx, userID, req) (*Message, error)`** — Single message lookup.
-   - Calls repo `GetMessageByID(ctx, messageID)` → gets the message with its `roomID` and `createdAt`
-   - Fetches subscription using `userID` + `roomID` from the message
+   - Fetches subscription using `userID` + `req.RoomID`
+   - Calls repo `GetMessageByID(ctx, roomID, messageID)`
    - Validates `message.CreatedAt >= sub.SharedHistorySince` — returns error if outside access window
-   - Request params: `messageID`
+   - Request params: `roomID`, `messageID`
    - Returns: single `*Message`
 
 #### `mocks/mock_store.go` — Generated
@@ -198,12 +207,23 @@ func New(svc *service.HistoryService, siteID string) *Handler {
 
 // Register wires all 4 NATS queue subscriptions. Uses existing pkg/subject
 // builders for subject patterns and the service name as queue group.
+// Returns an error if any subscription fails.
 func (h *Handler) Register(nc *nats.Conn) error {
     queueGroup := "history-service"
-    nc.QueueSubscribe(subject.HistoryRequestAll(h.siteID), queueGroup, h.handleLoadHistory)
-    nc.QueueSubscribe(subject.NextMessagesRequestAll(h.siteID), queueGroup, h.handleLoadNextMessages)
-    nc.QueueSubscribe(subject.SurroundingMessagesRequestAll(h.siteID), queueGroup, h.handleLoadSurroundingMessages)
-    nc.QueueSubscribe(subject.GetMessageRequestAll(h.siteID), queueGroup, h.handleGetMessageByID)
+    subs := []struct {
+        subject string
+        handler nats.MsgHandler
+    }{
+        {subject.MsgHistoryWildcard(h.siteID), h.handleLoadHistory},
+        {subject.MsgNextWildcard(h.siteID), h.handleLoadNextMessages},
+        {subject.MsgSurroundingWildcard(h.siteID), h.handleLoadSurroundingMessages},
+        {subject.MsgGetWildcard(h.siteID), h.handleGetMessageByID},
+    }
+    for _, s := range subs {
+        if _, err := nc.QueueSubscribe(s.subject, queueGroup, s.handler); err != nil {
+            return fmt.Errorf("subscribing to %s: %w", s.subject, err)
+        }
+    }
     return nil
 }
 ```
@@ -260,10 +280,12 @@ type LoadNextMessagesRequest struct {
 // LoadNextMessagesResponse is the response for LoadNextMessages.
 type LoadNextMessagesResponse struct {
     Messages []Message `json:"messages" bson:"messages"`
+    HasMore  bool      `json:"hasMore"  bson:"hasMore"`
 }
 
 // LoadSurroundingMessagesRequest is the payload for loading messages around a central message.
 type LoadSurroundingMessagesRequest struct {
+    RoomID    string `json:"roomId"    bson:"roomId"`
     MessageID string `json:"messageId" bson:"messageId"` // central message ID
     Limit     int    `json:"limit"     bson:"limit"`     // total messages including central
 }
@@ -276,6 +298,7 @@ type LoadSurroundingMessagesResponse struct {
 
 // GetMessageByIDRequest is the payload for fetching a single message.
 type GetMessageByIDRequest struct {
+    RoomID    string `json:"roomId"    bson:"roomId"`
     MessageID string `json:"messageId" bson:"messageId"`
 }
 ```
@@ -400,8 +423,8 @@ func NewRepository(session *gocql.Session) *Repository
 // Implements service.MessageRepository
 func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error)
 func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, limit int) ([]model.Message, error)
-func (r *Repository) GetSurroundingMessages(ctx context.Context, messageID string, limit int) (before []model.Message, after []model.Message, err error)
-func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*model.Message, error)
+func (r *Repository) GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) (before []model.Message, after []model.Message, err error)
+func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error)
 ```
 
 All methods use `NewQuery` + `ScanPage` from the utils toolkit.
@@ -463,8 +486,20 @@ Follows the established startup + graceful shutdown pattern:
 #### Cassandra Integration Tests (`integration_test.go`)
 - `//go:build integration` tag
 - testcontainers-go with Cassandra module
-- `setupCassandra(t)` helper — starts container, creates keyspace + table, returns session, registers `t.Cleanup`
-- Tests: insert test messages, verify `GetMessages`, `GetMessagesAfter`, `GetSurroundingMessages`, `GetMessageByID`
+- `setupCassandra(t)` helper — starts container, creates keyspace + `messages` table (schema below), returns session, registers `t.Cleanup`
+- Tests: insert test messages, verify `GetMessagesBefore`, `GetMessagesAfter`, `GetSurroundingMessages`, `GetMessageByID`
+
+**Expected Cassandra schema** (used by integration tests, subject to adjustment when real schema is provided):
+```cql
+CREATE TABLE messages (
+    room_id text,
+    created_at timestamp,
+    id text,
+    user_id text,
+    content text,
+    PRIMARY KEY (room_id, created_at)
+) WITH CLUSTERING ORDER BY (created_at DESC);
+```
 
 #### MongoDB Utils Tests (`utils_test.go`)
 - Unit tests for `FindOne` and `FindMany` error handling
@@ -484,7 +519,16 @@ The 4 endpoints need subject patterns. Currently only `HistoryRequest` exists in
 - `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.surrounding` (new)
 - `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.get` (new)
 
-Corresponding wildcard subjects for `QueueSubscribe` also need to be added to `pkg/subject`.
+New subject builder functions follow the existing `*Wildcard` naming convention:
+- `MsgHistoryWildcard(siteID)` — already exists
+- `MsgNextWildcard(siteID)` — new
+- `MsgSurroundingWildcard(siteID)` — new
+- `MsgGetWildcard(siteID)` — new
+
+Corresponding per-user builder functions (for client-side publishing):
+- `MsgNext(userID, roomID, siteID)` — new
+- `MsgSurrounding(userID, roomID, siteID)` — new
+- `MsgGet(userID, roomID, siteID)` — new
 
 ## Files Changed
 
@@ -519,7 +563,7 @@ Corresponding wildcard subjects for `QueueSubscribe` also need to be added to `p
 **Modified files:**
 - `pkg/model/history.go` — replace `HistoryRequest`/`HistoryResponse` with `LoadHistoryRequest`, `LoadHistoryResponse`, `LoadNextMessagesRequest`, `LoadNextMessagesResponse`, `LoadSurroundingMessagesRequest`, `LoadSurroundingMessagesResponse`, `GetMessageByIDRequest`
 - `pkg/subject/subject.go` — add new subject builders for `next`, `surrounding`, `get`
-- `Makefile` — update history-service build target to `./history-service/cmd/`
+- `Makefile` — add per-service build path override for history-service: `./history-service/cmd/` instead of `./history-service/`. `make test SERVICE=history-service` uses `./$(SERVICE)/...` which recurses into `cmd/` and `internal/` correctly — no change needed for test/generate targets.
 
 **Unchanged:**
 - `deploy/` directory stays as-is
