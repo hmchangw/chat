@@ -1,0 +1,124 @@
+//go:build integration
+
+package roomcrypto
+
+import (
+	"bytes"
+	"context"
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
+)
+
+// decryptPayload is the JSON structure passed to the TypeScript decrypt script.
+type decryptPayload struct {
+	PrivateKey string            `json:"privateKey"` // base64(privKey.Bytes()) — 32-byte P-256 scalar
+	PublicKey  string            `json:"publicKey"`  // base64(pubKey.Bytes())  — 65-byte uncompressed point
+	Message    *EncryptedMessage `json:"message"`
+}
+
+// setupNodeContainer starts a node:20-alpine container, copies decrypt.ts into it,
+// and installs tsx. The container is terminated via t.Cleanup.
+func setupNodeContainer(t *testing.T) testcontainers.Container {
+	t.Helper()
+	ctx := context.Background()
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:      "node:20-alpine",
+			Cmd:        []string{"sh", "-c", "sleep 600"},
+			WaitingFor: wait.ForExec([]string{"node", "--version"}).WithStartupTimeout(30 * time.Second),
+		},
+		Started: true,
+	})
+	require.NoError(t, err, "start node:20-alpine container")
+	t.Cleanup(func() {
+		_ = container.Terminate(ctx) // best-effort; ignore cleanup errors
+	})
+
+	// Copy the TypeScript decrypt script into the container.
+	scriptPath := filepath.Join("testdata", "decrypt.ts")
+	err = container.CopyFileToContainer(ctx, scriptPath, "/decrypt.ts", 0o644)
+	require.NoError(t, err, "copy testdata/decrypt.ts into container")
+
+	// Install tsx (TypeScript runner). Combined stdout+stderr is captured for diagnostics.
+	exitCode, reader, err := container.Exec(ctx, []string{"sh", "-c", "npm install -g tsx --quiet 2>&1"})
+	require.NoError(t, err, "exec npm install tsx")
+	out := readOutput(reader)
+	require.Equal(t, 0, exitCode, "npm install tsx failed:\n%s", out)
+
+	return container
+}
+
+// readOutput reads the Docker multiplexed output stream into a single string.
+func readOutput(r io.Reader) string {
+	if r == nil {
+		return ""
+	}
+	var stdout, stderr bytes.Buffer
+	_, _ = stdcopy.StdCopy(&stdout, &stderr, r)
+	return stdout.String() + stderr.String()
+}
+
+func TestEncode_TypeScriptDecrypt(t *testing.T) {
+	ctx := context.Background()
+	container := setupNodeContainer(t)
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "non-empty message", content: "hello from Go"},
+		{name: "empty string", content: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Generate a fresh P-256 key pair for this subtest.
+			privKey, err := ecdh.P256().GenerateKey(rand.Reader)
+			require.NoError(t, err)
+
+			// Encrypt with Go.
+			msg, err := Encode(tc.content, privKey.PublicKey().Bytes())
+			require.NoError(t, err)
+
+			// Build the JSON payload the TypeScript script expects.
+			payload := decryptPayload{
+				PrivateKey: base64.StdEncoding.EncodeToString(privKey.Bytes()),
+				PublicKey:  base64.StdEncoding.EncodeToString(privKey.PublicKey().Bytes()),
+				Message:    msg,
+			}
+			payloadJSON, err := json.Marshal(payload)
+			require.NoError(t, err)
+
+			// Write payload to a per-subtest temp file and copy into the container.
+			payloadFile := filepath.Join(t.TempDir(), "payload.json")
+			err = os.WriteFile(payloadFile, payloadJSON, 0o600)
+			require.NoError(t, err)
+			err = container.CopyFileToContainer(ctx, payloadFile, "/payload.json", 0o644)
+			require.NoError(t, err, "copy payload.json into container")
+
+			// Run the TypeScript decrypt script.
+			exitCode, reader, err := container.Exec(ctx, []string{"tsx", "/decrypt.ts", "/payload.json"})
+			require.NoError(t, err, "exec tsx decrypt")
+			output := readOutput(reader)
+			require.Equal(t, 0, exitCode, "decrypt script exited non-zero:\n%s", output)
+
+			// stdout should equal the original plaintext; trim trailing newline only.
+			assert.Equal(t, tc.content, strings.TrimRight(output, "\n"))
+		})
+	}
+}
