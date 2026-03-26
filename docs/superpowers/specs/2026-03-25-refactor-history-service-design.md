@@ -24,6 +24,10 @@ Refactor `history-service` from its current flat, pre-generated structure into a
 
 - `model.Message` in `pkg/model/message.go` is missing `bson` tags (CLAUDE.md requires both `json` and `bson`). Will address separately.
 
+## Notes
+
+- **Auth change**: NATS auth is moving from callout service to SSO token → auth service → JWT with permissions built-in. This has no impact on history-service — it receives messages on the wire after authentication is already complete. UserID comes from subject tokens, subscription validation gates access.
+
 ## Folder Structure
 
 ```
@@ -101,9 +105,16 @@ No env prefix on embedded structs — env var names stay consistent with the res
 ```go
 // MessageRepository defines Cassandra-backed message operations.
 type MessageRepository interface {
-    GetMessages(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error)
+    // GetMessagesBefore returns messages in a room before `before` and after `since`, ordered newest-first.
+    // Used by LoadHistory. Fetches limit+1 to determine HasMore.
+    GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error)
+    // GetMessagesAfter returns messages in a room after `after`, ordered oldest-first.
+    // Used by LoadNextMessages. If `after` is zero, returns the latest messages.
     GetMessagesAfter(ctx context.Context, roomID string, after time.Time, limit int) ([]model.Message, error)
-    GetSurroundingMessages(ctx context.Context, roomID string, anchor time.Time, limit int) ([]model.Message, []model.Message, error)
+    // GetSurroundingMessages looks up a message by ID, then returns messages before and after it.
+    // The central message is included in the `after` slice. Limit is total messages (split evenly).
+    GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) (before []model.Message, after []model.Message, err error)
+    // GetMessageByID returns a single message by its ID within a room.
     GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error)
 }
 
@@ -128,13 +139,13 @@ func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
 
 Four methods on `*HistoryService`. Each accepts a context + userID + parsed request struct, returns a response struct + error. No NATS dependency — pure business logic.
 
-1. **`LoadHistory(ctx, userID, req) (*HistoryResponse, error)`** — Messages before a cursor timestamp, paginated backwards. Validates user subscription, checks `SharedHistorySince`, returns `HistoryResponse` with `HasMore`.
+1. **`LoadHistory(ctx, userID, req) (*HistoryResponse, error)`** — Messages before a cursor timestamp, paginated backwards. Validates user subscription, checks `SharedHistorySince`. Request params: `roomID`, `before` (timestamp cursor), `limit` (default 20), `lastSeen` (last seen timestamp). Returns: `messages`, `firstUnread` (first message where `createdAt > lastSeen` within the loaded batch, nil if none), `hasMore` (cursor-based via limit+1 trick).
 
-2. **`LoadNextMessages(ctx, userID, req) (*HistoryResponse, error)`** — Messages after a cursor timestamp, paginated forwards. Same subscription validation. Returns messages in chronological order.
+2. **`LoadNextMessages(ctx, userID, req) (*NextMessagesResponse, error)`** — Messages after a cursor timestamp, paginated forwards. Same subscription validation. Request params: `roomID`, `after` (timestamp cursor, zero for latest), `limit` (default 20). Returns: `messages` array.
 
-3. **`LoadSurroundingMessages(ctx, userID, req) (*SurroundingMessagesResponse, error)`** — Given a timestamp anchor, returns N messages before and N after. Used for "jump to message" scenarios.
+3. **`LoadSurroundingMessages(ctx, userID, req) (*SurroundingMessagesResponse, error)`** — Given a message ID, returns messages around it. The Cassandra repo handles the ID→timestamp lookup internally. Request params: `roomID`, `messageID`, `limit` (total including central message). Returns: `before` and `after` message arrays (central message included in `after`).
 
-4. **`GetMessageByID(ctx, userID, req) (*Message, error)`** — Single message lookup by ID within a room. Validates subscription access.
+4. **`GetMessageByID(ctx, userID, req) (*Message, error)`** — Single message lookup by ID within a room. Validates subscription access. Request params: `roomID`, `messageID`.
 
 All handlers follow the pattern:
 - Validate subscription access via `SubscriptionRepository`
@@ -202,37 +213,57 @@ func HandleRequest[Req, Resp any](msg *nats.Msg, handlerFn func(ctx context.Cont
 
 ### 4. New Model Types (`pkg/model/history.go`)
 
-The existing `HistoryRequest`/`HistoryResponse` cover `LoadHistory`. New types needed:
+The existing `HistoryRequest`/`HistoryResponse` will be replaced with more precise types. All new model types:
 
 ```go
-// NextMessagesRequest is the payload for loading messages after a timestamp.
-type NextMessagesRequest struct {
+// LoadHistoryRequest is the payload for loading message history before a timestamp.
+type LoadHistoryRequest struct {
+    RoomID   string `json:"roomId"   bson:"roomId"`
+    Before   string `json:"before"   bson:"before"`   // RFC3339Nano cursor — fetch messages before this
+    Limit    int    `json:"limit"    bson:"limit"`     // default 20
+    LastSeen string `json:"lastSeen" bson:"lastSeen"`  // RFC3339Nano — last message seen by user
+}
+
+// LoadHistoryResponse is the response for LoadHistory.
+type LoadHistoryResponse struct {
+    Messages    []Message `json:"messages"              bson:"messages"`
+    FirstUnread *Message  `json:"firstUnread,omitempty" bson:"firstUnread,omitempty"`
+    HasMore     bool      `json:"hasMore"               bson:"hasMore"`
+}
+
+// LoadNextMessagesRequest is the payload for loading messages after a timestamp.
+type LoadNextMessagesRequest struct {
     RoomID string `json:"roomId" bson:"roomId"`
-    After  string `json:"after"  bson:"after"`   // RFC3339Nano timestamp cursor
-    Limit  int    `json:"limit"  bson:"limit"`
+    After  string `json:"after"  bson:"after"`  // RFC3339Nano cursor — fetch messages after this (empty for latest)
+    Limit  int    `json:"limit"  bson:"limit"`  // default 20
 }
 
-// SurroundingMessagesRequest is the payload for loading messages around an anchor.
-type SurroundingMessagesRequest struct {
+// LoadNextMessagesResponse is the response for LoadNextMessages.
+type LoadNextMessagesResponse struct {
+    Messages []Message `json:"messages" bson:"messages"`
+}
+
+// LoadSurroundingMessagesRequest is the payload for loading messages around a central message.
+type LoadSurroundingMessagesRequest struct {
     RoomID    string `json:"roomId"    bson:"roomId"`
-    Anchor    string `json:"anchor"    bson:"anchor"`    // RFC3339Nano timestamp
-    Limit     int    `json:"limit"     bson:"limit"`     // messages per direction
+    MessageID string `json:"messageId" bson:"messageId"` // central message ID
+    Limit     int    `json:"limit"     bson:"limit"`     // total messages including central
 }
 
-// SurroundingMessagesResponse contains messages before and after the anchor.
-type SurroundingMessagesResponse struct {
+// LoadSurroundingMessagesResponse contains messages before and after the central message.
+type LoadSurroundingMessagesResponse struct {
     Before []Message `json:"before" bson:"before"`
-    After  []Message `json:"after"  bson:"after"`
+    After  []Message `json:"after"  bson:"after"` // includes the central message
 }
 
-// GetMessageRequest is the payload for fetching a single message by ID.
-type GetMessageRequest struct {
+// GetMessageByIDRequest is the payload for fetching a single message.
+type GetMessageByIDRequest struct {
     RoomID    string `json:"roomId"    bson:"roomId"`
     MessageID string `json:"messageId" bson:"messageId"`
 }
 ```
 
-`LoadNextMessages` reuses `HistoryResponse` (same shape: messages + hasMore). `GetMessageByID` returns a single `Message`.
+`GetMessageByID` returns a single `*model.Message` directly.
 
 ### 5. Cassandra Pagination Toolkit (`internal/cassrepo/utils.go`)
 
@@ -295,9 +326,9 @@ type Repository struct {
 func NewRepository(session *gocql.Session) *Repository
 
 // Implements service.MessageRepository
-func (r *Repository) GetMessages(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error)
+func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error)
 func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, limit int) ([]model.Message, error)
-func (r *Repository) GetSurroundingMessages(ctx context.Context, roomID string, anchor time.Time, limit int) ([]model.Message, []model.Message, error)
+func (r *Repository) GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) (before []model.Message, after []model.Message, err error)
 func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error)
 ```
 
@@ -404,7 +435,7 @@ Corresponding wildcard subjects for `QueueSubscribe` also need to be added to `p
 - `history-service/integration_test.go`
 
 **Modified files:**
-- `pkg/model/history.go` — add `NextMessagesRequest`, `SurroundingMessagesRequest`, `SurroundingMessagesResponse`, `GetMessageRequest`
+- `pkg/model/history.go` — replace `HistoryRequest`/`HistoryResponse` with `LoadHistoryRequest`, `LoadHistoryResponse`, `LoadNextMessagesRequest`, `LoadNextMessagesResponse`, `LoadSurroundingMessagesRequest`, `LoadSurroundingMessagesResponse`, `GetMessageByIDRequest`
 - `pkg/subject/subject.go` — add new subject builders for `next`, `surrounding`, `get`
 - `Makefile` — update history-service build target to `./history-service/cmd/`
 
