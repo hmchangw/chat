@@ -4,8 +4,8 @@ package model
 type LoadHistoryRequest struct {
 	RoomID   string `json:"roomId"   bson:"roomId"`
 	Before   string `json:"before"   bson:"before"`   // RFC3339Nano cursor — fetch messages before this
-	Limit    int    `json:"limit"    bson:"limit"`     // default 50
-	LastSeen string `json:"lastSeen" bson:"lastSeen"`  // RFC3339Nano — last message seen by user
+	Limit    int    `json:"limit"    bson:"limit"`    // default 50
+	LastSeen string `json:"lastSeen" bson:"lastSeen"` // RFC3339Nano — last message seen by user
 }
 
 // LoadHistoryResponse is the response for LoadHistory.
