@@ -167,6 +167,129 @@ func TestHistoryService_GetMessageByID_OutsideAccessWindow(t *testing.T) {
 	require.Error(t, err)
 }
 
+// --- LoadHistory error paths ---
+
+func TestHistoryService_LoadHistory_StoreError(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", joinTime, gomock.Any(), 51).Return(nil, fmt.Errorf("db down"))
+
+	_, err := svc.LoadHistory(ctx, "u1", model.LoadHistoryRequest{RoomID: "r1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading history")
+}
+
+func TestHistoryService_LoadHistory_InvalidBefore(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	_, err := svc.LoadHistory(ctx, "u1", model.LoadHistoryRequest{RoomID: "r1", Before: "not-a-timestamp"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing before")
+}
+
+func TestHistoryService_LoadHistory_SubscriptionError(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(nil, fmt.Errorf("db error"))
+
+	_, err := svc.LoadHistory(ctx, "u1", model.LoadHistoryRequest{RoomID: "r1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking subscription")
+}
+
+func TestHistoryService_LoadHistory_EmptyResult(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", joinTime, gomock.Any(), 51).Return(nil, nil)
+
+	resp, err := svc.LoadHistory(ctx, "u1", model.LoadHistoryRequest{RoomID: "r1"})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Messages)
+	assert.False(t, resp.HasMore)
+}
+
+// --- LoadNextMessages error paths ---
+
+func TestHistoryService_LoadNextMessages_NotSubscribed(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(nil, nil)
+
+	_, err := svc.LoadNextMessages(ctx, "u1", model.LoadNextMessagesRequest{RoomID: "r1"})
+	require.Error(t, err)
+}
+
+func TestHistoryService_LoadNextMessages_StoreError(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", gomock.Any(), 51).Return(nil, fmt.Errorf("db error"))
+
+	_, err := svc.LoadNextMessages(ctx, "u1", model.LoadNextMessagesRequest{RoomID: "r1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading next messages")
+}
+
+func TestHistoryService_LoadNextMessages_EmptyAfterGetsLatest(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+	// When after is empty (zero), it should NOT be clamped — zero time passes through
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", time.Time{}, 51).Return(nil, nil)
+
+	_, err := svc.LoadNextMessages(ctx, "u1", model.LoadNextMessagesRequest{RoomID: "r1"})
+	require.NoError(t, err)
+}
+
+// --- GetMessageByID error paths ---
+
+func TestHistoryService_GetMessageByID_NotSubscribed(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(nil, nil)
+
+	_, err := svc.GetMessageByID(ctx, "u1", model.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
+	require.Error(t, err)
+}
+
+func TestHistoryService_GetMessageByID_NotFound(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m1").Return(nil, nil)
+
+	_, err := svc.GetMessageByID(ctx, "u1", model.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestHistoryService_GetMessageByID_StoreError(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m1").Return(nil, fmt.Errorf("db error"))
+
+	_, err := svc.GetMessageByID(ctx, "u1", model.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading message")
+}
+
+// --- LoadSurroundingMessages ---
+
 func TestHistoryService_LoadSurroundingMessages_Success(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
@@ -188,4 +311,75 @@ func TestHistoryService_LoadSurroundingMessages_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, resp.Before, 1)
 	assert.Len(t, resp.After, 2)
+}
+
+func TestHistoryService_LoadSurroundingMessages_NotSubscribed(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(nil, nil)
+
+	_, err := svc.LoadSurroundingMessages(ctx, "u1", model.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.Error(t, err)
+}
+
+func TestHistoryService_LoadSurroundingMessages_CentralMessageOutsideWindow(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	// Central message is before SharedHistorySince
+	before := []model.Message{}
+	after := []model.Message{
+		{ID: "m_old", RoomID: "r1", CreatedAt: joinTime.Add(-1 * time.Hour)},
+	}
+	msgs.EXPECT().GetSurroundingMessages(ctx, "r1", "m_old", 6).Return(before, after, nil)
+
+	_, err := svc.LoadSurroundingMessages(ctx, "u1", model.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m_old", Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside access window")
+}
+
+func TestHistoryService_LoadSurroundingMessages_StoreError(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+	msgs.EXPECT().GetSurroundingMessages(ctx, "r1", "m5", 6).Return(nil, nil, fmt.Errorf("db error"))
+
+	_, err := svc.LoadSurroundingMessages(ctx, "u1", model.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading surrounding")
+}
+
+func TestHistoryService_LoadSurroundingMessages_FiltersSharedHistorySince(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	// Some before messages are before SharedHistorySince — should be filtered
+	before := []model.Message{
+		{ID: "old", RoomID: "r1", CreatedAt: joinTime.Add(-1 * time.Minute)},
+		{ID: "new", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)},
+	}
+	after := []model.Message{
+		{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)},
+	}
+	msgs.EXPECT().GetSurroundingMessages(ctx, "r1", "m5", 6).Return(before, after, nil)
+
+	resp, err := svc.LoadSurroundingMessages(ctx, "u1", model.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Before, 1)
+	assert.Equal(t, "new", resp.Before[0].ID)
+	assert.Len(t, resp.After, 1)
 }

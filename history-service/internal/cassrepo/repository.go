@@ -60,6 +60,10 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 
 // GetMessageByID returns a single message by ID within a room.
 // Returns (nil, nil) if the message is not found.
+// GetMessageByID returns a single message by ID within a room.
+// Returns (nil, nil) if the message is not found.
+// NOTE: This scans the partition because `id` is not part of the primary key.
+// TODO: Add a messages_by_id lookup table or secondary index when schema is finalized.
 func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error) {
 	stmt := `SELECT id, room_id, user_id, content, created_at FROM messages
 		WHERE room_id = ? ALLOW FILTERING`

@@ -85,7 +85,7 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, re
 		return nil, fmt.Errorf("parsing after timestamp: %w", err)
 	}
 
-	if after.Before(sub.SharedHistorySince) {
+	if !after.IsZero() && after.Before(sub.SharedHistorySince) {
 		after = sub.SharedHistorySince
 	}
 
@@ -129,17 +129,30 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID str
 		return nil, fmt.Errorf("loading surrounding messages: %w", err)
 	}
 
+	// Validate central message is within access window.
+	// The central message is the first element in the after slice.
+	if len(after) > 0 && after[0].CreatedAt.Before(sub.SharedHistorySince) {
+		return nil, fmt.Errorf("message %s is outside access window", req.MessageID)
+	}
+
+	// Filter out messages before SharedHistorySince from both slices.
 	since := sub.SharedHistorySince
-	filtered := before[:0]
+	filteredBefore := before[:0]
 	for _, m := range before {
 		if !m.CreatedAt.Before(since) {
-			filtered = append(filtered, m)
+			filteredBefore = append(filteredBefore, m)
+		}
+	}
+	filteredAfter := after[:0]
+	for _, m := range after {
+		if !m.CreatedAt.Before(since) {
+			filteredAfter = append(filteredAfter, m)
 		}
 	}
 
 	return &model.LoadSurroundingMessagesResponse{
-		Before: filtered,
-		After:  after,
+		Before: filteredBefore,
+		After:  filteredAfter,
 	}, nil
 }
 
