@@ -4,6 +4,7 @@ go 1.24.7
 
 require (
 	github.com/caarlos0/env/v11 v11.4.0
+	github.com/docker/docker v27.1.1+incompatible
 	github.com/gocql/gocql v1.7.0
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/jwt/v2 v2.7.4
@@ -11,6 +12,7 @@ require (
 	github.com/nats-io/nkeys v0.4.12
 	github.com/stretchr/testify v1.10.0
 	github.com/synadia-io/callout.go v0.2.1
+	github.com/testcontainers/testcontainers-go v0.34.0
 	github.com/testcontainers/testcontainers-go/modules/cassandra v0.34.0
 	github.com/testcontainers/testcontainers-go/modules/mongodb v0.34.0
 	go.mongodb.org/mongo-driver/v2 v2.1.0
@@ -36,7 +38,6 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
-	github.com/docker/docker v27.1.1+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
@@ -73,7 +74,6 @@ require (
 	github.com/shirou/gopsutil/v3 v3.23.12 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
-	github.com/testcontainers/testcontainers-go v0.34.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
