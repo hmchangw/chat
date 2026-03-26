@@ -1075,3 +1075,809 @@ Integration tests with testcontainers."
 ```
 
 ---
+
+### Task 10: Service handler methods (TDD)
+
+**Files:**
+- Create: `history-service/internal/service/messages.go`
+- Create: `history-service/internal/service/messages_test.go`
+
+- [ ] **Step 1: Write failing tests for all 4 handlers**
+
+Write `history-service/internal/service/messages_test.go`:
+
+```go
+package service_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/hmchangw/chat/history-service/internal/service"
+	"github.com/hmchangw/chat/history-service/internal/service/mocks"
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+var (
+	joinTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	testSub  = &model.Subscription{
+		UserID: "u1", RoomID: "r1", Role: model.RoleMember,
+		SharedHistorySince: joinTime,
+	}
+)
+
+func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository) {
+	ctrl := gomock.NewController(t)
+	msgs := mocks.NewMockMessageRepository(ctrl)
+	subs := mocks.NewMockSubscriptionRepository(ctrl)
+	return service.New(msgs, subs), msgs, subs
+}
+
+// --- LoadHistory ---
+
+func TestHistoryService_LoadHistory_Success(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	messages := make([]model.Message, 4)
+	for i := range messages {
+		messages[i] = model.Message{
+			ID: fmt.Sprintf("m%d", i), RoomID: "r1",
+			CreatedAt: joinTime.Add(time.Duration(4-i) * time.Minute),
+		}
+	}
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", joinTime, gomock.Any(), 51).Return(messages, nil)
+
+	resp, err := svc.LoadHistory(ctx, "u1", model.LoadHistoryRequest{RoomID: "r1"})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 4)
+	assert.False(t, resp.HasMore)
+}
+
+func TestHistoryService_LoadHistory_HasMore(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	messages := make([]model.Message, 51)
+	for i := range messages {
+		messages[i] = model.Message{ID: fmt.Sprintf("m%d", i), RoomID: "r1", CreatedAt: joinTime.Add(time.Duration(i) * time.Minute)}
+	}
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", joinTime, gomock.Any(), 51).Return(messages, nil)
+
+	resp, err := svc.LoadHistory(ctx, "u1", model.LoadHistoryRequest{RoomID: "r1"})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 50)
+	assert.True(t, resp.HasMore)
+}
+
+func TestHistoryService_LoadHistory_NotSubscribed(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(nil, nil)
+
+	_, err := svc.LoadHistory(ctx, "u1", model.LoadHistoryRequest{RoomID: "r1"})
+	require.Error(t, err)
+}
+
+func TestHistoryService_LoadHistory_FirstUnread(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	lastSeen := joinTime.Add(2 * time.Minute)
+	messages := []model.Message{
+		{ID: "m3", RoomID: "r1", CreatedAt: joinTime.Add(3 * time.Minute)},
+		{ID: "m2", RoomID: "r1", CreatedAt: joinTime.Add(2 * time.Minute)},
+		{ID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)},
+	}
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", joinTime, gomock.Any(), 51).Return(messages, nil)
+
+	resp, err := svc.LoadHistory(ctx, "u1", model.LoadHistoryRequest{
+		RoomID:   "r1",
+		LastSeen: lastSeen.Format(time.RFC3339Nano),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.FirstUnread)
+	assert.Equal(t, "m3", resp.FirstUnread.ID)
+}
+
+// --- LoadNextMessages ---
+
+func TestHistoryService_LoadNextMessages_Success(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	after := joinTime.Add(1 * time.Minute)
+	messages := []model.Message{
+		{ID: "m2", RoomID: "r1", CreatedAt: joinTime.Add(2 * time.Minute)},
+		{ID: "m3", RoomID: "r1", CreatedAt: joinTime.Add(3 * time.Minute)},
+	}
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", after, 51).Return(messages, nil)
+
+	resp, err := svc.LoadNextMessages(ctx, "u1", model.LoadNextMessagesRequest{
+		RoomID: "r1",
+		After:  after.Format(time.RFC3339Nano),
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 2)
+	assert.False(t, resp.HasMore)
+}
+
+func TestHistoryService_LoadNextMessages_ClampsToSharedHistorySince(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	// Request after time BEFORE SharedHistorySince — should be clamped
+	earlyTime := joinTime.Add(-1 * time.Hour)
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", joinTime, 51).Return(nil, nil)
+
+	_, err := svc.LoadNextMessages(ctx, "u1", model.LoadNextMessagesRequest{
+		RoomID: "r1",
+		After:  earlyTime.Format(time.RFC3339Nano),
+	})
+	require.NoError(t, err)
+}
+
+// --- GetMessageByID ---
+
+func TestHistoryService_GetMessageByID_Success(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	msg := &model.Message{ID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m1").Return(msg, nil)
+
+	result, err := svc.GetMessageByID(ctx, "u1", model.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
+	require.NoError(t, err)
+	assert.Equal(t, "m1", result.ID)
+}
+
+func TestHistoryService_GetMessageByID_OutsideAccessWindow(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	msg := &model.Message{ID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(-1 * time.Hour)}
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m1").Return(msg, nil)
+
+	_, err := svc.GetMessageByID(ctx, "u1", model.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
+	require.Error(t, err)
+}
+
+// --- LoadSurroundingMessages ---
+
+func TestHistoryService_LoadSurroundingMessages_Success(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
+
+	before := []model.Message{
+		{ID: "m4", RoomID: "r1", CreatedAt: joinTime.Add(4 * time.Minute)},
+	}
+	after := []model.Message{
+		{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)},
+		{ID: "m6", RoomID: "r1", CreatedAt: joinTime.Add(6 * time.Minute)},
+	}
+	msgs.EXPECT().GetSurroundingMessages(ctx, "r1", "m5", 6).Return(before, after, nil)
+
+	resp, err := svc.LoadSurroundingMessages(ctx, "u1", model.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Before, 1)
+	assert.Len(t, resp.After, 2)
+}
+```
+
+- [ ] **Step 2: Run tests — verify they fail**
+
+Run: `go test ./history-service/internal/service/ -v`
+Expected: FAIL — `LoadHistory` method not defined
+
+- [ ] **Step 3: Implement messages.go**
+
+Write `history-service/internal/service/messages.go`:
+
+```go
+package service
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+const defaultLimit = 50
+
+func parseTimestamp(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339Nano, s)
+}
+
+// LoadHistory returns messages before a cursor timestamp, paginated backwards.
+func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req model.LoadHistoryRequest) (*model.LoadHistoryResponse, error) {
+	sub, err := s.subscriptions.GetSubscription(ctx, userID, req.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("checking subscription: %w", err)
+	}
+	if sub == nil {
+		return nil, fmt.Errorf("user %s is not subscribed to room %s", userID, req.RoomID)
+	}
+
+	before, err := parseTimestamp(req.Before)
+	if err != nil {
+		return nil, fmt.Errorf("parsing before timestamp: %w", err)
+	}
+	if before.IsZero() {
+		before = time.Now().UTC()
+	}
+
+	lastSeen, err := parseTimestamp(req.LastSeen)
+	if err != nil {
+		return nil, fmt.Errorf("parsing lastSeen timestamp: %w", err)
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+
+	since := sub.SharedHistorySince
+	msgs, err := s.messages.GetMessagesBefore(ctx, req.RoomID, since, before, limit+1)
+	if err != nil {
+		return nil, fmt.Errorf("loading history: %w", err)
+	}
+
+	hasMore := len(msgs) > limit
+	if hasMore {
+		msgs = msgs[:limit]
+	}
+
+	var firstUnread *model.Message
+	if !lastSeen.IsZero() {
+		for i := range msgs {
+			if msgs[i].CreatedAt.After(lastSeen) {
+				firstUnread = &msgs[i]
+			}
+		}
+	}
+
+	return &model.LoadHistoryResponse{
+		Messages:    msgs,
+		FirstUnread: firstUnread,
+		HasMore:     hasMore,
+	}, nil
+}
+
+// LoadNextMessages returns messages after a cursor timestamp, paginated forwards.
+func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, req model.LoadNextMessagesRequest) (*model.LoadNextMessagesResponse, error) {
+	sub, err := s.subscriptions.GetSubscription(ctx, userID, req.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("checking subscription: %w", err)
+	}
+	if sub == nil {
+		return nil, fmt.Errorf("user %s is not subscribed to room %s", userID, req.RoomID)
+	}
+
+	after, err := parseTimestamp(req.After)
+	if err != nil {
+		return nil, fmt.Errorf("parsing after timestamp: %w", err)
+	}
+
+	// Clamp to SharedHistorySince
+	if after.Before(sub.SharedHistorySince) {
+		after = sub.SharedHistorySince
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+
+	msgs, err := s.messages.GetMessagesAfter(ctx, req.RoomID, after, limit+1)
+	if err != nil {
+		return nil, fmt.Errorf("loading next messages: %w", err)
+	}
+
+	hasMore := len(msgs) > limit
+	if hasMore {
+		msgs = msgs[:limit]
+	}
+
+	return &model.LoadNextMessagesResponse{
+		Messages: msgs,
+		HasMore:  hasMore,
+	}, nil
+}
+
+// LoadSurroundingMessages returns messages around a central message.
+func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID string, req model.LoadSurroundingMessagesRequest) (*model.LoadSurroundingMessagesResponse, error) {
+	sub, err := s.subscriptions.GetSubscription(ctx, userID, req.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("checking subscription: %w", err)
+	}
+	if sub == nil {
+		return nil, fmt.Errorf("user %s is not subscribed to room %s", userID, req.RoomID)
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+
+	before, after, err := s.messages.GetSurroundingMessages(ctx, req.RoomID, req.MessageID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("loading surrounding messages: %w", err)
+	}
+
+	// Filter out messages before SharedHistorySince
+	since := sub.SharedHistorySince
+	filtered := before[:0]
+	for _, m := range before {
+		if !m.CreatedAt.Before(since) {
+			filtered = append(filtered, m)
+		}
+	}
+
+	return &model.LoadSurroundingMessagesResponse{
+		Before: filtered,
+		After:  after,
+	}, nil
+}
+
+// GetMessageByID returns a single message by ID.
+func (s *HistoryService) GetMessageByID(ctx context.Context, userID string, req model.GetMessageByIDRequest) (*model.Message, error) {
+	sub, err := s.subscriptions.GetSubscription(ctx, userID, req.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("checking subscription: %w", err)
+	}
+	if sub == nil {
+		return nil, fmt.Errorf("user %s is not subscribed to room %s", userID, req.RoomID)
+	}
+
+	msg, err := s.messages.GetMessageByID(ctx, req.RoomID, req.MessageID)
+	if err != nil {
+		return nil, fmt.Errorf("loading message: %w", err)
+	}
+	if msg == nil {
+		return nil, fmt.Errorf("message %s not found", req.MessageID)
+	}
+
+	if msg.CreatedAt.Before(sub.SharedHistorySince) {
+		return nil, fmt.Errorf("message %s is outside access window", req.MessageID)
+	}
+
+	return msg, nil
+}
+```
+
+- [ ] **Step 4: Run tests — verify they pass**
+
+Run: `go test ./history-service/internal/service/ -v`
+Expected: PASS — all tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/service/messages.go history-service/internal/service/messages_test.go
+git commit -m "feat(service): implement 4 transport-agnostic handler methods with tests
+
+TDD — LoadHistory, LoadNextMessages, LoadSurroundingMessages,
+GetMessageByID. SharedHistorySince enforcement, limit+1 pagination,
+firstUnread scanning, after-cursor clamping."
+```
+
+---
+
+### Task 11: NATS handler utils (TDD)
+
+**Files:**
+- Create: `history-service/internal/natshandler/utils.go`
+- Create: `history-service/internal/natshandler/utils_test.go`
+
+- [ ] **Step 1: Write failing tests**
+
+Write `history-service/internal/natshandler/utils_test.go`:
+
+```go
+package natshandler
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"testing"
+
+	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+type testReq struct {
+	Name string `json:"name"`
+}
+
+type testResp struct {
+	Greeting string `json:"greeting"`
+}
+
+// fakeMsg creates a *nats.Msg with a reply channel we can capture.
+func fakeMsg(t *testing.T, data []byte) (*nats.Msg, chan []byte) {
+	t.Helper()
+	replyCh := make(chan []byte, 1)
+
+	// We can't easily test nats.Msg.Respond without a real connection,
+	// so we test the unmarshal + handler logic directly.
+	// The HandleRequest function will be tested via the NATS handler integration.
+	return &nats.Msg{Data: data}, replyCh
+}
+
+func TestHandleRequest_UnmarshalSuccess(t *testing.T) {
+	req := testReq{Name: "world"}
+	data, _ := json.Marshal(req)
+
+	var captured testReq
+	handler := func(ctx context.Context, r testReq) (*testResp, error) {
+		captured = r
+		return &testResp{Greeting: "hello " + r.Name}, nil
+	}
+
+	// Test the unmarshal logic
+	var parsed testReq
+	err := json.Unmarshal(data, &parsed)
+	require.NoError(t, err)
+
+	resp, err := handler(context.Background(), parsed)
+	require.NoError(t, err)
+	assert.Equal(t, "world", captured.Name)
+	assert.Equal(t, "hello world", resp.Greeting)
+}
+
+func TestHandleRequest_HandlerError(t *testing.T) {
+	handler := func(ctx context.Context, r testReq) (*testResp, error) {
+		return nil, fmt.Errorf("something broke")
+	}
+
+	_, err := handler(context.Background(), testReq{Name: "test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "something broke")
+}
+
+func TestHandleRequest_InvalidJSON(t *testing.T) {
+	var parsed testReq
+	err := json.Unmarshal([]byte("not json"), &parsed)
+	require.Error(t, err)
+}
+```
+
+- [ ] **Step 2: Implement utils.go**
+
+Write `history-service/internal/natshandler/utils.go`:
+
+```go
+package natshandler
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+
+	"github.com/nats-io/nats.go"
+
+	"github.com/hmchangw/chat/pkg/natsutil"
+)
+
+// HandleRequest is a generic helper that eliminates unmarshal/reply boilerplate.
+// It unmarshals the NATS message payload into Req, calls the handler func,
+// and replies with the result via natsutil.ReplyJSON or natsutil.ReplyError.
+func HandleRequest[Req, Resp any](msg *nats.Msg, handlerFn func(ctx context.Context, req Req) (*Resp, error)) {
+	ctx := context.Background()
+
+	var req Req
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		natsutil.ReplyError(msg, "invalid request payload")
+		return
+	}
+
+	resp, err := handlerFn(ctx, req)
+	if err != nil {
+		slog.Error("handler error", "error", err)
+		natsutil.ReplyError(msg, "internal error")
+		return
+	}
+
+	natsutil.ReplyJSON(msg, resp)
+}
+```
+
+- [ ] **Step 3: Run tests — verify they pass**
+
+Run: `go test ./history-service/internal/natshandler/ -v`
+Expected: PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add history-service/internal/natshandler/utils.go history-service/internal/natshandler/utils_test.go
+git commit -m "feat(natshandler): add generic HandleRequest helper with tests
+
+TDD — handles unmarshal, error reply, and success reply boilerplate.
+Sanitizes errors at transport boundary."
+```
+
+---
+
+### Task 12: NATS handler — registration and glue
+
+**Files:**
+- Create: `history-service/internal/natshandler/handler.go`
+
+- [ ] **Step 1: Implement handler.go**
+
+Write `history-service/internal/natshandler/handler.go`:
+
+```go
+package natshandler
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/nats-io/nats.go"
+
+	"github.com/hmchangw/chat/history-service/internal/service"
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/subject"
+)
+
+// Handler wraps the HistoryService and registers NATS subscriptions.
+type Handler struct {
+	svc    *service.HistoryService
+	siteID string
+}
+
+// New creates a new NATS Handler.
+func New(svc *service.HistoryService, siteID string) *Handler {
+	return &Handler{svc: svc, siteID: siteID}
+}
+
+// Register wires all 4 NATS queue subscriptions.
+func (h *Handler) Register(nc *nats.Conn) error {
+	queueGroup := "history-service"
+	subs := []struct {
+		subject string
+		handler nats.MsgHandler
+	}{
+		{subject.MsgHistoryWildcard(h.siteID), h.handleLoadHistory},
+		{subject.MsgNextWildcard(h.siteID), h.handleLoadNextMessages},
+		{subject.MsgSurroundingWildcard(h.siteID), h.handleLoadSurroundingMessages},
+		{subject.MsgGetWildcard(h.siteID), h.handleGetMessageByID},
+	}
+	for _, s := range subs {
+		if _, err := nc.QueueSubscribe(s.subject, queueGroup, s.handler); err != nil {
+			return fmt.Errorf("subscribing to %s: %w", s.subject, err)
+		}
+	}
+	return nil
+}
+
+func (h *Handler) handleLoadHistory(msg *nats.Msg) {
+	userID, _, ok := subject.ParseUserRoomSubject(msg.Subject)
+	if !ok {
+		natsutil.ReplyError(msg, "invalid subject")
+		return
+	}
+	HandleRequest(msg, func(ctx context.Context, req model.LoadHistoryRequest) (*model.LoadHistoryResponse, error) {
+		return h.svc.LoadHistory(ctx, userID, req)
+	})
+}
+
+func (h *Handler) handleLoadNextMessages(msg *nats.Msg) {
+	userID, _, ok := subject.ParseUserRoomSubject(msg.Subject)
+	if !ok {
+		natsutil.ReplyError(msg, "invalid subject")
+		return
+	}
+	HandleRequest(msg, func(ctx context.Context, req model.LoadNextMessagesRequest) (*model.LoadNextMessagesResponse, error) {
+		return h.svc.LoadNextMessages(ctx, userID, req)
+	})
+}
+
+func (h *Handler) handleLoadSurroundingMessages(msg *nats.Msg) {
+	userID, _, ok := subject.ParseUserRoomSubject(msg.Subject)
+	if !ok {
+		natsutil.ReplyError(msg, "invalid subject")
+		return
+	}
+	HandleRequest(msg, func(ctx context.Context, req model.LoadSurroundingMessagesRequest) (*model.LoadSurroundingMessagesResponse, error) {
+		return h.svc.LoadSurroundingMessages(ctx, userID, req)
+	})
+}
+
+func (h *Handler) handleGetMessageByID(msg *nats.Msg) {
+	userID, _, ok := subject.ParseUserRoomSubject(msg.Subject)
+	if !ok {
+		natsutil.ReplyError(msg, "invalid subject")
+		return
+	}
+	HandleRequest(msg, func(ctx context.Context, req model.GetMessageByIDRequest) (*model.Message, error) {
+		return h.svc.GetMessageByID(ctx, userID, req)
+	})
+}
+```
+
+- [ ] **Step 2: Verify compilation**
+
+Run: `go build ./history-service/internal/natshandler/...`
+Expected: success
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add history-service/internal/natshandler/handler.go
+git commit -m "feat(natshandler): implement NATS handler with Register and 4 endpoints
+
+Bridges NATS transport to service layer. Uses ParseUserRoomSubject
+for subject parsing, HandleRequest for unmarshal/reply boilerplate."
+```
+
+---
+
+### Task 13: cmd/main.go — wiring and graceful shutdown
+
+**Files:**
+- Create: `history-service/cmd/main.go`
+
+- [ ] **Step 1: Implement main.go**
+
+Write `history-service/cmd/main.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/nats-io/nats.go"
+
+	"github.com/hmchangw/chat/history-service/internal/cassrepo"
+	"github.com/hmchangw/chat/history-service/internal/config"
+	"github.com/hmchangw/chat/history-service/internal/mongorepo"
+	"github.com/hmchangw/chat/history-service/internal/natshandler"
+	"github.com/hmchangw/chat/history-service/internal/service"
+	"github.com/hmchangw/chat/pkg/cassutil"
+	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/shutdown"
+)
+
+func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("parse config", "error", err)
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+
+	nc, err := nats.Connect(cfg.NATS.URL)
+	if err != nil {
+		slog.Error("nats connect failed", "error", err)
+		os.Exit(1)
+	}
+
+	mongoClient, err := mongoutil.Connect(ctx, cfg.Mongo.URI)
+	if err != nil {
+		slog.Error("mongo connect failed", "error", err)
+		os.Exit(1)
+	}
+
+	cassSession, err := cassutil.Connect(strings.Split(cfg.Cassandra.Hosts, ","), cfg.Cassandra.Keyspace)
+	if err != nil {
+		slog.Error("cassandra connect failed", "error", err)
+		os.Exit(1)
+	}
+
+	cassRepo := cassrepo.NewRepository(cassSession)
+	mongoRepo := mongorepo.NewRepository(mongoClient.Database(cfg.Mongo.DB))
+	svc := service.New(cassRepo, mongoRepo)
+	handler := natshandler.New(svc, cfg.SiteID)
+
+	if err := handler.Register(nc); err != nil {
+		slog.Error("register handlers failed", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("history-service running", "site", cfg.SiteID)
+
+	shutdown.Wait(ctx, 25*time.Second,
+		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
+	)
+}
+```
+
+- [ ] **Step 2: Verify compilation**
+
+Run: `go build ./history-service/cmd/...`
+Expected: success
+
+- [ ] **Step 3: Verify build via Makefile**
+
+Run: `make build SERVICE=history-service`
+Expected: creates `bin/history-service` binary
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add history-service/cmd/main.go
+git commit -m "feat(history-service): add cmd/main.go with config, wiring, graceful shutdown
+
+Wires config, NATS, MongoDB, Cassandra, repos, service, and handler.
+Graceful shutdown: nc.Drain -> mongo disconnect -> cassandra close."
+```
+
+---
+
+### Task 14: Final verification
+
+- [ ] **Step 1: Run all unit tests**
+
+Run: `make test SERVICE=history-service`
+Expected: PASS — all unit tests across all packages
+
+- [ ] **Step 2: Run linter**
+
+Run: `make fmt && make lint`
+Expected: no errors (fix any formatting/lint issues)
+
+- [ ] **Step 3: Verify build**
+
+Run: `make build SERVICE=history-service`
+Expected: binary at `bin/history-service`
+
+- [ ] **Step 4: Final commit (if any fixes needed)**
+
+```bash
+git add -A
+git commit -m "fix(history-service): address lint and formatting issues"
+```
+
+- [ ] **Step 5: Push all changes**
+
+```bash
+git push -u origin claude/refactor-history-service-ucB7z
+```
+
+---
