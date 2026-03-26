@@ -593,3 +593,485 @@ Error wrapping includes collection name. FindMany returns []T{} not nil."
 ```
 
 ---
+
+### Task 7: Service interfaces + mock generation
+
+**Files:**
+- Create: `history-service/internal/service/service.go`
+- Create: `history-service/internal/service/mocks/mock_store.go` (generated)
+
+- [ ] **Step 1: Create service.go with interfaces and struct**
+
+Write `history-service/internal/service/service.go`:
+
+```go
+package service
+
+import (
+	"context"
+	"time"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+//go:generate mockgen -destination=mocks/mock_store.go -package=mocks . MessageRepository,SubscriptionRepository
+
+// MessageRepository defines Cassandra-backed message operations.
+type MessageRepository interface {
+	GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error)
+	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, limit int) ([]model.Message, error)
+	GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) (before []model.Message, after []model.Message, err error)
+	GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error)
+}
+
+// SubscriptionRepository defines MongoDB-backed subscription lookups.
+type SubscriptionRepository interface {
+	GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error)
+}
+
+// HistoryService handles message history queries. Transport-agnostic.
+type HistoryService struct {
+	messages      MessageRepository
+	subscriptions SubscriptionRepository
+}
+
+// New creates a HistoryService with the given repositories.
+func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
+	return &HistoryService{messages: msgs, subscriptions: subs}
+}
+```
+
+- [ ] **Step 2: Verify compilation**
+
+Run: `go build ./history-service/internal/service/...`
+Expected: success
+
+- [ ] **Step 3: Generate mocks**
+
+Run: `make generate SERVICE=history-service`
+Expected: creates `history-service/internal/service/mocks/mock_store.go`
+
+- [ ] **Step 4: Verify mocks compile**
+
+Run: `go build ./history-service/internal/service/mocks/...`
+Expected: success
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/service/service.go history-service/internal/service/mocks/
+git commit -m "feat(service): add repository interfaces, HistoryService struct, generated mocks"
+```
+
+---
+
+### Task 8: Cassandra repository + integration tests (TDD)
+
+**Files:**
+- Create: `history-service/internal/cassrepo/repository.go`
+- Create: `history-service/internal/cassrepo/integration_test.go`
+
+- [ ] **Step 1: Write integration tests**
+
+Write `history-service/internal/cassrepo/integration_test.go`:
+
+```go
+//go:build integration
+
+package cassrepo
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/gocql/gocql"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go/modules/cassandra"
+)
+
+func setupCassandra(t *testing.T) *gocql.Session {
+	t.Helper()
+	ctx := context.Background()
+	container, err := cassandra.Run(ctx, "cassandra:5")
+	require.NoError(t, err)
+	t.Cleanup(func() { container.Terminate(ctx) })
+
+	host, err := container.ConnectionHost(ctx)
+	require.NoError(t, err)
+
+	cluster := gocql.NewCluster(host)
+	cluster.Consistency = gocql.One
+	session, err := cluster.CreateSession()
+	require.NoError(t, err)
+	t.Cleanup(func() { session.Close() })
+
+	require.NoError(t, session.Query(`CREATE KEYSPACE IF NOT EXISTS chat_test WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`).Exec())
+	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.messages (room_id text, created_at timestamp, id text, user_id text, content text, PRIMARY KEY (room_id, created_at)) WITH CLUSTERING ORDER BY (created_at DESC)`).Exec())
+
+	cluster.Keyspace = "chat_test"
+	ksSession, err := cluster.CreateSession()
+	require.NoError(t, err)
+	t.Cleanup(func() { ksSession.Close() })
+	return ksSession
+}
+
+func seedMessages(t *testing.T, session *gocql.Session, roomID string, base time.Time, count int) {
+	t.Helper()
+	for i := 0; i < count; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		err := session.Query(`INSERT INTO messages (room_id, created_at, id, user_id, content) VALUES (?, ?, ?, ?, ?)`,
+			roomID, ts, fmt.Sprintf("m%d", i), "u1", fmt.Sprintf("msg-%d", i)).Exec()
+		require.NoError(t, err)
+	}
+}
+
+func TestRepository_GetMessagesBefore(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedMessages(t, session, "r1", base, 5)
+
+	msgs, err := repo.GetMessagesBefore(ctx, "r1", base, base.Add(10*time.Minute), 3)
+	require.NoError(t, err)
+	assert.Len(t, msgs, 3)
+	// Newest first (DESC)
+	assert.True(t, msgs[0].CreatedAt.After(msgs[1].CreatedAt))
+}
+
+func TestRepository_GetMessagesAfter(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedMessages(t, session, "r1", base, 5)
+
+	msgs, err := repo.GetMessagesAfter(ctx, "r1", base.Add(2*time.Minute), 10)
+	require.NoError(t, err)
+	assert.Len(t, msgs, 2) // m3, m4
+	// Oldest first (ASC)
+	assert.True(t, msgs[0].CreatedAt.Before(msgs[1].CreatedAt))
+}
+
+func TestRepository_GetMessageByID(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedMessages(t, session, "r1", base, 3)
+
+	msg, err := repo.GetMessageByID(ctx, "r1", "m1")
+	require.NoError(t, err)
+	require.NotNil(t, msg)
+	assert.Equal(t, "m1", msg.ID)
+	assert.Equal(t, "r1", msg.RoomID)
+}
+
+func TestRepository_GetMessageByID_NotFound(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	msg, err := repo.GetMessageByID(ctx, "r1", "nonexistent")
+	require.NoError(t, err)
+	assert.Nil(t, msg)
+}
+
+func TestRepository_GetSurroundingMessages(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedMessages(t, session, "r1", base, 10) // m0..m9
+
+	before, after, err := repo.GetSurroundingMessages(ctx, "r1", "m5", 6)
+	require.NoError(t, err)
+	// Should have messages before and after m5's timestamp
+	assert.NotEmpty(t, before)
+	assert.NotEmpty(t, after)
+}
+```
+
+- [ ] **Step 2: Implement repository.go**
+
+Write `history-service/internal/cassrepo/repository.go`:
+
+```go
+package cassrepo
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/gocql/gocql"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+// Repository implements service.MessageRepository using Cassandra.
+type Repository struct {
+	session *gocql.Session
+}
+
+// NewRepository creates a new Cassandra repository.
+func NewRepository(session *gocql.Session) *Repository {
+	return &Repository{session: session}
+}
+
+func (r *Repository) scanMessage(iter *gocql.Iter) (model.Message, error) {
+	var msg model.Message
+	if !iter.Scan(&msg.ID, &msg.RoomID, &msg.UserID, &msg.Content, &msg.CreatedAt) {
+		return msg, fmt.Errorf("no more rows")
+	}
+	return msg, nil
+}
+
+// GetMessagesBefore returns messages before `before` and after `since`, newest-first.
+func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error) {
+	stmt := `SELECT id, room_id, user_id, content, created_at FROM messages
+		WHERE room_id = ? AND created_at > ? AND created_at < ?
+		ORDER BY created_at DESC LIMIT ?`
+
+	iter := r.session.Query(stmt, roomID, since, before, limit).WithContext(ctx).Iter()
+
+	var messages []model.Message
+	var msg model.Message
+	for iter.Scan(&msg.ID, &msg.RoomID, &msg.UserID, &msg.Content, &msg.CreatedAt) {
+		messages = append(messages, msg)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("querying messages before: %w", err)
+	}
+	return messages, nil
+}
+
+// GetMessagesAfter returns messages after `after`, oldest-first.
+func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, limit int) ([]model.Message, error) {
+	stmt := `SELECT id, room_id, user_id, content, created_at FROM messages
+		WHERE room_id = ? AND created_at > ?
+		ORDER BY created_at ASC LIMIT ?`
+
+	iter := r.session.Query(stmt, roomID, after, limit).WithContext(ctx).Iter()
+
+	var messages []model.Message
+	var msg model.Message
+	for iter.Scan(&msg.ID, &msg.RoomID, &msg.UserID, &msg.Content, &msg.CreatedAt) {
+		messages = append(messages, msg)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("querying messages after: %w", err)
+	}
+	return messages, nil
+}
+
+// GetMessageByID returns a single message by ID within a room.
+// Returns (nil, nil) if the message is not found.
+func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error) {
+	stmt := `SELECT id, room_id, user_id, content, created_at FROM messages
+		WHERE room_id = ? ALLOW FILTERING`
+
+	iter := r.session.Query(stmt, roomID).WithContext(ctx).Iter()
+
+	var msg model.Message
+	for iter.Scan(&msg.ID, &msg.RoomID, &msg.UserID, &msg.Content, &msg.CreatedAt) {
+		if msg.ID == messageID {
+			iter.Close()
+			return &msg, nil
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("querying message by id: %w", err)
+	}
+	return nil, nil
+}
+
+// GetSurroundingMessages returns messages before and after a given message.
+// The central message is included in the `after` slice.
+func (r *Repository) GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) ([]model.Message, []model.Message, error) {
+	msg, err := r.GetMessageByID(ctx, roomID, messageID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("finding central message: %w", err)
+	}
+	if msg == nil {
+		return nil, nil, fmt.Errorf("message %s not found in room %s", messageID, roomID)
+	}
+
+	half := limit / 2
+
+	// Messages before the central message (newest first, then reverse for chronological)
+	beforeMsgs, err := r.GetMessagesBefore(ctx, roomID, time.Time{}, msg.CreatedAt, half)
+	if err != nil {
+		return nil, nil, fmt.Errorf("querying surrounding before: %w", err)
+	}
+
+	// Messages after (and including) the central message
+	afterStmt := `SELECT id, room_id, user_id, content, created_at FROM messages
+		WHERE room_id = ? AND created_at >= ?
+		ORDER BY created_at ASC LIMIT ?`
+
+	iter := r.session.Query(afterStmt, roomID, msg.CreatedAt, half+1).WithContext(ctx).Iter()
+
+	var afterMsgs []model.Message
+	var m model.Message
+	for iter.Scan(&m.ID, &m.RoomID, &m.UserID, &m.Content, &m.CreatedAt) {
+		afterMsgs = append(afterMsgs, m)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, nil, fmt.Errorf("querying surrounding after: %w", err)
+	}
+
+	return beforeMsgs, afterMsgs, nil
+}
+```
+
+- [ ] **Step 3: Verify compilation**
+
+Run: `go build ./history-service/internal/cassrepo/...`
+Expected: success
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add history-service/internal/cassrepo/repository.go history-service/internal/cassrepo/integration_test.go
+git commit -m "feat(cassrepo): implement Cassandra MessageRepository with integration tests
+
+TDD — GetMessagesBefore, GetMessagesAfter, GetMessageByID,
+GetSurroundingMessages. Integration tests with testcontainers."
+```
+
+---
+
+### Task 9: MongoDB repository + integration tests (TDD)
+
+**Files:**
+- Create: `history-service/internal/mongorepo/repository.go`
+- Create: `history-service/internal/mongorepo/integration_test.go`
+
+- [ ] **Step 1: Write integration tests**
+
+Write `history-service/internal/mongorepo/integration_test.go`:
+
+```go
+//go:build integration
+
+package mongorepo
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go/modules/mongodb"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+func setupMongo(t *testing.T) *mongo.Database {
+	t.Helper()
+	ctx := context.Background()
+	container, err := mongodb.Run(ctx, "mongo:8")
+	require.NoError(t, err)
+	t.Cleanup(func() { container.Terminate(ctx) })
+
+	uri, err := container.ConnectionString(ctx)
+	require.NoError(t, err)
+
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	require.NoError(t, err)
+	t.Cleanup(func() { client.Disconnect(ctx) })
+	return client.Database("chat_test")
+}
+
+func TestRepository_GetSubscription(t *testing.T) {
+	db := setupMongo(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	joinTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+		ID: "s1", UserID: "u1", RoomID: "r1", SiteID: "site-local",
+		Role: model.RoleMember, SharedHistorySince: joinTime, JoinedAt: joinTime,
+	})
+	require.NoError(t, err)
+
+	sub, err := repo.GetSubscription(ctx, "u1", "r1")
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	assert.Equal(t, "u1", sub.UserID)
+	assert.Equal(t, "r1", sub.RoomID)
+	assert.Equal(t, joinTime.UTC(), sub.SharedHistorySince.UTC())
+}
+
+func TestRepository_GetSubscription_NotFound(t *testing.T) {
+	db := setupMongo(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	sub, err := repo.GetSubscription(ctx, "nonexistent", "r1")
+	require.NoError(t, err)
+	assert.Nil(t, sub)
+}
+```
+
+- [ ] **Step 2: Implement repository.go**
+
+Write `history-service/internal/mongorepo/repository.go`:
+
+```go
+package mongorepo
+
+import (
+	"context"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+// Repository implements service.SubscriptionRepository using MongoDB.
+type Repository struct {
+	subscriptions *Collection[model.Subscription]
+}
+
+// NewRepository creates a new MongoDB repository.
+func NewRepository(db *mongo.Database) *Repository {
+	return &Repository{
+		subscriptions: NewCollection[model.Subscription](db.Collection("subscriptions")),
+	}
+}
+
+// GetSubscription returns the subscription for a user in a room.
+// Returns (nil, nil) when the user is not subscribed.
+func (r *Repository) GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error) {
+	return r.subscriptions.FindOne(ctx, bson.D{
+		{Key: "userId", Value: userID},
+		{Key: "roomId", Value: roomID},
+	})
+}
+```
+
+- [ ] **Step 3: Verify compilation**
+
+Run: `go build ./history-service/internal/mongorepo/...`
+Expected: success
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add history-service/internal/mongorepo/repository.go history-service/internal/mongorepo/integration_test.go
+git commit -m "feat(mongorepo): implement MongoDB SubscriptionRepository with integration tests
+
+TDD — GetSubscription using Collection[T]. Returns (nil, nil) on not-found.
+Integration tests with testcontainers."
+```
+
+---
