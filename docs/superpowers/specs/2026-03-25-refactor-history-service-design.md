@@ -139,18 +139,37 @@ func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
 
 Four methods on `*HistoryService`. Each accepts a context + userID + parsed request struct, returns a response struct + error. No NATS dependency — pure business logic.
 
-1. **`LoadHistory(ctx, userID, req) (*HistoryResponse, error)`** — Messages before a cursor timestamp, paginated backwards. Validates user subscription, checks `SharedHistorySince`. Request params: `roomID`, `before` (timestamp cursor), `limit` (default 20), `lastSeen` (last seen timestamp). Returns: `messages`, `firstUnread` (first message where `createdAt > lastSeen` within the loaded batch, nil if none), `hasMore` (cursor-based via limit+1 trick).
+**`SharedHistorySince` enforcement:** Every endpoint must respect the subscription's `SharedHistorySince` timestamp — users must never see messages from before their access window. This is enforced at the **service layer** (not the repo). The service fetches the subscription from MongoDB, extracts `SharedHistorySince`, and passes it as the `since` lower bound to Cassandra queries. For single-message lookups, the service checks `message.CreatedAt >= sub.SharedHistorySince` after fetching. No caching of subscriptions currently — every request hits MongoDB. (Caching is a future optimization.)
 
-2. **`LoadNextMessages(ctx, userID, req) (*NextMessagesResponse, error)`** — Messages after a cursor timestamp, paginated forwards. Same subscription validation. Request params: `roomID`, `after` (timestamp cursor, zero for latest), `limit` (default 20). Returns: `messages` array.
+1. **`LoadHistory(ctx, userID, req) (*LoadHistoryResponse, error)`** — Messages before a cursor timestamp, paginated backwards.
+   - Fetches subscription → extracts `SharedHistorySince` as `since` lower bound
+   - Calls `GetMessagesBefore(ctx, roomID, since, before, limit+1)`
+   - Determines `hasMore` from limit+1 trick
+   - Scans loaded batch for `firstUnread`: first message where `createdAt > lastSeen`
+   - Request params: `roomID`, `before` (timestamp cursor), `limit` (default 20), `lastSeen` (last seen timestamp)
+   - Returns: `messages`, `firstUnread` (nil if none in batch), `hasMore`
 
-3. **`LoadSurroundingMessages(ctx, userID, req) (*SurroundingMessagesResponse, error)`** — Given a message ID, returns messages around it. The Cassandra repo handles the ID→timestamp lookup internally. Request params: `messageID`, `limit` (total including central message). Returns: `before` and `after` message arrays (central message included in `after`). Service validates subscription using the roomID from the fetched message.
+2. **`LoadNextMessages(ctx, userID, req) (*LoadNextMessagesResponse, error)`** — Messages after a cursor timestamp, paginated forwards.
+   - Fetches subscription → extracts `SharedHistorySince`
+   - If `after` is before `SharedHistorySince`, clamps it to `SharedHistorySince` (prevents requesting messages outside access window)
+   - Calls `GetMessagesAfter(ctx, roomID, after, limit)`
+   - Request params: `roomID`, `after` (timestamp cursor, empty for latest), `limit` (default 20)
+   - Returns: `messages` array
 
-4. **`GetMessageByID(ctx, userID, req) (*Message, error)`** — Single message lookup by ID. Validates subscription access using roomID from the fetched message. Request params: `messageID`.
+3. **`LoadSurroundingMessages(ctx, userID, req) (*LoadSurroundingMessagesResponse, error)`** — Messages around a central message.
+   - Calls repo `GetSurroundingMessages(ctx, messageID, limit)` which internally: fetches the message by ID → gets `roomID` + `createdAt` → queries before/after
+   - Service then fetches subscription using `userID` + the `roomID` from the message
+   - Validates `centralMessage.CreatedAt >= sub.SharedHistorySince` — denies access if the central message is outside the access window
+   - Filters out any returned messages where `createdAt < SharedHistorySince` (edge case: surrounding query may return messages from before the user's access window)
+   - Request params: `messageID`, `limit` (total including central message)
+   - Returns: `before` and `after` message arrays (central message included in `after`)
 
-All handlers follow the pattern:
-- Validate subscription access via `SubscriptionRepository`
-- Query messages via `MessageRepository`
-- Return typed response or wrapped error
+4. **`GetMessageByID(ctx, userID, req) (*Message, error)`** — Single message lookup.
+   - Calls repo `GetMessageByID(ctx, messageID)` → gets the message with its `roomID` and `createdAt`
+   - Fetches subscription using `userID` + `roomID` from the message
+   - Validates `message.CreatedAt >= sub.SharedHistorySince` — returns error if outside access window
+   - Request params: `messageID`
+   - Returns: single `*Message`
 
 #### `mocks/mock_store.go` — Generated
 
