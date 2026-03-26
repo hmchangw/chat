@@ -319,17 +319,72 @@ func ScanPage[T any](q *Query, scan Scanner[T]) (*Page[T], error)
 
 `ScanPage` iterates the query result, calls the scanner for each row, captures the page state from the iterator, and sets `HasMore` based on whether a page state exists.
 
-### 6. MongoDB Helpers (`internal/mongorepo/utils.go`)
+### 6. MongoDB Collection Abstraction (`internal/mongorepo/utils.go`)
 
-Thin generic wrappers that eliminate decode boilerplate:
+A generic `Collection[T]` type that wraps `*mongo.Collection` with type-safe, ergonomic methods. Lives in `internal/mongorepo` for now — can be promoted to `pkg/mongoutil` after review.
 
 ```go
-// FindOne[T] finds a single document matching the filter and decodes into T.
-func FindOne[T any](ctx context.Context, col *mongo.Collection, filter bson.D) (*T, error)
+// Collection[T] is a type-safe wrapper around *mongo.Collection.
+// It handles decoding, ErrNoDocuments normalization, and consistent error wrapping.
+type Collection[T any] struct {
+    col  *mongo.Collection
+    name string // collection name, used for error context
+}
 
-// FindMany[T] finds all documents matching the filter and decodes into []T.
-func FindMany[T any](ctx context.Context, col *mongo.Collection, filter bson.D, opts ...options.Lister[options.FindOptions]) ([]T, error)
+// NewCollection creates a typed collection wrapper.
+func NewCollection[T any](col *mongo.Collection) *Collection[T] {
+    return &Collection[T]{col: col, name: col.Name()}
+}
+
+// FindOne returns the first document matching the filter decoded into *T.
+// Returns (nil, nil) when no document matches — not an error.
+// Only returns a non-nil error for actual failures (network, decode, etc.).
+// This eliminates the need for callers to check mongo.ErrNoDocuments.
+func (c *Collection[T]) FindOne(ctx context.Context, filter bson.D) (*T, error) {
+    var result T
+    err := c.col.FindOne(ctx, filter).Decode(&result)
+    if errors.Is(err, mongo.ErrNoDocuments) {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, fmt.Errorf("finding %s: %w", c.name, err)
+    }
+    return &result, nil
+}
+
+// FindByID is a shortcut for finding a document by its _id field.
+func (c *Collection[T]) FindByID(ctx context.Context, id string) (*T, error) {
+    return c.FindOne(ctx, bson.D{{Key: "_id", Value: id}})
+}
+
+// FindMany returns all documents matching the filter decoded into []T.
+// Returns an empty slice (not nil) when no documents match.
+func (c *Collection[T]) FindMany(ctx context.Context, filter bson.D, opts ...options.Lister[options.FindOptions]) ([]T, error) {
+    cursor, err := c.col.Find(ctx, filter, opts...)
+    if err != nil {
+        return nil, fmt.Errorf("querying %s: %w", c.name, err)
+    }
+    var results []T
+    if err := cursor.All(ctx, &results); err != nil {
+        return nil, fmt.Errorf("decoding %s results: %w", c.name, err)
+    }
+    if results == nil {
+        results = []T{}
+    }
+    return results, nil
+}
+
+// Raw returns the underlying *mongo.Collection for escape-hatch scenarios
+// (aggregation pipelines, bulk writes, etc.) where the typed wrapper is insufficient.
+func (c *Collection[T]) Raw() *mongo.Collection { return c.col }
 ```
+
+**Key design decisions:**
+- **`FindOne` returns `(nil, nil)` on not-found** — callers check `if result == nil` instead of `errors.Is(err, mongo.ErrNoDocuments)` everywhere. This is the biggest ergonomic win.
+- **Error wrapping includes collection name** — `"finding subscriptions: connection refused"` instead of a generic mongo error. Follows CLAUDE.md's "wrap with context" rule.
+- **`FindMany` returns `[]T{}` not `nil`** — consistent for JSON marshaling (empty array, not null).
+- **`Raw()` escape hatch** — for when you need raw mongo driver access without fighting the abstraction.
+- **No write methods yet** — history-service is read-only. `InsertOne`, `UpdateOne`, etc. can be added when another service adopts the pattern. YAGNI.
 
 ### 7. Repository Implementations
 
@@ -355,16 +410,26 @@ All methods use `NewQuery` + `ScanPage` from the utils toolkit.
 
 ```go
 type Repository struct {
-    subscriptions *mongo.Collection
+    subscriptions *Collection[model.Subscription]
 }
 
-func NewRepository(db *mongo.Database) *Repository
+func NewRepository(db *mongo.Database) *Repository {
+    return &Repository{
+        subscriptions: NewCollection[model.Subscription](db.Collection("subscriptions")),
+    }
+}
 
-// Implements service.SubscriptionRepository
-func (r *Repository) GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error)
+// Implements service.SubscriptionRepository.
+// Returns (nil, nil) when the user is not subscribed to the room.
+func (r *Repository) GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error) {
+    return r.subscriptions.FindOne(ctx, bson.D{
+        {Key: "userId", Value: userID},
+        {Key: "roomId", Value: roomID},
+    })
+}
 ```
 
-Uses `FindOne[model.Subscription]` from utils.
+The repository is a thin delegation layer — `Collection[T]` handles all the decoding and error wrapping. Adding new query methods is one line each.
 
 ### 8. `cmd/main.go`
 
