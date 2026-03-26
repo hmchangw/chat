@@ -16,6 +16,9 @@ import (
 )
 
 func TestEncode(t *testing.T) {
+	// Generate a valid key pair once at the top of the test for use in the table.
+	// This is shared read-only setup for test cases — each subtest reads only the pubKey bytes,
+	// it does not mutate state.
 	privKey, err := ecdh.P256().GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	validPubKey := privKey.PublicKey().Bytes()
@@ -72,11 +75,6 @@ func TestEncode(t *testing.T) {
 }
 
 func TestEncode_RoundTrip(t *testing.T) {
-	// Retain the private key — it is used to decrypt in the steps below.
-	privKey, err := ecdh.P256().GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	pubKeyBytes := privKey.PublicKey().Bytes()
-
 	cases := []struct {
 		name    string
 		content string
@@ -87,6 +85,12 @@ func TestEncode_RoundTrip(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Generate a fresh key pair for each subtest to ensure independence.
+			// Each subtest must be fully independent — no shared mutable state.
+			privKey, err := ecdh.P256().GenerateKey(rand.Reader)
+			require.NoError(t, err)
+			pubKeyBytes := privKey.PublicKey().Bytes()
+
 			msg, err := Encode(tc.content, pubKeyBytes)
 			require.NoError(t, err)
 
@@ -114,6 +118,9 @@ func TestEncode_RoundTrip(t *testing.T) {
 			plaintext, err := gcm.Open(nil, msg.Nonce, msg.Ciphertext, nil)
 			require.NoError(t, err)
 
+			// Note: string(nil) == "" in Go, so this assertion correctly validates that
+			// plaintext matches the expected content. When tc.content == "", plaintext may be nil
+			// but the comparison still holds due to Go's string conversion semantics.
 			assert.Equal(t, tc.content, string(plaintext))
 		})
 	}
