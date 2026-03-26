@@ -26,6 +26,12 @@ type EncryptedMessage struct {
 // Encode encrypts content using the room's P-256 public key.
 // roomPublicKey is the uncompressed point (65 bytes) as stored in MongoDB.
 func Encode(content string, roomPublicKey []byte) (*EncryptedMessage, error) {
+	return encode(content, roomPublicKey, rand.Reader)
+}
+
+// encode is the internal implementation that accepts an io.Reader for randomness,
+// enabling error path testing without changing the public API.
+func encode(content string, roomPublicKey []byte, randReader io.Reader) (*EncryptedMessage, error) {
 	// Step 1: parse and validate the room public key
 	roomPubKey, err := ecdh.P256().NewPublicKey(roomPublicKey)
 	if err != nil {
@@ -33,7 +39,7 @@ func Encode(content string, roomPublicKey []byte) (*EncryptedMessage, error) {
 	}
 
 	// Step 2: generate a fresh ephemeral P-256 key pair for this message
-	ephemeralPrivKey, err := ecdh.P256().GenerateKey(rand.Reader)
+	ephemeralPrivKey, err := ecdh.P256().GenerateKey(randReader)
 	if err != nil {
 		return nil, fmt.Errorf("generating ephemeral key: %w", err)
 	}
@@ -68,7 +74,7 @@ func Encode(content string, roomPublicKey []byte) (*EncryptedMessage, error) {
 
 	// Step 6: generate a random 12-byte nonce
 	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+	if _, err := io.ReadFull(randReader, nonce); err != nil {
 		return nil, fmt.Errorf("generating nonce: %w", err)
 	}
 
