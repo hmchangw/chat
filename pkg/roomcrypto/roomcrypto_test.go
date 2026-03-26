@@ -163,14 +163,13 @@ func TestEncode_RandReaderErrors(t *testing.T) {
 	})
 
 	t.Run("nonce generation fails", func(t *testing.T) {
-		// P-256 GenerateKey reads 32+ bytes (may retry via rejection sampling).
-		// We loop with increasing byte limits until ephemeral key generation succeeds
-		// but the nonce generation hits the failReader.
+		// P-256 GenerateKey reads ~50 bytes. We loop with increasing byte limits
+		// until ephemeral key generation succeeds but the nonce generation hits the failReader.
 		// - limit too small: key gen fails with "generating ephemeral key" → increase limit
 		// - limit just right: key gen succeeds, nonce gen fails → "generating nonce"
 		// - limit too large: both succeed → increase limit (encErr == nil, result != nil)
 		var encErr error
-		for limit := int64(32); limit <= 4096; limit += 32 {
+		for limit := int64(32); limit <= 128; limit++ {
 			r := io.MultiReader(io.LimitReader(rand.Reader, limit), &failReader{})
 			_, encErr = encode("hello", pubKeyBytes, r)
 			if encErr != nil && strings.Contains(encErr.Error(), "generating nonce") {
@@ -178,7 +177,7 @@ func TestEncode_RandReaderErrors(t *testing.T) {
 			}
 		}
 		require.Error(t, encErr)
-		assert.Contains(t, encErr.Error(), "generating nonce")
+		require.Contains(t, encErr.Error(), "generating nonce", "loop exhausted without reaching nonce generation")
 	})
 }
 
@@ -188,4 +187,3 @@ type failReader struct{}
 func (f *failReader) Read(_ []byte) (int, error) {
 	return 0, errors.New("injected read failure")
 }
-
