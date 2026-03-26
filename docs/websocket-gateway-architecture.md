@@ -33,6 +33,115 @@ all communication to/from NATS. Backend services are unchanged.
 
 ---
 
+## Why Replace Auth Callout?
+
+### The Token Expiry Problem
+
+In the auth callout architecture, every client connects to NATS directly and receives
+a scoped JWT (2h expiry). When the JWT expires, **NATS drops the connection**. The client
+must reconnect with a fresh SSO token. With 10,000 users, that's 10,000 independent NATS
+connections, each with its own expiry clock — creating constant reconnection churn.
+
+Cross-site federation has a similar surface: if NATS-to-NATS server credentials expire
+or are misconfigured, the JetStream source link breaks and federation stops.
+
+### How the Gateway Solves This
+
+The gateway connects to NATS **once at startup** using a service account — a long-lived
+credential with no user-scoped expiry. This single connection is shared across all users
+for the lifetime of the gateway process.
+
+```
+Old:  10,000 users = 10,000 NATS connections, each with a 2h JWT
+      JWT expires → NATS drops connection → client must re-auth
+
+New:  10,000 users = 10,000 WebSocket connections + 1 NATS connection (service account)
+      Service account never expires → no reconnection churn
+      User SSO expiry handled by gateway (force-disconnect WS or re-verify silently)
+```
+
+User token expiry is now the gateway's concern, not NATS infrastructure. The gateway
+can choose how to handle it: force-disconnect the WebSocket, prompt re-auth over the
+existing connection, or silently refresh if using OAuth2 refresh tokens.
+
+### Side-by-Side Comparison
+
+```mermaid
+graph LR
+    subgraph "Old: Auth Callout"
+        direction TB
+        C_OLD["Client (chat app)"] -->|"CONNECT {token: sso-xyz}<br/>(NATS protocol)"| NATS_OLD["NATS Server"]
+        NATS_OLD -->|"auth_callout"| AS_OLD["auth-service"]
+        AS_OLD -->|"Signed JWT (2h)"| NATS_OLD
+        NATS_OLD -.->|"JWT enforces permissions<br/>on this connection"| C_OLD
+
+        note_old["Token: sent once at connect<br/>Identity: TCP connection + JWT<br/>Enforced by: NATS server<br/>Expiry: NATS drops connection"]
+    end
+
+    subgraph "New: WS Gateway"
+        direction TB
+        C_NEW["Client (chat app)"] -->|"WS upgrade + SSO token<br/>(WebSocket)"| GW["WS Gateway"]
+        GW -->|"Service account<br/>(long-lived, at startup)"| NATS_NEW["NATS Server"]
+
+        note_new["Token: verified once at WS connect<br/>Identity: gateway injects userID<br/>Enforced by: gateway code<br/>Expiry: gateway's choice"]
+    end
+```
+
+| Concern | Old (Auth Callout) | New (WS Gateway) |
+|---------|-------------------|-------------------|
+| Client protocol | NATS native (needs NATS client library) | WebSocket + JSON (works in any browser) |
+| Auth token sent | Once, in NATS CONNECT handshake | Once, in WebSocket upgrade request |
+| Identity enforced by | NATS server (JWT Pub.Allow/Sub.Allow) | Gateway (controls NATS subject, injects userID) |
+| Token expiry | NATS drops TCP connection | Gateway decides: disconnect WS, re-verify, or refresh |
+| NATS connections | 1 per user (each with scoped JWT) | 1 per gateway instance (service account, shared) |
+| Cross-site auth | Server-level credentials (NKeys/creds) | Same — unchanged |
+| Security boundary | Infrastructure (NATS enforces) | Application (gateway code enforces) |
+| If auth component has a bug | NATS still enforces JWT permissions | Gateway could publish to any subject — single point of trust |
+
+### NATS Connection Model
+
+```mermaid
+sequenceDiagram
+    participant GW as WS Gateway
+    participant NATS as NATS Server
+
+    Note over GW: Process starts
+
+    GW->>NATS: nats.Connect(url, serviceAccountCreds)<br/>Single connection, established at startup
+
+    Note over GW,NATS: Connection lives for the entire<br/>lifetime of the gateway process.<br/>No user tokens involved.
+
+    GW->>GW: Start listening on :8080 for WebSocket connections
+
+    Note over GW: ... time passes ...
+
+    Note over GW: Alice connects via WebSocket
+    GW->>NATS: nc.Subscribe("chat.user.alice.>")
+    GW->>NATS: nc.Subscribe("chat.room.R1.stream.msg")
+
+    Note over GW: ... time passes ...
+
+    Note over GW: Bob connects via WebSocket
+    GW->>NATS: nc.Subscribe("chat.user.bob.>")
+    GW->>NATS: nc.Subscribe("chat.room.R1.stream.msg")
+    GW->>NATS: nc.Subscribe("chat.room.R2.stream.msg")
+
+    Note over GW: Alice sends a message
+    GW->>NATS: nc.Publish("chat.user.alice.room.R1.site-a.msg.send", ...)
+
+    Note over GW,NATS: All operations use the SAME NATS connection.<br/>Subscriptions are added/removed as users<br/>connect/disconnect via WebSocket.
+
+    Note over GW: Alice disconnects
+    GW->>NATS: sub.Unsubscribe() (alice's subscriptions)
+    Note over GW: NATS connection stays open
+```
+
+This is the same pattern every other service uses. For example, `message-worker/main.go:43`
+calls `nats.Connect(cfg.NatsURL)` once at startup and uses that connection for the entire
+process lifetime.
+
+---
+
 ## Connection Lifecycle
 
 ```mermaid
