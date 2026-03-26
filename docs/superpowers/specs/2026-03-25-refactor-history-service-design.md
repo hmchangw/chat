@@ -111,11 +111,11 @@ type MessageRepository interface {
     // GetMessagesAfter returns messages in a room after `after`, ordered oldest-first.
     // Used by LoadNextMessages. If `after` is zero, returns the latest messages.
     GetMessagesAfter(ctx context.Context, roomID string, after time.Time, limit int) ([]model.Message, error)
-    // GetSurroundingMessages looks up a message by ID, then returns messages before and after it.
-    // The central message is included in the `after` slice. Limit is total messages (split evenly).
-    GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) (before []model.Message, after []model.Message, err error)
-    // GetMessageByID returns a single message by its ID within a room.
-    GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error)
+    // GetSurroundingMessages looks up a message by ID, derives roomID and createdAt,
+    // then returns messages before and after it. Central message included in `after` slice.
+    GetSurroundingMessages(ctx context.Context, messageID string, limit int) (before []model.Message, after []model.Message, err error)
+    // GetMessageByID returns a single message by its ID.
+    GetMessageByID(ctx context.Context, messageID string) (*model.Message, error)
 }
 
 // SubscriptionRepository defines MongoDB-backed subscription lookups.
@@ -143,9 +143,9 @@ Four methods on `*HistoryService`. Each accepts a context + userID + parsed requ
 
 2. **`LoadNextMessages(ctx, userID, req) (*NextMessagesResponse, error)`** — Messages after a cursor timestamp, paginated forwards. Same subscription validation. Request params: `roomID`, `after` (timestamp cursor, zero for latest), `limit` (default 20). Returns: `messages` array.
 
-3. **`LoadSurroundingMessages(ctx, userID, req) (*SurroundingMessagesResponse, error)`** — Given a message ID, returns messages around it. The Cassandra repo handles the ID→timestamp lookup internally. Request params: `roomID`, `messageID`, `limit` (total including central message). Returns: `before` and `after` message arrays (central message included in `after`).
+3. **`LoadSurroundingMessages(ctx, userID, req) (*SurroundingMessagesResponse, error)`** — Given a message ID, returns messages around it. The Cassandra repo handles the ID→timestamp lookup internally. Request params: `messageID`, `limit` (total including central message). Returns: `before` and `after` message arrays (central message included in `after`). Service validates subscription using the roomID from the fetched message.
 
-4. **`GetMessageByID(ctx, userID, req) (*Message, error)`** — Single message lookup by ID within a room. Validates subscription access. Request params: `roomID`, `messageID`.
+4. **`GetMessageByID(ctx, userID, req) (*Message, error)`** — Single message lookup by ID. Validates subscription access using roomID from the fetched message. Request params: `messageID`.
 
 All handlers follow the pattern:
 - Validate subscription access via `SubscriptionRepository`
@@ -245,7 +245,6 @@ type LoadNextMessagesResponse struct {
 
 // LoadSurroundingMessagesRequest is the payload for loading messages around a central message.
 type LoadSurroundingMessagesRequest struct {
-    RoomID    string `json:"roomId"    bson:"roomId"`
     MessageID string `json:"messageId" bson:"messageId"` // central message ID
     Limit     int    `json:"limit"     bson:"limit"`     // total messages including central
 }
@@ -258,7 +257,6 @@ type LoadSurroundingMessagesResponse struct {
 
 // GetMessageByIDRequest is the payload for fetching a single message.
 type GetMessageByIDRequest struct {
-    RoomID    string `json:"roomId"    bson:"roomId"`
     MessageID string `json:"messageId" bson:"messageId"`
 }
 ```
@@ -328,8 +326,8 @@ func NewRepository(session *gocql.Session) *Repository
 // Implements service.MessageRepository
 func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error)
 func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, limit int) ([]model.Message, error)
-func (r *Repository) GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) (before []model.Message, after []model.Message, err error)
-func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error)
+func (r *Repository) GetSurroundingMessages(ctx context.Context, messageID string, limit int) (before []model.Message, after []model.Message, err error)
+func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*model.Message, error)
 ```
 
 All methods use `NewQuery` + `ScanPage` from the utils toolkit.
