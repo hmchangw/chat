@@ -74,14 +74,14 @@ y = base64url(publicKey[33:65])    ← Y coordinate
 ### Decrypt Steps
 
 1. **Import room private key** — `importKey('jwk', { kty:'EC', crv:'P-256', d, x, y }, { name:'ECDH', namedCurve:'P-256' }, false, ['deriveBits'])`
-2. **Import ephemeral public key** — same as above but without `d`, from `message.ephemeralPublicKey` (base64-decoded, then split into x/y)
+2. **Import ephemeral public key** — public keys must use `keyUsages: []` (empty array); passing any usage throws a `DataError` in Web Crypto: `importKey('jwk', { kty:'EC', crv:'P-256', x, y }, { name:'ECDH', namedCurve:'P-256' }, false, [])` — `x`/`y` extracted from `message.ephemeralPublicKey` (base64-decoded, then `slice(1,33)` / `slice(33,65)`)
 3. **ECDH shared secret** — `deriveBits({ name:'ECDH', public: ephPubKey }, roomPrivKey, 256)` → 32-byte `ArrayBuffer`
 4. **Import shared secret as HKDF key** — `importKey('raw', sharedSecret, 'HKDF', false, ['deriveKey'])`
 5. **HKDF-SHA256** — `deriveKey({ name:'HKDF', hash:'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('room-message-encryption') }, hkdfKey, { name:'AES-GCM', length:256 }, false, ['decrypt'])`
 6. **AES-256-GCM decrypt** — `decrypt({ name:'AES-GCM', iv: nonce }, aesKey, ciphertext)` where `ciphertext` includes the 16-byte GCM tag appended by Go's `Seal`; AAD is omitted (matches Go's `nil` AAD)
 7. **Output** — `process.stdout.write(new TextDecoder().decode(plaintext))`
 
-Parameters match Go exactly: `salt=new Uint8Array(0)` (nil), `info="room-message-encryption"`, no AAD.
+Parameters match Go exactly: `salt=new Uint8Array(0)` corresponds to Go's `nil` salt — per RFC 5869 §2.2 both default to `HashLen` zero bytes and are equivalent. `info="room-message-encryption"`, no AAD.
 
 ### Error Handling
 
