@@ -106,38 +106,53 @@ graph TB
 
 ## NATS Auth Callout Flow
 
-When a client connects, the NATS server delegates authentication to auth-service
-via the auth_callout mechanism. The service verifies the SSO token and returns a
-signed JWT that scopes the client's publish/subscribe permissions.
+The SSO token is used **exactly once** — at connection time. It is not sent with
+every message. After the handshake, the **TCP connection itself becomes the identity**.
+NATS tags the connection with the JWT permissions and enforces them on every
+publish/subscribe for the lifetime of that connection. Services downstream never
+see the SSO token — they trust the `userID` embedded in the NATS subject, which
+is guaranteed correct because NATS permissions prevent alice from publishing to
+`chat.user.bob.>`.
 
 ```mermaid
 sequenceDiagram
-    participant Client
+    participant Client as Client (Chat App)
     participant NATS as NATS Server
     participant AS as auth-service
     participant SSO as SSO/IdP (TODO)
 
-    Note over Client: Holds SSO token from<br/>external identity provider
+    Note over Client: User has logged in via SSO.<br/>Chat app holds an SSO token.
 
-    Client->>NATS: CONNECT {token: "sso-token-xyz"}
-    Note over NATS: Auth callout triggered —<br/>connection is held pending
+    rect rgb(240, 248, 255)
+        Note over Client,NATS: ONE-TIME HANDSHAKE — token sent only here
+        Client->>NATS: CONNECT {token: "sso-token-xyz"}
+        Note over NATS: Auth callout triggered —<br/>connection held pending
 
-    NATS->>AS: AuthorizationRequest<br/>{UserNkey, ConnectOptions.Token}
+        NATS->>AS: AuthorizationRequest<br/>{UserNkey, ConnectOptions.Token}
 
-    AS->>SSO: Verify SSO token
-    SSO-->>AS: username = "alice"
+        AS->>SSO: Verify SSO token
+        SSO-->>AS: username = "alice"
 
-    Note over AS: Build UserClaims JWT:<br/>• Subject = UserNkey<br/>• Audience = "$G"<br/>• Expires = now + 2h<br/>• Pub.Allow: chat.user.alice.>, _INBOX.><br/>• Sub.Allow: chat.user.alice.>, chat.room.>, _INBOX.>
+        Note over AS: Build UserClaims JWT:<br/>• Subject = UserNkey<br/>• Audience = "$G"<br/>• Expires = now + 2h<br/>• Pub.Allow: chat.user.alice.>, _INBOX.><br/>• Sub.Allow: chat.user.alice.>, chat.room.>, _INBOX.>
 
-    AS->>AS: Sign JWT with account NKey
+        AS->>AS: Sign JWT with account NKey
+        AS-->>NATS: Signed User JWT
 
-    AS-->>NATS: Signed User JWT
+        Note over NATS: JWT applied to this TCP connection.<br/>Connection IS the identity now.
 
-    Note over NATS: Apply JWT permissions<br/>to client connection
+        NATS-->>Client: +OK (connected)
+    end
 
-    NATS-->>Client: +OK (connected)
+    rect rgb(240, 255, 240)
+        Note over Client,NATS: ALL SUBSEQUENT MESSAGES — no token, connection is the identity
+        Client->>NATS: PUB chat.user.alice.room.R1.site-a.msg.send<br/>{roomId, content, requestId}
+        Note over NATS: JWT check: chat.user.alice.> ∈ Pub.Allow? ✓ Allow
 
-    Note over Client: Can now publish/subscribe<br/>within scoped permissions
+        Client->>NATS: PUB chat.user.bob.room.R1.site-a.msg.send<br/>(impersonation attempt)
+        Note over NATS: JWT check: chat.user.bob.> ∈ Pub.Allow? ✗ Denied
+    end
+
+    Note over Client,NATS: Connection lives until client disconnects<br/>or JWT expires (2h). No re-authentication<br/>needed during that window.
 ```
 
 ### Permission Boundaries After Auth
