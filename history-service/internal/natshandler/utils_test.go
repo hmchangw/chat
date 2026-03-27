@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 type testReq struct {
@@ -18,38 +23,76 @@ type testResp struct {
 	Greeting string `json:"greeting"`
 }
 
-func TestHandleRequest_UnmarshalSuccess(t *testing.T) {
-	req := testReq{Name: "world"}
-	data, _ := json.Marshal(req)
-
-	var captured testReq
-	handler := func(ctx context.Context, r testReq) (*testResp, error) {
-		captured = r
-		return &testResp{Greeting: "hello " + r.Name}, nil
-	}
-
-	var parsed testReq
-	err := json.Unmarshal(data, &parsed)
+func startTestNATS(t *testing.T) *nats.Conn {
+	t.Helper()
+	opts := &natsserver.Options{Port: -1}
+	ns, err := natsserver.NewServer(opts)
 	require.NoError(t, err)
+	ns.Start()
+	t.Cleanup(ns.Shutdown)
 
-	resp, err := handler(context.Background(), parsed)
+	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
-	assert.Equal(t, "world", captured.Name)
-	assert.Equal(t, "hello world", resp.Greeting)
+	t.Cleanup(nc.Close)
+	return nc
 }
 
-func TestHandleRequest_HandlerError(t *testing.T) {
-	handler := func(ctx context.Context, r testReq) (*testResp, error) {
-		return nil, fmt.Errorf("something broke")
-	}
+func TestHandleRequest_Success(t *testing.T) {
+	nc := startTestNATS(t)
 
-	_, err := handler(context.Background(), testReq{Name: "test"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "something broke")
+	// Subscribe with HandleRequest
+	_, err := nc.Subscribe("test.subject", func(msg *nats.Msg) {
+		HandleRequest(msg, func(ctx context.Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "hello " + req.Name}, nil
+		})
+	})
+	require.NoError(t, err)
+
+	// Send request
+	data, _ := json.Marshal(testReq{Name: "world"})
+	resp, err := nc.Request("test.subject", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result testResp
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "hello world", result.Greeting)
 }
 
 func TestHandleRequest_InvalidJSON(t *testing.T) {
-	var parsed testReq
-	err := json.Unmarshal([]byte("not json"), &parsed)
-	require.Error(t, err)
+	nc := startTestNATS(t)
+
+	_, err := nc.Subscribe("test.subject", func(msg *nats.Msg) {
+		HandleRequest(msg, func(ctx context.Context, req testReq) (*testResp, error) {
+			t.Fatal("handler should not be called for invalid JSON")
+			return nil, nil
+		})
+	})
+	require.NoError(t, err)
+
+	resp, err := nc.Request("test.subject", []byte("not json"), 2*time.Second)
+	require.NoError(t, err)
+
+	var errResp model.ErrorResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
+	assert.Equal(t, "invalid request payload", errResp.Error)
+}
+
+func TestHandleRequest_HandlerError(t *testing.T) {
+	nc := startTestNATS(t)
+
+	_, err := nc.Subscribe("test.subject", func(msg *nats.Msg) {
+		HandleRequest(msg, func(ctx context.Context, req testReq) (*testResp, error) {
+			return nil, fmt.Errorf("something broke")
+		})
+	})
+	require.NoError(t, err)
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request("test.subject", data, 2*time.Second)
+	require.NoError(t, err)
+
+	// Should get sanitized error, not the raw "something broke"
+	var errResp model.ErrorResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
+	assert.Equal(t, "internal error", errResp.Error)
 }
