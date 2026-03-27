@@ -7,7 +7,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-//go:generate mockgen -destination=mocks/mock_store.go -package=mocks . MessageRepository,SubscriptionRepository
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageRepository,SubscriptionRepository
 
 // MessageRepository defines Cassandra-backed message operations.
 type MessageRepository interface {
