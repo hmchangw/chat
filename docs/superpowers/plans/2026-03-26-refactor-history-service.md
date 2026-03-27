@@ -998,7 +998,7 @@ func TestRepository_GetSubscription(t *testing.T) {
 	joinTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", UserID: "u1", RoomID: "r1", SiteID: "site-local",
-		Role: model.RoleMember, SharedHistorySince: joinTime, JoinedAt: joinTime,
+		Role: model.RoleMember, HistorySharedSince: joinTime, JoinedAt: joinTime,
 	})
 	require.NoError(t, err)
 
@@ -1007,7 +1007,7 @@ func TestRepository_GetSubscription(t *testing.T) {
 	require.NotNil(t, sub)
 	assert.Equal(t, "u1", sub.UserID)
 	assert.Equal(t, "r1", sub.RoomID)
-	assert.Equal(t, joinTime.UTC(), sub.SharedHistorySince.UTC())
+	assert.Equal(t, joinTime.UTC(), sub.HistorySharedSince.UTC())
 }
 
 func TestRepository_GetSubscription_NotFound(t *testing.T) {
@@ -1108,7 +1108,7 @@ var (
 	joinTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	testSub  = &model.Subscription{
 		UserID: "u1", RoomID: "r1", Role: model.RoleMember,
-		SharedHistorySince: joinTime,
+		HistorySharedSince: joinTime,
 	}
 )
 
@@ -1217,13 +1217,13 @@ func TestHistoryService_LoadNextMessages_Success(t *testing.T) {
 	assert.False(t, resp.HasMore)
 }
 
-func TestHistoryService_LoadNextMessages_ClampsToSharedHistorySince(t *testing.T) {
+func TestHistoryService_LoadNextMessages_ClampsToHistorySharedSince(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
 	subs.EXPECT().GetSubscription(ctx, "u1", "r1").Return(testSub, nil)
 
-	// Request after time BEFORE SharedHistorySince — should be clamped
+	// Request after time BEFORE HistorySharedSince — should be clamped
 	earlyTime := joinTime.Add(-1 * time.Hour)
 	msgs.EXPECT().GetMessagesAfter(ctx, "r1", joinTime, 51).Return(nil, nil)
 
@@ -1346,7 +1346,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req mod
 		limit = defaultLimit
 	}
 
-	since := sub.SharedHistorySince
+	since := sub.HistorySharedSince
 	msgs, err := s.messages.GetMessagesBefore(ctx, req.RoomID, since, before, limit+1)
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
@@ -1388,9 +1388,9 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, re
 		return nil, fmt.Errorf("parsing after timestamp: %w", err)
 	}
 
-	// Clamp to SharedHistorySince
-	if after.Before(sub.SharedHistorySince) {
-		after = sub.SharedHistorySince
+	// Clamp to HistorySharedSince
+	if after.Before(sub.HistorySharedSince) {
+		after = sub.HistorySharedSince
 	}
 
 	limit := req.Limit
@@ -1434,8 +1434,8 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID str
 		return nil, fmt.Errorf("loading surrounding messages: %w", err)
 	}
 
-	// Filter out messages before SharedHistorySince
-	since := sub.SharedHistorySince
+	// Filter out messages before HistorySharedSince
+	since := sub.HistorySharedSince
 	filtered := before[:0]
 	for _, m := range before {
 		if !m.CreatedAt.Before(since) {
@@ -1467,7 +1467,7 @@ func (s *HistoryService) GetMessageByID(ctx context.Context, userID string, req 
 		return nil, fmt.Errorf("message %s not found", req.MessageID)
 	}
 
-	if msg.CreatedAt.Before(sub.SharedHistorySince) {
+	if msg.CreatedAt.Before(sub.HistorySharedSince) {
 		return nil, fmt.Errorf("message %s is outside access window", req.MessageID)
 	}
 
@@ -1487,7 +1487,7 @@ git add history-service/internal/service/messages.go history-service/internal/se
 git commit -m "feat(service): implement 4 transport-agnostic handler methods with tests
 
 TDD — LoadHistory, LoadNextMessages, LoadSurroundingMessages,
-GetMessageByID. SharedHistorySince enforcement, limit+1 pagination,
+GetMessageByID. HistorySharedSince enforcement, limit+1 pagination,
 firstUnread scanning, after-cursor clamping."
 ```
 

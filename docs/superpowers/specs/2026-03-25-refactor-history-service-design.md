@@ -145,12 +145,12 @@ Four methods on `*HistoryService`. Each accepts a context + userID + parsed requ
 
 **Default limit:** All endpoints use a default limit of **50** when `limit <= 0` (consistent with existing behavior).
 
-**`SharedHistorySince` enforcement:** Every endpoint must respect the subscription's `SharedHistorySince` timestamp — users must never see messages from before their access window. This is enforced at the **service layer** (not the repo). The service fetches the subscription from MongoDB, extracts `SharedHistorySince`, and passes it as the `since` lower bound to Cassandra queries. For single-message lookups, the service checks `message.CreatedAt >= sub.SharedHistorySince` after fetching. No caching of subscriptions currently — every request hits MongoDB. (Caching is a future optimization.)
+**`HistorySharedSince` enforcement:** Every endpoint must respect the subscription's `HistorySharedSince` timestamp — users must never see messages from before their access window. This is enforced at the **service layer** (not the repo). The service fetches the subscription from MongoDB, extracts `HistorySharedSince`, and passes it as the `since` lower bound to Cassandra queries. For single-message lookups, the service checks `message.CreatedAt >= sub.HistorySharedSince` after fetching. No caching of subscriptions currently — every request hits MongoDB. (Caching is a future optimization.)
 
 1. **`LoadHistory(ctx, userID, req) (*LoadHistoryResponse, error)`** — Messages before a cursor timestamp, paginated backwards.
    - Parses `req.Before` → `before time.Time` (defaults to `time.Now().UTC()` if empty)
    - Parses `req.LastSeen` → `lastSeen time.Time` (zero if empty — means all messages are "read")
-   - Fetches subscription → extracts `SharedHistorySince` as `since` lower bound
+   - Fetches subscription → extracts `HistorySharedSince` as `since` lower bound
    - Calls `GetMessagesBefore(ctx, roomID, since, before, limit+1)`
    - Determines `hasMore` from limit+1 trick (fetched limit+1, return limit)
    - Scans loaded batch for `firstUnread`: first message where `createdAt > lastSeen`
@@ -159,8 +159,8 @@ Four methods on `*HistoryService`. Each accepts a context + userID + parsed requ
 
 2. **`LoadNextMessages(ctx, userID, req) (*LoadNextMessagesResponse, error)`** — Messages after a cursor timestamp, paginated forwards.
    - Parses `req.After` → `after time.Time` (if empty, returns latest messages — repo handles zero time)
-   - Fetches subscription → extracts `SharedHistorySince`
-   - If `after` is before `SharedHistorySince`, clamps it to `SharedHistorySince` (prevents requesting messages outside access window)
+   - Fetches subscription → extracts `HistorySharedSince`
+   - If `after` is before `HistorySharedSince`, clamps it to `HistorySharedSince` (prevents requesting messages outside access window)
    - Calls `GetMessagesAfter(ctx, roomID, after, limit+1)` — uses limit+1 trick for `hasMore`
    - Request params: `roomID`, `after` (timestamp cursor, empty for latest), `limit` (default 50)
    - Returns: `messages` array, `hasMore`
@@ -168,15 +168,15 @@ Four methods on `*HistoryService`. Each accepts a context + userID + parsed requ
 3. **`LoadSurroundingMessages(ctx, userID, req) (*LoadSurroundingMessagesResponse, error)`** — Messages around a central message.
    - Fetches subscription using `userID` + `req.RoomID`
    - Calls repo `GetSurroundingMessages(ctx, roomID, messageID, limit)` — repo fetches the message by ID, gets `createdAt`, queries before/after within the room
-   - Validates `centralMessage.CreatedAt >= sub.SharedHistorySince` — denies access if the central message is outside the access window
-   - Filters out any returned messages where `createdAt < SharedHistorySince` (edge case: surrounding query may return messages from before the user's access window)
+   - Validates `centralMessage.CreatedAt >= sub.HistorySharedSince` — denies access if the central message is outside the access window
+   - Filters out any returned messages where `createdAt < HistorySharedSince` (edge case: surrounding query may return messages from before the user's access window)
    - Request params: `roomID`, `messageID`, `limit` (total including central message)
    - Returns: `before` and `after` message arrays (central message included in `after`)
 
 4. **`GetMessageByID(ctx, userID, req) (*Message, error)`** — Single message lookup.
    - Fetches subscription using `userID` + `req.RoomID`
    - Calls repo `GetMessageByID(ctx, roomID, messageID)`
-   - Validates `message.CreatedAt >= sub.SharedHistorySince` — returns error if outside access window
+   - Validates `message.CreatedAt >= sub.HistorySharedSince` — returns error if outside access window
    - Request params: `roomID`, `messageID`
    - Returns: single `*Message`
 

@@ -41,7 +41,7 @@ func TestSubscriptionRepo_GetSubscription(t *testing.T) {
 	joinTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", UserID: "u1", RoomID: "r1", SiteID: "site-local",
-		Role: model.RoleMember, SharedHistorySince: joinTime, JoinedAt: joinTime,
+		Role: model.RoleMember, HistorySharedSince: joinTime, JoinedAt: joinTime,
 	})
 	require.NoError(t, err)
 
@@ -50,7 +50,7 @@ func TestSubscriptionRepo_GetSubscription(t *testing.T) {
 	require.NotNil(t, sub)
 	assert.Equal(t, "u1", sub.UserID)
 	assert.Equal(t, "r1", sub.RoomID)
-	assert.Equal(t, joinTime.UTC(), sub.SharedHistorySince.UTC())
+	assert.Equal(t, joinTime.UTC(), sub.HistorySharedSince.UTC())
 }
 
 func TestSubscriptionRepo_GetSubscription_NotFound(t *testing.T) {

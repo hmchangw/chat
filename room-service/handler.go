@@ -114,7 +114,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
 		Role:               model.RoleOwner,
-		SharedHistorySince: now,
+		HistorySharedSince: now,
 		JoinedAt:           now,
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {

@@ -28,12 +28,12 @@ func (r *SubscriptionRepo) GetSubscription(ctx context.Context, userID, roomID s
 	return r.subscriptions.FindOne(ctx, bson.M{"userId": userID, "roomId": roomID})
 }
 
-// GetSharedHistorySince returns just the SharedHistorySince timestamp for a subscription.
+// GetHistorySharedSince returns just the HistorySharedSince timestamp for a subscription.
 // Uses projection to only fetch the needed field. Returns (nil, nil) when not subscribed.
-func (r *SubscriptionRepo) GetSharedHistorySince(ctx context.Context, userID, roomID string) (*time.Time, error) {
+func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, userID, roomID string) (*time.Time, error) {
 	sub, err := r.subscriptions.FindOne(ctx,
 		bson.M{"userId": userID, "roomId": roomID},
-		WithProjection(bson.M{"sharedHistorySince": 1}),
+		WithProjection(bson.M{"historySharedSince": 1}),
 	)
 	if err != nil {
 		return nil, err
@@ -41,5 +41,5 @@ func (r *SubscriptionRepo) GetSharedHistorySince(ctx context.Context, userID, ro
 	if sub == nil {
 		return nil, nil
 	}
-	return &sub.SharedHistorySince, nil
+	return &sub.HistorySharedSince, nil
 }

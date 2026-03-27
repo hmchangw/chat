@@ -127,19 +127,19 @@ func (m *MockSubscriptionRepository) EXPECT() *MockSubscriptionRepositoryMockRec
 	return m.recorder
 }
 
-// GetSharedHistorySince mocks base method.
-func (m *MockSubscriptionRepository) GetSharedHistorySince(ctx context.Context, userID, roomID string) (*time.Time, error) {
+// GetHistorySharedSince mocks base method.
+func (m *MockSubscriptionRepository) GetHistorySharedSince(ctx context.Context, userID, roomID string) (*time.Time, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetSharedHistorySince", ctx, userID, roomID)
+	ret := m.ctrl.Call(m, "GetHistorySharedSince", ctx, userID, roomID)
 	ret0, _ := ret[0].(*time.Time)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetSharedHistorySince indicates an expected call of GetSharedHistorySince.
-func (mr *MockSubscriptionRepositoryMockRecorder) GetSharedHistorySince(ctx, userID, roomID any) *gomock.Call {
+// GetHistorySharedSince indicates an expected call of GetHistorySharedSince.
+func (mr *MockSubscriptionRepositoryMockRecorder) GetHistorySharedSince(ctx, userID, roomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSharedHistorySince", reflect.TypeOf((*MockSubscriptionRepository)(nil).GetSharedHistorySince), ctx, userID, roomID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetHistorySharedSince", reflect.TypeOf((*MockSubscriptionRepository)(nil).GetHistorySharedSince), ctx, userID, roomID)
 }
 
 // GetSubscription mocks base method.
