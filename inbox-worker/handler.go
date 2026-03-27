@@ -63,7 +63,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) 
 	now := time.Now()
 	sub := model.Subscription{
 		ID:                 uuid.New().String(),
-		User:               model.SubscriptionUser{ID: invite.InviteeID},
+		User:               model.SubscriptionUser{ID: invite.InviteeID, Username: invite.InviteeUsername},
 		RoomID:             invite.RoomID,
 		SiteID:             invite.SiteID,
 		Role:               model.RoleMember,
@@ -86,9 +86,9 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) 
 		return fmt.Errorf("marshal subscription update event: %w", err)
 	}
 
-	subj := subject.SubscriptionUpdate(invite.InviteeID)
+	subj := subject.SubscriptionUpdate(invite.InviteeUsername)
 	if err := h.pub.Publish(subj, updateData); err != nil {
-		slog.Error("publish subscription update failed", "error", err, "userID", invite.InviteeID)
+		slog.Error("publish subscription update failed", "error", err, "username", invite.InviteeUsername)
 	}
 
 	return nil
