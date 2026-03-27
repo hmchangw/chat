@@ -51,9 +51,9 @@ func main() {
 	cassRepo := cassrepo.NewRepository(cassSession)
 	mongoRepo := mongorepo.NewSubscriptionRepo(mongoClient.Database(cfg.Mongo.DB))
 	svc := service.New(cassRepo, mongoRepo)
-	handler := natshandler.New(svc, cfg.SiteID)
+	nh := natshandler.New(nc, "history-service")
 
-	if err := handler.Register(nc); err != nil {
+	if err := svc.RegisterHandlers(nh, cfg.SiteID); err != nil {
 		slog.Error("register handlers failed", "error", err)
 		os.Exit(1)
 	}

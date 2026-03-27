@@ -37,39 +37,35 @@ func startTestNATS(t *testing.T) *nats.Conn {
 	return nc
 }
 
-func TestHandleRequest_Success(t *testing.T) {
+func TestRegister_Success(t *testing.T) {
 	nc := startTestNATS(t)
+	h := New(nc, "test-service")
 
-	// Subscribe with HandleRequest
-	_, err := nc.Subscribe("test.subject", func(msg *nats.Msg) {
-		HandleRequest(msg, func(ctx context.Context, req testReq) (*testResp, error) {
-			return &testResp{Greeting: "hello " + req.Name}, nil
-		})
+	err := Register(h, "chat.user.*.request.room.*.site-1.msg.test", func(ctx context.Context, userID string, req testReq) (*testResp, error) {
+		return &testResp{Greeting: "hello " + req.Name + " from " + userID}, nil
 	})
 	require.NoError(t, err)
 
-	// Send request
 	data, _ := json.Marshal(testReq{Name: "world"})
-	resp, err := nc.Request("test.subject", data, 2*time.Second)
+	resp, err := nc.Request("chat.user.u1.request.room.r1.site-1.msg.test", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var result testResp
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
-	assert.Equal(t, "hello world", result.Greeting)
+	assert.Equal(t, "hello world from u1", result.Greeting)
 }
 
-func TestHandleRequest_InvalidJSON(t *testing.T) {
+func TestRegister_InvalidJSON(t *testing.T) {
 	nc := startTestNATS(t)
+	h := New(nc, "test-service")
 
-	_, err := nc.Subscribe("test.subject", func(msg *nats.Msg) {
-		HandleRequest(msg, func(ctx context.Context, req testReq) (*testResp, error) {
-			t.Fatal("handler should not be called for invalid JSON")
-			return nil, nil
-		})
+	err := Register(h, "chat.user.*.request.room.*.site-1.msg.test", func(ctx context.Context, userID string, req testReq) (*testResp, error) {
+		t.Fatal("handler should not be called for invalid JSON")
+		return nil, nil
 	})
 	require.NoError(t, err)
 
-	resp, err := nc.Request("test.subject", []byte("not json"), 2*time.Second)
+	resp, err := nc.Request("chat.user.u1.request.room.r1.site-1.msg.test", []byte("not json"), 2*time.Second)
 	require.NoError(t, err)
 
 	var errResp model.ErrorResponse
@@ -77,22 +73,56 @@ func TestHandleRequest_InvalidJSON(t *testing.T) {
 	assert.Equal(t, "invalid request payload", errResp.Error)
 }
 
-func TestHandleRequest_HandlerError(t *testing.T) {
+func TestRegister_HandlerError(t *testing.T) {
 	nc := startTestNATS(t)
+	h := New(nc, "test-service")
 
-	_, err := nc.Subscribe("test.subject", func(msg *nats.Msg) {
-		HandleRequest(msg, func(ctx context.Context, req testReq) (*testResp, error) {
-			return nil, fmt.Errorf("something broke")
-		})
+	err := Register(h, "chat.user.*.request.room.*.site-1.msg.test", func(ctx context.Context, userID string, req testReq) (*testResp, error) {
+		return nil, fmt.Errorf("something broke")
 	})
 	require.NoError(t, err)
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request("test.subject", data, 2*time.Second)
+	resp, err := nc.Request("chat.user.u1.request.room.r1.site-1.msg.test", data, 2*time.Second)
 	require.NoError(t, err)
 
-	// Should get sanitized error, not the raw "something broke"
 	var errResp model.ErrorResponse
 	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
 	assert.Equal(t, "internal error", errResp.Error)
+}
+
+func TestRegister_InvalidSubject(t *testing.T) {
+	nc := startTestNATS(t)
+	h := New(nc, "test-service")
+
+	err := Register(h, "invalid.subject.*", func(ctx context.Context, userID string, req testReq) (*testResp, error) {
+		t.Fatal("handler should not be called for invalid subject")
+		return nil, nil
+	})
+	require.NoError(t, err)
+
+	resp, err := nc.Request("invalid.subject.foo", []byte("{}"), 2*time.Second)
+	require.NoError(t, err)
+
+	var errResp model.ErrorResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
+	assert.Equal(t, "invalid subject", errResp.Error)
+}
+
+func TestRegister_ExtractsUserID(t *testing.T) {
+	nc := startTestNATS(t)
+	h := New(nc, "test-service")
+
+	var capturedUserID string
+	err := Register(h, "chat.user.*.request.room.*.site-1.msg.test", func(ctx context.Context, userID string, req testReq) (*testResp, error) {
+		capturedUserID = userID
+		return &testResp{}, nil
+	})
+	require.NoError(t, err)
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	_, err = nc.Request("chat.user.alice123.request.room.r1.site-1.msg.test", data, 2*time.Second)
+	require.NoError(t, err)
+
+	assert.Equal(t, "alice123", capturedUserID)
 }
