@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
   PRIMARY KEY((room_id),thread_room_id,created_at,message_id)
-)WITH CLUSTERING ORDER BY (threadRoomId DESC,createAt DESC, messageId DESC);
+)WITH CLUSTERING ORDER BY (thread_room_id DESC,created_at DESC, message_id DESC);
 ```
 #### pinned_messages_by_room
 ```cql
