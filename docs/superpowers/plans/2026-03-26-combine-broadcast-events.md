@@ -17,7 +17,8 @@
 | File | Action | Responsibility |
 |------|--------|----------------|
 | `pkg/model/room.go` | Modify | Add `Origin`, `LastMsgAt`, `LastMsgID`, `LastMentionAllAt` fields |
-| `pkg/model/subscription.go` | Modify | Add `LastSeenAt`, `HasMention` fields |
+| `pkg/model/user.go` | Modify | Add `Username` field |
+| `pkg/model/subscription.go` | Modify | Add `Username`, `LastSeenAt`, `HasMention` fields |
 | `pkg/model/event.go` | Modify | Add `RoomEvent` type, `RoomEventType`, keep `RoomMetadataUpdateEvent` for now |
 | `pkg/model/model_test.go` | Modify | Update round-trip tests for new fields, add `RoomEvent` test |
 | `pkg/subject/subject.go` | Modify | Add `RoomEvent()`, `UserRoomEvent()` builders |
@@ -39,6 +40,7 @@
 
 **Files:**
 - Modify: `pkg/model/room.go`
+- Modify: `pkg/model/user.go`
 - Modify: `pkg/model/subscription.go`
 - Test: `pkg/model/model_test.go`
 
@@ -99,14 +101,50 @@ make test SERVICE=pkg/model
 
 Expected: `TestRoomJSON` passes.
 
-- [ ] **Step 5: Update `TestSubscriptionJSON` to include new fields (Red phase)**
+- [ ] **Step 5: Update `TestUserJSON` to include `Username` (Red phase)**
+
+Replace the existing `TestUserJSON` function in `pkg/model/model_test.go`:
+
+```go
+func TestUserJSON(t *testing.T) {
+	u := model.User{ID: "u1", Name: "alice", Username: "alice", SiteID: "site-a"}
+	roundTrip(t, &u, &model.User{})
+}
+```
+
+- [ ] **Step 6: Run test to confirm it fails**
+
+```bash
+make test SERVICE=pkg/model
+```
+
+Expected: compilation error — `model.User` has no field `Username`.
+
+- [ ] **Step 7: Add `Username` field to `User` in `pkg/model/user.go`**
+
+```go
+type User struct {
+	ID       string `json:"id" bson:"_id"`
+	Name     string `json:"name" bson:"name"`
+	Username string `json:"username" bson:"username"`
+	SiteID   string `json:"siteId" bson:"siteId"`
+}
+```
+
+- [ ] **Step 8: Run test to confirm it passes**
+
+```bash
+make test SERVICE=pkg/model
+```
+
+- [ ] **Step 9: Update `TestSubscriptionJSON` to include new fields (Red phase)**
 
 Replace the existing `TestSubscriptionJSON` function in `pkg/model/model_test.go`:
 
 ```go
 func TestSubscriptionJSON(t *testing.T) {
 	s := model.Subscription{
-		ID: "s1", UserID: "u1", RoomID: "r1", SiteID: "site-a",
+		ID: "s1", UserID: "u1", Username: "alice", RoomID: "r1", SiteID: "site-a",
 		Role:               model.RoleOwner,
 		SharedHistorySince: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -117,7 +155,7 @@ func TestSubscriptionJSON(t *testing.T) {
 }
 ```
 
-- [ ] **Step 6: Run test to confirm it fails**
+- [ ] **Step 10: Run test to confirm it fails**
 
 ```bash
 make test SERVICE=pkg/model
@@ -125,7 +163,7 @@ make test SERVICE=pkg/model
 
 Expected: compilation error — `model.Subscription` has no fields `LastSeenAt`, `HasMention`.
 
-- [ ] **Step 7: Add the 2 new fields to `Subscription` in `pkg/model/subscription.go` (Green phase)**
+- [ ] **Step 11: Add `Username`, `LastSeenAt`, `HasMention` fields to `Subscription` in `pkg/model/subscription.go` (Green phase)**
 
 Replace the `Subscription` struct:
 
@@ -133,6 +171,7 @@ Replace the `Subscription` struct:
 type Subscription struct {
 	ID                 string    `json:"id" bson:"_id"`
 	UserID             string    `json:"userId" bson:"userId"`
+	Username           string    `json:"username" bson:"username"`
 	RoomID             string    `json:"roomId" bson:"roomId"`
 	SiteID             string    `json:"siteId" bson:"siteId"`
 	Role               Role      `json:"role" bson:"role"`
@@ -143,7 +182,7 @@ type Subscription struct {
 }
 ```
 
-- [ ] **Step 8: Run all model tests**
+- [ ] **Step 12: Run all model tests**
 
 ```bash
 make test SERVICE=pkg/model
@@ -151,12 +190,12 @@ make test SERVICE=pkg/model
 
 Expected: all tests pass.
 
-- [ ] **Step 9: Lint and commit**
+- [ ] **Step 13: Lint and commit**
 
 ```bash
 make fmt && make lint
-git add pkg/model/room.go pkg/model/subscription.go pkg/model/model_test.go
-git commit -m "feat(model): add federation and activity fields to Room and Subscription"
+git add pkg/model/room.go pkg/model/user.go pkg/model/subscription.go pkg/model/model_test.go
+git commit -m "feat(model): add Username to User/Subscription, federation and activity fields to Room"
 ```
 
 ---
@@ -327,7 +366,7 @@ Add two new rows to the `tests` table inside `TestSubjectBuilders` in `pkg/subje
 
 ```go
 {"RoomEvent", subject.RoomEvent("r1"), "chat.room.r1.event"},
-{"UserRoomEvent", subject.UserRoomEvent("u1"), "chat.user.u1.event.room"},
+{"UserRoomEvent", subject.UserRoomEvent("alice"), "chat.user.alice.event.room"},
 ```
 
 - [ ] **Step 2: Run test to confirm it fails**
@@ -347,8 +386,8 @@ func RoomEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event", roomID)
 }
 
-func UserRoomEvent(userID string) string {
-	return fmt.Sprintf("chat.user.%s.event.room", userID)
+func UserRoomEvent(username string) string {
+	return fmt.Sprintf("chat.user.%s.event.room", username)
 }
 ```
 
@@ -396,7 +435,7 @@ type Store interface {
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	ListSubscriptions(ctx context.Context, roomID string) ([]model.Subscription, error)
 	UpdateRoomOnNewMessage(ctx context.Context, roomID string, msgID string, msgAt time.Time, mentionAll bool) error
-	SetSubscriptionMentions(ctx context.Context, roomID string, userIDs []string) error
+	SetSubscriptionMentions(ctx context.Context, roomID string, usernames []string) error
 }
 ```
 
@@ -466,10 +505,10 @@ func (m *mongoStore) UpdateRoomOnNewMessage(ctx context.Context, roomID string, 
 	return nil
 }
 
-func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string, userIDs []string) error {
+func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string, usernames []string) error {
 	filter := bson.M{
-		"roomId": roomID,
-		"userId": bson.M{"$in": userIDs},
+		"roomId":   roomID,
+		"username": bson.M{"$in": usernames},
 	}
 	update := bson.M{"$set": bson.M{"hasMention": true}}
 	_, err := m.subCol.UpdateMany(ctx, filter, update)
@@ -562,8 +601,8 @@ var (
 		SiteID: "site-a", Origin: "site-a", UserCount: 2,
 	}
 	testDMSubs = []model.Subscription{
-		{UserID: "alice", RoomID: "dm-1"},
-		{UserID: "bob", RoomID: "dm-1"},
+		{UserID: "alice-id", Username: "alice", RoomID: "dm-1"},
+		{UserID: "bob-id", Username: "bob", RoomID: "dm-1"},
 	}
 )
 
@@ -601,23 +640,23 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 		},
 		{
 			name:            "individual mentions",
-			content:         "hey @user-2 and @user-3",
+			content:         "hey @alice and @bob",
 			wantMentionAll:  false,
-			wantMentions:    []string{"user-2", "user-3"},
+			wantMentions:    []string{"alice", "bob"},
 			wantSetMentions: true,
 		},
 		{
-			name:            "mention all",
-			content:         "attention @All",
+			name:            "mention all case insensitive",
+			content:         "attention @all",
 			wantMentionAll:  true,
-			wantMentions:    []string{"All"},
-			wantSetMentions: true,
+			wantMentions:    nil,
+			wantSetMentions: false,
 		},
 		{
 			name:            "mention all and individual",
-			content:         "@All and @user-2",
+			content:         "@All and @alice",
 			wantMentionAll:  true,
-			wantMentions:    []string{"All", "user-2"},
+			wantMentions:    []string{"alice"},
 			wantSetMentions: true,
 		},
 	}
@@ -653,7 +692,7 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 			assert.Nil(t, evt.Message, "group room events must not carry Message payload")
 
 			if tc.wantMentions != nil {
-				assert.ElementsMatch(t, tc.wantMentions, evt.Mentions)
+				assert.ElementsMatch(t, tc.wantMentions, evt.Mentions) // usernames, not userIDs
 			} else {
 				assert.Empty(t, evt.Mentions)
 			}
@@ -700,7 +739,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			evt := model.MessageEvent{
 				RoomID: "dm-1", SiteID: "site-a",
 				Message: model.Message{
-					ID: "msg-1", RoomID: "dm-1", UserID: "alice",
+					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id",
 					Content: tc.content, CreatedAt: msgTime,
 				},
 			}
@@ -725,6 +764,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 				evtBySubject[rec.subject] = decodeRoomEvent(t, rec.data)
 			}
 
+			// DM events route to username-based subjects
 			aliceEvt := evtBySubject[subject.UserRoomEvent("alice")]
 			assert.Equal(t, model.RoomEventNewMessage, aliceEvt.Type)
 			require.NotNil(t, aliceEvt.Message, "DM events must carry Message payload")
@@ -791,10 +831,12 @@ func TestDetectMentionAll(t *testing.T) {
 		content string
 		want    bool
 	}{
-		{"contains @All", "attention @All everyone", true},
-		{"contains @here", "look @here please", true},
+		{"@All uppercase", "attention @All everyone", true},
+		{"@all lowercase", "hey @all", true},
+		{"@HERE uppercase", "look @HERE please", true},
+		{"@here lowercase", "look @here please", true},
 		{"no mentions", "just a normal message", false},
-		{"lowercase @all", "hey @all", false},
+		{"partial match not detected", "email@all.com", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -803,20 +845,22 @@ func TestDetectMentionAll(t *testing.T) {
 	}
 }
 
-func TestExtractMentionedUserIDs(t *testing.T) {
+func TestExtractMentionedUsernames(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
 		want    []string
 	}{
-		{"two mentions", "hey @user-1 and @user-2", []string{"user-1", "user-2"}},
+		{"two mentions", "hey @Alice and @Bob", []string{"alice", "bob"}},
 		{"no mentions", "no mentions here", nil},
-		{"dedup", "@user-1 @user-1", []string{"user-1"}},
-		{"@All extracted as token", "@All should appear", []string{"All"}},
+		{"dedup case insensitive", "@alice @Alice", []string{"alice"}},
+		{"@all excluded", "hey @all and @alice", []string{"alice"}},
+		{"@here excluded", "@here @bob", []string{"bob"}},
+		{"mixed case", "hey @BOB", []string{"bob"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractMentionedUserIDs(tc.content)
+			got := extractMentionedUsernames(tc.content)
 			if tc.want == nil {
 				assert.Empty(t, got)
 			} else {
@@ -883,23 +927,23 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 
 	mentionAll := detectMentionAll(msg.Content)
-	mentionedIDs := extractMentionedUserIDs(msg.Content)
+	mentionedUsernames := extractMentionedUsernames(msg.Content)
 
 	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, mentionAll); err != nil {
 		return fmt.Errorf("update room on new message: %w", err)
 	}
 
-	if len(mentionedIDs) > 0 {
-		if err := h.store.SetSubscriptionMentions(ctx, room.ID, mentionedIDs); err != nil {
+	if len(mentionedUsernames) > 0 {
+		if err := h.store.SetSubscriptionMentions(ctx, room.ID, mentionedUsernames); err != nil {
 			return fmt.Errorf("set subscription mentions: %w", err)
 		}
 	}
 
 	switch room.Type {
 	case model.RoomTypeGroup:
-		return h.publishGroupEvent(room, msg, mentionAll, mentionedIDs)
+		return h.publishGroupEvent(room, msg, mentionAll, mentionedUsernames)
 	case model.RoomTypeDM:
-		return h.publishDMEvents(ctx, room, msg, mentionedIDs)
+		return h.publishDMEvents(ctx, room, msg, mentionedUsernames)
 	default:
 		slog.Warn("unknown room type, skipping fan-out", "type", room.Type, "roomID", room.ID)
 		return nil
@@ -921,19 +965,19 @@ func (h *Handler) publishGroupEvent(room *model.Room, msg model.Message, mention
 	return h.pub.Publish(subject.RoomEvent(room.ID), payload)
 }
 
-func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, msg model.Message, mentionedIDs []string) error {
+func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, msg model.Message, mentionedUsernames []string) error {
 	subs, err := h.store.ListSubscriptions(ctx, room.ID)
 	if err != nil {
 		return fmt.Errorf("list subscriptions for DM room %s: %w", room.ID, err)
 	}
 
-	mentionSet := make(map[string]struct{}, len(mentionedIDs))
-	for _, id := range mentionedIDs {
-		mentionSet[id] = struct{}{}
+	mentionSet := make(map[string]struct{}, len(mentionedUsernames))
+	for _, name := range mentionedUsernames {
+		mentionSet[name] = struct{}{}
 	}
 
 	for _, sub := range subs {
-		_, hasMention := mentionSet[sub.UserID]
+		_, hasMention := mentionSet[sub.Username]
 
 		evt := buildRoomEvent(room, msg)
 		evt.HasMention = hasMention
@@ -941,10 +985,10 @@ func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, msg mod
 
 		payload, err := json.Marshal(evt)
 		if err != nil {
-			return fmt.Errorf("marshal DM event for user %s: %w", sub.UserID, err)
+			return fmt.Errorf("marshal DM event for user %s: %w", sub.Username, err)
 		}
-		if err := h.pub.Publish(subject.UserRoomEvent(sub.UserID), payload); err != nil {
-			slog.Error("publish DM event failed", "error", err, "userID", sub.UserID)
+		if err := h.pub.Publish(subject.UserRoomEvent(sub.Username), payload); err != nil {
+			slog.Error("publish DM event failed", "error", err, "username", sub.Username)
 		}
 	}
 	return nil
@@ -964,31 +1008,37 @@ func buildRoomEvent(room *model.Room, msg model.Message) model.RoomEvent {
 	}
 }
 
-// detectMentionAll checks for @All or @here keywords in message content.
+// detectMentionAll checks for @all or @here as exact tokens (case-insensitive).
 func detectMentionAll(content string) bool {
-	return strings.Contains(content, "@All") || strings.Contains(content, "@here")
+	for _, token := range strings.Fields(content) {
+		lower := strings.ToLower(token)
+		if lower == "@all" || lower == "@here" {
+			return true
+		}
+	}
+	return false
 }
 
-// extractMentionedUserIDs extracts all @-prefixed tokens from content.
-// Returns a deduplicated slice. Does not verify membership.
-func extractMentionedUserIDs(content string) []string {
+// extractMentionedUsernames extracts @-prefixed tokens from content as usernames.
+// Returns lowercased, deduplicated usernames. Excludes "all" and "here" keywords.
+func extractMentionedUsernames(content string) []string {
 	seen := make(map[string]struct{})
-	var ids []string
+	var usernames []string
 	for _, token := range strings.Fields(content) {
-		if !strings.HasPrefix(token, "@") {
+		if !strings.HasPrefix(token, "@") || len(token) == 1 {
 			continue
 		}
-		id := strings.TrimPrefix(token, "@")
-		if id == "" {
+		name := strings.ToLower(token[1:])
+		if name == "all" || name == "here" {
 			continue
 		}
-		if _, exists := seen[id]; exists {
+		if _, exists := seen[name]; exists {
 			continue
 		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
+		seen[name] = struct{}{}
+		usernames = append(usernames, name)
 	}
-	return ids
+	return usernames
 }
 ```
 
@@ -1090,8 +1140,8 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s1", UserID: "u1", RoomID: "r1"},
-		model.Subscription{ID: "s2", UserID: "u2", RoomID: "r1"},
+		model.Subscription{ID: "s1", UserID: "u1", Username: "alice", RoomID: "r1"},
+		model.Subscription{ID: "s2", UserID: "u2", Username: "bob", RoomID: "r1"},
 	})
 	require.NoError(t, err)
 
@@ -1159,8 +1209,8 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s5", UserID: "u1", RoomID: "r3"},
-		model.Subscription{ID: "s6", UserID: "u2", RoomID: "r3"},
+		model.Subscription{ID: "s5", UserID: "u1", Username: "alice", RoomID: "r3"},
+		model.Subscription{ID: "s6", UserID: "u2", Username: "bob", RoomID: "r3"},
 	})
 	require.NoError(t, err)
 
@@ -1172,22 +1222,22 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	evt := model.MessageEvent{
 		RoomID: "r3", SiteID: "site-a",
 		Message: model.Message{
-			ID: "m3", RoomID: "r3", UserID: "u1", Content: "hey @u2", CreatedAt: msgTime,
+			ID: "m3", RoomID: "r3", UserID: "u1", Content: "hey @bob", CreatedAt: msgTime,
 		},
 	}
 	data, _ := json.Marshal(evt)
 
 	require.NoError(t, handler.HandleMessage(ctx, data))
 
-	// u2 should have hasMention = true
-	var subU2 model.Subscription
-	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"userId": "u2", "roomId": "r3"}).Decode(&subU2))
-	assert.True(t, subU2.HasMention)
+	// bob should have hasMention = true (matched by username)
+	var subBob model.Subscription
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"username": "bob", "roomId": "r3"}).Decode(&subBob))
+	assert.True(t, subBob.HasMention)
 
-	// u1 should have hasMention = false (unchanged)
-	var subU1 model.Subscription
-	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"userId": "u1", "roomId": "r3"}).Decode(&subU1))
-	assert.False(t, subU1.HasMention)
+	// alice should have hasMention = false (unchanged)
+	var subAlice model.Subscription
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"username": "alice", "roomId": "r3"}).Decode(&subAlice))
+	assert.False(t, subAlice.HasMention)
 }
 
 func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
@@ -1199,8 +1249,8 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s7", UserID: "u1", RoomID: "dm-1"},
-		model.Subscription{ID: "s8", UserID: "u2", RoomID: "dm-1"},
+		model.Subscription{ID: "s7", UserID: "u1", Username: "alice", RoomID: "dm-1"},
+		model.Subscription{ID: "s8", UserID: "u2", Username: "bob", RoomID: "dm-1"},
 	})
 	require.NoError(t, err)
 
@@ -1222,8 +1272,8 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	subjects := pub.getSubjects()
 	require.Len(t, subjects, 2)
 	assert.ElementsMatch(t, []string{
-		subject.UserRoomEvent("u1"),
-		subject.UserRoomEvent("u2"),
+		subject.UserRoomEvent("alice"),
+		subject.UserRoomEvent("bob"),
 	}, subjects)
 
 	// Verify room doc updated

@@ -44,12 +44,21 @@ type Room struct {
 }
 ```
 
-### Subscription Model (`pkg/model/subscription.go`)
+### User Model (`pkg/model/user.go`)
 
-Add two fields:
+Add one field:
 
 | Field | Type | BSON | Purpose |
 |---|---|---|---|
+| `Username` | `string` | `username` | Unique account name within a company, used for `@mentions` |
+
+### Subscription Model (`pkg/model/subscription.go`)
+
+Add three fields:
+
+| Field | Type | BSON | Purpose |
+|---|---|---|---|
+| `Username` | `string` | `username` | Denormalized from User, enables mention matching and subject routing without user lookup |
 | `LastSeenAt` | `time.Time` | `lastSeenAt` | When user last read the room (set by "mark as read" API, not in scope) |
 | `HasMention` | `bool` | `hasMention` | Whether user has an unread individual mention (set by broadcast-worker, cleared by "mark as read" API) |
 
@@ -59,6 +68,7 @@ Full struct:
 type Subscription struct {
     ID                 string    `json:"id" bson:"_id"`
     UserID             string    `json:"userId" bson:"userId"`
+    Username           string    `json:"username" bson:"username"`
     RoomID             string    `json:"roomId" bson:"roomId"`
     SiteID             string    `json:"siteId" bson:"siteId"`
     Role               Role      `json:"role" bson:"role"`
@@ -98,7 +108,7 @@ type RoomEvent struct {
     LastMsgID string   `json:"lastMsgId"`
 
     // Mention metadata (new_message only)
-    Mentions   []string `json:"mentions,omitempty"`
+    Mentions   []string `json:"mentions,omitempty"` // mentioned usernames (not userIDs)
     MentionAll bool     `json:"mentionAll,omitempty"`
 
     // Per-user context (DM only, personalized during fan-out)
@@ -114,8 +124,8 @@ type RoomEvent struct {
 | Field | Group Room | DM Room |
 |---|---|---|
 | `Type` | `"new_message"` | `"new_message"` |
-| `Mentions` | list of mentioned userIDs | omitted |
-| `MentionAll` | `true` if `@All`/`@here` detected | omitted |
+| `Mentions` | list of mentioned usernames | omitted |
+| `MentionAll` | `true` if `@all`/`@here` detected (case-insensitive) | omitted |
 | `HasMention` | omitted (client self-detects from `Mentions`) | personalized per recipient |
 | `Message` | `nil` (room subject is publicly subscribable) | full message (per-user subject is secure) |
 
@@ -142,7 +152,7 @@ type MessageEvent struct {
 | Function | Subject Pattern | Purpose |
 |---|---|---|
 | `RoomEvent(roomID)` | `chat.room.{roomID}.event` | Group room events (fan-out-on-read) |
-| `UserRoomEvent(userID)` | `chat.user.{userID}.event.room` | DM per-user events (fan-out-on-write) |
+| `UserRoomEvent(username)` | `chat.user.{username}.event.room` | DM per-user events (fan-out-on-write) |
 
 ### Retired Subjects
 
@@ -161,70 +171,93 @@ type Store interface {
     GetRoom(ctx context.Context, roomID string) (*model.Room, error)
     ListSubscriptions(ctx context.Context, roomID string) ([]model.Subscription, error)
     UpdateRoomOnNewMessage(ctx context.Context, roomID string, msgID string, msgAt time.Time, mentionAll bool) error
-    SetSubscriptionMentions(ctx context.Context, roomID string, userIDs []string) error
+    SetSubscriptionMentions(ctx context.Context, roomID string, usernames []string) error
 }
 ```
 
 - `UpdateRoomOnNewMessage`: single MongoDB call. Always sets `lastMsgAt`, `lastMsgId`, `updatedAt`. Conditionally sets `lastMentionAllAt` only when `mentionAll` is `true`.
-- `SetSubscriptionMentions`: batch update setting `hasMention = true` for matching subscriptions by `roomID` and `userID in [...]`.
+- `SetSubscriptionMentions`: batch update setting `hasMention = true` for matching subscriptions by `roomID` and `username in [...]`. Uses the `username` field on subscriptions, not `userId`.
 
 ### Handler Flow — Group Room
 
 1. Unmarshal `MessageEvent` from FANOUT
 2. `GetRoom(roomID)`
-3. Detect mentions: scan `msg.Content` for `@userID` patterns and `@All`/`@here` keywords
+3. Detect mentions: exact token match, case-insensitive — `@all`/`@here` for mentionAll, `@username` tokens for individual mentions
 4. `UpdateRoomOnNewMessage(roomID, msg.ID, msg.CreatedAt, mentionAll)`
-5. If individual mentions found: `SetSubscriptionMentions(roomID, mentionedUserIDs)`
-6. Build `RoomEvent` — no `Message` payload, includes `Mentions` and `MentionAll`
+5. If individual mentions found: `SetSubscriptionMentions(roomID, mentionedUsernames)`
+6. Build `RoomEvent` — no `Message` payload, `Mentions` contains usernames, `MentionAll` set
 7. Publish **one event** to `chat.room.{roomID}.event`
 
 ### Handler Flow — DM Room
 
 1. Unmarshal `MessageEvent` from FANOUT
 2. `GetRoom(roomID)`
-3. `ListSubscriptions(roomID)` — always 2 users
-4. Detect mentions: scan `msg.Content` for `@userID` of each participant
+3. `ListSubscriptions(roomID)` — always 2 users (subscriptions include `username` field)
+4. Detect mentions: exact token match, case-insensitive, scan `msg.Content` for `@username` of each participant
 5. `UpdateRoomOnNewMessage(roomID, msg.ID, msg.CreatedAt, false)` (no `@All` in DMs)
-6. If individual mentions found: `SetSubscriptionMentions(roomID, mentionedUserIDs)`
+6. If individual mentions found: `SetSubscriptionMentions(roomID, mentionedUsernames)`
 7. For each subscription:
    a. Build `RoomEvent` — includes full `Message`, personalized `HasMention`
-   b. Publish to `chat.user.{userID}.event.room`
+   b. Publish to `chat.user.{subscription.Username}.event.room`
 8. Always **2 publishes** (both participants including sender)
 
 ### Mention Detection
 
-Two separate functions handle `@All`/`@here` detection and individual `@userID` extraction:
+All mention matching uses **exact token matching** (whitespace-delimited) and is **case-insensitive**.
+
+Two separate functions:
 
 ```go
-// detectMentionAll checks for @All or @here keywords
+// detectMentionAll checks for @all or @here as exact tokens (case-insensitive).
 func detectMentionAll(content string) bool {
-    return strings.Contains(content, "@All") || strings.Contains(content, "@here")
-}
-
-// extractMentionedUserIDs extracts @-prefixed tokens from content.
-// For group rooms, these are used directly as mentionedUserIDs (no subscription lookup).
-// For DM rooms, pass the 2 subscription userIDs and match against them.
-func extractMentionedUserIDs(content string, candidates []string) []string {
-    var mentioned []string
-    for _, uid := range candidates {
-        if strings.Contains(content, "@"+uid) {
-            mentioned = append(mentioned, uid)
+    for _, token := range strings.Fields(content) {
+        lower := strings.ToLower(token)
+        if lower == "@all" || lower == "@here" {
+            return true
         }
     }
-    return mentioned
+    return false
+}
+
+// extractMentionedUsernames extracts @-prefixed tokens from content as usernames.
+// Returns lowercased, deduplicated usernames. Excludes "all" and "here" keywords.
+func extractMentionedUsernames(content string) []string {
+    seen := make(map[string]struct{})
+    var usernames []string
+    for _, token := range strings.Fields(content) {
+        if !strings.HasPrefix(token, "@") || len(token) == 1 {
+            continue
+        }
+        name := strings.ToLower(token[1:])
+        if name == "all" || name == "here" {
+            continue
+        }
+        if _, exists := seen[name]; exists {
+            continue
+        }
+        seen[name] = struct{}{}
+        usernames = append(usernames, name)
+    }
+    return usernames
 }
 ```
 
-**Group rooms:** Do not call `ListSubscriptions` (avoids loading all members for large rooms). Instead, extract all `@`-prefixed tokens from the message content using simple string parsing, and pass them directly as `mentionedUserIDs` to `SetSubscriptionMentions`. The MongoDB update filter (`roomID + userID in [...]`) naturally ignores non-member user IDs — no membership verification needed.
+**Key design decisions:**
+- Case-insensitive: `@Alice`, `@alice`, `@ALICE` all resolve to `"alice"`
+- Exact token match: `@alice` in `"email@alice"` does NOT match (not whitespace-delimited)
+- `@all`/`@here` are excluded from individual mentions — handled separately by `detectMentionAll`
+- Returned usernames are lowercased for consistent matching against `subscription.username`
 
-**DM rooms:** `candidates` comes from the 2 subscriptions already loaded for fan-out. Match `@userID` against these 2 user IDs.
+**Group rooms:** Extract `@username` tokens from content, pass them directly to `SetSubscriptionMentions`. The MongoDB update filter (`roomID + username in [...]`) naturally ignores non-member usernames — no membership verification needed.
+
+**DM rooms:** Extract `@username` tokens from content, match against the 2 subscription usernames already loaded for fan-out.
 
 ### Mention State for Offline/Reconnect
 
 | Mention Type | Real-Time (Online Client) | Offline/Reconnect |
 |---|---|---|
-| Individual `@userID` | Client checks `mentions` array on `RoomEvent` | `subscription.hasMention == true` |
-| `@All` / `@here` | Client checks `mentionAll` field on `RoomEvent` | `room.lastMentionAllAt > subscription.lastSeenAt` |
+| Individual `@username` | Client checks `mentions` array on `RoomEvent` (contains usernames) | `subscription.hasMention == true` |
+| `@all` / `@here` | Client checks `mentionAll` field on `RoomEvent` | `room.lastMentionAllAt > subscription.lastSeenAt` |
 
 ## Message-Worker Changes
 
@@ -241,7 +274,7 @@ Message-worker no longer writes to the `rooms` MongoDB collection. Its store int
 ## Security Considerations
 
 - **Group room subjects** (`chat.room.{roomID}.event`): subscribable by any authenticated user via NATS wildcard permissions. `RoomEvent` for group rooms does **not** include the `Message` payload — only the message ID. Clients fetch message content via NATS request/reply (which enforces authorization).
-- **DM per-user subjects** (`chat.user.{userID}.event.room`): only subscribable by the specific user. `RoomEvent` for DMs includes the full `Message` payload — safe because the subject is per-user scoped.
+- **DM per-user subjects** (`chat.user.{username}.event.room`): only subscribable by the specific user. `RoomEvent` for DMs includes the full `Message` payload — safe because the subject is per-user scoped.
 
 ## Testing Strategy
 
@@ -251,8 +284,8 @@ Table-driven tests:
 
 **Group room `new_message`:**
 - Happy path, no mentions: 1 publish to room event subject, `UpdateRoomOnNewMessage` called with `mentionAll=false`, no `SetSubscriptionMentions` call
-- Individual `@userID` mentions: 1 publish with `Mentions` populated, `SetSubscriptionMentions` called with correct userIDs
-- `@All` mention: 1 publish with `MentionAll=true`, `UpdateRoomOnNewMessage` called with `mentionAll=true`
+- Individual `@username` mentions: 1 publish with `Mentions` populated (lowercased usernames), `SetSubscriptionMentions` called with correct usernames
+- `@All` mention (case-insensitive): 1 publish with `MentionAll=true`, `UpdateRoomOnNewMessage` called with `mentionAll=true`
 - Both `@All` and individual mentions: room updated with `mentionAll=true`, subscriptions also updated
 - Invalid JSON: error returned
 - Room not found: error returned
@@ -264,12 +297,13 @@ Table-driven tests:
 - Room metadata fields correctly populated on both events
 
 **Mention detection:**
-- `@userID` in middle of text
+- `@username` as exact token (case-insensitive)
 - Multiple mentions in one message
-- `@All` keyword
-- `@here` keyword
+- `@All` / `@all` / `@ALL` keyword (case-insensitive)
+- `@here` / `@Here` keyword (case-insensitive)
 - No mentions
-- `@` followed by non-member ID (no-op)
+- `@` followed by non-member username (no-op in MongoDB)
+- `@all` and `@here` excluded from individual mentions list
 
 ### Integration Tests (`broadcast-worker/integration_test.go`)
 
@@ -277,8 +311,8 @@ MongoDB testcontainer:
 - `UpdateRoomOnNewMessage` persists `lastMsgAt`, `lastMsgID` correctly
 - `UpdateRoomOnNewMessage` with `mentionAll=true` sets `lastMentionAllAt`
 - `UpdateRoomOnNewMessage` with `mentionAll=false` does not modify `lastMentionAllAt`
-- `SetSubscriptionMentions` sets `hasMention=true` on correct subscription docs
-- `SetSubscriptionMentions` with non-member userIDs is a safe no-op
+- `SetSubscriptionMentions` sets `hasMention=true` on correct subscription docs (matched by username)
+- `SetSubscriptionMentions` with non-member usernames is a safe no-op
 
 ### Message-Worker Test Updates
 
@@ -292,3 +326,4 @@ MongoDB testcontainer:
 - Push notifications / notification-worker changes
 - Cross-site federation changes for the new event format
 - Client-side implementation
+- System-wide migration of all NATS subjects from `userID` to `username` (separate session)
