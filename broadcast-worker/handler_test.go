@@ -3,34 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"sync"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/subject"
 )
-
-// --- In-memory RoomLookup stub ---
-
-type stubRoomLookup struct {
-	rooms map[string]*model.Room
-	subs  map[string][]model.Subscription
-}
-
-func (s *stubRoomLookup) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
-	room, ok := s.rooms[roomID]
-	if !ok {
-		return nil, fmt.Errorf("room not found: %s", roomID)
-	}
-	return room, nil
-}
-
-func (s *stubRoomLookup) ListSubscriptions(ctx context.Context, roomID string) ([]model.Subscription, error) {
-	return s.subs[roomID], nil
-}
-
-// --- NATS publish recorder ---
 
 type publishRecord struct {
 	subject string
@@ -38,317 +21,287 @@ type publishRecord struct {
 }
 
 type mockPublisher struct {
-	mu      sync.Mutex
 	records []publishRecord
 }
 
-func (m *mockPublisher) Publish(subject string, data []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.records = append(m.records, publishRecord{subject: subject, data: data})
+func (m *mockPublisher) Publish(subj string, data []byte) error {
+	m.records = append(m.records, publishRecord{subject: subj, data: data})
 	return nil
 }
 
-func (m *mockPublisher) getRecords() []publishRecord {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cp := make([]publishRecord, len(m.records))
-	copy(cp, m.records)
-	return cp
+func decodeRoomEvent(t *testing.T, data []byte) model.RoomEvent {
+	t.Helper()
+	var e model.RoomEvent
+	require.NoError(t, json.Unmarshal(data, &e))
+	return e
 }
 
-// --- Tests ---
-
-func TestHandleMessage_GroupRoom(t *testing.T) {
-	now := time.Date(2026, 3, 19, 12, 0, 0, 0, time.UTC)
-	lookup := &stubRoomLookup{
-		rooms: map[string]*model.Room{
-			"room-1": {
-				ID: "room-1", Name: "general", Type: model.RoomTypeGroup,
-				CreatedBy: "alice", SiteID: "site-a", UserCount: 5,
-				CreatedAt: now, UpdatedAt: now,
-			},
-		},
+var (
+	testGroupRoom = &model.Room{
+		ID: "room-1", Name: "general", Type: model.RoomTypeGroup,
+		SiteID: "site-a", Origin: "site-a", UserCount: 5,
 	}
-	pub := &mockPublisher{}
-	h := NewHandler(lookup, pub)
+	testDMRoom = &model.Room{
+		ID: "dm-1", Name: "", Type: model.RoomTypeDM,
+		SiteID: "site-a", Origin: "site-a", UserCount: 2,
+	}
+	testDMSubs = []model.Subscription{
+		{User: model.SubscriptionUser{ID: "alice-id", Username: "alice"}, RoomID: "dm-1"},
+		{User: model.SubscriptionUser{ID: "bob-id", Username: "bob"}, RoomID: "dm-1"},
+	}
+)
 
+func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 	evt := model.MessageEvent{
-		RoomID: "room-1",
+		RoomID: roomID,
 		SiteID: "site-a",
 		Message: model.Message{
-			ID:        "m1",
-			RoomID:    "room-1",
-			UserID:    "alice",
-			Content:   "hello group",
-			CreatedAt: now,
+			ID: "msg-1", RoomID: roomID, UserID: "user-1",
+			Content: content, CreatedAt: msgTime,
 		},
 	}
-	evtData, err := json.Marshal(evt)
-	if err != nil {
-		t.Fatalf("marshal event: %v", err)
+	data, _ := json.Marshal(evt)
+	return data
+}
+
+func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
+	msgTime := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name            string
+		content         string
+		wantMentionAll  bool
+		wantMentions    []string
+		wantSetMentions bool
+	}{
+		{
+			name:            "no mentions",
+			content:         "hello group",
+			wantMentionAll:  false,
+			wantMentions:    nil,
+			wantSetMentions: false,
+		},
+		{
+			name:            "individual mentions",
+			content:         "hey @alice and @bob",
+			wantMentionAll:  false,
+			wantMentions:    []string{"alice", "bob"},
+			wantSetMentions: true,
+		},
+		{
+			name:            "mention all case insensitive",
+			content:         "attention @all",
+			wantMentionAll:  true,
+			wantMentions:    nil,
+			wantSetMentions: false,
+		},
+		{
+			name:            "mention all and individual",
+			content:         "@All and @alice",
+			wantMentionAll:  true,
+			wantMentions:    []string{"alice"},
+			wantSetMentions: true,
+		},
 	}
 
-	err = h.HandleMessage(context.Background(), evtData)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			pub := &mockPublisher{}
 
-	records := pub.getRecords()
+			store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
+			store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, tc.wantMentionAll).Return(nil)
 
-	// Expect exactly 2 publishes:
-	// 1. RoomMetadataUpdateEvent to chat.room.room-1.event.metadata.update
-	// 2. MessageEvent to chat.room.room-1.stream.msg
-	if len(records) != 2 {
-		t.Fatalf("expected 2 publishes, got %d", len(records))
-	}
+			if tc.wantSetMentions {
+				store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.InAnyOrder(tc.wantMentions)).Return(nil)
+			}
 
-	// --- Verify metadata update publish ---
-	metaRec := records[0]
-	wantMetaSubj := "chat.room.room-1.event.metadata.update"
-	if metaRec.subject != wantMetaSubj {
-		t.Errorf("metadata subject = %q, want %q", metaRec.subject, wantMetaSubj)
-	}
+			h := NewHandler(store, pub)
+			err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", tc.content, msgTime))
+			require.NoError(t, err)
 
-	var metaEvt model.RoomMetadataUpdateEvent
-	if err := json.Unmarshal(metaRec.data, &metaEvt); err != nil {
-		t.Fatalf("unmarshal metadata event: %v", err)
-	}
-	if metaEvt.RoomID != "room-1" {
-		t.Errorf("metadata roomID = %q, want %q", metaEvt.RoomID, "room-1")
-	}
-	if metaEvt.Name != "general" {
-		t.Errorf("metadata name = %q, want %q", metaEvt.Name, "general")
-	}
-	if metaEvt.UserCount != 5 {
-		t.Errorf("metadata userCount = %d, want %d", metaEvt.UserCount, 5)
-	}
+			require.Len(t, pub.records, 1)
+			assert.Equal(t, subject.RoomEvent("room-1"), pub.records[0].subject)
 
-	// --- Verify message stream publish ---
-	msgRec := records[1]
-	wantMsgSubj := "chat.room.room-1.stream.msg"
-	if msgRec.subject != wantMsgSubj {
-		t.Errorf("message subject = %q, want %q", msgRec.subject, wantMsgSubj)
-	}
+			evt := decodeRoomEvent(t, pub.records[0].data)
+			assert.Equal(t, model.RoomEventNewMessage, evt.Type)
+			assert.Equal(t, "room-1", evt.RoomID)
+			assert.Equal(t, "general", evt.RoomName)
+			assert.Equal(t, "site-a", evt.Origin)
+			assert.Equal(t, 5, evt.UserCount)
+			assert.Equal(t, "msg-1", evt.LastMsgID)
+			assert.Equal(t, tc.wantMentionAll, evt.MentionAll)
+			assert.Nil(t, evt.Message, "group room events must not carry Message payload")
 
-	var msgEvt model.MessageEvent
-	if err := json.Unmarshal(msgRec.data, &msgEvt); err != nil {
-		t.Fatalf("unmarshal message event: %v", err)
-	}
-	if msgEvt.Message.ID != "m1" {
-		t.Errorf("message ID = %q, want %q", msgEvt.Message.ID, "m1")
-	}
-	if msgEvt.Message.Content != "hello group" {
-		t.Errorf("message content = %q, want %q", msgEvt.Message.Content, "hello group")
+			if tc.wantMentions != nil {
+				assert.ElementsMatch(t, tc.wantMentions, evt.Mentions)
+			} else {
+				assert.Empty(t, evt.Mentions)
+			}
+		})
 	}
 }
 
-func TestHandleMessage_DMRoom(t *testing.T) {
-	now := time.Date(2026, 3, 19, 12, 0, 0, 0, time.UTC)
-	lookup := &stubRoomLookup{
-		rooms: map[string]*model.Room{
-			"dm-1": {
-				ID: "dm-1", Name: "", Type: model.RoomTypeDM,
-				CreatedBy: "alice", SiteID: "site-a", UserCount: 2,
-				CreatedAt: now, UpdatedAt: now,
-			},
-		},
-		subs: map[string][]model.Subscription{
-			"dm-1": {
-				{ID: "s1", User: model.SubscriptionUser{ID: "alice"}, RoomID: "dm-1", SiteID: "site-a"},
-				{ID: "s2", User: model.SubscriptionUser{ID: "bob"}, RoomID: "dm-1", SiteID: "site-a"},
-			},
-		},
-	}
-	pub := &mockPublisher{}
-	h := NewHandler(lookup, pub)
+func TestHandler_HandleMessage_DMRoom(t *testing.T) {
+	msgTime := time.Date(2026, 3, 26, 11, 0, 0, 0, time.UTC)
 
-	evt := model.MessageEvent{
-		RoomID: "dm-1",
-		SiteID: "site-a",
-		Message: model.Message{
-			ID:        "m2",
-			RoomID:    "dm-1",
-			UserID:    "alice",
-			Content:   "hey bob",
-			CreatedAt: now,
+	tests := []struct {
+		name            string
+		content         string
+		wantSetMentions bool
+		mentionedUsers  []string
+		aliceHasMention bool
+		bobHasMention   bool
+	}{
+		{
+			name:            "no mentions",
+			content:         "hey bob",
+			wantSetMentions: false,
+			aliceHasMention: false,
+			bobHasMention:   false,
+		},
+		{
+			name:            "with mention",
+			content:         "hey @bob",
+			wantSetMentions: true,
+			mentionedUsers:  []string{"bob"},
+			aliceHasMention: false,
+			bobHasMention:   true,
 		},
 	}
-	evtData, _ := json.Marshal(evt)
 
-	err := h.HandleMessage(context.Background(), evtData)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			pub := &mockPublisher{}
 
-	records := pub.getRecords()
+			evt := model.MessageEvent{
+				RoomID: "dm-1", SiteID: "site-a",
+				Message: model.Message{
+					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id",
+					Content: tc.content, CreatedAt: msgTime,
+				},
+			}
+			data, _ := json.Marshal(evt)
 
-	// Expect exactly 3 publishes:
-	// 1. RoomMetadataUpdateEvent to chat.room.dm-1.event.metadata.update
-	// 2. MessageEvent to chat.user.alice.stream.msg
-	// 3. MessageEvent to chat.user.bob.stream.msg
-	if len(records) != 3 {
-		t.Fatalf("expected 3 publishes, got %d", len(records))
-	}
+			store.EXPECT().GetRoom(gomock.Any(), "dm-1").Return(testDMRoom, nil)
+			store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
+			store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
 
-	// --- Verify metadata update is first ---
-	wantMetaSubj := "chat.room.dm-1.event.metadata.update"
-	if records[0].subject != wantMetaSubj {
-		t.Errorf("first publish subject = %q, want %q", records[0].subject, wantMetaSubj)
-	}
+			if tc.wantSetMentions {
+				store.EXPECT().SetSubscriptionMentions(gomock.Any(), "dm-1", gomock.InAnyOrder(tc.mentionedUsers)).Return(nil)
+			}
 
-	// --- Verify per-user DM publishes ---
-	subjects := map[string]bool{}
-	for _, r := range records[1:] {
-		subjects[r.subject] = true
+			h := NewHandler(store, pub)
+			err := h.HandleMessage(context.Background(), data)
+			require.NoError(t, err)
 
-		var msgEvt model.MessageEvent
-		if err := json.Unmarshal(r.data, &msgEvt); err != nil {
-			t.Fatalf("unmarshal message event: %v", err)
-		}
-		if msgEvt.Message.ID != "m2" {
-			t.Errorf("message ID = %q, want %q", msgEvt.Message.ID, "m2")
-		}
-	}
+			require.Len(t, pub.records, 2)
 
-	if !subjects["chat.user.alice.stream.msg"] {
-		t.Error("missing DM publish for alice")
-	}
-	if !subjects["chat.user.bob.stream.msg"] {
-		t.Error("missing DM publish for bob")
+			evtBySubject := map[string]model.RoomEvent{}
+			for _, rec := range pub.records {
+				evtBySubject[rec.subject] = decodeRoomEvent(t, rec.data)
+			}
+
+			aliceEvt := evtBySubject[subject.UserRoomEvent("alice")]
+			assert.Equal(t, model.RoomEventNewMessage, aliceEvt.Type)
+			require.NotNil(t, aliceEvt.Message, "DM events must carry Message payload")
+			assert.Equal(t, "msg-1", aliceEvt.Message.ID)
+			assert.Equal(t, tc.aliceHasMention, aliceEvt.HasMention)
+
+			bobEvt := evtBySubject[subject.UserRoomEvent("bob")]
+			require.NotNil(t, bobEvt.Message)
+			assert.Equal(t, "msg-1", bobEvt.Message.ID)
+			assert.Equal(t, tc.bobHasMention, bobEvt.HasMention)
+		})
 	}
 }
 
-func TestHandleMessage_DMRoom_NoSubscriptions(t *testing.T) {
-	now := time.Date(2026, 3, 19, 12, 0, 0, 0, time.UTC)
-	lookup := &stubRoomLookup{
-		rooms: map[string]*model.Room{
-			"dm-empty": {
-				ID: "dm-empty", Name: "", Type: model.RoomTypeDM,
-				CreatedBy: "alice", SiteID: "site-a", UserCount: 0,
-				CreatedAt: now, UpdatedAt: now,
-			},
-		},
-		subs: map[string][]model.Subscription{},
-	}
-	pub := &mockPublisher{}
-	h := NewHandler(lookup, pub)
+func TestHandler_HandleMessage_Errors(t *testing.T) {
+	msgTime := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
 
-	evt := model.MessageEvent{
-		RoomID: "dm-empty",
-		SiteID: "site-a",
-		Message: model.Message{
-			ID: "m3", RoomID: "dm-empty", UserID: "alice", Content: "anyone?",
-			CreatedAt: now,
-		},
-	}
-	evtData, _ := json.Marshal(evt)
+	t.Run("invalid json", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
+		h := NewHandler(store, pub)
 
-	err := h.HandleMessage(context.Background(), evtData)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
+		err := h.HandleMessage(context.Background(), []byte("not json"))
+		require.Error(t, err)
+		assert.Empty(t, pub.records)
+	})
 
-	records := pub.getRecords()
+	t.Run("room not found", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
 
-	// Should still publish metadata update, but no user stream publishes
-	if len(records) != 1 {
-		t.Fatalf("expected 1 publish (metadata only), got %d", len(records))
+		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(nil, errors.New("not found"))
+
+		h := NewHandler(store, pub)
+		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
+		require.Error(t, err)
+		assert.Empty(t, pub.records)
+	})
+
+	t.Run("update room fails", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
+
+		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
+		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(errors.New("db error"))
+
+		h := NewHandler(store, pub)
+		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
+		require.Error(t, err)
+		assert.Empty(t, pub.records)
+	})
+}
+
+func TestDetectMentionAll(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"@All uppercase", "attention @All everyone", true},
+		{"@all lowercase", "hey @all", true},
+		{"@HERE uppercase", "look @HERE please", true},
+		{"@here lowercase", "look @here please", true},
+		{"no mentions", "just a normal message", false},
+		{"partial match not detected", "email@all.com", false},
 	}
-	wantMetaSubj := "chat.room.dm-empty.event.metadata.update"
-	if records[0].subject != wantMetaSubj {
-		t.Errorf("subject = %q, want %q", records[0].subject, wantMetaSubj)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, detectMentionAll(tc.content))
+		})
 	}
 }
 
-func TestHandleMessage_RoomNotFound(t *testing.T) {
-	lookup := &stubRoomLookup{
-		rooms: map[string]*model.Room{},
+func TestExtractMentionedUsernames(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{"two mentions", "hey @Alice and @Bob", []string{"alice", "bob"}},
+		{"no mentions", "no mentions here", nil},
+		{"dedup case insensitive", "@alice @Alice", []string{"alice"}},
+		{"@all excluded", "hey @all and @alice", []string{"alice"}},
+		{"@here excluded", "@here @bob", []string{"bob"}},
+		{"mixed case", "hey @BOB", []string{"bob"}},
 	}
-	pub := &mockPublisher{}
-	h := NewHandler(lookup, pub)
-
-	evt := model.MessageEvent{
-		RoomID: "nonexistent",
-		SiteID: "site-a",
-		Message: model.Message{
-			ID: "m4", RoomID: "nonexistent", UserID: "alice", Content: "hello",
-		},
-	}
-	evtData, _ := json.Marshal(evt)
-
-	err := h.HandleMessage(context.Background(), evtData)
-	if err == nil {
-		t.Error("expected error for nonexistent room, got nil")
-	}
-
-	records := pub.getRecords()
-	if len(records) != 0 {
-		t.Errorf("expected 0 publishes on room lookup failure, got %d", len(records))
-	}
-}
-
-func TestHandleMessage_InvalidJSON(t *testing.T) {
-	lookup := &stubRoomLookup{}
-	pub := &mockPublisher{}
-	h := NewHandler(lookup, pub)
-
-	err := h.HandleMessage(context.Background(), []byte("not json"))
-	if err == nil {
-		t.Error("expected error for invalid JSON, got nil")
-	}
-}
-
-func TestHandleMessage_MetadataFields(t *testing.T) {
-	now := time.Date(2026, 3, 19, 14, 30, 0, 0, time.UTC)
-	msgTime := time.Date(2026, 3, 19, 15, 0, 0, 0, time.UTC)
-	lookup := &stubRoomLookup{
-		rooms: map[string]*model.Room{
-			"room-meta": {
-				ID: "room-meta", Name: "dev-team", Type: model.RoomTypeGroup,
-				CreatedBy: "alice", SiteID: "site-a", UserCount: 10,
-				CreatedAt: now, UpdatedAt: now,
-			},
-		},
-	}
-	pub := &mockPublisher{}
-	h := NewHandler(lookup, pub)
-
-	evt := model.MessageEvent{
-		RoomID: "room-meta",
-		SiteID: "site-a",
-		Message: model.Message{
-			ID: "m5", RoomID: "room-meta", UserID: "bob",
-			Content: "checking metadata", CreatedAt: msgTime,
-		},
-	}
-	evtData, _ := json.Marshal(evt)
-
-	err := h.HandleMessage(context.Background(), evtData)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-
-	records := pub.getRecords()
-	if len(records) < 1 {
-		t.Fatal("expected at least 1 publish")
-	}
-
-	var metaEvt model.RoomMetadataUpdateEvent
-	if err := json.Unmarshal(records[0].data, &metaEvt); err != nil {
-		t.Fatalf("unmarshal metadata: %v", err)
-	}
-
-	if metaEvt.RoomID != "room-meta" {
-		t.Errorf("RoomID = %q, want %q", metaEvt.RoomID, "room-meta")
-	}
-	if metaEvt.Name != "dev-team" {
-		t.Errorf("Name = %q, want %q", metaEvt.Name, "dev-team")
-	}
-	if metaEvt.UserCount != 10 {
-		t.Errorf("UserCount = %d, want %d", metaEvt.UserCount, 10)
-	}
-	if metaEvt.LastMessageAt != msgTime {
-		t.Errorf("LastMessageAt = %v, want %v", metaEvt.LastMessageAt, msgTime)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractMentionedUsernames(tc.content)
+			if tc.want == nil {
+				assert.Empty(t, got)
+			} else {
+				assert.ElementsMatch(t, tc.want, got)
+			}
+		})
 	}
 }

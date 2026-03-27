@@ -10,14 +10,12 @@ import (
 
 	"github.com/caarlos0/env/v11"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type config struct {
@@ -26,37 +24,6 @@ type config struct {
 	MongoURI   string `env:"MONGO_URI"   envDefault:"mongodb://localhost:27017"`
 	MongoDB    string `env:"MONGO_DB"    envDefault:"chat"`
 	MaxWorkers int    `env:"MAX_WORKERS" envDefault:"100"`
-}
-
-// mongoRoomLookup implements RoomLookup using MongoDB.
-type mongoRoomLookup struct {
-	roomCol *mongo.Collection
-	subCol  *mongo.Collection
-}
-
-func (m *mongoRoomLookup) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
-	filter := map[string]string{"_id": roomID}
-	var room model.Room
-	err := m.roomCol.FindOne(ctx, filter).Decode(&room)
-	if err != nil {
-		return nil, err
-	}
-	return &room, nil
-}
-
-func (m *mongoRoomLookup) ListSubscriptions(ctx context.Context, roomID string) ([]model.Subscription, error) {
-	filter := map[string]string{"roomId": roomID}
-	cursor, err := m.subCol.Find(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-
-	var subs []model.Subscription
-	if err := cursor.All(ctx, &subs); err != nil {
-		return nil, err
-	}
-	return subs, nil
 }
 
 func main() {
@@ -76,10 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 	db := mongoClient.Database(cfg.MongoDB)
-	roomLookup := &mongoRoomLookup{
-		roomCol: db.Collection("rooms"),
-		subCol:  db.Collection("subscriptions"),
-	}
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 
 	nc, err := nats.Connect(cfg.NatsURL)
 	if err != nil {
@@ -112,7 +76,7 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(roomLookup, publisher)
+	handler := NewHandler(store, publisher)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
