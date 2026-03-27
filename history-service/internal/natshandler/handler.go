@@ -49,7 +49,7 @@ func (h *Handler) handleLoadHistory(msg *nats.Msg) {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
-	HandleRequest(msg, func(ctx context.Context, req model.LoadHistoryRequest) (*model.LoadHistoryResponse, error) {
+	HandleRequest(msg, func(ctx context.Context, req service.LoadHistoryRequest) (*service.LoadHistoryResponse, error) {
 		return h.svc.LoadHistory(ctx, userID, req)
 	})
 }
@@ -60,7 +60,7 @@ func (h *Handler) handleLoadNextMessages(msg *nats.Msg) {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
-	HandleRequest(msg, func(ctx context.Context, req model.LoadNextMessagesRequest) (*model.LoadNextMessagesResponse, error) {
+	HandleRequest(msg, func(ctx context.Context, req service.LoadNextMessagesRequest) (*service.LoadNextMessagesResponse, error) {
 		return h.svc.LoadNextMessages(ctx, userID, req)
 	})
 }
@@ -71,7 +71,7 @@ func (h *Handler) handleLoadSurroundingMessages(msg *nats.Msg) {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
-	HandleRequest(msg, func(ctx context.Context, req model.LoadSurroundingMessagesRequest) (*model.LoadSurroundingMessagesResponse, error) {
+	HandleRequest(msg, func(ctx context.Context, req service.LoadSurroundingMessagesRequest) (*service.LoadSurroundingMessagesResponse, error) {
 		return h.svc.LoadSurroundingMessages(ctx, userID, req)
 	})
 }
@@ -82,7 +82,7 @@ func (h *Handler) handleGetMessageByID(msg *nats.Msg) {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
-	HandleRequest(msg, func(ctx context.Context, req model.GetMessageByIDRequest) (*model.Message, error) {
+	HandleRequest(msg, func(ctx context.Context, req service.GetMessageByIDRequest) (*model.Message, error) {
 		return h.svc.GetMessageByID(ctx, userID, req)
 	})
 }

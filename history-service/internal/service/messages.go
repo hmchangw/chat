@@ -29,7 +29,7 @@ func (s *HistoryService) getHistorySharedSince(ctx context.Context, userID, room
 	return *since, nil
 }
 
-func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req model.LoadHistoryRequest) (*model.LoadHistoryResponse, error) {
+func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req LoadHistoryRequest) (*LoadHistoryResponse, error) {
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
@@ -72,14 +72,14 @@ func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req mod
 		}
 	}
 
-	return &model.LoadHistoryResponse{
+	return &LoadHistoryResponse{
 		Messages:    msgs,
 		FirstUnread: firstUnread,
 		HasMore:     hasMore,
 	}, nil
 }
 
-func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, req model.LoadNextMessagesRequest) (*model.LoadNextMessagesResponse, error) {
+func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, req LoadNextMessagesRequest) (*LoadNextMessagesResponse, error) {
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
@@ -109,13 +109,13 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, re
 		msgs = msgs[:limit]
 	}
 
-	return &model.LoadNextMessagesResponse{
+	return &LoadNextMessagesResponse{
 		Messages: msgs,
 		HasMore:  hasMore,
 	}, nil
 }
 
-func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID string, req model.LoadSurroundingMessagesRequest) (*model.LoadSurroundingMessagesResponse, error) {
+func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID string, req LoadSurroundingMessagesRequest) (*LoadSurroundingMessagesResponse, error) {
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
@@ -151,13 +151,13 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID str
 		}
 	}
 
-	return &model.LoadSurroundingMessagesResponse{
+	return &LoadSurroundingMessagesResponse{
 		Before: filteredBefore,
 		After:  filteredAfter,
 	}, nil
 }
 
-func (s *HistoryService) GetMessageByID(ctx context.Context, userID string, req model.GetMessageByIDRequest) (*model.Message, error) {
+func (s *HistoryService) GetMessageByID(ctx context.Context, userID string, req GetMessageByIDRequest) (*model.Message, error) {
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
