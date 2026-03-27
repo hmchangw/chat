@@ -33,9 +33,9 @@ func setupMongo(t *testing.T) *mongo.Database {
 	return client.Database("chat_test")
 }
 
-func TestRepository_GetSubscription(t *testing.T) {
+func TestSubscriptionRepo_GetSubscription(t *testing.T) {
 	db := setupMongo(t)
-	repo := NewRepository(db)
+	repo := NewSubscriptionRepo(db)
 	ctx := context.Background()
 
 	joinTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -53,9 +53,9 @@ func TestRepository_GetSubscription(t *testing.T) {
 	assert.Equal(t, joinTime.UTC(), sub.SharedHistorySince.UTC())
 }
 
-func TestRepository_GetSubscription_NotFound(t *testing.T) {
+func TestSubscriptionRepo_GetSubscription_NotFound(t *testing.T) {
 	db := setupMongo(t)
-	repo := NewRepository(db)
+	repo := NewSubscriptionRepo(db)
 	ctx := context.Background()
 
 	sub, err := repo.GetSubscription(ctx, "nonexistent", "r1")
@@ -79,7 +79,7 @@ func TestCollection_FindOne_Success(t *testing.T) {
 	_, err := db.Collection("test_docs").InsertOne(ctx, testDoc{ID: "d1", Name: "Alice", Age: 30})
 	require.NoError(t, err)
 
-	result, err := col.FindOne(ctx, bson.D{{Key: "name", Value: "Alice"}})
+	result, err := col.FindOne(ctx, bson.M{"name": "Alice"})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, "d1", result.ID)
@@ -91,7 +91,7 @@ func TestCollection_FindOne_NotFound_ReturnsNilNil(t *testing.T) {
 	ctx := context.Background()
 	col := NewCollection[testDoc](db.Collection("test_docs"))
 
-	result, err := col.FindOne(ctx, bson.D{{Key: "name", Value: "Nobody"}})
+	result, err := col.FindOne(ctx, bson.M{"name": "Nobody"})
 	require.NoError(t, err)
 	assert.Nil(t, result)
 }
@@ -132,7 +132,7 @@ func TestCollection_FindMany_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	results, err := col.FindMany(ctx, bson.D{{Key: "age", Value: bson.D{{Key: "$gte", Value: 30}}}})
+	results, err := col.FindMany(ctx, bson.M{"age": bson.M{"$gte": 30}})
 	require.NoError(t, err)
 	assert.Len(t, results, 2)
 }
@@ -142,7 +142,7 @@ func TestCollection_FindMany_Empty_ReturnsEmptySlice(t *testing.T) {
 	ctx := context.Background()
 	col := NewCollection[testDoc](db.Collection("test_docs"))
 
-	results, err := col.FindMany(ctx, bson.D{{Key: "name", Value: "Nobody"}})
+	results, err := col.FindMany(ctx, bson.M{"name": "Nobody"})
 	require.NoError(t, err)
 	assert.NotNil(t, results)
 	assert.Empty(t, results)

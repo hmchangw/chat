@@ -49,7 +49,7 @@ func main() {
 	}
 
 	cassRepo := cassrepo.NewRepository(cassSession)
-	mongoRepo := mongorepo.NewRepository(mongoClient.Database(cfg.Mongo.DB))
+	mongoRepo := mongorepo.NewSubscriptionRepo(mongoClient.Database(cfg.Mongo.DB))
 	svc := service.New(cassRepo, mongoRepo)
 	handler := natshandler.New(svc, cfg.SiteID)
 
