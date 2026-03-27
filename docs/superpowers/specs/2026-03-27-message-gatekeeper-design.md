@@ -185,11 +185,12 @@ type Handler struct {
 ```
 
 - `publish` is injected so tests can capture published data without a real NATS connection
-- `siteID` for constructing the MESSAGE_SSOT subject
+- `siteID` used to verify the extracted siteID from the subject matches this instance's config
 
 ### Processing Flow
 
-1. Parse subject via `subject.ParseUserRoomSubject` to extract `username`, `roomID`
+1. Parse subject via `subject.ParseUserRoomSiteSubject` to extract `username`, `roomID`, `siteID`
+1a. **Validate siteID**: verify extracted `siteID` matches `handler.siteID` — reject if mismatched (guard against misconfigured streams)
 2. Unmarshal payload to `SendMessageRequest`
 3. **Validate ID**: `uuid.Parse(req.ID)` — must be a valid UUID
 4. **Validate Content**: non-empty and `len([]byte(req.Content)) <= 20480` (20KB)
@@ -297,6 +298,7 @@ Store interface unchanged — still needs subscriptions from MongoDB for subscri
 | User not in room | Reply error, ack message |
 | MongoDB unavailable | Nack/retry (transient) |
 | MESSAGE_SSOT publish fails | Nack/retry (transient) |
+| SiteID mismatch | Log error, ack (misconfigured) |
 | Subject parse failure | Log error, ack (malformed) |
 | JSON unmarshal failure | Log error, ack (malformed) |
 
@@ -315,6 +317,7 @@ Validation failures are terminal — ack the message to prevent redelivery. Infr
   - Store error (MongoDB failure)
   - Publish error
   - Malformed JSON payload
+  - SiteID mismatch
   - Subject parse failure
 - **Integration tests**: testcontainers with MongoDB + NATS
 
