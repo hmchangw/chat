@@ -125,7 +125,7 @@ func setupNodeContainer(t *testing.T) testcontainers.Container {
 
 - `require.NoError` on all container API calls
 - `require.Equal(t, 0, exitCode)` — non-zero exit includes output in failure message
-- `assert.Equal(t, tc.content, strings.TrimRight(stdout, "\n"))` — trim trailing newline only (not all whitespace, to preserve the empty-string case)
+- `assert.Equal(t, tc.content, strings.TrimSuffix(stdout, "\n"))` — trim trailing newline only (not all whitespace, to preserve the empty-string case)
 
 ---
 
