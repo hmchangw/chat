@@ -8,7 +8,7 @@ CREATE TYPE IF NOT EXISTS "Participant"(
   id UUID,
   user_name TEXT,
   eng_name TEXT,
-  tsmc_name TEXT,
+  company_name TEXT, // need to change internal
   app_id UUID,
   app_name TEXT,
   is_bot BOOLEAN
