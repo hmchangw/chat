@@ -20,23 +20,27 @@ func NewRepository(session *gocql.Session) *Repository {
 	return &Repository{session: session}
 }
 
+// scanMessage is the Scanner[model.Message] used by ScanPage to decode a row.
+func scanMessage(iter *gocql.Iter) (model.Message, error) {
+	var msg model.Message
+	if !iter.Scan(&msg.ID, &msg.RoomID, &msg.UserID, &msg.Content, &msg.CreatedAt) {
+		return msg, fmt.Errorf("no more rows")
+	}
+	return msg, nil
+}
+
 // GetMessagesBefore returns messages before `before` and after `since`, newest-first.
 func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error) {
 	stmt := `SELECT id, room_id, user_id, content, created_at FROM messages
 		WHERE room_id = ? AND created_at > ? AND created_at < ?
 		ORDER BY created_at DESC LIMIT ?`
 
-	iter := r.session.Query(stmt, roomID, since, before, limit).WithContext(ctx).Iter()
-
-	var messages []model.Message
-	var msg model.Message
-	for iter.Scan(&msg.ID, &msg.RoomID, &msg.UserID, &msg.Content, &msg.CreatedAt) {
-		messages = append(messages, msg)
-	}
-	if err := iter.Close(); err != nil {
+	q := NewQuery(r.session, stmt, roomID, since, before, limit)
+	page, err := ScanPage(q, scanMessage)
+	if err != nil {
 		return nil, fmt.Errorf("querying messages before: %w", err)
 	}
-	return messages, nil
+	return page.Items, nil
 }
 
 // GetMessagesAfter returns messages after `after`, oldest-first.
@@ -45,21 +49,14 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 		WHERE room_id = ? AND created_at > ?
 		ORDER BY created_at ASC LIMIT ?`
 
-	iter := r.session.Query(stmt, roomID, after, limit).WithContext(ctx).Iter()
-
-	var messages []model.Message
-	var msg model.Message
-	for iter.Scan(&msg.ID, &msg.RoomID, &msg.UserID, &msg.Content, &msg.CreatedAt) {
-		messages = append(messages, msg)
-	}
-	if err := iter.Close(); err != nil {
+	q := NewQuery(r.session, stmt, roomID, after, limit)
+	page, err := ScanPage(q, scanMessage)
+	if err != nil {
 		return nil, fmt.Errorf("querying messages after: %w", err)
 	}
-	return messages, nil
+	return page.Items, nil
 }
 
-// GetMessageByID returns a single message by ID within a room.
-// Returns (nil, nil) if the message is not found.
 // GetMessageByID returns a single message by ID within a room.
 // Returns (nil, nil) if the message is not found.
 // NOTE: This scans the partition because `id` is not part of the primary key.
@@ -105,16 +102,11 @@ func (r *Repository) GetSurroundingMessages(ctx context.Context, roomID, message
 		WHERE room_id = ? AND created_at >= ?
 		ORDER BY created_at ASC LIMIT ?`
 
-	iter := r.session.Query(afterStmt, roomID, msg.CreatedAt, half+1).WithContext(ctx).Iter()
-
-	var afterMsgs []model.Message
-	var m model.Message
-	for iter.Scan(&m.ID, &m.RoomID, &m.UserID, &m.Content, &m.CreatedAt) {
-		afterMsgs = append(afterMsgs, m)
-	}
-	if err := iter.Close(); err != nil {
+	q := NewQuery(r.session, afterStmt, roomID, msg.CreatedAt, half+1)
+	afterPage, err := ScanPage(q, scanMessage)
+	if err != nil {
 		return nil, nil, fmt.Errorf("querying surrounding after: %w", err)
 	}
 
-	return beforeMsgs, afterMsgs, nil
+	return beforeMsgs, afterPage.Items, nil
 }
