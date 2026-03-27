@@ -1,4 +1,4 @@
-package service
+package models
 
 import "github.com/hmchangw/chat/pkg/model"
 

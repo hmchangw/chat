@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -29,7 +30,7 @@ func (s *HistoryService) getHistorySharedSince(ctx context.Context, userID, room
 	return *since, nil
 }
 
-func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req LoadHistoryRequest) (*LoadHistoryResponse, error) {
+func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
@@ -72,14 +73,14 @@ func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req Loa
 		}
 	}
 
-	return &LoadHistoryResponse{
+	return &models.LoadHistoryResponse{
 		Messages:    msgs,
 		FirstUnread: firstUnread,
 		HasMore:     hasMore,
 	}, nil
 }
 
-func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, req LoadNextMessagesRequest) (*LoadNextMessagesResponse, error) {
+func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
@@ -109,13 +110,13 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, re
 		msgs = msgs[:limit]
 	}
 
-	return &LoadNextMessagesResponse{
+	return &models.LoadNextMessagesResponse{
 		Messages: msgs,
 		HasMore:  hasMore,
 	}, nil
 }
 
-func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID string, req LoadSurroundingMessagesRequest) (*LoadSurroundingMessagesResponse, error) {
+func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID string, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
@@ -151,13 +152,13 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID str
 		}
 	}
 
-	return &LoadSurroundingMessagesResponse{
+	return &models.LoadSurroundingMessagesResponse{
 		Before: filteredBefore,
 		After:  filteredAfter,
 	}, nil
 }
 
-func (s *HistoryService) GetMessageByID(ctx context.Context, userID string, req GetMessageByIDRequest) (*model.Message, error) {
+func (s *HistoryService) GetMessageByID(ctx context.Context, userID string, req models.GetMessageByIDRequest) (*model.Message, error) {
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -49,7 +50,7 @@ func (h *Handler) handleLoadHistory(msg *nats.Msg) {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
-	HandleRequest(msg, func(ctx context.Context, req service.LoadHistoryRequest) (*service.LoadHistoryResponse, error) {
+	HandleRequest(msg, func(ctx context.Context, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
 		return h.svc.LoadHistory(ctx, userID, req)
 	})
 }
@@ -60,7 +61,7 @@ func (h *Handler) handleLoadNextMessages(msg *nats.Msg) {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
-	HandleRequest(msg, func(ctx context.Context, req service.LoadNextMessagesRequest) (*service.LoadNextMessagesResponse, error) {
+	HandleRequest(msg, func(ctx context.Context, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
 		return h.svc.LoadNextMessages(ctx, userID, req)
 	})
 }
@@ -71,7 +72,7 @@ func (h *Handler) handleLoadSurroundingMessages(msg *nats.Msg) {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
-	HandleRequest(msg, func(ctx context.Context, req service.LoadSurroundingMessagesRequest) (*service.LoadSurroundingMessagesResponse, error) {
+	HandleRequest(msg, func(ctx context.Context, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
 		return h.svc.LoadSurroundingMessages(ctx, userID, req)
 	})
 }
@@ -82,7 +83,7 @@ func (h *Handler) handleGetMessageByID(msg *nats.Msg) {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
-	HandleRequest(msg, func(ctx context.Context, req service.GetMessageByIDRequest) (*model.Message, error) {
+	HandleRequest(msg, func(ctx context.Context, req models.GetMessageByIDRequest) (*model.Message, error) {
 		return h.svc.GetMessageByID(ctx, userID, req)
 	})
 }
