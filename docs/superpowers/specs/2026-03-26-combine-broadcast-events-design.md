@@ -54,30 +54,36 @@ Add one field:
 
 ### Subscription Model (`pkg/model/subscription.go`)
 
-Add three fields:
+Restructure the `UserID` and add `Username` into a nested `User` field (`bson:"u"`), matching the MongoDB document structure where user info is stored as a subdocument. Add `LastSeenAt` and `HasMention` fields.
 
 | Field | Type | BSON | Purpose |
 |---|---|---|---|
-| `Username` | `string` | `username` | Denormalized from User, enables mention matching and subject routing without user lookup |
+| `User` | `SubscriptionUser` | `u` | Nested user object containing `_id` and `username` |
 | `LastSeenAt` | `time.Time` | `lastSeenAt` | When user last read the room (set by "mark as read" API, not in scope) |
 | `HasMention` | `bool` | `hasMention` | Whether user has an unread individual mention (set by broadcast-worker, cleared by "mark as read" API) |
 
-Full struct:
+Full structs:
 
 ```go
+type SubscriptionUser struct {
+    ID       string `json:"id" bson:"_id"`
+    Username string `json:"username" bson:"username"`
+}
+
 type Subscription struct {
-    ID                 string    `json:"id" bson:"_id"`
-    UserID             string    `json:"userId" bson:"userId"`
-    Username           string    `json:"username" bson:"username"`
-    RoomID             string    `json:"roomId" bson:"roomId"`
-    SiteID             string    `json:"siteId" bson:"siteId"`
-    Role               Role      `json:"role" bson:"role"`
-    LastSeenAt         time.Time `json:"lastSeenAt" bson:"lastSeenAt"`
-    HasMention         bool      `json:"hasMention" bson:"hasMention"`
-    SharedHistorySince time.Time `json:"sharedHistorySince" bson:"sharedHistorySince"`
-    JoinedAt           time.Time `json:"joinedAt" bson:"joinedAt"`
+    ID                 string           `json:"id" bson:"_id"`
+    User               SubscriptionUser `json:"u" bson:"u"`
+    RoomID             string           `json:"roomId" bson:"roomId"`
+    SiteID             string           `json:"siteId" bson:"siteId"`
+    Role               Role             `json:"role" bson:"role"`
+    LastSeenAt         time.Time        `json:"lastSeenAt" bson:"lastSeenAt"`
+    HasMention         bool             `json:"hasMention" bson:"hasMention"`
+    SharedHistorySince time.Time        `json:"sharedHistorySince" bson:"sharedHistorySince"`
+    JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`
 }
 ```
+
+**Breaking change:** The flat `UserID` field (`bson:"userId"`) is replaced by `User.ID` (`bson:"u._id"`). All services that query subscriptions by user ID must change their MongoDB filter from `"userId"` to `"u._id"`, and all Go code referencing `sub.UserID` must change to `sub.User.ID`. Similarly, `sub.User.Username` replaces what would have been `sub.Username`.
 
 ## Event Model
 
@@ -176,7 +182,7 @@ type Store interface {
 ```
 
 - `UpdateRoomOnNewMessage`: single MongoDB call. Always sets `lastMsgAt`, `lastMsgId`, `updatedAt`. Conditionally sets `lastMentionAllAt` only when `mentionAll` is `true`.
-- `SetSubscriptionMentions`: batch update setting `hasMention = true` for matching subscriptions by `roomID` and `username in [...]`. Uses the `username` field on subscriptions, not `userId`.
+- `SetSubscriptionMentions`: batch update setting `hasMention = true` for matching subscriptions by `roomID` and `u.username in [...]`. Uses the nested `u.username` field on subscriptions.
 
 ### Handler Flow — Group Room
 
@@ -198,7 +204,7 @@ type Store interface {
 6. If individual mentions found: `SetSubscriptionMentions(roomID, mentionedUsernames)`
 7. For each subscription:
    a. Build `RoomEvent` — includes full `Message`, personalized `HasMention`
-   b. Publish to `chat.user.{subscription.Username}.event.room`
+   b. Publish to `chat.user.{subscription.User.Username}.event.room`
 8. Always **2 publishes** (both participants including sender)
 
 ### Mention Detection

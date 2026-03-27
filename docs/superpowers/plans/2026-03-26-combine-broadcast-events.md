@@ -18,7 +18,16 @@
 |------|--------|----------------|
 | `pkg/model/room.go` | Modify | Add `Origin`, `LastMsgAt`, `LastMsgID`, `LastMentionAllAt` fields |
 | `pkg/model/user.go` | Modify | Add `Username` field |
-| `pkg/model/subscription.go` | Modify | Add `Username`, `LastSeenAt`, `HasMention` fields |
+| `pkg/model/subscription.go` | Modify | Restructure: nested `SubscriptionUser` under `u` field, add `LastSeenAt`, `HasMention` |
+| **Existing services (subscription model migration):** | | |
+| `message-worker/store_mongo.go` | Modify | Change `"userId"` filter to `"u._id"` |
+| `history-service/store_real.go` | Modify | Change `"userId"` filter to `"u._id"` |
+| `room-service/store_mongo.go` | Modify | Change `"userId"` filter to `"u._id"` |
+| `room-service/handler.go` | Modify | Use `SubscriptionUser{ID: ..., Username: ...}` |
+| `room-worker/handler.go` | Modify | Use `sub.User.ID` / `sub.User.Username` |
+| `inbox-worker/handler.go` | Modify | Use `SubscriptionUser{ID: ..., Username: ...}` |
+| `notification-worker/handler.go` | Modify | Use `sub.User.ID` |
+| Various `*_test.go` / `integration_test.go` | Modify | Update Subscription literals and assertions |
 | `pkg/model/event.go` | Modify | Add `RoomEvent` type, `RoomEventType`, keep `RoomMetadataUpdateEvent` for now |
 | `pkg/model/model_test.go` | Modify | Update round-trip tests for new fields, add `RoomEvent` test |
 | `pkg/subject/subject.go` | Modify | Add `RoomEvent()`, `UserRoomEvent()` builders |
@@ -33,6 +42,302 @@
 | `message-worker/store_mongo.go` | Modify | Remove `UpdateRoomLastMessage` impl and `rooms` collection |
 | `message-worker/handler.go` | Modify | Remove `UpdateRoomLastMessage` call |
 | `message-worker/handler_test.go` | Modify | Remove `UpdateRoomLastMessage` mock expectation |
+
+---
+
+### Task 0: Restructure Subscription Model (nested `u` field)
+
+**Files:**
+- Modify: `pkg/model/subscription.go`
+- Modify: `pkg/model/model_test.go`
+- Modify: `message-worker/store_mongo.go`
+- Modify: `message-worker/handler_test.go`
+- Modify: `message-worker/integration_test.go`
+- Modify: `history-service/store_real.go`
+- Modify: `history-service/handler_test.go`
+- Modify: `history-service/integration_test.go`
+- Modify: `room-service/store_mongo.go`
+- Modify: `room-service/handler.go`
+- Modify: `room-service/handler_test.go`
+- Modify: `room-service/integration_test.go`
+- Modify: `room-worker/handler.go`
+- Modify: `room-worker/handler_test.go`
+- Modify: `room-worker/integration_test.go`
+- Modify: `inbox-worker/handler.go`
+- Modify: `inbox-worker/handler_test.go`
+- Modify: `inbox-worker/integration_test.go`
+- Modify: `notification-worker/handler.go`
+- Modify: `notification-worker/handler_test.go`
+- Modify: `notification-worker/integration_test.go`
+- Modify: `broadcast-worker/handler_test.go`
+- Modify: `broadcast-worker/integration_test.go`
+
+This task replaces the flat `UserID` field on `Subscription` with a nested `SubscriptionUser` struct under the `u` BSON field. It also adds the `Username` field inside that nested struct. All existing services are updated to use the new structure.
+
+- [ ] **Step 1: Update `TestSubscriptionJSON` (Red phase)**
+
+In `pkg/model/model_test.go`, replace `TestSubscriptionJSON`. Note: `Subscription` now contains `SubscriptionUser` which has a slice-free struct — still `comparable`, so `roundTrip` works:
+
+```go
+func TestSubscriptionJSON(t *testing.T) {
+	s := model.Subscription{
+		ID: "s1",
+		User: model.SubscriptionUser{ID: "u1", Username: "alice"},
+		RoomID: "r1", SiteID: "site-a",
+		Role:               model.RoleOwner,
+		SharedHistorySince: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	roundTrip(t, &s, &model.Subscription{})
+}
+```
+
+- [ ] **Step 2: Run test to confirm it fails**
+
+```bash
+make test SERVICE=pkg/model
+```
+
+Expected: compilation error — `model.SubscriptionUser` undefined, `model.Subscription` has no field `User`.
+
+- [ ] **Step 3: Restructure `Subscription` in `pkg/model/subscription.go` (Green phase)**
+
+Replace the entire file:
+
+```go
+package model
+
+import "time"
+
+type Role string
+
+const (
+	RoleOwner  Role = "owner"
+	RoleMember Role = "member"
+)
+
+type SubscriptionUser struct {
+	ID       string `json:"id" bson:"_id"`
+	Username string `json:"username" bson:"username"`
+}
+
+type Subscription struct {
+	ID                 string           `json:"id" bson:"_id"`
+	User               SubscriptionUser `json:"u" bson:"u"`
+	RoomID             string           `json:"roomId" bson:"roomId"`
+	SiteID             string           `json:"siteId" bson:"siteId"`
+	Role               Role             `json:"role" bson:"role"`
+	SharedHistorySince time.Time        `json:"sharedHistorySince" bson:"sharedHistorySince"`
+	JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`
+}
+```
+
+- [ ] **Step 4: Run model tests**
+
+```bash
+make test SERVICE=pkg/model
+```
+
+Expected: `TestSubscriptionJSON` passes. Other services will have compile errors — that's expected, we fix them next.
+
+- [ ] **Step 5: Update all existing services — MongoDB queries**
+
+Change `"userId"` filter to `"u._id"` in these files:
+
+**`message-worker/store_mongo.go`** (line 31):
+```go
+filter := bson.M{"u._id": userID, "roomId": roomID}
+```
+
+**`history-service/store_real.go`** (line 29):
+```go
+filter := bson.M{"u._id": userID, "roomId": roomID}
+```
+
+**`room-service/store_mongo.go`** (line 52):
+```go
+filter := bson.M{"u._id": userID, "roomId": roomID}
+```
+
+- [ ] **Step 6: Update all existing services — Subscription creation**
+
+**`room-service/handler.go`** (line 111-119) — replace `UserID: req.CreatedBy` with nested struct:
+```go
+sub := model.Subscription{
+	ID:                 uuid.New().String(),
+	User:               model.SubscriptionUser{ID: req.CreatedBy},
+	RoomID:             room.ID,
+	SiteID:             req.SiteID,
+	Role:               model.RoleOwner,
+	SharedHistorySince: now,
+	JoinedAt:           now,
+}
+```
+
+**`room-worker/handler.go`** (line 44-52) — replace `UserID: req.InviteeID`:
+```go
+sub := model.Subscription{
+	ID:                 uuid.New().String(),
+	User:               model.SubscriptionUser{ID: req.InviteeID},
+	RoomID:             req.RoomID,
+	SiteID:             req.SiteID,
+	Role:               model.RoleMember,
+	SharedHistorySince: now,
+	JoinedAt:           now,
+}
+```
+
+**`inbox-worker/handler.go`** (line 64-72) — replace `UserID: invite.InviteeID`:
+```go
+sub := model.Subscription{
+	ID:                 uuid.New().String(),
+	User:               model.SubscriptionUser{ID: invite.InviteeID},
+	RoomID:             invite.RoomID,
+	SiteID:             invite.SiteID,
+	Role:               model.RoleMember,
+	SharedHistorySince: now,
+	JoinedAt:           now,
+}
+```
+
+- [ ] **Step 7: Update all existing services — `sub.UserID` references**
+
+**`room-worker/handler.go`** (lines 97-98) — change `members[i].UserID` to `members[i].User.ID`:
+```go
+if err := h.publish(subject.RoomMetadataChanged(members[i].User.ID), metaData); err != nil {
+	slog.Error("room metadata publish failed", "error", err, "userID", members[i].User.ID)
+```
+
+**`notification-worker/handler.go`** (lines 57-65) — change `subs[i].UserID` to `subs[i].User.ID`:
+```go
+senderID := evt.Message.UserID
+for i := range subs {
+	if subs[i].User.ID == senderID {
+		continue
+	}
+	subj := subject.Notification(subs[i].User.ID)
+	if err := h.pub.Publish(subj, notifData); err != nil {
+		slog.Error("publish notification failed", "error", err, "userID", subs[i].User.ID)
+```
+
+- [ ] **Step 8: Update all test files — Subscription literals**
+
+Replace `UserID: "..."` with `User: model.SubscriptionUser{ID: "..."}` in all test files:
+
+**`message-worker/handler_test.go`** (line 21):
+```go
+Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleMember}, nil)
+```
+
+**`message-worker/integration_test.go`** (line 87):
+```go
+db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+	ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleMember,
+})
+```
+
+**`history-service/handler_test.go`** (lines 21, 85):
+```go
+Return(&model.Subscription{
+	User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleMember,
+	SharedHistorySince: joinTime,
+}, nil)
+```
+
+**`history-service/integration_test.go`** (line 85):
+```go
+db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+	ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleMember,
+	SharedHistorySince: joinTime,
+})
+```
+
+**`room-service/handler_test.go`** (lines 44, 73, 95):
+```go
+Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2"}, RoomID: "r1", Role: model.RoleMember}, nil)
+Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+```
+
+**`room-service/integration_test.go`** (line 66):
+```go
+sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+```
+
+**`room-worker/handler_test.go`** (lines 28-31):
+```go
+[]model.Subscription{
+	{User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner},
+	{User: model.SubscriptionUser{ID: "u2"}, RoomID: "r1", Role: model.RoleMember},
+}
+```
+
+**`room-worker/integration_test.go`** (line 46):
+```go
+sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+```
+
+**`inbox-worker/handler_test.go`** (line 124) — change `sub.UserID` to `sub.User.ID`:
+```go
+if sub.User.ID != "bob" {
+	t.Errorf("subscription User.ID = %q, want %q", sub.User.ID, "bob")
+```
+
+**`inbox-worker/integration_test.go`** (line 74) — change MongoDB filter:
+```go
+err := db.Collection("subscriptions").FindOne(ctx, bson.M{"u._id": "u2", "roomId": "r1"}).Decode(&sub)
+```
+
+**`notification-worker/handler_test.go`** (lines 54-58):
+```go
+"room-1": {
+	{ID: "s1", User: model.SubscriptionUser{ID: "alice"}, RoomID: "room-1"},
+	{ID: "s2", User: model.SubscriptionUser{ID: "bob"}, RoomID: "room-1"},
+	{ID: "s3", User: model.SubscriptionUser{ID: "carol"}, RoomID: "room-1"},
+}
+```
+
+**`notification-worker/integration_test.go`** (lines 59-61):
+```go
+model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1"},
+model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2"}, RoomID: "r1"},
+model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3"}, RoomID: "r1"},
+```
+
+**`broadcast-worker/handler_test.go`** (lines 157-160):
+```go
+"dm-1": {
+	{ID: "s1", User: model.SubscriptionUser{ID: "alice"}, RoomID: "dm-1", SiteID: "site-a"},
+	{ID: "s2", User: model.SubscriptionUser{ID: "bob"}, RoomID: "dm-1", SiteID: "site-a"},
+}
+```
+
+**`broadcast-worker/integration_test.go`** (lines 62-63):
+```go
+model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1"},
+model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2"}, RoomID: "r1"},
+```
+
+- [ ] **Step 9: Run all unit tests**
+
+```bash
+make test
+```
+
+Expected: all unit tests pass across all services.
+
+- [ ] **Step 10: Lint and commit**
+
+```bash
+make fmt && make lint
+git add -A
+git commit -m "refactor(model): restructure Subscription with nested SubscriptionUser under u field
+
+Replace flat UserID field (bson:userId) with nested User field (bson:u)
+containing SubscriptionUser{ID, Username}. Update all services: MongoDB
+queries use u._id, Go code uses sub.User.ID. Prepares for username-based
+mention routing."
+```
 
 ---
 
@@ -137,14 +442,16 @@ type User struct {
 make test SERVICE=pkg/model
 ```
 
-- [ ] **Step 9: Update `TestSubscriptionJSON` to include new fields (Red phase)**
+- [ ] **Step 9: Update `TestSubscriptionJSON` to include `LastSeenAt` and `HasMention` (Red phase)**
 
-Replace the existing `TestSubscriptionJSON` function in `pkg/model/model_test.go`:
+Replace the existing `TestSubscriptionJSON` function in `pkg/model/model_test.go` (note: `User` field was already restructured in Task 0):
 
 ```go
 func TestSubscriptionJSON(t *testing.T) {
 	s := model.Subscription{
-		ID: "s1", UserID: "u1", Username: "alice", RoomID: "r1", SiteID: "site-a",
+		ID:   "s1",
+		User: model.SubscriptionUser{ID: "u1", Username: "alice"},
+		RoomID: "r1", SiteID: "site-a",
 		Role:               model.RoleOwner,
 		SharedHistorySince: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -163,22 +470,21 @@ make test SERVICE=pkg/model
 
 Expected: compilation error — `model.Subscription` has no fields `LastSeenAt`, `HasMention`.
 
-- [ ] **Step 11: Add `Username`, `LastSeenAt`, `HasMention` fields to `Subscription` in `pkg/model/subscription.go` (Green phase)**
+- [ ] **Step 11: Add `LastSeenAt` and `HasMention` fields to `Subscription` in `pkg/model/subscription.go` (Green phase)**
 
-Replace the `Subscription` struct:
+Add the two new fields to the `Subscription` struct (which already has the nested `User` from Task 0):
 
 ```go
 type Subscription struct {
-	ID                 string    `json:"id" bson:"_id"`
-	UserID             string    `json:"userId" bson:"userId"`
-	Username           string    `json:"username" bson:"username"`
-	RoomID             string    `json:"roomId" bson:"roomId"`
-	SiteID             string    `json:"siteId" bson:"siteId"`
-	Role               Role      `json:"role" bson:"role"`
-	SharedHistorySince time.Time `json:"sharedHistorySince" bson:"sharedHistorySince"`
-	JoinedAt           time.Time `json:"joinedAt" bson:"joinedAt"`
-	LastSeenAt         time.Time `json:"lastSeenAt" bson:"lastSeenAt"`
-	HasMention         bool      `json:"hasMention" bson:"hasMention"`
+	ID                 string           `json:"id" bson:"_id"`
+	User               SubscriptionUser `json:"u" bson:"u"`
+	RoomID             string           `json:"roomId" bson:"roomId"`
+	SiteID             string           `json:"siteId" bson:"siteId"`
+	Role               Role             `json:"role" bson:"role"`
+	SharedHistorySince time.Time        `json:"sharedHistorySince" bson:"sharedHistorySince"`
+	JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`
+	LastSeenAt         time.Time        `json:"lastSeenAt" bson:"lastSeenAt"`
+	HasMention         bool             `json:"hasMention" bson:"hasMention"`
 }
 ```
 
@@ -507,8 +813,8 @@ func (m *mongoStore) UpdateRoomOnNewMessage(ctx context.Context, roomID string, 
 
 func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string, usernames []string) error {
 	filter := bson.M{
-		"roomId":   roomID,
-		"username": bson.M{"$in": usernames},
+		"roomId":     roomID,
+		"u.username": bson.M{"$in": usernames},
 	}
 	update := bson.M{"$set": bson.M{"hasMention": true}}
 	_, err := m.subCol.UpdateMany(ctx, filter, update)
@@ -601,8 +907,8 @@ var (
 		SiteID: "site-a", Origin: "site-a", UserCount: 2,
 	}
 	testDMSubs = []model.Subscription{
-		{UserID: "alice-id", Username: "alice", RoomID: "dm-1"},
-		{UserID: "bob-id", Username: "bob", RoomID: "dm-1"},
+		{User: model.SubscriptionUser{ID: "alice-id", Username: "alice"}, RoomID: "dm-1"},
+		{User: model.SubscriptionUser{ID: "bob-id", Username: "bob"}, RoomID: "dm-1"},
 	}
 )
 
@@ -977,7 +1283,7 @@ func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, msg mod
 	}
 
 	for _, sub := range subs {
-		_, hasMention := mentionSet[sub.Username]
+		_, hasMention := mentionSet[sub.User.Username]
 
 		evt := buildRoomEvent(room, msg)
 		evt.HasMention = hasMention
@@ -985,10 +1291,10 @@ func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, msg mod
 
 		payload, err := json.Marshal(evt)
 		if err != nil {
-			return fmt.Errorf("marshal DM event for user %s: %w", sub.Username, err)
+			return fmt.Errorf("marshal DM event for user %s: %w", sub.User.Username, err)
 		}
-		if err := h.pub.Publish(subject.UserRoomEvent(sub.Username), payload); err != nil {
-			slog.Error("publish DM event failed", "error", err, "username", sub.Username)
+		if err := h.pub.Publish(subject.UserRoomEvent(sub.User.Username), payload); err != nil {
+			slog.Error("publish DM event failed", "error", err, "username", sub.User.Username)
 		}
 	}
 	return nil
@@ -1140,8 +1446,8 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s1", UserID: "u1", Username: "alice", RoomID: "r1"},
-		model.Subscription{ID: "s2", UserID: "u2", Username: "bob", RoomID: "r1"},
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1"},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r1"},
 	})
 	require.NoError(t, err)
 
@@ -1209,8 +1515,8 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s5", UserID: "u1", Username: "alice", RoomID: "r3"},
-		model.Subscription{ID: "s6", UserID: "u2", Username: "bob", RoomID: "r3"},
+		model.Subscription{ID: "s5", User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r3"},
+		model.Subscription{ID: "s6", User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r3"},
 	})
 	require.NoError(t, err)
 
@@ -1231,12 +1537,12 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 
 	// bob should have hasMention = true (matched by username)
 	var subBob model.Subscription
-	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"username": "bob", "roomId": "r3"}).Decode(&subBob))
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"u.username": "bob", "roomId": "r3"}).Decode(&subBob))
 	assert.True(t, subBob.HasMention)
 
 	// alice should have hasMention = false (unchanged)
 	var subAlice model.Subscription
-	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"username": "alice", "roomId": "r3"}).Decode(&subAlice))
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"u.username": "alice", "roomId": "r3"}).Decode(&subAlice))
 	assert.False(t, subAlice.HasMention)
 }
 
@@ -1249,8 +1555,8 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s7", UserID: "u1", Username: "alice", RoomID: "dm-1"},
-		model.Subscription{ID: "s8", UserID: "u2", Username: "bob", RoomID: "dm-1"},
+		model.Subscription{ID: "s7", User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "dm-1"},
+		model.Subscription{ID: "s8", User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "dm-1"},
 	})
 	require.NoError(t, err)
 
