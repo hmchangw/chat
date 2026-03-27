@@ -77,6 +77,14 @@ func Fanout(siteID, roomID string) string {
 	return fmt.Sprintf("fanout.%s.%s", siteID, roomID)
 }
 
+func RoomEvent(roomID string) string {
+	return fmt.Sprintf("chat.room.%s.event", roomID)
+}
+
+func UserRoomEvent(username string) string {
+	return fmt.Sprintf("chat.user.%s.event.room", username)
+}
+
 // --- Room CRUD request builders ---
 
 func RoomsCreate(userID string) string {

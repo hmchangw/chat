@@ -44,6 +44,8 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.u1.request.rooms.list"},
 		{"RoomsGet", subject.RoomsGet("u1", "r1"),
 			"chat.user.u1.request.rooms.get.r1"},
+		{"RoomEvent", subject.RoomEvent("r1"), "chat.room.r1.event"},
+		{"UserRoomEvent", subject.UserRoomEvent("alice"), "chat.user.alice.event.room"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
