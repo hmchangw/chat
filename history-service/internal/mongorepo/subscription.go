@@ -10,6 +10,8 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+const subscriptionsCollection = "subscriptions"
+
 // SubscriptionRepo implements service.SubscriptionRepository using MongoDB.
 type SubscriptionRepo struct {
 	subscriptions *Collection[model.Subscription]
@@ -18,7 +20,7 @@ type SubscriptionRepo struct {
 // NewSubscriptionRepo creates a new MongoDB subscription repository.
 func NewSubscriptionRepo(db *mongo.Database) *SubscriptionRepo {
 	return &SubscriptionRepo{
-		subscriptions: NewCollection[model.Subscription](db.Collection("subscriptions")),
+		subscriptions: NewCollection[model.Subscription](db.Collection(subscriptionsCollection)),
 	}
 }
 
