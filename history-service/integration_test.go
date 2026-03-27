@@ -83,7 +83,7 @@ func TestRealStore_Integration(t *testing.T) {
 	// Seed subscription
 	joinTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
-		ID: "s1", UserID: "u1", RoomID: "r1", Role: model.RoleMember,
+		ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleMember,
 		SharedHistorySince: joinTime,
 	})
 
@@ -92,8 +92,8 @@ func TestRealStore_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSubscription: %v", err)
 	}
-	if sub.UserID != "u1" {
-		t.Errorf("UserID = %q", sub.UserID)
+	if sub.User.ID != "u1" {
+		t.Errorf("User.ID = %q", sub.User.ID)
 	}
 
 	// Seed messages in Cassandra

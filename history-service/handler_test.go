@@ -19,7 +19,7 @@ func TestHandler_HandleHistory_Success(t *testing.T) {
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "u1", "r1").
 		Return(&model.Subscription{
-			UserID: "u1", RoomID: "r1", Role: model.RoleMember,
+			User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleMember,
 			SharedHistorySince: joinTime,
 		}, nil)
 
@@ -83,7 +83,7 @@ func TestHandler_HandleHistory_SharedHistorySinceFilter(t *testing.T) {
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "u1", "r1").
 		Return(&model.Subscription{
-			UserID: "u1", RoomID: "r1",
+			User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1",
 			SharedHistorySince: joinTime,
 		}, nil)
 

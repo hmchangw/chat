@@ -56,9 +56,9 @@ func TestNotificationWorker_Integration(t *testing.T) {
 
 	// Seed subscriptions
 	db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s1", UserID: "u1", RoomID: "r1"},
-		model.Subscription{ID: "s2", UserID: "u2", RoomID: "r1"},
-		model.Subscription{ID: "s3", UserID: "u3", RoomID: "r1"},
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1"},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2"}, RoomID: "r1"},
+		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3"}, RoomID: "r1"},
 	})
 
 	memberLookup := &mongoMemberLookup{col: db.Collection("subscriptions")}

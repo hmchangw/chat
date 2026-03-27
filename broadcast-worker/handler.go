@@ -83,9 +83,9 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		}
 
 		for i := range subs {
-			subj := subject.UserMsgStream(subs[i].UserID)
+			subj := subject.UserMsgStream(subs[i].User.ID)
 			if err := h.pub.Publish(subj, evtData); err != nil {
-				slog.Error("publish to user stream failed", "error", err, "userID", subs[i].UserID)
+				slog.Error("publish to user stream failed", "error", err, "userID", subs[i].User.ID)
 			}
 		}
 

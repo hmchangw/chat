@@ -9,12 +9,17 @@ const (
 	RoleMember Role = "member"
 )
 
+type SubscriptionUser struct {
+	ID       string `json:"id" bson:"_id"`
+	Username string `json:"username" bson:"username"`
+}
+
 type Subscription struct {
-	ID                 string    `json:"id" bson:"_id"`
-	UserID             string    `json:"userId" bson:"userId"`
-	RoomID             string    `json:"roomId" bson:"roomId"`
-	SiteID             string    `json:"siteId" bson:"siteId"`
-	Role               Role      `json:"role" bson:"role"`
-	SharedHistorySince time.Time `json:"sharedHistorySince" bson:"sharedHistorySince"`
-	JoinedAt           time.Time `json:"joinedAt" bson:"joinedAt"`
+	ID                 string           `json:"id" bson:"_id"`
+	User               SubscriptionUser `json:"u" bson:"u"`
+	RoomID             string           `json:"roomId" bson:"roomId"`
+	SiteID             string           `json:"siteId" bson:"siteId"`
+	Role               Role             `json:"role" bson:"role"`
+	SharedHistorySince time.Time        `json:"sharedHistorySince" bson:"sharedHistorySince"`
+	JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`
 }

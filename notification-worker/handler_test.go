@@ -52,9 +52,9 @@ func TestHandleMessage_FanOutSkipsSender(t *testing.T) {
 	lookup := &stubMemberLookup{
 		subs: map[string][]model.Subscription{
 			"room-1": {
-				{ID: "s1", UserID: "alice", RoomID: "room-1"},
-				{ID: "s2", UserID: "bob", RoomID: "room-1"},
-				{ID: "s3", UserID: "carol", RoomID: "room-1"},
+				{ID: "s1", User: model.SubscriptionUser{ID: "alice"}, RoomID: "room-1"},
+				{ID: "s2", User: model.SubscriptionUser{ID: "bob"}, RoomID: "room-1"},
+				{ID: "s3", User: model.SubscriptionUser{ID: "carol"}, RoomID: "room-1"},
 			},
 		},
 	}
@@ -152,7 +152,7 @@ func TestHandleMessage_SoleMember(t *testing.T) {
 	lookup := &stubMemberLookup{
 		subs: map[string][]model.Subscription{
 			"room-solo": {
-				{ID: "s1", UserID: "alice", RoomID: "room-solo"},
+				{ID: "s1", User: model.SubscriptionUser{ID: "alice"}, RoomID: "room-solo"},
 			},
 		},
 	}

@@ -110,7 +110,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 	// Auto-create owner subscription
 	sub := model.Subscription{
 		ID:                 uuid.New().String(),
-		UserID:             req.CreatedBy,
+		User:               model.SubscriptionUser{ID: req.CreatedBy},
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
 		Role:               model.RoleOwner,

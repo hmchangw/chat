@@ -155,8 +155,8 @@ func TestHandleMessage_DMRoom(t *testing.T) {
 		},
 		subs: map[string][]model.Subscription{
 			"dm-1": {
-				{ID: "s1", UserID: "alice", RoomID: "dm-1", SiteID: "site-a"},
-				{ID: "s2", UserID: "bob", RoomID: "dm-1", SiteID: "site-a"},
+				{ID: "s1", User: model.SubscriptionUser{ID: "alice"}, RoomID: "dm-1", SiteID: "site-a"},
+				{ID: "s2", User: model.SubscriptionUser{ID: "bob"}, RoomID: "dm-1", SiteID: "site-a"},
 			},
 		},
 	}

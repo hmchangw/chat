@@ -18,7 +18,7 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "u1", "r1").
-		Return(&model.Subscription{UserID: "u1", RoomID: "r1", Role: model.RoleMember}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleMember}, nil)
 	store.EXPECT().
 		SaveMessage(gomock.Any(), gomock.Any()).
 		Return(nil)

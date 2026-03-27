@@ -43,7 +43,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 	// Create subscription for invitee
 	sub := model.Subscription{
 		ID:                 uuid.New().String(),
-		UserID:             req.InviteeID,
+		User:               model.SubscriptionUser{ID: req.InviteeID},
 		RoomID:             req.RoomID,
 		SiteID:             req.SiteID,
 		Role:               model.RoleMember,
@@ -94,8 +94,8 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 
 		members, _ := h.store.ListByRoom(ctx, req.RoomID)
 		for i := range members {
-			if err := h.publish(subject.RoomMetadataChanged(members[i].UserID), metaData); err != nil {
-				slog.Error("room metadata publish failed", "error", err, "userID", members[i].UserID)
+			if err := h.publish(subject.RoomMetadataChanged(members[i].User.ID), metaData); err != nil {
+				slog.Error("room metadata publish failed", "error", err, "userID", members[i].User.ID)
 			}
 		}
 	}

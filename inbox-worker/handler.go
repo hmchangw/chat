@@ -63,7 +63,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) 
 	now := time.Now()
 	sub := model.Subscription{
 		ID:                 uuid.New().String(),
-		UserID:             invite.InviteeID,
+		User:               model.SubscriptionUser{ID: invite.InviteeID},
 		RoomID:             invite.RoomID,
 		SiteID:             invite.SiteID,
 		Role:               model.RoleMember,

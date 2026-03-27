@@ -41,7 +41,7 @@ func TestHandler_InviteOwner_Success(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "u1", "r1").
-		Return(&model.Subscription{UserID: "u1", RoomID: "r1", Role: model.RoleOwner}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
 		Return(&model.Room{ID: "r1", Name: "general", UserCount: 1}, nil)
@@ -70,7 +70,7 @@ func TestHandler_InviteMember_Rejected(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "u2", "r1").
-		Return(&model.Subscription{UserID: "u2", RoomID: "r1", Role: model.RoleMember}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2"}, RoomID: "r1", Role: model.RoleMember}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(data []byte) error { return nil },
@@ -92,7 +92,7 @@ func TestHandler_InviteExceedsMaxSize(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "u1", "r1").
-		Return(&model.Subscription{UserID: "u1", RoomID: "r1", Role: model.RoleOwner}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
 		Return(&model.Room{ID: "r1", Name: "general", UserCount: 1000}, nil)

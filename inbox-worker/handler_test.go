@@ -121,8 +121,8 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 		t.Fatalf("expected 1 subscription, got %d", len(subs))
 	}
 	sub := subs[0]
-	if sub.UserID != "bob" {
-		t.Errorf("subscription UserID = %q, want %q", sub.UserID, "bob")
+	if sub.User.ID != "bob" {
+		t.Errorf("subscription User.ID = %q, want %q", sub.User.ID, "bob")
 	}
 	if sub.RoomID != "room-1" {
 		t.Errorf("subscription RoomID = %q, want %q", sub.RoomID, "room-1")

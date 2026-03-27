@@ -59,8 +59,8 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 		ID: "r1", Name: "general", Type: model.RoomTypeGroup, UserCount: 2,
 	})
 	db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s1", UserID: "u1", RoomID: "r1"},
-		model.Subscription{ID: "s2", UserID: "u2", RoomID: "r1"},
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1"},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2"}, RoomID: "r1"},
 	})
 
 	lookup := &mongoRoomLookup{
