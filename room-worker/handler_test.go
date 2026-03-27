@@ -14,9 +14,13 @@ func TestHandler_ProcessInvite(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 
+	var createdSub *model.Subscription
 	store.EXPECT().
 		CreateSubscription(gomock.Any(), gomock.Any()).
-		Return(nil)
+		DoAndReturn(func(_ context.Context, s *model.Subscription) error {
+			createdSub = s
+			return nil
+		})
 	store.EXPECT().
 		IncrementUserCount(gomock.Any(), "r1").
 		Return(nil)
@@ -26,8 +30,8 @@ func TestHandler_ProcessInvite(t *testing.T) {
 	store.EXPECT().
 		ListByRoom(gomock.Any(), "r1").
 		Return([]model.Subscription{
-			{User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner},
-			{User: model.SubscriptionUser{ID: "u2"}, RoomID: "r1", Role: model.RoleMember},
+			{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleOwner},
+			{User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r1", Role: model.RoleMember},
 		}, nil)
 
 	var published []publishedMsg
@@ -36,16 +40,39 @@ func TestHandler_ProcessInvite(t *testing.T) {
 		return nil
 	}}
 
-	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", RoomID: "r1", SiteID: "site-a"}
+	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", InviteeUsername: "bob", RoomID: "r1", SiteID: "site-a"}
 	data, _ := json.Marshal(req)
 
 	if err := h.processInvite(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// Verify created subscription has the correct username
+	if createdSub == nil {
+		t.Fatal("expected subscription to be created")
+	}
+	if createdSub.User.Username != "bob" {
+		t.Errorf("expected subscription username %q, got %q", "bob", createdSub.User.Username)
+	}
+
 	// Verify notifications published (subscription update + room metadata for existing members)
-	if len(published) < 2 {
-		t.Errorf("expected at least 2 publishes, got %d", len(published))
+	if len(published) < 3 {
+		t.Errorf("expected at least 3 publishes, got %d", len(published))
+	}
+
+	subjectSet := make(map[string]bool)
+	for _, p := range published {
+		subjectSet[p.subj] = true
+	}
+
+	if !subjectSet["chat.user.bob.event.subscription.update"] {
+		t.Errorf("expected subscription update published to chat.user.bob.event.subscription.update, subjects: %v", subjectSet)
+	}
+	if !subjectSet["chat.user.alice.event.room.metadata.update"] {
+		t.Errorf("expected room metadata published to chat.user.alice.event.room.metadata.update, subjects: %v", subjectSet)
+	}
+	if !subjectSet["chat.user.bob.event.room.metadata.update"] {
+		t.Errorf("expected room metadata published to chat.user.bob.event.room.metadata.update, subjects: %v", subjectSet)
 	}
 }
 
