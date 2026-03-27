@@ -1,23 +1,24 @@
 # Cassandra Message Data Model
-Description: This schema is for message related operation in Cassandra, include query, upsert... 
+Description: This schema is for message-related operation in Cassandra, include query, upsert... 
 ## Schema
 ### UDT
 #### Participant
 ```cql
 CREATE TYPE IF NOT EXISTS "Participant"(
   id UUID,
-  userName TEXT,
-  engName TEXT,
-  appId UUID,
-  appName TEXT,
-  isBot BOOLEAN
+  user_name TEXT,
+  eng_name TEXT,
+  tsmc_name TEXT,
+  app_id UUID,
+  app_name TEXT,
+  is_bot BOOLEAN
 );
 ```
 #### Card
 ```cql
 CREATE TYPE IF NOT EXISTS "Card"(
   template TEXT,
-  data BLOB,
+  data BLOB
 );
 ```
 #### CardAction
@@ -25,10 +26,10 @@ CREATE TYPE IF NOT EXISTS "Card"(
 CREATE TYPE IF NOT EXISTS "CardAction"(
   verb TEXT,
   text TEXT,
-  cardId UUID,
-  displayText TEXT,
-  hideExecLog BOOLEAN,
-  cardTmid TEXT,
+  card_id UUID,
+  display_text TEXT,
+  hide_exec_log BOOLEAN,
+  card_tmid TEXT,
   data BLOB
 );
 ```
@@ -37,89 +38,89 @@ CREATE TYPE IF NOT EXISTS "CardAction"(
 CREATE TYPE IF NOT EXISTS "File"(
   id TEXT,
   name TEXT,
-  type TEXT,
+  type TEXT
 );
 ```
 ### Table
 #### messages_by_room
 ```cql
 CREATE TABLE IF NOT EXISTS messages_by_room(
-  roomId UUID,
-  createAt TIMESTAMP,
-  messageId UUID,
+  room_id UUID,
+  created_at TIMESTAMP,
+  message_id UUID,
   sender FROZEN<"Participant">,
-  targetUser FROZEN<"Participant">,
+  target_user FROZEN<"Participant">,
   msg TEXT,
-  mentions SET<"Participants">,
+  mentions SET<FROZEN<"Participant">>,
   attachments LIST<BLOB>,
   file FROZEN<"File">,
   card FROZEN<"Card">,
-  cardAction FROZEN<"CardAction">,
-  visibleTo TEXT,
+  card_action FROZEN<"CardAction">,
+  visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
   deleted BOOLEAN,
-  sysMsgType TEXT,
-  sysMsgData BLOB,
-  federateFrom TEXT,
-  editedAt TIMESTAMP,
-  updateAt TIMESTAMP,
-  PRIMARY KEY((roomId),createAt,messageId)
-)WITH CLUSTRING ORDER BY (createAt DESC, messageId DESC);
+  sys_msg_type TEXT,
+  sys_msg_data BLOB,
+  federate_from TEXT,
+  edited_at TIMESTAMP,
+  update_at TIMESTAMP,
+  PRIMARY KEY((room_id),created_at,message_id)
+)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
 #### thread_messages_by_room
 ```cql
 CREATE TABLE IF NOT EXISTS thread_messages_by_room(
-  roomId UUID,
-  threadRoomId UUID,
-  createAt TIMESTAMP,
-  messageId UUID,
-  threadMessageId UUID,
+  room_id UUID,
+  thread_room_id UUID,
+  created_at TIMESTAMP,
+  message_id UUID,
+  thread_message_id UUID,
   tshow BOOLEAN,
   sender FROZEN<"Participant">,
-  targetUser FROZEN<"Participant">,
+  target_user FROZEN<"Participant">,
   msg TEXT,
-  mentions SET<"Participants">,
+  mentions SET<FROZEN<"Participant">>,
   attachments LIST<BLOB>,
   file FROZEN<"File">,
   card FROZEN<"Card">,
-  cardAction FROZEN<"CardAction">,
-  visibleTo TEXT,
+  card_action FROZEN<"CardAction">,
+  visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
   deleted BOOLEAN,
-  sysMsgType TEXT,
-  sysMsgData BLOB,
-  federateFrom TEXT,
-  editedAt TIMESTAMP,
-  updateAt TIMESTAMP,
-  PRIMARY KEY((roomId),threadRoomId,createAt,messageId)
-)WITH CLUSTRING ORDER BY (threadRoomId DESC,createAt DESC, messageId DESC);
+  sys_msg_type TEXT,
+  sys_msg_data BLOB,
+  federate_from TEXT,
+  edited_at TIMESTAMP,
+  updated_at TIMESTAMP,
+  PRIMARY KEY((room_id),thread_room_id,created_at,message_id)
+)WITH CLUSTERING ORDER BY (threadRoomId DESC,createAt DESC, messageId DESC);
 ```
 #### pinned_messages_by_room
 ```cql
 CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
-  roomId UUID,
-  createAt TIMESTAMP, // =pinnedAt
-  messageId UUID,
+  room_id UUID,
+  created_at TIMESTAMP, // =pinnedAt
+  message_id UUID,
   sender FROZEN<"Participant">,
-  targetUser FROZEN<"Participant">,
+  target_user FROZEN<"Participant">,
   msg TEXT,
-  mentions SET<"Participants">,
+  mentions SET<FROZEN<"Participant">>,
   attachments LIST<BLOB>,
   file FROZEN<"File">,
   card FROZEN<"Card">,
-  cardAction FROZEN<"CardAction">,
-  visibleTo TEXT,
+  card_action FROZEN<"CardAction">,
+  visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
   deleted BOOLEAN,
-  sysMsgType TEXT,
-  sysMsgData BLOB,
-  federateFrom TEXT,
-  editedAt TIMESTAMP,
-  updateAt TIMESTAMP,
-  pinnedBy FROZEN<"Participant">,
-  PRIMARY KEY((roomId),createAt,messageId)
-)WITH CLUSTRING ORDER BY (createAt DESC, messageId DESC);
+  sys_msg_type TEXT,
+  sys_msg_data BLOB,
+  federate_from TEXT,
+  edited_at TIMESTAMP,
+  updated_at TIMESTAMP,
+  pinned_by FROZEN<"Participant">,
+  PRIMARY KEY((room_id),created_at,message_id)
+)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
