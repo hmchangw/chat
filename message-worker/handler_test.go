@@ -22,9 +22,6 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 	store.EXPECT().
 		SaveMessage(gomock.Any(), gomock.Any()).
 		Return(nil)
-	store.EXPECT().
-		UpdateRoomLastMessage(gomock.Any(), "r1", gomock.Any()).
-		Return(nil)
 
 	var published []*nats.Msg
 	publisher := func(msg *nats.Msg) error {

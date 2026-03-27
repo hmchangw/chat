@@ -90,9 +90,6 @@ func (h *Handler) processMessage(ctx context.Context, userID, roomID, siteID str
 	if err := h.store.SaveMessage(ctx, &msg); err != nil {
 		return nil, fmt.Errorf("save message: %w", err)
 	}
-	if err := h.store.UpdateRoomLastMessage(ctx, roomID, now); err != nil {
-		slog.Warn("update room last message failed", "error", err, "roomID", roomID)
-	}
 
 	// Publish fanout event with Nats-Msg-Id for JetStream dedup
 	evt := model.MessageEvent{Message: msg, RoomID: roomID, SiteID: siteID}

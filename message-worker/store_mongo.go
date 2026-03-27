@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/gocql/gocql"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -14,14 +13,12 @@ import (
 
 type MongoStore struct {
 	subscriptions *mongo.Collection
-	rooms         *mongo.Collection
 	cassSession   *gocql.Session
 }
 
 func NewMongoStore(db *mongo.Database, cassSession *gocql.Session) *MongoStore {
 	return &MongoStore{
 		subscriptions: db.Collection("subscriptions"),
-		rooms:         db.Collection("rooms"),
 		cassSession:   cassSession,
 	}
 }
@@ -40,11 +37,4 @@ func (s *MongoStore) SaveMessage(ctx context.Context, msg *model.Message) error 
 		`INSERT INTO messages (room_id, created_at, id, user_id, content) VALUES (?, ?, ?, ?, ?)`,
 		msg.RoomID, msg.CreatedAt, msg.ID, msg.UserID, msg.Content,
 	).WithContext(ctx).Exec()
-}
-
-func (s *MongoStore) UpdateRoomLastMessage(ctx context.Context, roomID string, at time.Time) error {
-	filter := bson.M{"_id": roomID}
-	update := bson.M{"$set": bson.M{"updatedAt": at}}
-	_, err := s.rooms.UpdateOne(ctx, filter, update)
-	return err
 }
