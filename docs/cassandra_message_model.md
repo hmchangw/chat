@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   file FROZEN<"File">,
   card FROZEN<"Card">,
   card_action FROZEN<"CardAction">,
+  tshow BOOLEAN, // means from thread [also send to channel]
+  thread_parent_created_at TIMESTAMP, // for FE to query thread parent message 
   visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
@@ -76,7 +78,6 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   created_at TIMESTAMP,
   message_id UUID,
   thread_message_id UUID,
-  tshow BOOLEAN,
   sender FROZEN<"Participant">,
   target_user FROZEN<"Participant">,
   msg TEXT,
