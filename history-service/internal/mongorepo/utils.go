@@ -11,11 +11,41 @@ import (
 )
 
 // QueryOptions configures optional query behavior for Collection methods.
+// Use the typed terminal methods (findOneOpts, findOpts) to convert into
+// the appropriate mongo-driver options for each operation.
 type QueryOptions struct {
 	Projection any
 	Sort       any
 	Limit      *int64
 	Skip       *int64
+}
+
+// findOneOpts produces mongo FindOne options. Only projection is applied —
+// sort, limit, and skip are not relevant for single-document lookups.
+func (qo *QueryOptions) findOneOpts() *options.FindOneOptionsBuilder {
+	opts := options.FindOne()
+	if qo.Projection != nil {
+		opts.SetProjection(qo.Projection)
+	}
+	return opts
+}
+
+// findOpts produces mongo Find options with all applicable settings.
+func (qo *QueryOptions) findOpts() *options.FindOptionsBuilder {
+	opts := options.Find()
+	if qo.Projection != nil {
+		opts.SetProjection(qo.Projection)
+	}
+	if qo.Sort != nil {
+		opts.SetSort(qo.Sort)
+	}
+	if qo.Limit != nil {
+		opts.SetLimit(*qo.Limit)
+	}
+	if qo.Skip != nil {
+		opts.SetSkip(*qo.Skip)
+	}
+	return opts
 }
 
 // QueryOption is a functional option for configuring queries.
@@ -29,7 +59,7 @@ func WithProjection(projection any) QueryOption {
 	}
 }
 
-// WithSort sets the sort order for results.
+// WithSort sets the sort order for results. Only applies to FindMany.
 // Use bson.M{"field": 1} for ascending, bson.M{"field": -1} for descending.
 func WithSort(sort any) QueryOption {
 	return func(o *QueryOptions) {
@@ -37,18 +67,26 @@ func WithSort(sort any) QueryOption {
 	}
 }
 
-// WithLimit sets the maximum number of results to return.
+// WithLimit sets the maximum number of results to return. Only applies to FindMany.
 func WithLimit(limit int64) QueryOption {
 	return func(o *QueryOptions) {
 		o.Limit = &limit
 	}
 }
 
-// WithSkip sets the number of results to skip.
+// WithSkip sets the number of results to skip. Only applies to FindMany.
 func WithSkip(skip int64) QueryOption {
 	return func(o *QueryOptions) {
 		o.Skip = &skip
 	}
+}
+
+func apply(opts []QueryOption) *QueryOptions {
+	qo := &QueryOptions{}
+	for _, opt := range opts {
+		opt(qo)
+	}
+	return qo
 }
 
 // Collection is a type-safe wrapper around *mongo.Collection.
@@ -65,22 +103,10 @@ func NewCollection[T any](col *mongo.Collection) *Collection[T] {
 
 // FindOne returns the first document matching the filter decoded into *T.
 // Returns (nil, nil) when no document matches — not an error.
-// Filter accepts any type the mongo driver supports (bson.M, bson.D, structs, etc.).
+// Supports WithProjection only; sort/limit/skip are ignored.
 func (c *Collection[T]) FindOne(ctx context.Context, filter any, opts ...QueryOption) (*T, error) {
-	qo := applyOptions(opts)
-	findOpts := options.FindOne()
-	if qo.Projection != nil {
-		findOpts.SetProjection(qo.Projection)
-	}
-	if qo.Sort != nil {
-		findOpts.SetSort(qo.Sort)
-	}
-	if qo.Skip != nil {
-		findOpts.SetSkip(*qo.Skip)
-	}
-
 	var result T
-	err := c.col.FindOne(ctx, filter, findOpts).Decode(&result)
+	err := c.col.FindOne(ctx, filter, apply(opts).findOneOpts()).Decode(&result)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
 	}
@@ -97,24 +123,9 @@ func (c *Collection[T]) FindByID(ctx context.Context, id string, opts ...QueryOp
 
 // FindMany returns all documents matching the filter decoded into []T.
 // Returns an empty slice (not nil) when no documents match.
-// Filter accepts any type the mongo driver supports (bson.M, bson.D, structs, etc.).
+// Supports WithProjection, WithSort, WithLimit, WithSkip.
 func (c *Collection[T]) FindMany(ctx context.Context, filter any, opts ...QueryOption) ([]T, error) {
-	qo := applyOptions(opts)
-	findOpts := options.Find()
-	if qo.Projection != nil {
-		findOpts.SetProjection(qo.Projection)
-	}
-	if qo.Sort != nil {
-		findOpts.SetSort(qo.Sort)
-	}
-	if qo.Limit != nil {
-		findOpts.SetLimit(*qo.Limit)
-	}
-	if qo.Skip != nil {
-		findOpts.SetSkip(*qo.Skip)
-	}
-
-	cursor, err := c.col.Find(ctx, filter, findOpts)
+	cursor, err := c.col.Find(ctx, filter, apply(opts).findOpts())
 	if err != nil {
 		return nil, fmt.Errorf("querying %s: %w", c.name, err)
 	}
@@ -130,11 +141,3 @@ func (c *Collection[T]) FindMany(ctx context.Context, filter any, opts ...QueryO
 
 // Raw returns the underlying *mongo.Collection for escape-hatch scenarios.
 func (c *Collection[T]) Raw() *mongo.Collection { return c.col }
-
-func applyOptions(opts []QueryOption) *QueryOptions {
-	qo := &QueryOptions{}
-	for _, opt := range opts {
-		opt(qo)
-	}
-	return qo
-}
