@@ -110,7 +110,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 	// Auto-create owner subscription
 	sub := model.Subscription{
 		ID:                 uuid.New().String(),
-		User:               model.SubscriptionUser{ID: req.CreatedBy},
+		User:               model.SubscriptionUser{ID: req.CreatedBy, Username: req.CreatedByUsername},
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
 		Role:               model.RoleOwner,
@@ -125,14 +125,14 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 }
 
 func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([]byte, error) {
-	// Extract userID and roomID from the subject before unmarshalling for performance.
-	inviterID, roomID, ok := subject.ParseUserRoomSubject(subj)
+	// Extract username and roomID from the subject before unmarshalling for performance.
+	inviterUsername, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
 		return nil, fmt.Errorf("invalid invite subject: %s", subj)
 	}
 
 	// Verify inviter is owner (cheap DB lookup before expensive unmarshal)
-	sub, err := h.store.GetSubscription(ctx, inviterID, roomID)
+	sub, err := h.store.GetSubscription(ctx, inviterUsername, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("inviter not found: %w", err)
 	}
