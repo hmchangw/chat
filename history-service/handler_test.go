@@ -17,9 +17,9 @@ func TestHandler_HandleHistory_Success(t *testing.T) {
 
 	joinTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "u1", "r1").
+		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{
-			UserID: "u1", RoomID: "r1", Role: model.RoleMember,
+			User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleMember,
 			SharedHistorySince: joinTime,
 		}, nil)
 
@@ -41,7 +41,7 @@ func TestHandler_HandleHistory_Success(t *testing.T) {
 	req := model.HistoryRequest{RoomID: "r1", Limit: 3}
 	data, _ := json.Marshal(req)
 
-	resp, err := h.handleHistory("u1", "r1", data)
+	resp, err := h.handleHistory("alice", "r1", data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestHandler_HandleHistory_NotSubscribed(t *testing.T) {
 	store := NewMockHistoryStore(ctrl)
 
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "u1", "r1").
+		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(nil, fmt.Errorf("subscription not found"))
 
 	h := &Handler{store: store}
@@ -69,7 +69,7 @@ func TestHandler_HandleHistory_NotSubscribed(t *testing.T) {
 	req := model.HistoryRequest{RoomID: "r1", Limit: 10}
 	data, _ := json.Marshal(req)
 
-	_, err := h.handleHistory("u1", "r1", data)
+	_, err := h.handleHistory("alice", "r1", data)
 	if err == nil {
 		t.Fatal("expected error for unsubscribed user")
 	}
@@ -81,9 +81,9 @@ func TestHandler_HandleHistory_SharedHistorySinceFilter(t *testing.T) {
 
 	joinTime := time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC)
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "u1", "r1").
+		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{
-			UserID: "u1", RoomID: "r1",
+			User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1",
 			SharedHistorySince: joinTime,
 		}, nil)
 
@@ -99,7 +99,7 @@ func TestHandler_HandleHistory_SharedHistorySinceFilter(t *testing.T) {
 	req := model.HistoryRequest{RoomID: "r1", Limit: 100}
 	data, _ := json.Marshal(req)
 
-	resp, err := h.handleHistory("u1", "r1", data)
+	resp, err := h.handleHistory("alice", "r1", data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

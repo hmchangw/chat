@@ -17,13 +17,10 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 	store := NewMockMessageStore(ctrl)
 
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "u1", "r1").
-		Return(&model.Subscription{UserID: "u1", RoomID: "r1", Role: model.RoleMember}, nil)
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleMember}, nil)
 	store.EXPECT().
 		SaveMessage(gomock.Any(), gomock.Any()).
-		Return(nil)
-	store.EXPECT().
-		UpdateRoomLastMessage(gomock.Any(), "r1", gomock.Any()).
 		Return(nil)
 
 	var published []*nats.Msg
@@ -37,7 +34,7 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 	req := model.SendMessageRequest{RoomID: "r1", Content: "hello", RequestID: "req-1"}
 	data, _ := json.Marshal(req)
 
-	reply, err := h.processMessage(context.Background(), "u1", "r1", "site-a", data)
+	reply, err := h.processMessage(context.Background(), "alice", "r1", "site-a", data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +59,7 @@ func TestHandler_ProcessMessage_NotSubscribed(t *testing.T) {
 	store := NewMockMessageStore(ctrl)
 
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "u1", "r1").
+		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(nil, fmt.Errorf("subscription not found"))
 
 	h := &Handler{store: store, siteID: "site-a", publishMsg: func(*nats.Msg) error { return nil }}
@@ -70,7 +67,7 @@ func TestHandler_ProcessMessage_NotSubscribed(t *testing.T) {
 	req := model.SendMessageRequest{RoomID: "r1", Content: "hello", RequestID: "req-1"}
 	data, _ := json.Marshal(req)
 
-	_, err := h.processMessage(context.Background(), "u1", "r1", "site-a", data)
+	_, err := h.processMessage(context.Background(), "alice", "r1", "site-a", data)
 	if err == nil {
 		t.Fatal("expected error for unsubscribed user")
 	}

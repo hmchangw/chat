@@ -71,7 +71,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 
 	// Verify subscription was created in MongoDB
 	var sub model.Subscription
-	err := db.Collection("subscriptions").FindOne(ctx, bson.M{"userId": "u2", "roomId": "r1"}).Decode(&sub)
+	err := db.Collection("subscriptions").FindOne(ctx, bson.M{"u._id": "u2", "roomId": "r1"}).Decode(&sub)
 	if err != nil {
 		t.Fatalf("subscription not found: %v", err)
 	}

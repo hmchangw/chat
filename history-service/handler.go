@@ -25,13 +25,13 @@ func NewHandler(store HistoryStore) *Handler {
 // NatsHandleHistory handles NATS request/reply for message history.
 // Subject: chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history
 func (h *Handler) NatsHandleHistory(msg *nats.Msg) {
-	userID, roomID, ok := subject.ParseUserRoomSubject(msg.Subject)
+	username, roomID, ok := subject.ParseUserRoomSubject(msg.Subject)
 	if !ok {
 		natsutil.ReplyError(msg, "invalid subject")
 		return
 	}
 
-	resp, err := h.handleHistory(userID, roomID, msg.Data)
+	resp, err := h.handleHistory(username, roomID, msg.Data)
 	if err != nil {
 		natsutil.ReplyError(msg, err.Error())
 		return
@@ -41,11 +41,11 @@ func (h *Handler) NatsHandleHistory(msg *nats.Msg) {
 	}
 }
 
-func (h *Handler) handleHistory(userID, roomID string, data []byte) ([]byte, error) {
+func (h *Handler) handleHistory(username, roomID string, data []byte) ([]byte, error) {
 	ctx := context.Background()
 
 	// Verify subscription before unmarshalling request data for performance
-	sub, err := h.store.GetSubscription(ctx, userID, roomID)
+	sub, err := h.store.GetSubscription(ctx, username, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("not subscribed: %w", err)
 	}

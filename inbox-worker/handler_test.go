@@ -89,10 +89,11 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	h := NewHandler(store, pub)
 
 	invite := model.InviteMemberRequest{
-		InviterID: "alice",
-		InviteeID: "bob",
-		RoomID:    "room-1",
-		SiteID:    "site-b",
+		InviterID:       "alice",
+		InviteeID:       "bob",
+		InviteeUsername: "bob",
+		RoomID:          "room-1",
+		SiteID:          "site-b",
 	}
 	inviteData, err := json.Marshal(invite)
 	if err != nil {
@@ -121,8 +122,11 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 		t.Fatalf("expected 1 subscription, got %d", len(subs))
 	}
 	sub := subs[0]
-	if sub.UserID != "bob" {
-		t.Errorf("subscription UserID = %q, want %q", sub.UserID, "bob")
+	if sub.User.ID != "bob" {
+		t.Errorf("subscription User.ID = %q, want %q", sub.User.ID, "bob")
+	}
+	if sub.User.Username != "bob" {
+		t.Errorf("subscription User.Username = %q, want %q", sub.User.Username, "bob")
 	}
 	if sub.RoomID != "room-1" {
 		t.Errorf("subscription RoomID = %q, want %q", sub.RoomID, "room-1")
@@ -143,7 +147,7 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 		t.Fatalf("expected 1 publish, got %d", len(records))
 	}
 
-	wantSubject := "chat.user.bob.event.subscription.update"
+	wantSubject := "chat.user.bob.event.subscription.update" // routed by InviteeUsername "bob"
 	if records[0].subject != wantSubject {
 		t.Errorf("publish subject = %q, want %q", records[0].subject, wantSubject)
 	}
@@ -169,10 +173,11 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	h := NewHandler(store, pub)
 
 	invite := model.InviteMemberRequest{
-		InviterID: "alice",
-		InviteeID: "carol",
-		RoomID:    "room-2",
-		SiteID:    "site-b",
+		InviterID:       "alice",
+		InviteeID:       "carol",
+		InviteeUsername: "carol",
+		RoomID:          "room-2",
+		SiteID:          "site-b",
 	}
 	inviteData, _ := json.Marshal(invite)
 
@@ -378,6 +383,63 @@ func TestHandleEvent_MemberAdded_InvalidPayload(t *testing.T) {
 	// No subscription should have been created
 	if len(store.getSubscriptions()) != 0 {
 		t.Error("subscription should not be created with invalid payload")
+	}
+}
+
+func TestHandleEvent_MemberAdded_UsernameRoutedSubject(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	invite := model.InviteMemberRequest{
+		InviterID:       "alice",
+		InviteeID:       "uid-bob",
+		InviteeUsername: "username-bob",
+		RoomID:          "room-1",
+		SiteID:          "site-b",
+	}
+	inviteData, err := json.Marshal(invite)
+	if err != nil {
+		t.Fatalf("marshal invite: %v", err)
+	}
+
+	evt := model.OutboxEvent{
+		Type:       "member_added",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    inviteData,
+	}
+	evtData, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	err = h.HandleEvent(context.Background(), evtData)
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	// Verify subscription carries both ID and Username
+	subs := store.getSubscriptions()
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subscription, got %d", len(subs))
+	}
+	sub := subs[0]
+	if sub.User.ID != "uid-bob" {
+		t.Errorf("subscription User.ID = %q, want %q", sub.User.ID, "uid-bob")
+	}
+	if sub.User.Username != "username-bob" {
+		t.Errorf("subscription User.Username = %q, want %q", sub.User.Username, "username-bob")
+	}
+
+	// Verify subject is routed by username, not ID
+	records := pub.getRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 publish, got %d", len(records))
+	}
+	wantSubject := "chat.user.username-bob.event.subscription.update"
+	if records[0].subject != wantSubject {
+		t.Errorf("publish subject = %q, want %q", records[0].subject, wantSubject)
 	}
 }
 

@@ -10,22 +10,27 @@ const (
 )
 
 type Room struct {
-	ID        string    `json:"id" bson:"_id"`
-	Name      string    `json:"name" bson:"name"`
-	Type      RoomType  `json:"type" bson:"type"`
-	CreatedBy string    `json:"createdBy" bson:"createdBy"`
-	SiteID    string    `json:"siteId" bson:"siteId"`
-	UserCount int       `json:"userCount" bson:"userCount"`
-	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+	ID               string    `json:"id" bson:"_id"`
+	Name             string    `json:"name" bson:"name"`
+	Type             RoomType  `json:"type" bson:"type"`
+	CreatedBy        string    `json:"createdBy" bson:"createdBy"`
+	SiteID           string    `json:"siteId" bson:"siteId"`
+	Origin           string    `json:"origin" bson:"origin"`
+	UserCount        int       `json:"userCount" bson:"userCount"`
+	LastMsgAt        time.Time `json:"lastMsgAt" bson:"lastMsgAt"`
+	LastMsgID        string    `json:"lastMsgId" bson:"lastMsgId"`
+	LastMentionAllAt time.Time `json:"lastMentionAllAt" bson:"lastMentionAllAt"`
+	CreatedAt        time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt" bson:"updatedAt"`
 }
 
 type CreateRoomRequest struct {
-	Name      string   `json:"name"`
-	Type      RoomType `json:"type"`
-	CreatedBy string   `json:"createdBy"`
-	SiteID    string   `json:"siteId"`
-	Members   []string `json:"members,omitempty"`
+	Name              string   `json:"name"`
+	Type              RoomType `json:"type"`
+	CreatedBy         string   `json:"createdBy"`
+	CreatedByUsername string   `json:"createdByUsername"`
+	SiteID            string   `json:"siteId"`
+	Members           []string `json:"members,omitempty"`
 }
 
 type ListRoomsResponse struct {

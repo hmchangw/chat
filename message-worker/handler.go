@@ -37,14 +37,14 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 		}
 		return
 	}
-	userID := parts[2]
+	username := parts[2]
 	roomID := parts[4]
 	siteID := parts[5]
 
 	ctx := context.Background()
-	replyData, err := h.processMessage(ctx, userID, roomID, siteID, msg.Data())
+	replyData, err := h.processMessage(ctx, username, roomID, siteID, msg.Data())
 	if err != nil {
-		slog.Error("process message failed", "error", err, "userID", userID, "roomID", roomID)
+		slog.Error("process message failed", "error", err, "username", username, "roomID", roomID)
 		if err := msg.Ack(); err != nil {
 			slog.Error("failed to ack message", "error", err)
 		}
@@ -53,7 +53,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 
 	// Publish reply to sender's response subject
 	if reqID := getRequestID(msg.Data()); reqID != "" {
-		respSubj := subject.UserResponse(userID, reqID)
+		respSubj := subject.UserResponse(username, reqID)
 		if err := h.publishMsg(&nats.Msg{Subject: respSubj, Data: replyData}); err != nil {
 			slog.Error("reply publish failed", "error", err, "subject", respSubj)
 		}
@@ -64,14 +64,14 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	}
 }
 
-func (h *Handler) processMessage(ctx context.Context, userID, roomID, siteID string, data []byte) ([]byte, error) {
+func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID string, data []byte) ([]byte, error) {
 	var req model.SendMessageRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 
 	// Validate subscription
-	_, err := h.store.GetSubscription(ctx, userID, roomID)
+	sub, err := h.store.GetSubscription(ctx, username, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("not subscribed: %w", err)
 	}
@@ -81,7 +81,7 @@ func (h *Handler) processMessage(ctx context.Context, userID, roomID, siteID str
 	msg := model.Message{
 		ID:        uuid.New().String(),
 		RoomID:    roomID,
-		UserID:    userID,
+		UserID:    sub.User.ID,
 		Content:   req.Content,
 		CreatedAt: now,
 	}
@@ -89,9 +89,6 @@ func (h *Handler) processMessage(ctx context.Context, userID, roomID, siteID str
 	// Persist
 	if err := h.store.SaveMessage(ctx, &msg); err != nil {
 		return nil, fmt.Errorf("save message: %w", err)
-	}
-	if err := h.store.UpdateRoomLastMessage(ctx, roomID, now); err != nil {
-		slog.Warn("update room last message failed", "error", err, "roomID", roomID)
 	}
 
 	// Publish fanout event with Nats-Msg-Id for JetStream dedup
