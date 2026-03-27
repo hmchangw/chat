@@ -43,7 +43,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 	// Create subscription for invitee
 	sub := model.Subscription{
 		ID:                 uuid.New().String(),
-		UserID:             req.InviteeID,
+		User:               model.SubscriptionUser{ID: req.InviteeID, Username: req.InviteeUsername},
 		RoomID:             req.RoomID,
 		SiteID:             req.SiteID,
 		Role:               model.RoleMember,
@@ -77,7 +77,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 	// Notify invitee: subscription update
 	subEvt := model.SubscriptionUpdateEvent{UserID: req.InviteeID, Subscription: sub, Action: "added"}
 	subEvtData, _ := json.Marshal(subEvt)
-	if err := h.publish(subject.SubscriptionUpdate(req.InviteeID), subEvtData); err != nil {
+	if err := h.publish(subject.SubscriptionUpdate(req.InviteeUsername), subEvtData); err != nil {
 		slog.Error("subscription update publish failed", "error", err)
 	}
 
@@ -94,8 +94,8 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 
 		members, _ := h.store.ListByRoom(ctx, req.RoomID)
 		for i := range members {
-			if err := h.publish(subject.RoomMetadataChanged(members[i].UserID), metaData); err != nil {
-				slog.Error("room metadata publish failed", "error", err, "userID", members[i].UserID)
+			if err := h.publish(subject.RoomMetadataChanged(members[i].User.Username), metaData); err != nil {
+				slog.Error("room metadata publish failed", "error", err, "username", members[i].User.Username)
 			}
 		}
 	}

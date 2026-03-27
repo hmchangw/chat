@@ -85,7 +85,7 @@ func TestMongoStore_Integration(t *testing.T) {
 
 	// Seed subscription
 	db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
-		ID: "s1", UserID: "u1", RoomID: "r1", Role: model.RoleMember,
+		ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleMember,
 	})
 
 	// Test GetSubscription

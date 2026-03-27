@@ -12,7 +12,6 @@ package main
 import (
 	context "context"
 	reflect "reflect"
-	time "time"
 
 	model "github.com/hmchangw/chat/pkg/model"
 	gomock "go.uber.org/mock/gomock"
@@ -43,18 +42,18 @@ func (m *MockMessageStore) EXPECT() *MockMessageStoreMockRecorder {
 }
 
 // GetSubscription mocks base method.
-func (m *MockMessageStore) GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error) {
+func (m *MockMessageStore) GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetSubscription", ctx, userID, roomID)
+	ret := m.ctrl.Call(m, "GetSubscription", ctx, username, roomID)
 	ret0, _ := ret[0].(*model.Subscription)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetSubscription indicates an expected call of GetSubscription.
-func (mr *MockMessageStoreMockRecorder) GetSubscription(ctx, userID, roomID any) *gomock.Call {
+func (mr *MockMessageStoreMockRecorder) GetSubscription(ctx, username, roomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSubscription", reflect.TypeOf((*MockMessageStore)(nil).GetSubscription), ctx, userID, roomID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSubscription", reflect.TypeOf((*MockMessageStore)(nil).GetSubscription), ctx, username, roomID)
 }
 
 // SaveMessage mocks base method.
@@ -69,18 +68,4 @@ func (m *MockMessageStore) SaveMessage(ctx context.Context, msg *model.Message) 
 func (mr *MockMessageStoreMockRecorder) SaveMessage(ctx, msg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveMessage", reflect.TypeOf((*MockMessageStore)(nil).SaveMessage), ctx, msg)
-}
-
-// UpdateRoomLastMessage mocks base method.
-func (m *MockMessageStore) UpdateRoomLastMessage(ctx context.Context, roomID string, at time.Time) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateRoomLastMessage", ctx, roomID, at)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpdateRoomLastMessage indicates an expected call of UpdateRoomLastMessage.
-func (mr *MockMessageStoreMockRecorder) UpdateRoomLastMessage(ctx, roomID, at any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateRoomLastMessage", reflect.TypeOf((*MockMessageStore)(nil).UpdateRoomLastMessage), ctx, roomID, at)
 }
