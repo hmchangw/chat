@@ -96,22 +96,54 @@ type SendMessageRequest struct {
 - **Added**: `ID` — client-generated UUID, validated by gatekeeper
 - **Removed**: `RoomID` — extracted from NATS subject instead
 
-### MessageEvent (unchanged structure)
+### Message (modified)
+
+```go
+type Message struct {
+    ID        string    `json:"id"        bson:"_id"`
+    RoomID    string    `json:"roomId"    bson:"roomId"`
+    UserID    string    `json:"userId"    bson:"userId"`
+    Username  string    `json:"username"  bson:"username"`
+    Content   string    `json:"content"   bson:"content"`
+    CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+}
+```
+
+- **Added**: `Username` — needed by broadcast-worker (sender display), notification-worker (notification text), and Cassandra persistence (maps to `sender.user_name` in `Participant` UDT)
+
+### MessageEvent (modified)
 
 ```go
 type MessageEvent struct {
     Message Message `json:"message"`
-    RoomID  string  `json:"roomId"`
     SiteID  string  `json:"siteId"`
 }
 ```
 
+- **Removed**: `RoomID` — already present in `Message.RoomID`, no need to duplicate
+
 Published to `MESSAGE_SSOT` by the gatekeeper. The `Message` inside contains:
 - `ID` — from client (validated UUID)
-- `CreatedAt` — set by gatekeeper (canonical server timestamp)
-- `UserID` — resolved from subscription lookup
 - `RoomID` — from NATS subject
+- `UserID` — resolved from subscription lookup
+- `Username` — resolved from subscription lookup
 - `Content` — from request payload
+- `CreatedAt` — set by gatekeeper (canonical server timestamp)
+
+### Cassandra Mapping (message-worker internal)
+
+The JetStream `Message` is a lean domain type. The message-worker maps it to the richer Cassandra `Participant` UDT when persisting:
+
+| Message field | Cassandra column |
+|---------------|-----------------|
+| `ID`          | `message_id`    |
+| `RoomID`      | `room_id`       |
+| `UserID`      | `sender.id`     |
+| `Username`    | `sender.user_name` |
+| `Content`     | `msg`           |
+| `CreatedAt`   | `created_at`    |
+
+Other `Participant` fields (`eng_name`, `company_name`, `app_id`, `app_name`, `is_bot`) are not populated in the initial message send flow.
 
 ## Message Gatekeeper Service
 
@@ -162,8 +194,8 @@ type Handler struct {
 3. **Validate ID**: `uuid.Parse(req.ID)` — must be a valid UUID
 4. **Validate Content**: non-empty and `len([]byte(req.Content)) <= 20480` (20KB)
 5. **Validate subscription**: `store.GetSubscription(ctx, username, roomID)` — confirms membership, retrieves `UserID`
-6. **Build Message**: `{ID: req.ID, RoomID: roomID, UserID: sub.User.ID, Content: req.Content, CreatedAt: time.Now()}`
-7. **Publish to MESSAGE_SSOT**: subject `chat.msg.ssot.{siteID}.created`, payload `MessageEvent{Message, RoomID, SiteID}`, header `Nats-Msg-Id: message.ID`
+6. **Build Message**: `{ID: req.ID, RoomID: roomID, UserID: sub.User.ID, Username: username, Content: req.Content, CreatedAt: time.Now()}`
+7. **Publish to MESSAGE_SSOT**: subject `chat.msg.ssot.{siteID}.created`, payload `MessageEvent{Message, SiteID}`, header `Nats-Msg-Id: message.ID`
 8. **Reply success**: `natsutil.ReplyJSON(msg, message)` to `chat.user.{username}.response.{requestID}`
 9. On any validation failure: `natsutil.ReplyError(msg, "<description>")`, ack the JetStream message (validation failures must not redeliver)
 
