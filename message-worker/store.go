@@ -10,6 +10,6 @@ import (
 
 // MessageStore defines persistence operations for the message worker.
 type MessageStore interface {
-	GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error)
+	GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error)
 	SaveMessage(ctx context.Context, msg *model.Message) error
 }
