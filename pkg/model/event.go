@@ -41,3 +41,29 @@ type OutboxEvent struct {
 	DestSiteID string `json:"destSiteId"`
 	Payload    []byte `json:"payload"` // JSON-encoded inner event
 }
+
+type RoomEventType string
+
+const (
+	RoomEventNewMessage RoomEventType = "new_message"
+)
+
+type RoomEvent struct {
+	Type      RoomEventType `json:"type"`
+	RoomID    string        `json:"roomId"`
+	Timestamp time.Time     `json:"timestamp"`
+
+	RoomName  string    `json:"roomName"`
+	RoomType  RoomType  `json:"roomType"`
+	Origin    string    `json:"origin"`
+	UserCount int       `json:"userCount"`
+	LastMsgAt time.Time `json:"lastMsgAt"`
+	LastMsgID string    `json:"lastMsgId"`
+
+	Mentions   []string `json:"mentions,omitempty"`
+	MentionAll bool     `json:"mentionAll,omitempty"`
+
+	HasMention bool `json:"hasMention,omitempty"`
+
+	Message *Message `json:"message,omitempty"`
+}
