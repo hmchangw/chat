@@ -17,13 +17,22 @@ func parseTimestamp(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, s)
 }
 
-func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req model.LoadHistoryRequest) (*model.LoadHistoryResponse, error) {
-	sub, err := s.subscriptions.GetSubscription(ctx, userID, req.RoomID)
+// getSharedHistorySince fetches the SharedHistorySince timestamp and validates subscription exists.
+func (s *HistoryService) getSharedHistorySince(ctx context.Context, userID, roomID string) (time.Time, error) {
+	since, ok, err := s.subscriptions.GetSharedHistorySince(ctx, userID, roomID)
 	if err != nil {
-		return nil, fmt.Errorf("checking subscription: %w", err)
+		return time.Time{}, fmt.Errorf("checking subscription: %w", err)
 	}
-	if sub == nil {
-		return nil, fmt.Errorf("user %s is not subscribed to room %s", userID, req.RoomID)
+	if !ok {
+		return time.Time{}, fmt.Errorf("user %s is not subscribed to room %s", userID, roomID)
+	}
+	return since, nil
+}
+
+func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req model.LoadHistoryRequest) (*model.LoadHistoryResponse, error) {
+	since, err := s.getSharedHistorySince(ctx, userID, req.RoomID)
+	if err != nil {
+		return nil, err
 	}
 
 	before, err := parseTimestamp(req.Before)
@@ -44,7 +53,6 @@ func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req mod
 		limit = defaultLimit
 	}
 
-	since := sub.SharedHistorySince
 	msgs, err := s.messages.GetMessagesBefore(ctx, req.RoomID, since, before, limit+1)
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
@@ -72,12 +80,9 @@ func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req mod
 }
 
 func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, req model.LoadNextMessagesRequest) (*model.LoadNextMessagesResponse, error) {
-	sub, err := s.subscriptions.GetSubscription(ctx, userID, req.RoomID)
+	since, err := s.getSharedHistorySince(ctx, userID, req.RoomID)
 	if err != nil {
-		return nil, fmt.Errorf("checking subscription: %w", err)
-	}
-	if sub == nil {
-		return nil, fmt.Errorf("user %s is not subscribed to room %s", userID, req.RoomID)
+		return nil, err
 	}
 
 	after, err := parseTimestamp(req.After)
@@ -85,8 +90,8 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, re
 		return nil, fmt.Errorf("parsing after timestamp: %w", err)
 	}
 
-	if !after.IsZero() && after.Before(sub.SharedHistorySince) {
-		after = sub.SharedHistorySince
+	if !after.IsZero() && after.Before(since) {
+		after = since
 	}
 
 	limit := req.Limit
@@ -111,12 +116,9 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, re
 }
 
 func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID string, req model.LoadSurroundingMessagesRequest) (*model.LoadSurroundingMessagesResponse, error) {
-	sub, err := s.subscriptions.GetSubscription(ctx, userID, req.RoomID)
+	since, err := s.getSharedHistorySince(ctx, userID, req.RoomID)
 	if err != nil {
-		return nil, fmt.Errorf("checking subscription: %w", err)
-	}
-	if sub == nil {
-		return nil, fmt.Errorf("user %s is not subscribed to room %s", userID, req.RoomID)
+		return nil, err
 	}
 
 	limit := req.Limit
@@ -131,12 +133,11 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID str
 
 	// Validate central message is within access window.
 	// The central message is the first element in the after slice.
-	if len(after) > 0 && after[0].CreatedAt.Before(sub.SharedHistorySince) {
+	if len(after) > 0 && after[0].CreatedAt.Before(since) {
 		return nil, fmt.Errorf("message %s is outside access window", req.MessageID)
 	}
 
 	// Filter out messages before SharedHistorySince from both slices.
-	since := sub.SharedHistorySince
 	filteredBefore := before[:0]
 	for _, m := range before {
 		if !m.CreatedAt.Before(since) {
@@ -157,12 +158,9 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID str
 }
 
 func (s *HistoryService) GetMessageByID(ctx context.Context, userID string, req model.GetMessageByIDRequest) (*model.Message, error) {
-	sub, err := s.subscriptions.GetSubscription(ctx, userID, req.RoomID)
+	since, err := s.getSharedHistorySince(ctx, userID, req.RoomID)
 	if err != nil {
-		return nil, fmt.Errorf("checking subscription: %w", err)
-	}
-	if sub == nil {
-		return nil, fmt.Errorf("user %s is not subscribed to room %s", userID, req.RoomID)
+		return nil, err
 	}
 
 	msg, err := s.messages.GetMessageByID(ctx, req.RoomID, req.MessageID)
@@ -173,7 +171,7 @@ func (s *HistoryService) GetMessageByID(ctx context.Context, userID string, req 
 		return nil, fmt.Errorf("message %s not found", req.MessageID)
 	}
 
-	if msg.CreatedAt.Before(sub.SharedHistorySince) {
+	if msg.CreatedAt.Before(since) {
 		return nil, fmt.Errorf("message %s is outside access window", req.MessageID)
 	}
 
