@@ -41,11 +41,10 @@ func TestRegister_Success(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	err := Register(r, "chat.user.{userID}.request.room.{roomID}.site-1.msg.test",
+	Register(r, "chat.user.{userID}.request.room.{roomID}.site-1.msg.test",
 		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
 			return &testResp{Greeting: "hello " + req.Name + " from " + p.Get("userID")}, nil
 		})
-	require.NoError(t, err)
 
 	data, _ := json.Marshal(testReq{Name: "world"})
 	resp, err := nc.Request("chat.user.alice.request.room.r1.site-1.msg.test", data, 2*time.Second)
@@ -61,15 +60,14 @@ func TestRegister_ParamsExtraction(t *testing.T) {
 	r := New(nc, "test-service")
 
 	var captured Params
-	err := Register(r, "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.test",
+	Register(r, "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.test",
 		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
 			captured = p
 			return &testResp{}, nil
 		})
-	require.NoError(t, err)
 
 	data, _ := json.Marshal(testReq{})
-	_, err = nc.Request("chat.user.alice.request.room.room-42.site-prod.msg.test", data, 2*time.Second)
+	_, err := nc.Request("chat.user.alice.request.room.room-42.site-prod.msg.test", data, 2*time.Second)
 	require.NoError(t, err)
 
 	assert.Equal(t, "alice", captured.Get("userID"))
@@ -81,12 +79,11 @@ func TestRegister_InvalidJSON(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	err := Register(r, "test.{id}",
+	Register(r, "test.{id}",
 		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
 			t.Fatal("handler should not be called for invalid JSON")
 			return nil, nil
 		})
-	require.NoError(t, err)
 
 	resp, err := nc.Request("test.123", []byte("not json"), 2*time.Second)
 	require.NoError(t, err)
@@ -100,11 +97,10 @@ func TestRegister_HandlerError(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	err := Register(r, "test.{id}",
+	Register(r, "test.{id}",
 		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
 			return nil, fmt.Errorf("something broke")
 		})
-	require.NoError(t, err)
 
 	data, _ := json.Marshal(testReq{Name: "test"})
 	resp, err := nc.Request("test.123", data, 2*time.Second)
@@ -119,11 +115,10 @@ func TestRegisterNoBody_Success(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	err := RegisterNoBody(r, "chat.user.{userID}.request.rooms.get.{roomID}",
+	RegisterNoBody(r, "chat.user.{userID}.request.rooms.get.{roomID}",
 		func(ctx context.Context, p Params) (*testResp, error) {
 			return &testResp{Greeting: "room " + p.Get("roomID")}, nil
 		})
-	require.NoError(t, err)
 
 	resp, err := nc.Request("chat.user.alice.request.rooms.get.room-42", nil, 2*time.Second)
 	require.NoError(t, err)
@@ -162,15 +157,14 @@ func TestMiddleware_ExecutionOrder(t *testing.T) {
 	r.Use(makeMiddleware("B"))
 	r.Use(makeMiddleware("C"))
 
-	err := Register(r, "test.{id}",
+	Register(r, "test.{id}",
 		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
 			order = append(order, "handler")
 			return &testResp{}, nil
 		})
-	require.NoError(t, err)
 
 	data, _ := json.Marshal(testReq{})
-	_, err = nc.Request("test.123", data, 2*time.Second)
+	_, err := nc.Request("test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	result := <-doneCh
@@ -193,12 +187,11 @@ func TestMiddleware_ShortCircuit(t *testing.T) {
 	})
 
 	handlerCalled := false
-	err := Register(r, "test.{id}",
+	Register(r, "test.{id}",
 		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
 			handlerCalled = true
 			return &testResp{}, nil
 		})
-	require.NoError(t, err)
 
 	data, _ := json.Marshal(testReq{})
 	resp, err := nc.Request("test.123", data, 2*time.Second)
@@ -213,11 +206,10 @@ func TestRecovery_CatchesPanic(t *testing.T) {
 	r := New(nc, "test-service")
 	r.Use(Recovery())
 
-	err := Register(r, "test.{id}",
+	Register(r, "test.{id}",
 		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
 			panic("boom!")
 		})
-	require.NoError(t, err)
 
 	data, _ := json.Marshal(testReq{})
 	resp, err := nc.Request("test.123", data, 2*time.Second)
@@ -232,11 +224,10 @@ func TestRegister_NoParams(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	err := Register(r, "static.subject",
+	Register(r, "static.subject",
 		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
 			return &testResp{Greeting: "hello " + req.Name}, nil
 		})
-	require.NoError(t, err)
 
 	data, _ := json.Marshal(testReq{Name: "world"})
 	resp, err := nc.Request("static.subject", data, 2*time.Second)

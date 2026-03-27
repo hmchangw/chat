@@ -55,10 +55,7 @@ func main() {
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
 
-	if err := svc.RegisterHandlers(router, cfg.SiteID); err != nil {
-		slog.Error("register handlers failed", "error", err)
-		os.Exit(1)
-	}
+	svc.RegisterHandlers(router, cfg.SiteID)
 
 	slog.Info("history-service running", "site", cfg.SiteID)
 

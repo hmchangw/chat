@@ -19,24 +19,21 @@ import (
 // the subject, the request body is unmarshalled into Req, the handler is called,
 // and the response is marshalled back as JSON.
 //
+// Register panics if the subscription fails. This is intentional — registration
+// happens at startup, and a failed subscription means the service cannot function.
+// This follows the same pattern as http.HandleFunc and template.Must.
+//
 // Handler errors are logged with the subject and sanitized — callers receive
 // "internal error", never raw Go error strings.
 //
 // Example:
 //
-//	natsrouter.Register[LoadHistoryRequest, LoadHistoryResponse](
-//	    router,
-//	    "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history",
-//	    func(ctx context.Context, p natsrouter.Params, req LoadHistoryRequest) (*LoadHistoryResponse, error) {
-//	        userID := p.Get("userID")
-//	        return svc.LoadHistory(ctx, userID, req)
-//	    },
-//	)
+//	natsrouter.Register(router, "chat.user.{userID}.room.{roomID}.msg.history", svc.LoadHistory)
 func Register[Req, Resp any](
 	r *Router,
 	pattern string,
 	fn func(ctx context.Context, params Params, req Req) (*Resp, error),
-) error {
+) {
 	rt := parsePattern(pattern)
 
 	handler := r.applyMiddleware(func(msg *nats.Msg) {
@@ -60,29 +57,24 @@ func Register[Req, Resp any](
 	})
 
 	if _, err := r.nc.QueueSubscribe(rt.natsSubject, r.queue, handler); err != nil {
-		return fmt.Errorf("subscribing to %s: %w", rt.natsSubject, err)
+		panic(fmt.Sprintf("natsrouter: subscribing to %s: %v", rt.natsSubject, err))
 	}
-	return nil
 }
 
 // RegisterNoBody subscribes a handler that takes no request body — only params.
 // Use for endpoints where the subject contains all the information needed
 // (e.g. GET-style lookups by ID).
 //
+// Panics if the subscription fails (same rationale as Register).
+//
 // Example:
 //
-//	natsrouter.RegisterNoBody[Room](
-//	    router,
-//	    "chat.user.{userID}.request.rooms.get.{roomID}",
-//	    func(ctx context.Context, p natsrouter.Params) (*Room, error) {
-//	        return svc.GetRoom(ctx, p.Get("roomID"))
-//	    },
-//	)
+//	natsrouter.RegisterNoBody(router, "chat.user.{userID}.request.rooms.get.{roomID}", svc.GetRoom)
 func RegisterNoBody[Resp any](
 	r *Router,
 	pattern string,
 	fn func(ctx context.Context, params Params) (*Resp, error),
-) error {
+) {
 	rt := parsePattern(pattern)
 
 	handler := r.applyMiddleware(func(msg *nats.Msg) {
@@ -100,7 +92,6 @@ func RegisterNoBody[Resp any](
 	})
 
 	if _, err := r.nc.QueueSubscribe(rt.natsSubject, r.queue, handler); err != nil {
-		return fmt.Errorf("subscribing to %s: %w", rt.natsSubject, err)
+		panic(fmt.Sprintf("natsrouter: subscribing to %s: %v", rt.natsSubject, err))
 	}
-	return nil
 }

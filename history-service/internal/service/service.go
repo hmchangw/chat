@@ -37,21 +37,13 @@ func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
 }
 
 // RegisterHandlers wires all NATS endpoints for the history service.
-func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) error {
+// Panics if any subscription fails (startup-only, fatal if broken).
+func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	pattern := func(action string) string {
 		return fmt.Sprintf("chat.user.{userID}.request.room.{roomID}.%s.msg.%s", siteID, action)
 	}
-	if err := natsrouter.Register(r, pattern("history"), s.LoadHistory); err != nil {
-		return err
-	}
-	if err := natsrouter.Register(r, pattern("next"), s.LoadNextMessages); err != nil {
-		return err
-	}
-	if err := natsrouter.Register(r, pattern("surrounding"), s.LoadSurroundingMessages); err != nil {
-		return err
-	}
-	if err := natsrouter.Register(r, pattern("get"), s.GetMessageByID); err != nil {
-		return err
-	}
-	return nil
+	natsrouter.Register(r, pattern("history"), s.LoadHistory)
+	natsrouter.Register(r, pattern("next"), s.LoadNextMessages)
+	natsrouter.Register(r, pattern("surrounding"), s.LoadSurroundingMessages)
+	natsrouter.Register(r, pattern("get"), s.GetMessageByID)
 }
