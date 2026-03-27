@@ -5,11 +5,11 @@ Description: This schema is for message-related operation in Cassandra, include 
 #### Participant
 ```cql
 CREATE TYPE IF NOT EXISTS "Participant"(
-  id UUID,
+  id TEXT,
   user_name TEXT,
   eng_name TEXT,
   company_name TEXT, // need to change internal
-  app_id UUID,
+  app_id TEXT,
   app_name TEXT,
   is_bot BOOLEAN
 );
@@ -26,7 +26,7 @@ CREATE TYPE IF NOT EXISTS "Card"(
 CREATE TYPE IF NOT EXISTS "CardAction"(
   verb TEXT,
   text TEXT,
-  card_id UUID,
+  card_id TEXT,
   display_text TEXT,
   hide_exec_log BOOLEAN,
   card_tmid TEXT,
@@ -45,9 +45,9 @@ CREATE TYPE IF NOT EXISTS "File"(
 #### messages_by_room
 ```cql
 CREATE TABLE IF NOT EXISTS messages_by_room(
-  room_id UUID,
+  room_id TEXT,
   created_at TIMESTAMP,
-  message_id UUID,
+  message_id TEXT,
   sender FROZEN<"Participant">,
   target_user FROZEN<"Participant">,
   msg TEXT,
@@ -73,11 +73,11 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
 #### thread_messages_by_room
 ```cql
 CREATE TABLE IF NOT EXISTS thread_messages_by_room(
-  room_id UUID,
-  thread_room_id UUID,
+  room_id TEXT,
+  thread_room_id TEXT,
   created_at TIMESTAMP,
-  message_id UUID,
-  thread_message_id UUID,
+  message_id TEXT,
+  thread_message_id TEXT,
   sender FROZEN<"Participant">,
   target_user FROZEN<"Participant">,
   msg TEXT,
@@ -101,9 +101,9 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
 #### pinned_messages_by_room
 ```cql
 CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
-  room_id UUID,
+  room_id TEXT,
   created_at TIMESTAMP, // =pinnedAt
-  message_id UUID,
+  message_id TEXT,
   sender FROZEN<"Participant">,
   target_user FROZEN<"Participant">,
   msg TEXT,
