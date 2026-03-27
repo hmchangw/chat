@@ -12,10 +12,10 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/config"
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
-	"github.com/hmchangw/chat/history-service/internal/natshandler"
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
@@ -51,9 +51,11 @@ func main() {
 	cassRepo := cassrepo.NewRepository(cassSession)
 	mongoRepo := mongorepo.NewSubscriptionRepo(mongoClient.Database(cfg.Mongo.DB))
 	svc := service.New(cassRepo, mongoRepo)
-	nh := natshandler.New(nc, "history-service")
+	router := natsrouter.New(nc, "history-service")
+	router.Use(natsrouter.Recovery())
+	router.Use(natsrouter.Logging())
 
-	if err := svc.RegisterHandlers(nh, cfg.SiteID); err != nil {
+	if err := svc.RegisterHandlers(router, cfg.SiteID); err != nil {
 		slog.Error("register handlers failed", "error", err)
 		os.Exit(1)
 	}

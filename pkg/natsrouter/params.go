@@ -12,6 +12,12 @@ type Params struct {
 	values map[string]string
 }
 
+// NewParams creates Params from a map of key-value pairs.
+// Useful for testing handlers that accept Params without a real NATS subject.
+func NewParams(values map[string]string) Params {
+	return Params{values: values}
+}
+
 // Get returns the value of a named param, or empty string if not found.
 func (p Params) Get(key string) string {
 	return p.values[key]

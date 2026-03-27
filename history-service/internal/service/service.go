@@ -5,9 +5,8 @@ import (
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
-	"github.com/hmchangw/chat/history-service/internal/natshandler"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
 //go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageRepository,SubscriptionRepository
@@ -38,17 +37,17 @@ func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
 }
 
 // RegisterHandlers wires all NATS endpoints for the history service.
-func (s *HistoryService) RegisterHandlers(nh *natshandler.Handler, siteID string) error {
-	if err := natshandler.Register[models.LoadHistoryRequest, models.LoadHistoryResponse](nh, subject.MsgHistoryWildcard(siteID), s.LoadHistory); err != nil {
+func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) error {
+	if err := natsrouter.Register[models.LoadHistoryRequest, models.LoadHistoryResponse](r, "chat.user.{userID}.request.room.{roomID}."+siteID+".msg.history", s.LoadHistory); err != nil {
 		return err
 	}
-	if err := natshandler.Register[models.LoadNextMessagesRequest, models.LoadNextMessagesResponse](nh, subject.MsgNextWildcard(siteID), s.LoadNextMessages); err != nil {
+	if err := natsrouter.Register[models.LoadNextMessagesRequest, models.LoadNextMessagesResponse](r, "chat.user.{userID}.request.room.{roomID}."+siteID+".msg.next", s.LoadNextMessages); err != nil {
 		return err
 	}
-	if err := natshandler.Register[models.LoadSurroundingMessagesRequest, models.LoadSurroundingMessagesResponse](nh, subject.MsgSurroundingWildcard(siteID), s.LoadSurroundingMessages); err != nil {
+	if err := natsrouter.Register[models.LoadSurroundingMessagesRequest, models.LoadSurroundingMessagesResponse](r, "chat.user.{userID}.request.room.{roomID}."+siteID+".msg.surrounding", s.LoadSurroundingMessages); err != nil {
 		return err
 	}
-	if err := natshandler.Register[models.GetMessageByIDRequest, model.Message](nh, subject.MsgGetWildcard(siteID), s.GetMessageByID); err != nil {
+	if err := natsrouter.Register[models.GetMessageByIDRequest, model.Message](r, "chat.user.{userID}.request.room.{roomID}."+siteID+".msg.get", s.GetMessageByID); err != nil {
 		return err
 	}
 	return nil

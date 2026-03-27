@@ -7,6 +7,7 @@ import (
 
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
 const defaultLimit = 50
@@ -30,7 +31,8 @@ func (s *HistoryService) getHistorySharedSince(ctx context.Context, userID, room
 	return *since, nil
 }
 
-func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
+func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
+	userID := p.Get("userID")
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
@@ -80,7 +82,8 @@ func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req mod
 	}, nil
 }
 
-func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
+func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Params, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
+	userID := p.Get("userID")
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
@@ -116,7 +119,8 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, userID string, re
 	}, nil
 }
 
-func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID string, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
+func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrouter.Params, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
+	userID := p.Get("userID")
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
@@ -132,13 +136,10 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID str
 		return nil, fmt.Errorf("loading surrounding messages: %w", err)
 	}
 
-	// Validate central message is within access window.
-	// The central message is the first element in the after slice.
 	if len(after) > 0 && after[0].CreatedAt.Before(since) {
 		return nil, fmt.Errorf("message %s is outside access window", req.MessageID)
 	}
 
-	// Filter out messages before HistorySharedSince from both slices.
 	filteredBefore := before[:0]
 	for _, m := range before {
 		if !m.CreatedAt.Before(since) {
@@ -158,7 +159,8 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, userID str
 	}, nil
 }
 
-func (s *HistoryService) GetMessageByID(ctx context.Context, userID string, req models.GetMessageByIDRequest) (*model.Message, error) {
+func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params, req models.GetMessageByIDRequest) (*model.Message, error) {
+	userID := p.Get("userID")
 	since, err := s.getHistorySharedSince(ctx, userID, req.RoomID)
 	if err != nil {
 		return nil, err
