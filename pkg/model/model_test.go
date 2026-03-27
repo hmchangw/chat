@@ -9,7 +9,7 @@ import (
 )
 
 func TestUserJSON(t *testing.T) {
-	u := model.User{ID: "u1", Name: "alice", SiteID: "site-a"}
+	u := model.User{ID: "u1", Name: "alice", Username: "alice", SiteID: "site-a"}
 	roundTrip(t, &u, &model.User{})
 }
 
@@ -17,8 +17,12 @@ func TestRoomJSON(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
-		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Origin:           "site-a",
+		LastMsgAt:        time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		LastMsgID:        "m1",
+		LastMentionAllAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		CreatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	roundTrip(t, &r, &model.Room{})
 }
@@ -39,6 +43,8 @@ func TestSubscriptionJSON(t *testing.T) {
 		Role:               model.RoleOwner,
 		SharedHistorySince: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		HasMention:         true,
 	}
 	roundTrip(t, &s, &model.Subscription{})
 }

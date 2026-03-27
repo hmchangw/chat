@@ -22,4 +22,6 @@ type Subscription struct {
 	Role               Role             `json:"role" bson:"role"`
 	SharedHistorySince time.Time        `json:"sharedHistorySince" bson:"sharedHistorySince"`
 	JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`
+	LastSeenAt         time.Time        `json:"lastSeenAt" bson:"lastSeenAt"`
+	HasMention         bool             `json:"hasMention" bson:"hasMention"`
 }
