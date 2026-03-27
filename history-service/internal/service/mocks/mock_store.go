@@ -128,13 +128,12 @@ func (m *MockSubscriptionRepository) EXPECT() *MockSubscriptionRepositoryMockRec
 }
 
 // GetSharedHistorySince mocks base method.
-func (m *MockSubscriptionRepository) GetSharedHistorySince(ctx context.Context, userID, roomID string) (time.Time, bool, error) {
+func (m *MockSubscriptionRepository) GetSharedHistorySince(ctx context.Context, userID, roomID string) (*time.Time, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetSharedHistorySince", ctx, userID, roomID)
-	ret0, _ := ret[0].(time.Time)
-	ret1, _ := ret[1].(bool)
-	ret2, _ := ret[2].(error)
-	return ret0, ret1, ret2
+	ret0, _ := ret[0].(*time.Time)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // GetSharedHistorySince indicates an expected call of GetSharedHistorySince.

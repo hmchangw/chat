@@ -19,14 +19,14 @@ func parseTimestamp(s string) (time.Time, error) {
 
 // getSharedHistorySince fetches the SharedHistorySince timestamp and validates subscription exists.
 func (s *HistoryService) getSharedHistorySince(ctx context.Context, userID, roomID string) (time.Time, error) {
-	since, ok, err := s.subscriptions.GetSharedHistorySince(ctx, userID, roomID)
+	since, err := s.subscriptions.GetSharedHistorySince(ctx, userID, roomID)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("checking subscription: %w", err)
 	}
-	if !ok {
+	if since == nil {
 		return time.Time{}, fmt.Errorf("user %s is not subscribed to room %s", userID, roomID)
 	}
-	return since, nil
+	return *since, nil
 }
 
 func (s *HistoryService) LoadHistory(ctx context.Context, userID string, req model.LoadHistoryRequest) (*model.LoadHistoryResponse, error) {
