@@ -23,10 +23,11 @@ type SubscriptionUpdateEvent struct {
 }
 
 type InviteMemberRequest struct {
-	InviterID string `json:"inviterId"`
-	InviteeID string `json:"inviteeId"`
-	RoomID    string `json:"roomId"`
-	SiteID    string `json:"siteId"`
+	InviterID       string `json:"inviterId"`
+	InviteeID       string `json:"inviteeId"`
+	InviteeUsername string `json:"inviteeUsername"`
+	RoomID          string `json:"roomId"`
+	SiteID          string `json:"siteId"`
 }
 
 type NotificationEvent struct {
