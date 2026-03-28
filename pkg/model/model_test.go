@@ -30,10 +30,32 @@ func TestRoomJSON(t *testing.T) {
 
 func TestMessageJSON(t *testing.T) {
 	m := model.Message{
-		ID: "m1", RoomID: "r1", UserID: "u1", Content: "hello",
+		ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+		Content:   "hello",
 		CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 	}
 	roundTrip(t, &m, &model.Message{})
+}
+
+func TestSendMessageRequestJSON(t *testing.T) {
+	r := model.SendMessageRequest{
+		ID:        "msg-uuid-1",
+		Content:   "hello world",
+		RequestID: "req-1",
+	}
+	roundTrip(t, &r, &model.SendMessageRequest{})
+}
+
+func TestMessageEventJSON(t *testing.T) {
+	e := model.MessageEvent{
+		Message: model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			Content:   "hello",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		},
+		SiteID: "site-a",
+	}
+	roundTrip(t, &e, &model.MessageEvent{})
 }
 
 func TestSubscriptionJSON(t *testing.T) {
@@ -72,7 +94,7 @@ func TestRoomEventJSON(t *testing.T) {
 	now := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
 	msg := model.Message{
 		ID: "msg-1", RoomID: "room-1", UserID: "user-1",
-		Content: "hello", CreatedAt: now,
+		Username: "alice", Content: "hello", CreatedAt: now,
 	}
 
 	t.Run("all fields populated", func(t *testing.T) {
