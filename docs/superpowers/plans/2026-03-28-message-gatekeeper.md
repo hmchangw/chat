@@ -1420,3 +1420,132 @@ make lint
 git add message-worker/
 git commit -m "refactor: simplify message-worker — consume from MESSAGE_SSOT, remove MongoDB and FANOUT"
 ```
+
+---
+
+### Task 6: Refactor broadcast-worker
+
+**Files:**
+- Modify: `broadcast-worker/handler.go`
+- Modify: `broadcast-worker/handler_test.go`
+- Modify: `broadcast-worker/main.go`
+
+- [ ] **Step 1: Update tests — remove RoomID from MessageEvent (Red)**
+
+In `broadcast-worker/handler_test.go`, update `makeMessageEvent`:
+
+```go
+// Replace:
+func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
+	evt := model.MessageEvent{
+		RoomID: roomID,
+		SiteID: "site-a",
+		Message: model.Message{
+			ID: "msg-1", RoomID: roomID, UserID: "user-1",
+			Content: content, CreatedAt: msgTime,
+		},
+	}
+	data, _ := json.Marshal(evt)
+	return data
+}
+
+// With:
+func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
+	evt := model.MessageEvent{
+		SiteID: "site-a",
+		Message: model.Message{
+			ID: "msg-1", RoomID: roomID, UserID: "user-1",
+			Content: content, CreatedAt: msgTime,
+		},
+	}
+	data, _ := json.Marshal(evt)
+	return data
+}
+```
+
+In the DM test, update:
+
+```go
+// Replace:
+			evt := model.MessageEvent{
+				RoomID: "dm-1", SiteID: "site-a",
+				Message: model.Message{
+					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id",
+					Content: tc.content, CreatedAt: msgTime,
+				},
+			}
+
+// With:
+			evt := model.MessageEvent{
+				SiteID: "site-a",
+				Message: model.Message{
+					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id",
+					Content: tc.content, CreatedAt: msgTime,
+				},
+			}
+```
+
+Run: `make test SERVICE=broadcast-worker` — Expected: FAIL
+
+- [ ] **Step 2: Update handler — evt.RoomID to evt.Message.RoomID (Green)**
+
+In `broadcast-worker/handler.go`, replace:
+
+```go
+	room, err := h.store.GetRoom(ctx, evt.RoomID)
+	if err != nil {
+		return fmt.Errorf("get room %s: %w", evt.RoomID, err)
+	}
+```
+
+With:
+
+```go
+	room, err := h.store.GetRoom(ctx, evt.Message.RoomID)
+	if err != nil {
+		return fmt.Errorf("get room %s: %w", evt.Message.RoomID, err)
+	}
+```
+
+Run: `make test SERVICE=broadcast-worker` — Expected: PASS
+
+- [ ] **Step 3: Update main.go — switch to MESSAGE_SSOT**
+
+In `broadcast-worker/main.go`, replace:
+
+```go
+	fanoutCfg := stream.Fanout(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     fanoutCfg.Name,
+		Subjects: fanoutCfg.Subjects,
+	}); err != nil {
+		slog.Error("create fanout stream failed", "error", err)
+		os.Exit(1)
+	}
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, fanoutCfg.Name, jetstream.ConsumerConfig{
+```
+
+With:
+
+```go
+	ssotCfg := stream.MessageSSOT(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     ssotCfg.Name,
+		Subjects: ssotCfg.Subjects,
+	}); err != nil {
+		slog.Error("create message ssot stream failed", "error", err)
+		os.Exit(1)
+	}
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, ssotCfg.Name, jetstream.ConsumerConfig{
+```
+
+- [ ] **Step 4: Verify and commit**
+
+```bash
+make test SERVICE=broadcast-worker
+make lint
+git add broadcast-worker/
+git commit -m "refactor: broadcast-worker consumes from MESSAGE_SSOT instead of FANOUT"
+```
