@@ -435,3 +435,632 @@ Expected: PASS
 git add pkg/subject/subject.go pkg/subject/subject_test.go
 git commit -m "feat: add MESSAGE_SSOT subject builders and ParseUserRoomSiteSubject, remove Fanout"
 ```
+
+---
+
+### Task 4: Create message-gatekeeper Service
+
+**Files:**
+- Create: `message-gatekeeper/store.go`
+- Create: `message-gatekeeper/store_mongo.go`
+- Create: `message-gatekeeper/handler.go`
+- Create: `message-gatekeeper/handler_test.go`
+- Create: `message-gatekeeper/main.go`
+- Create: `message-gatekeeper/deploy/Dockerfile`
+- Create: `message-gatekeeper/deploy/docker-compose.yml`
+- Generate: `message-gatekeeper/mock_store_test.go`
+
+- [ ] **Step 1: Create store interface**
+
+Create `message-gatekeeper/store.go`:
+
+```go
+package main
+
+import (
+	"context"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+//go:generate mockgen -destination=mock_store_test.go -package=main . Store
+
+// Store defines persistence operations for the message gatekeeper.
+type Store interface {
+	GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error)
+}
+```
+
+- [ ] **Step 2: Generate mocks**
+
+```bash
+make generate SERVICE=message-gatekeeper
+```
+
+- [ ] **Step 3: Write handler tests (Red phase)**
+
+Create `message-gatekeeper/handler_test.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+func TestHandler_processMessage(t *testing.T) {
+	const (
+		validUUID = "550e8400-e29b-41d4-a716-446655440000"
+		siteID    = "site-a"
+	)
+
+	happySub := &model.Subscription{
+		User:   model.SubscriptionUser{ID: "u1", Username: "alice"},
+		RoomID: "r1",
+		Role:   model.RoleMember,
+	}
+
+	tests := []struct {
+		name          string
+		username      string
+		roomID        string
+		siteID        string
+		payload       any
+		rawPayload    []byte
+		setupStore    func(*MockStore)
+		publishErr    error
+		wantErr       bool
+		wantInfraErr  bool
+		wantErrSubstr string
+		wantPublished bool
+	}{
+		{
+			name:     "happy path",
+			username: "alice",
+			roomID:   "r1",
+			siteID:   siteID,
+			payload: model.SendMessageRequest{
+				ID: validUUID, Content: "hello world", RequestID: "req-1",
+			},
+			setupStore: func(m *MockStore) {
+				m.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(happySub, nil)
+			},
+			wantPublished: true,
+		},
+		{
+			name: "invalid UUID format", username: "alice", roomID: "r1", siteID: siteID,
+			payload:       model.SendMessageRequest{ID: "not-a-uuid", Content: "hello", RequestID: "req-1"},
+			setupStore:    func(m *MockStore) {},
+			wantErr:       true,
+			wantErrSubstr: "invalid message ID",
+		},
+		{
+			name: "empty content", username: "alice", roomID: "r1", siteID: siteID,
+			payload:       model.SendMessageRequest{ID: validUUID, Content: "", RequestID: "req-1"},
+			setupStore:    func(m *MockStore) {},
+			wantErr:       true,
+			wantErrSubstr: "content is empty",
+		},
+		{
+			name: "content exceeding 20KB", username: "alice", roomID: "r1", siteID: siteID,
+			payload:       model.SendMessageRequest{ID: validUUID, Content: strings.Repeat("a", 20*1024+1), RequestID: "req-1"},
+			setupStore:    func(m *MockStore) {},
+			wantErr:       true,
+			wantErrSubstr: "content exceeds",
+		},
+		{
+			name: "user not in room", username: "alice", roomID: "r1", siteID: siteID,
+			payload: model.SendMessageRequest{ID: validUUID, Content: "hello", RequestID: "req-1"},
+			setupStore: func(m *MockStore) {
+				m.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(nil, errors.New("subscription not found"))
+			},
+			wantErr: true, wantInfraErr: true, wantErrSubstr: "not subscribed",
+		},
+		{
+			name: "store infra error", username: "alice", roomID: "r1", siteID: siteID,
+			payload: model.SendMessageRequest{ID: validUUID, Content: "hello", RequestID: "req-1"},
+			setupStore: func(m *MockStore) {
+				m.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(nil, errors.New("connection refused"))
+			},
+			wantErr: true, wantInfraErr: true,
+		},
+		{
+			name: "publish to MESSAGE_SSOT fails", username: "alice", roomID: "r1", siteID: siteID,
+			payload: model.SendMessageRequest{ID: validUUID, Content: "hello", RequestID: "req-1"},
+			setupStore: func(m *MockStore) {
+				m.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(happySub, nil)
+			},
+			publishErr: errors.New("nats publish failed"), wantErr: true, wantInfraErr: true,
+		},
+		{
+			name: "malformed JSON", username: "alice", roomID: "r1", siteID: siteID,
+			rawPayload: []byte("{invalid json"), setupStore: func(m *MockStore) {},
+			wantErr: true, wantErrSubstr: "unmarshal",
+		},
+		{
+			name: "siteID mismatch", username: "alice", roomID: "r1", siteID: "site-other",
+			payload:       model.SendMessageRequest{ID: validUUID, Content: "hello", RequestID: "req-1"},
+			setupStore:    func(m *MockStore) {},
+			wantErr:       true,
+			wantErrSubstr: "site ID mismatch",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockStore := NewMockStore(ctrl)
+			tc.setupStore(mockStore)
+
+			var publishedSubject string
+			var publishedData []byte
+			publishCalled := false
+
+			publish := func(subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+				publishCalled = true
+				publishedSubject = subj
+				publishedData = data
+				if tc.publishErr != nil {
+					return nil, tc.publishErr
+				}
+				return &jetstream.PubAck{}, nil
+			}
+
+			reply := func(subj string, data []byte) error { return nil }
+
+			h := &Handler{store: mockStore, publish: publish, reply: reply, siteID: siteID}
+
+			var data []byte
+			if tc.rawPayload != nil {
+				data = tc.rawPayload
+			} else {
+				data, _ = json.Marshal(tc.payload)
+			}
+
+			replyData, err := h.processMessage(context.Background(), tc.username, tc.roomID, tc.siteID, data)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.wantErrSubstr != "" {
+					assert.Contains(t, err.Error(), tc.wantErrSubstr)
+				}
+				if tc.wantInfraErr {
+					var ie *infraError
+					assert.True(t, errors.As(err, &ie), "expected infraError, got: %v", err)
+				} else {
+					var ie *infraError
+					assert.False(t, errors.As(err, &ie), "expected validation error, got: %v", err)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, replyData)
+
+			var msg model.Message
+			require.NoError(t, json.Unmarshal(replyData, &msg))
+			assert.Equal(t, validUUID, msg.ID)
+			assert.Equal(t, tc.roomID, msg.RoomID)
+			assert.Equal(t, "u1", msg.UserID)
+			assert.Equal(t, "alice", msg.Username)
+			assert.Equal(t, "hello world", msg.Content)
+			assert.False(t, msg.CreatedAt.IsZero())
+
+			if tc.wantPublished {
+				require.True(t, publishCalled)
+				assert.Equal(t, "chat.msg.ssot.site-a.created", publishedSubject)
+				var evt model.MessageEvent
+				require.NoError(t, json.Unmarshal(publishedData, &evt))
+				assert.Equal(t, msg.ID, evt.Message.ID)
+				assert.Equal(t, siteID, evt.SiteID)
+			}
+		})
+	}
+}
+```
+
+Run: `make test SERVICE=message-gatekeeper` — Expected: FAIL (handler.go doesn't exist)
+
+- [ ] **Step 4: Implement handler (Green phase)**
+
+Create `message-gatekeeper/handler.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/subject"
+)
+
+const maxContentBytes = 20 * 1024 // 20KB
+
+type publishFunc func(subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
+
+// infraError signals a transient infrastructure failure that should trigger a nack/retry.
+type infraError struct {
+	err error
+}
+
+func (e *infraError) Error() string { return e.err.Error() }
+func (e *infraError) Unwrap() error { return e.err }
+
+type Handler struct {
+	store   Store
+	publish publishFunc
+	reply   func(subject string, data []byte) error
+	siteID  string
+}
+
+func NewHandler(store Store, siteID string, publish publishFunc, reply func(string, []byte) error) *Handler {
+	return &Handler{store: store, publish: publish, reply: reply, siteID: siteID}
+}
+
+// HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
+func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
+	username, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(msg.Subject())
+	if !ok {
+		slog.Warn("invalid subject", "subject", msg.Subject())
+		if err := msg.Ack(); err != nil {
+			slog.Error("failed to ack message", "error", err)
+		}
+		return
+	}
+
+	ctx := context.Background()
+	replyData, err := h.processMessage(ctx, username, roomID, siteID, msg.Data())
+	if err != nil {
+		slog.Error("process message failed", "error", err, "username", username, "roomID", roomID)
+
+		var ie *infraError
+		if errors.As(err, &ie) {
+			if nackErr := msg.Nak(); nackErr != nil {
+				slog.Error("failed to nak message", "error", nackErr)
+			}
+			return
+		}
+
+		if reqID := extractRequestID(msg.Data()); reqID != "" {
+			respSubj := subject.UserResponse(username, reqID)
+			errData := natsutil.MarshalError(err.Error())
+			if pubErr := h.reply(respSubj, errData); pubErr != nil {
+				slog.Error("reply error publish failed", "error", pubErr)
+			}
+		}
+		if ackErr := msg.Ack(); ackErr != nil {
+			slog.Error("failed to ack message", "error", ackErr)
+		}
+		return
+	}
+
+	if reqID := extractRequestID(msg.Data()); reqID != "" {
+		respSubj := subject.UserResponse(username, reqID)
+		if pubErr := h.reply(respSubj, replyData); pubErr != nil {
+			slog.Error("reply publish failed", "error", pubErr)
+		}
+	}
+	if ackErr := msg.Ack(); ackErr != nil {
+		slog.Error("failed to ack message", "error", ackErr)
+	}
+}
+
+func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID string, data []byte) ([]byte, error) {
+	if siteID != h.siteID {
+		return nil, fmt.Errorf("site ID mismatch: got %s, want %s", siteID, h.siteID)
+	}
+
+	var req model.SendMessageRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+
+	if _, err := uuid.Parse(req.ID); err != nil {
+		return nil, fmt.Errorf("invalid message ID: %w", err)
+	}
+
+	if len(req.Content) == 0 {
+		return nil, fmt.Errorf("content is empty")
+	}
+	if len(req.Content) > maxContentBytes {
+		return nil, fmt.Errorf("content exceeds %d bytes", maxContentBytes)
+	}
+
+	sub, err := h.store.GetSubscription(ctx, username, roomID)
+	if err != nil {
+		return nil, &infraError{err: fmt.Errorf("not subscribed: %w", err)}
+	}
+
+	msg := model.Message{
+		ID:        req.ID,
+		RoomID:    roomID,
+		UserID:    sub.User.ID,
+		Username:  sub.User.Username,
+		Content:   req.Content,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	evt := model.MessageEvent{Message: msg, SiteID: siteID}
+	evtData, err := json.Marshal(evt)
+	if err != nil {
+		return nil, &infraError{err: fmt.Errorf("marshal event: %w", err)}
+	}
+
+	ssotSubj := subject.MsgSSOTCreated(siteID)
+	if _, err := h.publish(ssotSubj, evtData, jetstream.WithMsgID(msg.ID)); err != nil {
+		return nil, &infraError{err: fmt.Errorf("publish to MESSAGE_SSOT: %w", err)}
+	}
+
+	return json.Marshal(msg)
+}
+
+func extractRequestID(data []byte) string {
+	var req model.SendMessageRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return ""
+	}
+	return req.RequestID
+}
+```
+
+Run: `make test SERVICE=message-gatekeeper` — Expected: PASS
+
+- [ ] **Step 5: Create MongoDB store**
+
+Create `message-gatekeeper/store_mongo.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+type MongoStore struct {
+	subscriptions *mongo.Collection
+}
+
+func NewMongoStore(db *mongo.Database) *MongoStore {
+	return &MongoStore{subscriptions: db.Collection("subscriptions")}
+}
+
+func (s *MongoStore) GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error) {
+	var sub model.Subscription
+	filter := bson.M{"u.username": username, "roomId": roomID}
+	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
+		return nil, fmt.Errorf("find subscription for user %s in room %s: %w", username, roomID, err)
+	}
+	return &sub, nil
+}
+```
+
+- [ ] **Step 6: Create main.go**
+
+Create `message-gatekeeper/main.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/shutdown"
+	"github.com/hmchangw/chat/pkg/stream"
+)
+
+type config struct {
+	NatsURL    string `env:"NATS_URL"    envDefault:"nats://localhost:4222"`
+	SiteID     string `env:"SITE_ID"     envDefault:"site-local"`
+	MongoURI   string `env:"MONGO_URI"   envDefault:"mongodb://localhost:27017"`
+	MongoDB    string `env:"MONGO_DB"    envDefault:"chat"`
+	MaxWorkers int    `env:"MAX_WORKERS" envDefault:"100"`
+}
+
+func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	cfg, err := env.ParseAs[config]()
+	if err != nil {
+		slog.Error("parse config", "error", err)
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+
+	nc, err := nats.Connect(cfg.NatsURL)
+	if err != nil {
+		slog.Error("nats connect failed", "error", err)
+		os.Exit(1)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		slog.Error("jetstream init failed", "error", err)
+		os.Exit(1)
+	}
+
+	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
+	if err != nil {
+		slog.Error("mongo connect failed", "error", err)
+		os.Exit(1)
+	}
+	db := mongoClient.Database(cfg.MongoDB)
+	store := NewMongoStore(db)
+
+	publish := func(subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		return js.Publish(ctx, subj, data, opts...)
+	}
+	reply := func(subj string, data []byte) error {
+		return nc.Publish(subj, data)
+	}
+	handler := NewHandler(store, cfg.SiteID, publish, reply)
+
+	msgCfg := stream.Messages(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: msgCfg.Name, Subjects: msgCfg.Subjects,
+	}); err != nil {
+		slog.Error("create MESSAGES stream failed", "error", err)
+		os.Exit(1)
+	}
+
+	ssotCfg := stream.MessageSSOT(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: ssotCfg.Name, Subjects: ssotCfg.Subjects,
+	}); err != nil {
+		slog.Error("create MESSAGE_SSOT stream failed", "error", err)
+		os.Exit(1)
+	}
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, msgCfg.Name, jetstream.ConsumerConfig{
+		Durable: "message-gatekeeper", AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		slog.Error("create consumer failed", "error", err)
+		os.Exit(1)
+	}
+
+	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
+	if err != nil {
+		slog.Error("messages failed", "error", err)
+		os.Exit(1)
+	}
+
+	sem := make(chan struct{}, cfg.MaxWorkers)
+	var wg sync.WaitGroup
+
+	go func() {
+		for {
+			msg, err := iter.Next()
+			if err != nil {
+				return
+			}
+			sem <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer func() { <-sem; wg.Done() }()
+				handler.HandleJetStreamMsg(msg)
+			}()
+		}
+	}()
+
+	slog.Info("message-gatekeeper running", "site", cfg.SiteID)
+
+	shutdown.Wait(ctx, 25*time.Second,
+		func(ctx context.Context) error { iter.Stop(); return nil },
+		func(ctx context.Context) error {
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
+			}
+		},
+		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+	)
+}
+```
+
+- [ ] **Step 7: Create Dockerfile**
+
+Create `message-gatekeeper/deploy/Dockerfile`:
+
+```dockerfile
+FROM golang:1.24-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY pkg/ pkg/
+COPY message-gatekeeper/ message-gatekeeper/
+RUN CGO_ENABLED=0 go build -o /message-gatekeeper ./message-gatekeeper/
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /message-gatekeeper /message-gatekeeper
+ENTRYPOINT ["/message-gatekeeper"]
+```
+
+- [ ] **Step 8: Create docker-compose.yml**
+
+Create `message-gatekeeper/deploy/docker-compose.yml`:
+
+```yaml
+services:
+  nats:
+    image: nats:2.11-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--http_port", "8222"]
+
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+
+  message-gatekeeper:
+    build:
+      context: ../..
+      dockerfile: message-gatekeeper/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+    depends_on:
+      - nats
+      - mongodb
+```
+
+- [ ] **Step 9: Verify**
+
+```bash
+make generate SERVICE=message-gatekeeper
+make test SERVICE=message-gatekeeper
+make lint
+```
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add message-gatekeeper/
+git commit -m "feat: add message-gatekeeper service — validates messages and publishes to MESSAGE_SSOT"
+```
