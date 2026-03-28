@@ -31,7 +31,7 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 
 	h := &Handler{store: store, siteID: "site-a", publishMsg: publisher}
 
-	req := model.SendMessageRequest{RoomID: "r1", Content: "hello", RequestID: "req-1"}
+	req := model.SendMessageRequest{Content: "hello", RequestID: "req-1"}
 	data, _ := json.Marshal(req)
 
 	reply, err := h.processMessage(context.Background(), "alice", "r1", "site-a", data)
@@ -64,7 +64,7 @@ func TestHandler_ProcessMessage_NotSubscribed(t *testing.T) {
 
 	h := &Handler{store: store, siteID: "site-a", publishMsg: func(*nats.Msg) error { return nil }}
 
-	req := model.SendMessageRequest{RoomID: "r1", Content: "hello", RequestID: "req-1"}
+	req := model.SendMessageRequest{Content: "hello", RequestID: "req-1"}
 	data, _ := json.Marshal(req)
 
 	_, err := h.processMessage(context.Background(), "alice", "r1", "site-a", data)

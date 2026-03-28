@@ -35,9 +35,9 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 
 	msg := evt.Message
 
-	room, err := h.store.GetRoom(ctx, evt.RoomID)
+	room, err := h.store.GetRoom(ctx, msg.RoomID)
 	if err != nil {
-		return fmt.Errorf("get room %s: %w", evt.RoomID, err)
+		return fmt.Errorf("get room %s: %w", msg.RoomID, err)
 	}
 
 	mentionAll := detectMentionAll(msg.Content)

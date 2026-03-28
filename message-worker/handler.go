@@ -82,6 +82,7 @@ func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID s
 		ID:        uuid.New().String(),
 		RoomID:    roomID,
 		UserID:    sub.User.ID,
+		Username:  sub.User.Username,
 		Content:   req.Content,
 		CreatedAt: now,
 	}
@@ -92,7 +93,7 @@ func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID s
 	}
 
 	// Publish fanout event with Nats-Msg-Id for JetStream dedup
-	evt := model.MessageEvent{Message: msg, RoomID: roomID, SiteID: siteID}
+	evt := model.MessageEvent{Message: msg, SiteID: siteID}
 	evtData, _ := json.Marshal(evt)
 	fanoutSubj := subject.Fanout(siteID, roomID)
 	fanoutMsg := &nats.Msg{

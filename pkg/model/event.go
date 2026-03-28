@@ -4,7 +4,6 @@ import "time"
 
 type MessageEvent struct {
 	Message Message `json:"message"`
-	RoomID  string  `json:"roomId"`
 	SiteID  string  `json:"siteId"`
 }
 
