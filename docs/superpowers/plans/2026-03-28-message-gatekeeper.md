@@ -1064,3 +1064,359 @@ make lint
 git add message-gatekeeper/
 git commit -m "feat: add message-gatekeeper service — validates messages and publishes to MESSAGE_SSOT"
 ```
+
+---
+
+### Task 5: Refactor message-worker
+
+**Files:**
+- Modify: `message-worker/store.go`
+- Delete: `message-worker/store_mongo.go`
+- Create: `message-worker/store_cassandra.go`
+- Rewrite: `message-worker/handler.go`
+- Rewrite: `message-worker/handler_test.go`
+- Rewrite: `message-worker/main.go`
+- Regenerate: `message-worker/mock_store_test.go`
+
+- [ ] **Step 1: Rewrite store.go**
+
+Replace entire `message-worker/store.go`:
+
+```go
+package main
+
+import (
+	"context"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+//go:generate mockgen -destination=mock_store_test.go -package=main . Store
+
+// Store defines persistence operations for the message worker.
+type Store interface {
+	SaveMessage(ctx context.Context, msg model.Message) error
+}
+```
+
+- [ ] **Step 2: Regenerate mocks**
+
+```bash
+make generate SERVICE=message-worker
+```
+
+- [ ] **Step 3: Rewrite handler_test.go (Red phase)**
+
+Replace entire `message-worker/handler_test.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+func TestHandler_processMessage(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	validEvt := model.MessageEvent{
+		Message: model.Message{
+			ID: "msg-1", RoomID: "r1", UserID: "u1", Username: "alice",
+			Content: "hello", CreatedAt: now,
+		},
+		SiteID: "site-a",
+	}
+	validData, _ := json.Marshal(validEvt)
+
+	tests := []struct {
+		name      string
+		data      []byte
+		setupMock func(s *MockStore)
+		wantErr   bool
+		errMsg    string
+	}{
+		{
+			name: "happy path",
+			data: validData,
+			setupMock: func(s *MockStore) {
+				s.EXPECT().SaveMessage(gomock.Any(), validEvt.Message).Return(nil)
+			},
+		},
+		{
+			name:      "invalid JSON",
+			data:      []byte(`{not json}`),
+			setupMock: func(s *MockStore) {},
+			wantErr:   true,
+			errMsg:    "unmarshal message event",
+		},
+		{
+			name: "store error",
+			data: validData,
+			setupMock: func(s *MockStore) {
+				s.EXPECT().SaveMessage(gomock.Any(), validEvt.Message).Return(fmt.Errorf("cassandra timeout"))
+			},
+			wantErr: true,
+			errMsg:  "save message",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			tc.setupMock(store)
+
+			h := NewHandler(store)
+			err := h.processMessage(context.Background(), tc.data)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+```
+
+Run: `make test SERVICE=message-worker` — Expected: FAIL
+
+- [ ] **Step 4: Rewrite handler.go (Green phase)**
+
+Replace entire `message-worker/handler.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+// Handler consumes validated messages from MESSAGE_SSOT and persists them to Cassandra.
+type Handler struct {
+	store Store
+}
+
+func NewHandler(store Store) *Handler {
+	return &Handler{store: store}
+}
+
+// HandleJetStreamMsg processes a JetStream message from the MESSAGE_SSOT stream.
+func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
+	ctx := context.Background()
+	if err := h.processMessage(ctx, msg.Data()); err != nil {
+		slog.Error("process message failed", "error", err)
+		if err := msg.Nak(); err != nil {
+			slog.Error("failed to nak message", "error", err)
+		}
+		return
+	}
+	if err := msg.Ack(); err != nil {
+		slog.Error("failed to ack message", "error", err)
+	}
+}
+
+func (h *Handler) processMessage(ctx context.Context, data []byte) error {
+	var evt model.MessageEvent
+	if err := json.Unmarshal(data, &evt); err != nil {
+		return fmt.Errorf("unmarshal message event: %w", err)
+	}
+	if err := h.store.SaveMessage(ctx, evt.Message); err != nil {
+		return fmt.Errorf("save message: %w", err)
+	}
+	return nil
+}
+```
+
+Run: `make test SERVICE=message-worker` — Expected: PASS
+
+- [ ] **Step 5: Delete store_mongo.go, create store_cassandra.go**
+
+```bash
+rm message-worker/store_mongo.go
+```
+
+Create `message-worker/store_cassandra.go`:
+
+```go
+package main
+
+import (
+	"context"
+
+	"github.com/gocql/gocql"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+type CassandraStore struct {
+	session *gocql.Session
+}
+
+func NewCassandraStore(session *gocql.Session) *CassandraStore {
+	return &CassandraStore{session: session}
+}
+
+func (s *CassandraStore) SaveMessage(ctx context.Context, msg model.Message) error {
+	return s.session.Query(
+		`INSERT INTO messages (room_id, created_at, id, user_id, username, content) VALUES (?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, msg.CreatedAt, msg.ID, msg.UserID, msg.Username, msg.Content,
+	).WithContext(ctx).Exec()
+}
+```
+
+- [ ] **Step 6: Rewrite main.go**
+
+Replace entire `message-worker/main.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/hmchangw/chat/pkg/cassutil"
+	"github.com/hmchangw/chat/pkg/shutdown"
+	"github.com/hmchangw/chat/pkg/stream"
+)
+
+type config struct {
+	NatsURL           string `env:"NATS_URL"           envDefault:"nats://localhost:4222"`
+	SiteID            string `env:"SITE_ID"            envDefault:"site-local"`
+	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
+	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
+	MaxWorkers        int    `env:"MAX_WORKERS"        envDefault:"100"`
+}
+
+func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	cfg, err := env.ParseAs[config]()
+	if err != nil {
+		slog.Error("parse config", "error", err)
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+
+	nc, err := nats.Connect(cfg.NatsURL)
+	if err != nil {
+		slog.Error("nats connect failed", "error", err)
+		os.Exit(1)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		slog.Error("jetstream init failed", "error", err)
+		os.Exit(1)
+	}
+
+	cassSession, err := cassutil.Connect(strings.Split(cfg.CassandraHosts, ","), cfg.CassandraKeyspace)
+	if err != nil {
+		slog.Error("cassandra connect failed", "error", err)
+		os.Exit(1)
+	}
+
+	store := NewCassandraStore(cassSession)
+	handler := NewHandler(store)
+
+	streamCfg := stream.MessageSSOT(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: streamCfg.Name, Subjects: streamCfg.Subjects,
+	}); err != nil {
+		slog.Error("create stream failed", "error", err)
+		os.Exit(1)
+	}
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, jetstream.ConsumerConfig{
+		Durable: "message-worker", AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		slog.Error("create consumer failed", "error", err)
+		os.Exit(1)
+	}
+
+	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
+	if err != nil {
+		slog.Error("messages failed", "error", err)
+		os.Exit(1)
+	}
+
+	sem := make(chan struct{}, cfg.MaxWorkers)
+	var wg sync.WaitGroup
+
+	go func() {
+		for {
+			msg, err := iter.Next()
+			if err != nil {
+				return
+			}
+			sem <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer func() { <-sem; wg.Done() }()
+				handler.HandleJetStreamMsg(msg)
+			}()
+		}
+	}()
+
+	slog.Info("message-worker running", "site", cfg.SiteID)
+
+	shutdown.Wait(ctx, 25*time.Second,
+		func(ctx context.Context) error { iter.Stop(); return nil },
+		func(ctx context.Context) error {
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
+			}
+		},
+		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
+	)
+}
+```
+
+- [ ] **Step 7: Verify**
+
+```bash
+make generate SERVICE=message-worker
+make test SERVICE=message-worker
+make lint
+```
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add message-worker/
+git commit -m "refactor: simplify message-worker — consume from MESSAGE_SSOT, remove MongoDB and FANOUT"
+```
