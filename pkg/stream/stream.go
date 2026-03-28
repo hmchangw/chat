@@ -15,10 +15,10 @@ func Messages(siteID string) Config {
 	}
 }
 
-func Fanout(siteID string) Config {
+func MessageSSOT(siteID string) Config {
 	return Config{
-		Name:     fmt.Sprintf("FANOUT_%s", siteID),
-		Subjects: []string{fmt.Sprintf("fanout.%s.>", siteID)},
+		Name:     fmt.Sprintf("MESSAGE_SSOT_%s", siteID),
+		Subjects: []string{fmt.Sprintf("chat.msg.ssot.%s.>", siteID)},
 	}
 }
 
