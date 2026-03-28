@@ -12,14 +12,14 @@ import (
 )
 
 type Handler struct {
-	store MessageStore
+	store Store
 }
 
-func NewHandler(store MessageStore) *Handler {
+func NewHandler(store Store) *Handler {
 	return &Handler{store: store}
 }
 
-// HandleJetStreamMsg processes a JetStream message from the MESSAGE_SSOT stream.
+// HandleJetStreamMsg processes a JetStream message from the MESSAGES_CANONICAL stream.
 func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	ctx := context.Background()
 	if err := h.processMessage(ctx, msg.Data()); err != nil {
@@ -41,7 +41,7 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal message event: %w", err)
 	}
 
-	if err := h.store.SaveMessage(ctx, &evt.Message); err != nil {
+	if err := h.store.SaveMessage(ctx, evt.Message); err != nil {
 		return fmt.Errorf("save message: %w", err)
 	}
 

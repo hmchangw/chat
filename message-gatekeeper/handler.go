@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -29,20 +31,24 @@ func (e *infraError) Unwrap() error {
 	return e.cause
 }
 
+// replyFunc is the function signature for publishing a reply to a NATS subject.
+type replyFunc func(subject string, data []byte) error
+
 // publishFunc is the function signature for publishing to JetStream.
 type publishFunc func(subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
 
 // Handler processes messages from the MESSAGES stream and validates them
-// before publishing to MESSAGE_SSOT.
+// before publishing to MESSAGES_CANONICAL.
 type Handler struct {
 	store   Store
 	publish publishFunc
+	reply   replyFunc
 	siteID  string
 }
 
 // NewHandler constructs a new Handler with the given dependencies.
-func NewHandler(store Store, publish publishFunc, siteID string) *Handler {
-	return &Handler{store: store, publish: publish, siteID: siteID}
+func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string) *Handler {
+	return &Handler{store: store, publish: publish, reply: reply, siteID: siteID}
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
@@ -57,15 +63,17 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	}
 
 	ctx := context.Background()
-	_, err := h.processMessage(ctx, username, roomID, siteID, msg.Data())
+	replyData, err := h.processMessage(ctx, username, roomID, siteID, msg.Data())
 	if err != nil {
 		slog.Error("process message failed", "error", err, "username", username, "roomID", roomID)
 		var ie *infraError
-		if isInfraError(err, &ie) {
+		if errors.As(err, &ie) {
 			if err := msg.Nak(); err != nil {
 				slog.Error("failed to nack message", "error", err)
 			}
 		} else {
+			// Validation error: reply with error and ack.
+			h.sendReply(username, msg.Data(), natsutil.MarshalError(err.Error()))
 			if err := msg.Ack(); err != nil {
 				slog.Error("failed to ack message", "error", err)
 			}
@@ -73,39 +81,31 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 		return
 	}
 
+	h.sendReply(username, msg.Data(), replyData)
+
 	if err := msg.Ack(); err != nil {
 		slog.Error("failed to ack message", "err", err)
 	}
 }
 
-func isInfraError(err error, ie **infraError) bool {
-	var e *infraError
-	if ok := asInfraError(err, &e); ok {
-		*ie = e
-		return true
+// sendReply extracts the requestID from the raw message data and publishes the
+// reply payload to the user's response subject.
+func (h *Handler) sendReply(username string, rawData []byte, replyData []byte) {
+	var req model.SendMessageRequest
+	if err := json.Unmarshal(rawData, &req); err != nil {
+		slog.Error("unmarshal request for reply", "error", err)
+		return
 	}
-	return false
+	if req.RequestID == "" {
+		return
+	}
+	respSubj := subject.UserResponse(username, req.RequestID)
+	if err := h.reply(respSubj, replyData); err != nil {
+		slog.Error("reply to client failed", "error", err, "subject", respSubj)
+	}
 }
 
-func asInfraError(err error, target **infraError) bool {
-	type unwrapper interface {
-		Unwrap() error
-	}
-	for err != nil {
-		if ie, ok := err.(*infraError); ok {
-			*target = ie
-			return true
-		}
-		if uw, ok := err.(unwrapper); ok {
-			err = uw.Unwrap()
-		} else {
-			break
-		}
-	}
-	return false
-}
-
-// processMessage validates a SendMessageRequest and publishes a MessageEvent to MESSAGE_SSOT.
+// processMessage validates a SendMessageRequest and publishes a MessageEvent to MESSAGES_CANONICAL.
 // Returns the serialized Message on success, or an error.
 // Validation errors (bad input) are plain errors; transient failures are *infraError.
 func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID string, data []byte) ([]byte, error) {
@@ -138,6 +138,9 @@ func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID s
 	// Verify subscription
 	sub, err := h.store.GetSubscription(ctx, username, roomID)
 	if err != nil {
+		if errors.Is(err, errNotSubscribed) {
+			return nil, fmt.Errorf("user %s is not subscribed to room %s", username, roomID)
+		}
 		return nil, &infraError{cause: fmt.Errorf("get subscription for user %s in room %s: %w", username, roomID, err)}
 	}
 
@@ -152,16 +155,16 @@ func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID s
 		CreatedAt: now,
 	}
 
-	// Publish MessageEvent to MESSAGE_SSOT
+	// Publish MessageEvent to MESSAGES_CANONICAL
 	evt := model.MessageEvent{Message: msg, SiteID: siteID}
 	evtData, err := json.Marshal(evt)
 	if err != nil {
 		return nil, &infraError{cause: fmt.Errorf("marshal message event: %w", err)}
 	}
 
-	ssotSubj := subject.MsgSSOTCreated(siteID)
-	if _, err := h.publish(ssotSubj, evtData, jetstream.WithMsgID(msg.ID)); err != nil {
-		return nil, &infraError{cause: fmt.Errorf("publish to MESSAGE_SSOT: %w", err)}
+	canonicalSubj := subject.MsgCanonicalCreated(siteID)
+	if _, err := h.publish(canonicalSubj, evtData, jetstream.WithMsgID(msg.ID)); err != nil {
+		return nil, &infraError{cause: fmt.Errorf("publish to MESSAGES_CANONICAL: %w", err)}
 	}
 
 	return json.Marshal(msg)

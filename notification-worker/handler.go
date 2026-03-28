@@ -21,7 +21,7 @@ type Publisher interface {
 	Publish(subject string, data []byte) error
 }
 
-// Handler processes fanout messages and sends notifications.
+// Handler processes MESSAGES_CANONICAL messages and sends notifications.
 type Handler struct {
 	members MemberLookup
 	pub     Publisher

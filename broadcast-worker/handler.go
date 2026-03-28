@@ -16,7 +16,7 @@ type Publisher interface {
 	Publish(subject string, data []byte) error
 }
 
-// Handler processes fanout messages and broadcasts room events.
+// Handler processes MESSAGES_CANONICAL messages and broadcasts room events.
 type Handler struct {
 	store Store
 	pub   Publisher
@@ -26,7 +26,7 @@ func NewHandler(store Store, pub Publisher) *Handler {
 	return &Handler{store: store, pub: pub}
 }
 
-// HandleMessage processes a single fanout message payload.
+// HandleMessage processes a single MESSAGES_CANONICAL message payload.
 func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {

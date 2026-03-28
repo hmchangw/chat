@@ -57,16 +57,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	ssotCfg := stream.MessageSSOT(cfg.SiteID)
+	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     ssotCfg.Name,
-		Subjects: ssotCfg.Subjects,
+		Name:     canonicalCfg.Name,
+		Subjects: canonicalCfg.Subjects,
 	}); err != nil {
-		slog.Error("create MESSAGE_SSOT stream failed", "error", err)
+		slog.Error("create MESSAGES_CANONICAL stream failed", "error", err)
 		os.Exit(1)
 	}
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, ssotCfg.Name, jetstream.ConsumerConfig{
+	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
 		Durable:   "broadcast-worker",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})

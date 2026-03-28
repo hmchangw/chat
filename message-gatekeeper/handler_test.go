@@ -91,7 +91,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				assert.Equal(t, validUsername, msg.Username)
 				assert.NotEmpty(t, msg.ID)
 				assert.Len(t, published, 1)
-				assert.Equal(t, subject.MsgSSOTCreated(validSiteID), published[0].subject)
+				assert.Equal(t, subject.MsgCanonicalCreated(validSiteID), published[0].subject)
 			},
 		},
 		{
@@ -158,13 +158,13 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			setupStore: func(s *MockStore) {
 				s.EXPECT().
 					GetSubscription(gomock.Any(), validUsername, validRoomID).
-					Return(nil, fmt.Errorf("subscription not found: %w", errors.New("not found")))
+					Return(nil, fmt.Errorf("user alice not subscribed to room room-1: %w", errNotSubscribed))
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				return makePublishFunc(nil, nil), nil
 			},
 			wantErr:   true,
-			wantInfra: true,
+			wantInfra: false,
 		},
 		{
 			name:     "store infra error",

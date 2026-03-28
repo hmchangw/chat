@@ -81,8 +81,8 @@ func Outbox(siteID, destSiteID, eventType string) string {
 	return fmt.Sprintf("outbox.%s.to.%s.%s", siteID, destSiteID, eventType)
 }
 
-func MsgSSOTCreated(siteID string) string {
-	return fmt.Sprintf("chat.msg.ssot.%s.created", siteID)
+func MsgCanonicalCreated(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.created", siteID)
 }
 
 func RoomEvent(roomID string) string {
@@ -121,8 +121,8 @@ func MsgHistoryWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.history", siteID)
 }
 
-func MsgSSOTWildcard(siteID string) string {
-	return fmt.Sprintf("chat.msg.ssot.%s.>", siteID)
+func MsgCanonicalWildcard(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.>", siteID)
 }
 
 func OutboxWildcard(siteID string) string {

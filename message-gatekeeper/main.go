@@ -18,9 +18,9 @@ import (
 )
 
 type config struct {
-	NatsURL    string `env:"NATS_URL"     envDefault:"nats://localhost:4222"`
-	SiteID     string `env:"SITE_ID"      envDefault:"site-local"`
-	MongoURI   string `env:"MONGO_URI"    envDefault:"mongodb://localhost:27017"`
+	NatsURL    string `env:"NATS_URL,required"`
+	SiteID     string `env:"SITE_ID,required"`
+	MongoURI   string `env:"MONGO_URI,required"`
 	MongoDB    string `env:"MONGO_DB"     envDefault:"chat"`
 	MaxWorkers int    `env:"MAX_WORKERS"  envDefault:"100"`
 }
@@ -58,7 +58,10 @@ func main() {
 	pub := func(subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 		return js.Publish(context.Background(), subj, data, opts...)
 	}
-	handler := NewHandler(store, pub, cfg.SiteID)
+	reply := func(subj string, data []byte) error {
+		return nc.Publish(subj, data)
+	}
+	handler := NewHandler(store, pub, reply, cfg.SiteID)
 
 	// Create MESSAGES stream
 	messagesCfg := stream.Messages(cfg.SiteID)
@@ -70,13 +73,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create MESSAGE_SSOT stream
-	ssotCfg := stream.MessageSSOT(cfg.SiteID)
+	// Create MESSAGES_CANONICAL stream
+	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     ssotCfg.Name,
-		Subjects: ssotCfg.Subjects,
+		Name:     canonicalCfg.Name,
+		Subjects: canonicalCfg.Subjects,
 	}); err != nil {
-		slog.Error("create MESSAGE_SSOT stream failed", "error", err)
+		slog.Error("create MESSAGES_CANONICAL stream failed", "error", err)
 		os.Exit(1)
 	}
 

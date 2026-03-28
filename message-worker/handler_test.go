@@ -13,7 +13,7 @@ import (
 
 func TestHandler_ProcessMessage_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	store := NewMockMessageStore(ctrl)
+	store := NewMockStore(ctrl)
 
 	msg := model.Message{
 		ID:       "msg-1",
@@ -25,7 +25,7 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 	evt := model.MessageEvent{Message: msg, SiteID: "site-a"}
 
 	store.EXPECT().
-		SaveMessage(gomock.Any(), &msg).
+		SaveMessage(gomock.Any(), msg).
 		Return(nil)
 
 	h := &Handler{store: store}
@@ -38,7 +38,7 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 
 func TestHandler_ProcessMessage_SaveError(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	store := NewMockMessageStore(ctrl)
+	store := NewMockStore(ctrl)
 
 	msg := model.Message{
 		ID:       "msg-1",
@@ -63,7 +63,7 @@ func TestHandler_ProcessMessage_SaveError(t *testing.T) {
 
 func TestHandler_ProcessMessage_MalformedJSON(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	store := NewMockMessageStore(ctrl)
+	store := NewMockStore(ctrl)
 
 	h := &Handler{store: store}
 

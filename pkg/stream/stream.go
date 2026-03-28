@@ -15,10 +15,10 @@ func Messages(siteID string) Config {
 	}
 }
 
-func MessageSSOT(siteID string) Config {
+func MessagesCanonical(siteID string) Config {
 	return Config{
-		Name:     fmt.Sprintf("MESSAGE_SSOT_%s", siteID),
-		Subjects: []string{fmt.Sprintf("chat.msg.ssot.%s.>", siteID)},
+		Name:     fmt.Sprintf("MESSAGES_CANONICAL_%s", siteID),
+		Subjects: []string{fmt.Sprintf("chat.msg.canonical.%s.>", siteID)},
 	}
 }
 

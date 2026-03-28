@@ -2,7 +2,7 @@
 
 ## Overview
 
-Introduce a new `message-gatekeeper` microservice that sits between client message submissions and downstream processing. The gatekeeper consumes from the existing `MESSAGES` stream, validates the message (UUID format, content size, room membership), and publishes validated events to a new `MESSAGE_SSOT` stream. All downstream workers (message-worker, broadcast-worker, notification-worker) consume from this single source of truth, eliminating the FANOUT stream entirely.
+Introduce a new `message-gatekeeper` microservice that sits between client message submissions and downstream processing. The gatekeeper consumes from the existing `MESSAGES` stream, validates the message (UUID format, content size, room membership), and publishes validated events to a new `MESSAGES_CANONICAL` stream. All downstream workers (message-worker, broadcast-worker, notification-worker) consume from this single source of truth, eliminating the FANOUT stream entirely.
 
 ## Motivation
 
@@ -28,8 +28,8 @@ message-gatekeeper
   │  ├─ reply success/failure to client
   │  └─ publish MessageEvent
   ▼
-MESSAGE_SSOT_{siteID} stream
-  subject: chat.msg.ssot.{siteID}.created
+MESSAGES_CANONICAL_{siteID} stream
+  subject: chat.msg.canonical.{siteID}.created
   │
   ├──────────────────┼──────────────────┐
   ▼                  ▼                  ▼
@@ -47,12 +47,12 @@ Client → MESSAGES → message-worker → FANOUT → broadcast-worker
 
 ## Stream Definitions
 
-### New: MESSAGE_SSOT_{siteID}
+### New: MESSAGES_CANONICAL_{siteID}
 
 | Field    | Value                           |
 |----------|---------------------------------|
-| Name     | `MESSAGE_SSOT_{siteID}`         |
-| Subjects | `["chat.msg.ssot.{siteID}.>"]`  |
+| Name     | `MESSAGES_CANONICAL_{siteID}`         |
+| Subjects | `["chat.msg.canonical.{siteID}.>"]`  |
 
 The `>` wildcard allows future action subjects (`.edited`, `.deleted`) alongside `.created`.
 
@@ -71,8 +71,8 @@ The FANOUT stream, its subject builders (`Fanout`, `FanoutWildcard`), and all re
 
 | Function                    | Output                               |
 |-----------------------------|--------------------------------------|
-| `MsgSSOTCreated(siteID)`    | `chat.msg.ssot.{siteID}.created`     |
-| `MsgSSOTWildcard(siteID)`   | `chat.msg.ssot.{siteID}.>`           |
+| `MsgCanonicalCreated(siteID)`    | `chat.msg.canonical.{siteID}.created`     |
+| `MsgCanonicalWildcard(siteID)`   | `chat.msg.canonical.{siteID}.>`           |
 
 ### Removed Subject Builders
 
@@ -122,7 +122,7 @@ type MessageEvent struct {
 
 - **Removed**: `RoomID` — already present in `Message.RoomID`, no need to duplicate
 
-Published to `MESSAGE_SSOT` by the gatekeeper. The `Message` inside contains:
+Published to `MESSAGES_CANONICAL` by the gatekeeper. The `Message` inside contains:
 - `ID` — from client (validated UUID)
 - `RoomID` — from NATS subject
 - `UserID` — resolved from subscription lookup
@@ -196,7 +196,7 @@ type Handler struct {
 4. **Validate Content**: non-empty and `len([]byte(req.Content)) <= 20480` (20KB)
 5. **Validate subscription**: `store.GetSubscription(ctx, username, roomID)` — confirms membership, retrieves `UserID`
 6. **Build Message**: `{ID: req.ID, RoomID: roomID, UserID: sub.User.ID, Username: username, Content: req.Content, CreatedAt: time.Now()}`
-7. **Publish to MESSAGE_SSOT**: subject `chat.msg.ssot.{siteID}.created`, payload `MessageEvent{Message, SiteID}`, header `Nats-Msg-Id: message.ID`
+7. **Publish to MESSAGES_CANONICAL**: subject `chat.msg.canonical.{siteID}.created`, payload `MessageEvent{Message, SiteID}`, header `Nats-Msg-Id: message.ID`
 8. **Reply success**: `natsutil.ReplyJSON(msg, message)` to `chat.user.{username}.response.{requestID}`
 9. On any validation failure: `natsutil.ReplyError(msg, "<description>")`, ack the JetStream message (validation failures must not redeliver)
 
@@ -222,7 +222,7 @@ type Config struct {
 
 | Aspect | Before | After |
 |--------|--------|-------|
-| Source stream | `MESSAGES_{siteID}` | `MESSAGE_SSOT_{siteID}` |
+| Source stream | `MESSAGES_{siteID}` | `MESSAGES_CANONICAL_{siteID}` |
 | Payload | `SendMessageRequest` | `MessageEvent` |
 | Subscription validation | Yes (MongoDB) | No |
 | UUID generation | Yes | No |
@@ -232,7 +232,7 @@ type Config struct {
 | Cassandra persistence | Yes | Yes |
 
 **Simplified handler flow:**
-1. Unmarshal `MessageEvent` from MESSAGE_SSOT
+1. Unmarshal `MessageEvent` from MESSAGES_CANONICAL
 2. Save `event.Message` to Cassandra
 3. Ack
 
@@ -253,7 +253,7 @@ type Store interface {
 
 | Aspect | Before | After |
 |--------|--------|-------|
-| Source stream | `FANOUT_{siteID}` | `MESSAGE_SSOT_{siteID}` |
+| Source stream | `FANOUT_{siteID}` | `MESSAGES_CANONICAL_{siteID}` |
 | Payload | `MessageEvent` | `MessageEvent` (same) |
 | Consumer name | Updated to reflect new stream |
 | All broadcast logic | Unchanged | Unchanged |
@@ -264,7 +264,7 @@ Store interface unchanged — still needs rooms and subscriptions from MongoDB f
 
 | Aspect | Before | After |
 |--------|--------|-------|
-| Source stream | `FANOUT_{siteID}` | `MESSAGE_SSOT_{siteID}` |
+| Source stream | `FANOUT_{siteID}` | `MESSAGES_CANONICAL_{siteID}` |
 | Payload | `MessageEvent` | `MessageEvent` (same) |
 | Consumer name | Updated to reflect new stream |
 | All notification logic | Unchanged | Unchanged |
@@ -284,8 +284,8 @@ Store interface unchanged — still needs subscriptions from MongoDB for subscri
 ## CLAUDE.md Updates
 
 - **Event flow**: Update to reflect gatekeeper in the pipeline
-- **JetStream Streams**: Add `MESSAGE_SSOT_{siteID}`, remove `FANOUT_{siteID}`
-- **Subject Naming**: Add `chat.msg.ssot.{siteID}.created` pattern
+- **JetStream Streams**: Add `MESSAGES_CANONICAL_{siteID}`, remove `FANOUT_{siteID}`
+- **Subject Naming**: Add `chat.msg.canonical.{siteID}.created` pattern
 - **Service descriptions**: Add message-gatekeeper, update message-worker description
 
 ## Error Handling
@@ -297,7 +297,7 @@ Store interface unchanged — still needs subscriptions from MongoDB for subscri
 | Content > 20KB | Reply error, ack message |
 | User not in room | Reply error, ack message |
 | MongoDB unavailable | Nack/retry (transient) |
-| MESSAGE_SSOT publish fails | Nack/retry (transient) |
+| MESSAGES_CANONICAL publish fails | Nack/retry (transient) |
 | SiteID mismatch | Log error, ack (misconfigured) |
 | Subject parse failure | Log error, ack (malformed) |
 | JSON unmarshal failure | Log error, ack (malformed) |
