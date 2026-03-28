@@ -20,7 +20,7 @@
 | Testing | `go.uber.org/mock` (mockgen), `stretchr/testify` (assertions), `testcontainers-go` (integration) |
 | Containers | Docker multi-stage builds, Docker Compose |
 
-**Event flow:** User publishes message to MESSAGES stream → `message-worker` stores and publishes to FANOUT → `broadcast-worker` delivers to room members → `notification-worker` sends notifications → cross-site events flow via OUTBOX/INBOX streams.
+**Event flow:** User publishes message to MESSAGES stream → `message-gatekeeper` validates and publishes to MESSAGE_SSOT → `message-worker` persists to Cassandra, `broadcast-worker` delivers to room members, `notification-worker` sends notifications → cross-site events flow via OUTBOX/INBOX streams.
 
 **Multi-site federation:** Each site runs independently with its own NATS, MongoDB, and Cassandra. Cross-site events use the Outbox/Inbox pattern — local events go to the OUTBOX stream, remote sites source from it into their INBOX stream. User subscriptions and room metadata are scoped by `siteID`.
 
@@ -35,6 +35,8 @@
 - `handler_test.go` — Unit tests with mocked store
 - `integration_test.go` — Integration tests with testcontainers (tagged `//go:build integration`)
 - `mock_store_test.go` — Generated mocks (never edit manually)
+
+All services follow this layout, including `message-gatekeeper` (validates messages and publishes to MESSAGE_SSOT).
 
 ## Section 2: Common Commands
 
@@ -198,13 +200,13 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Dot-delimited hierarchical subjects — use `pkg/subject` builders, never raw `fmt.Sprintf`
 - User-scoped: `chat.user.{userID}.…`
 - Room-scoped: `chat.room.{roomID}.…`
-- Fanout: `fanout.{siteID}.{roomID}`
+- MESSAGE_SSOT: `chat.msg.ssot.{siteID}.created` (`.edited`, `.deleted` for future)
 - Outbox: `outbox.{siteID}.to.{destSiteID}.{eventType}`
 - Wildcards: `*` for single-token, `>` for multi-token tail — define patterns in `pkg/subject`
 
 ### JetStream Streams
 - `MESSAGES_{siteID}` — User message submissions
-- `FANOUT_{siteID}` — Broadcast messages for fan-out
+- `MESSAGE_SSOT_{siteID}` — Validated messages (single source of truth for downstream workers)
 - `ROOMS_{siteID}` — Member invite requests
 - `OUTBOX_{siteID}` — Cross-site outbound events
 - `INBOX_{siteID}` — Cross-site inbound events (sourced from remote OUTBOX)
