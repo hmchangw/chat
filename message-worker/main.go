@@ -19,8 +19,8 @@ import (
 )
 
 type config struct {
-	NatsURL           string `env:"NATS_URL"           envDefault:"nats://localhost:4222"`
-	SiteID            string `env:"SITE_ID"            envDefault:"site-local"`
+	NatsURL           string `env:"NATS_URL,required"`
+	SiteID            string `env:"SITE_ID,required"`
 	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
 	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
 	MaxWorkers        int    `env:"MAX_WORKERS"        envDefault:"100"`
