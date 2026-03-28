@@ -1549,3 +1549,144 @@ make lint
 git add broadcast-worker/
 git commit -m "refactor: broadcast-worker consumes from MESSAGE_SSOT instead of FANOUT"
 ```
+
+---
+
+### Task 7: Refactor notification-worker
+
+**Files:**
+- Modify: `notification-worker/handler.go`
+- Modify: `notification-worker/handler_test.go`
+- Modify: `notification-worker/main.go`
+
+- [ ] **Step 1: Update tests — remove RoomID from MessageEvent (Red)**
+
+In `notification-worker/handler_test.go`, update all 3 `MessageEvent` constructions.
+
+Replace in `TestHandleMessage_FanOutSkipsSender`:
+
+```go
+	evt := model.MessageEvent{
+		RoomID: "room-1",
+		SiteID: "site-a",
+		Message: model.Message{
+```
+
+With:
+
+```go
+	evt := model.MessageEvent{
+		SiteID: "site-a",
+		Message: model.Message{
+```
+
+Replace in `TestHandleMessage_NoMembers`:
+
+```go
+	evt := model.MessageEvent{
+		RoomID: "empty-room",
+		SiteID: "site-a",
+		Message: model.Message{
+```
+
+With:
+
+```go
+	evt := model.MessageEvent{
+		SiteID: "site-a",
+		Message: model.Message{
+```
+
+Replace in `TestHandleMessage_SoleMember`:
+
+```go
+	evt := model.MessageEvent{
+		RoomID: "room-solo",
+		SiteID: "site-a",
+		Message: model.Message{
+```
+
+With:
+
+```go
+	evt := model.MessageEvent{
+		SiteID: "site-a",
+		Message: model.Message{
+```
+
+Run: `make test SERVICE=notification-worker` — Expected: FAIL
+
+- [ ] **Step 2: Update handler — evt.RoomID to evt.Message.RoomID (Green)**
+
+In `notification-worker/handler.go`, replace:
+
+```go
+	subs, err := h.members.ListSubscriptions(ctx, evt.RoomID)
+	if err != nil {
+		return fmt.Errorf("list subscriptions for room %s: %w", evt.RoomID, err)
+	}
+
+	notif := model.NotificationEvent{
+		Type:    "new_message",
+		RoomID:  evt.RoomID,
+		Message: evt.Message,
+	}
+```
+
+With:
+
+```go
+	subs, err := h.members.ListSubscriptions(ctx, evt.Message.RoomID)
+	if err != nil {
+		return fmt.Errorf("list subscriptions for room %s: %w", evt.Message.RoomID, err)
+	}
+
+	notif := model.NotificationEvent{
+		Type:    "new_message",
+		RoomID:  evt.Message.RoomID,
+		Message: evt.Message,
+	}
+```
+
+Run: `make test SERVICE=notification-worker` — Expected: PASS
+
+- [ ] **Step 3: Update main.go — switch to MESSAGE_SSOT**
+
+In `notification-worker/main.go`, replace:
+
+```go
+	fanoutCfg := stream.Fanout(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     fanoutCfg.Name,
+		Subjects: fanoutCfg.Subjects,
+	}); err != nil {
+		slog.Error("create fanout stream failed", "error", err)
+		os.Exit(1)
+	}
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, fanoutCfg.Name, jetstream.ConsumerConfig{
+```
+
+With:
+
+```go
+	ssotCfg := stream.MessageSSOT(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     ssotCfg.Name,
+		Subjects: ssotCfg.Subjects,
+	}); err != nil {
+		slog.Error("create message ssot stream failed", "error", err)
+		os.Exit(1)
+	}
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, ssotCfg.Name, jetstream.ConsumerConfig{
+```
+
+- [ ] **Step 4: Verify and commit**
+
+```bash
+make test SERVICE=notification-worker
+make lint
+git add notification-worker/
+git commit -m "refactor: notification-worker consumes from MESSAGE_SSOT instead of FANOUT"
+```
