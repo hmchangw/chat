@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Introduce a message-gatekeeper microservice that centralizes message validation, replaces the FANOUT stream with MESSAGE_SSOT, and simplifies all downstream workers.
+**Goal:** Introduce a message-gatekeeper microservice that centralizes message validation, replaces the FANOUT stream with MESSAGES_CANONICAL, and simplifies all downstream workers.
 
-**Architecture:** A new `message-gatekeeper` service consumes from the existing `MESSAGES` stream, validates messages (UUID, content size, room membership), and publishes to a new `MESSAGE_SSOT` stream. All downstream workers (message-worker, broadcast-worker, notification-worker) consume from MESSAGE_SSOT. The FANOUT stream is eliminated entirely.
+**Architecture:** A new `message-gatekeeper` service consumes from the existing `MESSAGES` stream, validates messages (UUID, content size, room membership), and publishes to a new `MESSAGES_CANONICAL` stream. All downstream workers (message-worker, broadcast-worker, notification-worker) consume from MESSAGES_CANONICAL. The FANOUT stream is eliminated entirely.
 
 **Tech Stack:** Go 1.24, NATS JetStream, MongoDB, Cassandra, `go.uber.org/mock`, `stretchr/testify`
 
@@ -19,7 +19,7 @@
 |------|---------|
 | `message-gatekeeper/store.go` | Store interface with `GetSubscription` + mockgen directive |
 | `message-gatekeeper/store_mongo.go` | MongoDB implementation of Store |
-| `message-gatekeeper/handler.go` | Message validation, MESSAGE_SSOT publishing, reply routing |
+| `message-gatekeeper/handler.go` | Message validation, MESSAGES_CANONICAL publishing, reply routing |
 | `message-gatekeeper/handler_test.go` | Table-driven tests for `processMessage` (9 cases) |
 | `message-gatekeeper/main.go` | Config, NATS/Mongo, stream setup, high-throughput consumer, graceful shutdown |
 | `message-gatekeeper/deploy/Dockerfile` | Multi-stage build (golang:1.24-alpine / alpine:3.21) |
@@ -32,21 +32,21 @@
 | `pkg/model/message.go` | Add `Username` + bson tags to `Message`; add `ID`, remove `RoomID` from `SendMessageRequest` |
 | `pkg/model/event.go` | Remove `RoomID` from `MessageEvent` |
 | `pkg/model/model_test.go` | Update and add roundtrip tests |
-| `pkg/stream/stream.go` | Add `MessageSSOT`, remove `Fanout` |
+| `pkg/stream/stream.go` | Add `MessagesCanonical`, remove `Fanout` |
 | `pkg/stream/stream_test.go` | Update test table |
-| `pkg/subject/subject.go` | Add `ParseUserRoomSiteSubject`, `MsgSSOTCreated`, `MsgSSOTWildcard`; remove `Fanout`, `FanoutWildcard` |
+| `pkg/subject/subject.go` | Add `ParseUserRoomSiteSubject`, `MsgCanonicalCreated`, `MsgCanonicalWildcard`; remove `Fanout`, `FanoutWildcard` |
 | `pkg/subject/subject_test.go` | Add new test cases, remove Fanout cases |
 | `message-worker/store.go` | Rename to `Store`, remove `GetSubscription`, `SaveMessage` takes value |
 | `message-worker/handler.go` | Simplified: unmarshal `MessageEvent` + `SaveMessage` only |
 | `message-worker/handler_test.go` | Rewrite for new handler |
-| `message-worker/main.go` | Remove MongoDB, switch to MESSAGE_SSOT stream |
+| `message-worker/main.go` | Remove MongoDB, switch to MESSAGES_CANONICAL stream |
 | `message-worker/integration_test.go` | Cassandra-only tests |
 | `broadcast-worker/handler.go` | `evt.RoomID` → `evt.Message.RoomID` |
 | `broadcast-worker/handler_test.go` | Remove top-level `RoomID` from `MessageEvent` |
-| `broadcast-worker/main.go` | `stream.Fanout` → `stream.MessageSSOT` |
+| `broadcast-worker/main.go` | `stream.Fanout` → `stream.MessagesCanonical` |
 | `notification-worker/handler.go` | `evt.RoomID` → `evt.Message.RoomID` |
 | `notification-worker/handler_test.go` | Remove top-level `RoomID` from `MessageEvent` |
-| `notification-worker/main.go` | `stream.Fanout` → `stream.MessageSSOT` |
+| `notification-worker/main.go` | `stream.Fanout` → `stream.MessagesCanonical` |
 | `CLAUDE.md` | Update event flow, streams, subjects |
 
 ### Deleted Files
@@ -244,7 +244,7 @@ git commit -m "feat: update domain models — add Username to Message, add ID to
 - Modify: `pkg/stream/stream.go`
 - Modify: `pkg/stream/stream_test.go`
 
-- [ ] **Step 1: Update test — add MessageSSOT, remove Fanout (Red)**
+- [ ] **Step 1: Update test — add MessagesCanonical, remove Fanout (Red)**
 
 In `pkg/stream/stream_test.go`, replace:
 
@@ -258,13 +258,13 @@ With:
 
 ```go
 		{"Messages", stream.Messages(siteID), "MESSAGES_site-a", "chat.user.*.room.*.site-a.msg.>"},
-		{"MessageSSOT", stream.MessageSSOT(siteID), "MESSAGE_SSOT_site-a", "chat.msg.ssot.site-a.>"},
+		{"MessagesCanonical", stream.MessagesCanonical(siteID), "MESSAGES_CANONICAL_site-a", "chat.msg.canonical.site-a.>"},
 		{"Rooms", stream.Rooms(siteID), "ROOMS_site-a", "chat.user.*.request.room.*.site-a.member.>"},
 ```
 
-Run: `make test SERVICE=pkg/stream` — Expected: FAIL (MessageSSOT undefined)
+Run: `make test SERVICE=pkg/stream` — Expected: FAIL (MessagesCanonical undefined)
 
-- [ ] **Step 2: Add MessageSSOT, remove Fanout (Green)**
+- [ ] **Step 2: Add MessagesCanonical, remove Fanout (Green)**
 
 In `pkg/stream/stream.go`, replace:
 
@@ -280,10 +280,10 @@ func Fanout(siteID string) Config {
 With:
 
 ```go
-func MessageSSOT(siteID string) Config {
+func MessagesCanonical(siteID string) Config {
 	return Config{
-		Name:     fmt.Sprintf("MESSAGE_SSOT_%s", siteID),
-		Subjects: []string{fmt.Sprintf("chat.msg.ssot.%s.>", siteID)},
+		Name:     fmt.Sprintf("MESSAGES_CANONICAL_%s", siteID),
+		Subjects: []string{fmt.Sprintf("chat.msg.canonical.%s.>", siteID)},
 	}
 }
 ```
@@ -300,7 +300,7 @@ Expected: PASS
 
 ```bash
 git add pkg/stream/stream.go pkg/stream/stream_test.go
-git commit -m "feat: add MESSAGE_SSOT stream, remove FANOUT stream"
+git commit -m "feat: add MESSAGES_CANONICAL stream, remove FANOUT stream"
 ```
 
 ---
@@ -323,8 +323,8 @@ In `pkg/subject/subject_test.go`, in `TestSubjectBuilders`, replace:
 With:
 
 ```go
-		{"MsgSSOTCreated", subject.MsgSSOTCreated("site-a"),
-			"chat.msg.ssot.site-a.created"},
+		{"MsgCanonicalCreated", subject.MsgCanonicalCreated("site-a"),
+			"chat.msg.canonical.site-a.created"},
 ```
 
 In `TestWildcardPatterns`, replace:
@@ -337,8 +337,8 @@ In `TestWildcardPatterns`, replace:
 With:
 
 ```go
-		{"MsgSSOTWild", subject.MsgSSOTWildcard("site-a"),
-			"chat.msg.ssot.site-a.>"},
+		{"MsgCanonicalWild", subject.MsgCanonicalWildcard("site-a"),
+			"chat.msg.canonical.site-a.>"},
 ```
 
 - [ ] **Step 2: Add TestParseUserRoomSiteSubject**
@@ -393,7 +393,7 @@ func ParseUserRoomSiteSubject(subj string) (username, roomID, siteID string, ok 
 }
 ```
 
-Replace `Fanout` function with `MsgSSOTCreated`:
+Replace `Fanout` function with `MsgCanonicalCreated`:
 
 ```go
 // Replace:
@@ -402,12 +402,12 @@ func Fanout(siteID, roomID string) string {
 }
 
 // With:
-func MsgSSOTCreated(siteID string) string {
-	return fmt.Sprintf("chat.msg.ssot.%s.created", siteID)
+func MsgCanonicalCreated(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.created", siteID)
 }
 ```
 
-Replace `FanoutWildcard` function with `MsgSSOTWildcard`:
+Replace `FanoutWildcard` function with `MsgCanonicalWildcard`:
 
 ```go
 // Replace:
@@ -416,8 +416,8 @@ func FanoutWildcard(siteID string) string {
 }
 
 // With:
-func MsgSSOTWildcard(siteID string) string {
-	return fmt.Sprintf("chat.msg.ssot.%s.>", siteID)
+func MsgCanonicalWildcard(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.>", siteID)
 }
 ```
 
@@ -433,7 +433,7 @@ Expected: PASS
 
 ```bash
 git add pkg/subject/subject.go pkg/subject/subject_test.go
-git commit -m "feat: add MESSAGE_SSOT subject builders and ParseUserRoomSiteSubject, remove Fanout"
+git commit -m "feat: add MESSAGES_CANONICAL subject builders and ParseUserRoomSiteSubject, remove Fanout"
 ```
 
 ---
@@ -576,7 +576,7 @@ func TestHandler_processMessage(t *testing.T) {
 			wantErr: true, wantInfraErr: true,
 		},
 		{
-			name: "publish to MESSAGE_SSOT fails", username: "alice", roomID: "r1", siteID: siteID,
+			name: "publish to MESSAGES_CANONICAL fails", username: "alice", roomID: "r1", siteID: siteID,
 			payload: model.SendMessageRequest{ID: validUUID, Content: "hello", RequestID: "req-1"},
 			setupStore: func(m *MockStore) {
 				m.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(happySub, nil)
@@ -659,7 +659,7 @@ func TestHandler_processMessage(t *testing.T) {
 
 			if tc.wantPublished {
 				require.True(t, publishCalled)
-				assert.Equal(t, "chat.msg.ssot.site-a.created", publishedSubject)
+				assert.Equal(t, "chat.msg.canonical.site-a.created", publishedSubject)
 				var evt model.MessageEvent
 				require.NoError(t, json.Unmarshal(publishedData, &evt))
 				assert.Equal(t, msg.ID, evt.Message.ID)
@@ -807,9 +807,9 @@ func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID s
 		return nil, &infraError{err: fmt.Errorf("marshal event: %w", err)}
 	}
 
-	ssotSubj := subject.MsgSSOTCreated(siteID)
-	if _, err := h.publish(ssotSubj, evtData, jetstream.WithMsgID(msg.ID)); err != nil {
-		return nil, &infraError{err: fmt.Errorf("publish to MESSAGE_SSOT: %w", err)}
+	canonicalSubj := subject.MsgCanonicalCreated(siteID)
+	if _, err := h.publish(canonicalSubj, evtData, jetstream.WithMsgID(msg.ID)); err != nil {
+		return nil, &infraError{err: fmt.Errorf("publish to MESSAGES_CANONICAL: %w", err)}
 	}
 
 	return json.Marshal(msg)
@@ -939,11 +939,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	ssotCfg := stream.MessageSSOT(cfg.SiteID)
+	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: ssotCfg.Name, Subjects: ssotCfg.Subjects,
+		Name: canonicalCfg.Name, Subjects: canonicalCfg.Subjects,
 	}); err != nil {
-		slog.Error("create MESSAGE_SSOT stream failed", "error", err)
+		slog.Error("create MESSAGES_CANONICAL stream failed", "error", err)
 		os.Exit(1)
 	}
 
@@ -1062,7 +1062,7 @@ make lint
 
 ```bash
 git add message-gatekeeper/
-git commit -m "feat: add message-gatekeeper service — validates messages and publishes to MESSAGE_SSOT"
+git commit -m "feat: add message-gatekeeper service — validates messages and publishes to MESSAGES_CANONICAL"
 ```
 
 ---
@@ -1209,7 +1209,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-// Handler consumes validated messages from MESSAGE_SSOT and persists them to Cassandra.
+// Handler consumes validated messages from MESSAGES_CANONICAL and persists them to Cassandra.
 type Handler struct {
 	store Store
 }
@@ -1218,7 +1218,7 @@ func NewHandler(store Store) *Handler {
 	return &Handler{store: store}
 }
 
-// HandleJetStreamMsg processes a JetStream message from the MESSAGE_SSOT stream.
+// HandleJetStreamMsg processes a JetStream message from the MESSAGES_CANONICAL stream.
 func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	ctx := context.Background()
 	if err := h.processMessage(ctx, msg.Data()); err != nil {
@@ -1346,7 +1346,7 @@ func main() {
 	store := NewCassandraStore(cassSession)
 	handler := NewHandler(store)
 
-	streamCfg := stream.MessageSSOT(cfg.SiteID)
+	streamCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: streamCfg.Name, Subjects: streamCfg.Subjects,
 	}); err != nil {
@@ -1418,7 +1418,7 @@ make lint
 
 ```bash
 git add message-worker/
-git commit -m "refactor: simplify message-worker — consume from MESSAGE_SSOT, remove MongoDB and FANOUT"
+git commit -m "refactor: simplify message-worker — consume from MESSAGES_CANONICAL, remove MongoDB and FANOUT"
 ```
 
 ---
@@ -1509,7 +1509,7 @@ With:
 
 Run: `make test SERVICE=broadcast-worker` — Expected: PASS
 
-- [ ] **Step 3: Update main.go — switch to MESSAGE_SSOT**
+- [ ] **Step 3: Update main.go — switch to MESSAGES_CANONICAL**
 
 In `broadcast-worker/main.go`, replace:
 
@@ -1529,16 +1529,16 @@ In `broadcast-worker/main.go`, replace:
 With:
 
 ```go
-	ssotCfg := stream.MessageSSOT(cfg.SiteID)
+	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     ssotCfg.Name,
-		Subjects: ssotCfg.Subjects,
+		Name:     canonicalCfg.Name,
+		Subjects: canonicalCfg.Subjects,
 	}); err != nil {
-		slog.Error("create message ssot stream failed", "error", err)
+		slog.Error("create MESSAGES_CANONICAL stream failed", "error", err)
 		os.Exit(1)
 	}
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, ssotCfg.Name, jetstream.ConsumerConfig{
+	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
 ```
 
 - [ ] **Step 4: Verify and commit**
@@ -1547,7 +1547,7 @@ With:
 make test SERVICE=broadcast-worker
 make lint
 git add broadcast-worker/
-git commit -m "refactor: broadcast-worker consumes from MESSAGE_SSOT instead of FANOUT"
+git commit -m "refactor: broadcast-worker consumes from MESSAGES_CANONICAL instead of FANOUT"
 ```
 
 ---
@@ -1650,7 +1650,7 @@ With:
 
 Run: `make test SERVICE=notification-worker` — Expected: PASS
 
-- [ ] **Step 3: Update main.go — switch to MESSAGE_SSOT**
+- [ ] **Step 3: Update main.go — switch to MESSAGES_CANONICAL**
 
 In `notification-worker/main.go`, replace:
 
@@ -1670,16 +1670,16 @@ In `notification-worker/main.go`, replace:
 With:
 
 ```go
-	ssotCfg := stream.MessageSSOT(cfg.SiteID)
+	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     ssotCfg.Name,
-		Subjects: ssotCfg.Subjects,
+		Name:     canonicalCfg.Name,
+		Subjects: canonicalCfg.Subjects,
 	}); err != nil {
-		slog.Error("create message ssot stream failed", "error", err)
+		slog.Error("create MESSAGES_CANONICAL stream failed", "error", err)
 		os.Exit(1)
 	}
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, ssotCfg.Name, jetstream.ConsumerConfig{
+	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
 ```
 
 - [ ] **Step 4: Verify and commit**
@@ -1688,7 +1688,7 @@ With:
 make test SERVICE=notification-worker
 make lint
 git add notification-worker/
-git commit -m "refactor: notification-worker consumes from MESSAGE_SSOT instead of FANOUT"
+git commit -m "refactor: notification-worker consumes from MESSAGES_CANONICAL instead of FANOUT"
 ```
 
 ---
@@ -1709,7 +1709,7 @@ Replace:
 With:
 
 ```
-**Event flow:** User publishes message to MESSAGES stream → `message-gatekeeper` validates and publishes to MESSAGE_SSOT → `message-worker` persists to Cassandra, `broadcast-worker` delivers to room members, `notification-worker` sends notifications → cross-site events flow via OUTBOX/INBOX streams.
+**Event flow:** User publishes message to MESSAGES stream → `message-gatekeeper` validates and publishes to MESSAGES_CANONICAL → `message-worker` persists to Cassandra, `broadcast-worker` delivers to room members, `notification-worker` sends notifications → cross-site events flow via OUTBOX/INBOX streams.
 ```
 
 - [ ] **Step 2: Update JetStream Streams list**
@@ -1723,7 +1723,7 @@ Replace:
 With:
 
 ```
-- `MESSAGE_SSOT_{siteID}` — Validated messages (single source of truth for downstream workers)
+- `MESSAGES_CANONICAL_{siteID}` — Validated messages (single source of truth for downstream workers)
 ```
 
 - [ ] **Step 3: Update subject naming**
@@ -1737,7 +1737,7 @@ Replace:
 With:
 
 ```
-- MESSAGE_SSOT: `chat.msg.ssot.{siteID}.created` (`.edited`, `.deleted` for future)
+- MESSAGES_CANONICAL: `chat.msg.canonical.{siteID}.created` (`.edited`, `.deleted` for future)
 ```
 
 - [ ] **Step 4: Add message-gatekeeper to per-service note**
@@ -1746,7 +1746,7 @@ After the line `- `mock_store_test.go` — Generated mocks (never edit manually)
 
 ```
 
-All services follow this layout, including `message-gatekeeper` (validates messages and publishes to MESSAGE_SSOT).
+All services follow this layout, including `message-gatekeeper` (validates messages and publishes to MESSAGES_CANONICAL).
 ```
 
 - [ ] **Step 5: Commit**
