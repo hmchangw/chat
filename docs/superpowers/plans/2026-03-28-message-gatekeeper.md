@@ -1690,3 +1690,68 @@ make lint
 git add notification-worker/
 git commit -m "refactor: notification-worker consumes from MESSAGE_SSOT instead of FANOUT"
 ```
+
+---
+
+### Task 8: Update CLAUDE.md
+
+**Files:**
+- Modify: `CLAUDE.md`
+
+- [ ] **Step 1: Update event flow**
+
+Replace:
+
+```
+**Event flow:** User publishes message to MESSAGES stream → `message-worker` stores and publishes to FANOUT → `broadcast-worker` delivers to room members → `notification-worker` sends notifications → cross-site events flow via OUTBOX/INBOX streams.
+```
+
+With:
+
+```
+**Event flow:** User publishes message to MESSAGES stream → `message-gatekeeper` validates and publishes to MESSAGE_SSOT → `message-worker` persists to Cassandra, `broadcast-worker` delivers to room members, `notification-worker` sends notifications → cross-site events flow via OUTBOX/INBOX streams.
+```
+
+- [ ] **Step 2: Update JetStream Streams list**
+
+Replace:
+
+```
+- `FANOUT_{siteID}` — Broadcast messages for fan-out
+```
+
+With:
+
+```
+- `MESSAGE_SSOT_{siteID}` — Validated messages (single source of truth for downstream workers)
+```
+
+- [ ] **Step 3: Update subject naming**
+
+Replace:
+
+```
+- Fanout: `fanout.{siteID}.{roomID}`
+```
+
+With:
+
+```
+- MESSAGE_SSOT: `chat.msg.ssot.{siteID}.created` (`.edited`, `.deleted` for future)
+```
+
+- [ ] **Step 4: Add message-gatekeeper to per-service note**
+
+After the line `- `mock_store_test.go` — Generated mocks (never edit manually)`, add:
+
+```
+
+All services follow this layout, including `message-gatekeeper` (validates messages and publishes to MESSAGE_SSOT).
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add CLAUDE.md
+git commit -m "docs: update CLAUDE.md for message-gatekeeper architecture"
+```
