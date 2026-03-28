@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/nats-io/nats.go"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -16,59 +15,59 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockMessageStore(ctrl)
 
+	msg := model.Message{
+		ID:       "msg-1",
+		RoomID:   "r1",
+		UserID:   "u1",
+		Username: "alice",
+		Content:  "hello",
+	}
+	evt := model.MessageEvent{Message: msg, SiteID: "site-a"}
+
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleMember}, nil)
-	store.EXPECT().
-		SaveMessage(gomock.Any(), gomock.Any()).
+		SaveMessage(gomock.Any(), &msg).
 		Return(nil)
 
-	var published []*nats.Msg
-	publisher := func(msg *nats.Msg) error {
-		published = append(published, msg)
-		return nil
-	}
+	h := &Handler{store: store}
 
-	h := &Handler{store: store, siteID: "site-a", publishMsg: publisher}
-
-	req := model.SendMessageRequest{Content: "hello", RequestID: "req-1"}
-	data, _ := json.Marshal(req)
-
-	reply, err := h.processMessage(context.Background(), "alice", "r1", "site-a", data)
-	if err != nil {
+	data, _ := json.Marshal(evt)
+	if err := h.processMessage(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var msg model.Message
-	if err := json.Unmarshal(reply, &msg); err != nil {
-		t.Fatalf("unmarshal reply: %v", err)
-	}
-	if msg.Content != "hello" || msg.UserID != "u1" || msg.RoomID != "r1" {
-		t.Errorf("got %+v", msg)
-	}
-	if msg.ID == "" {
-		t.Error("message ID should be set")
-	}
-	if len(published) == 0 {
-		t.Fatal("expected fanout publish")
 	}
 }
 
-func TestHandler_ProcessMessage_NotSubscribed(t *testing.T) {
+func TestHandler_ProcessMessage_SaveError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockMessageStore(ctrl)
 
+	msg := model.Message{
+		ID:       "msg-1",
+		RoomID:   "r1",
+		UserID:   "u1",
+		Username: "alice",
+		Content:  "hello",
+	}
+	evt := model.MessageEvent{Message: msg, SiteID: "site-a"}
+
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(nil, fmt.Errorf("subscription not found"))
+		SaveMessage(gomock.Any(), gomock.Any()).
+		Return(fmt.Errorf("cassandra unavailable"))
 
-	h := &Handler{store: store, siteID: "site-a", publishMsg: func(*nats.Msg) error { return nil }}
+	h := &Handler{store: store}
 
-	req := model.SendMessageRequest{Content: "hello", RequestID: "req-1"}
-	data, _ := json.Marshal(req)
+	data, _ := json.Marshal(evt)
+	if err := h.processMessage(context.Background(), data); err == nil {
+		t.Fatal("expected error for save failure")
+	}
+}
 
-	_, err := h.processMessage(context.Background(), "alice", "r1", "site-a", data)
-	if err == nil {
-		t.Fatal("expected error for unsubscribed user")
+func TestHandler_ProcessMessage_MalformedJSON(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockMessageStore(ctrl)
+
+	h := &Handler{store: store}
+
+	if err := h.processMessage(context.Background(), []byte("{invalid")); err == nil {
+		t.Fatal("expected error for malformed JSON")
 	}
 }

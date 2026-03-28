@@ -57,16 +57,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	fanoutCfg := stream.Fanout(cfg.SiteID)
+	ssotCfg := stream.MessageSSOT(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     fanoutCfg.Name,
-		Subjects: fanoutCfg.Subjects,
+		Name:     ssotCfg.Name,
+		Subjects: ssotCfg.Subjects,
 	}); err != nil {
-		slog.Error("create fanout stream failed", "error", err)
+		slog.Error("create MESSAGE_SSOT stream failed", "error", err)
 		os.Exit(1)
 	}
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, fanoutCfg.Name, jetstream.ConsumerConfig{
+	cons, err := js.CreateOrUpdateConsumer(ctx, ssotCfg.Name, jetstream.ConsumerConfig{
 		Durable:   "broadcast-worker",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})

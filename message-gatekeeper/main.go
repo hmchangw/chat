@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -13,20 +12,17 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
 
 type config struct {
-	NatsURL           string `env:"NATS_URL"           envDefault:"nats://localhost:4222"`
-	SiteID            string `env:"SITE_ID"            envDefault:"site-local"`
-	MongoURI          string `env:"MONGO_URI"          envDefault:"mongodb://localhost:27017"`
-	MongoDB           string `env:"MONGO_DB"           envDefault:"chat"`
-	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
-	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
-	MaxWorkers        int    `env:"MAX_WORKERS"        envDefault:"100"`
+	NatsURL    string `env:"NATS_URL"     envDefault:"nats://localhost:4222"`
+	SiteID     string `env:"SITE_ID"      envDefault:"site-local"`
+	MongoURI   string `env:"MONGO_URI"    envDefault:"mongodb://localhost:27017"`
+	MongoDB    string `env:"MONGO_DB"     envDefault:"chat"`
+	MaxWorkers int    `env:"MAX_WORKERS"  envDefault:"100"`
 }
 
 func main() {
@@ -58,15 +54,23 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
-	cassSession, err := cassutil.Connect(strings.Split(cfg.CassandraHosts, ","), cfg.CassandraKeyspace)
-	if err != nil {
-		slog.Error("cassandra connect failed", "error", err)
+	store := NewMongoStore(db)
+	pub := func(subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		return js.Publish(context.Background(), subj, data, opts...)
+	}
+	handler := NewHandler(store, pub, cfg.SiteID)
+
+	// Create MESSAGES stream
+	messagesCfg := stream.Messages(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     messagesCfg.Name,
+		Subjects: messagesCfg.Subjects,
+	}); err != nil {
+		slog.Error("create MESSAGES stream failed", "error", err)
 		os.Exit(1)
 	}
 
-	store := NewMongoStore(db, cassSession)
-	handler := NewHandler(store)
-
+	// Create MESSAGE_SSOT stream
 	ssotCfg := stream.MessageSSOT(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     ssotCfg.Name,
@@ -76,8 +80,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, ssotCfg.Name, jetstream.ConsumerConfig{
-		Durable:   "message-worker",
+	cons, err := js.CreateOrUpdateConsumer(ctx, messagesCfg.Name, jetstream.ConsumerConfig{
+		Durable:   "message-gatekeeper",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
@@ -112,7 +116,7 @@ func main() {
 		}
 	}()
 
-	slog.Info("message-worker running", "site", cfg.SiteID)
+	slog.Info("message-gatekeeper running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error {
@@ -131,6 +135,5 @@ func main() {
 		},
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 	)
 }
