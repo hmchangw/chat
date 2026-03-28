@@ -36,8 +36,8 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.notification"},
 		{"Outbox", subject.Outbox("site-a", "site-b", "member_added"),
 			"outbox.site-a.to.site-b.member_added"},
-		{"Fanout", subject.Fanout("site-a", "r1"),
-			"fanout.site-a.r1"},
+		{"MsgSSOTCreated", subject.MsgSSOTCreated("site-a"),
+			"chat.msg.ssot.site-a.created"},
 		{"RoomsCreate", subject.RoomsCreate("alice"),
 			"chat.user.alice.request.rooms.create"},
 		{"RoomsList", subject.RoomsList("alice"),
@@ -82,6 +82,34 @@ func TestParseUserRoomSubject(t *testing.T) {
 	}
 }
 
+func TestParseUserRoomSiteSubject(t *testing.T) {
+	tests := []struct {
+		name         string
+		subj         string
+		wantUsername string
+		wantRoomID   string
+		wantSiteID   string
+		wantOK       bool
+	}{
+		{"valid msg send", "chat.user.alice.room.r1.site-a.msg.send", "alice", "r1", "site-a", true},
+		{"different values", "chat.user.bob.room.room-42.site-b.msg.send", "bob", "room-42", "site-b", true},
+		{"too few parts", "chat.user.alice.room.r1.site-a", "", "", "", false},
+		{"bad prefix", "foo.user.alice.room.r1.site-a.msg.send", "", "", "", false},
+		{"not user", "chat.blah.alice.room.r1.site-a.msg.send", "", "", "", false},
+		{"no room token", "chat.user.alice.notroom.r1.site-a.msg.send", "", "", "", false},
+		{"empty", "", "", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			username, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(tt.subj)
+			if ok != tt.wantOK || username != tt.wantUsername || roomID != tt.wantRoomID || siteID != tt.wantSiteID {
+				t.Errorf("ParseUserRoomSiteSubject(%q) = (%q, %q, %q, %v), want (%q, %q, %q, %v)",
+					tt.subj, username, roomID, siteID, ok, tt.wantUsername, tt.wantRoomID, tt.wantSiteID, tt.wantOK)
+			}
+		})
+	}
+}
+
 func TestWildcardPatterns(t *testing.T) {
 	tests := []struct {
 		name string
@@ -94,8 +122,8 @@ func TestWildcardPatterns(t *testing.T) {
 			"chat.user.*.request.room.*.site-a.member.>"},
 		{"MsgHistoryWild", subject.MsgHistoryWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.msg.history"},
-		{"FanoutWild", subject.FanoutWildcard("site-a"),
-			"fanout.site-a.>"},
+		{"MsgSSOTWild", subject.MsgSSOTWildcard("site-a"),
+			"chat.msg.ssot.site-a.>"},
 		{"OutboxWild", subject.OutboxWildcard("site-a"),
 			"outbox.site-a.>"},
 		{"RoomsCreateWild", subject.RoomsCreateWildcard(),

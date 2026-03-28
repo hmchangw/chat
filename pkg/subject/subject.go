@@ -23,6 +23,14 @@ func ParseUserRoomSubject(subj string) (username, roomID string, ok bool) {
 	return "", "", false
 }
 
+func ParseUserRoomSiteSubject(subj string) (username, roomID, siteID string, ok bool) {
+	parts := strings.Split(subj, ".")
+	if len(parts) < 7 || parts[0] != "chat" || parts[1] != "user" || parts[3] != "room" {
+		return "", "", "", false
+	}
+	return parts[2], parts[4], parts[5], true
+}
+
 // --- Specific subject builders ---
 
 func MsgSend(username, roomID, siteID string) string {
@@ -73,8 +81,8 @@ func Outbox(siteID, destSiteID, eventType string) string {
 	return fmt.Sprintf("outbox.%s.to.%s.%s", siteID, destSiteID, eventType)
 }
 
-func Fanout(siteID, roomID string) string {
-	return fmt.Sprintf("fanout.%s.%s", siteID, roomID)
+func MsgSSOTCreated(siteID string) string {
+	return fmt.Sprintf("chat.msg.ssot.%s.created", siteID)
 }
 
 func RoomEvent(roomID string) string {
@@ -113,8 +121,8 @@ func MsgHistoryWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.history", siteID)
 }
 
-func FanoutWildcard(siteID string) string {
-	return fmt.Sprintf("fanout.%s.>", siteID)
+func MsgSSOTWildcard(siteID string) string {
+	return fmt.Sprintf("chat.msg.ssot.%s.>", siteID)
 }
 
 func OutboxWildcard(siteID string) string {
