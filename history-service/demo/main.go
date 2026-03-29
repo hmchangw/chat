@@ -148,6 +148,31 @@ func run() error {
 	})
 	printJSON("Response", request(nc, subject.MsgSurrounding(userID, roomID, siteID), surroundReq, timeout))
 
+	// --- Error cases ---
+
+	// 5. Forbidden — user not subscribed to room
+	fmt.Println("\n--- 5. ERROR: Not subscribed to room ---")
+	forbiddenReq, _ := json.Marshal(map[string]any{
+		"roomId": "room-nobody-joined",
+	})
+	printJSON("Response", request(nc, subject.MsgHistory(userID, "room-nobody-joined", siteID), forbiddenReq, timeout))
+
+	// 6. Not found — message doesn't exist
+	fmt.Println("\n--- 6. ERROR: Message not found ---")
+	notFoundReq, _ := json.Marshal(map[string]any{
+		"roomId":    roomID,
+		"messageId": "msg-nonexistent",
+	})
+	printJSON("Response", request(nc, subject.MsgGet(userID, roomID, siteID), notFoundReq, timeout))
+
+	// 7. Bad request — invalid timestamp format
+	fmt.Println("\n--- 7. ERROR: Invalid timestamp ---")
+	badTimestampReq, _ := json.Marshal(map[string]any{
+		"roomId": roomID,
+		"before": "not-a-valid-timestamp",
+	})
+	printJSON("Response", request(nc, subject.MsgHistory(userID, roomID, siteID), badTimestampReq, timeout))
+
 	fmt.Println("\n✓ Demo complete!")
 	return nil
 }
