@@ -188,7 +188,7 @@ func TestHistoryService_LoadHistory_InvalidBefore(t *testing.T) {
 
 	_, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1", Before: "not-a-timestamp"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing before")
+	assert.Contains(t, err.Error(), "invalid timestamp")
 }
 
 func TestHistoryService_LoadHistory_SubscriptionError(t *testing.T) {

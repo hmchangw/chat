@@ -16,7 +16,11 @@ func parseTimestamp(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil
 	}
-	return time.Parse(time.RFC3339Nano, s)
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}, natsrouter.ErrWithCode("bad_request", "invalid timestamp format")
+	}
+	return t, nil
 }
 
 // getHistorySharedSince fetches the HistorySharedSince timestamp and validates subscription exists.
@@ -26,7 +30,7 @@ func (s *HistoryService) getHistorySharedSince(ctx context.Context, userID, room
 		return time.Time{}, fmt.Errorf("checking subscription: %w", err)
 	}
 	if since == nil {
-		return time.Time{}, fmt.Errorf("user %s is not subscribed to room %s", userID, roomID)
+		return time.Time{}, natsrouter.ErrWithCode("forbidden", "not subscribed to this room")
 	}
 	return *since, nil
 }
@@ -40,7 +44,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 
 	before, err := parseTimestamp(req.Before)
 	if err != nil {
-		return nil, fmt.Errorf("parsing before timestamp: %w", err)
+		return nil, err
 	}
 	if before.IsZero() {
 		before = time.Now().UTC()
@@ -48,7 +52,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 
 	lastSeen, err := parseTimestamp(req.LastSeen)
 	if err != nil {
-		return nil, fmt.Errorf("parsing lastSeen timestamp: %w", err)
+		return nil, err
 	}
 
 	limit := req.Limit
@@ -91,7 +95,7 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 
 	after, err := parseTimestamp(req.After)
 	if err != nil {
-		return nil, fmt.Errorf("parsing after timestamp: %w", err)
+		return nil, err
 	}
 
 	if !after.IsZero() && after.Before(since) {
@@ -137,7 +141,7 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	}
 
 	if len(after) > 0 && after[0].CreatedAt.Before(since) {
-		return nil, fmt.Errorf("message %s is outside access window", req.MessageID)
+		return nil, natsrouter.ErrWithCode("forbidden", "message is outside access window")
 	}
 
 	filteredBefore := before[:0]
@@ -171,11 +175,11 @@ func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params
 		return nil, fmt.Errorf("loading message: %w", err)
 	}
 	if msg == nil {
-		return nil, fmt.Errorf("message %s not found", req.MessageID)
+		return nil, natsrouter.ErrWithCode("not_found", "message not found")
 	}
 
 	if msg.CreatedAt.Before(since) {
-		return nil, fmt.Errorf("message %s is outside access window", req.MessageID)
+		return nil, natsrouter.ErrWithCode("forbidden", "message is outside access window")
 	}
 
 	return msg, nil
