@@ -237,3 +237,126 @@ func TestRegister_NoParams(t *testing.T) {
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
 	assert.Equal(t, "hello world", result.Greeting)
 }
+
+func TestRegister_RouteError(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	Register(r, "test.{id}",
+		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+			return nil, ErrWithCode("not_found", "thing not found")
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result RouteError
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "thing not found", result.Message)
+	assert.Equal(t, "not_found", result.Code)
+}
+
+func TestRegister_RouteErrorSimple(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	Register(r, "test.{id}",
+		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+			return nil, Errf("user %s not allowed", "alice")
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result RouteError
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "user alice not allowed", result.Message)
+	assert.Equal(t, "", result.Code)
+}
+
+func TestRegister_InternalErrorNotExposed(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	Register(r, "test.{id}",
+		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+			return nil, fmt.Errorf("database connection refused")
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var errResp model.ErrorResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
+	assert.Equal(t, "internal error", errResp.Error)
+	assert.NotContains(t, string(resp.Data), "database")
+}
+
+func TestRegisterVoid_Success(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	processed := make(chan string, 1)
+	RegisterVoid(r, "events.{type}",
+		func(ctx context.Context, p Params, req testReq) error {
+			processed <- p.Get("type") + ":" + req.Name
+			return nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "hello"})
+	err := nc.Publish("events.typing", data)
+	require.NoError(t, err)
+
+	select {
+	case result := <-processed:
+		assert.Equal(t, "typing:hello", result)
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler not called within timeout")
+	}
+}
+
+func TestRegisterVoid_NoReply(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	RegisterVoid(r, "events.{type}",
+		func(ctx context.Context, p Params, req testReq) error {
+			return nil
+		})
+
+	// Use Request (expects reply) — should timeout since RegisterVoid doesn't reply
+	data, _ := json.Marshal(testReq{Name: "hello"})
+	_, err := nc.Request("events.typing", data, 200*time.Millisecond)
+	assert.ErrorIs(t, err, nats.ErrTimeout)
+}
+
+func TestRouteError_Error(t *testing.T) {
+	e := ErrWithCode("not_found", "room not found")
+	assert.Equal(t, "not_found: room not found", e.Error())
+
+	e2 := Err("simple error")
+	assert.Equal(t, "simple error", e2.Error())
+}
+
+func TestRouteError_WrappedInFmtErrorf(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	// RouteError wrapped with fmt.Errorf should still be detected via errors.As
+	Register(r, "test.{id}",
+		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+			return nil, fmt.Errorf("context: %w", ErrWithCode("forbidden", "not allowed"))
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result RouteError
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "not allowed", result.Message)
+	assert.Equal(t, "forbidden", result.Code)
+}

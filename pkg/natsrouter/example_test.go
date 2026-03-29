@@ -76,6 +76,50 @@ func Example_noBodyHandler() {
 	)
 }
 
+// Example_errorHandling demonstrates user-facing vs internal errors.
+func Example_errorHandling() {
+	nc, _ := nats.Connect(nats.DefaultURL)
+	router := natsrouter.New(nc, "room-service")
+
+	natsrouter.Register(
+		router,
+		"chat.user.{userID}.request.rooms.get.{roomID}",
+		func(ctx context.Context, p natsrouter.Params, req GreetRequest) (*Room, error) {
+			room := findRoom(p.Get("roomID"))
+			if room == nil {
+				// User-facing error — client receives: {"error":"room not found","code":"not_found"}
+				return nil, natsrouter.ErrWithCode("not_found", "room not found")
+			}
+			return room, nil
+			// If findRoom returned a Go error (e.g. DB failure), return it as-is:
+			//   return nil, fmt.Errorf("db lookup: %w", err)
+			// Client would receive: {"error":"internal error"} (sanitized)
+		},
+	)
+}
+
+func findRoom(_ string) *Room { return nil }
+
+type TypingEvent struct {
+	RoomID string `json:"roomId"`
+}
+
+// Example_fireAndForget demonstrates RegisterVoid for events with no response.
+func Example_fireAndForget() {
+	nc, _ := nats.Connect(nats.DefaultURL)
+	router := natsrouter.New(nc, "chat-service")
+
+	// No response sent — the sender publishes and moves on.
+	natsrouter.RegisterVoid(
+		router,
+		"chat.user.{userID}.event.typing",
+		func(ctx context.Context, p natsrouter.Params, req TypingEvent) error {
+			fmt.Printf("user %s is typing in room %s\n", p.Get("userID"), req.RoomID)
+			return nil
+		},
+	)
+}
+
 // Example_customMiddleware demonstrates writing custom middleware.
 func Example_customMiddleware() {
 	nc, _ := nats.Connect(nats.DefaultURL)

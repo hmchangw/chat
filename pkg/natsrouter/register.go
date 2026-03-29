@@ -3,6 +3,7 @@ package natsrouter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -23,8 +24,10 @@ import (
 // happens at startup, and a failed subscription means the service cannot function.
 // This follows the same pattern as http.HandleFunc and template.Must.
 //
-// Handler errors are logged with the subject and sanitized — callers receive
-// "internal error", never raw Go error strings.
+// Error handling:
+//   - Handler returns *RouteError → sent to client as-is (user-facing error)
+//   - Handler returns any other error → logged, client receives "internal error"
+//   - JSON unmarshal fails → client receives "invalid request payload"
 //
 // Example:
 //
@@ -48,17 +51,14 @@ func Register[Req, Resp any](
 
 		resp, err := fn(ctx, params, req)
 		if err != nil {
-			slog.Error("handler error", "error", err, "subject", msg.Subject)
-			natsutil.ReplyError(msg, "internal error")
+			replyErr(msg, err)
 			return
 		}
 
 		natsutil.ReplyJSON(msg, resp)
 	})
 
-	if _, err := r.nc.QueueSubscribe(rt.natsSubject, r.queue, handler); err != nil {
-		panic(fmt.Sprintf("natsrouter: subscribing to %s: %v", rt.natsSubject, err))
-	}
+	subscribe(r, rt.natsSubject, handler)
 }
 
 // RegisterNoBody subscribes a handler that takes no request body — only params.
@@ -83,15 +83,65 @@ func RegisterNoBody[Resp any](
 
 		resp, err := fn(ctx, params)
 		if err != nil {
-			slog.Error("handler error", "error", err, "subject", msg.Subject)
-			natsutil.ReplyError(msg, "internal error")
+			replyErr(msg, err)
 			return
 		}
 
 		natsutil.ReplyJSON(msg, resp)
 	})
 
-	if _, err := r.nc.QueueSubscribe(rt.natsSubject, r.queue, handler); err != nil {
-		panic(fmt.Sprintf("natsrouter: subscribing to %s: %v", rt.natsSubject, err))
+	subscribe(r, rt.natsSubject, handler)
+}
+
+// RegisterVoid subscribes a handler that processes a request without replying.
+// Use for fire-and-forget event handlers where the sender does not expect a response.
+//
+// Panics if the subscription fails (same rationale as Register).
+//
+// Example:
+//
+//	natsrouter.RegisterVoid(router, "chat.user.{userID}.event.typing", svc.HandleTyping)
+func RegisterVoid[Req any](
+	r *Router,
+	pattern string,
+	fn func(ctx context.Context, params Params, req Req) error,
+) {
+	rt := parsePattern(pattern)
+
+	handler := r.applyMiddleware(func(msg *nats.Msg) {
+		ctx := context.Background()
+		params := rt.extractParams(msg.Subject)
+
+		var req Req
+		if err := json.Unmarshal(msg.Data, &req); err != nil {
+			slog.Error("invalid payload in void handler", "error", err, "subject", msg.Subject)
+			return
+		}
+
+		if err := fn(ctx, params, req); err != nil {
+			slog.Error("void handler error", "error", err, "subject", msg.Subject)
+		}
+	})
+
+	subscribe(r, rt.natsSubject, handler)
+}
+
+// replyErr handles error replies. If the error is a *RouteError, it is sent
+// to the client as-is (user-facing). Any other error is logged and the client
+// receives a generic "internal error".
+func replyErr(msg *nats.Msg, err error) {
+	var routeErr *RouteError
+	if errors.As(err, &routeErr) {
+		natsutil.ReplyJSON(msg, routeErr)
+		return
+	}
+	slog.Error("handler error", "error", err, "subject", msg.Subject)
+	natsutil.ReplyError(msg, "internal error")
+}
+
+// subscribe wraps QueueSubscribe with a panic on failure.
+func subscribe(r *Router, subject string, handler nats.MsgHandler) {
+	if _, err := r.nc.QueueSubscribe(subject, r.queue, handler); err != nil {
+		panic(fmt.Sprintf("natsrouter: subscribing to %s: %v", subject, err))
 	}
 }
