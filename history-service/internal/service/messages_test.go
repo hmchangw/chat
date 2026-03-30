@@ -493,15 +493,27 @@ func TestHistoryService_LoadSurroundingMessages_MoreBeforeAndAfter(t *testing.T)
 }
 
 func TestHistoryService_LoadSurroundingMessages_NotSubscribed(t *testing.T) {
-	svc, _, subs := newService(t)
+	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
+	// HSS not found — no lower bound, message is still accessible
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
 
-	_, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
+	centralMsg := &model.Message{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m5").Return(centralMsg, nil)
+
+	beforeMsgs := []model.Message{{ID: "m4", RoomID: "r1", CreatedAt: joinTime.Add(4 * time.Minute)}}
+	// since is zero — no lower bound applied to before-query
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", time.Time{}, centralMsg.CreatedAt, gomock.Any()).Return(makePage(beforeMsgs, false), nil)
+
+	afterMsgs := []model.Message{{ID: "m6", RoomID: "r1", CreatedAt: joinTime.Add(6 * time.Minute)}}
+	msgs.EXPECT().GetMessagesBetween(ctx, "r1", centralMsg.CreatedAt, gomock.Any(), gomock.Any()).Return(makePage(afterMsgs, false), nil)
+
+	resp, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
 		RoomID: "r1", MessageID: "m5", Limit: 6,
 	})
-	require.Error(t, err)
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 3)
 }
 
 func TestHistoryService_LoadSurroundingMessages_CentralMessageOutsideWindow(t *testing.T) {

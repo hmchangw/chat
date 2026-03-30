@@ -143,9 +143,15 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 
 func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrouter.Params, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
 	username := p.Get("username")
-	since, err := s.getHistorySharedSince(ctx, username, req.RoomID)
+
+	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("checking subscription: %w", err)
+	}
+	// HSS not found means no lower-bound restriction; zero time acts as no filter.
+	var since time.Time
+	if hss != nil {
+		since = *hss
 	}
 
 	msg, err := s.messages.GetMessageByID(ctx, req.RoomID, req.MessageID)
