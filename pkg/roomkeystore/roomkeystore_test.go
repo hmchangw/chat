@@ -116,3 +116,88 @@ func TestValkeyStore_Set(t *testing.T) {
 		})
 	}
 }
+
+func TestValkeyStore_Get(t *testing.T) {
+	pubKey := bytes.Repeat([]byte{0xAB}, 65)
+	privKey := bytes.Repeat([]byte{0xCD}, 32)
+
+	tests := []struct {
+		name        string
+		fake        *fakeHashClient
+		roomID      string
+		want        *RoomKeyPair
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "happy path — returns stored key pair",
+			fake: func() *fakeHashClient {
+				f := &fakeHashClient{}
+				store := newTestStore(f)
+				err := store.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				if err != nil {
+					panic("test setup failed: " + err.Error())
+				}
+				return f
+			}(),
+			roomID: "room-1",
+			want:   &RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey},
+		},
+		{
+			name:   "missing key — returns nil, nil",
+			fake:   &fakeHashClient{},
+			roomID: "nonexistent",
+			want:   nil,
+		},
+		{
+			name:        "hgetall error — returns wrapped error",
+			fake:        &fakeHashClient{hgetallErr: errors.New("io timeout")},
+			roomID:      "room-1",
+			wantErr:     true,
+			errContains: "get room key",
+		},
+		{
+			name: "corrupted pub base64 — returns error",
+			fake: &fakeHashClient{
+				store: map[string]map[string]string{
+					roomkey("room-1"): {"pub": "!!!notbase64!!!", "priv": "AQID"},
+				},
+			},
+			roomID:      "room-1",
+			wantErr:     true,
+			errContains: "get room key",
+		},
+		{
+			name: "corrupted priv base64 — returns error",
+			fake: &fakeHashClient{
+				store: map[string]map[string]string{
+					roomkey("room-1"): {"pub": "AQID", "priv": "!!!notbase64!!!"},
+				},
+			},
+			roomID:      "room-1",
+			wantErr:     true,
+			errContains: "get room key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(tt.fake)
+			got, err := store.Get(context.Background(), tt.roomID)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				assert.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			if tt.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, tt.want.PublicKey, got.PublicKey)
+			assert.Equal(t, tt.want.PrivateKey, got.PrivateKey)
+		})
+	}
+}
