@@ -29,8 +29,37 @@ func scanMessages(iter *gocql.Iter) []model.Message {
 	return messages
 }
 
-// GetMessagesBefore returns a paginated set of messages before `before` and after `since`, newest-first.
-func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, q PageRequest) (Page[model.Message], error) {
+// GetMessagesBefore returns a paginated set of messages strictly before `before`, newest-first.
+func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q PageRequest) (Page[model.Message], error) {
+	var messages []model.Message
+
+	nextCursor, err := NewQueryBuilder(
+		r.session.Query(
+			`SELECT id, room_id, user_id, content, created_at FROM messages
+			WHERE room_id = ? AND created_at < ?
+			ORDER BY created_at DESC`,
+			roomID, before,
+		).WithContext(ctx),
+	).
+		WithCursor(q.Cursor).
+		WithPageSize(q.PageSize).
+		Fetch(func(iter *gocql.Iter) {
+			messages = scanMessages(iter)
+		})
+	if err != nil {
+		return Page[model.Message]{}, fmt.Errorf("querying messages before: %w", err)
+	}
+
+	return Page[model.Message]{
+		Data:       messages,
+		NextCursor: nextCursor,
+		HasNext:    nextCursor != "",
+	}, nil
+}
+
+// GetMessagesInRange returns a paginated set of messages between `since` and `before`, newest-first.
+// Used when a lower-bound access restriction (e.g. historySharedSince) must be enforced.
+func (r *Repository) GetMessagesInRange(ctx context.Context, roomID string, since, before time.Time, q PageRequest) (Page[model.Message], error) {
 	var messages []model.Message
 
 	nextCursor, err := NewQueryBuilder(
@@ -47,7 +76,7 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since
 			messages = scanMessages(iter)
 		})
 	if err != nil {
-		return Page[model.Message]{}, fmt.Errorf("querying messages before: %w", err)
+		return Page[model.Message]{}, fmt.Errorf("querying messages in range: %w", err)
 	}
 
 	return Page[model.Message]{

@@ -57,7 +57,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		return nil, err
 	}
 
-	page, err := s.messages.GetMessagesBefore(ctx, req.RoomID, since, before, q)
+	page, err := s.messages.GetMessagesInRange(ctx, req.RoomID, since, before, q)
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
 	}
@@ -171,10 +171,19 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	}
 	half := limit / 2
 
-	// Fetch messages before the central message (newest-first within the before range)
-	beforePage, err := s.messages.GetMessagesBefore(ctx, req.RoomID, since, msg.CreatedAt, cassrepo.PageRequest{
-		Cursor: &cassrepo.Cursor{}, PageSize: half,
-	})
+	// Fetch messages before the central message (newest-first).
+	// When since is zero (no HSS) use GetMessagesBefore (no lower bound).
+	// When since is set use GetMessagesInRange to enforce the access window.
+	var beforePage cassrepo.Page[model.Message]
+	if since.IsZero() {
+		beforePage, err = s.messages.GetMessagesBefore(ctx, req.RoomID, msg.CreatedAt, cassrepo.PageRequest{
+			Cursor: &cassrepo.Cursor{}, PageSize: half,
+		})
+	} else {
+		beforePage, err = s.messages.GetMessagesInRange(ctx, req.RoomID, since, msg.CreatedAt, cassrepo.PageRequest{
+			Cursor: &cassrepo.Cursor{}, PageSize: half,
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding before: %w", err)
 	}

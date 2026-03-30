@@ -89,18 +89,18 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessagesAfter(ctx, roomID, after
 }
 
 // GetMessagesBefore mocks base method.
-func (m *MockMessageRepository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
+func (m *MockMessageRepository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMessagesBefore", ctx, roomID, since, before, q)
+	ret := m.ctrl.Call(m, "GetMessagesBefore", ctx, roomID, before, q)
 	ret0, _ := ret[0].(cassrepo.Page[model.Message])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetMessagesBefore indicates an expected call of GetMessagesBefore.
-func (mr *MockMessageRepositoryMockRecorder) GetMessagesBefore(ctx, roomID, since, before, q any) *gomock.Call {
+func (mr *MockMessageRepositoryMockRecorder) GetMessagesBefore(ctx, roomID, before, q any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBefore", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBefore), ctx, roomID, since, before, q)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBefore", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBefore), ctx, roomID, before, q)
 }
 
 // GetMessagesBetween mocks base method.
@@ -116,6 +116,21 @@ func (m *MockMessageRepository) GetMessagesBetween(ctx context.Context, roomID s
 func (mr *MockMessageRepositoryMockRecorder) GetMessagesBetween(ctx, roomID, after, before, q any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBetween", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBetween), ctx, roomID, after, before, q)
+}
+
+// GetMessagesInRange mocks base method.
+func (m *MockMessageRepository) GetMessagesInRange(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMessagesInRange", ctx, roomID, since, before, q)
+	ret0, _ := ret[0].(cassrepo.Page[model.Message])
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetMessagesInRange indicates an expected call of GetMessagesInRange.
+func (mr *MockMessageRepositoryMockRecorder) GetMessagesInRange(ctx, roomID, since, before, q any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesInRange", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesInRange), ctx, roomID, since, before, q)
 }
 
 // MockSubscriptionRepository is a mock of SubscriptionRepository interface.
