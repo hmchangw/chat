@@ -87,17 +87,19 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 }
 
 // GetMessagesBetweenAsc returns a paginated set of messages between `after` and `before`, oldest-first.
+// When inclusive is true the upper bound is `<=`, otherwise it is strictly `<`.
 // Used for finding unread messages within a range.
-func (r *Repository) GetMessagesBetweenAsc(ctx context.Context, roomID string, after, before time.Time, q PageRequest) (Page[model.Message], error) {
+func (r *Repository) GetMessagesBetweenAsc(ctx context.Context, roomID string, after, before time.Time, inclusive bool, q PageRequest) (Page[model.Message], error) {
 	var messages []model.Message
 
+	upperOp := "<"
+	if inclusive {
+		upperOp = "<="
+	}
+	cql := fmt.Sprintf(`SELECT id, room_id, user_id, content, created_at FROM messages WHERE room_id = ? AND created_at > ? AND created_at %s ? ORDER BY created_at ASC`, upperOp)
+
 	nextCursor, err := NewQueryBuilder(
-		r.session.Query(
-			`SELECT id, room_id, user_id, content, created_at FROM messages
-			WHERE room_id = ? AND created_at > ? AND created_at < ?
-			ORDER BY created_at ASC`,
-			roomID, after, before,
-		).WithContext(ctx),
+		r.session.Query(cql, roomID, after, before).WithContext(ctx),
 	).
 		WithCursor(q.Cursor).
 		WithPageSize(q.PageSize).

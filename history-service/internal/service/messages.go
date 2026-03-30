@@ -72,7 +72,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 				after = *hss
 			}
 
-			unreadPage, err := s.messages.GetMessagesBetweenAsc(ctx, req.RoomID, after, oldestInPage.CreatedAt, cassrepo.PageRequest{
+			unreadPage, err := s.messages.GetMessagesBetweenAsc(ctx, req.RoomID, after, oldestInPage.CreatedAt, true, cassrepo.PageRequest{
 				Cursor: &cassrepo.Cursor{}, PageSize: 1,
 			})
 			if err != nil {
@@ -163,6 +163,12 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 		limit = surroundingPageSize
 	}
 	half := limit / 2
+	if half == 0 {
+		// Limit of 1 means only the central message — skip before/after queries.
+		return &models.LoadSurroundingMessagesResponse{
+			Messages: []model.Message{*msg},
+		}, nil
+	}
 
 	// Fetch messages before the central message (newest-first).
 	// When since is zero (no HSS) use GetMessagesBefore (no lower bound).

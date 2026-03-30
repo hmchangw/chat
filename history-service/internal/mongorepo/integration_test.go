@@ -66,6 +66,55 @@ func TestSubscriptionRepo_GetSubscription_NotFound(t *testing.T) {
 	assert.Nil(t, sub)
 }
 
+func TestSubscriptionRepo_GetHistorySharedSince_NilHSS(t *testing.T) {
+	db := setupMongo(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := context.Background()
+
+	// Insert subscription with no HistorySharedSince (owner — full history access)
+	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+		ID:     "s2",
+		User:   model.SubscriptionUser{ID: "owner", Username: "owner"},
+		RoomID: "r1", SiteID: "site-local",
+		Role: model.RoleOwner, JoinedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
+	hss, err := repo.GetHistorySharedSince(ctx, "owner", "r1")
+	require.NoError(t, err)
+	assert.Nil(t, hss) // nil means no lower-bound restriction
+}
+
+func TestSubscriptionRepo_GetHistorySharedSince_WithHSS(t *testing.T) {
+	db := setupMongo(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := context.Background()
+
+	joinTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+		ID:     "s3",
+		User:   model.SubscriptionUser{ID: "u2", Username: "u2"},
+		RoomID: "r2", SiteID: "site-local",
+		Role: model.RoleMember, HistorySharedSince: &joinTime, JoinedAt: joinTime,
+	})
+	require.NoError(t, err)
+
+	hss, err := repo.GetHistorySharedSince(ctx, "u2", "r2")
+	require.NoError(t, err)
+	require.NotNil(t, hss)
+	assert.Equal(t, joinTime.UTC(), hss.UTC())
+}
+
+func TestSubscriptionRepo_GetHistorySharedSince_NotSubscribed(t *testing.T) {
+	db := setupMongo(t)
+	repo := NewSubscriptionRepo(db)
+	ctx := context.Background()
+
+	hss, err := repo.GetHistorySharedSince(ctx, "nobody", "r1")
+	require.NoError(t, err)
+	assert.Nil(t, hss)
+}
+
 // --- Collection[T] integration tests ---
 
 type testDoc struct {

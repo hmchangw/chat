@@ -35,7 +35,7 @@ func (r *SubscriptionRepo) GetSubscription(ctx context.Context, username, roomID
 func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, username, roomID string) (*time.Time, error) {
 	sub, err := r.subscriptions.FindOne(ctx,
 		bson.M{"u._id": username, "roomId": roomID},
-		WithProjection(bson.M{"historySharedSince": 1}),
+		WithProjection(bson.M{"historySharedSince": 1, "_id": 0}),
 	)
 	if err != nil {
 		return nil, err
