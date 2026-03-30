@@ -124,7 +124,7 @@ func TestSubscriptionJSON(t *testing.T) {
 	s := model.Subscription{
 		ID: "s1", UserID: "u1", RoomID: "r1", SiteID: "site-a",
 		Role:               model.RoleOwner,
-		SharedHistorySince: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		HistorySharedSince: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	roundTrip(t, &s, &model.Subscription{})
@@ -262,7 +262,7 @@ type Subscription struct {
 	RoomID             string    `json:"roomId" bson:"roomId"`
 	SiteID             string    `json:"siteId" bson:"siteId"`
 	Role               Role      `json:"role" bson:"role"`
-	SharedHistorySince time.Time `json:"sharedHistorySince" bson:"sharedHistorySince"`
+	HistorySharedSince time.Time `json:"historySharedSince" bson:"historySharedSince"`
 	JoinedAt           time.Time `json:"joinedAt" bson:"joinedAt"`
 }
 ```

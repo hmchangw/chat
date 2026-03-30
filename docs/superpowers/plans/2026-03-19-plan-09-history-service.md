@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Create the history service that handles paginated message history requests. Verifies subscription, filters by `sharedHistorySince`, and queries Cassandra for messages.
+**Goal:** Create the history service that handles paginated message history requests. Verifies subscription, filters by `historySharedSince`, and queries Cassandra for messages.
 
 **Tech Stack:** Go 1.25, NATS, MongoDB (subscriptions), Cassandra (messages), `pkg/model`, `pkg/subject`, `pkg/natsutil`, `pkg/mongoutil`, `pkg/cassutil`, `pkg/shutdown`
 
@@ -13,7 +13,7 @@
 | Action | Path | Responsibility |
 |--------|------|----------------|
 | Create | `history-service/store.go` | `HistoryStore` interface + in-memory implementation |
-| Create | `history-service/store_test.go` | Store tests (pagination, sharedHistorySince filtering) |
+| Create | `history-service/store_test.go` | Store tests (pagination, historySharedSince filtering) |
 | Create | `history-service/store_real.go` | Real MongoDB + Cassandra implementation |
 | Create | `history-service/handler.go` | NATS request/reply handler |
 | Create | `history-service/handler_test.go` | Handler tests |
@@ -64,7 +64,7 @@ func TestMemoryStore_ListMessages_Pagination(t *testing.T) {
 	}
 }
 
-func TestMemoryStore_ListMessages_SharedHistorySince(t *testing.T) {
+func TestMemoryStore_ListMessages_HistorySharedSince(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
 
@@ -93,7 +93,7 @@ func TestMemoryStore_GetSubscription(t *testing.T) {
 
 	s.subscriptions = append(s.subscriptions, model.Subscription{
 		UserID: "u1", RoomID: "r1", Role: model.RoleMember,
-		SharedHistorySince: time.Date(2026, 1, 1, 5, 0, 0, 0, time.UTC),
+		HistorySharedSince: time.Date(2026, 1, 1, 5, 0, 0, 0, time.UTC),
 	})
 
 	sub, err := s.GetSubscription(ctx, "u1", "r1")
@@ -208,7 +208,7 @@ func TestHandler_HandleHistory_Success(t *testing.T) {
 
 	store.subscriptions = append(store.subscriptions, model.Subscription{
 		UserID: "u1", RoomID: "r1", Role: model.RoleMember,
-		SharedHistorySince: joinTime,
+		HistorySharedSince: joinTime,
 	})
 
 	base := joinTime
@@ -253,12 +253,12 @@ func TestHandler_HandleHistory_NotSubscribed(t *testing.T) {
 	}
 }
 
-func TestHandler_HandleHistory_SharedHistorySinceFilter(t *testing.T) {
+func TestHandler_HandleHistory_HistorySharedSinceFilter(t *testing.T) {
 	store := NewMemoryStore()
 	joinTime := time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC)
 
 	store.subscriptions = append(store.subscriptions, model.Subscription{
-		UserID: "u1", RoomID: "r1", SharedHistorySince: joinTime,
+		UserID: "u1", RoomID: "r1", HistorySharedSince: joinTime,
 	})
 
 	// Messages before and after join
@@ -346,7 +346,7 @@ func (h *Handler) handleHistory(userID, roomID string, data []byte) ([]byte, err
 		return nil, fmt.Errorf("not subscribed: %w", err)
 	}
 
-	since := sub.SharedHistorySince
+	since := sub.HistorySharedSince
 	before := time.Now().UTC()
 
 	// If "before" cursor is provided, parse it as a timestamp
