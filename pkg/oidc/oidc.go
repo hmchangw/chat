@@ -3,9 +3,9 @@ package oidc
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -13,13 +13,13 @@ import (
 
 // Claims holds the validated identity extracted from an OIDC token.
 type Claims struct {
-	Subject           string
-	Email             string
-	Name              string
-	PreferredUsername  string
-	GivenName         string
-	FamilyName        string
-	Extra             map[string]interface{}
+	Subject          string
+	Email            string
+	Name             string
+	PreferredUsername string
+	GivenName        string
+	FamilyName       string
+	Extra            map[string]interface{}
 }
 
 // ErrTokenExpired is returned when the SSO token has passed its expiry time.
@@ -43,6 +43,8 @@ type Validator struct {
 	verifyAZP bool
 }
 
+const issuerDiscoveryTimeout = 10 * time.Second
+
 // NewValidator connects to the OIDC issuer and fetches its JWKS keys.
 // Fails fast if the issuer is unreachable.
 func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
@@ -52,8 +54,18 @@ func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
 				InsecureSkipVerify: true, //nolint:gosec // intentional for dev environments
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := &http.Client{
+			Transport: transport,
+			Timeout:   issuerDiscoveryTimeout,
+		}
 		ctx = oidc.ClientContext(ctx, client)
+	}
+
+	// Ensure issuer discovery cannot hang indefinitely.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, issuerDiscoveryTimeout)
+		defer cancel()
 	}
 
 	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
@@ -82,7 +94,8 @@ func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
 func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, error) {
 	idToken, err := v.verifier.Verify(ctx, rawToken)
 	if err != nil {
-		if isExpiredError(err) {
+		var expErr *oidc.TokenExpiredError
+		if errors.As(err, &expErr) {
 			return Claims{}, ErrTokenExpired
 		}
 		return Claims{}, fmt.Errorf("oidc token verification failed: %w", err)
@@ -93,12 +106,12 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 	}
 
 	var tokenClaims struct {
-		Email             string `json:"email"`
-		Name              string `json:"name"`
-		PreferredUsername  string `json:"preferred_username"`
-		GivenName         string `json:"given_name"`
-		FamilyName        string `json:"family_name"`
-		AZP               string `json:"azp"`
+		Email            string `json:"email"`
+		Name             string `json:"name"`
+		PreferredUsername string `json:"preferred_username"`
+		GivenName        string `json:"given_name"`
+		FamilyName       string `json:"family_name"`
+		AZP              string `json:"azp"`
 	}
 
 	if err := idToken.Claims(&tokenClaims); err != nil {
@@ -134,8 +147,4 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 		FamilyName:       tokenClaims.FamilyName,
 		Extra:            allClaims,
 	}, nil
-}
-
-func isExpiredError(err error) bool {
-	return strings.Contains(err.Error(), "expired")
 }

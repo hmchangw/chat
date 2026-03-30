@@ -66,6 +66,11 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		return
 	}
 
+	if !nkeys.IsValidPublicUserKey(req.NATSPublicKey) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid natsPublicKey format"})
+		return
+	}
+
 	claims, err := h.validator.Validate(c.Request.Context(), req.SSOToken)
 	if err != nil {
 		if errors.Is(err, pkgoidc.ErrTokenExpired) {

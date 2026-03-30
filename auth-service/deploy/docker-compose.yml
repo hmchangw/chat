@@ -27,4 +27,19 @@ services:
       - "9222:9222"
     volumes:
       - ./nats.conf:/etc/nats/nats.conf:ro
+      - nats-data:/data/jetstream
     command: ["-c", "/etc/nats/nats.conf"]
+
+  auth-service:
+    build:
+      context: ../..
+      dockerfile: auth-service/deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file: .env
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+volumes:
+  nats-data:

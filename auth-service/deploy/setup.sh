@@ -92,8 +92,13 @@ cat > "$ENV_FILE" <<EOF
 # === NATS ===
 AUTH_SIGNING_KEY=${ACCOUNT_SEED}
 
+# === Auth Service ===
+PORT=8080
+NATS_JWT_EXPIRY=2h
+
 # === OIDC / Keycloak (local dev) ===
-OIDC_ISSUER_URL=http://localhost:9090/realms/chatapp
+# Uses Docker service name since auth-service runs inside Docker network.
+OIDC_ISSUER_URL=http://keycloak:8080/realms/chatapp
 OIDC_AUDIENCE=nats-chat
 OIDC_VERIFY_AZP=true
 TLS_SKIP_VERIFY=false
@@ -123,6 +128,12 @@ resolver_preload {
   ${SYS_PUB_KEY}: ${SYS_JWT}
 }
 
+jetstream {
+  store_dir: /data/jetstream
+  max_mem: 1G
+  max_file: 10G
+}
+
 websocket {
   port: 9222
   no_tls: true
@@ -134,19 +145,16 @@ echo "Wrote $NATS_CONF"
 echo ""
 echo "=== Ready! ==="
 echo ""
-echo "  # 1. Start Keycloak + NATS"
+echo "  # Start all services (Keycloak + NATS + Auth Service)"
 echo "  cd $SCRIPT_DIR"
 echo "  docker compose up -d"
 echo ""
-echo "  # 2. Wait for Keycloak to be ready (~30-60s)"
+echo "  # Wait for Keycloak to be ready (~30-60s)"
 echo "  docker compose logs -f keycloak  # watch for 'Listening on'"
-echo ""
-echo "  # 3. Start the auth service (on host)"
-echo "  cd $(dirname "$(dirname "$SCRIPT_DIR")")"
-echo "  source auth-service/deploy/.env && go run ./auth-service/"
 echo ""
 echo "  ──────────────────────────────────────"
 echo "  Keycloak Admin:   http://localhost:9090  (admin / admin)"
+echo "  Auth Service:     http://localhost:8080"
 echo "  NATS Monitoring:  http://localhost:8222"
 echo "  NATS WebSocket:   ws://localhost:9222"
 echo "  ──────────────────────────────────────"

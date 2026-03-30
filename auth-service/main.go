@@ -77,17 +77,26 @@ func run() error {
 		WriteTimeout: 10 * time.Second,
 	}
 
+	srvErr := make(chan error, 1)
 	go func() {
 		slog.Info("auth service starting", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server error", "error", err)
-		}
+		srvErr <- srv.ListenAndServe()
 	}()
 
-	shutdown.Wait(ctx, 25*time.Second, func(ctx context.Context) error {
-		slog.Info("shutting down auth service")
-		return srv.Shutdown(ctx)
-	})
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		shutdown.Wait(ctx, 25*time.Second, func(ctx context.Context) error {
+			slog.Info("shutting down auth service")
+			return srv.Shutdown(ctx)
+		})
+	}()
+
+	err = <-srvErr
+	if err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("listen auth server: %w", err)
+	}
+	<-shutdownDone
 
 	return nil
 }

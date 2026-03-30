@@ -123,7 +123,8 @@ func TestHandleAuth_ExpiredToken(t *testing.T) {
 	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
 	router := setupRouter(t, handler)
 
-	body := `{"ssoToken":"expired-token","natsPublicKey":"UFAKE"}`
+	userPub := mustUserNKey(t)
+	body := `{"ssoToken":"expired-token","natsPublicKey":"` + userPub + `"}`
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -139,7 +140,8 @@ func TestHandleAuth_InvalidToken(t *testing.T) {
 	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
 	router := setupRouter(t, handler)
 
-	body := `{"ssoToken":"bad-token","natsPublicKey":"UFAKE"}`
+	userPub := mustUserNKey(t)
+	body := `{"ssoToken":"bad-token","natsPublicKey":"` + userPub + `"}`
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -147,6 +149,22 @@ func TestHandleAuth_InvalidToken(t *testing.T) {
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 	assert.Contains(t, w.Body.String(), "invalid SSO token")
+}
+
+func TestHandleAuth_InvalidNKey(t *testing.T) {
+	signingKP := mustAccountKP(t)
+	validator := &fakeValidator{username: "alice", subject: "uuid-alice"}
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	router := setupRouter(t, handler)
+
+	body := `{"ssoToken":"valid-token","natsPublicKey":"NOT-A-VALID-NKEY"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid natsPublicKey format")
 }
 
 func TestHandleAuth_MissingFields(t *testing.T) {
@@ -159,7 +177,7 @@ func TestHandleAuth_MissingFields(t *testing.T) {
 		name string
 		body string
 	}{
-		{"missing ssoToken", `{"natsPublicKey":"UFAKE"}`},
+		{"missing ssoToken", `{"natsPublicKey":"somekey"}`},
 		{"missing natsPublicKey", `{"ssoToken":"tok"}`},
 		{"empty body", `{}`},
 	}
