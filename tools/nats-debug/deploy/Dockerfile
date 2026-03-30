@@ -10,7 +10,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 go build -o /nats-debug ./nats-debug/
+RUN CGO_ENABLED=0 go build -o /nats-debug ./tools/nats-debug/
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM alpine:3.21
