@@ -99,9 +99,10 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 
 func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Params, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
 	username := p.Get("username")
-	since, err := s.getHistorySharedSince(ctx, username, req.RoomID)
+
+	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
 
 	after, err := parseTimestamp(req.After)
@@ -109,16 +110,13 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	if after.IsZero() || after.Before(since) {
-		after = since
+	// Effective lower bound = max(after, historySharedSince); zero if both unset.
+	var effectiveAfter time.Time
+	if hss != nil {
+		effectiveAfter = *hss
 	}
-
-	before, err := parseTimestamp(req.Before)
-	if err != nil {
-		return nil, err
-	}
-	if before.IsZero() {
-		before = time.Now().UTC()
+	if !after.IsZero() && (effectiveAfter.IsZero() || after.After(effectiveAfter)) {
+		effectiveAfter = after
 	}
 
 	q, err := parsePageRequest(req.Cursor, req.Limit)
@@ -126,7 +124,7 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	page, err := s.messages.GetMessagesBetween(ctx, req.RoomID, after, before, q)
+	page, err := s.messages.GetMessagesAfter(ctx, req.RoomID, effectiveAfter, q)
 	if err != nil {
 		return nil, fmt.Errorf("loading next messages: %w", err)
 	}

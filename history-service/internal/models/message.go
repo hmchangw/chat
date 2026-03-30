@@ -22,8 +22,7 @@ type LoadHistoryResponse struct {
 // LoadNextMessagesRequest is the payload for loading messages after a timestamp.
 type LoadNextMessagesRequest struct {
 	RoomID string `json:"roomId"`
-	After  string `json:"after"`  // RFC3339Nano cursor — fetch messages after this (empty for latest)
-	Before string `json:"before"` // RFC3339Nano upper bound (empty for no upper bound)
+	After  string `json:"after"`  // RFC3339Nano cursor — fetch messages after this (empty for no lower bound)
 	Limit  int    `json:"limit"`  // default 50
 	Cursor string `json:"cursor"` // pagination cursor from previous response
 }

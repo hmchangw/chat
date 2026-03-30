@@ -86,6 +86,54 @@ func (r *Repository) GetMessagesBetween(ctx context.Context, roomID string, afte
 	}, nil
 }
 
+// GetMessagesAfter returns a paginated set of messages after `after`, oldest-first.
+// If after is zero, all messages in the room are returned without a lower-bound filter.
+func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q PageRequest) (Page[model.Message], error) {
+	var messages []model.Message
+
+	var nextCursor string
+	var err error
+
+	if after.IsZero() {
+		nextCursor, err = NewQueryBuilder(
+			r.session.Query(
+				`SELECT id, room_id, user_id, content, created_at FROM messages
+				WHERE room_id = ?
+				ORDER BY created_at ASC`,
+				roomID,
+			).WithContext(ctx),
+		).
+			WithCursor(q.Cursor).
+			WithPageSize(q.PageSize).
+			Fetch(func(iter *gocql.Iter) {
+				messages = scanMessages(iter)
+			})
+	} else {
+		nextCursor, err = NewQueryBuilder(
+			r.session.Query(
+				`SELECT id, room_id, user_id, content, created_at FROM messages
+				WHERE room_id = ? AND created_at > ?
+				ORDER BY created_at ASC`,
+				roomID, after,
+			).WithContext(ctx),
+		).
+			WithCursor(q.Cursor).
+			WithPageSize(q.PageSize).
+			Fetch(func(iter *gocql.Iter) {
+				messages = scanMessages(iter)
+			})
+	}
+	if err != nil {
+		return Page[model.Message]{}, fmt.Errorf("querying messages after: %w", err)
+	}
+
+	return Page[model.Message]{
+		Data:       messages,
+		NextCursor: nextCursor,
+		HasNext:    nextCursor != "",
+	}, nil
+}
+
 // GetMessageByID returns a single message by ID within a room.
 // Returns (nil, nil) if the message is not found.
 // NOTE: This scans the full partition because `id` is not part of the primary key.
