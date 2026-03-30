@@ -227,6 +227,55 @@ func TestHistoryService_LoadHistory_EmptyResult(t *testing.T) {
 	assert.Empty(t, resp.Messages)
 }
 
+func TestHistoryService_LoadHistory_OwnerNoHSS(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	// Owner: subscription exists but HSS is zero — full history access, no lower bound
+	zeroHSS := time.Time{}
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&zeroHSS, nil)
+
+	messages := make([]model.Message, 3)
+	for i := range messages {
+		messages[i] = model.Message{ID: fmt.Sprintf("m%d", i), RoomID: "r1", CreatedAt: time.Now().Add(time.Duration(i) * time.Minute)}
+	}
+	// No lower bound — must use GetMessagesBefore, not GetMessagesBetweenDesc
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", gomock.Any(), gomock.Any()).Return(makePage(messages, false), nil)
+
+	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 3)
+}
+
+func TestHistoryService_LoadHistory_OwnerNoHSS_WithUnread(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	// Owner with zero HSS — unread query uses lastSeen as lower bound (MAX(zero, lastSeen) = lastSeen)
+	zeroHSS := time.Time{}
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&zeroHSS, nil)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	pageMessages := []model.Message{
+		{ID: "m8", RoomID: "r1", CreatedAt: base.Add(8 * time.Minute)},
+		{ID: "m5", RoomID: "r1", CreatedAt: base.Add(5 * time.Minute)},
+	}
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
+
+	// lastSeen < oldestInPage — unread query: GetMessagesBetweenAsc(lastSeen, oldest)
+	lastSeen := base.Add(2 * time.Minute)
+	firstUnread := model.Message{ID: "m3", RoomID: "r1", CreatedAt: base.Add(3 * time.Minute)}
+	msgs.EXPECT().GetMessagesBetweenAsc(ctx, "r1", lastSeen, pageMessages[1].CreatedAt, gomock.Any()).Return(makePage([]model.Message{firstUnread}, false), nil)
+
+	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
+		RoomID:   "r1",
+		LastSeen: lastSeen.Format(time.RFC3339Nano),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.FirstUnread)
+	assert.Equal(t, "m3", resp.FirstUnread.ID)
+}
+
 // --- LoadNextMessages ---
 
 func TestHistoryService_LoadNextMessages_BothAfterAndHSS(t *testing.T) {

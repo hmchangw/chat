@@ -57,7 +57,12 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		return nil, err
 	}
 
-	page, err := s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, since, before, q)
+	var page cassrepo.Page[model.Message]
+	if since.IsZero() {
+		page, err = s.messages.GetMessagesBefore(ctx, req.RoomID, before, q)
+	} else {
+		page, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, since, before, q)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
 	}
