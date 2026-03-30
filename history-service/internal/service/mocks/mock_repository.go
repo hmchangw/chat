@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 	time "time"
 
+	cassrepo "github.com/hmchangw/chat/history-service/internal/cassrepo"
 	model "github.com/hmchangw/chat/pkg/model"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -58,33 +59,33 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessageByID(ctx, roomID, message
 }
 
 // GetMessagesAfter mocks base method.
-func (m *MockMessageRepository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, limit int) ([]model.Message, error) {
+func (m *MockMessageRepository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.Query) (cassrepo.Page[model.Message], error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMessagesAfter", ctx, roomID, after, limit)
-	ret0, _ := ret[0].([]model.Message)
+	ret := m.ctrl.Call(m, "GetMessagesAfter", ctx, roomID, after, q)
+	ret0, _ := ret[0].(cassrepo.Page[model.Message])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetMessagesAfter indicates an expected call of GetMessagesAfter.
-func (mr *MockMessageRepositoryMockRecorder) GetMessagesAfter(ctx, roomID, after, limit any) *gomock.Call {
+func (mr *MockMessageRepositoryMockRecorder) GetMessagesAfter(ctx, roomID, after, q any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesAfter", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesAfter), ctx, roomID, after, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesAfter", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesAfter), ctx, roomID, after, q)
 }
 
 // GetMessagesBefore mocks base method.
-func (m *MockMessageRepository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, limit int) ([]model.Message, error) {
+func (m *MockMessageRepository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, q cassrepo.Query) (cassrepo.Page[model.Message], error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMessagesBefore", ctx, roomID, since, before, limit)
-	ret0, _ := ret[0].([]model.Message)
+	ret := m.ctrl.Call(m, "GetMessagesBefore", ctx, roomID, since, before, q)
+	ret0, _ := ret[0].(cassrepo.Page[model.Message])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetMessagesBefore indicates an expected call of GetMessagesBefore.
-func (mr *MockMessageRepositoryMockRecorder) GetMessagesBefore(ctx, roomID, since, before, limit any) *gomock.Call {
+func (mr *MockMessageRepositoryMockRecorder) GetMessagesBefore(ctx, roomID, since, before, q any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBefore", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBefore), ctx, roomID, since, before, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBefore", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBefore), ctx, roomID, since, before, q)
 }
 
 // GetSurroundingMessages mocks base method.

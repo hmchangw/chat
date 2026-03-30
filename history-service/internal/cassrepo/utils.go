@@ -1,76 +1,122 @@
 package cassrepo
 
-import "github.com/gocql/gocql"
+import (
+	"encoding/base64"
+
+	"github.com/gocql/gocql"
+)
+
+// Cursor is an opaque pagination token wrapping Cassandra's PageState.
+// It is base64-encoded for safe transport in JSON and URLs.
+type Cursor struct {
+	state []byte
+}
+
+// NewCursor decodes a base64-encoded cursor string.
+// An empty string returns a zero cursor (first page).
+func NewCursor(encoded string) (*Cursor, error) {
+	if encoded == "" {
+		return &Cursor{}, nil
+	}
+	state, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	return &Cursor{state: state}, nil
+}
+
+// Encode returns the base64 representation of the cursor.
+// Returns empty string for a zero cursor (no more pages).
+func (c *Cursor) Encode() string {
+	if len(c.state) == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(c.state)
+}
+
+// Raw returns the underlying Cassandra PageState bytes.
+func (c *Cursor) Raw() []byte {
+	return c.state
+}
 
 // Page is a generic paginated result from Cassandra.
 type Page[T any] struct {
-	Items     []T    `json:"items"`
-	PageState []byte `json:"pageState,omitempty"`
-	HasMore   bool   `json:"hasMore"`
+	Data       []T    `json:"data"`
+	NextCursor string `json:"nextCursor,omitempty"`
+	HasNext    bool   `json:"hasNext"`
 }
 
-// Scanner scans values from a gocql iterator row into a T.
-type Scanner[T any] func(iter *gocql.Iter) (T, error)
+// NewPage creates a Page from data and the raw Cassandra PageState.
+func NewPage[T any](data []T, nextState []byte) Page[T] {
+	next := (&Cursor{state: nextState}).Encode()
+	return Page[T]{
+		Data:       data,
+		NextCursor: next,
+		HasNext:    next != "",
+	}
+}
 
-// Query wraps a CQL statement with builder-pattern configuration.
+// Query represents a paginated query request from the client.
 type Query struct {
-	session   *gocql.Session
-	stmt      string
-	args      []interface{}
-	pageSize  int
-	pageState []byte
+	Cursor   *Cursor
+	PageSize int
 }
 
-// NewQuery creates a new Query with the given statement and arguments.
-func NewQuery(session *gocql.Session, stmt string, args ...interface{}) *Query {
-	return &Query{
-		session: session,
-		stmt:    stmt,
-		args:    args,
-	}
+// DefaultQuery returns a Query with defaults (first page, 10 items).
+func DefaultQuery() Query {
+	return Query{Cursor: &Cursor{}, PageSize: 10}
 }
 
-// PageSize sets the number of results per page.
-func (q *Query) PageSize(n int) *Query {
-	q.pageSize = n
-	return q
+// ParseQuery creates a Query from a cursor string and page size.
+// Returns a valid Query with defaults applied for invalid/missing values.
+func ParseQuery(cursorStr string, pageSize int) (Query, error) {
+	cursor, err := NewCursor(cursorStr)
+	if err != nil {
+		return Query{}, err
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 10
+	}
+	return Query{Cursor: cursor, PageSize: pageSize}, nil
 }
 
-// WithPageState sets the pagination cursor for resuming iteration.
-func (q *Query) WithPageState(state []byte) *Query {
-	q.pageState = state
-	return q
+// QueryBuilder wraps a *gocql.Query with pagination support.
+// Use NewQueryBuilder to create, then chain WithCursor and WithPageSize,
+// and call Fetch to execute.
+type QueryBuilder struct {
+	query    *gocql.Query
+	cursor   *Cursor
+	pageSize int
 }
 
-// ScanPage executes the query and scans results into a Page[T].
-// Standalone function because Go methods cannot have type parameters.
-func ScanPage[T any](q *Query, scan Scanner[T]) (*Page[T], error) {
-	gocqlQuery := q.session.Query(q.stmt, q.args...)
-	if q.pageSize > 0 {
-		gocqlQuery = gocqlQuery.PageSize(q.pageSize)
-	}
-	if q.pageState != nil {
-		gocqlQuery = gocqlQuery.PageState(q.pageState)
+// NewQueryBuilder wraps an existing gocql.Query with pagination.
+func NewQueryBuilder(q *gocql.Query) *QueryBuilder {
+	return &QueryBuilder{query: q, pageSize: 10}
+}
+
+// WithCursor sets the pagination cursor for resuming from a previous page.
+func (b *QueryBuilder) WithCursor(cursor *Cursor) *QueryBuilder {
+	b.cursor = cursor
+	return b
+}
+
+// WithPageSize sets the number of results per page.
+func (b *QueryBuilder) WithPageSize(size int) *QueryBuilder {
+	b.pageSize = size
+	return b
+}
+
+// Fetch executes the query and passes the iterator to the callback for scanning.
+// The caller controls the scan loop. Returns the encoded next cursor and any error.
+func (b *QueryBuilder) Fetch(scan func(iter *gocql.Iter)) (string, error) {
+	q := b.query.PageSize(b.pageSize)
+	if b.cursor != nil {
+		q = q.PageState(b.cursor.Raw())
 	}
 
-	iter := gocqlQuery.Iter()
-	var items []T
-	for {
-		item, err := scan(iter)
-		if err != nil {
-			break
-		}
-		items = append(items, item)
-	}
+	iter := q.Iter()
+	scan(iter)
 
-	pageState := iter.PageState()
-	if err := iter.Close(); err != nil {
-		return nil, err
-	}
-
-	return &Page[T]{
-		Items:     items,
-		PageState: pageState,
-		HasMore:   len(pageState) > 0,
-	}, nil
+	nextCursor := (&Cursor{state: iter.PageState()}).Encode()
+	return nextCursor, iter.Close()
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
@@ -21,6 +22,17 @@ func parseTimestamp(s string) (time.Time, error) {
 		return time.Time{}, natsrouter.ErrWithCode("bad_request", "invalid timestamp format")
 	}
 	return t, nil
+}
+
+func parsePaginationQuery(cursor string, limit int) (cassrepo.Query, error) {
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+	q, err := cassrepo.ParseQuery(cursor, limit)
+	if err != nil {
+		return cassrepo.Query{}, natsrouter.ErrWithCode("bad_request", "invalid pagination cursor")
+	}
+	return q, nil
 }
 
 // getHistorySharedSince fetches the HistorySharedSince timestamp and validates subscription exists.
@@ -55,34 +67,30 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		return nil, err
 	}
 
-	limit := req.Limit
-	if limit <= 0 {
-		limit = defaultLimit
+	q, err := parsePaginationQuery(req.Cursor, req.Limit)
+	if err != nil {
+		return nil, err
 	}
 
-	msgs, err := s.messages.GetMessagesBefore(ctx, req.RoomID, since, before, limit+1)
+	page, err := s.messages.GetMessagesBefore(ctx, req.RoomID, since, before, q)
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
 	}
 
-	hasMore := len(msgs) > limit
-	if hasMore {
-		msgs = msgs[:limit]
-	}
-
 	var firstUnread *model.Message
 	if !lastSeen.IsZero() {
-		for i := range msgs {
-			if msgs[i].CreatedAt.After(lastSeen) {
-				firstUnread = &msgs[i]
+		for i := range page.Data {
+			if page.Data[i].CreatedAt.After(lastSeen) {
+				firstUnread = &page.Data[i]
 			}
 		}
 	}
 
 	return &models.LoadHistoryResponse{
-		Messages:    msgs,
+		Messages:    page.Data,
 		FirstUnread: firstUnread,
-		HasMore:     hasMore,
+		NextCursor:  page.NextCursor,
+		HasNext:     page.HasNext,
 	}, nil
 }
 
@@ -102,24 +110,20 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		after = since
 	}
 
-	limit := req.Limit
-	if limit <= 0 {
-		limit = defaultLimit
+	q, err := parsePaginationQuery(req.Cursor, req.Limit)
+	if err != nil {
+		return nil, err
 	}
 
-	msgs, err := s.messages.GetMessagesAfter(ctx, req.RoomID, after, limit+1)
+	page, err := s.messages.GetMessagesAfter(ctx, req.RoomID, after, q)
 	if err != nil {
 		return nil, fmt.Errorf("loading next messages: %w", err)
 	}
 
-	hasMore := len(msgs) > limit
-	if hasMore {
-		msgs = msgs[:limit]
-	}
-
 	return &models.LoadNextMessagesResponse{
-		Messages: msgs,
-		HasMore:  hasMore,
+		Messages:   page.Data,
+		NextCursor: page.NextCursor,
+		HasNext:    page.HasNext,
 	}, nil
 }
 

@@ -8,26 +8,30 @@ type LoadHistoryRequest struct {
 	Before   string `json:"before"`   // RFC3339Nano cursor — fetch messages before this
 	Limit    int    `json:"limit"`    // default 50
 	LastSeen string `json:"lastSeen"` // RFC3339Nano — last message seen by user
+	Cursor   string `json:"cursor"`   // pagination cursor from previous response
 }
 
 // LoadHistoryResponse is the response for LoadHistory.
 type LoadHistoryResponse struct {
 	Messages    []model.Message `json:"messages"`
 	FirstUnread *model.Message  `json:"firstUnread,omitempty"`
-	HasMore     bool            `json:"hasMore"`
+	NextCursor  string          `json:"nextCursor,omitempty"`
+	HasNext     bool            `json:"hasNext"`
 }
 
 // LoadNextMessagesRequest is the payload for loading messages after a timestamp.
 type LoadNextMessagesRequest struct {
 	RoomID string `json:"roomId"`
-	After  string `json:"after"` // RFC3339Nano cursor — fetch messages after this (empty for latest)
-	Limit  int    `json:"limit"` // default 50
+	After  string `json:"after"`  // RFC3339Nano cursor — fetch messages after this (empty for latest)
+	Limit  int    `json:"limit"`  // default 50
+	Cursor string `json:"cursor"` // pagination cursor from previous response
 }
 
 // LoadNextMessagesResponse is the response for LoadNextMessages.
 type LoadNextMessagesResponse struct {
-	Messages []model.Message `json:"messages"`
-	HasMore  bool            `json:"hasMore"`
+	Messages   []model.Message `json:"messages"`
+	NextCursor string          `json:"nextCursor,omitempty"`
+	HasNext    bool            `json:"hasNext"`
 }
 
 // LoadSurroundingMessagesRequest is the payload for loading messages around a central message.
