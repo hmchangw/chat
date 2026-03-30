@@ -67,6 +67,8 @@ func run() error {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(requestIDMiddleware())
+	r.Use(accessLogMiddleware())
 	registerRoutes(r, handler)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)

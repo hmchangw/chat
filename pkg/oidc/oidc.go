@@ -13,13 +13,13 @@ import (
 
 // Claims holds the validated identity extracted from an OIDC token.
 type Claims struct {
-	Subject          string
-	Email            string
-	Name             string
+	Subject           string
+	Email             string
+	Name              string
 	PreferredUsername string
-	GivenName        string
-	FamilyName       string
-	Extra            map[string]interface{}
+	GivenName         string
+	FamilyName        string
+	Extra             map[string]interface{}
 }
 
 // ErrTokenExpired is returned when the SSO token has passed its expiry time.
@@ -38,9 +38,10 @@ type Config struct {
 
 // Validator verifies OIDC tokens against an issuer's JWKS endpoint.
 type Validator struct {
-	verifier  *oidc.IDTokenVerifier
-	audience  string
-	verifyAZP bool
+	verifier   *oidc.IDTokenVerifier
+	httpClient *http.Client
+	audience   string
+	verifyAZP  bool
 }
 
 const issuerDiscoveryTimeout = 10 * time.Second
@@ -48,17 +49,19 @@ const issuerDiscoveryTimeout = 10 * time.Second
 // NewValidator connects to the OIDC issuer and fetches its JWKS keys.
 // Fails fast if the issuer is unreachable.
 func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
+	var httpClient *http.Client
+
 	if cfg.TLSSkipVerify {
 		transport := &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true, //nolint:gosec // intentional for dev environments
 			},
 		}
-		client := &http.Client{
+		httpClient = &http.Client{
 			Transport: transport,
 			Timeout:   issuerDiscoveryTimeout,
 		}
-		ctx = oidc.ClientContext(ctx, client)
+		ctx = oidc.ClientContext(ctx, httpClient)
 	}
 
 	// Ensure issuer discovery cannot hang indefinitely.
@@ -83,15 +86,21 @@ func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
 	}
 
 	return &Validator{
-		verifier:  provider.Verifier(oidcConfig),
-		audience:  cfg.Audience,
-		verifyAZP: cfg.VerifyAZP,
+		verifier:   provider.Verifier(oidcConfig),
+		httpClient: httpClient,
+		audience:   cfg.Audience,
+		verifyAZP:  cfg.VerifyAZP,
 	}, nil
 }
 
 // Validate verifies the raw OIDC token string and extracts user claims.
 // Returns ErrTokenExpired if the token's exp claim is in the past.
 func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, error) {
+	// Re-attach the custom HTTP client so JWKS fetches also use TLSSkipVerify.
+	if v.httpClient != nil {
+		ctx = oidc.ClientContext(ctx, v.httpClient)
+	}
+
 	idToken, err := v.verifier.Verify(ctx, rawToken)
 	if err != nil {
 		var expErr *oidc.TokenExpiredError
@@ -106,12 +115,12 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 	}
 
 	var tokenClaims struct {
-		Email            string `json:"email"`
-		Name             string `json:"name"`
+		Email             string `json:"email"`
+		Name              string `json:"name"`
 		PreferredUsername string `json:"preferred_username"`
-		GivenName        string `json:"given_name"`
-		FamilyName       string `json:"family_name"`
-		AZP              string `json:"azp"`
+		GivenName         string `json:"given_name"`
+		FamilyName        string `json:"family_name"`
+		AZP               string `json:"azp"`
 	}
 
 	if err := idToken.Claims(&tokenClaims); err != nil {
@@ -139,12 +148,12 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 	}
 
 	return Claims{
-		Subject:          idToken.Subject,
-		Email:            tokenClaims.Email,
-		Name:             tokenClaims.Name,
+		Subject:           idToken.Subject,
+		Email:             tokenClaims.Email,
+		Name:              tokenClaims.Name,
 		PreferredUsername: tokenClaims.PreferredUsername,
-		GivenName:        tokenClaims.GivenName,
-		FamilyName:       tokenClaims.FamilyName,
-		Extra:            allClaims,
+		GivenName:         tokenClaims.GivenName,
+		FamilyName:        tokenClaims.FamilyName,
+		Extra:             allClaims,
 	}, nil
 }

@@ -36,8 +36,8 @@ func (f *fakeValidator) Validate(_ context.Context, _ string) (pkgoidc.Claims, e
 		return pkgoidc.Claims{}, fmt.Errorf("oidc token verification failed: invalid signature")
 	}
 	return pkgoidc.Claims{
-		Subject:          f.subject,
-		Email:            f.email,
+		Subject:           f.subject,
+		Email:             f.email,
 		PreferredUsername: f.username,
 	}, nil
 }
