@@ -53,7 +53,7 @@ func TestHistoryService_LoadHistory_Success(t *testing.T) {
 			CreatedAt: joinTime.Add(time.Duration(4-i) * time.Minute),
 		}
 	}
-	msgs.EXPECT().GetMessagesInRange(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(messages, false), nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(messages, false), nil)
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
 	require.NoError(t, err)
@@ -72,24 +72,14 @@ func TestHistoryService_LoadHistory_HasNext(t *testing.T) {
 	for i := range messages {
 		messages[i] = model.Message{ID: fmt.Sprintf("m%d", i), RoomID: "r1", CreatedAt: joinTime.Add(time.Duration(3-i) * time.Minute)}
 	}
-	msgs.EXPECT().GetMessagesInRange(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(messages, true), nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(messages, true), nil)
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
 	require.NoError(t, err)
 	assert.Len(t, resp.Messages, 3)
 }
 
-func TestHistoryService_LoadHistory_NotSubscribed(t *testing.T) {
-	svc, _, subs := newService(t)
-	ctx := context.Background()
-
-	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
-
-	_, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
-	require.Error(t, err)
-}
-
-func TestHistoryService_LoadHistory_FirstUnread(t *testing.T) {
+func TestHistoryService_LoadHistory_LastSeenAfterOldest_NoFirstUnread(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
@@ -102,7 +92,7 @@ func TestHistoryService_LoadHistory_FirstUnread(t *testing.T) {
 		{ID: "m2", RoomID: "r1", CreatedAt: joinTime.Add(2 * time.Minute)},
 		{ID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)},
 	}
-	msgs.EXPECT().GetMessagesInRange(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
 
 	// lastSeen (2min) < oldestInPage (1min)? No — 2min > 1min, so no unread query
 	// Wait — lastSeen=2min, oldestInPage=1min. lastSeen > oldestInPage. So all messages
@@ -134,16 +124,16 @@ func TestHistoryService_LoadHistory_FirstUnread_WithDBQuery(t *testing.T) {
 		{ID: "m7", RoomID: "r1", CreatedAt: joinTime.Add(7 * time.Minute)},
 		{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)},
 	}
-	msgs.EXPECT().GetMessagesInRange(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
 
 	// lastSeen=2min < oldestInPage=5min → unread exist
 	// after = MAX(joinTime, lastSeen=2min) = 2min (since joinTime < 2min? No — joinTime=0min, 2min > 0min, so after=2min)
 	// Actually joinTime is the base (2026-01-01 00:00), lastSeen is joinTime+2min.
 	// MAX(joinTime, joinTime+2min) = joinTime+2min
-	// Query: GetMessagesBetween(r1, joinTime+2min, joinTime+5min, pageSize=1)
+	// Query: GetMessagesBetweenAsc(r1, joinTime+2min, joinTime+5min, pageSize=1)
 	lastSeen := joinTime.Add(2 * time.Minute)
 	firstUnreadMsg := model.Message{ID: "m3", RoomID: "r1", CreatedAt: joinTime.Add(3 * time.Minute)}
-	msgs.EXPECT().GetMessagesBetween(ctx, "r1", lastSeen, pageMessages[2].CreatedAt, gomock.Any()).Return(makePage([]model.Message{firstUnreadMsg}, true), nil)
+	msgs.EXPECT().GetMessagesBetweenAsc(ctx, "r1", lastSeen, pageMessages[2].CreatedAt, true, gomock.Any()).Return(makePage([]model.Message{firstUnreadMsg}, true), nil)
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
@@ -166,11 +156,11 @@ func TestHistoryService_LoadHistory_FirstUnread_LastSeenBeforeHSS(t *testing.T) 
 		{ID: "m3", RoomID: "r1", CreatedAt: joinTime.Add(3 * time.Minute)},
 		{ID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)},
 	}
-	msgs.EXPECT().GetMessagesInRange(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
 
 	// lastSeen is BEFORE historySharedSince — after should be clamped to HSS
 	lastSeen := joinTime.Add(-10 * time.Minute)
-	msgs.EXPECT().GetMessagesBetween(ctx, "r1", joinTime, pageMessages[1].CreatedAt, gomock.Any()).Return(makePage(nil, false), nil)
+	msgs.EXPECT().GetMessagesBetweenAsc(ctx, "r1", joinTime, pageMessages[1].CreatedAt, true, gomock.Any()).Return(makePage(nil, false), nil)
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
@@ -186,7 +176,7 @@ func TestHistoryService_LoadHistory_StoreError(t *testing.T) {
 	ctx := context.Background()
 
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
-	msgs.EXPECT().GetMessagesInRange(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db down"))
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db down"))
 
 	_, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
 	require.Error(t, err)
@@ -220,11 +210,82 @@ func TestHistoryService_LoadHistory_EmptyResult(t *testing.T) {
 	ctx := context.Background()
 
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
-	msgs.EXPECT().GetMessagesInRange(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
 	require.NoError(t, err)
 	assert.Empty(t, resp.Messages)
+}
+
+func TestHistoryService_LoadHistory_NoHSS(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	// No HSS — full history access, no lower bound
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
+
+	messages := make([]model.Message, 3)
+	for i := range messages {
+		messages[i] = model.Message{ID: fmt.Sprintf("m%d", i), RoomID: "r1", CreatedAt: time.Now().Add(time.Duration(i) * time.Minute)}
+	}
+	// No lower bound — must use GetMessagesBefore, not GetMessagesBetweenDesc
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", gomock.Any(), gomock.Any()).Return(makePage(messages, false), nil)
+
+	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 3)
+}
+
+func TestHistoryService_LoadHistory_NoHSS_WithUnread(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	// No HSS — unread query uses lastSeen as lower bound (MAX(nil, lastSeen) = lastSeen)
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	pageMessages := []model.Message{
+		{ID: "m8", RoomID: "r1", CreatedAt: base.Add(8 * time.Minute)},
+		{ID: "m5", RoomID: "r1", CreatedAt: base.Add(5 * time.Minute)},
+	}
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
+
+	// lastSeen < oldestInPage — unread query: GetMessagesBetweenAsc(lastSeen, oldest)
+	lastSeen := base.Add(2 * time.Minute)
+	firstUnread := model.Message{ID: "m3", RoomID: "r1", CreatedAt: base.Add(3 * time.Minute)}
+	msgs.EXPECT().GetMessagesBetweenAsc(ctx, "r1", lastSeen, pageMessages[1].CreatedAt, true, gomock.Any()).Return(makePage([]model.Message{firstUnread}, false), nil)
+
+	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
+		RoomID:   "r1",
+		LastSeen: lastSeen.Format(time.RFC3339Nano),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.FirstUnread)
+	assert.Equal(t, "m3", resp.FirstUnread.ID)
+}
+
+func TestHistoryService_LoadHistory_LastSeenEqualsOldest_NoUnreadQuery(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
+
+	// lastSeen exactly equals oldestInPage.CreatedAt — condition is strict Before, so no unread query fires
+	pageMessages := []model.Message{
+		{ID: "m3", RoomID: "r1", CreatedAt: joinTime.Add(3 * time.Minute)},
+		{ID: "m2", RoomID: "r1", CreatedAt: joinTime.Add(2 * time.Minute)},
+		{ID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)},
+	}
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
+	// No GetMessagesBetweenAsc call expected
+
+	lastSeen := joinTime.Add(1 * time.Minute) // equal to oldestInPage.CreatedAt
+	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
+		RoomID:   "r1",
+		LastSeen: lastSeen.Format(time.RFC3339Nano),
+	})
+	require.NoError(t, err)
+	assert.Nil(t, resp.FirstUnread)
 }
 
 // --- LoadNextMessages ---
@@ -405,16 +466,6 @@ func TestHistoryService_GetMessageByID_OutsideAccessWindow(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestHistoryService_GetMessageByID_NotSubscribed(t *testing.T) {
-	svc, _, subs := newService(t)
-	ctx := context.Background()
-
-	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
-
-	_, err := svc.GetMessageByID(ctx, testParams, models.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
-	require.Error(t, err)
-}
-
 func TestHistoryService_GetMessageByID_NotFound(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
@@ -439,6 +490,33 @@ func TestHistoryService_GetMessageByID_StoreError(t *testing.T) {
 	assert.Contains(t, err.Error(), "loading message")
 }
 
+func TestHistoryService_GetMessageByID_NoHSS(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	// nil HSS means no restriction — any message is accessible
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
+	msg := &model.Message{ID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(-1 * time.Hour)}
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m1").Return(msg, nil)
+
+	result, err := svc.GetMessageByID(ctx, testParams, models.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
+	require.NoError(t, err)
+	assert.Equal(t, "m1", result.ID)
+}
+
+func TestHistoryService_LoadNextMessages_HasNextFalse(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", joinTime, gomock.Any()).Return(makePage(nil, false), nil)
+
+	resp, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "r1"})
+	require.NoError(t, err)
+	assert.False(t, resp.HasNext)
+	assert.Empty(t, resp.NextCursor)
+}
+
 // --- LoadSurroundingMessages ---
 
 func TestHistoryService_LoadSurroundingMessages_Success(t *testing.T) {
@@ -451,10 +529,10 @@ func TestHistoryService_LoadSurroundingMessages_Success(t *testing.T) {
 	msgs.EXPECT().GetMessageByID(ctx, "r1", "m5").Return(centralMsg, nil)
 
 	beforeMsgs := []model.Message{{ID: "m4", RoomID: "r1", CreatedAt: joinTime.Add(4 * time.Minute)}}
-	msgs.EXPECT().GetMessagesInRange(ctx, "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(makePage(beforeMsgs, false), nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(makePage(beforeMsgs, false), nil)
 
 	afterMsgs := []model.Message{{ID: "m6", RoomID: "r1", CreatedAt: joinTime.Add(6 * time.Minute)}}
-	msgs.EXPECT().GetMessagesBetween(ctx, "r1", centralMsg.CreatedAt, gomock.Any(), gomock.Any()).Return(makePage(afterMsgs, false), nil)
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", centralMsg.CreatedAt, gomock.Any()).Return(makePage(afterMsgs, false), nil)
 
 	resp, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
 		RoomID: "r1", MessageID: "m5", Limit: 6,
@@ -479,10 +557,10 @@ func TestHistoryService_LoadSurroundingMessages_MoreBeforeAndAfter(t *testing.T)
 	msgs.EXPECT().GetMessageByID(ctx, "r1", "m5").Return(centralMsg, nil)
 
 	beforeMsgs := []model.Message{{ID: "m4", RoomID: "r1", CreatedAt: joinTime.Add(4 * time.Minute)}}
-	msgs.EXPECT().GetMessagesInRange(ctx, "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(makePage(beforeMsgs, true), nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(makePage(beforeMsgs, true), nil)
 
 	afterMsgs := []model.Message{{ID: "m6", RoomID: "r1", CreatedAt: joinTime.Add(6 * time.Minute)}}
-	msgs.EXPECT().GetMessagesBetween(ctx, "r1", centralMsg.CreatedAt, gomock.Any(), gomock.Any()).Return(makePage(afterMsgs, true), nil)
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", centralMsg.CreatedAt, gomock.Any()).Return(makePage(afterMsgs, true), nil)
 
 	resp, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
 		RoomID: "r1", MessageID: "m5", Limit: 4,
@@ -490,6 +568,33 @@ func TestHistoryService_LoadSurroundingMessages_MoreBeforeAndAfter(t *testing.T)
 	require.NoError(t, err)
 	assert.True(t, resp.MoreBefore)
 	assert.True(t, resp.MoreAfter)
+}
+
+func TestHistoryService_LoadSurroundingMessages_HSSBeforeMessage(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	// hss != nil, hss < msg.CreatedAt — message accessible, before-page uses GetMessagesBetweenDesc,
+	// after-page uses GetMessagesAfter (no HSS constraint needed, messages after central are past HSS too)
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
+
+	centralMsg := &model.Message{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m5").Return(centralMsg, nil)
+
+	beforeMsgs := []model.Message{{ID: "m4", RoomID: "r1", CreatedAt: joinTime.Add(4 * time.Minute)}}
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(makePage(beforeMsgs, false), nil)
+
+	afterMsgs := []model.Message{{ID: "m6", RoomID: "r1", CreatedAt: joinTime.Add(6 * time.Minute)}}
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", centralMsg.CreatedAt, gomock.Any()).Return(makePage(afterMsgs, false), nil)
+
+	resp, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 3)
+	assert.Equal(t, "m4", resp.Messages[0].ID)
+	assert.Equal(t, "m5", resp.Messages[1].ID)
+	assert.Equal(t, "m6", resp.Messages[2].ID)
 }
 
 func TestHistoryService_LoadSurroundingMessages_NotSubscribed(t *testing.T) {
@@ -507,7 +612,7 @@ func TestHistoryService_LoadSurroundingMessages_NotSubscribed(t *testing.T) {
 	msgs.EXPECT().GetMessagesBefore(ctx, "r1", centralMsg.CreatedAt, gomock.Any()).Return(makePage(beforeMsgs, false), nil)
 
 	afterMsgs := []model.Message{{ID: "m6", RoomID: "r1", CreatedAt: joinTime.Add(6 * time.Minute)}}
-	msgs.EXPECT().GetMessagesBetween(ctx, "r1", centralMsg.CreatedAt, gomock.Any(), gomock.Any()).Return(makePage(afterMsgs, false), nil)
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", centralMsg.CreatedAt, gomock.Any()).Return(makePage(afterMsgs, false), nil)
 
 	resp, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
 		RoomID: "r1", MessageID: "m5", Limit: 6,
@@ -558,4 +663,73 @@ func TestHistoryService_LoadSurroundingMessages_StoreError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "finding central message")
+}
+
+func TestHistoryService_LoadSurroundingMessages_BeforePageError(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
+	centralMsg := &model.Message{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m5").Return(centralMsg, nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db error"))
+
+	_, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading surrounding before")
+}
+
+func TestHistoryService_LoadSurroundingMessages_BeforePageError_NoHSS(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
+	centralMsg := &model.Message{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m5").Return(centralMsg, nil)
+	msgs.EXPECT().GetMessagesBefore(ctx, "r1", centralMsg.CreatedAt, gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db error"))
+
+	_, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading surrounding before")
+}
+
+func TestHistoryService_LoadSurroundingMessages_AfterPageError(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
+	centralMsg := &model.Message{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m5").Return(centralMsg, nil)
+	beforeMsgs := []model.Message{{ID: "m4", RoomID: "r1", CreatedAt: joinTime.Add(4 * time.Minute)}}
+	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(makePage(beforeMsgs, false), nil)
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", centralMsg.CreatedAt, gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db error"))
+
+	_, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading surrounding after")
+}
+
+func TestHistoryService_LoadSurroundingMessages_Limit1_OnlyCentral(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
+	centralMsg := &model.Message{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(ctx, "r1", "m5").Return(centralMsg, nil)
+	// No before/after queries expected — half = 1/2 = 0
+
+	resp, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 1,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 1)
+	assert.Equal(t, "m5", resp.Messages[0].ID)
+	assert.False(t, resp.MoreBefore)
+	assert.False(t, resp.MoreAfter)
 }

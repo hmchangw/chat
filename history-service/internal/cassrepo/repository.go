@@ -57,9 +57,9 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, befor
 	}, nil
 }
 
-// GetMessagesInRange returns a paginated set of messages between `since` and `before`, newest-first.
+// GetMessagesBetweenDesc returns a paginated set of messages between `since` and `before`, newest-first.
 // Used when a lower-bound access restriction (e.g. historySharedSince) must be enforced.
-func (r *Repository) GetMessagesInRange(ctx context.Context, roomID string, since, before time.Time, q PageRequest) (Page[model.Message], error) {
+func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q PageRequest) (Page[model.Message], error) {
 	var messages []model.Message
 
 	nextCursor, err := NewQueryBuilder(
@@ -76,7 +76,7 @@ func (r *Repository) GetMessagesInRange(ctx context.Context, roomID string, sinc
 			messages = scanMessages(iter)
 		})
 	if err != nil {
-		return Page[model.Message]{}, fmt.Errorf("querying messages in range: %w", err)
+		return Page[model.Message]{}, fmt.Errorf("querying messages between desc: %w", err)
 	}
 
 	return Page[model.Message]{
@@ -86,18 +86,20 @@ func (r *Repository) GetMessagesInRange(ctx context.Context, roomID string, sinc
 	}, nil
 }
 
-// GetMessagesBetween returns a paginated set of messages between `after` and `before`, oldest-first.
-// Used for forward pagination and for finding unread messages within a range.
-func (r *Repository) GetMessagesBetween(ctx context.Context, roomID string, after, before time.Time, q PageRequest) (Page[model.Message], error) {
+// GetMessagesBetweenAsc returns a paginated set of messages between `after` and `before`, oldest-first.
+// When inclusive is true the upper bound is `<=`, otherwise it is strictly `<`.
+// Used for finding unread messages within a range.
+func (r *Repository) GetMessagesBetweenAsc(ctx context.Context, roomID string, after, before time.Time, inclusive bool, q PageRequest) (Page[model.Message], error) {
 	var messages []model.Message
 
+	upperOp := "<"
+	if inclusive {
+		upperOp = "<="
+	}
+	cql := fmt.Sprintf(`SELECT id, room_id, user_id, content, created_at FROM messages WHERE room_id = ? AND created_at > ? AND created_at %s ? ORDER BY created_at ASC`, upperOp)
+
 	nextCursor, err := NewQueryBuilder(
-		r.session.Query(
-			`SELECT id, room_id, user_id, content, created_at FROM messages
-			WHERE room_id = ? AND created_at > ? AND created_at < ?
-			ORDER BY created_at ASC`,
-			roomID, after, before,
-		).WithContext(ctx),
+		r.session.Query(cql, roomID, after, before).WithContext(ctx),
 	).
 		WithCursor(q.Cursor).
 		WithPageSize(q.PageSize).
@@ -105,7 +107,7 @@ func (r *Repository) GetMessagesBetween(ctx context.Context, roomID string, afte
 			messages = scanMessages(iter)
 		})
 	if err != nil {
-		return Page[model.Message]{}, fmt.Errorf("querying messages between: %w", err)
+		return Page[model.Message]{}, fmt.Errorf("querying messages between asc: %w", err)
 	}
 
 	return Page[model.Message]{

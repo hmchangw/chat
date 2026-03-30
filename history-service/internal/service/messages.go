@@ -16,23 +16,11 @@ const (
 	surroundingPageSize = 25
 )
 
-// getHistorySharedSince fetches the HistorySharedSince timestamp and validates subscription exists.
-func (s *HistoryService) getHistorySharedSince(ctx context.Context, username, roomID string) (time.Time, error) {
-	since, err := s.subscriptions.GetHistorySharedSince(ctx, username, roomID)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("checking subscription: %w", err)
-	}
-	if since == nil {
-		return time.Time{}, natsrouter.ErrWithCode("forbidden", "not subscribed to this room")
-	}
-	return *since, nil
-}
-
 func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
 	username := p.Get("username")
-	since, err := s.getHistorySharedSince(ctx, username, req.RoomID)
+	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
 
 	before, err := parseTimestamp(req.Before)
@@ -57,7 +45,12 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		return nil, err
 	}
 
-	page, err := s.messages.GetMessagesInRange(ctx, req.RoomID, since, before, q)
+	var page cassrepo.Page[model.Message]
+	if hss == nil {
+		page, err = s.messages.GetMessagesBefore(ctx, req.RoomID, before, q)
+	} else {
+		page, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, *hss, before, q)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
 	}
@@ -75,11 +68,11 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 			// There are unread messages — query for the first one
 			// after = MAX(historySharedSince, lastSeen)
 			after := lastSeen
-			if since.After(lastSeen) {
-				after = since
+			if hss != nil && hss.After(lastSeen) {
+				after = *hss
 			}
 
-			unreadPage, err := s.messages.GetMessagesBetween(ctx, req.RoomID, after, oldestInPage.CreatedAt, cassrepo.PageRequest{
+			unreadPage, err := s.messages.GetMessagesBetweenAsc(ctx, req.RoomID, after, oldestInPage.CreatedAt, true, cassrepo.PageRequest{
 				Cursor: &cassrepo.Cursor{}, PageSize: 1,
 			})
 			if err != nil {
@@ -170,17 +163,23 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 		limit = surroundingPageSize
 	}
 	half := limit / 2
+	if half == 0 {
+		// Limit of 1 means only the central message — skip before/after queries.
+		return &models.LoadSurroundingMessagesResponse{
+			Messages: []model.Message{*msg},
+		}, nil
+	}
 
 	// Fetch messages before the central message (newest-first).
 	// When since is zero (no HSS) use GetMessagesBefore (no lower bound).
-	// When since is set use GetMessagesInRange to enforce the access window.
+	// When since is set use GetMessagesBetweenDesc to enforce the access window.
 	var beforePage cassrepo.Page[model.Message]
 	if since.IsZero() {
 		beforePage, err = s.messages.GetMessagesBefore(ctx, req.RoomID, msg.CreatedAt, cassrepo.PageRequest{
 			Cursor: &cassrepo.Cursor{}, PageSize: half,
 		})
 	} else {
-		beforePage, err = s.messages.GetMessagesInRange(ctx, req.RoomID, since, msg.CreatedAt, cassrepo.PageRequest{
+		beforePage, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, since, msg.CreatedAt, cassrepo.PageRequest{
 			Cursor: &cassrepo.Cursor{}, PageSize: half,
 		})
 	}
@@ -188,8 +187,9 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 		return nil, fmt.Errorf("loading surrounding before: %w", err)
 	}
 
-	// Fetch messages after the central message (oldest-first)
-	afterPage, err := s.messages.GetMessagesBetween(ctx, req.RoomID, msg.CreatedAt, time.Now().UTC(), cassrepo.PageRequest{
+	// Fetch messages after the central message (oldest-first).
+	// No upper bound needed — messages after central are always past HSS too.
+	afterPage, err := s.messages.GetMessagesAfter(ctx, req.RoomID, msg.CreatedAt, cassrepo.PageRequest{
 		Cursor: &cassrepo.Cursor{}, PageSize: half,
 	})
 	if err != nil {
@@ -213,9 +213,9 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 
 func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params, req models.GetMessageByIDRequest) (*model.Message, error) {
 	username := p.Get("username")
-	since, err := s.getHistorySharedSince(ctx, username, req.RoomID)
+	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
 
 	msg, err := s.messages.GetMessageByID(ctx, req.RoomID, req.MessageID)
@@ -226,7 +226,7 @@ func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params
 		return nil, natsrouter.ErrWithCode("not_found", "message not found")
 	}
 
-	if msg.CreatedAt.Before(since) {
+	if hss != nil && msg.CreatedAt.Before(*hss) {
 		return nil, natsrouter.ErrWithCode("forbidden", "message is outside access window")
 	}
 

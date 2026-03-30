@@ -205,7 +205,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	if sub.JoinedAt.Before(before) || sub.JoinedAt.After(after) {
 		t.Errorf("JoinedAt = %v, want between %v and %v", sub.JoinedAt, before, after)
 	}
-	if sub.HistorySharedSince.Before(before) || sub.HistorySharedSince.After(after) {
+	if sub.HistorySharedSince == nil || sub.HistorySharedSince.Before(before) || sub.HistorySharedSince.After(after) {
 		t.Errorf("HistorySharedSince = %v, want between %v and %v", sub.HistorySharedSince, before, after)
 	}
 }
