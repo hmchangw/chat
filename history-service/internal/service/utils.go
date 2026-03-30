@@ -25,3 +25,25 @@ func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {
 	}
 	return q, nil
 }
+
+// derefTime safely dereferences a *time.Time, returning zero time if nil.
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// timeMax returns the later of two timestamps. Zero values are ignored.
+func timeMax(a, b time.Time) time.Time {
+	if a.IsZero() {
+		return b
+	}
+	if b.IsZero() {
+		return a
+	}
+	if a.After(b) {
+		return a
+	}
+	return b
+}

@@ -94,21 +94,12 @@ func TestHistoryService_LoadHistory_LastSeenAfterOldest_NoFirstUnread(t *testing
 	}
 	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
 
-	// lastSeen (2min) < oldestInPage (1min)? No — 2min > 1min, so no unread query
-	// Wait — lastSeen=2min, oldestInPage=1min. lastSeen > oldestInPage. So all messages
-	// in the page after lastSeen are read... but m3 (3min) > lastSeen (2min).
-	// But the logic checks lastSeen < oldestInPage.CreatedAt, which is 2min < 1min = false.
-	// So no firstUnread query happens here.
-
-	// Let me fix the test: to trigger firstUnread, lastSeen must be BEFORE the oldest message in page.
-	// So lastSeen should be before joinTime+1min.
-
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
 		LastSeen: lastSeen.Format(time.RFC3339Nano),
 	})
 	require.NoError(t, err)
-	// lastSeen (2min) > oldestInPage (1min), so no firstUnread query
+	// lastSeen (2min) > oldestInPage (1min) — all loaded messages are seen, no unread query
 	assert.Nil(t, resp.FirstUnread)
 }
 
@@ -126,11 +117,8 @@ func TestHistoryService_LoadHistory_FirstUnread_WithDBQuery(t *testing.T) {
 	}
 	msgs.EXPECT().GetMessagesBetweenDesc(ctx, "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
 
-	// lastSeen=2min < oldestInPage=5min → unread exist
-	// after = MAX(joinTime, lastSeen=2min) = 2min (since joinTime < 2min? No — joinTime=0min, 2min > 0min, so after=2min)
-	// Actually joinTime is the base (2026-01-01 00:00), lastSeen is joinTime+2min.
-	// MAX(joinTime, joinTime+2min) = joinTime+2min
-	// Query: GetMessagesBetweenAsc(r1, joinTime+2min, joinTime+5min, pageSize=1)
+	// lastSeen (2min) < oldestInPage (5min) — unread exist before the loaded page
+	// Unread query lower bound: max(accessSince=0min, lastSeen=2min) = 2min
 	lastSeen := joinTime.Add(2 * time.Minute)
 	firstUnreadMsg := model.Message{ID: "m3", RoomID: "r1", CreatedAt: joinTime.Add(3 * time.Minute)}
 	msgs.EXPECT().GetMessagesBetweenAsc(ctx, "r1", lastSeen, pageMessages[2].CreatedAt, true, gomock.Any()).Return(makePage([]model.Message{firstUnreadMsg}, true), nil)
@@ -597,11 +585,11 @@ func TestHistoryService_LoadSurroundingMessages_HSSBeforeMessage(t *testing.T) {
 	assert.Equal(t, "m6", resp.Messages[2].ID)
 }
 
-func TestHistoryService_LoadSurroundingMessages_NotSubscribed(t *testing.T) {
+func TestHistoryService_LoadSurroundingMessages_NoHSS(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
-	// HSS not found — no lower bound, message is still accessible
+	// nil accessSince — no lower bound restriction, full history access
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
 
 	centralMsg := &model.Message{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
@@ -619,6 +607,19 @@ func TestHistoryService_LoadSurroundingMessages_NotSubscribed(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Len(t, resp.Messages, 3)
+}
+
+func TestHistoryService_LoadSurroundingMessages_SubscriptionError(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, fmt.Errorf("db error"))
+
+	_, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking subscription")
 }
 
 func TestHistoryService_LoadSurroundingMessages_CentralMessageOutsideWindow(t *testing.T) {

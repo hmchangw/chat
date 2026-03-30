@@ -18,7 +18,7 @@ const (
 
 func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
 	username := p.Get("username")
-	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	accessSince, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
@@ -40,16 +40,17 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 	if limit <= 0 {
 		limit = historyPageSize
 	}
-	q, err := parsePageRequest(req.Cursor, limit)
+	pageReq, err := parsePageRequest(req.Cursor, limit)
 	if err != nil {
 		return nil, err
 	}
 
+	// Fetch history page. With accessSince set, enforce it as the lower bound.
 	var page cassrepo.Page[model.Message]
-	if hss == nil {
-		page, err = s.messages.GetMessagesBefore(ctx, req.RoomID, before, q)
+	if accessSince == nil {
+		page, err = s.messages.GetMessagesBefore(ctx, req.RoomID, before, pageReq)
 	} else {
-		page, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, *hss, before, q)
+		page, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, *accessSince, before, pageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
@@ -59,20 +60,22 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		Messages: page.Data,
 	}
 
-	// Find firstUnread via DB query if there are messages and lastSeen is set
+	// Find the first unread message via a separate query when:
+	// - the page has messages
+	// - the client provided a lastSeen timestamp
+	// - lastSeen is before the oldest message in the page (meaning unread messages may exist before it)
 	if len(page.Data) > 0 && !lastSeen.IsZero() {
-		// Messages are newest-first (DESC), so the last element is the oldest in the page
 		oldestInPage := page.Data[len(page.Data)-1]
 
 		if lastSeen.Before(oldestInPage.CreatedAt) {
-			// There are unread messages — query for the first one
-			// after = MAX(historySharedSince, lastSeen)
-			after := lastSeen
-			if hss != nil && hss.After(lastSeen) {
-				after = *hss
+			// Lower bound for the unread query: max(accessSince, lastSeen).
+			// If accessSince is nil (no restriction), just use lastSeen.
+			unreadAfter := lastSeen
+			if accessSince != nil && accessSince.After(lastSeen) {
+				unreadAfter = *accessSince
 			}
 
-			unreadPage, err := s.messages.GetMessagesBetweenAsc(ctx, req.RoomID, after, oldestInPage.CreatedAt, true, cassrepo.PageRequest{
+			unreadPage, err := s.messages.GetMessagesBetweenAsc(ctx, req.RoomID, unreadAfter, oldestInPage.CreatedAt, true, cassrepo.PageRequest{
 				Cursor: &cassrepo.Cursor{}, PageSize: 1,
 			})
 			if err != nil {
@@ -93,7 +96,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Params, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
 	username := p.Get("username")
 
-	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	accessSince, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
@@ -103,25 +106,19 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	// Effective lower bound = max(after, historySharedSince); zero if both unset.
-	var effectiveAfter time.Time
-	if hss != nil {
-		effectiveAfter = *hss
-	}
-	if !after.IsZero() && (effectiveAfter.IsZero() || after.After(effectiveAfter)) {
-		effectiveAfter = after
-	}
+	// Lower bound = max(after, accessSince). Zero means no lower bound.
+	lowerBound := timeMax(after, derefTime(accessSince))
 
-	q, err := parsePageRequest(req.Cursor, req.Limit)
+	pageReq, err := parsePageRequest(req.Cursor, req.Limit)
 	if err != nil {
 		return nil, err
 	}
 
 	var page cassrepo.Page[model.Message]
-	if effectiveAfter.IsZero() {
-		page, err = s.messages.GetLatestMessages(ctx, req.RoomID, q)
+	if lowerBound.IsZero() {
+		page, err = s.messages.GetLatestMessages(ctx, req.RoomID, pageReq)
 	} else {
-		page, err = s.messages.GetMessagesAfter(ctx, req.RoomID, effectiveAfter, q)
+		page, err = s.messages.GetMessagesAfter(ctx, req.RoomID, lowerBound, pageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading next messages: %w", err)
@@ -137,24 +134,19 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrouter.Params, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
 	username := p.Get("username")
 
-	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	accessSince, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
-	// HSS not found means no lower-bound restriction; zero time acts as no filter.
-	var since time.Time
-	if hss != nil {
-		since = *hss
-	}
 
-	msg, err := s.messages.GetMessageByID(ctx, req.RoomID, req.MessageID)
+	centralMsg, err := s.messages.GetMessageByID(ctx, req.RoomID, req.MessageID)
 	if err != nil {
 		return nil, fmt.Errorf("finding central message: %w", err)
 	}
-	if msg == nil {
+	if centralMsg == nil {
 		return nil, natsrouter.ErrWithCode("not_found", "message not found")
 	}
-	if msg.CreatedAt.Before(since) {
+	if accessSince != nil && centralMsg.CreatedAt.Before(*accessSince) {
 		return nil, natsrouter.ErrWithCode("forbidden", "message is outside access window")
 	}
 
@@ -164,44 +156,36 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	}
 	half := limit / 2
 	if half == 0 {
-		// Limit of 1 means only the central message — skip before/after queries.
 		return &models.LoadSurroundingMessagesResponse{
-			Messages: []model.Message{*msg},
+			Messages: []model.Message{*centralMsg},
 		}, nil
 	}
 
-	// Fetch messages before the central message (newest-first).
-	// When since is zero (no HSS) use GetMessagesBefore (no lower bound).
-	// When since is set use GetMessagesBetweenDesc to enforce the access window.
+	halfPageReq := cassrepo.PageRequest{Cursor: &cassrepo.Cursor{}, PageSize: half}
+
+	// Before-page: messages older than central, newest-first.
 	var beforePage cassrepo.Page[model.Message]
-	if since.IsZero() {
-		beforePage, err = s.messages.GetMessagesBefore(ctx, req.RoomID, msg.CreatedAt, cassrepo.PageRequest{
-			Cursor: &cassrepo.Cursor{}, PageSize: half,
-		})
+	if accessSince == nil {
+		beforePage, err = s.messages.GetMessagesBefore(ctx, req.RoomID, centralMsg.CreatedAt, halfPageReq)
 	} else {
-		beforePage, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, since, msg.CreatedAt, cassrepo.PageRequest{
-			Cursor: &cassrepo.Cursor{}, PageSize: half,
-		})
+		beforePage, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, *accessSince, centralMsg.CreatedAt, halfPageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding before: %w", err)
 	}
 
-	// Fetch messages after the central message (oldest-first).
-	// No upper bound needed — messages after central are always past HSS too.
-	afterPage, err := s.messages.GetMessagesAfter(ctx, req.RoomID, msg.CreatedAt, cassrepo.PageRequest{
-		Cursor: &cassrepo.Cursor{}, PageSize: half,
-	})
+	// After-page: messages newer than central, oldest-first.
+	afterPage, err := s.messages.GetMessagesAfter(ctx, req.RoomID, centralMsg.CreatedAt, halfPageReq)
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding after: %w", err)
 	}
 
-	// Combine: reverse before (they come DESC) + central + after (ASC)
+	// Assemble: reverse before-page (DESC→ASC) + central + after-page (already ASC).
 	messages := make([]model.Message, 0, len(beforePage.Data)+1+len(afterPage.Data))
 	for i := len(beforePage.Data) - 1; i >= 0; i-- {
 		messages = append(messages, beforePage.Data[i])
 	}
-	messages = append(messages, *msg)
+	messages = append(messages, *centralMsg)
 	messages = append(messages, afterPage.Data...)
 
 	return &models.LoadSurroundingMessagesResponse{
@@ -213,7 +197,7 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 
 func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params, req models.GetMessageByIDRequest) (*model.Message, error) {
 	username := p.Get("username")
-	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	accessSince, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
@@ -226,7 +210,7 @@ func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params
 		return nil, natsrouter.ErrWithCode("not_found", "message not found")
 	}
 
-	if hss != nil && msg.CreatedAt.Before(*hss) {
+	if accessSince != nil && msg.CreatedAt.Before(*accessSince) {
 		return nil, natsrouter.ErrWithCode("forbidden", "message is outside access window")
 	}
 
