@@ -18,7 +18,7 @@ A browser-based debug UI for inspecting and publishing NATS messages across two 
 Spins up two NATS servers and the debug UI in one command.
 
 ```bash
-docker compose -f nats-debug/deploy/docker-compose.yml up
+docker compose -f tools/nats-debug/deploy/docker-compose.yml up
 ```
 
 | Service | URL |
@@ -35,13 +35,13 @@ Requires a NATS server already running.
 
 ```bash
 # Build
-make build SERVICE=nats-debug
+make build SERVICE=tools/nats-debug
 
 # Run (default port 8090)
-./bin/nats-debug
+./bin/tools/nats-debug
 
 # Custom port
-PORT=9000 ./bin/nats-debug
+PORT=9000 ./bin/tools/nats-debug
 ```
 
 Open http://localhost:8090.
