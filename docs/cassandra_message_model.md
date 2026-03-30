@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   sys_msg_data BLOB,
   federate_from TEXT,
   edited_at TIMESTAMP,
-  update_at TIMESTAMP,
+  updated_at TIMESTAMP,
   PRIMARY KEY((room_id),created_at,message_id)
 )WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
