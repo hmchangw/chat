@@ -17,7 +17,7 @@ import (
 
 // setupValkey starts a valkey/valkey:8 container and returns a connected valkeyStore.
 // The container is terminated via t.Cleanup.
-func setupValkey(t *testing.T, ttl time.Duration) *valkeyStore {
+func setupValkey(t *testing.T, ttl time.Duration) RoomKeyStore {
 	t.Helper()
 	ctx := context.Background()
 
