@@ -100,8 +100,23 @@ func (s *valkeyStore) Set(ctx context.Context, roomID string, pair RoomKeyPair) 
 }
 
 // Get retrieves the key pair for roomID. Returns (nil, nil) if the key does not exist.
-func (s *valkeyStore) Get(_ context.Context, _ string) (*RoomKeyPair, error) {
-	return nil, errors.New("not implemented")
+func (s *valkeyStore) Get(ctx context.Context, roomID string) (*RoomKeyPair, error) {
+	fields, err := s.client.hgetall(ctx, roomkey(roomID))
+	if err != nil {
+		return nil, fmt.Errorf("get room key: %w", err)
+	}
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	pub, err := base64.StdEncoding.DecodeString(fields["pub"])
+	if err != nil {
+		return nil, fmt.Errorf("get room key: decode public key: %w", err)
+	}
+	priv, err := base64.StdEncoding.DecodeString(fields["priv"])
+	if err != nil {
+		return nil, fmt.Errorf("get room key: decode private key: %w", err)
+	}
+	return &RoomKeyPair{PublicKey: pub, PrivateKey: priv}, nil
 }
 
 // Delete removes the key pair for roomID. No-op if the key does not exist.
