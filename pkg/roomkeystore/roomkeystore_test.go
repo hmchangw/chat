@@ -201,3 +201,58 @@ func TestValkeyStore_Get(t *testing.T) {
 		})
 	}
 }
+
+func TestValkeyStore_Delete(t *testing.T) {
+	pubKey := bytes.Repeat([]byte{0xAB}, 65)
+	privKey := bytes.Repeat([]byte{0xCD}, 32)
+
+	tests := []struct {
+		name        string
+		fake        *fakeHashClient
+		roomID      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "happy path — deletes existing key",
+			fake: func() *fakeHashClient {
+				f := &fakeHashClient{}
+				store := newTestStore(f)
+				err := store.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				if err != nil {
+					panic("test setup failed: " + err.Error())
+				}
+				return f
+			}(),
+			roomID: "room-1",
+		},
+		{
+			name:   "missing key — no-op, no error",
+			fake:   &fakeHashClient{},
+			roomID: "nonexistent",
+		},
+		{
+			name:        "del error — returns wrapped error",
+			fake:        &fakeHashClient{delErr: errors.New("connection lost")},
+			roomID:      "room-1",
+			wantErr:     true,
+			errContains: "delete room key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(tt.fake)
+			err := store.Delete(context.Background(), tt.roomID)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+			require.NoError(t, err)
+			// Verify the key is gone from the fake store.
+			_, exists := tt.fake.store[roomkey(tt.roomID)]
+			assert.False(t, exists, "key should be removed after Delete")
+		})
+	}
+}
