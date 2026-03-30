@@ -66,7 +66,7 @@ func (a *redisAdapter) del(ctx context.Context, key string) error {
 }
 
 // NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
-func NewValkeyStore(cfg Config) (*valkeyStore, error) {
+func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
 	c := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
