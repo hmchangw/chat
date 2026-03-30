@@ -58,9 +58,8 @@ func TestHistoryService_LoadHistory_Success(t *testing.T) {
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
 	require.NoError(t, err)
 	assert.Len(t, resp.Messages, 4)
-	assert.False(t, resp.HasNext)
 	assert.Nil(t, resp.FirstUnread)
-	assert.False(t, resp.UnreadNotLoaded)
+	assert.False(t, resp.HasNextUnread)
 }
 
 func TestHistoryService_LoadHistory_HasNext(t *testing.T) {
@@ -78,7 +77,6 @@ func TestHistoryService_LoadHistory_HasNext(t *testing.T) {
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
 	require.NoError(t, err)
 	assert.Len(t, resp.Messages, 3)
-	assert.True(t, resp.HasNext)
 }
 
 func TestHistoryService_LoadHistory_NotSubscribed(t *testing.T) {
@@ -154,8 +152,8 @@ func TestHistoryService_LoadHistory_FirstUnread_WithDBQuery(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp.FirstUnread)
 	assert.Equal(t, "m3", resp.FirstUnread.ID)
-	assert.True(t, resp.UnreadNotLoaded)
-	assert.NotEmpty(t, resp.NextCursor)
+	assert.True(t, resp.HasNextUnread)
+	assert.NotEmpty(t, resp.NextUnreadCursor)
 }
 
 func TestHistoryService_LoadHistory_FirstUnread_LastSeenBeforeHSS(t *testing.T) {
@@ -180,7 +178,7 @@ func TestHistoryService_LoadHistory_FirstUnread_LastSeenBeforeHSS(t *testing.T) 
 	})
 	require.NoError(t, err)
 	assert.Nil(t, resp.FirstUnread) // no unread found in range
-	assert.False(t, resp.UnreadNotLoaded)
+	assert.False(t, resp.HasNextUnread)
 }
 
 func TestHistoryService_LoadHistory_StoreError(t *testing.T) {
@@ -227,7 +225,6 @@ func TestHistoryService_LoadHistory_EmptyResult(t *testing.T) {
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
 	require.NoError(t, err)
 	assert.Empty(t, resp.Messages)
-	assert.False(t, resp.HasNext)
 }
 
 // --- LoadNextMessages ---

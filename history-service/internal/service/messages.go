@@ -64,7 +64,6 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 
 	resp := &models.LoadHistoryResponse{
 		Messages: page.Data,
-		HasNext:  page.HasNext,
 	}
 
 	// Find firstUnread via DB query if there are messages and lastSeen is set
@@ -89,8 +88,8 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 
 			if len(unreadPage.Data) > 0 {
 				resp.FirstUnread = &unreadPage.Data[0]
-				resp.UnreadNotLoaded = unreadPage.HasNext
-				resp.NextCursor = unreadPage.NextCursor
+				resp.HasNextUnread = unreadPage.HasNext
+				resp.NextUnreadCursor = unreadPage.NextCursor
 			}
 		}
 	}
