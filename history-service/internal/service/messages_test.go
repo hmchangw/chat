@@ -79,16 +79,6 @@ func TestHistoryService_LoadHistory_HasNext(t *testing.T) {
 	assert.Len(t, resp.Messages, 3)
 }
 
-func TestHistoryService_LoadHistory_NotSubscribed(t *testing.T) {
-	svc, _, subs := newService(t)
-	ctx := context.Background()
-
-	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
-
-	_, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
-	require.Error(t, err)
-}
-
 func TestHistoryService_LoadHistory_FirstUnread(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
@@ -227,13 +217,12 @@ func TestHistoryService_LoadHistory_EmptyResult(t *testing.T) {
 	assert.Empty(t, resp.Messages)
 }
 
-func TestHistoryService_LoadHistory_OwnerNoHSS(t *testing.T) {
+func TestHistoryService_LoadHistory_NoHSS(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
-	// Owner: subscription exists but HSS is zero — full history access, no lower bound
-	zeroHSS := time.Time{}
-	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&zeroHSS, nil)
+	// No HSS — full history access, no lower bound
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
 
 	messages := make([]model.Message, 3)
 	for i := range messages {
@@ -247,13 +236,12 @@ func TestHistoryService_LoadHistory_OwnerNoHSS(t *testing.T) {
 	assert.Len(t, resp.Messages, 3)
 }
 
-func TestHistoryService_LoadHistory_OwnerNoHSS_WithUnread(t *testing.T) {
+func TestHistoryService_LoadHistory_NoHSS_WithUnread(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
-	// Owner with zero HSS — unread query uses lastSeen as lower bound (MAX(zero, lastSeen) = lastSeen)
-	zeroHSS := time.Time{}
-	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&zeroHSS, nil)
+	// No HSS — unread query uses lastSeen as lower bound (MAX(nil, lastSeen) = lastSeen)
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	pageMessages := []model.Message{
@@ -449,16 +437,6 @@ func TestHistoryService_GetMessageByID_OutsideAccessWindow(t *testing.T) {
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
 	msg := &model.Message{ID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(-1 * time.Hour)}
 	msgs.EXPECT().GetMessageByID(ctx, "r1", "m1").Return(msg, nil)
-
-	_, err := svc.GetMessageByID(ctx, testParams, models.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
-	require.Error(t, err)
-}
-
-func TestHistoryService_GetMessageByID_NotSubscribed(t *testing.T) {
-	svc, _, subs := newService(t)
-	ctx := context.Background()
-
-	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
 
 	_, err := svc.GetMessageByID(ctx, testParams, models.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
 	require.Error(t, err)

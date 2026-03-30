@@ -43,7 +43,7 @@ func TestSubscriptionRepo_GetSubscription(t *testing.T) {
 		ID:     "s1",
 		User:   model.SubscriptionUser{ID: "u1", Username: "u1"},
 		RoomID: "r1", SiteID: "site-local",
-		Role: model.RoleMember, HistorySharedSince: joinTime, JoinedAt: joinTime,
+		Role: model.RoleMember, HistorySharedSince: &joinTime, JoinedAt: joinTime,
 	})
 	require.NoError(t, err)
 
@@ -52,6 +52,7 @@ func TestSubscriptionRepo_GetSubscription(t *testing.T) {
 	require.NotNil(t, sub)
 	assert.Equal(t, "u1", sub.User.ID)
 	assert.Equal(t, "r1", sub.RoomID)
+	require.NotNil(t, sub.HistorySharedSince)
 	assert.Equal(t, joinTime.UTC(), sub.HistorySharedSince.UTC())
 }
 

@@ -107,15 +107,14 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		return nil, fmt.Errorf("create room: %w", err)
 	}
 
-	// Auto-create owner subscription
+	// Auto-create owner subscription (no HistorySharedSince — owners have full history access)
 	sub := model.Subscription{
-		ID:                 uuid.New().String(),
-		User:               model.SubscriptionUser{ID: req.CreatedBy, Username: req.CreatedByUsername},
-		RoomID:             room.ID,
-		SiteID:             req.SiteID,
-		Role:               model.RoleOwner,
-		HistorySharedSince: now,
-		JoinedAt:           now,
+		ID:       uuid.New().String(),
+		User:     model.SubscriptionUser{ID: req.CreatedBy, Username: req.CreatedByUsername},
+		RoomID:   room.ID,
+		SiteID:   req.SiteID,
+		Role:     model.RoleOwner,
+		JoinedAt: now,
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
 		slog.Warn("create owner subscription failed", "error", err)

@@ -85,7 +85,7 @@ func run() error {
 		RoomID:             roomID,
 		SiteID:             siteID,
 		Role:               model.RoleMember,
-		HistorySharedSince: joinTime,
+		HistorySharedSince: &joinTime,
 		JoinedAt:           joinTime,
 	}
 	_, _ = db.Collection("subscriptions").DeleteMany(ctx, map[string]string{"u._id": username, "roomId": roomID})

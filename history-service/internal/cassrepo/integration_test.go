@@ -60,7 +60,7 @@ func TestRepository_GetMessagesBefore(t *testing.T) {
 	q, err := ParsePageRequest("", 3)
 	require.NoError(t, err)
 
-	page, err := repo.GetMessagesBefore(ctx, "r1", base, base.Add(10*time.Minute), q)
+	page, err := repo.GetMessagesBefore(ctx, "r1", base.Add(10*time.Minute), q)
 	require.NoError(t, err)
 	assert.Len(t, page.Data, 3)
 	assert.True(t, page.Data[0].CreatedAt.After(page.Data[1].CreatedAt))

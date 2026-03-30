@@ -43,5 +43,5 @@ func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, username, 
 	if sub == nil {
 		return nil, nil
 	}
-	return &sub.HistorySharedSince, nil
+	return sub.HistorySharedSince, nil
 }
