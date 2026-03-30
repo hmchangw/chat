@@ -66,9 +66,27 @@
       border-radius: 50%;
       background: var(--border);
       transition: background 0.3s;
+      flex-shrink: 0;
     }
     .dot.on { background: var(--success); box-shadow: 0 0 6px var(--success); }
     .dot.warn { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+
+    .conn-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 10px;
+      margin-bottom: 2px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .conn-status-sep { margin: 0 4px; color: var(--border); }
+
+    .btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
 
     /* ── Layout ──────────────────────────────────────────── */
     .layout {
@@ -370,11 +388,6 @@
 <header>
   <span class="logo">⚡</span>
   <h1>NATS Debug Tool</h1>
-  <div class="status-badge">
-    <span id="src-dot" class="dot"></span><span id="src-label">Source</span>
-    &nbsp;·&nbsp;
-    <span id="dst-dot" class="dot"></span><span id="dst-label">Dest</span>
-  </div>
 </header>
 
 <div class="layout">
@@ -389,9 +402,14 @@
       <input id="src-url" type="text" placeholder="nats://localhost:4222" value="nats://localhost:4222" />
       <label>Dest NATS (subscribe)</label>
       <input id="dst-url" type="text" placeholder="nats://localhost:4223" value="nats://localhost:4223" />
+      <div class="conn-status">
+        <span id="src-dot" class="dot"></span><span>Source</span>
+        <span class="conn-status-sep">·</span>
+        <span id="dst-dot" class="dot"></span><span>Dest</span>
+      </div>
       <div class="connect-actions">
-        <button class="btn btn-primary" onclick="doConnect()">Connect</button>
-        <button class="btn btn-ghost"   onclick="doDisconnect()">Disconnect</button>
+        <button id="btn-connect"    class="btn btn-primary" onclick="doConnect()">Connect</button>
+        <button id="btn-disconnect" class="btn btn-ghost"   onclick="doDisconnect()" disabled>Disconnect</button>
       </div>
     </div>
 
@@ -525,6 +543,9 @@ async function refreshStatus() {
     const s = await api('GET', '/api/status');
     document.getElementById('src-dot').className = 'dot' + (s.sourceConnected ? ' on' : '');
     document.getElementById('dst-dot').className = 'dot' + (s.destConnected ? ' on' : '');
+    const connected = s.sourceConnected || s.destConnected;
+    document.getElementById('btn-connect').disabled    =  connected;
+    document.getElementById('btn-disconnect').disabled = !connected;
   } catch {}
 }
 
