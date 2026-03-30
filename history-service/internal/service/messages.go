@@ -57,7 +57,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		return nil, err
 	}
 
-	page, err := s.messages.GetMessagesInRange(ctx, req.RoomID, since, before, q)
+	page, err := s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, since, before, q)
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
 	}
@@ -79,7 +79,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 				after = since
 			}
 
-			unreadPage, err := s.messages.GetMessagesBetween(ctx, req.RoomID, after, oldestInPage.CreatedAt, cassrepo.PageRequest{
+			unreadPage, err := s.messages.GetMessagesBetweenAsc(ctx, req.RoomID, after, oldestInPage.CreatedAt, cassrepo.PageRequest{
 				Cursor: &cassrepo.Cursor{}, PageSize: 1,
 			})
 			if err != nil {
@@ -173,14 +173,14 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 
 	// Fetch messages before the central message (newest-first).
 	// When since is zero (no HSS) use GetMessagesBefore (no lower bound).
-	// When since is set use GetMessagesInRange to enforce the access window.
+	// When since is set use GetMessagesBetweenDesc to enforce the access window.
 	var beforePage cassrepo.Page[model.Message]
 	if since.IsZero() {
 		beforePage, err = s.messages.GetMessagesBefore(ctx, req.RoomID, msg.CreatedAt, cassrepo.PageRequest{
 			Cursor: &cassrepo.Cursor{}, PageSize: half,
 		})
 	} else {
-		beforePage, err = s.messages.GetMessagesInRange(ctx, req.RoomID, since, msg.CreatedAt, cassrepo.PageRequest{
+		beforePage, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, since, msg.CreatedAt, cassrepo.PageRequest{
 			Cursor: &cassrepo.Cursor{}, PageSize: half,
 		})
 	}
@@ -188,8 +188,9 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 		return nil, fmt.Errorf("loading surrounding before: %w", err)
 	}
 
-	// Fetch messages after the central message (oldest-first)
-	afterPage, err := s.messages.GetMessagesBetween(ctx, req.RoomID, msg.CreatedAt, time.Now().UTC(), cassrepo.PageRequest{
+	// Fetch messages after the central message (oldest-first).
+	// No upper bound needed — messages after central are always past HSS too.
+	afterPage, err := s.messages.GetMessagesAfter(ctx, req.RoomID, msg.CreatedAt, cassrepo.PageRequest{
 		Cursor: &cassrepo.Cursor{}, PageSize: half,
 	})
 	if err != nil {

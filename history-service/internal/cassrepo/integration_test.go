@@ -66,7 +66,7 @@ func TestRepository_GetMessagesBefore(t *testing.T) {
 	assert.True(t, page.Data[0].CreatedAt.After(page.Data[1].CreatedAt))
 }
 
-func TestRepository_GetMessagesBetween(t *testing.T) {
+func TestRepository_GetMessagesBetweenAsc(t *testing.T) {
 	session := setupCassandra(t)
 	repo := NewRepository(session)
 	ctx := context.Background()
@@ -76,7 +76,7 @@ func TestRepository_GetMessagesBetween(t *testing.T) {
 	q, err := ParsePageRequest("", 10)
 	require.NoError(t, err)
 
-	page, err := repo.GetMessagesBetween(ctx, "r1", base.Add(1*time.Minute), base.Add(4*time.Minute), q)
+	page, err := repo.GetMessagesBetweenAsc(ctx, "r1", base.Add(1*time.Minute), base.Add(4*time.Minute), q)
 	require.NoError(t, err)
 	assert.Len(t, page.Data, 2)                                           // m2 (2min), m3 (3min) — excludes 1min and 4min
 	assert.True(t, page.Data[0].CreatedAt.Before(page.Data[1].CreatedAt)) // ASC order
