@@ -3,7 +3,6 @@ package roomkeystore
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"time"
 
@@ -119,7 +118,11 @@ func (s *valkeyStore) Get(ctx context.Context, roomID string) (*RoomKeyPair, err
 	return &RoomKeyPair{PublicKey: pub, PrivateKey: priv}, nil
 }
 
-// Delete removes the key pair for roomID. No-op if the key does not exist.
-func (s *valkeyStore) Delete(_ context.Context, _ string) error {
-	return errors.New("not implemented")
+// Delete removes the key pair for roomID from Valkey.
+// No-op if the key does not exist.
+func (s *valkeyStore) Delete(ctx context.Context, roomID string) error {
+	if err := s.client.del(ctx, roomkey(roomID)); err != nil {
+		return fmt.Errorf("delete room key: %w", err)
+	}
+	return nil
 }
