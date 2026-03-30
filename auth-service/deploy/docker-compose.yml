@@ -1,18 +1,30 @@
 services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    ports:
+      - "9090:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    command: ["start-dev", "--import-realm"]
+    healthcheck:
+      test: >
+        sh -c 'exec 3<>/dev/tcp/localhost/8080 &&
+        echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+        cat <&3 | grep -q "200"'
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
   nats:
     image: nats:2.11-alpine
     ports:
       - "4222:4222"
       - "8222:8222"
-    command: ["--jetstream", "--http_port", "8222"]
-
-  auth-service:
-    build:
-      context: ../..
-      dockerfile: auth-service/deploy/Dockerfile
-    environment:
-      - NATS_URL=nats://nats:4222
-      - NATS_CREDS=/run/secrets/nats.creds
-      - AUTH_SIGNING_KEY=${AUTH_SIGNING_KEY}
-    depends_on:
-      - nats
+      - "9222:9222"
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf:ro
+    command: ["-c", "/etc/nats/nats.conf"]
