@@ -257,7 +257,7 @@ func TestHistoryService_LoadNextMessages_OnlyHSS(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
-	// No after in request, HSS present — effective lower bound = HSS
+	// No after in request, HSS present — effective lower bound = HSS, uses GetMessagesAfter
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
 	msgs.EXPECT().GetMessagesAfter(ctx, "r1", joinTime, gomock.Any()).Return(makePage(nil, false), nil)
 
@@ -285,9 +285,9 @@ func TestHistoryService_LoadNextMessages_BothNil(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
-	// Neither after nor HSS — effective lower bound = zero → query all messages
+	// Neither after nor HSS — no lower bound → GetLatestMessages
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
-	msgs.EXPECT().GetMessagesAfter(ctx, "r1", time.Time{}, gomock.Any()).Return(makePage(nil, false), nil)
+	msgs.EXPECT().GetLatestMessages(ctx, "r1", gomock.Any()).Return(makePage(nil, false), nil)
 
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "r1"})
 	require.NoError(t, err)
@@ -334,12 +334,26 @@ func TestHistoryService_LoadNextMessages_InvalidAfter(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid timestamp")
 }
 
-func TestHistoryService_LoadNextMessages_StoreError(t *testing.T) {
+func TestHistoryService_LoadNextMessages_StoreErrorAfter(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
+	// HSS present → GetMessagesAfter path
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
-	msgs.EXPECT().GetMessagesAfter(ctx, "r1", gomock.Any(), gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db error"))
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", joinTime, gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db error"))
+
+	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "r1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading next messages")
+}
+
+func TestHistoryService_LoadNextMessages_StoreErrorLatest(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	ctx := context.Background()
+
+	// No HSS, no after → GetLatestMessages path
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, nil)
+	msgs.EXPECT().GetLatestMessages(ctx, "r1", gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db error"))
 
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "r1"})
 	require.Error(t, err)

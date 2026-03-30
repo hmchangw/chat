@@ -124,7 +124,12 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	page, err := s.messages.GetMessagesAfter(ctx, req.RoomID, effectiveAfter, q)
+	var page cassrepo.Page[model.Message]
+	if effectiveAfter.IsZero() {
+		page, err = s.messages.GetLatestMessages(ctx, req.RoomID, q)
+	} else {
+		page, err = s.messages.GetMessagesAfter(ctx, req.RoomID, effectiveAfter, q)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading next messages: %w", err)
 	}

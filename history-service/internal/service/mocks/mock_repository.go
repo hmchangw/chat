@@ -43,6 +43,21 @@ func (m *MockMessageRepository) EXPECT() *MockMessageRepositoryMockRecorder {
 	return m.recorder
 }
 
+// GetLatestMessages mocks base method.
+func (m *MockMessageRepository) GetLatestMessages(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetLatestMessages", ctx, roomID, q)
+	ret0, _ := ret[0].(cassrepo.Page[model.Message])
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetLatestMessages indicates an expected call of GetLatestMessages.
+func (mr *MockMessageRepositoryMockRecorder) GetLatestMessages(ctx, roomID, q any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLatestMessages", reflect.TypeOf((*MockMessageRepository)(nil).GetLatestMessages), ctx, roomID, q)
+}
+
 // GetMessageByID mocks base method.
 func (m *MockMessageRepository) GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error) {
 	m.ctrl.T.Helper()
