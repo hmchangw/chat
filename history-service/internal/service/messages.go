@@ -57,7 +57,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		return nil, err
 	}
 
-	page, err := s.messages.GetMessagesBefore(ctx, req.RoomID, since, before, q)
+	page, err := s.messages.GetMessagesInRange(ctx, req.RoomID, since, before, q)
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
 	}
@@ -99,9 +99,10 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 
 func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Params, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
 	username := p.Get("username")
-	since, err := s.getHistorySharedSince(ctx, username, req.RoomID)
+
+	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
 
 	after, err := parseTimestamp(req.After)
@@ -109,16 +110,13 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	if after.IsZero() || after.Before(since) {
-		after = since
+	// Effective lower bound = max(after, historySharedSince); zero if both unset.
+	var effectiveAfter time.Time
+	if hss != nil {
+		effectiveAfter = *hss
 	}
-
-	before, err := parseTimestamp(req.Before)
-	if err != nil {
-		return nil, err
-	}
-	if before.IsZero() {
-		before = time.Now().UTC()
+	if !after.IsZero() && (effectiveAfter.IsZero() || after.After(effectiveAfter)) {
+		effectiveAfter = after
 	}
 
 	q, err := parsePageRequest(req.Cursor, req.Limit)
@@ -126,7 +124,12 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	page, err := s.messages.GetMessagesBetween(ctx, req.RoomID, after, before, q)
+	var page cassrepo.Page[model.Message]
+	if effectiveAfter.IsZero() {
+		page, err = s.messages.GetLatestMessages(ctx, req.RoomID, q)
+	} else {
+		page, err = s.messages.GetMessagesAfter(ctx, req.RoomID, effectiveAfter, q)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading next messages: %w", err)
 	}
@@ -140,9 +143,15 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 
 func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrouter.Params, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
 	username := p.Get("username")
-	since, err := s.getHistorySharedSince(ctx, username, req.RoomID)
+
+	hss, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("checking subscription: %w", err)
+	}
+	// HSS not found means no lower-bound restriction; zero time acts as no filter.
+	var since time.Time
+	if hss != nil {
+		since = *hss
 	}
 
 	msg, err := s.messages.GetMessageByID(ctx, req.RoomID, req.MessageID)
@@ -162,10 +171,19 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	}
 	half := limit / 2
 
-	// Fetch messages before the central message (newest-first within the before range)
-	beforePage, err := s.messages.GetMessagesBefore(ctx, req.RoomID, since, msg.CreatedAt, cassrepo.PageRequest{
-		Cursor: &cassrepo.Cursor{}, PageSize: half,
-	})
+	// Fetch messages before the central message (newest-first).
+	// When since is zero (no HSS) use GetMessagesBefore (no lower bound).
+	// When since is set use GetMessagesInRange to enforce the access window.
+	var beforePage cassrepo.Page[model.Message]
+	if since.IsZero() {
+		beforePage, err = s.messages.GetMessagesBefore(ctx, req.RoomID, msg.CreatedAt, cassrepo.PageRequest{
+			Cursor: &cassrepo.Cursor{}, PageSize: half,
+		})
+	} else {
+		beforePage, err = s.messages.GetMessagesInRange(ctx, req.RoomID, since, msg.CreatedAt, cassrepo.PageRequest{
+			Cursor: &cassrepo.Cursor{}, PageSize: half,
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding before: %w", err)
 	}

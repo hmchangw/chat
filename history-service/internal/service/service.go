@@ -14,8 +14,11 @@ import (
 
 // MessageRepository defines Cassandra-backed message operations.
 type MessageRepository interface {
-	GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error)
+	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error)
+	GetMessagesInRange(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error)
 	GetMessagesBetween(ctx context.Context, roomID string, after, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error)
+	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error)
+	GetLatestMessages(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error)
 	GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error)
 }
 
