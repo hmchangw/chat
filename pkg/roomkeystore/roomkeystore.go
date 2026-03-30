@@ -2,6 +2,7 @@ package roomkeystore
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
@@ -84,9 +85,18 @@ func roomkey(roomID string) string {
 	return "room:" + roomID + ":key"
 }
 
-// Set stores pair in Valkey and (re)sets the TTL on the hash key.
-func (s *valkeyStore) Set(_ context.Context, _ string, _ RoomKeyPair) error {
-	return errors.New("not implemented")
+// Set stores pair in Valkey as a hash and (re)sets the TTL on the hash key.
+func (s *valkeyStore) Set(ctx context.Context, roomID string, pair RoomKeyPair) error {
+	pub := base64.StdEncoding.EncodeToString(pair.PublicKey)
+	priv := base64.StdEncoding.EncodeToString(pair.PrivateKey)
+	key := roomkey(roomID)
+	if err := s.client.hset(ctx, key, pub, priv); err != nil {
+		return fmt.Errorf("set room key: %w", err)
+	}
+	if err := s.client.expire(ctx, key, s.ttl); err != nil {
+		return fmt.Errorf("set room key ttl: %w", err)
+	}
+	return nil
 }
 
 // Get retrieves the key pair for roomID. Returns (nil, nil) if the key does not exist.
