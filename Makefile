@@ -39,4 +39,8 @@ build:
 ifndef SERVICE
 	$(error SERVICE is required. Usage: make build SERVICE=<name>)
 endif
+ifeq ($(SERVICE),history-service)
+	CGO_ENABLED=0 go build -o bin/$(SERVICE) ./$(SERVICE)/cmd/
+else
 	CGO_ENABLED=0 go build -o bin/$(SERVICE) ./$(SERVICE)/
+endif
