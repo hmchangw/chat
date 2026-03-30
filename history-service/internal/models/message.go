@@ -13,11 +13,10 @@ type LoadHistoryRequest struct {
 
 // LoadHistoryResponse is the response for LoadHistory.
 type LoadHistoryResponse struct {
-	Messages        []model.Message `json:"messages"`
-	HasNext         bool            `json:"hasNext"`               // more history pages available
-	FirstUnread     *model.Message  `json:"firstUnread,omitempty"` // first unread message based on lastSeen
-	UnreadNotLoaded bool            `json:"unreadNotLoaded"`       // unread messages exist beyond firstUnread
-	NextCursor      string          `json:"nextCursor,omitempty"`  // cursor for fetching more unread messages
+	Messages         []model.Message `json:"messages"`
+	FirstUnread      *model.Message  `json:"firstUnread,omitempty"`      // first unread message based on lastSeen
+	HasNextUnread    bool            `json:"hasNextUnread"`              // unread messages exist beyond firstUnread
+	NextUnreadCursor string          `json:"nextUnreadCursor,omitempty"` // cursor for fetching more unread messages
 }
 
 // LoadNextMessagesRequest is the payload for loading messages after a timestamp.
