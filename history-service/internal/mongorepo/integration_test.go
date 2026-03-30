@@ -80,9 +80,9 @@ func TestSubscriptionRepo_GetHistorySharedSince_NilHSS(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	hss, err := repo.GetHistorySharedSince(ctx, "owner", "r1")
+	accessSince, err := repo.GetHistorySharedSince(ctx, "owner", "r1")
 	require.NoError(t, err)
-	assert.Nil(t, hss) // nil means no lower-bound restriction
+	assert.Nil(t, accessSince) // nil means no lower-bound restriction
 }
 
 func TestSubscriptionRepo_GetHistorySharedSince_WithHSS(t *testing.T) {
@@ -99,10 +99,10 @@ func TestSubscriptionRepo_GetHistorySharedSince_WithHSS(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	hss, err := repo.GetHistorySharedSince(ctx, "u2", "r2")
+	accessSince, err := repo.GetHistorySharedSince(ctx, "u2", "r2")
 	require.NoError(t, err)
-	require.NotNil(t, hss)
-	assert.Equal(t, joinTime.UTC(), hss.UTC())
+	require.NotNil(t, accessSince)
+	assert.Equal(t, joinTime.UTC(), accessSince.UTC())
 }
 
 func TestSubscriptionRepo_GetHistorySharedSince_NotSubscribed(t *testing.T) {
@@ -110,9 +110,9 @@ func TestSubscriptionRepo_GetHistorySharedSince_NotSubscribed(t *testing.T) {
 	repo := NewSubscriptionRepo(db)
 	ctx := context.Background()
 
-	hss, err := repo.GetHistorySharedSince(ctx, "nobody", "r1")
+	accessSince, err := repo.GetHistorySharedSince(ctx, "nobody", "r1")
 	require.NoError(t, err)
-	assert.Nil(t, hss)
+	assert.Nil(t, accessSince)
 }
 
 // --- Collection[T] integration tests ---

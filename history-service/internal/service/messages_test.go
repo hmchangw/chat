@@ -562,8 +562,8 @@ func TestHistoryService_LoadSurroundingMessages_HSSBeforeMessage(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
-	// hss != nil, hss < msg.CreatedAt — message accessible, before-page uses GetMessagesBetweenDesc,
-	// after-page uses GetMessagesAfter (no HSS constraint needed, messages after central are past HSS too)
+	// accessSince set and before central message — before-page uses GetMessagesBetweenDesc,
+	// after-page uses GetMessagesAfter (no access constraint needed for newer messages)
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
 
 	centralMsg := &model.Message{ID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}

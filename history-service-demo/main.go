@@ -4,7 +4,7 @@
 // Prerequisites:
 //  1. docker compose up -d (from history-service/docker-local/)
 //  2. go run ./history-service/cmd/ (with env vars from .env)
-//  3. go run ./history-service/demo/
+//  3. go run ./history-service-demo/
 //
 // The demo uses the same NATS_URL, MONGO_URI, and CASSANDRA_HOSTS env vars.
 // If not set, defaults to localhost.
@@ -150,23 +150,16 @@ func run() error {
 
 	// --- Error cases ---
 
-	// 5. Forbidden — user not subscribed to room
-	fmt.Println("\n--- 5. ERROR: Not subscribed to room ---")
-	forbiddenReq, _ := json.Marshal(map[string]any{
-		"roomId": "room-nobody-joined",
-	})
-	printJSON("Response", request(nc, subject.MsgHistory(username, "room-nobody-joined", siteID), forbiddenReq, timeout))
-
-	// 6. Not found — message doesn't exist
-	fmt.Println("\n--- 6. ERROR: Message not found ---")
+	// 5. Not found — message doesn't exist
+	fmt.Println("\n--- 5. ERROR: Message not found ---")
 	notFoundReq, _ := json.Marshal(map[string]any{
 		"roomId":    roomID,
 		"messageId": "msg-nonexistent",
 	})
 	printJSON("Response", request(nc, subject.MsgGet(username, roomID, siteID), notFoundReq, timeout))
 
-	// 7. Bad request — invalid timestamp format
-	fmt.Println("\n--- 7. ERROR: Invalid timestamp ---")
+	// 6. Bad request — invalid timestamp format
+	fmt.Println("\n--- 6. ERROR: Invalid timestamp ---")
 	badTimestampReq, _ := json.Marshal(map[string]any{
 		"roomId": roomID,
 		"before": "not-a-valid-timestamp",
