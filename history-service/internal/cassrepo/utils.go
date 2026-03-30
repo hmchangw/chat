@@ -62,20 +62,29 @@ type Query struct {
 	PageSize int
 }
 
-// DefaultQuery returns a Query with defaults (first page, 10 items).
+// DefaultQuery returns a Query with defaults (first page, 50 items).
 func DefaultQuery() Query {
-	return Query{Cursor: &Cursor{}, PageSize: 10}
+	return Query{Cursor: &Cursor{}, PageSize: defaultPageSize}
 }
+
+const (
+	defaultPageSize = 50
+	maxPageSize     = 100
+)
 
 // ParseQuery creates a Query from a cursor string and page size.
 // Returns a valid Query with defaults applied for invalid/missing values.
+// Default page size is 50, max is 100.
 func ParseQuery(cursorStr string, pageSize int) (Query, error) {
 	cursor, err := NewCursor(cursorStr)
 	if err != nil {
 		return Query{}, err
 	}
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 10
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	if pageSize > maxPageSize {
+		pageSize = maxPageSize
 	}
 	return Query{Cursor: cursor, PageSize: pageSize}, nil
 }

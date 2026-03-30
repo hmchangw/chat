@@ -57,10 +57,13 @@ func TestRepository_GetMessagesBefore(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
 
-	msgs, err := repo.GetMessagesBefore(ctx, "r1", base, base.Add(10*time.Minute), 3)
+	q, err := ParseQuery("", 3)
 	require.NoError(t, err)
-	assert.Len(t, msgs, 3)
-	assert.True(t, msgs[0].CreatedAt.After(msgs[1].CreatedAt))
+
+	page, err := repo.GetMessagesBefore(ctx, "r1", base, base.Add(10*time.Minute), q)
+	require.NoError(t, err)
+	assert.Len(t, page.Data, 3)
+	assert.True(t, page.Data[0].CreatedAt.After(page.Data[1].CreatedAt))
 }
 
 func TestRepository_GetMessagesAfter(t *testing.T) {
@@ -70,10 +73,13 @@ func TestRepository_GetMessagesAfter(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
 
-	msgs, err := repo.GetMessagesAfter(ctx, "r1", base.Add(2*time.Minute), 10)
+	q, err := ParseQuery("", 10)
 	require.NoError(t, err)
-	assert.Len(t, msgs, 2)
-	assert.True(t, msgs[0].CreatedAt.Before(msgs[1].CreatedAt))
+
+	page, err := repo.GetMessagesAfter(ctx, "r1", base.Add(2*time.Minute), q)
+	require.NoError(t, err)
+	assert.Len(t, page.Data, 2)
+	assert.True(t, page.Data[0].CreatedAt.Before(page.Data[1].CreatedAt))
 }
 
 func TestRepository_GetMessageByID(t *testing.T) {

@@ -65,7 +65,7 @@ func TestParseQuery_Defaults(t *testing.T) {
 	q, err := ParseQuery("", 0)
 	require.NoError(t, err)
 	assert.Empty(t, q.Cursor.Raw())
-	assert.Equal(t, 10, q.PageSize)
+	assert.Equal(t, 50, q.PageSize)
 }
 
 func TestParseQuery_WithValues(t *testing.T) {
@@ -86,7 +86,7 @@ func TestParseQuery_InvalidCursor(t *testing.T) {
 func TestParseQuery_ClampsPageSize(t *testing.T) {
 	q, err := ParseQuery("", 999)
 	require.NoError(t, err)
-	assert.Equal(t, 10, q.PageSize)
+	assert.Equal(t, 100, q.PageSize)
 }
 
 func TestQueryBuilder_Chaining(t *testing.T) {

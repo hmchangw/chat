@@ -22,7 +22,6 @@ type MessageRepository interface {
 
 // SubscriptionRepository defines MongoDB-backed subscription lookups.
 type SubscriptionRepository interface {
-	GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error)
 	GetHistorySharedSince(ctx context.Context, userID, roomID string) (*time.Time, error)
 }
 

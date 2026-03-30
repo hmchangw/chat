@@ -221,12 +221,13 @@ func TestHistoryService_LoadNextMessages_StoreError(t *testing.T) {
 	assert.Contains(t, err.Error(), "loading next messages")
 }
 
-func TestHistoryService_LoadNextMessages_EmptyAfterGetsLatest(t *testing.T) {
+func TestHistoryService_LoadNextMessages_EmptyAfterClampsToSince(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, nil)
-	msgs.EXPECT().GetMessagesAfter(ctx, "r1", time.Time{}, gomock.Any()).Return(makePage(nil, false), nil)
+	// Empty after is clamped to HistorySharedSince (prevents access before join)
+	msgs.EXPECT().GetMessagesAfter(ctx, "r1", joinTime, gomock.Any()).Return(makePage(nil, false), nil)
 
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "r1"})
 	require.NoError(t, err)

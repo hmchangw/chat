@@ -11,8 +11,6 @@ import (
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
-const defaultLimit = 50
-
 func parseTimestamp(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil
@@ -25,9 +23,6 @@ func parseTimestamp(s string) (time.Time, error) {
 }
 
 func parsePaginationQuery(cursor string, limit int) (cassrepo.Query, error) {
-	if limit <= 0 {
-		limit = defaultLimit
-	}
 	q, err := cassrepo.ParseQuery(cursor, limit)
 	if err != nil {
 		return cassrepo.Query{}, natsrouter.ErrWithCode("bad_request", "invalid pagination cursor")
@@ -106,7 +101,7 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	if !after.IsZero() && after.Before(since) {
+	if after.IsZero() || after.Before(since) {
 		after = since
 	}
 
@@ -136,7 +131,7 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 
 	limit := req.Limit
 	if limit <= 0 {
-		limit = defaultLimit
+		limit = cassrepo.DefaultQuery().PageSize
 	}
 
 	before, after, err := s.messages.GetSurroundingMessages(ctx, req.RoomID, req.MessageID, limit)
