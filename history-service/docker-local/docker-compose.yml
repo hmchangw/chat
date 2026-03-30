@@ -1,0 +1,76 @@
+# Local development environment for history-service.
+# Starts NATS (with JetStream), MongoDB, and Cassandra.
+#
+# Usage:
+#   cd history-service/docker-local
+#   docker compose up -d          # start all services
+#   docker compose logs -f        # follow logs
+#   docker compose down           # stop all services
+#   docker compose down -v        # stop and remove volumes (clean slate)
+#
+# After starting, run history-service from repo root:
+#   set -a && source history-service/docker-local/.env && set +a
+#   go run ./history-service/cmd/
+
+services:
+  nats:
+    image: nats:2.11-alpine
+    ports:
+      - "4222:4222"   # client connections
+      - "8222:8222"   # HTTP monitoring
+    command: ["--jetstream", "--http_port", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  cassandra:
+    image: cassandra:5
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    environment:
+      - CASSANDRA_CLUSTER_NAME=chat-dev
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "DESCRIBE KEYSPACES"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  cassandra-init:
+    image: cassandra:5
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["cqlsh", "cassandra", "-e"]
+    command:
+      - |
+        CREATE KEYSPACE IF NOT EXISTS chat WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+        CREATE TABLE IF NOT EXISTS chat.messages (
+            room_id text,
+            created_at timestamp,
+            id text,
+            user_id text,
+            content text,
+            PRIMARY KEY (room_id, created_at)
+        ) WITH CLUSTERING ORDER BY (created_at DESC);
+
+volumes:
+  mongo-data:
+  cassandra-data:
