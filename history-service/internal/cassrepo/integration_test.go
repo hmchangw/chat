@@ -57,7 +57,7 @@ func TestRepository_GetMessagesBefore(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
 
-	q, err := ParseQuery("", 3)
+	q, err := ParsePageRequest("", 3)
 	require.NoError(t, err)
 
 	page, err := repo.GetMessagesBefore(ctx, "r1", base, base.Add(10*time.Minute), q)
@@ -66,20 +66,20 @@ func TestRepository_GetMessagesBefore(t *testing.T) {
 	assert.True(t, page.Data[0].CreatedAt.After(page.Data[1].CreatedAt))
 }
 
-func TestRepository_GetMessagesAfter(t *testing.T) {
+func TestRepository_GetMessagesBetween(t *testing.T) {
 	session := setupCassandra(t)
 	repo := NewRepository(session)
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
 
-	q, err := ParseQuery("", 10)
+	q, err := ParsePageRequest("", 10)
 	require.NoError(t, err)
 
-	page, err := repo.GetMessagesAfter(ctx, "r1", base.Add(2*time.Minute), q)
+	page, err := repo.GetMessagesBetween(ctx, "r1", base.Add(1*time.Minute), base.Add(4*time.Minute), q)
 	require.NoError(t, err)
-	assert.Len(t, page.Data, 2)
-	assert.True(t, page.Data[0].CreatedAt.Before(page.Data[1].CreatedAt))
+	assert.Len(t, page.Data, 2)                                           // m2 (2min), m3 (3min) — excludes 1min and 4min
+	assert.True(t, page.Data[0].CreatedAt.Before(page.Data[1].CreatedAt)) // ASC order
 }
 
 func TestRepository_GetMessageByID(t *testing.T) {
@@ -104,17 +104,4 @@ func TestRepository_GetMessageByID_NotFound(t *testing.T) {
 	msg, err := repo.GetMessageByID(ctx, "r1", "nonexistent")
 	require.NoError(t, err)
 	assert.Nil(t, msg)
-}
-
-func TestRepository_GetSurroundingMessages(t *testing.T) {
-	session := setupCassandra(t)
-	repo := NewRepository(session)
-	ctx := context.Background()
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	seedMessages(t, session, "r1", base, 10)
-
-	before, after, err := repo.GetSurroundingMessages(ctx, "r1", "m5", 6)
-	require.NoError(t, err)
-	assert.NotEmpty(t, before)
-	assert.NotEmpty(t, after)
 }

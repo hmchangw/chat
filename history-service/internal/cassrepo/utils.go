@@ -56,15 +56,10 @@ func NewPage[T any](data []T, nextState []byte) Page[T] {
 	}
 }
 
-// Query represents a paginated query request from the client.
-type Query struct {
+// PageRequest represents a pagination request from the client.
+type PageRequest struct {
 	Cursor   *Cursor
 	PageSize int
-}
-
-// DefaultQuery returns a Query with defaults (first page, 50 items).
-func DefaultQuery() Query {
-	return Query{Cursor: &Cursor{}, PageSize: defaultPageSize}
 }
 
 const (
@@ -72,13 +67,18 @@ const (
 	maxPageSize     = 100
 )
 
-// ParseQuery creates a Query from a cursor string and page size.
-// Returns a valid Query with defaults applied for invalid/missing values.
+// DefaultPageRequest returns a PageRequest with defaults (first page, 50 items).
+func DefaultPageRequest() PageRequest {
+	return PageRequest{Cursor: &Cursor{}, PageSize: defaultPageSize}
+}
+
+// ParsePageRequest creates a PageRequest from a cursor string and page size.
+// Returns a valid PageRequest with defaults applied for invalid/missing values.
 // Default page size is 50, max is 100.
-func ParseQuery(cursorStr string, pageSize int) (Query, error) {
+func ParsePageRequest(cursorStr string, pageSize int) (PageRequest, error) {
 	cursor, err := NewCursor(cursorStr)
 	if err != nil {
-		return Query{}, err
+		return PageRequest{}, err
 	}
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
@@ -86,7 +86,7 @@ func ParseQuery(cursorStr string, pageSize int) (Query, error) {
 	if pageSize > maxPageSize {
 		pageSize = maxPageSize
 	}
-	return Query{Cursor: cursor, PageSize: pageSize}, nil
+	return PageRequest{Cursor: cursor, PageSize: pageSize}, nil
 }
 
 // QueryBuilder wraps a *gocql.Query with pagination support.

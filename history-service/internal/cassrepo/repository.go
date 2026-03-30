@@ -30,7 +30,7 @@ func scanMessages(iter *gocql.Iter) []model.Message {
 }
 
 // GetMessagesBefore returns a paginated set of messages before `before` and after `since`, newest-first.
-func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, q Query) (Page[model.Message], error) {
+func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, q PageRequest) (Page[model.Message], error) {
 	var messages []model.Message
 
 	nextCursor, err := NewQueryBuilder(
@@ -57,16 +57,17 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, since
 	}, nil
 }
 
-// GetMessagesAfter returns a paginated set of messages after `after`, oldest-first.
-func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q Query) (Page[model.Message], error) {
+// GetMessagesBetween returns a paginated set of messages between `after` and `before`, oldest-first.
+// Used for forward pagination and for finding unread messages within a range.
+func (r *Repository) GetMessagesBetween(ctx context.Context, roomID string, after, before time.Time, q PageRequest) (Page[model.Message], error) {
 	var messages []model.Message
 
 	nextCursor, err := NewQueryBuilder(
 		r.session.Query(
 			`SELECT id, room_id, user_id, content, created_at FROM messages
-			WHERE room_id = ? AND created_at > ?
+			WHERE room_id = ? AND created_at > ? AND created_at < ?
 			ORDER BY created_at ASC`,
-			roomID, after,
+			roomID, after, before,
 		).WithContext(ctx),
 	).
 		WithCursor(q.Cursor).
@@ -75,7 +76,7 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 			messages = scanMessages(iter)
 		})
 	if err != nil {
-		return Page[model.Message]{}, fmt.Errorf("querying messages after: %w", err)
+		return Page[model.Message]{}, fmt.Errorf("querying messages between: %w", err)
 	}
 
 	return Page[model.Message]{
@@ -106,44 +107,4 @@ func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID strin
 		return nil, fmt.Errorf("querying message by id: %w", err)
 	}
 	return nil, nil
-}
-
-// GetSurroundingMessages returns messages before and after a given message.
-// The central message is included in the `after` slice.
-func (r *Repository) GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) ([]model.Message, []model.Message, error) {
-	msg, err := r.GetMessageByID(ctx, roomID, messageID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("finding central message: %w", err)
-	}
-	if msg == nil {
-		return nil, nil, fmt.Errorf("message %s not found in room %s", messageID, roomID)
-	}
-
-	half := limit / 2
-
-	beforePage, err := r.GetMessagesBefore(ctx, roomID, time.Time{}, msg.CreatedAt, Query{
-		Cursor: &Cursor{}, PageSize: half,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("querying surrounding before: %w", err)
-	}
-
-	var afterMsgs []model.Message
-	_, err = NewQueryBuilder(
-		r.session.Query(
-			`SELECT id, room_id, user_id, content, created_at FROM messages
-			WHERE room_id = ? AND created_at >= ?
-			ORDER BY created_at ASC`,
-			roomID, msg.CreatedAt,
-		).WithContext(ctx),
-	).
-		WithPageSize(half + 1).
-		Fetch(func(iter *gocql.Iter) {
-			afterMsgs = scanMessages(iter)
-		})
-	if err != nil {
-		return nil, nil, fmt.Errorf("querying surrounding after: %w", err)
-	}
-
-	return beforePage.Data, afterMsgs, nil
 }

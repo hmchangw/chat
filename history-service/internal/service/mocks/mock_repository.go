@@ -58,23 +58,8 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessageByID(ctx, roomID, message
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessageByID", reflect.TypeOf((*MockMessageRepository)(nil).GetMessageByID), ctx, roomID, messageID)
 }
 
-// GetMessagesAfter mocks base method.
-func (m *MockMessageRepository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.Query) (cassrepo.Page[model.Message], error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMessagesAfter", ctx, roomID, after, q)
-	ret0, _ := ret[0].(cassrepo.Page[model.Message])
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetMessagesAfter indicates an expected call of GetMessagesAfter.
-func (mr *MockMessageRepositoryMockRecorder) GetMessagesAfter(ctx, roomID, after, q any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesAfter", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesAfter), ctx, roomID, after, q)
-}
-
 // GetMessagesBefore mocks base method.
-func (m *MockMessageRepository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, q cassrepo.Query) (cassrepo.Page[model.Message], error) {
+func (m *MockMessageRepository) GetMessagesBefore(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetMessagesBefore", ctx, roomID, since, before, q)
 	ret0, _ := ret[0].(cassrepo.Page[model.Message])
@@ -88,20 +73,19 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessagesBefore(ctx, roomID, sinc
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBefore", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBefore), ctx, roomID, since, before, q)
 }
 
-// GetSurroundingMessages mocks base method.
-func (m *MockMessageRepository) GetSurroundingMessages(ctx context.Context, roomID, messageID string, limit int) ([]model.Message, []model.Message, error) {
+// GetMessagesBetween mocks base method.
+func (m *MockMessageRepository) GetMessagesBetween(ctx context.Context, roomID string, after, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetSurroundingMessages", ctx, roomID, messageID, limit)
-	ret0, _ := ret[0].([]model.Message)
-	ret1, _ := ret[1].([]model.Message)
-	ret2, _ := ret[2].(error)
-	return ret0, ret1, ret2
+	ret := m.ctrl.Call(m, "GetMessagesBetween", ctx, roomID, after, before, q)
+	ret0, _ := ret[0].(cassrepo.Page[model.Message])
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
-// GetSurroundingMessages indicates an expected call of GetSurroundingMessages.
-func (mr *MockMessageRepositoryMockRecorder) GetSurroundingMessages(ctx, roomID, messageID, limit any) *gomock.Call {
+// GetMessagesBetween indicates an expected call of GetMessagesBetween.
+func (mr *MockMessageRepositoryMockRecorder) GetMessagesBetween(ctx, roomID, after, before, q any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSurroundingMessages", reflect.TypeOf((*MockMessageRepository)(nil).GetSurroundingMessages), ctx, roomID, messageID, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBetween", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBetween), ctx, roomID, after, before, q)
 }
 
 // MockSubscriptionRepository is a mock of SubscriptionRepository interface.
@@ -129,16 +113,16 @@ func (m *MockSubscriptionRepository) EXPECT() *MockSubscriptionRepositoryMockRec
 }
 
 // GetHistorySharedSince mocks base method.
-func (m *MockSubscriptionRepository) GetHistorySharedSince(ctx context.Context, userID, roomID string) (*time.Time, error) {
+func (m *MockSubscriptionRepository) GetHistorySharedSince(ctx context.Context, username, roomID string) (*time.Time, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetHistorySharedSince", ctx, userID, roomID)
+	ret := m.ctrl.Call(m, "GetHistorySharedSince", ctx, username, roomID)
 	ret0, _ := ret[0].(*time.Time)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetHistorySharedSince indicates an expected call of GetHistorySharedSince.
-func (mr *MockSubscriptionRepositoryMockRecorder) GetHistorySharedSince(ctx, userID, roomID any) *gomock.Call {
+func (mr *MockSubscriptionRepositoryMockRecorder) GetHistorySharedSince(ctx, username, roomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetHistorySharedSince", reflect.TypeOf((*MockSubscriptionRepository)(nil).GetHistorySharedSince), ctx, userID, roomID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetHistorySharedSince", reflect.TypeOf((*MockSubscriptionRepository)(nil).GetHistorySharedSince), ctx, username, roomID)
 }

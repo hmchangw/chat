@@ -61,30 +61,30 @@ func TestNewPage_LastPage(t *testing.T) {
 	assert.Empty(t, page.NextCursor)
 }
 
-func TestParseQuery_Defaults(t *testing.T) {
-	q, err := ParseQuery("", 0)
+func TestParsePageRequest_Defaults(t *testing.T) {
+	q, err := ParsePageRequest("", 0)
 	require.NoError(t, err)
 	assert.Empty(t, q.Cursor.Raw())
 	assert.Equal(t, 50, q.PageSize)
 }
 
-func TestParseQuery_WithValues(t *testing.T) {
+func TestParsePageRequest_WithValues(t *testing.T) {
 	state := []byte{0x01}
 	encoded := base64.StdEncoding.EncodeToString(state)
 
-	q, err := ParseQuery(encoded, 25)
+	q, err := ParsePageRequest(encoded, 25)
 	require.NoError(t, err)
 	assert.Equal(t, state, q.Cursor.Raw())
 	assert.Equal(t, 25, q.PageSize)
 }
 
-func TestParseQuery_InvalidCursor(t *testing.T) {
-	_, err := ParseQuery("bad!!!", 10)
+func TestParsePageRequest_InvalidCursor(t *testing.T) {
+	_, err := ParsePageRequest("bad!!!", 10)
 	require.Error(t, err)
 }
 
-func TestParseQuery_ClampsPageSize(t *testing.T) {
-	q, err := ParseQuery("", 999)
+func TestParsePageRequest_ClampsPageSize(t *testing.T) {
+	q, err := ParsePageRequest("", 999)
 	require.NoError(t, err)
 	assert.Equal(t, 100, q.PageSize)
 }
