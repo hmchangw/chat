@@ -25,7 +25,7 @@ type RoomKeyStore interface {
 // Config holds Valkey connection and TTL configuration, parsed via caarlos0/env.
 type Config struct {
 	Addr     string        `env:"VALKEY_ADDR,required"`
-	Password string        `env:"VALKEY_PASSWORD"`
+	Password string        `env:"VALKEY_PASSWORD" envDefault:""`
 	KeyTTL   time.Duration `env:"VALKEY_KEY_TTL,required"`
 }
 
