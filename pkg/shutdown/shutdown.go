@@ -1,3 +1,5 @@
+// Package shutdown provides graceful shutdown coordination for services,
+// handling OS signals and executing cleanup functions with a timeout.
 package shutdown
 
 import (
