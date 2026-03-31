@@ -19,6 +19,9 @@ type Claims struct {
 	PreferredUsername string
 	GivenName         string
 	FamilyName        string
+	Description       string
+	DeptID            string
+	DeptName          string
 	Extra             map[string]interface{}
 }
 
@@ -120,6 +123,9 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 		PreferredUsername string `json:"preferred_username"`
 		GivenName         string `json:"given_name"`
 		FamilyName        string `json:"family_name"`
+		Description       string `json:"description"`
+		DeptID            string `json:"deptid"`
+		DeptName          string `json:"deptname"`
 		AZP               string `json:"azp"`
 	}
 
@@ -140,7 +146,7 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 	}
 	for _, key := range []string{
 		"sub", "email", "name", "preferred_username",
-		"given_name", "family_name",
+		"given_name", "family_name", "description", "deptid", "deptname",
 		"iss", "aud", "exp", "iat", "nbf", "jti",
 		"azp", "typ", "sid", "at_hash", "email_verified",
 	} {
@@ -154,6 +160,9 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 		PreferredUsername: tokenClaims.PreferredUsername,
 		GivenName:         tokenClaims.GivenName,
 		FamilyName:        tokenClaims.FamilyName,
+		Description:       tokenClaims.Description,
+		DeptID:            tokenClaims.DeptID,
+		DeptName:          tokenClaims.DeptName,
 		Extra:             allClaims,
 	}, nil
 }

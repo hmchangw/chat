@@ -27,9 +27,12 @@ type fakeValidator struct {
 
 func (v *fakeValidator) Validate(_ context.Context, _ string) (pkgoidc.Claims, error) {
 	return pkgoidc.Claims{
-		Subject:          "uuid-" + v.username,
+		Subject:           "uuid-" + v.username,
 		PreferredUsername: v.username,
-		Email:            v.username + "@example.com",
+		Email:             v.username + "@example.com",
+		Description:       "E001, Test User, 測試用戶",
+		DeptName:          "QA",
+		DeptID:            "ABC"
 	}, nil
 }
 

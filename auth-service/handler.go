@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -31,12 +32,13 @@ type authResponse struct {
 }
 
 type userInfoResp struct {
-	Subject           string `json:"sub"`
-	Email             string `json:"email"`
-	Name              string `json:"name"`
-	PreferredUsername string `json:"preferredUsername"`
-	GivenName         string `json:"givenName"`
-	FamilyName        string `json:"familyName"`
+	Email       string `json:"email"`
+	Account     string `json:"account"`
+	EmployeeID  string `json:"employeeId"`
+	EngName     string `json:"engName"`
+	ChineseName string `json:"chineseName"`
+	DeptName    string `json:"deptName"`
+	DeptID      string `json:"deptId"`
 }
 
 // AuthHandler processes auth requests, validates SSO tokens via OIDC,
@@ -85,7 +87,7 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 
 	username := claims.PreferredUsername
 	if username == "" {
-		username = claims.Subject
+		username = claims.Name
 	}
 
 	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, username)
@@ -95,17 +97,21 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		return
 	}
 
-	slog.Info("auth success", "username", username, "subject", claims.Subject)
+	slog.Debug("auth success", "username", username, "subject", claims.Subject)
+
+	// Parse description field: "employeeId, engName, chineseName"
+	employeeID, engName, chineseName := parseDescription(claims.Description)
 
 	c.JSON(http.StatusOK, authResponse{
 		NATSJWT: natsJWT,
 		UserInfo: userInfoResp{
-			Subject:           claims.Subject,
-			Email:             claims.Email,
-			Name:              claims.Name,
-			PreferredUsername: claims.PreferredUsername,
-			GivenName:         claims.GivenName,
-			FamilyName:        claims.FamilyName,
+			Email:       claims.Email,
+			Account:     claims.PreferredUsername,
+			EmployeeID:  employeeID,
+			EngName:     engName,
+			ChineseName: chineseName,
+			DeptName:    claims.DeptName,
+			DeptID:      claims.DeptID,
 		},
 	})
 }
@@ -126,6 +132,22 @@ func (h *AuthHandler) signNATSJWT(userPubKey, username string) (string, error) {
 	uc.Sub.Allow.Add("_INBOX.>")
 
 	return uc.Encode(h.signingKey)
+}
+
+// parseDescription splits the description field "employeeId, engName, chineseName"
+// into its three components.
+func parseDescription(desc string) (employeeID, engName, chineseName string) {
+	parts := strings.SplitN(desc, ",", 3)
+	if len(parts) >= 1 {
+		employeeID = strings.TrimSpace(parts[0])
+	}
+	if len(parts) >= 2 {
+		engName = strings.TrimSpace(parts[1])
+	}
+	if len(parts) >= 3 {
+		chineseName = strings.TrimSpace(parts[2])
+	}
+	return
 }
 
 func (h *AuthHandler) HandleHealth(c *gin.Context) {

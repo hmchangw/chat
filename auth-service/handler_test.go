@@ -21,11 +21,15 @@ import (
 
 // fakeValidator implements TokenValidator for testing.
 type fakeValidator struct {
-	username string
-	subject  string
-	email    string
-	expired  bool
-	invalid  bool
+	username    string
+	subject     string
+	email       string
+	name        string
+	description string
+	deptName    string
+	deptId      string
+	expired     bool
+	invalid     bool
 }
 
 func (f *fakeValidator) Validate(_ context.Context, _ string) (pkgoidc.Claims, error) {
@@ -38,7 +42,11 @@ func (f *fakeValidator) Validate(_ context.Context, _ string) (pkgoidc.Claims, e
 	return pkgoidc.Claims{
 		Subject:           f.subject,
 		Email:             f.email,
+		Name:              f.name,
 		PreferredUsername: f.username,
+		Description:       f.description,
+		DeptName:          f.deptName,
+		DeptID:            f.deptId,
 	}, nil
 }
 
@@ -74,9 +82,12 @@ func TestHandleAuth_ValidToken(t *testing.T) {
 	userPub := mustUserNKey(t)
 
 	validator := &fakeValidator{
-		username: "alice",
-		subject:  "uuid-alice",
-		email:    "alice@example.com",
+		username:    "alice",
+		subject:     "uuid-alice",
+		email:       "alice@example.com",
+		description: "E001, Alice Wang, 王小明",
+		deptName:    "Engineering",
+		deptId:      "ABC123",
 	}
 	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
 	router := setupRouter(t, handler)
@@ -93,9 +104,13 @@ func TestHandleAuth_ValidToken(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
 	// Verify user info in response.
-	assert.Equal(t, "uuid-alice", resp.UserInfo.Subject)
 	assert.Equal(t, "alice@example.com", resp.UserInfo.Email)
-	assert.Equal(t, "alice", resp.UserInfo.PreferredUsername)
+	assert.Equal(t, "alice", resp.UserInfo.Account)
+	assert.Equal(t, "E001", resp.UserInfo.EmployeeID)
+	assert.Equal(t, "Alice Wang", resp.UserInfo.EngName)
+	assert.Equal(t, "王小明", resp.UserInfo.ChineseName)
+	assert.Equal(t, "Engineering", resp.UserInfo.DeptName)
+	assert.Equal(t, "ABC123", resp.UserInfo.DeptID)
 
 	// Decode and verify the NATS JWT.
 	claims, err := jwt.DecodeUserClaims(resp.NATSJWT)
