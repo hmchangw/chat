@@ -88,11 +88,7 @@ func (a *redisAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey s
 }
 
 func (a *redisAdapter) deletePipeline(ctx context.Context, currentKey, prevKey string) error {
-	pipe := a.c.Pipeline()
-	pipe.Del(ctx, currentKey)
-	pipe.Del(ctx, prevKey)
-	_, err := pipe.Exec(ctx)
-	return err
+	return a.c.Del(ctx, currentKey, prevKey).Err()
 }
 
 // NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
@@ -185,15 +181,6 @@ func (s *valkeyStore) GetByVersion(ctx context.Context, roomID, versionID string
 // Rotate atomically moves the current key to the previous slot (with grace period TTL)
 // and writes newPair as the current key. Returns ErrNoCurrentKey if no current key exists.
 func (s *valkeyStore) Rotate(ctx context.Context, roomID string, versionID string, newPair RoomKeyPair) error {
-	// Check if current key exists.
-	currentFields, err := s.client.hgetall(ctx, roomkey(roomID))
-	if err != nil {
-		return fmt.Errorf("rotate room key: %w", err)
-	}
-	if len(currentFields) == 0 {
-		return fmt.Errorf("rotate room key: %w", ErrNoCurrentKey)
-	}
-
 	pub := base64.StdEncoding.EncodeToString(newPair.PublicKey)
 	priv := base64.StdEncoding.EncodeToString(newPair.PrivateKey)
 	if err := s.client.rotatePipeline(ctx, roomkey(roomID), roomprevkey(roomID), pub, priv, versionID, s.gracePeriod); err != nil {

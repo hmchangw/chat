@@ -51,13 +51,14 @@ func (f *fakeHashClient) rotatePipeline(_ context.Context, currentKey, prevKey s
 		return f.rotatePipelineErr
 	}
 	if f.store == nil {
-		f.store = make(map[string]map[string]string)
+		return ErrNoCurrentKey
+	}
+	cur, ok := f.store[currentKey]
+	if !ok {
+		return ErrNoCurrentKey
 	}
 	// Copy current to prev.
-	cur, ok := f.store[currentKey]
-	if ok {
-		f.store[prevKey] = map[string]string{"pub": cur["pub"], "priv": cur["priv"], "ver": cur["ver"]}
-	}
+	f.store[prevKey] = map[string]string{"pub": cur["pub"], "priv": cur["priv"], "ver": cur["ver"]}
 	// Write new current.
 	f.store[currentKey] = map[string]string{"pub": pub, "priv": priv, "ver": ver}
 	return nil
