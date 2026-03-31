@@ -1,8 +1,8 @@
-// Package natsrouter provides pattern-based routing for NATS request/reply endpoints.
+// Package natsrouter provides Gin-style pattern-based routing for NATS request/reply endpoints.
 //
-// Subjects use {param} placeholders (like REST API path params) instead of raw
-// NATS wildcards. The router handles pattern-to-wildcard conversion, param extraction,
-// JSON unmarshal/reply, middleware, and error handling.
+// Subjects use {param} placeholders (like REST path params) instead of raw NATS wildcards.
+// The router handles pattern-to-wildcard conversion, param extraction, JSON marshal/unmarshal,
+// middleware, and error handling.
 //
 // # Quick Start
 //
@@ -14,62 +14,76 @@
 //	natsrouter.RegisterNoBody(router, "chat.user.{userID}.rooms.get.{roomID}", svc.GetRoom)
 //	natsrouter.RegisterVoid(router, "chat.user.{userID}.event.typing", svc.HandleTyping)
 //
+// # Context
+//
+// Every handler and middleware receives a *Context that implements context.Context.
+// It can be passed directly to database calls and carries:
+//   - Params extracted from the NATS subject
+//   - A key-value store for middleware-to-handler data passing (e.g., auth user)
+//   - The raw *nats.Msg for advanced use cases
+//
+// Handlers access params via c.Param("name") and middleware data via c.Get("key").
+//
 // # Registration Functions
 //
-// There are three registration functions, each for a different handler shape:
+// Three handler shapes:
 //
-//   - Register[Req, Resp]     — takes request body, returns response (request/reply)
-//   - RegisterNoBody[Resp]    — no request body, returns response (GET-style)
-//   - RegisterVoid[Req]       — takes request body, no response (fire-and-forget)
+//   - Register[Req, Resp]     — request body + response (request/reply)
+//   - RegisterNoBody[Resp]    — no body, response only (GET-style)
+//   - RegisterVoid[Req]       — request body, no response (fire-and-forget)
 //
-// All three extract params from the subject and panic on subscription failure
-// (startup-only, fatal if broken — same as http.HandleFunc).
+// All accept a Registrar (Router or Group) and panic on subscription failure.
 //
-// # Pattern Routing
+// # Route Groups
 //
-// Patterns use {name} placeholders that map to NATS single-token wildcards (*).
-// At registration time the pattern is parsed into a NATS wildcard subject for
-// subscription and a param extraction map. At request time, params are extracted
-// from the incoming subject by position.
+// Groups reduce boilerplate by sharing a subject prefix and optional middleware:
 //
-//	Pattern:  "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history"
-//	Wildcard: "chat.user.*.request.room.*.*.msg.history"
-//	Params:   {userID: position 2, roomID: position 5, siteID: position 6}
+//	msg := router.Group("chat.user.{userID}.request.room.{roomID}.site-1.msg")
+//	natsrouter.Register(msg, "history", svc.LoadHistory)
+//	natsrouter.Register(msg, "next", svc.LoadNextMessages)
 //
-// # Error Handling
+// Group middleware runs after router middleware, before the handler:
 //
-// Handlers return errors using Go's standard error interface. The router
-// distinguishes between user-facing errors and internal errors:
-//
-//   - Return a *RouteError (via Err, Errf, or ErrWithCode) to send a user-facing
-//     error response. The client receives the error message and optional code.
-//   - Return any other error for internal failures. The error is logged with the
-//     subject for debugging, and the client receives a generic "internal error".
-//
-// Example:
-//
-//	func (s *Svc) GetRoom(ctx context.Context, p natsrouter.Params, req GetReq) (*Room, error) {
-//	    room, err := s.store.Find(ctx, req.ID)
-//	    if err != nil {
-//	        return nil, fmt.Errorf("finding room: %w", err) // internal → "internal error"
-//	    }
-//	    if room == nil {
-//	        return nil, natsrouter.ErrWithCode("not_found", "room not found") // → sent to client
-//	    }
-//	    return room, nil
-//	}
+//	admin := router.Group("admin.{userID}", adminAuthMiddleware)
+//	natsrouter.Register(admin, "users.delete", svc.DeleteUser)
 //
 // # Middleware
 //
-// Middleware wraps NATS message handlers using the standard pattern:
+// Middleware is a HandlerFunc that calls c.Next() to continue the chain:
 //
-//	type Middleware func(next nats.MsgHandler) nats.MsgHandler
-//
-// Middleware sees the raw *nats.Msg and can inspect/modify messages, reject
-// requests before unmarshal, or wrap the reply. Use router.Use() to add
-// middleware — it executes in the order added.
+//	func AuthMiddleware() natsrouter.HandlerFunc {
+//	    return func(c *natsrouter.Context) {
+//	        user, err := validateToken(c.Msg.Header.Get("Authorization"))
+//	        if err != nil {
+//	            c.ReplyError("unauthorized")
+//	            c.Abort()
+//	            return
+//	        }
+//	        c.Set("user", user)
+//	        c.Next()
+//	    }
+//	}
 //
 // Built-in middleware:
 //   - Recovery() — catches panics, logs them, replies with "internal error"
 //   - Logging()  — logs subject and duration for each request
+//
+// # Error Handling
+//
+// Handlers return errors using Go's standard error interface:
+//
+//   - Return a *RouteError (via ErrNotFound, ErrForbidden, ErrBadRequest, etc.)
+//     to send a user-facing error. The client receives the message and code.
+//   - Return any other error for internal failures. It is logged and the client
+//     receives "internal error".
+//
+// Standard error codes: CodeBadRequest, CodeNotFound, CodeForbidden, CodeConflict.
+//
+// # Pattern Routing
+//
+// Patterns use {name} placeholders that map to NATS single-token wildcards (*).
+//
+//	Pattern:  "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history"
+//	Wildcard: "chat.user.*.request.room.*.*.msg.history"
+//	Params:   {userID: position 2, roomID: position 5, siteID: position 6}
 package natsrouter
