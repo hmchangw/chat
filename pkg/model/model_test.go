@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -100,6 +103,21 @@ func TestRoleValues(t *testing.T) {
 	}
 	if model.RoleMember != "member" {
 		t.Errorf("RoleMember = %q", model.RoleMember)
+	}
+}
+
+func TestMemberTypeValues(t *testing.T) {
+	if model.MemberEntryTypeUser != "user" {
+		t.Errorf("MemberEntryTypeUser = %q", model.MemberEntryTypeUser)
+	}
+	if model.MemberEntryTypeOrg != "org" {
+		t.Errorf("MemberEntryTypeOrg = %q", model.MemberEntryTypeOrg)
+	}
+	if model.RoomMemberTypeIndividual != "individual" {
+		t.Errorf("RoomMemberTypeIndividual = %q", model.RoomMemberTypeIndividual)
+	}
+	if model.RoomMemberTypeOrg != "org" {
+		t.Errorf("RoomMemberTypeOrg = %q", model.RoomMemberTypeOrg)
 	}
 }
 
@@ -203,6 +221,39 @@ func TestRoomKeyEventJSON(t *testing.T) {
 	if !reflect.DeepEqual(src, dst) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
 	}
+}
+
+func TestRoomMemberJSON(t *testing.T) {
+	t.Run("org member", func(t *testing.T) {
+		src := model.RoomMember{ID: "m1", RoomID: "r1", Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberTypeOrg}}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+		var dst model.RoomMember
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+	})
+	t.Run("individual member", func(t *testing.T) {
+		src := model.RoomMember{ID: "m2", RoomID: "r1", Member: model.RoomMemberEntry{Type: model.RoomMemberTypeIndividual, Username: "alice"}}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+		var dst model.RoomMember
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+	})
+}
+
+func TestAddMembersRequestJSON(t *testing.T) {
+	src := model.AddMembersRequest{
+		RoomID:  "r1",
+		Users:   []string{"alice"},
+		Orgs:    []string{"org-eng"},
+		History: model.HistoryConfig{Mode: model.HistoryModeNone},
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+	var dst model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.

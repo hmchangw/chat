@@ -62,10 +62,14 @@ func main() {
 	}
 
 	store := NewMongoStore(db)
-	handler := NewHandler(store, cfg.SiteID, cfg.MaxRoomSize, func(data []byte) error {
-		_, err := js.Publish(ctx, subject.MemberInviteWildcard(cfg.SiteID), data)
-		return err
-	})
+	handler := NewHandler(store, cfg.SiteID, cfg.MaxRoomSize,
+		func(data []byte) error {
+			_, err := js.Publish(ctx, subject.MemberInviteWildcard(cfg.SiteID), data)
+			return err
+		},
+		func(subj string, data []byte) error { return nc.Publish(subj, data) },
+		func(subj string, data []byte) error { _, err := js.Publish(ctx, subj, data); return err },
+	)
 
 	if err := handler.RegisterCRUD(nc); err != nil {
 		slog.Error("register CRUD handlers failed", "error", err)

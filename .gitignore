@@ -36,3 +36,5 @@ bin/
 # .idea/
 # .vscode/
 bin/
+.claude/
+docs/

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
@@ -63,7 +64,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test CreateSubscription and GetSubscription
-	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Username: "u1"}, RoomID: "r1", Role: model.RoleOwner}
 	if err := store.CreateSubscription(ctx, &sub); err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
@@ -79,5 +80,141 @@ func TestMongoStore_Integration(t *testing.T) {
 	_, err = store.GetSubscription(ctx, "u2", "r1")
 	if err == nil {
 		t.Error("expected error for missing subscription")
+	}
+}
+
+func TestMongoStore_RoomMembers(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Empty result for a room with no members
+	members, err := store.GetRoomMembers(ctx, "r-unknown")
+	if err != nil {
+		t.Fatalf("GetRoomMembers on empty room: %v", err)
+	}
+	if len(members) != 0 {
+		t.Errorf("expected 0 members, got %d", len(members))
+	}
+
+	// Insert org and individual members
+	orgMember := model.RoomMember{ID: "m1", RoomID: "r1", Type: model.RoomMemberTypeOrg, OrgID: "org-eng"}
+	if err := store.CreateRoomMember(ctx, &orgMember); err != nil {
+		t.Fatalf("CreateRoomMember org: %v", err)
+	}
+	indMember := model.RoomMember{ID: "m2", RoomID: "r1", Type: model.RoomMemberTypeIndividual, Username: "alice"}
+	if err := store.CreateRoomMember(ctx, &indMember); err != nil {
+		t.Fatalf("CreateRoomMember individual: %v", err)
+	}
+
+	// Retrieve and verify
+	members, err = store.GetRoomMembers(ctx, "r1")
+	if err != nil {
+		t.Fatalf("GetRoomMembers: %v", err)
+	}
+	if len(members) != 2 {
+		t.Errorf("expected 2 members, got %d", len(members))
+	}
+
+	// Different room is unaffected
+	other, err := store.GetRoomMembers(ctx, "r2")
+	if err != nil {
+		t.Fatalf("GetRoomMembers r2: %v", err)
+	}
+	if len(other) != 0 {
+		t.Errorf("expected 0 members for r2, got %d", len(other))
+	}
+}
+
+func TestMongoStore_BulkCreateSubscriptions(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	subs := []*model.Subscription{
+		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+	}
+	if err := store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		t.Fatalf("BulkCreateSubscriptions: %v", err)
+	}
+
+	got, err := store.GetSubscription(ctx, "alice", "r1")
+	if err != nil {
+		t.Fatalf("GetSubscription alice: %v", err)
+	}
+	if got.Role != model.RoleMember {
+		t.Errorf("Role = %q, want member", got.Role)
+	}
+
+	got2, err := store.GetSubscription(ctx, "bob", "r1")
+	if err != nil {
+		t.Fatalf("GetSubscription bob: %v", err)
+	}
+	if got2.User.Username != "bob" {
+		t.Errorf("Username = %q, want bob", got2.User.Username)
+	}
+
+	// Empty slice must not error
+	if err := store.BulkCreateSubscriptions(ctx, []*model.Subscription{}); err != nil {
+		t.Fatalf("BulkCreateSubscriptions empty: %v", err)
+	}
+}
+
+func TestMongoStore_GetOrgUsers(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Seed hr_data directly
+	hrData := db.Collection("hr_data")
+	_, _ = hrData.InsertMany(ctx, []any{
+		bson.M{"sectId": "org-eng", "username": "alice"},
+		bson.M{"sectId": "org-eng", "username": "bob"},
+		bson.M{"sectId": "org-hr", "username": "carol"},
+	})
+
+	users, err := store.GetOrgUsers(ctx, "org-eng")
+	if err != nil {
+		t.Fatalf("GetOrgUsers org-eng: %v", err)
+	}
+	if len(users) != 2 {
+		t.Errorf("expected 2 users, got %d: %v", len(users), users)
+	}
+
+	// Unknown org returns empty slice, not error
+	users, err = store.GetOrgUsers(ctx, "org-unknown")
+	if err != nil {
+		t.Fatalf("GetOrgUsers unknown: %v", err)
+	}
+	if len(users) != 0 {
+		t.Errorf("expected 0 users for unknown org, got %d", len(users))
+	}
+}
+
+func TestMongoStore_GetUserSite(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Seed users collection directly
+	usersCol := db.Collection("users")
+	_, _ = usersCol.InsertOne(ctx, bson.M{
+		"username":   "alice",
+		"federation": bson.M{"origin": "site-a"},
+	})
+
+	site, err := store.GetUserSite(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUserSite alice: %v", err)
+	}
+	if site != "site-a" {
+		t.Errorf("site = %q, want site-a", site)
+	}
+
+	// Unknown user returns error
+	_, err = store.GetUserSite(ctx, "nobody")
+	if err == nil {
+		t.Error("expected error for unknown user, got nil")
 	}
 }

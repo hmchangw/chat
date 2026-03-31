@@ -6,7 +6,7 @@ import (
 )
 
 // ParseUserRoomSubject extracts username and roomID from subjects matching
-// the pattern "chat.user.{username}.*.room.{roomID}.…".
+// the pattern "chat.user.{username}.*.room.{roomID}.\u2026".
 // Returns username, roomID, and ok=true on success.
 func ParseUserRoomSubject(subj string) (username, roomID string, ok bool) {
 	parts := strings.Split(subj, ".")
@@ -57,9 +57,20 @@ func UserMsgStream(username string) string {
 	return fmt.Sprintf("chat.user.%s.stream.msg", username)
 }
 
+// MemberInvite returns the specific subject for a member.invite request.
 func MemberInvite(username, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", username, roomID, siteID)
 }
+
+// MemberAdd returns the specific subject for a member.add request.
+func MemberAdd(username, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.add", username, roomID, siteID)
+}
+
+func MsgHistory(username, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.history", username, roomID, siteID)
+}
+
 
 func SubscriptionUpdate(username string) string {
 	return fmt.Sprintf("chat.user.%s.event.subscription.update", username)
@@ -113,8 +124,14 @@ func MsgSendWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.room.*.%s.msg.send", siteID)
 }
 
+// MemberInviteWildcard returns the wildcard subscription pattern for all member requests.
 func MemberInviteWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.>", siteID)
+}
+
+// MemberAddWildcard returns the wildcard subscription pattern for member.add requests.
+func MemberAddWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.add", siteID)
 }
 
 func MsgHistoryWildcard(siteID string) string {
