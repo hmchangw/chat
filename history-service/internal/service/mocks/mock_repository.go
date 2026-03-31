@@ -15,7 +15,7 @@ import (
 	time "time"
 
 	cassrepo "github.com/hmchangw/chat/history-service/internal/cassrepo"
-	model "github.com/hmchangw/chat/pkg/model"
+	models "github.com/hmchangw/chat/history-service/internal/models"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -44,10 +44,10 @@ func (m *MockMessageRepository) EXPECT() *MockMessageRepositoryMockRecorder {
 }
 
 // GetAllMessagesAsc mocks base method.
-func (m *MockMessageRepository) GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
+func (m *MockMessageRepository) GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetAllMessagesAsc", ctx, roomID, q)
-	ret0, _ := ret[0].(cassrepo.Page[model.Message])
+	ret0, _ := ret[0].(cassrepo.Page[models.Message])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -59,10 +59,10 @@ func (mr *MockMessageRepositoryMockRecorder) GetAllMessagesAsc(ctx, roomID, q an
 }
 
 // GetMessageByID mocks base method.
-func (m *MockMessageRepository) GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error) {
+func (m *MockMessageRepository) GetMessageByID(ctx context.Context, roomID, messageID string) (*models.Message, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetMessageByID", ctx, roomID, messageID)
-	ret0, _ := ret[0].(*model.Message)
+	ret0, _ := ret[0].(*models.Message)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -74,10 +74,10 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessageByID(ctx, roomID, message
 }
 
 // GetMessagesAfter mocks base method.
-func (m *MockMessageRepository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
+func (m *MockMessageRepository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetMessagesAfter", ctx, roomID, after, q)
-	ret0, _ := ret[0].(cassrepo.Page[model.Message])
+	ret0, _ := ret[0].(cassrepo.Page[models.Message])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -89,10 +89,10 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessagesAfter(ctx, roomID, after
 }
 
 // GetMessagesBefore mocks base method.
-func (m *MockMessageRepository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
+func (m *MockMessageRepository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetMessagesBefore", ctx, roomID, before, q)
-	ret0, _ := ret[0].(cassrepo.Page[model.Message])
+	ret0, _ := ret[0].(cassrepo.Page[models.Message])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -104,10 +104,10 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessagesBefore(ctx, roomID, befo
 }
 
 // GetMessagesBetweenAsc mocks base method.
-func (m *MockMessageRepository) GetMessagesBetweenAsc(ctx context.Context, roomID string, after, before time.Time, inclusive bool, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
+func (m *MockMessageRepository) GetMessagesBetweenAsc(ctx context.Context, roomID string, after, before time.Time, inclusive bool, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetMessagesBetweenAsc", ctx, roomID, after, before, inclusive, q)
-	ret0, _ := ret[0].(cassrepo.Page[model.Message])
+	ret0, _ := ret[0].(cassrepo.Page[models.Message])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -119,10 +119,10 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessagesBetweenAsc(ctx, roomID, 
 }
 
 // GetMessagesBetweenDesc mocks base method.
-func (m *MockMessageRepository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[model.Message], error) {
+func (m *MockMessageRepository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetMessagesBetweenDesc", ctx, roomID, since, before, q)
-	ret0, _ := ret[0].(cassrepo.Page[model.Message])
+	ret0, _ := ret[0].(cassrepo.Page[models.Message])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
