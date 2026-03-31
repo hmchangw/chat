@@ -9,9 +9,9 @@ import (
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
-// checkAccess verifies the user is subscribed to the room and returns the
+// getAccessSince verifies the user is subscribed to the room and returns the
 // historySharedSince lower bound (nil = full access).
-func (s *HistoryService) checkAccess(ctx context.Context, username, roomID string) (*time.Time, error) {
+func (s *HistoryService) getAccessSince(ctx context.Context, username, roomID string) (*time.Time, error) {
 	accessSince, subscribed, err := s.subscriptions.GetHistorySharedSince(ctx, username, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
@@ -22,14 +22,18 @@ func (s *HistoryService) checkAccess(ctx context.Context, username, roomID strin
 	return accessSince, nil
 }
 
-// resolveRoomID returns the roomID from the subject params and validates it
-// matches the body value when present.
+// resolveRoomID returns the authoritative roomID by reconciling the subject
+// param with the body value. Returns an error if both are present and differ.
 func resolveRoomID(p natsrouter.Params, bodyRoomID string) (string, error) {
-	roomID := p.Get("roomID")
-	if bodyRoomID != "" && bodyRoomID != roomID {
+	subjectRoomID := p.Get("roomID")
+	switch {
+	case subjectRoomID != "" && bodyRoomID != "" && subjectRoomID != bodyRoomID:
 		return "", natsrouter.ErrWithCode("bad_request", "roomId in body does not match subject")
+	case subjectRoomID != "":
+		return subjectRoomID, nil
+	default:
+		return bodyRoomID, nil
 	}
-	return roomID, nil
 }
 
 func parseTimestamp(s string) (time.Time, error) {

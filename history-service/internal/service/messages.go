@@ -21,7 +21,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		return nil, err
 	}
 
-	accessSince, err := s.checkAccess(ctx, p.Get("username"), roomID)
+	accessSince, err := s.getAccessSince(ctx, p.Get("username"), roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	accessSince, err := s.checkAccess(ctx, p.Get("username"), roomID)
+	accessSince, err := s.getAccessSince(ctx, p.Get("username"), roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +143,7 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 		return nil, err
 	}
 
-	accessSince, err := s.checkAccess(ctx, p.Get("username"), roomID)
+	accessSince, err := s.getAccessSince(ctx, p.Get("username"), roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +210,7 @@ func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params
 		return nil, err
 	}
 
-	accessSince, err := s.checkAccess(ctx, p.Get("username"), roomID)
+	accessSince, err := s.getAccessSince(ctx, p.Get("username"), roomID)
 	if err != nil {
 		return nil, err
 	}
