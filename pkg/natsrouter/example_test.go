@@ -1,7 +1,6 @@
 package natsrouter_test
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/nats-io/nats.go"
@@ -27,9 +26,9 @@ func Example_basicUsage() {
 	natsrouter.Register[GreetRequest, GreetResponse](
 		router,
 		"chat.user.{userID}.room.{roomID}.greet",
-		func(ctx context.Context, p natsrouter.Params, req GreetRequest) (*GreetResponse, error) {
-			userID := p.Get("userID")
-			roomID := p.Get("roomID")
+		func(c *natsrouter.Context, req GreetRequest) (*GreetResponse, error) {
+			userID := c.Param("userID")
+			roomID := c.Param("roomID")
 			reply := fmt.Sprintf("%s says %s in room %s", userID, req.Message, roomID)
 			return &GreetResponse{Reply: reply}, nil
 		},
@@ -49,8 +48,8 @@ func Example_withMiddleware() {
 	natsrouter.Register[GreetRequest, GreetResponse](
 		router,
 		"chat.user.{userID}.greet",
-		func(ctx context.Context, p natsrouter.Params, req GreetRequest) (*GreetResponse, error) {
-			return &GreetResponse{Reply: "hello " + p.Get("userID")}, nil
+		func(c *natsrouter.Context, req GreetRequest) (*GreetResponse, error) {
+			return &GreetResponse{Reply: "hello " + c.Param("userID")}, nil
 		},
 	)
 }
@@ -69,8 +68,8 @@ func Example_noBodyHandler() {
 	natsrouter.RegisterNoBody[Room](
 		router,
 		"chat.user.{userID}.request.rooms.get.{roomID}",
-		func(ctx context.Context, p natsrouter.Params) (*Room, error) {
-			roomID := p.Get("roomID")
+		func(c *natsrouter.Context) (*Room, error) {
+			roomID := c.Param("roomID")
 			return &Room{ID: roomID, Name: "General"}, nil
 		},
 	)
@@ -84,8 +83,8 @@ func Example_errorHandling() {
 	natsrouter.Register(
 		router,
 		"chat.user.{userID}.request.rooms.get.{roomID}",
-		func(ctx context.Context, p natsrouter.Params, req GreetRequest) (*Room, error) {
-			room := findRoom(p.Get("roomID"))
+		func(c *natsrouter.Context, req GreetRequest) (*Room, error) {
+			room := findRoom(c.Param("roomID"))
 			if room == nil {
 				// User-facing error — client receives: {"error":"room not found","code":"not_found"}
 				return nil, natsrouter.ErrWithCode("not_found", "room not found")
@@ -113,8 +112,8 @@ func Example_fireAndForget() {
 	natsrouter.RegisterVoid(
 		router,
 		"chat.user.{userID}.event.typing",
-		func(ctx context.Context, p natsrouter.Params, req TypingEvent) error {
-			fmt.Printf("user %s is typing in room %s\n", p.Get("userID"), req.RoomID)
+		func(c *natsrouter.Context, req TypingEvent) error {
+			fmt.Printf("user %s is typing in room %s\n", c.Param("userID"), req.RoomID)
 			return nil
 		},
 	)
@@ -126,24 +125,51 @@ func Example_customMiddleware() {
 	router := natsrouter.New(nc, "my-service")
 
 	// Custom middleware that rejects requests with empty payloads.
-	requireBody := func(next nats.MsgHandler) nats.MsgHandler {
-		return func(msg *nats.Msg) {
-			if len(msg.Data) == 0 {
-				msg.Respond([]byte(`{"error":"request body required"}`))
-				return
-			}
-			next(msg)
+	requireBody := natsrouter.HandlerFunc(func(c *natsrouter.Context) {
+		if len(c.Msg.Data) == 0 {
+			c.ReplyError("request body required")
+			return
 		}
-	}
+		c.Next()
+	})
 
 	router.Use(natsrouter.Recovery())
-	router.Use(natsrouter.Middleware(requireBody))
+	router.Use(requireBody)
 
 	natsrouter.Register[GreetRequest, GreetResponse](
 		router,
 		"chat.user.{userID}.greet",
-		func(ctx context.Context, p natsrouter.Params, req GreetRequest) (*GreetResponse, error) {
+		func(c *natsrouter.Context, req GreetRequest) (*GreetResponse, error) {
 			return &GreetResponse{Reply: "hello"}, nil
+		},
+	)
+}
+
+// Example_routeGroups demonstrates using Groups for subject prefixes and scoped middleware.
+func Example_routeGroups() {
+	nc, _ := nats.Connect(nats.DefaultURL)
+	router := natsrouter.New(nc, "my-service")
+
+	// Create a group with a subject prefix and optional middleware.
+	userRoutes := router.Group("chat.user.{userID}.request")
+
+	// Routes registered on the group inherit the prefix.
+	// Full subject: chat.user.{userID}.request.rooms.list
+	natsrouter.RegisterNoBody[[]Room](
+		userRoutes,
+		"rooms.list",
+		func(c *natsrouter.Context) (*[]Room, error) {
+			_ = c.Param("userID") // extracted from group prefix
+			return &[]Room{}, nil
+		},
+	)
+
+	// Full subject: chat.user.{userID}.request.rooms.get.{roomID}
+	natsrouter.RegisterNoBody[Room](
+		userRoutes,
+		"rooms.get.{roomID}",
+		func(c *natsrouter.Context) (*Room, error) {
+			return &Room{ID: c.Param("roomID"), Name: "General"}, nil
 		},
 	)
 }

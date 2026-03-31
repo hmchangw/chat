@@ -1,7 +1,6 @@
 package natsrouter
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -42,8 +41,8 @@ func TestRegister_Success(t *testing.T) {
 	r := New(nc, "test-service")
 
 	Register(r, "chat.user.{userID}.request.room.{roomID}.site-1.msg.test",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
-			return &testResp{Greeting: "hello " + req.Name + " from " + p.Get("userID")}, nil
+		func(c *Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "hello " + req.Name + " from " + c.Param("userID")}, nil
 		})
 
 	data, _ := json.Marshal(testReq{Name: "world"})
@@ -61,8 +60,8 @@ func TestRegister_ParamsExtraction(t *testing.T) {
 
 	var captured Params
 	Register(r, "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.test",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
-			captured = p
+		func(c *Context, req testReq) (*testResp, error) {
+			captured = c.Params
 			return &testResp{}, nil
 		})
 
@@ -80,7 +79,7 @@ func TestRegister_InvalidJSON(t *testing.T) {
 	r := New(nc, "test-service")
 
 	Register(r, "test.{id}",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			t.Fatal("handler should not be called for invalid JSON")
 			return nil, nil
 		})
@@ -98,7 +97,7 @@ func TestRegister_HandlerError(t *testing.T) {
 	r := New(nc, "test-service")
 
 	Register(r, "test.{id}",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			return nil, fmt.Errorf("something broke")
 		})
 
@@ -116,8 +115,8 @@ func TestRegisterNoBody_Success(t *testing.T) {
 	r := New(nc, "test-service")
 
 	RegisterNoBody(r, "chat.user.{userID}.request.rooms.get.{roomID}",
-		func(ctx context.Context, p Params) (*testResp, error) {
-			return &testResp{Greeting: "room " + p.Get("roomID")}, nil
+		func(c *Context) (*testResp, error) {
+			return &testResp{Greeting: "room " + c.Param("roomID")}, nil
 		})
 
 	resp, err := nc.Request("chat.user.alice.request.rooms.get.room-42", nil, 2*time.Second)
@@ -136,20 +135,16 @@ func TestMiddleware_ExecutionOrder(t *testing.T) {
 
 	// Use the outermost middleware to capture the full order after chain completes.
 	var order []string
-	r.Use(func(next nats.MsgHandler) nats.MsgHandler {
-		return func(msg *nats.Msg) {
-			next(msg)
-			doneCh <- order // send after entire chain (all afters) is done
-		}
+	r.Use(func(c *Context) {
+		c.Next()
+		doneCh <- order // send after entire chain (all afters) is done
 	})
 
-	makeMiddleware := func(name string) Middleware {
-		return func(next nats.MsgHandler) nats.MsgHandler {
-			return func(msg *nats.Msg) {
-				order = append(order, name+":before")
-				next(msg)
-				order = append(order, name+":after")
-			}
+	makeMiddleware := func(name string) HandlerFunc {
+		return func(c *Context) {
+			order = append(order, name+":before")
+			c.Next()
+			order = append(order, name+":after")
 		}
 	}
 
@@ -158,7 +153,7 @@ func TestMiddleware_ExecutionOrder(t *testing.T) {
 	r.Use(makeMiddleware("C"))
 
 	Register(r, "test.{id}",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			order = append(order, "handler")
 			return &testResp{}, nil
 		})
@@ -179,16 +174,15 @@ func TestMiddleware_ShortCircuit(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	r.Use(func(next nats.MsgHandler) nats.MsgHandler {
-		return func(msg *nats.Msg) {
-			// Short-circuit — don't call next
-			msg.Respond([]byte(`{"rejected":true}`))
-		}
+	r.Use(func(c *Context) {
+		// Short-circuit — abort and respond directly
+		c.Abort()
+		c.Msg.Respond([]byte(`{"rejected":true}`))
 	})
 
 	handlerCalled := false
 	Register(r, "test.{id}",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			handlerCalled = true
 			return &testResp{}, nil
 		})
@@ -207,7 +201,7 @@ func TestRecovery_CatchesPanic(t *testing.T) {
 	r.Use(Recovery())
 
 	Register(r, "test.{id}",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			panic("boom!")
 		})
 
@@ -225,7 +219,7 @@ func TestRegister_NoParams(t *testing.T) {
 	r := New(nc, "test-service")
 
 	Register(r, "static.subject",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			return &testResp{Greeting: "hello " + req.Name}, nil
 		})
 
@@ -243,7 +237,7 @@ func TestRegister_RouteError(t *testing.T) {
 	r := New(nc, "test-service")
 
 	Register(r, "test.{id}",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			return nil, ErrWithCode("not_found", "thing not found")
 		})
 
@@ -262,7 +256,7 @@ func TestRegister_RouteErrorSimple(t *testing.T) {
 	r := New(nc, "test-service")
 
 	Register(r, "test.{id}",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			return nil, Errf("user %s not allowed", "alice")
 		})
 
@@ -281,7 +275,7 @@ func TestRegister_InternalErrorNotExposed(t *testing.T) {
 	r := New(nc, "test-service")
 
 	Register(r, "test.{id}",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			return nil, fmt.Errorf("database connection refused")
 		})
 
@@ -301,8 +295,8 @@ func TestRegisterVoid_Success(t *testing.T) {
 
 	processed := make(chan string, 1)
 	RegisterVoid(r, "events.{type}",
-		func(ctx context.Context, p Params, req testReq) error {
-			processed <- p.Get("type") + ":" + req.Name
+		func(c *Context, req testReq) error {
+			processed <- c.Param("type") + ":" + req.Name
 			return nil
 		})
 
@@ -323,7 +317,7 @@ func TestRegisterVoid_NoReply(t *testing.T) {
 	r := New(nc, "test-service")
 
 	RegisterVoid(r, "events.{type}",
-		func(ctx context.Context, p Params, req testReq) error {
+		func(c *Context, req testReq) error {
 			return nil
 		})
 
@@ -347,7 +341,7 @@ func TestRouteError_WrappedInFmtErrorf(t *testing.T) {
 
 	// RouteError wrapped with fmt.Errorf should still be detected via errors.As
 	Register(r, "test.{id}",
-		func(ctx context.Context, p Params, req testReq) (*testResp, error) {
+		func(c *Context, req testReq) (*testResp, error) {
 			return nil, fmt.Errorf("context: %w", ErrWithCode("forbidden", "not allowed"))
 		})
 
@@ -359,4 +353,115 @@ func TestRouteError_WrappedInFmtErrorf(t *testing.T) {
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
 	assert.Equal(t, "not allowed", result.Message)
 	assert.Equal(t, "forbidden", result.Code)
+}
+
+func TestGroup_Registration(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	g := r.Group("chat.user.{userID}.request")
+	Register(g, "rooms.list",
+		func(c *Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "rooms for " + c.Param("userID")}, nil
+		})
+
+	data, _ := json.Marshal(testReq{})
+	resp, err := nc.Request("chat.user.alice.request.rooms.list", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result testResp
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "rooms for alice", result.Greeting)
+}
+
+func TestGroup_ScopedMiddleware(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	var middlewareRan bool
+	g := r.Group("scoped.{id}", func(c *Context) {
+		middlewareRan = true
+		c.Next()
+	})
+
+	Register(g, "action",
+		func(c *Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "ok"}, nil
+		})
+
+	// Also register a route directly on the router (no group middleware)
+	Register(r, "direct.action",
+		func(c *Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "direct"}, nil
+		})
+
+	data, _ := json.Marshal(testReq{})
+
+	// Group route should trigger group middleware
+	middlewareRan = false
+	_, err := nc.Request("scoped.123.action", data, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, middlewareRan)
+
+	// Direct route should NOT trigger group middleware
+	middlewareRan = false
+	_, err = nc.Request("direct.action", data, 2*time.Second)
+	require.NoError(t, err)
+	assert.False(t, middlewareRan)
+}
+
+func TestContext_SetGet(t *testing.T) {
+	c := NewContext(map[string]string{"id": "123"})
+	c.Set("user", "alice")
+
+	val, ok := c.Get("user")
+	assert.True(t, ok)
+	assert.Equal(t, "alice", val)
+
+	assert.Equal(t, "alice", c.MustGet("user"))
+	assert.Equal(t, "123", c.Param("id"))
+
+	_, ok = c.Get("nonexistent")
+	assert.False(t, ok)
+}
+
+func TestContext_MustGet_Panics(t *testing.T) {
+	c := NewContext(nil)
+	require.Panics(t, func() { c.MustGet("nope") })
+}
+
+func TestContext_Abort(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	handlerCalled := false
+	r.Use(func(c *Context) {
+		c.Abort()
+		// Don't call Next
+	})
+
+	Register(r, "test.abort",
+		func(c *Context, req testReq) (*testResp, error) {
+			handlerCalled = true
+			return &testResp{}, nil
+		})
+
+	data, _ := json.Marshal(testReq{})
+	_, _ = nc.Request("test.abort", data, 200*time.Millisecond)
+	assert.False(t, handlerCalled)
+}
+
+func TestErrConstants(t *testing.T) {
+	e := ErrBadRequest("invalid input")
+	assert.Equal(t, "bad_request", e.Code)
+	assert.Equal(t, "invalid input", e.Message)
+
+	e = ErrNotFound("not here")
+	assert.Equal(t, "not_found", e.Code)
+
+	e = ErrForbidden("nope")
+	assert.Equal(t, "forbidden", e.Code)
+
+	e = ErrConflict("already exists")
+	assert.Equal(t, "conflict", e.Code)
 }

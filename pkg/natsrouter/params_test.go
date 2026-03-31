@@ -78,3 +78,23 @@ func TestParams_MustGet_Panics(t *testing.T) {
 		p.MustGet("nonexistent")
 	})
 }
+
+func TestParams_Require_Success(t *testing.T) {
+	p := Params{values: map[string]string{"userID": "abc"}}
+	v, err := p.Require("userID")
+	require.NoError(t, err)
+	assert.Equal(t, "abc", v)
+}
+
+func TestParams_Require_Missing(t *testing.T) {
+	p := Params{values: map[string]string{}}
+	_, err := p.Require("userID")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing required param")
+}
+
+func TestParams_Require_Empty(t *testing.T) {
+	p := Params{values: map[string]string{"userID": ""}}
+	_, err := p.Require("userID")
+	require.Error(t, err)
+}
