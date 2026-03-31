@@ -85,6 +85,10 @@ func UserRoomEvent(username string) string {
 	return fmt.Sprintf("chat.user.%s.event.room", username)
 }
 
+func RoomKeyUpdate(username string) string {
+	return fmt.Sprintf("chat.user.%s.event.room.key", username)
+}
+
 // --- Room CRUD request builders ---
 
 func RoomsCreate(username string) string {
