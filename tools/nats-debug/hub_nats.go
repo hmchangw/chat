@@ -17,13 +17,15 @@ type natsSub struct {
 }
 
 type natsHub struct {
-	mu         sync.RWMutex
-	sourceConn *nats.Conn
-	destConn   *nats.Conn
-	sourceURL  string
-	destURL    string
-	subs       map[string]*natsSub
-	clients    map[string]chan<- Message
+	mu          sync.RWMutex
+	sourceConn  *nats.Conn
+	destConn    *nats.Conn
+	requestConn *nats.Conn
+	sourceURL   string
+	destURL     string
+	requestURL  string
+	subs        map[string]*natsSub
+	clients     map[string]chan<- Message
 }
 
 func newNATSHub() *natsHub {
@@ -88,8 +90,13 @@ func (h *natsHub) disconnectLocked() {
 		h.destConn.Close()
 		h.destConn = nil
 	}
+	if h.requestConn != nil {
+		h.requestConn.Close()
+		h.requestConn = nil
+	}
 	h.sourceURL = ""
 	h.destURL = ""
+	h.requestURL = ""
 }
 
 func (h *natsHub) Subscribe(subject string) (Subscription, error) {
@@ -152,10 +159,12 @@ func (h *natsHub) Status() ConnectionStatus {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return ConnectionStatus{
-		SourceConnected: h.sourceConn != nil && h.sourceConn.IsConnected(),
-		DestConnected:   h.destConn != nil && h.destConn.IsConnected(),
-		SourceURL:       h.sourceURL,
-		DestURL:         h.destURL,
+		SourceConnected:  h.sourceConn != nil && h.sourceConn.IsConnected(),
+		DestConnected:    h.destConn != nil && h.destConn.IsConnected(),
+		RequestConnected: h.requestConn != nil && h.requestConn.IsConnected(),
+		SourceURL:        h.sourceURL,
+		DestURL:          h.destURL,
+		RequestURL:       h.requestURL,
 	}
 }
 
@@ -181,6 +190,58 @@ func (h *natsHub) UnregisterSSEClient(id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.clients, id)
+}
+
+func (h *natsHub) ConnectRequest(url string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.requestConn != nil {
+		h.requestConn.Close()
+		h.requestConn = nil
+		h.requestURL = ""
+	}
+
+	conn, err := nats.Connect(url,
+		nats.Name("nats-debug-request"),
+		nats.MaxReconnects(0),
+	)
+	if err != nil {
+		return fmt.Errorf("connect to request NATS %s: %w", url, err)
+	}
+
+	h.requestConn = conn
+	h.requestURL = url
+	slog.Info("connected to request NATS", "url", url)
+	return nil
+}
+
+func (h *natsHub) DisconnectRequest() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.requestConn != nil {
+		h.requestConn.Close()
+		h.requestConn = nil
+	}
+	h.requestURL = ""
+	slog.Info("disconnected from request NATS")
+}
+
+func (h *natsHub) Request(subject, payload string, timeoutMs int) (string, error) {
+	h.mu.RLock()
+	conn := h.requestConn
+	h.mu.RUnlock()
+
+	if conn == nil {
+		return "", fmt.Errorf("not connected to request NATS")
+	}
+
+	msg, err := conn.Request(subject, []byte(payload), time.Duration(timeoutMs)*time.Millisecond)
+	if err != nil {
+		return "", err
+	}
+	return string(msg.Data), nil
 }
 
 // broadcast sends a message to all registered SSE clients without blocking.
