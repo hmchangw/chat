@@ -1,0 +1,45 @@
+version: "3.9"
+
+# NATS Debug Tool — local development stack
+#
+# Starts:
+#   nats-source  – source NATS server (publish target) on port 4222
+#   nats-dest    – dest NATS server   (subscribe target) on port 4223
+#   nats-debug   – debug UI on http://localhost:8090
+#
+# Usage:
+#   docker compose -f nats-debug/deploy/docker-compose.yml up
+#   Open http://localhost:8090
+#
+# To route messages from source → dest (mirror), configure source NATS
+# with a leaf-node or subject import/export pointing at dest.
+# For simple local testing, connect both Source and Dest to the same
+# NATS URL (e.g. nats://nats-source:4222) and subscribe + publish there.
+
+services:
+
+  nats-source:
+    image: nats:2.10-alpine
+    command: ["--jetstream", "--http_port", "8222", "--port", "4222", "--name", "source"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+  nats-dest:
+    image: nats:2.10-alpine
+    command: ["--jetstream", "--http_port", "8223", "--port", "4222", "--name", "dest"]
+    ports:
+      - "4223:4222"
+      - "8223:8223"
+
+  nats-debug:
+    build:
+      context: ../..
+      dockerfile: nats-debug/deploy/Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      PORT: "8090"
+    depends_on:
+      - nats-source
+      - nats-dest
