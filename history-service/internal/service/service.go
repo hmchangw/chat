@@ -16,7 +16,6 @@ import (
 type MessageRepository interface {
 	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
-	GetMessagesBetweenAsc(ctx context.Context, roomID string, after, before time.Time, inclusive bool, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessageByID(ctx context.Context, roomID, messageID string) (*models.Message, error)

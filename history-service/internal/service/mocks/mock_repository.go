@@ -103,21 +103,6 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessagesBefore(ctx, roomID, befo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBefore", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBefore), ctx, roomID, before, q)
 }
 
-// GetMessagesBetweenAsc mocks base method.
-func (m *MockMessageRepository) GetMessagesBetweenAsc(ctx context.Context, roomID string, after, before time.Time, inclusive bool, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMessagesBetweenAsc", ctx, roomID, after, before, inclusive, q)
-	ret0, _ := ret[0].(cassrepo.Page[models.Message])
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetMessagesBetweenAsc indicates an expected call of GetMessagesBetweenAsc.
-func (mr *MockMessageRepositoryMockRecorder) GetMessagesBetweenAsc(ctx, roomID, after, before, inclusive, q any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBetweenAsc", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBetweenAsc), ctx, roomID, after, before, inclusive, q)
-}
-
 // GetMessagesBetweenDesc mocks base method.
 func (m *MockMessageRepository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
 	m.ctrl.T.Helper()
