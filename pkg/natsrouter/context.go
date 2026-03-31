@@ -2,6 +2,7 @@ package natsrouter
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -15,6 +16,7 @@ type HandlerFunc func(c *Context)
 
 // Context carries request state through the middleware chain.
 // It implements context.Context so it can be passed directly to database calls.
+// Contexts are pooled — do not hold references to a Context after the handler returns.
 type Context struct {
 	ctx      context.Context
 	Msg      *nats.Msg
@@ -24,15 +26,28 @@ type Context struct {
 	index    int
 }
 
-func newContext(msg *nats.Msg, params Params, handlers []HandlerFunc) *Context {
-	return &Context{
-		ctx:      context.Background(),
-		Msg:      msg,
-		Params:   params,
-		keys:     make(map[string]any),
-		handlers: handlers,
-		index:    -1,
-	}
+var ctxPool = sync.Pool{
+	New: func() any { return &Context{} },
+}
+
+func acquireContext(msg *nats.Msg, params Params, handlers []HandlerFunc) *Context {
+	c := ctxPool.Get().(*Context)
+	c.ctx = context.Background()
+	c.Msg = msg
+	c.Params = params
+	c.keys = nil // lazy init on first Set()
+	c.handlers = handlers
+	c.index = -1
+	return c
+}
+
+func releaseContext(c *Context) {
+	c.ctx = nil
+	c.Msg = nil
+	c.Params = Params{}
+	c.keys = nil
+	c.handlers = nil
+	ctxPool.Put(c)
 }
 
 // NewContext creates a Context for testing handlers without a NATS connection.
@@ -40,7 +55,6 @@ func NewContext(params map[string]string) *Context {
 	return &Context{
 		ctx:    context.Background(),
 		Params: NewParams(params),
-		keys:   make(map[string]any),
 		index:  -1,
 	}
 }
@@ -72,18 +86,24 @@ func (c *Context) IsAborted() bool {
 
 // Set stores a key-value pair for downstream handlers.
 func (c *Context) Set(key string, value any) {
+	if c.keys == nil {
+		c.keys = make(map[string]any)
+	}
 	c.keys[key] = value
 }
 
 // Get returns a value by key and whether it was found.
 func (c *Context) Get(key string) (any, bool) {
+	if c.keys == nil {
+		return nil, false
+	}
 	val, ok := c.keys[key]
 	return val, ok
 }
 
 // MustGet returns a value by key. Panics if not found.
 func (c *Context) MustGet(key string) any {
-	val, ok := c.keys[key]
+	val, ok := c.Get(key)
 	if !ok {
 		panic("natsrouter: key " + key + " not found in context")
 	}

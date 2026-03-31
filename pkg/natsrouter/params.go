@@ -83,14 +83,23 @@ func parsePattern(pattern string) route {
 	}
 }
 
-// extractParams splits an incoming subject by "." and pulls values from
-// the positions recorded in the route's params map.
+// extractParams scans the subject by "." positions and pulls values
+// from the positions recorded in the route's params map.
+// Uses index scanning instead of strings.Split to avoid a []string allocation.
 func (r route) extractParams(subject string) Params {
-	parts := strings.Split(subject, ".")
+	if len(r.params) == 0 {
+		return Params{}
+	}
 	values := make(map[string]string, len(r.params))
-	for pos, name := range r.params {
-		if pos < len(parts) {
-			values[name] = parts[pos]
+	pos := 0
+	tokenStart := 0
+	for i := 0; i <= len(subject); i++ {
+		if i == len(subject) || subject[i] == '.' {
+			if name, ok := r.params[pos]; ok {
+				values[name] = subject[tokenStart:i]
+			}
+			pos++
+			tokenStart = i + 1
 		}
 	}
 	return Params{values: values}

@@ -41,8 +41,9 @@ func (r *Router) addRoute(pattern string, handlers []HandlerFunc) {
 	all = append(all, handlers...)
 
 	natsHandler := func(msg *nats.Msg) {
-		c := newContext(msg, rt.extractParams(msg.Subject), all)
+		c := acquireContext(msg, rt.extractParams(msg.Subject), all)
 		c.Next()
+		releaseContext(c)
 	}
 
 	if _, err := r.nc.QueueSubscribe(rt.natsSubject, r.queue, natsHandler); err != nil {
