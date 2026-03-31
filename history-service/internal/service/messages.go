@@ -7,7 +7,6 @@ import (
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
@@ -50,7 +49,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 	}
 
 	// Fetch history page. With accessSince set, enforce it as the lower bound.
-	var page cassrepo.Page[model.Message]
+	var page cassrepo.Page[models.Message]
 	if accessSince == nil {
 		page, err = s.messages.GetMessagesBefore(ctx, roomID, before, pageReq)
 	} else {
@@ -121,7 +120,7 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	var page cassrepo.Page[model.Message]
+	var page cassrepo.Page[models.Message]
 	if lowerBound.IsZero() {
 		page, err = s.messages.GetAllMessagesAsc(ctx, roomID, pageReq)
 	} else {
@@ -167,14 +166,14 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	half := limit / 2
 	if half == 0 {
 		return &models.LoadSurroundingMessagesResponse{
-			Messages: []model.Message{*centralMsg},
+			Messages: []models.Message{*centralMsg},
 		}, nil
 	}
 
 	halfPageReq := cassrepo.PageRequest{Cursor: &cassrepo.Cursor{}, PageSize: half}
 
 	// Before-page: messages older than central, newest-first.
-	var beforePage cassrepo.Page[model.Message]
+	var beforePage cassrepo.Page[models.Message]
 	if accessSince == nil {
 		beforePage, err = s.messages.GetMessagesBefore(ctx, roomID, centralMsg.CreatedAt, halfPageReq)
 	} else {
@@ -191,7 +190,7 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	}
 
 	// Assemble: reverse before-page (DESC→ASC) + central + after-page (already ASC).
-	messages := make([]model.Message, 0, len(beforePage.Data)+1+len(afterPage.Data))
+	messages := make([]models.Message, 0, len(beforePage.Data)+1+len(afterPage.Data))
 	for i := len(beforePage.Data) - 1; i >= 0; i-- {
 		messages = append(messages, beforePage.Data[i])
 	}
@@ -205,7 +204,7 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	}, nil
 }
 
-func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params, req models.GetMessageByIDRequest) (*model.Message, error) {
+func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params, req models.GetMessageByIDRequest) (*models.Message, error) {
 	roomID, err := resolveRoomID(p, req.RoomID)
 	if err != nil {
 		return nil, err
