@@ -17,6 +17,8 @@ type fakeHashClient struct {
 	store             map[string]map[string]string
 	hsetErr           error
 	hgetallErr        error
+	hgetallCallCount  int // tracks number of hgetall calls made
+	hgetallErrOnCall  int // if >0, hgetallErr fires only on this call number (1-based)
 	rotatePipelineErr error
 	deletePipelineErr error
 }
@@ -33,7 +35,8 @@ func (f *fakeHashClient) hset(_ context.Context, key string, pub, priv, ver stri
 }
 
 func (f *fakeHashClient) hgetall(_ context.Context, key string) (map[string]string, error) {
-	if f.hgetallErr != nil {
+	f.hgetallCallCount++
+	if f.hgetallErr != nil && (f.hgetallErrOnCall == 0 || f.hgetallCallCount == f.hgetallErrOnCall) {
 		return nil, f.hgetallErr
 	}
 	if f.store == nil {
@@ -271,10 +274,26 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 			versionID: "v1",
 		},
 		{
-			name:        "hgetall error — returns wrapped error",
+			name:        "hgetall error on current key — returns wrapped error",
 			fake:        &fakeHashClient{hgetallErr: errors.New("connection reset")},
 			roomID:      "room-1",
 			versionID:   "v1",
+			wantErr:     true,
+			errContains: "get room key by version",
+		},
+		{
+			name: "hgetall error on previous key — returns wrapped error",
+			fake: func() *fakeHashClient {
+				f := &fakeHashClient{}
+				s := newTestStore(f)
+				// Set a current key with a different version so the code falls through to check previous.
+				_ = s.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				f.hgetallErr = errors.New("connection reset")
+				f.hgetallErrOnCall = 2 // error only on the second hgetall (previous key lookup)
+				return f
+			}(),
+			roomID:      "room-1",
+			versionID:   "v-old",
 			wantErr:     true,
 			errContains: "get room key by version",
 		},
