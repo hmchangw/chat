@@ -145,9 +145,9 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 	}, nil
 }
 
-// GetLatestMessages returns a paginated set of all messages in the room, oldest-first.
+// GetAllMessagesAsc returns a paginated set of all messages in the room, oldest-first.
 // Used when no lower-bound cursor exists.
-func (r *Repository) GetLatestMessages(ctx context.Context, roomID string, q PageRequest) (Page[model.Message], error) {
+func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q PageRequest) (Page[model.Message], error) {
 	var messages []model.Message
 
 	nextCursor, err := NewQueryBuilder(
@@ -176,23 +176,22 @@ func (r *Repository) GetLatestMessages(ctx context.Context, roomID string, q Pag
 
 // GetMessageByID returns a single message by ID within a room.
 // Returns (nil, nil) if the message is not found.
-// NOTE: This scans the full partition because `id` is not part of the primary key.
-// TODO: Add a messages_by_id lookup table or secondary index when schema is finalized.
+// NOTE: Uses ALLOW FILTERING to push the id filter server-side within a single
+// partition (room_id). Consider adding a messages_by_id lookup table if this
+// becomes a bottleneck in rooms with very large message counts.
 func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID string) (*model.Message, error) {
-	iter := r.session.Query(
-		`SELECT id, room_id, user_id, content, created_at FROM messages WHERE room_id = ?`,
-		roomID,
-	).WithContext(ctx).Iter()
-
 	var msg model.Message
-	for iter.Scan(&msg.ID, &msg.RoomID, &msg.UserID, &msg.Content, &msg.CreatedAt) {
-		if msg.ID == messageID {
-			iter.Close() //nolint:errcheck
-			return &msg, nil
-		}
+	err := r.session.Query(
+		`SELECT id, room_id, user_id, content, created_at FROM messages
+		WHERE room_id = ? AND id = ?
+		ALLOW FILTERING`,
+		roomID, messageID,
+	).WithContext(ctx).Scan(&msg.ID, &msg.RoomID, &msg.UserID, &msg.Content, &msg.CreatedAt)
+	if err == gocql.ErrNotFound {
+		return nil, nil
 	}
-	if err := iter.Close(); err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("querying message by id: %w", err)
 	}
-	return nil, nil
+	return &msg, nil
 }

@@ -1,11 +1,36 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
+
+// checkAccess verifies the user is subscribed to the room and returns the
+// historySharedSince lower bound (nil = full access).
+func (s *HistoryService) checkAccess(ctx context.Context, username, roomID string) (*time.Time, error) {
+	accessSince, subscribed, err := s.subscriptions.GetHistorySharedSince(ctx, username, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("checking subscription: %w", err)
+	}
+	if !subscribed {
+		return nil, natsrouter.ErrWithCode("forbidden", "not subscribed to room")
+	}
+	return accessSince, nil
+}
+
+// resolveRoomID returns the roomID from the subject params and validates it
+// matches the body value when present.
+func resolveRoomID(p natsrouter.Params, bodyRoomID string) (string, error) {
+	roomID := p.Get("roomID")
+	if bodyRoomID != "" && bodyRoomID != roomID {
+		return "", natsrouter.ErrWithCode("bad_request", "roomId in body does not match subject")
+	}
+	return roomID, nil
+}
 
 func parseTimestamp(s string) (time.Time, error) {
 	if s == "" {

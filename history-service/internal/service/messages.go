@@ -17,10 +17,14 @@ const (
 )
 
 func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
-	username := p.Get("username")
-	accessSince, _, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	roomID, err := resolveRoomID(p, req.RoomID)
 	if err != nil {
-		return nil, fmt.Errorf("checking subscription: %w", err)
+		return nil, err
+	}
+
+	accessSince, err := s.checkAccess(ctx, p.Get("username"), roomID)
+	if err != nil {
+		return nil, err
 	}
 
 	before, err := parseTimestamp(req.Before)
@@ -48,9 +52,9 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 	// Fetch history page. With accessSince set, enforce it as the lower bound.
 	var page cassrepo.Page[model.Message]
 	if accessSince == nil {
-		page, err = s.messages.GetMessagesBefore(ctx, req.RoomID, before, pageReq)
+		page, err = s.messages.GetMessagesBefore(ctx, roomID, before, pageReq)
 	} else {
-		page, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, *accessSince, before, pageReq)
+		page, err = s.messages.GetMessagesBetweenDesc(ctx, roomID, *accessSince, before, pageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
@@ -75,7 +79,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 				unreadAfter = *accessSince
 			}
 
-			unreadPage, err := s.messages.GetMessagesBetweenAsc(ctx, req.RoomID, unreadAfter, oldestInPage.CreatedAt, true, cassrepo.PageRequest{
+			unreadPage, err := s.messages.GetMessagesBetweenAsc(ctx, roomID, unreadAfter, oldestInPage.CreatedAt, true, cassrepo.PageRequest{
 				Cursor: &cassrepo.Cursor{}, PageSize: 1,
 			})
 			if err != nil {
@@ -94,11 +98,14 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 }
 
 func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Params, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
-	username := p.Get("username")
-
-	accessSince, _, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	roomID, err := resolveRoomID(p, req.RoomID)
 	if err != nil {
-		return nil, fmt.Errorf("checking subscription: %w", err)
+		return nil, err
+	}
+
+	accessSince, err := s.checkAccess(ctx, p.Get("username"), roomID)
+	if err != nil {
+		return nil, err
 	}
 
 	after, err := parseTimestamp(req.After)
@@ -116,9 +123,9 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 
 	var page cassrepo.Page[model.Message]
 	if lowerBound.IsZero() {
-		page, err = s.messages.GetLatestMessages(ctx, req.RoomID, pageReq)
+		page, err = s.messages.GetAllMessagesAsc(ctx, roomID, pageReq)
 	} else {
-		page, err = s.messages.GetMessagesAfter(ctx, req.RoomID, lowerBound, pageReq)
+		page, err = s.messages.GetMessagesAfter(ctx, roomID, lowerBound, pageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading next messages: %w", err)
@@ -132,14 +139,17 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 }
 
 func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrouter.Params, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
-	username := p.Get("username")
-
-	accessSince, _, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	roomID, err := resolveRoomID(p, req.RoomID)
 	if err != nil {
-		return nil, fmt.Errorf("checking subscription: %w", err)
+		return nil, err
 	}
 
-	centralMsg, err := s.messages.GetMessageByID(ctx, req.RoomID, req.MessageID)
+	accessSince, err := s.checkAccess(ctx, p.Get("username"), roomID)
+	if err != nil {
+		return nil, err
+	}
+
+	centralMsg, err := s.messages.GetMessageByID(ctx, roomID, req.MessageID)
 	if err != nil {
 		return nil, fmt.Errorf("finding central message: %w", err)
 	}
@@ -166,16 +176,16 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	// Before-page: messages older than central, newest-first.
 	var beforePage cassrepo.Page[model.Message]
 	if accessSince == nil {
-		beforePage, err = s.messages.GetMessagesBefore(ctx, req.RoomID, centralMsg.CreatedAt, halfPageReq)
+		beforePage, err = s.messages.GetMessagesBefore(ctx, roomID, centralMsg.CreatedAt, halfPageReq)
 	} else {
-		beforePage, err = s.messages.GetMessagesBetweenDesc(ctx, req.RoomID, *accessSince, centralMsg.CreatedAt, halfPageReq)
+		beforePage, err = s.messages.GetMessagesBetweenDesc(ctx, roomID, *accessSince, centralMsg.CreatedAt, halfPageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding before: %w", err)
 	}
 
 	// After-page: messages newer than central, oldest-first.
-	afterPage, err := s.messages.GetMessagesAfter(ctx, req.RoomID, centralMsg.CreatedAt, halfPageReq)
+	afterPage, err := s.messages.GetMessagesAfter(ctx, roomID, centralMsg.CreatedAt, halfPageReq)
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding after: %w", err)
 	}
@@ -196,13 +206,17 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 }
 
 func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params, req models.GetMessageByIDRequest) (*model.Message, error) {
-	username := p.Get("username")
-	accessSince, _, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	roomID, err := resolveRoomID(p, req.RoomID)
 	if err != nil {
-		return nil, fmt.Errorf("checking subscription: %w", err)
+		return nil, err
 	}
 
-	msg, err := s.messages.GetMessageByID(ctx, req.RoomID, req.MessageID)
+	accessSince, err := s.checkAccess(ctx, p.Get("username"), roomID)
+	if err != nil {
+		return nil, err
+	}
+
+	msg, err := s.messages.GetMessageByID(ctx, roomID, req.MessageID)
 	if err != nil {
 		return nil, fmt.Errorf("loading message: %w", err)
 	}

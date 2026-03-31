@@ -131,7 +131,7 @@ func TestRepository_GetMessagesAfter(t *testing.T) {
 	assert.True(t, page.Data[0].CreatedAt.Before(page.Data[1].CreatedAt)) // ASC order
 }
 
-func TestRepository_GetLatestMessages(t *testing.T) {
+func TestRepository_GetAllMessagesAsc(t *testing.T) {
 	session := setupCassandra(t)
 	repo := NewRepository(session)
 	ctx := context.Background()
@@ -141,7 +141,7 @@ func TestRepository_GetLatestMessages(t *testing.T) {
 	q, err := ParsePageRequest("", 3)
 	require.NoError(t, err)
 
-	page, err := repo.GetLatestMessages(ctx, "r1", q)
+	page, err := repo.GetAllMessagesAsc(ctx, "r1", q)
 	require.NoError(t, err)
 	assert.Len(t, page.Data, 3)
 	assert.True(t, page.Data[0].CreatedAt.Before(page.Data[1].CreatedAt)) // ASC order

@@ -334,9 +334,9 @@ func TestHistoryService_LoadNextMessages_BothNil(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
-	// Neither after nor HSS — no lower bound → GetLatestMessages
+	// Neither after nor HSS — no lower bound → GetAllMessagesAsc
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, true, nil)
-	msgs.EXPECT().GetLatestMessages(ctx, "r1", gomock.Any()).Return(makePage(nil, false), nil)
+	msgs.EXPECT().GetAllMessagesAsc(ctx, "r1", gomock.Any()).Return(makePage(nil, false), nil)
 
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "r1"})
 	require.NoError(t, err)
@@ -400,9 +400,9 @@ func TestHistoryService_LoadNextMessages_StoreErrorLatest(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	ctx := context.Background()
 
-	// No HSS, no after → GetLatestMessages path
+	// No HSS, no after → GetAllMessagesAsc path
 	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, true, nil)
-	msgs.EXPECT().GetLatestMessages(ctx, "r1", gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db error"))
+	msgs.EXPECT().GetAllMessagesAsc(ctx, "r1", gomock.Any()).Return(cassrepo.Page[model.Message]{}, fmt.Errorf("db error"))
 
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "r1"})
 	require.Error(t, err)
@@ -733,4 +733,92 @@ func TestHistoryService_LoadSurroundingMessages_Limit1_OnlyCentral(t *testing.T)
 	assert.Equal(t, "m5", resp.Messages[0].ID)
 	assert.False(t, resp.MoreBefore)
 	assert.False(t, resp.MoreAfter)
+}
+
+// --- Access Control: Not Subscribed ---
+
+func TestHistoryService_LoadHistory_NotSubscribed(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, false, nil)
+
+	_, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not subscribed to room")
+}
+
+func TestHistoryService_LoadNextMessages_NotSubscribed(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, false, nil)
+
+	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "r1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not subscribed to room")
+}
+
+func TestHistoryService_LoadSurroundingMessages_NotSubscribed(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, false, nil)
+
+	_, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
+		RoomID: "r1", MessageID: "m5", Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not subscribed to room")
+}
+
+func TestHistoryService_GetMessageByID_NotSubscribed(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(nil, false, nil)
+
+	_, err := svc.GetMessageByID(ctx, testParams, models.GetMessageByIDRequest{RoomID: "r1", MessageID: "m1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not subscribed to room")
+}
+
+// --- RoomID Mismatch ---
+
+func TestHistoryService_LoadHistory_RoomIDMismatch(t *testing.T) {
+	svc, _, _ := newService(t)
+	ctx := context.Background()
+
+	_, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "wrong-room"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "roomId in body does not match subject")
+}
+
+func TestHistoryService_LoadNextMessages_RoomIDMismatch(t *testing.T) {
+	svc, _, _ := newService(t)
+	ctx := context.Background()
+
+	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "wrong-room"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "roomId in body does not match subject")
+}
+
+func TestHistoryService_LoadSurroundingMessages_RoomIDMismatch(t *testing.T) {
+	svc, _, _ := newService(t)
+	ctx := context.Background()
+
+	_, err := svc.LoadSurroundingMessages(ctx, testParams, models.LoadSurroundingMessagesRequest{
+		RoomID: "wrong-room", MessageID: "m5", Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "roomId in body does not match subject")
+}
+
+func TestHistoryService_GetMessageByID_RoomIDMismatch(t *testing.T) {
+	svc, _, _ := newService(t)
+	ctx := context.Background()
+
+	_, err := svc.GetMessageByID(ctx, testParams, models.GetMessageByIDRequest{RoomID: "wrong-room", MessageID: "m1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "roomId in body does not match subject")
 }
