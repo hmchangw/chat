@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
 // ErrNoCurrentKey is returned by Rotate when no current key exists for the room.
@@ -54,55 +52,6 @@ type hashCommander interface {
 type valkeyStore struct {
 	client      hashCommander
 	gracePeriod time.Duration
-}
-
-// redisAdapter wraps *redis.Client to satisfy hashCommander.
-type redisAdapter struct {
-	c *redis.Client
-}
-
-func (a *redisAdapter) hset(ctx context.Context, key string, pub, priv, ver string) error {
-	return a.c.HSet(ctx, key, "pub", pub, "priv", priv, "ver", ver).Err()
-}
-
-func (a *redisAdapter) hgetall(ctx context.Context, key string) (map[string]string, error) {
-	return a.c.HGetAll(ctx, key).Result()
-}
-
-func (a *redisAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv, ver string, gracePeriod time.Duration) error {
-	pipe := a.c.Pipeline()
-	// Read current key to copy to prev — we use HGetAll outside the pipeline,
-	// then write both in a single pipeline for atomicity of the write side.
-	current, err := a.c.HGetAll(ctx, currentKey).Result()
-	if err != nil {
-		return fmt.Errorf("read current key: %w", err)
-	}
-	if len(current) == 0 {
-		return ErrNoCurrentKey
-	}
-	pipe.HSet(ctx, prevKey, "pub", current["pub"], "priv", current["priv"], "ver", current["ver"])
-	pipe.Expire(ctx, prevKey, gracePeriod)
-	pipe.HSet(ctx, currentKey, "pub", pub, "priv", priv, "ver", ver)
-	_, err = pipe.Exec(ctx)
-	return err
-}
-
-func (a *redisAdapter) deletePipeline(ctx context.Context, currentKey, prevKey string) error {
-	return a.c.Del(ctx, currentKey, prevKey).Err()
-}
-
-// NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
-func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
-	c := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := c.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("valkey connect: %w", err)
-	}
-	return &valkeyStore{client: &redisAdapter{c: c}, gracePeriod: cfg.GracePeriod}, nil
 }
 
 // roomkey returns the Valkey hash key for a room's current key pair.
