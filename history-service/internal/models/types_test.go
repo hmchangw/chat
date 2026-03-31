@@ -75,34 +75,35 @@ func TestCardAction_JSON_Minimal(t *testing.T) {
 	assert.False(t, got.HideExecLog)
 }
 
-func TestParticipant_UnmarshalUDT_UnknownField(t *testing.T) {
-	// Unknown fields should be silently ignored (return nil).
-	p := &Participant{}
-	err := p.UnmarshalUDT("nonexistent_field", nil, nil)
-	assert.NoError(t, err)
+func TestUnmarshalUDT_UnknownField(t *testing.T) {
+	assert.NoError(t, (&Participant{}).UnmarshalUDT("nonexistent", nil, nil))
+	assert.NoError(t, (&File{}).UnmarshalUDT("nonexistent", nil, nil))
+	assert.NoError(t, (&Card{}).UnmarshalUDT("nonexistent", nil, nil))
+	assert.NoError(t, (&CardAction{}).UnmarshalUDT("nonexistent", nil, nil))
 }
 
-func TestFile_UnmarshalUDT_UnknownField(t *testing.T) {
-	f := &File{}
-	err := f.UnmarshalUDT("nonexistent_field", nil, nil)
-	assert.NoError(t, err)
-}
-
-func TestCard_UnmarshalUDT_UnknownField(t *testing.T) {
-	c := &Card{}
-	err := c.UnmarshalUDT("nonexistent_field", nil, nil)
-	assert.NoError(t, err)
-}
-
-func TestCardAction_UnmarshalUDT_UnknownField(t *testing.T) {
-	ca := &CardAction{}
-	err := ca.UnmarshalUDT("nonexistent_field", nil, nil)
-	assert.NoError(t, err)
-}
-
-func TestParticipant_MarshalUDT_UnknownField(t *testing.T) {
-	p := &Participant{ID: "u1"}
-	data, err := p.MarshalUDT("nonexistent_field", nil)
+func TestMarshalUDT_UnknownField(t *testing.T) {
+	data, err := (&Participant{}).MarshalUDT("nonexistent", nil)
 	assert.NoError(t, err)
 	assert.Nil(t, data)
+
+	data, err = (&File{}).MarshalUDT("nonexistent", nil)
+	assert.NoError(t, err)
+	assert.Nil(t, data)
+
+	data, err = (&Card{}).MarshalUDT("nonexistent", nil)
+	assert.NoError(t, err)
+	assert.Nil(t, data)
+
+	data, err = (&CardAction{}).MarshalUDT("nonexistent", nil)
+	assert.NoError(t, err)
+	assert.Nil(t, data)
+}
+
+func TestVerifyUDTTags_PanicsOnMissingTag(t *testing.T) {
+	type BadUDT struct {
+		Name string `cql:"name"`
+		Oops string // no cql tag
+	}
+	assert.Panics(t, func() { verifyUDTTags(&BadUDT{}) })
 }
