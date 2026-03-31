@@ -33,7 +33,7 @@ func (p *Participant) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte
 	return nil
 }
 
-func (p Participant) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+func (p *Participant) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
 	switch name {
 	case "id":
 		return gocql.Marshal(info, p.ID)
@@ -141,7 +141,7 @@ func (ca *CardAction) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte
 	return nil
 }
 
-func (ca CardAction) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+func (ca *CardAction) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
 	switch name {
 	case "verb":
 		return gocql.Marshal(info, ca.Verb)

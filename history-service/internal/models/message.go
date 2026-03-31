@@ -4,28 +4,28 @@ import "time"
 
 // Message represents a full message row from the messages_by_room Cassandra table.
 type Message struct {
-	RoomID                string                  `json:"roomId"`
-	CreatedAt             time.Time               `json:"createdAt"`
-	MessageID             string                  `json:"messageId"`
-	Sender                Participant             `json:"sender"`
-	TargetUser            *Participant            `json:"targetUser,omitempty"`
-	Msg                   string                  `json:"msg"`
-	Mentions              []Participant           `json:"mentions,omitempty"`
-	Attachments           [][]byte                `json:"attachments,omitempty"`
-	File                  *File                   `json:"file,omitempty"`
-	Card                  *Card                   `json:"card,omitempty"`
-	CardAction            *CardAction             `json:"cardAction,omitempty"`
-	TShow                 bool                    `json:"tshow,omitempty"`
-	ThreadParentCreatedAt *time.Time              `json:"threadParentCreatedAt,omitempty"`
-	VisibleTo             string                  `json:"visibleTo,omitempty"`
-	Unread                bool                    `json:"unread,omitempty"`
+	RoomID                string                   `json:"roomId"`
+	CreatedAt             time.Time                `json:"createdAt"`
+	MessageID             string                   `json:"messageId"`
+	Sender                Participant              `json:"sender"`
+	TargetUser            *Participant             `json:"targetUser,omitempty"`
+	Msg                   string                   `json:"msg"`
+	Mentions              []Participant            `json:"mentions,omitempty"`
+	Attachments           [][]byte                 `json:"attachments,omitempty"`
+	File                  *File                    `json:"file,omitempty"`
+	Card                  *Card                    `json:"card,omitempty"`
+	CardAction            *CardAction              `json:"cardAction,omitempty"`
+	TShow                 bool                     `json:"tshow,omitempty"`
+	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty"`
+	VisibleTo             string                   `json:"visibleTo,omitempty"`
+	Unread                bool                     `json:"unread,omitempty"`
 	Reactions             map[string][]Participant `json:"reactions,omitempty"`
-	Deleted               bool                    `json:"deleted,omitempty"`
-	SysMsgType            string                  `json:"sysMsgType,omitempty"`
-	SysMsgData            []byte                  `json:"sysMsgData,omitempty"`
-	FederateFrom          string                  `json:"federateFrom,omitempty"`
-	EditedAt              *time.Time              `json:"editedAt,omitempty"`
-	UpdatedAt             *time.Time              `json:"updatedAt,omitempty"`
+	Deleted               bool                     `json:"deleted,omitempty"`
+	SysMsgType            string                   `json:"sysMsgType,omitempty"`
+	SysMsgData            []byte                   `json:"sysMsgData,omitempty"`
+	FederateFrom          string                   `json:"federateFrom,omitempty"`
+	EditedAt              *time.Time               `json:"editedAt,omitempty"`
+	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"`
 }
 
 // LoadHistoryRequest is the payload for loading message history before a timestamp.
