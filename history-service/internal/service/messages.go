@@ -31,18 +31,15 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		before = time.Now().UTC()
 	}
 
-	lastSeen := millisToTime(req.LastSeen)
-
 	limit := req.Limit
 	if limit <= 0 {
 		limit = historyPageSize
 	}
-	pageReq, err := parsePageRequest(req.Cursor, limit)
+	pageReq, err := parsePageRequest("", limit)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch history page. With accessSince set, enforce it as the lower bound.
 	var page cassrepo.Page[models.Message]
 	if accessSince == nil {
 		page, err = s.messages.GetMessagesBefore(ctx, roomID, before, pageReq)
@@ -53,41 +50,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		return nil, fmt.Errorf("loading history: %w", err)
 	}
 
-	resp := &models.LoadHistoryResponse{
-		Messages: page.Data,
-	}
-
-	// Find the first unread message via a separate query when:
-	// - the page has messages
-	// - the client provided a lastSeen timestamp
-	// - lastSeen is before the oldest message in the page (meaning unread messages may exist before it)
-	if len(page.Data) > 0 && !lastSeen.IsZero() {
-		oldestInPage := page.Data[len(page.Data)-1]
-
-		if lastSeen.Before(oldestInPage.CreatedAt) {
-			// Lower bound for the unread query: max(accessSince, lastSeen).
-			// If accessSince is nil (no restriction), just use lastSeen.
-			unreadAfter := lastSeen
-			if accessSince != nil && accessSince.After(lastSeen) {
-				unreadAfter = *accessSince
-			}
-
-			unreadPage, err := s.messages.GetMessagesBetweenAsc(ctx, roomID, unreadAfter, oldestInPage.CreatedAt, true, cassrepo.PageRequest{
-				Cursor: &cassrepo.Cursor{}, PageSize: 1,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("finding first unread: %w", err)
-			}
-
-			if len(unreadPage.Data) > 0 {
-				resp.FirstUnread = &unreadPage.Data[0]
-				resp.HasNextUnread = unreadPage.HasNext
-				resp.NextUnreadCursor = unreadPage.NextCursor
-			}
-		}
-	}
-
-	return resp, nil
+	return &models.LoadHistoryResponse{Messages: page.Data}, nil
 }
 
 func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Params, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
