@@ -18,7 +18,7 @@ const (
 
 func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
 	username := p.Get("username")
-	accessSince, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	accessSince, _, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
@@ -96,7 +96,7 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Params, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
 	username := p.Get("username")
 
-	accessSince, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	accessSince, _, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
@@ -134,7 +134,7 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrouter.Params, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
 	username := p.Get("username")
 
-	accessSince, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	accessSince, _, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
@@ -197,7 +197,7 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 
 func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params, req models.GetMessageByIDRequest) (*model.Message, error) {
 	username := p.Get("username")
-	accessSince, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
+	accessSince, _, err := s.subscriptions.GetHistorySharedSince(ctx, username, req.RoomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
