@@ -37,12 +37,12 @@ func resolveRoomID(p natsrouter.Params, bodyRoomID string) (string, error) {
 }
 
 // millisToTime converts a UTC millisecond timestamp to time.Time.
-// Returns zero time if millis is 0 (meaning "not provided").
-func millisToTime(millis int64) time.Time {
-	if millis == 0 {
+// Returns zero time if millis is nil (meaning "not provided").
+func millisToTime(millis *int64) time.Time {
+	if millis == nil {
 		return time.Time{}
 	}
-	return time.UnixMilli(millis).UTC()
+	return time.UnixMilli(*millis).UTC()
 }
 
 func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {

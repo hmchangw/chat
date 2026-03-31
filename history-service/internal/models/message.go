@@ -31,10 +31,10 @@ type Message struct {
 // LoadHistoryRequest is the payload for loading message history before a timestamp.
 type LoadHistoryRequest struct {
 	RoomID   string `json:"roomId"`
-	Before   int64  `json:"before"`   // UTC millis — fetch messages before this (0 = now)
-	Limit    int    `json:"limit"`    // default 20
-	LastSeen int64  `json:"lastSeen"` // UTC millis — last message seen by user (0 = not set)
-	Cursor   string `json:"cursor"`   // pagination cursor from previous response
+	Before   *int64 `json:"before,omitempty"`   // UTC millis — fetch messages before this (nil = now)
+	Limit    int    `json:"limit"`              // default 20
+	LastSeen *int64 `json:"lastSeen,omitempty"` // UTC millis — last message seen by user (nil = not set)
+	Cursor   string `json:"cursor"`             // pagination cursor from previous response
 }
 
 // LoadHistoryResponse is the response for LoadHistory.
@@ -48,9 +48,9 @@ type LoadHistoryResponse struct {
 // LoadNextMessagesRequest is the payload for loading messages after a timestamp.
 type LoadNextMessagesRequest struct {
 	RoomID string `json:"roomId"`
-	After  int64  `json:"after"`  // UTC millis — fetch messages after this (0 = no lower bound)
-	Limit  int    `json:"limit"`  // default 50
-	Cursor string `json:"cursor"` // pagination cursor from previous response
+	After  *int64 `json:"after,omitempty"` // UTC millis — fetch messages after this (nil = no lower bound)
+	Limit  int    `json:"limit"`           // default 50
+	Cursor string `json:"cursor"`          // pagination cursor from previous response
 }
 
 // LoadNextMessagesResponse is the response for LoadNextMessages.

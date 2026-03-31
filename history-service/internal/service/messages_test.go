@@ -22,6 +22,11 @@ var (
 	testParams = natsrouter.NewParams(map[string]string{"username": "u1", "roomID": "r1"})
 )
 
+func millis(t time.Time) *int64 {
+	ms := t.UnixMilli()
+	return &ms
+}
+
 func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository) {
 	ctrl := gomock.NewController(t)
 	msgs := mocks.NewMockMessageRepository(ctrl)
@@ -95,7 +100,7 @@ func TestHistoryService_LoadHistory_LastSeenAfterOldest_NoFirstUnread(t *testing
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.UnixMilli(),
+		LastSeen: millis(lastSeen),
 	})
 	require.NoError(t, err)
 	// lastSeen (2min) > oldestInPage (1min) — all loaded messages are seen, no unread query
@@ -124,7 +129,7 @@ func TestHistoryService_LoadHistory_FirstUnread_WithDBQuery(t *testing.T) {
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.UnixMilli(),
+		LastSeen: millis(lastSeen),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp.FirstUnread)
@@ -151,7 +156,7 @@ func TestHistoryService_LoadHistory_FirstUnread_LastSeenBeforeHSS(t *testing.T) 
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.UnixMilli(),
+		LastSeen: millis(lastSeen),
 	})
 	require.NoError(t, err)
 	assert.Nil(t, resp.FirstUnread) // no unread found in range
@@ -244,7 +249,7 @@ func TestHistoryService_LoadHistory_NoHSS_WithUnread(t *testing.T) {
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.UnixMilli(),
+		LastSeen: millis(lastSeen),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp.FirstUnread)
@@ -269,7 +274,7 @@ func TestHistoryService_LoadHistory_LastSeenEqualsOldest_NoUnreadQuery(t *testin
 	lastSeen := joinTime.Add(1 * time.Minute) // equal to oldestInPage.CreatedAt
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.UnixMilli(),
+		LastSeen: millis(lastSeen),
 	})
 	require.NoError(t, err)
 	assert.Nil(t, resp.FirstUnread)
@@ -294,7 +299,7 @@ func TestHistoryService_LoadNextMessages_BothAfterAndHSS(t *testing.T) {
 
 	resp, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{
 		RoomID: "r1",
-		After:  afterTime.UnixMilli(),
+		After:  millis(afterTime),
 	})
 	require.NoError(t, err)
 	assert.Len(t, resp.Messages, 2)
@@ -324,7 +329,7 @@ func TestHistoryService_LoadNextMessages_OnlyAfter(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{
 		RoomID: "r1",
-		After:  afterTime.UnixMilli(),
+		After:  millis(afterTime),
 	})
 	require.NoError(t, err)
 }
@@ -352,7 +357,7 @@ func TestHistoryService_LoadNextMessages_AfterBeforeHSS_ClampsToHSS(t *testing.T
 
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{
 		RoomID: "r1",
-		After:  earlyTime.UnixMilli(),
+		After:  millis(earlyTime),
 	})
 	require.NoError(t, err)
 }
