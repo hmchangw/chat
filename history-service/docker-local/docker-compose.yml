@@ -1,23 +1,23 @@
 # Local development environment for history-service.
-# Starts NATS (with JetStream), MongoDB, and Cassandra.
+# Starts NATS, MongoDB, Cassandra, initializes schema, and runs the service.
 #
 # Usage:
 #   cd history-service/docker-local
-#   docker compose up -d          # start all services
-#   docker compose logs -f        # follow logs
-#   docker compose down           # stop all services
-#   docker compose down -v        # stop and remove volumes (clean slate)
+#   docker compose up -d            # start everything
+#   docker compose logs -f history  # follow service logs
+#   docker compose down             # stop all services
+#   docker compose down -v          # stop and remove volumes (clean slate)
 #
-# After starting, run history-service from repo root:
-#   set -a && source history-service/docker-local/.env && set +a
-#   go run ./history-service/cmd/
+# Run the demo from another terminal:
+#   cd history-service-demo
+#   docker compose up
 
 services:
   nats:
     image: nats:2.11-alpine
     ports:
-      - "4222:4222"   # client connections
-      - "8222:8222"   # HTTP monitoring
+      - "4222:4222"
+      - "8222:8222"
     command: ["--jetstream", "--http_port", "8222"]
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
@@ -62,14 +62,58 @@ services:
     command:
       - |
         CREATE KEYSPACE IF NOT EXISTS chat WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
-        CREATE TABLE IF NOT EXISTS chat.messages (
-            room_id text,
-            created_at timestamp,
-            id text,
-            user_id text,
-            content text,
-            PRIMARY KEY (room_id, created_at)
-        ) WITH CLUSTERING ORDER BY (created_at DESC);
+
+        CREATE TYPE IF NOT EXISTS chat."Participant" (id TEXT, user_name TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN);
+        CREATE TYPE IF NOT EXISTS chat."File" (id TEXT, name TEXT, type TEXT);
+        CREATE TYPE IF NOT EXISTS chat."Card" (template TEXT, data BLOB);
+        CREATE TYPE IF NOT EXISTS chat."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB);
+
+        CREATE TABLE IF NOT EXISTS chat.messages_by_room (
+            room_id TEXT,
+            created_at TIMESTAMP,
+            message_id TEXT,
+            sender FROZEN<"Participant">,
+            target_user FROZEN<"Participant">,
+            msg TEXT,
+            mentions SET<FROZEN<"Participant">>,
+            attachments LIST<BLOB>,
+            file FROZEN<"File">,
+            card FROZEN<"Card">,
+            card_action FROZEN<"CardAction">,
+            tshow BOOLEAN,
+            thread_parent_created_at TIMESTAMP,
+            visible_to TEXT,
+            unread BOOLEAN,
+            reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+            deleted BOOLEAN,
+            sys_msg_type TEXT,
+            sys_msg_data BLOB,
+            federate_from TEXT,
+            edited_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            PRIMARY KEY ((room_id), created_at, message_id)
+        ) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+
+  history:
+    build:
+      context: ../..
+      dockerfile: history-service/deploy/Dockerfile
+    depends_on:
+      nats:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+    environment:
+      NATS_URL: nats://nats:4222
+      SITE_ID: site-local
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB: chat
+      CASSANDRA_HOSTS: cassandra
+      CASSANDRA_KEYSPACE: chat
+    ports:
+      - "8080:8080"
 
 volumes:
   mongo-data:
