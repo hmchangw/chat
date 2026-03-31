@@ -40,27 +40,6 @@ func TestCursor_RoundTrip(t *testing.T) {
 	assert.Equal(t, state, decoded.Raw())
 }
 
-func TestNewPage(t *testing.T) {
-	data := []string{"a", "b", "c"}
-	state := []byte{0x01, 0x02}
-
-	page := NewPage(data, state)
-
-	assert.Equal(t, data, page.Data)
-	assert.True(t, page.HasNext)
-	assert.NotEmpty(t, page.NextCursor)
-}
-
-func TestNewPage_LastPage(t *testing.T) {
-	data := []string{"a"}
-
-	page := NewPage(data, nil)
-
-	assert.Equal(t, data, page.Data)
-	assert.False(t, page.HasNext)
-	assert.Empty(t, page.NextCursor)
-}
-
 func TestParsePageRequest_Defaults(t *testing.T) {
 	q, err := ParsePageRequest("", 0)
 	require.NoError(t, err)

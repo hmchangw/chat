@@ -46,16 +46,6 @@ type Page[T any] struct {
 	HasNext    bool   `json:"hasNext"`
 }
 
-// NewPage creates a Page from data and the raw Cassandra PageState.
-func NewPage[T any](data []T, nextState []byte) Page[T] {
-	next := (&Cursor{state: nextState}).Encode()
-	return Page[T]{
-		Data:       data,
-		NextCursor: next,
-		HasNext:    next != "",
-	}
-}
-
 // PageRequest represents a pagination request from the client.
 type PageRequest struct {
 	Cursor   *Cursor
@@ -66,11 +56,6 @@ const (
 	defaultPageSize = 50
 	maxPageSize     = 100
 )
-
-// DefaultPageRequest returns a PageRequest with defaults (first page, 50 items).
-func DefaultPageRequest() PageRequest {
-	return PageRequest{Cursor: &Cursor{}, PageSize: defaultPageSize}
-}
 
 // ParsePageRequest creates a PageRequest from a cursor string and page size.
 // Returns a valid PageRequest with defaults applied for invalid/missing values.

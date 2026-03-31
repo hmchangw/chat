@@ -13,6 +13,7 @@ import (
 const (
 	historyPageSize     = 20
 	surroundingPageSize = 25
+	maxPageSize         = 100
 )
 
 func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
@@ -34,6 +35,9 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 	limit := req.Limit
 	if limit <= 0 {
 		limit = historyPageSize
+	}
+	if limit > maxPageSize {
+		limit = maxPageSize
 	}
 	pageReq, err := parsePageRequest("", limit)
 	if err != nil {
@@ -116,6 +120,9 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	limit := req.Limit
 	if limit <= 0 {
 		limit = surroundingPageSize
+	}
+	if limit > maxPageSize {
+		limit = maxPageSize
 	}
 	half := limit / 2
 	if half == 0 {

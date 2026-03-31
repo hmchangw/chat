@@ -41,7 +41,7 @@ func NewRepository(session *gocql.Session) *Repository {
 }
 
 func scanMessages(iter *gocql.Iter) []models.Message {
-	var messages []models.Message
+	messages := make([]models.Message, 0)
 	for {
 		var m models.Message
 		if !iter.Scan(messageScanDest(&m)...) {
