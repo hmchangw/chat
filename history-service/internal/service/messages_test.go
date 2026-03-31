@@ -95,7 +95,7 @@ func TestHistoryService_LoadHistory_LastSeenAfterOldest_NoFirstUnread(t *testing
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.Format(time.RFC3339Nano),
+		LastSeen: lastSeen.UnixMilli(),
 	})
 	require.NoError(t, err)
 	// lastSeen (2min) > oldestInPage (1min) — all loaded messages are seen, no unread query
@@ -124,7 +124,7 @@ func TestHistoryService_LoadHistory_FirstUnread_WithDBQuery(t *testing.T) {
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.Format(time.RFC3339Nano),
+		LastSeen: lastSeen.UnixMilli(),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp.FirstUnread)
@@ -151,7 +151,7 @@ func TestHistoryService_LoadHistory_FirstUnread_LastSeenBeforeHSS(t *testing.T) 
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.Format(time.RFC3339Nano),
+		LastSeen: lastSeen.UnixMilli(),
 	})
 	require.NoError(t, err)
 	assert.Nil(t, resp.FirstUnread) // no unread found in range
@@ -168,17 +168,6 @@ func TestHistoryService_LoadHistory_StoreError(t *testing.T) {
 	_, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "loading history")
-}
-
-func TestHistoryService_LoadHistory_InvalidBefore(t *testing.T) {
-	svc, _, subs := newService(t)
-	ctx := context.Background()
-
-	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, true, nil)
-
-	_, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1", Before: "not-a-timestamp"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid timestamp")
 }
 
 func TestHistoryService_LoadHistory_InvalidCursor(t *testing.T) {
@@ -255,7 +244,7 @@ func TestHistoryService_LoadHistory_NoHSS_WithUnread(t *testing.T) {
 
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.Format(time.RFC3339Nano),
+		LastSeen: lastSeen.UnixMilli(),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp.FirstUnread)
@@ -280,7 +269,7 @@ func TestHistoryService_LoadHistory_LastSeenEqualsOldest_NoUnreadQuery(t *testin
 	lastSeen := joinTime.Add(1 * time.Minute) // equal to oldestInPage.CreatedAt
 	resp, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{
 		RoomID:   "r1",
-		LastSeen: lastSeen.Format(time.RFC3339Nano),
+		LastSeen: lastSeen.UnixMilli(),
 	})
 	require.NoError(t, err)
 	assert.Nil(t, resp.FirstUnread)
@@ -305,7 +294,7 @@ func TestHistoryService_LoadNextMessages_BothAfterAndHSS(t *testing.T) {
 
 	resp, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{
 		RoomID: "r1",
-		After:  afterTime.Format(time.RFC3339Nano),
+		After:  afterTime.UnixMilli(),
 	})
 	require.NoError(t, err)
 	assert.Len(t, resp.Messages, 2)
@@ -335,7 +324,7 @@ func TestHistoryService_LoadNextMessages_OnlyAfter(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{
 		RoomID: "r1",
-		After:  afterTime.Format(time.RFC3339Nano),
+		After:  afterTime.UnixMilli(),
 	})
 	require.NoError(t, err)
 }
@@ -363,7 +352,7 @@ func TestHistoryService_LoadNextMessages_AfterBeforeHSS_ClampsToHSS(t *testing.T
 
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{
 		RoomID: "r1",
-		After:  earlyTime.Format(time.RFC3339Nano),
+		After:  earlyTime.UnixMilli(),
 	})
 	require.NoError(t, err)
 }
@@ -377,20 +366,6 @@ func TestHistoryService_LoadNextMessages_SubscriptionStoreError(t *testing.T) {
 	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{RoomID: "r1"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking subscription")
-}
-
-func TestHistoryService_LoadNextMessages_InvalidAfter(t *testing.T) {
-	svc, _, subs := newService(t)
-	ctx := context.Background()
-
-	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, true, nil)
-
-	_, err := svc.LoadNextMessages(ctx, testParams, models.LoadNextMessagesRequest{
-		RoomID: "r1",
-		After:  "not-a-timestamp",
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid timestamp")
 }
 
 func TestHistoryService_LoadNextMessages_StoreErrorAfter(t *testing.T) {

@@ -36,15 +36,13 @@ func resolveRoomID(p natsrouter.Params, bodyRoomID string) (string, error) {
 	}
 }
 
-func parseTimestamp(s string) (time.Time, error) {
-	if s == "" {
-		return time.Time{}, nil
+// millisToTime converts a UTC millisecond timestamp to time.Time.
+// Returns zero time if millis is 0 (meaning "not provided").
+func millisToTime(millis int64) time.Time {
+	if millis == 0 {
+		return time.Time{}
 	}
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		return time.Time{}, natsrouter.ErrWithCode("bad_request", "invalid timestamp format")
-	}
-	return t, nil
+	return time.UnixMilli(millis).UTC()
 }
 
 func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {

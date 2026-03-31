@@ -26,18 +26,12 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 		return nil, err
 	}
 
-	before, err := parseTimestamp(req.Before)
-	if err != nil {
-		return nil, err
-	}
+	before := millisToTime(req.Before)
 	if before.IsZero() {
 		before = time.Now().UTC()
 	}
 
-	lastSeen, err := parseTimestamp(req.LastSeen)
-	if err != nil {
-		return nil, err
-	}
+	lastSeen := millisToTime(req.LastSeen)
 
 	limit := req.Limit
 	if limit <= 0 {
@@ -107,10 +101,7 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 		return nil, err
 	}
 
-	after, err := parseTimestamp(req.After)
-	if err != nil {
-		return nil, err
-	}
+	after := millisToTime(req.After)
 
 	// Lower bound = max(after, accessSince). Zero means no lower bound.
 	lowerBound := timeMax(after, derefTime(accessSince))
