@@ -72,7 +72,7 @@ func (f *File) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte) error
 	return nil
 }
 
-func (f File) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+func (f *File) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
 	switch name {
 	case "id":
 		return gocql.Marshal(info, f.ID)
@@ -100,7 +100,7 @@ func (c *Card) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte) error
 	return nil
 }
 
-func (c Card) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+func (c *Card) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
 	switch name {
 	case "template":
 		return gocql.Marshal(info, c.Template)

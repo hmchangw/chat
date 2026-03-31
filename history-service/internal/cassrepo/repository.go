@@ -177,7 +177,7 @@ func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q Pag
 			messages = scanMessages(iter)
 		})
 	if err != nil {
-		return Page[models.Message]{}, fmt.Errorf("querying latest messages: %w", err)
+		return Page[models.Message]{}, fmt.Errorf("querying all messages asc: %w", err)
 	}
 
 	return Page[models.Message]{

@@ -181,6 +181,17 @@ func TestHistoryService_LoadHistory_InvalidBefore(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid timestamp")
 }
 
+func TestHistoryService_LoadHistory_InvalidCursor(t *testing.T) {
+	svc, _, subs := newService(t)
+	ctx := context.Background()
+
+	subs.EXPECT().GetHistorySharedSince(ctx, "u1", "r1").Return(&joinTime, true, nil)
+
+	_, err := svc.LoadHistory(ctx, testParams, models.LoadHistoryRequest{RoomID: "r1", Cursor: "not-valid-base64!@#"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid pagination cursor")
+}
+
 func TestHistoryService_LoadHistory_SubscriptionError(t *testing.T) {
 	svc, _, subs := newService(t)
 	ctx := context.Background()
