@@ -54,3 +54,23 @@ func Errf(format string, args ...any) *RouteError {
 func ErrWithCode(code, message string) *RouteError {
 	return &RouteError{Message: message, Code: code}
 }
+
+// Standard error codes.
+const (
+	CodeBadRequest = "bad_request"
+	CodeNotFound   = "not_found"
+	CodeForbidden  = "forbidden"
+	CodeConflict   = "conflict"
+)
+
+// ErrBadRequest creates a user-facing bad request error.
+func ErrBadRequest(message string) *RouteError { return ErrWithCode(CodeBadRequest, message) }
+
+// ErrNotFound creates a user-facing not found error.
+func ErrNotFound(message string) *RouteError { return ErrWithCode(CodeNotFound, message) }
+
+// ErrForbidden creates a user-facing forbidden error.
+func ErrForbidden(message string) *RouteError { return ErrWithCode(CodeForbidden, message) }
+
+// ErrConflict creates a user-facing conflict error.
+func ErrConflict(message string) *RouteError { return ErrWithCode(CodeConflict, message) }

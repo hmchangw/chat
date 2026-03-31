@@ -34,6 +34,15 @@ func (p Params) MustGet(key string) string {
 	return v
 }
 
+// Require returns the value of a named param or an error if not found/empty.
+func (p Params) Require(key string) (string, error) {
+	v, ok := p.values[key]
+	if !ok || v == "" {
+		return "", ErrBadRequest("missing required param: " + key)
+	}
+	return v, nil
+}
+
 // route is created once at registration time from a pattern.
 // It holds the converted NATS wildcard subject and the position-to-name
 // mapping for param extraction.
