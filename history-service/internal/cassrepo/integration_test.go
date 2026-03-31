@@ -210,3 +210,116 @@ func TestRepository_GetMessageByID_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, msg)
 }
+
+func TestRepository_FullRow_AllColumns(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	ts := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	editedAt := ts.Add(5 * time.Minute)
+	updatedAt := ts.Add(10 * time.Minute)
+	threadParent := ts.Add(-1 * time.Hour)
+
+	sender := models.Participant{ID: "u1", UserName: "alice", EngName: "Alice", CompanyName: "Acme", AppID: "app1", AppName: "MyApp", IsBot: false}
+	target := models.Participant{ID: "u2", UserName: "bob"}
+	mentionUser := models.Participant{ID: "u3", UserName: "charlie"}
+	reactUser := models.Participant{ID: "u4", UserName: "dave"}
+	file := models.File{ID: "f1", Name: "doc.pdf", Type: "application/pdf"}
+	card := models.Card{Template: "approval", Data: []byte("card-data")}
+	cardAction := models.CardAction{Verb: "approve", Text: "Approve", CardID: "c1", DisplayText: "Click", HideExecLog: true, CardTmID: "tm1", Data: []byte("action-data")}
+
+	err := session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_created_at, visible_to, unread, reactions, deleted, sys_msg_type, sys_msg_data, federate_from, edited_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"r-full", ts, "m-full",
+		sender, target, "hello world",
+		[]models.Participant{mentionUser},
+		[][]byte{[]byte("attach1"), []byte("attach2")},
+		file, card, cardAction,
+		true, threadParent, "u1", true,
+		map[string][]models.Participant{"thumbsup": {reactUser}},
+		true, "user_joined", []byte("sys-data"),
+		"site-remote", editedAt, updatedAt,
+	).Exec()
+	require.NoError(t, err)
+
+	msg, err := repo.GetMessageByID(ctx, "r-full", "m-full")
+	require.NoError(t, err)
+	require.NotNil(t, msg)
+
+	// Primary key fields
+	assert.Equal(t, "r-full", msg.RoomID)
+	assert.Equal(t, ts.UTC(), msg.CreatedAt.UTC())
+	assert.Equal(t, "m-full", msg.MessageID)
+
+	// Sender UDT (all fields)
+	assert.Equal(t, "u1", msg.Sender.ID)
+	assert.Equal(t, "alice", msg.Sender.UserName)
+	assert.Equal(t, "Alice", msg.Sender.EngName)
+	assert.Equal(t, "Acme", msg.Sender.CompanyName)
+	assert.Equal(t, "app1", msg.Sender.AppID)
+	assert.Equal(t, "MyApp", msg.Sender.AppName)
+	assert.False(t, msg.Sender.IsBot)
+
+	// Target user UDT
+	require.NotNil(t, msg.TargetUser)
+	assert.Equal(t, "u2", msg.TargetUser.ID)
+	assert.Equal(t, "bob", msg.TargetUser.UserName)
+
+	// Text
+	assert.Equal(t, "hello world", msg.Msg)
+
+	// Mentions (SET<FROZEN<Participant>>)
+	require.Len(t, msg.Mentions, 1)
+	assert.Equal(t, "u3", msg.Mentions[0].ID)
+	assert.Equal(t, "charlie", msg.Mentions[0].UserName)
+
+	// Attachments (LIST<BLOB>)
+	require.Len(t, msg.Attachments, 2)
+	assert.Equal(t, []byte("attach1"), msg.Attachments[0])
+	assert.Equal(t, []byte("attach2"), msg.Attachments[1])
+
+	// File UDT
+	require.NotNil(t, msg.File)
+	assert.Equal(t, "f1", msg.File.ID)
+	assert.Equal(t, "doc.pdf", msg.File.Name)
+	assert.Equal(t, "application/pdf", msg.File.Type)
+
+	// Card UDT
+	require.NotNil(t, msg.Card)
+	assert.Equal(t, "approval", msg.Card.Template)
+	assert.Equal(t, []byte("card-data"), msg.Card.Data)
+
+	// CardAction UDT
+	require.NotNil(t, msg.CardAction)
+	assert.Equal(t, "approve", msg.CardAction.Verb)
+	assert.Equal(t, "Approve", msg.CardAction.Text)
+	assert.Equal(t, "c1", msg.CardAction.CardID)
+	assert.Equal(t, "Click", msg.CardAction.DisplayText)
+	assert.True(t, msg.CardAction.HideExecLog)
+	assert.Equal(t, "tm1", msg.CardAction.CardTmID)
+	assert.Equal(t, []byte("action-data"), msg.CardAction.Data)
+
+	// Boolean/string fields
+	assert.True(t, msg.TShow)
+	require.NotNil(t, msg.ThreadParentCreatedAt)
+	assert.Equal(t, threadParent.UTC(), msg.ThreadParentCreatedAt.UTC())
+	assert.Equal(t, "u1", msg.VisibleTo)
+	assert.True(t, msg.Unread)
+	assert.True(t, msg.Deleted)
+	assert.Equal(t, "user_joined", msg.SysMsgType)
+	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)
+	assert.Equal(t, "site-remote", msg.FederateFrom)
+
+	// Timestamps
+	require.NotNil(t, msg.EditedAt)
+	assert.Equal(t, editedAt.UTC(), msg.EditedAt.UTC())
+	require.NotNil(t, msg.UpdatedAt)
+	assert.Equal(t, updatedAt.UTC(), msg.UpdatedAt.UTC())
+
+	// Reactions (MAP<TEXT, FROZEN<SET<FROZEN<Participant>>>>)
+	require.Contains(t, msg.Reactions, "thumbsup")
+	require.Len(t, msg.Reactions["thumbsup"], 1)
+	assert.Equal(t, "u4", msg.Reactions["thumbsup"][0].ID)
+	assert.Equal(t, "dave", msg.Reactions["thumbsup"][0].UserName)
+}
