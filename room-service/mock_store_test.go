@@ -55,6 +55,21 @@ func (mr *MockRoomStoreMockRecorder) BulkCreateSubscriptions(ctx, subs any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkCreateSubscriptions", reflect.TypeOf((*MockRoomStore)(nil).BulkCreateSubscriptions), ctx, subs)
 }
 
+// CountSubscriptions mocks base method.
+func (m *MockRoomStore) CountSubscriptions(ctx context.Context, roomID string) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountSubscriptions", ctx, roomID)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountSubscriptions indicates an expected call of CountSubscriptions.
+func (mr *MockRoomStoreMockRecorder) CountSubscriptions(ctx, roomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountSubscriptions", reflect.TypeOf((*MockRoomStore)(nil).CountSubscriptions), ctx, roomID)
+}
+
 // CreateRoom mocks base method.
 func (m *MockRoomStore) CreateRoom(ctx context.Context, room *model.Room) error {
 	m.ctrl.T.Helper()
@@ -97,19 +112,20 @@ func (mr *MockRoomStoreMockRecorder) CreateSubscription(ctx, sub any) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateSubscription", reflect.TypeOf((*MockRoomStore)(nil).CreateSubscription), ctx, sub)
 }
 
-// GetOrgUsers mocks base method.
-func (m *MockRoomStore) GetOrgUsers(ctx context.Context, orgID string) ([]string, error) {
+// GetOrgData mocks base method.
+func (m *MockRoomStore) GetOrgData(ctx context.Context, orgID string) (string, string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetOrgUsers", ctx, orgID)
-	ret0, _ := ret[0].([]string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret := m.ctrl.Call(m, "GetOrgData", ctx, orgID)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(string)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
 }
 
-// GetOrgUsers indicates an expected call of GetOrgUsers.
-func (mr *MockRoomStoreMockRecorder) GetOrgUsers(ctx, orgID any) *gomock.Call {
+// GetOrgData indicates an expected call of GetOrgData.
+func (mr *MockRoomStoreMockRecorder) GetOrgData(ctx, orgID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetOrgUsers", reflect.TypeOf((*MockRoomStore)(nil).GetOrgUsers), ctx, orgID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetOrgData", reflect.TypeOf((*MockRoomStore)(nil).GetOrgData), ctx, orgID)
 }
 
 // GetRoom mocks base method.
@@ -157,6 +173,21 @@ func (mr *MockRoomStoreMockRecorder) GetSubscription(ctx, username, roomID any) 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSubscription", reflect.TypeOf((*MockRoomStore)(nil).GetSubscription), ctx, username, roomID)
 }
 
+// GetUserID mocks base method.
+func (m *MockRoomStore) GetUserID(ctx context.Context, username string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetUserID", ctx, username)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetUserID indicates an expected call of GetUserID.
+func (mr *MockRoomStoreMockRecorder) GetUserID(ctx, username any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserID", reflect.TypeOf((*MockRoomStore)(nil).GetUserID), ctx, username)
+}
+
 // GetUserSite mocks base method.
 func (m *MockRoomStore) GetUserSite(ctx context.Context, username string) (string, error) {
 	m.ctrl.T.Helper()
@@ -185,4 +216,19 @@ func (m *MockRoomStore) ListRooms(ctx context.Context) ([]model.Room, error) {
 func (mr *MockRoomStoreMockRecorder) ListRooms(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRooms", reflect.TypeOf((*MockRoomStore)(nil).ListRooms), ctx)
+}
+
+// ListSubscriptionsByRoom mocks base method.
+func (m *MockRoomStore) ListSubscriptionsByRoom(ctx context.Context, roomID string) ([]model.Subscription, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListSubscriptionsByRoom", ctx, roomID)
+	ret0, _ := ret[0].([]model.Subscription)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListSubscriptionsByRoom indicates an expected call of ListSubscriptionsByRoom.
+func (mr *MockRoomStoreMockRecorder) ListSubscriptionsByRoom(ctx, roomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListSubscriptionsByRoom", reflect.TypeOf((*MockRoomStore)(nil).ListSubscriptionsByRoom), ctx, roomID)
 }

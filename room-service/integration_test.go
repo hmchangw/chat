@@ -41,7 +41,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	// Test CreateRoom and GetRoom
-	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup, SiteID: "site-a", CreatedBy: "u1", UserCount: 1}
+	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup, SiteID: "site-a", CreatedBy: "u1"}
 	if err := store.CreateRoom(ctx, &room); err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
@@ -98,11 +98,11 @@ func TestMongoStore_RoomMembers(t *testing.T) {
 	}
 
 	// Insert org and individual members
-	orgMember := model.RoomMember{ID: "m1", RoomID: "r1", Type: model.RoomMemberTypeOrg, OrgID: "org-eng"}
+	orgMember := model.RoomMember{ID: "m1", RoomID: "r1", Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberTypeOrg}}
 	if err := store.CreateRoomMember(ctx, &orgMember); err != nil {
 		t.Fatalf("CreateRoomMember org: %v", err)
 	}
-	indMember := model.RoomMember{ID: "m2", RoomID: "r1", Type: model.RoomMemberTypeIndividual, Username: "alice"}
+	indMember := model.RoomMember{ID: "m2", RoomID: "r1", Member: model.RoomMemberEntry{ID: "user-alice", Type: model.RoomMemberTypeIndividual, Username: "alice"}}
 	if err := store.CreateRoomMember(ctx, &indMember); err != nil {
 		t.Fatalf("CreateRoomMember individual: %v", err)
 	}
@@ -161,34 +161,61 @@ func TestMongoStore_BulkCreateSubscriptions(t *testing.T) {
 	}
 }
 
-func TestMongoStore_GetOrgUsers(t *testing.T) {
+func TestMongoStore_GetOrgData(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
-	// Seed hr_data directly
-	hrData := db.Collection("hr_data")
-	_, _ = hrData.InsertMany(ctx, []any{
-		bson.M{"sectId": "org-eng", "username": "alice"},
-		bson.M{"sectId": "org-eng", "username": "bob"},
-		bson.M{"sectId": "org-hr", "username": "carol"},
+	// Seed orgs collection directly
+	orgsCol := db.Collection("orgs")
+	_, _ = orgsCol.InsertOne(ctx, bson.M{
+		"_id":         "org-eng",
+		"name":        "Engineering",
+		"locationUrl": "http://site-a/orgs/eng",
 	})
 
-	users, err := store.GetOrgUsers(ctx, "org-eng")
+	name, locationURL, err := store.GetOrgData(ctx, "org-eng")
 	if err != nil {
-		t.Fatalf("GetOrgUsers org-eng: %v", err)
+		t.Fatalf("GetOrgData org-eng: %v", err)
 	}
-	if len(users) != 2 {
-		t.Errorf("expected 2 users, got %d: %v", len(users), users)
+	if name != "Engineering" {
+		t.Errorf("name = %q, want Engineering", name)
+	}
+	if locationURL != "http://site-a/orgs/eng" {
+		t.Errorf("locationURL = %q, want http://site-a/orgs/eng", locationURL)
 	}
 
-	// Unknown org returns empty slice, not error
-	users, err = store.GetOrgUsers(ctx, "org-unknown")
-	if err != nil {
-		t.Fatalf("GetOrgUsers unknown: %v", err)
+	// Unknown org returns error
+	_, _, err = store.GetOrgData(ctx, "org-unknown")
+	if err == nil {
+		t.Error("expected error for unknown org, got nil")
 	}
-	if len(users) != 0 {
-		t.Errorf("expected 0 users for unknown org, got %d", len(users))
+}
+
+func TestMongoStore_GetUserID(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Seed users collection directly
+	usersCol := db.Collection("users")
+	_, _ = usersCol.InsertOne(ctx, bson.M{
+		"_id":      "user-123",
+		"username": "alice",
+	})
+
+	id, err := store.GetUserID(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUserID alice: %v", err)
+	}
+	if id != "user-123" {
+		t.Errorf("id = %q, want user-123", id)
+	}
+
+	// Unknown user returns error
+	_, err = store.GetUserID(ctx, "nobody")
+	if err == nil {
+		t.Error("expected error for unknown user, got nil")
 	}
 }
 
@@ -216,5 +243,80 @@ func TestMongoStore_GetUserSite(t *testing.T) {
 	_, err = store.GetUserSite(ctx, "nobody")
 	if err == nil {
 		t.Error("expected error for unknown user, got nil")
+	}
+}
+
+func TestMongoStore_CountSubscriptions(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Empty room
+	count, err := store.CountSubscriptions(ctx, "r1")
+	if err != nil {
+		t.Fatalf("CountSubscriptions empty: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0, got %d", count)
+	}
+
+	subs := []*model.Subscription{
+		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		// bot usernames — must be excluded
+		{ID: "s3", User: model.SubscriptionUser{Username: "notify.bot"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s4", User: model.SubscriptionUser{Username: "p_webhook"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+	}
+	if err := store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		t.Fatalf("BulkCreateSubscriptions: %v", err)
+	}
+
+	count, err = store.CountSubscriptions(ctx, "r1")
+	if err != nil {
+		t.Fatalf("CountSubscriptions: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 (bots excluded), got %d", count)
+	}
+}
+
+func TestMongoStore_ListSubscriptionsByRoom(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Empty room returns empty slice, not error
+	subs, err := store.ListSubscriptionsByRoom(ctx, "r-unknown")
+	if err != nil {
+		t.Fatalf("ListSubscriptionsByRoom empty: %v", err)
+	}
+	if len(subs) != 0 {
+		t.Errorf("expected 0, got %d", len(subs))
+	}
+
+	seed := []*model.Subscription{
+		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s3", User: model.SubscriptionUser{Username: "carol"}, RoomID: "r2", SiteID: "site-a", Role: model.RoleMember},
+	}
+	if err := store.BulkCreateSubscriptions(ctx, seed); err != nil {
+		t.Fatalf("BulkCreateSubscriptions: %v", err)
+	}
+
+	subs, err = store.ListSubscriptionsByRoom(ctx, "r1")
+	if err != nil {
+		t.Fatalf("ListSubscriptionsByRoom r1: %v", err)
+	}
+	if len(subs) != 2 {
+		t.Errorf("expected 2 subs for r1, got %d", len(subs))
+	}
+
+	// Different room unaffected
+	subs, err = store.ListSubscriptionsByRoom(ctx, "r2")
+	if err != nil {
+		t.Fatalf("ListSubscriptionsByRoom r2: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Errorf("expected 1 sub for r2, got %d", len(subs))
 	}
 }

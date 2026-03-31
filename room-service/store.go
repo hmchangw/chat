@@ -17,6 +17,9 @@ type RoomStore interface {
 	GetRoomMembers(ctx context.Context, roomID string) ([]model.RoomMember, error)
 	CreateRoomMember(ctx context.Context, member *model.RoomMember) error
 	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
-	GetOrgUsers(ctx context.Context, orgID string) ([]string, error)
+	GetOrgData(ctx context.Context, orgID string) (name, locationURL string, err error)
+	GetUserID(ctx context.Context, username string) (string, error)
 	GetUserSite(ctx context.Context, username string) (string, error)
+	CountSubscriptions(ctx context.Context, roomID string) (int, error)
+	ListSubscriptionsByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 }

@@ -16,6 +16,7 @@ type MongoStore struct {
 	roomMembers   *mongo.Collection
 	hrData        *mongo.Collection
 	users         *mongo.Collection
+	orgs          *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
@@ -25,6 +26,7 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		roomMembers:   db.Collection("room_members"),
 		hrData:        db.Collection("hr_data"),
 		users:         db.Collection("users"),
+		orgs:          db.Collection("orgs"),
 	}
 }
 
@@ -68,7 +70,7 @@ func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscrip
 }
 
 func (s *MongoStore) GetRoomMembers(ctx context.Context, roomID string) ([]model.RoomMember, error) {
-	cursor, err := s.roomMembers.Find(ctx, bson.M{"roomId": roomID})
+	cursor, err := s.roomMembers.Find(ctx, bson.M{"rid": roomID})
 	if err != nil {
 		return nil, fmt.Errorf("find room members: %w", err)
 	}
@@ -96,22 +98,25 @@ func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.
 	return err
 }
 
-func (s *MongoStore) GetOrgUsers(ctx context.Context, orgID string) ([]string, error) {
-	cursor, err := s.hrData.Find(ctx, bson.M{"sectId": orgID})
-	if err != nil {
-		return nil, fmt.Errorf("find org users: %w", err)
+func (s *MongoStore) GetOrgData(ctx context.Context, orgID string) (name, locationURL string, err error) {
+	var doc struct {
+		Name        string `bson:"name"`
+		LocationURL string `bson:"locationUrl"`
 	}
-	var docs []struct {
-		Username string `bson:"username"`
+	if err := s.orgs.FindOne(ctx, bson.M{"_id": orgID}).Decode(&doc); err != nil {
+		return "", "", fmt.Errorf("get org data for %q: %w", orgID, err)
 	}
-	if err := cursor.All(ctx, &docs); err != nil {
-		return nil, fmt.Errorf("decode org users: %w", err)
+	return doc.Name, doc.LocationURL, nil
+}
+
+func (s *MongoStore) GetUserID(ctx context.Context, username string) (string, error) {
+	var doc struct {
+		ID string `bson:"_id"`
 	}
-	usernames := make([]string, len(docs))
-	for i, doc := range docs {
-		usernames[i] = doc.Username
+	if err := s.users.FindOne(ctx, bson.M{"username": username}).Decode(&doc); err != nil {
+		return "", fmt.Errorf("get user id for %q: %w", username, err)
 	}
-	return usernames, nil
+	return doc.ID, nil
 }
 
 func (s *MongoStore) GetUserSite(ctx context.Context, username string) (string, error) {
@@ -124,4 +129,30 @@ func (s *MongoStore) GetUserSite(ctx context.Context, username string) (string, 
 		return "", fmt.Errorf("get user site for %q: %w", username, err)
 	}
 	return doc.Federation.Origin, nil
+}
+
+func (s *MongoStore) CountSubscriptions(ctx context.Context, roomID string) (int, error) {
+	filter := bson.M{
+		"roomId": roomID,
+		"u.username": bson.M{
+			"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""},
+		},
+	}
+	count, err := s.subscriptions.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("count subscriptions for room %q: %w", roomID, err)
+	}
+	return int(count), nil
+}
+
+func (s *MongoStore) ListSubscriptionsByRoom(ctx context.Context, roomID string) ([]model.Subscription, error) {
+	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions for room %q: %w", roomID, err)
+	}
+	var subs []model.Subscription
+	if err := cursor.All(ctx, &subs); err != nil {
+		return nil, fmt.Errorf("decode subscriptions for room %q: %w", roomID, err)
+	}
+	return subs, nil
 }

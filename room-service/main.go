@@ -17,11 +17,12 @@ import (
 )
 
 type config struct {
-	NatsURL     string `env:"NATS_URL"       envDefault:"nats://localhost:4222"`
-	SiteID      string `env:"SITE_ID"        envDefault:"site-local"`
-	MongoURI    string `env:"MONGO_URI"      envDefault:"mongodb://localhost:27017"`
-	MongoDB     string `env:"MONGO_DB"       envDefault:"chat"`
-	MaxRoomSize int    `env:"MAX_ROOM_SIZE"  envDefault:"1000"`
+	NatsURL       string `env:"NATS_URL"       envDefault:"nats://localhost:4222"`
+	SiteID        string `env:"SITE_ID"        envDefault:"site-local"`
+	MongoURI      string `env:"MONGO_URI"      envDefault:"mongodb://localhost:27017"`
+	MongoDB       string `env:"MONGO_DB"       envDefault:"chat"`
+	MaxRoomSize   int    `env:"MAX_ROOM_SIZE"  envDefault:"1000"`
+	CurrentDomain string `env:"CURRENT_DOMAIN"      envRequired:"true"`
 }
 
 func main() {
@@ -62,9 +63,9 @@ func main() {
 	}
 
 	store := NewMongoStore(db)
-	handler := NewHandler(store, cfg.SiteID, cfg.MaxRoomSize,
-		func(data []byte) error {
-			_, err := js.Publish(ctx, subject.MemberInviteWildcard(cfg.SiteID), data)
+	handler := NewHandler(store, cfg.SiteID, cfg.CurrentDomain, cfg.MaxRoomSize,
+		func(subj string, data []byte) error {
+			_, err := js.Publish(ctx, subj, data)
 			return err
 		},
 		func(subj string, data []byte) error { return nc.Publish(subj, data) },

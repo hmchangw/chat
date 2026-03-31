@@ -107,17 +107,17 @@ func TestRoleValues(t *testing.T) {
 }
 
 func TestMemberTypeValues(t *testing.T) {
-	if model.MemberEntryTypeUser != "user" {
-		t.Errorf("MemberEntryTypeUser = %q", model.MemberEntryTypeUser)
-	}
-	if model.MemberEntryTypeOrg != "org" {
-		t.Errorf("MemberEntryTypeOrg = %q", model.MemberEntryTypeOrg)
-	}
 	if model.RoomMemberTypeIndividual != "individual" {
 		t.Errorf("RoomMemberTypeIndividual = %q", model.RoomMemberTypeIndividual)
 	}
 	if model.RoomMemberTypeOrg != "org" {
 		t.Errorf("RoomMemberTypeOrg = %q", model.RoomMemberTypeOrg)
+	}
+	if model.HistoryModeNone != "none" {
+		t.Errorf("HistoryModeNone = %q", model.HistoryModeNone)
+	}
+	if model.HistoryModeAll != "all" {
+		t.Errorf("HistoryModeAll = %q", model.HistoryModeAll)
 	}
 }
 

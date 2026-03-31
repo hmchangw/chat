@@ -124,9 +124,9 @@ func MsgSendWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.room.*.%s.msg.send", siteID)
 }
 
-// MemberInviteWildcard returns the wildcard subscription pattern for all member requests.
+// MemberInviteWildcard returns the wildcard subscription pattern for member.invite requests.
 func MemberInviteWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.>", siteID)
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.invite", siteID)
 }
 
 // MemberAddWildcard returns the wildcard subscription pattern for member.add requests.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"go.uber.org/mock/gomock"
 
@@ -51,12 +52,12 @@ func TestHandler_InviteOwner_Success(t *testing.T) {
 		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleOwner}, nil)
 	store.EXPECT().
-		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", UserCount: 1}, nil)
+		CountSubscriptions(gomock.Any(), "r1").
+		Return(1, nil)
 
 	var jsPublished []byte
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(data []byte) error { jsPublished = data; return nil },
+		publishToStream: func(_ string, data []byte) error { jsPublished = data; return nil },
 	}
 
 	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", InviteeUsername: "bob", RoomID: "r1", SiteID: "site-a"}
@@ -81,7 +82,7 @@ func TestHandler_InviteMember_Rejected(t *testing.T) {
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r1", Role: model.RoleMember}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(data []byte) error { return nil },
+		publishToStream: func(_ string, _ []byte) error { return nil },
 	}
 
 	req := model.InviteMemberRequest{InviterID: "u2", InviteeID: "u3", InviteeUsername: "charlie", RoomID: "r1", SiteID: "site-a"}
@@ -102,11 +103,11 @@ func TestHandler_InviteExceedsMaxSize(t *testing.T) {
 		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleOwner}, nil)
 	store.EXPECT().
-		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", UserCount: 1000}, nil)
+		CountSubscriptions(gomock.Any(), "r1").
+		Return(1000, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(data []byte) error { return nil },
+		publishToStream: func(_ string, _ []byte) error { return nil },
 	}
 
 	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", InviteeUsername: "bob", RoomID: "r1", SiteID: "site-a"}
@@ -125,37 +126,92 @@ func TestHandler_AddMembers(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		subj    string
-		payload any
-		setup   func(store *MockRoomStore)
-		wantErr bool
+		name        string
+		subj        string
+		payload     any
+		setup       func(store *MockRoomStore)
+		wantErr     bool
+		checkResult func(t *testing.T, subs []*model.Subscription)
 	}{
 		{
 			name: "individuals only, no existing room members",
 			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
 				RoomID:  "r1",
-				Members: []model.MemberEntry{{Type: model.MemberEntryTypeUser, Username: "bob"}, {Type: model.MemberEntryTypeUser, Username: "carol"}},
+				Users:   []string{"bob", "carol"},
+				History: model.HistoryConfig{Mode: model.HistoryModeNone},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
-				store.EXPECT().GetRoom(gomock.Any(), "r1").
-					Return(&model.Room{ID: "r1", UserCount: 5}, nil)
-				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").
-					Return([]model.RoomMember{}, nil)
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
+				store.EXPECT().GetUserID(gomock.Any(), "carol").Return("u-carol", nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
 						if len(subs) != 2 {
 							t.Errorf("expected 2 subscriptions, got %d", len(subs))
 						}
-						if subs[0].User.Username != "bob" || subs[1].User.Username != "carol" {
-							t.Errorf("unexpected usernames: %v, %v", subs[0].User.Username, subs[1].User.Username)
+						usernames := []string{subs[0].User.Username, subs[1].User.Username}
+						if usernames[0] != "bob" || usernames[1] != "carol" {
+							t.Errorf("unexpected usernames: %v", usernames)
+						}
+						// history=none: SharedHistorySince must be set
+						if subs[0].SharedHistorySince.IsZero() {
+							t.Error("expected SharedHistorySince to be set for history=none")
+						}
+						// userID must be set
+						if subs[0].User.ID != "u-bob" {
+							t.Errorf("expected user ID u-bob, got %s", subs[0].User.ID)
+						}
+						if subs[1].User.ID != "u-carol" {
+							t.Errorf("expected user ID u-carol, got %s", subs[1].User.ID)
 						}
 						return nil
 					})
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
 				// CreateRoomMember must NOT be called — no existing members, no orgs
+				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
+			},
+		},
+		{
+			name: "history=all: SharedHistorySince is zero",
+			subj: makeSubj("alice", "r1"),
+			payload: model.AddMembersRequest{
+				RoomID:  "r1",
+				Users:   []string{"bob"},
+				History: model.HistoryConfig{Mode: model.HistoryModeAll},
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
+				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+						if !subs[0].SharedHistorySince.IsZero() {
+							t.Error("expected SharedHistorySince to be zero for history=all")
+						}
+						return nil
+					})
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
+			},
+		},
+		{
+			name: "bot users are filtered out",
+			subj: makeSubj("alice", "r1"),
+			payload: model.AddMembersRequest{
+				RoomID: "r1",
+				Users:  []string{"bot.bot", "p_system", "carol"},
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "carol").Return("u-carol", nil)
+				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+						if len(subs) != 1 || subs[0].User.Username != "carol" {
+							t.Errorf("expected only carol after bot filter, got %d subs", len(subs))
+						}
+						return nil
+					})
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
 				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
 			},
 		},
@@ -163,20 +219,18 @@ func TestHandler_AddMembers(t *testing.T) {
 			name: "individuals only, existing room members present",
 			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
-				RoomID:  "r1",
-				Members: []model.MemberEntry{{Type: model.MemberEntryTypeUser, Username: "dave"}},
+				RoomID: "r1",
+				Users:  []string{"dave"},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
-				store.EXPECT().GetRoom(gomock.Any(), "r1").
-					Return(&model.Room{ID: "r1", UserCount: 5}, nil)
-				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").
-					Return([]model.RoomMember{{ID: "m0", RoomID: "r1", Type: model.RoomMemberTypeOrg, OrgID: "org-eng"}}, nil)
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "dave").Return("u-dave", nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").
+					Return([]model.RoomMember{{ID: "m0", RoomID: "r1", Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberTypeOrg}}}, nil)
 				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, m *model.RoomMember) error {
-						if m.Type != model.RoomMemberTypeIndividual || m.Username != "dave" {
+						if m.Member.Type != model.RoomMemberTypeIndividual || m.Member.Username != "dave" {
 							t.Errorf("expected individual member dave, got %+v", m)
 						}
 						return nil
@@ -188,28 +242,54 @@ func TestHandler_AddMembers(t *testing.T) {
 			name: "org in request",
 			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
-				RoomID:  "r1",
-				Members: []model.MemberEntry{{Type: model.MemberEntryTypeOrg, OrgID: "org-eng"}},
+				RoomID: "r1",
+				Orgs:   []string{"org-eng"},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
-				store.EXPECT().GetRoom(gomock.Any(), "r1").
-					Return(&model.Room{ID: "r1", UserCount: 5}, nil)
-				store.EXPECT().GetOrgUsers(gomock.Any(), "org-eng").
-					Return([]string{"bob", "carol"}, nil)
-				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").
-					Return([]model.RoomMember{}, nil)
+				store.EXPECT().GetOrgData(gomock.Any(), "org-eng").Return("Eng", "http://site-a", nil)
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "Eng").Return("u-eng", nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
-						if len(subs) != 2 {
-							t.Errorf("expected 2 subscriptions from org, got %d", len(subs))
+						if len(subs) != 1 {
+							t.Errorf("expected 1 subscription for org-expanded user Eng, got %d", len(subs))
+						}
+						if len(subs) > 0 && subs[0].User.Username != "Eng" {
+							t.Errorf("expected username Eng, got %s", subs[0].User.Username)
 						}
 						return nil
 					})
-				// 1 org doc + 2 individual docs = 3 CreateRoomMember calls
-				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				// 1 org doc + 1 individual doc (Eng) = 2 CreateRoomMember calls
+				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(nil).Times(2)
 				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
+			},
+		},
+		{
+			name: "org in request — remote org",
+			subj: makeSubj("alice", "r1"),
+			payload: model.AddMembersRequest{
+				RoomID: "r1",
+				Orgs:   []string{"org-remote"},
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetOrgData(gomock.Any(), "org-remote").Return("RemoteEng", "https://site-b.example.com", nil)
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "RemoteEng@site-b.example.com").Return("u-remote", nil)
+				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+						if len(subs) != 1 {
+							t.Errorf("expected 1 subscription, got %d", len(subs))
+						}
+						if len(subs) > 0 && subs[0].User.Username != "RemoteEng@site-b.example.com" {
+							t.Errorf("expected username RemoteEng@site-b.example.com, got %s", subs[0].User.Username)
+						}
+						return nil
+					})
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				// 1 org doc + 1 individual doc = 2 CreateRoomMember calls
+				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(nil).Times(2)
+				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-b", nil).AnyTimes()
 			},
 		},
 		{
@@ -217,99 +297,142 @@ func TestHandler_AddMembers(t *testing.T) {
 			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
 				RoomID: "r1",
-				Members: []model.MemberEntry{
-					{Type: model.MemberEntryTypeUser, Username: "dave"},
-					{Type: model.MemberEntryTypeOrg, OrgID: "org-eng"},
-				},
+				Users:  []string{"dave"},
+				Orgs:   []string{"org-eng"},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
-				store.EXPECT().GetRoom(gomock.Any(), "r1").
-					Return(&model.Room{ID: "r1", UserCount: 5}, nil)
-				store.EXPECT().GetOrgUsers(gomock.Any(), "org-eng").
-					Return([]string{"bob", "carol"}, nil)
-				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").
-					Return([]model.RoomMember{}, nil)
+				store.EXPECT().GetOrgData(gomock.Any(), "org-eng").Return("Eng", "http://site-a", nil)
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "dave").Return("u-dave", nil)
+				store.EXPECT().GetUserID(gomock.Any(), "Eng").Return("u-eng", nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
-						if len(subs) != 3 { // dave + bob + carol
-							t.Errorf("expected 3 subscriptions, got %d", len(subs))
+						if len(subs) != 2 {
+							t.Errorf("expected 2 subscriptions (dave + Eng), got %d", len(subs))
 						}
 						return nil
 					})
-				// 1 org doc + 3 individual docs (dave, bob, carol) = 4 calls
-				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(nil).Times(4)
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				// 1 org doc + 2 individual docs (dave + Eng) = 3 CreateRoomMember calls
+				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(nil).Times(3)
 				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
 			},
 		},
 		{
-			name: "inviter not found",
-			subj: makeSubj("unknown", "r1"),
+			name: "channel source: room_members non-empty — copy orgs and individuals",
+			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
-				RoomID:  "r1",
-				Members: []model.MemberEntry{{Type: model.MemberEntryTypeUser, Username: "bob"}},
+				RoomID:   "r1",
+				Channels: []string{"r-source"},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "unknown", "r1").
-					Return(nil, fmt.Errorf("not found"))
+				// channel resolution: room_members has org + individual
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r-source").Return([]model.RoomMember{
+					{ID: "m1", RoomID: "r-source", Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberTypeOrg}},
+					{ID: "m2", RoomID: "r-source", Member: model.RoomMemberEntry{Type: model.RoomMemberTypeIndividual, Username: "dave"}},
+				}, nil)
+				store.EXPECT().GetOrgData(gomock.Any(), "org-eng").Return("Eng", "http://site-a", nil)
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "dave").Return("u-dave", nil)
+				store.EXPECT().GetUserID(gomock.Any(), "Eng").Return("u-eng", nil)
+				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+						if len(subs) != 2 {
+							t.Errorf("expected 2 subscriptions (dave + Eng), got %d", len(subs))
+						}
+						return nil
+					})
+				// room_members for target room is empty
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				// org present: 1 org doc + 2 individual docs (dave + Eng) = 3 CreateRoomMember calls
+				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
 			},
-			wantErr: true,
 		},
 		{
-			name: "inviter not owner",
-			subj: makeSubj("bob", "r1"),
+			name: "channel source: room_members empty — fall back to subscriptions",
+			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
-				RoomID:  "r1",
-				Members: []model.MemberEntry{{Type: model.MemberEntryTypeUser, Username: "carol"}},
+				RoomID:   "r1",
+				Channels: []string{"r-source"},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
-					Return(&model.Subscription{Role: model.RoleMember}, nil)
+				// channel resolution: room_members empty, fall back to subscriptions
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r-source").Return([]model.RoomMember{}, nil)
+				store.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r-source").Return([]model.Subscription{
+					{User: model.SubscriptionUser{Username: "bob"}},
+					{User: model.SubscriptionUser{Username: "carol"}},
+				}, nil)
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
+				store.EXPECT().GetUserID(gomock.Any(), "carol").Return("u-carol", nil)
+				// room_members for target room
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+						if len(subs) != 2 {
+							t.Errorf("expected 2 subscriptions, got %d", len(subs))
+						}
+						return nil
+					})
+				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
 			},
-			wantErr: true,
+		},
+		{
+			name: "channel source: bots filtered from subscription fallback",
+			subj: makeSubj("alice", "r1"),
+			payload: model.AddMembersRequest{
+				RoomID:   "r1",
+				Channels: []string{"r-source"},
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r-source").Return([]model.RoomMember{}, nil)
+				store.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r-source").Return([]model.Subscription{
+					{User: model.SubscriptionUser{Username: "bob"}},
+					{User: model.SubscriptionUser{Username: "notify.bot"}},
+					{User: model.SubscriptionUser{Username: "p_webhook"}},
+				}, nil)
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+						if len(subs) != 1 || subs[0].User.Username != "bob" {
+							t.Errorf("expected only bob after bot filter, got %v subs", len(subs))
+						}
+						return nil
+					})
+				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
+			},
 		},
 		{
 			name: "room at capacity",
 			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
-				RoomID:  "r1",
-				Members: []model.MemberEntry{{Type: model.MemberEntryTypeUser, Username: "bob"}},
+				RoomID: "r1",
+				Users:  []string{"bob"},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
-				store.EXPECT().GetRoom(gomock.Any(), "r1").
-					Return(&model.Room{ID: "r1", UserCount: 1000}, nil)
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(1000, nil)
 			},
 			wantErr: true,
 		},
 		{
 			name:    "malformed json",
 			subj:    makeSubj("alice", "r1"),
-			payload: nil, // triggers raw invalid bytes path in test body
-			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
-				store.EXPECT().GetRoom(gomock.Any(), "r1").
-					Return(&model.Room{ID: "r1", UserCount: 5}, nil)
-			},
+			payload: nil,
+			setup:   func(store *MockRoomStore) {},
 			wantErr: true,
 		},
 		{
 			name: "org resolution fails",
 			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
-				RoomID:  "r1",
-				Members: []model.MemberEntry{{Type: model.MemberEntryTypeOrg, OrgID: "org-bad"}},
+				RoomID: "r1",
+				Orgs:   []string{"org-bad"},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
-				store.EXPECT().GetRoom(gomock.Any(), "r1").
-					Return(&model.Room{ID: "r1", UserCount: 5}, nil)
-				store.EXPECT().GetOrgUsers(gomock.Any(), "org-bad").
-					Return(nil, fmt.Errorf("hr_data unavailable"))
+				store.EXPECT().GetOrgData(gomock.Any(), "org-bad").Return("", "", fmt.Errorf("orgs collection unavailable"))
 			},
 			wantErr: true,
 		},
@@ -317,19 +440,24 @@ func TestHandler_AddMembers(t *testing.T) {
 			name: "bulk subscription write fails",
 			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
-				RoomID:  "r1",
-				Members: []model.MemberEntry{{Type: model.MemberEntryTypeUser, Username: "bob"}},
+				RoomID: "r1",
+				Users:  []string{"bob"},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
-				store.EXPECT().GetRoom(gomock.Any(), "r1").
-					Return(&model.Room{ID: "r1", UserCount: 5}, nil)
-				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").
-					Return([]model.RoomMember{}, nil)
-				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
-					Return(fmt.Errorf("write failed"))
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
+				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(fmt.Errorf("write failed"))
 			},
+			wantErr: true,
+		},
+		{
+			name: "invalid subject",
+			subj: "chat.invalid",
+			payload: model.AddMembersRequest{
+				RoomID: "r1",
+				Users:  []string{"bob"},
+			},
+			setup:   func(store *MockRoomStore) {},
 			wantErr: true,
 		},
 	}
@@ -341,8 +469,8 @@ func TestHandler_AddMembers(t *testing.T) {
 			tt.setup(store)
 
 			h := &Handler{
-				store: store, siteID: "site-a", maxRoomSize: 1000,
-				publishToStream: func(data []byte) error { return nil },
+				store: store, siteID: "site-a", currentDomain: "http://site-a", maxRoomSize: 1000,
+				publishToStream: func(_ string, _ []byte) error { return nil },
 				publishLocal:    func(s string, d []byte) error { return nil },
 				publishOutbox:   func(s string, d []byte) error { return nil },
 			}
@@ -437,4 +565,400 @@ func TestHandler_dispatchMemberEvents_GetUserSiteFails(t *testing.T) {
 
 	// Must not panic — errors are logged and skipped
 	h.dispatchMemberEvents(context.Background(), []string{"bob"}, "r1")
+}
+
+func TestHandler_expandChannels(t *testing.T) {
+	tests := []struct {
+		name          string
+		channelIDs    []string
+		setup         func(store *MockRoomStore)
+		wantOrgIDs    []string
+		wantUsernames []string
+		wantErr       bool
+	}{
+		{
+			name:       "room_members non-empty: orgs and individuals split",
+			channelIDs: []string{"r-src"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r-src").Return([]model.RoomMember{
+					{ID: "m1", RoomID: "r-src", Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberTypeOrg}},
+					{ID: "m2", RoomID: "r-src", Member: model.RoomMemberEntry{Type: model.RoomMemberTypeIndividual, Username: "alice"}},
+				}, nil)
+			},
+			wantOrgIDs:    []string{"org-eng"},
+			wantUsernames: []string{"alice"},
+		},
+		{
+			name:       "room_members empty: fallback to subscriptions",
+			channelIDs: []string{"r-src"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r-src").Return([]model.RoomMember{}, nil)
+				store.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r-src").Return([]model.Subscription{
+					{User: model.SubscriptionUser{Username: "bob"}},
+					{User: model.SubscriptionUser{Username: "carol"}},
+				}, nil)
+			},
+			wantOrgIDs:    nil,
+			wantUsernames: []string{"bob", "carol"},
+		},
+		{
+			name:       "GetRoomMembers error",
+			channelIDs: []string{"r-src"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r-src").Return(nil, fmt.Errorf("db error"))
+			},
+			wantErr: true,
+		},
+		{
+			name:       "ListSubscriptionsByRoom error",
+			channelIDs: []string{"r-src"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r-src").Return([]model.RoomMember{}, nil)
+				store.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r-src").Return(nil, fmt.Errorf("db error"))
+			},
+			wantErr: true,
+		},
+		{
+			name:          "empty channel list",
+			channelIDs:    []string{},
+			setup:         func(store *MockRoomStore) {},
+			wantOrgIDs:    nil,
+			wantUsernames: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			tt.setup(store)
+
+			h := &Handler{store: store, siteID: "site-a"}
+			orgIDs, usernames, err := h.expandChannels(context.Background(), tt.channelIDs)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(orgIDs) != len(tt.wantOrgIDs) {
+				t.Errorf("orgIDs: got %v, want %v", orgIDs, tt.wantOrgIDs)
+			}
+			for i := range tt.wantOrgIDs {
+				if i < len(orgIDs) && orgIDs[i] != tt.wantOrgIDs[i] {
+					t.Errorf("orgIDs[%d]: got %q, want %q", i, orgIDs[i], tt.wantOrgIDs[i])
+				}
+			}
+			if len(usernames) != len(tt.wantUsernames) {
+				t.Errorf("usernames: got %v, want %v", usernames, tt.wantUsernames)
+			}
+			for i := range tt.wantUsernames {
+				if i < len(usernames) && usernames[i] != tt.wantUsernames[i] {
+					t.Errorf("usernames[%d]: got %q, want %q", i, usernames[i], tt.wantUsernames[i])
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_resolveOrgs(t *testing.T) {
+	tests := []struct {
+		name          string
+		orgIDs        []string
+		setup         func(store *MockRoomStore)
+		wantUsernames []string
+		wantErr       bool
+	}{
+		{
+			name:   "local org",
+			orgIDs: []string{"org-eng"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetOrgData(gomock.Any(), "org-eng").Return("Eng", "http://site-a", nil)
+			},
+			wantUsernames: []string{"Eng"},
+		},
+		{
+			name:   "remote org",
+			orgIDs: []string{"org-remote"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetOrgData(gomock.Any(), "org-remote").Return("RemoteEng", "https://site-b.example.com", nil)
+			},
+			wantUsernames: []string{"RemoteEng@site-b.example.com"},
+		},
+		{
+			name:   "GetOrgData error",
+			orgIDs: []string{"org-bad"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetOrgData(gomock.Any(), "org-bad").Return("", "", fmt.Errorf("not found"))
+			},
+			wantErr: true,
+		},
+		{
+			name:          "empty org list",
+			orgIDs:        []string{},
+			setup:         func(store *MockRoomStore) {},
+			wantUsernames: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			tt.setup(store)
+
+			h := &Handler{store: store, siteID: "site-a", currentDomain: "http://site-a"}
+			usernames, err := h.resolveOrgs(context.Background(), tt.orgIDs)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(usernames) != len(tt.wantUsernames) {
+				t.Errorf("usernames: got %v, want %v", usernames, tt.wantUsernames)
+			}
+			for i := range tt.wantUsernames {
+				if i < len(usernames) && usernames[i] != tt.wantUsernames[i] {
+					t.Errorf("usernames[%d]: got %q, want %q", i, usernames[i], tt.wantUsernames[i])
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_buildSubscriptions(t *testing.T) {
+	now := time.Now().UTC()
+
+	tests := []struct {
+		name              string
+		usernames         []string
+		roomID            string
+		mode              model.HistoryMode
+		setup             func(store *MockRoomStore)
+		wantSubCount      int
+		wantResolvedCount int
+		checkSubs         func(t *testing.T, subs []*model.Subscription, resolved []string)
+	}{
+		{
+			name:      "all users resolved",
+			usernames: []string{"alice", "bob"},
+			roomID:    "r1",
+			mode:      model.HistoryModeNone,
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetUserID(gomock.Any(), "alice").Return("u-alice", nil)
+				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
+			},
+			wantSubCount:      2,
+			wantResolvedCount: 2,
+			checkSubs: func(t *testing.T, subs []*model.Subscription, resolved []string) {
+				t.Helper()
+				if subs[0].User.Username != "alice" || subs[1].User.Username != "bob" {
+					t.Errorf("unexpected usernames: %s, %s", subs[0].User.Username, subs[1].User.Username)
+				}
+				if resolved[0] != "alice" || resolved[1] != "bob" {
+					t.Errorf("unexpected resolvedUsernames: %v", resolved)
+				}
+			},
+		},
+		{
+			name:      "some users skipped",
+			usernames: []string{"alice", "bad-user", "bob"},
+			roomID:    "r1",
+			mode:      model.HistoryModeNone,
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetUserID(gomock.Any(), "alice").Return("u-alice", nil)
+				store.EXPECT().GetUserID(gomock.Any(), "bad-user").Return("", fmt.Errorf("not found"))
+				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
+			},
+			wantSubCount:      2,
+			wantResolvedCount: 2,
+			checkSubs: func(t *testing.T, subs []*model.Subscription, resolved []string) {
+				t.Helper()
+				for _, s := range subs {
+					if s.User.Username == "bad-user" {
+						t.Error("bad-user should have been skipped")
+					}
+				}
+			},
+		},
+		{
+			name:      "all skipped",
+			usernames: []string{"bad1", "bad2"},
+			roomID:    "r1",
+			mode:      model.HistoryModeNone,
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetUserID(gomock.Any(), "bad1").Return("", fmt.Errorf("not found"))
+				store.EXPECT().GetUserID(gomock.Any(), "bad2").Return("", fmt.Errorf("not found"))
+			},
+			wantSubCount:      0,
+			wantResolvedCount: 0,
+		},
+		{
+			name:      "history mode all: SharedHistorySince zero",
+			usernames: []string{"alice"},
+			roomID:    "r1",
+			mode:      model.HistoryModeAll,
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetUserID(gomock.Any(), "alice").Return("u-alice", nil)
+			},
+			wantSubCount:      1,
+			wantResolvedCount: 1,
+			checkSubs: func(t *testing.T, subs []*model.Subscription, _ []string) {
+				t.Helper()
+				if !subs[0].SharedHistorySince.IsZero() {
+					t.Error("expected SharedHistorySince to be zero for history=all")
+				}
+			},
+		},
+		{
+			name:      "history mode none: SharedHistorySince set",
+			usernames: []string{"alice"},
+			roomID:    "r1",
+			mode:      model.HistoryModeNone,
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetUserID(gomock.Any(), "alice").Return("u-alice", nil)
+			},
+			wantSubCount:      1,
+			wantResolvedCount: 1,
+			checkSubs: func(t *testing.T, subs []*model.Subscription, _ []string) {
+				t.Helper()
+				if subs[0].SharedHistorySince.IsZero() {
+					t.Error("expected SharedHistorySince to be set for history=none")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			tt.setup(store)
+
+			h := &Handler{store: store, siteID: "site-a"}
+			subs, resolved := h.buildSubscriptions(context.Background(), tt.usernames, tt.roomID, tt.mode, now)
+
+			if len(subs) != tt.wantSubCount {
+				t.Errorf("subs count: got %d, want %d", len(subs), tt.wantSubCount)
+			}
+			if len(resolved) != tt.wantResolvedCount {
+				t.Errorf("resolved count: got %d, want %d", len(resolved), tt.wantResolvedCount)
+			}
+			if tt.checkSubs != nil && len(subs) > 0 {
+				tt.checkSubs(t, subs, resolved)
+			}
+		})
+	}
+}
+
+func TestHandler_writeRoomMembers(t *testing.T) {
+	now := time.Now().UTC()
+
+	tests := []struct {
+		name              string
+		roomID            string
+		orgIDs            []string
+		resolvedUsernames []string
+		setup             func(store *MockRoomStore)
+		wantErr           bool
+	}{
+		{
+			name:              "orgs present, no existing members",
+			roomID:            "r1",
+			orgIDs:            []string{"org-eng"},
+			resolvedUsernames: []string{"alice"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				// 1 org doc + 1 individual doc
+				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(nil).Times(2)
+			},
+		},
+		{
+			name:              "orgs present, existing members present",
+			roomID:            "r1",
+			orgIDs:            []string{"org-eng"},
+			resolvedUsernames: []string{"alice"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{
+					{ID: "m0", RoomID: "r1", Member: model.RoomMemberEntry{ID: "org-other", Type: model.RoomMemberTypeOrg}},
+				}, nil)
+				// 1 org doc + 1 individual doc
+				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(nil).Times(2)
+			},
+		},
+		{
+			name:              "no orgs, existing members",
+			roomID:            "r1",
+			orgIDs:            []string{},
+			resolvedUsernames: []string{"bob"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{
+					{ID: "m0", RoomID: "r1", Member: model.RoomMemberEntry{ID: "org-other", Type: model.RoomMemberTypeOrg}},
+				}, nil)
+				// Only 1 individual doc
+				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+			},
+		},
+		{
+			name:              "no orgs, no existing members",
+			roomID:            "r1",
+			orgIDs:            []string{},
+			resolvedUsernames: []string{"carol"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				// No CreateRoomMember calls
+			},
+		},
+		{
+			name:              "CreateRoomMember error",
+			roomID:            "r1",
+			orgIDs:            []string{"org-eng"},
+			resolvedUsernames: []string{},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return([]model.RoomMember{}, nil)
+				store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Return(fmt.Errorf("write failed"))
+			},
+			wantErr: true,
+		},
+		{
+			name:              "GetRoomMembers error",
+			roomID:            "r1",
+			orgIDs:            []string{},
+			resolvedUsernames: []string{"bob"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetRoomMembers(gomock.Any(), "r1").Return(nil, fmt.Errorf("db error"))
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			tt.setup(store)
+
+			h := &Handler{store: store, siteID: "site-a"}
+			err := h.writeRoomMembers(context.Background(), tt.roomID, tt.orgIDs, tt.resolvedUsernames, now)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
 }
