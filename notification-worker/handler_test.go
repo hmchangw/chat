@@ -62,7 +62,6 @@ func TestHandleMessage_FanOutSkipsSender(t *testing.T) {
 	h := NewHandler(lookup, pub)
 
 	evt := model.MessageEvent{
-		RoomID: "room-1",
 		SiteID: "site-a",
 		Message: model.Message{
 			ID:      "m1",
@@ -126,7 +125,6 @@ func TestHandleMessage_NoMembers(t *testing.T) {
 	h := NewHandler(lookup, pub)
 
 	evt := model.MessageEvent{
-		RoomID: "empty-room",
 		SiteID: "site-a",
 		Message: model.Message{
 			ID:      "m1",
@@ -160,7 +158,6 @@ func TestHandleMessage_SoleMember(t *testing.T) {
 	h := NewHandler(lookup, pub)
 
 	evt := model.MessageEvent{
-		RoomID: "room-solo",
 		SiteID: "site-a",
 		Message: model.Message{
 			ID:      "m1",

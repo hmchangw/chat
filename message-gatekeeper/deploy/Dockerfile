@@ -1,0 +1,12 @@
+FROM golang:1.24-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY pkg/ pkg/
+COPY message-gatekeeper/ message-gatekeeper/
+RUN CGO_ENABLED=0 go build -o /message-gatekeeper ./message-gatekeeper/
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /message-gatekeeper /message-gatekeeper
+ENTRYPOINT ["/message-gatekeeper"]

@@ -14,16 +14,13 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/cassutil"
-	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
 
 type config struct {
-	NatsURL           string `env:"NATS_URL"           envDefault:"nats://localhost:4222"`
-	SiteID            string `env:"SITE_ID"            envDefault:"site-local"`
-	MongoURI          string `env:"MONGO_URI"          envDefault:"mongodb://localhost:27017"`
-	MongoDB           string `env:"MONGO_DB"           envDefault:"chat"`
+	NatsURL           string `env:"NATS_URL,required"`
+	SiteID            string `env:"SITE_ID,required"`
 	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
 	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
 	MaxWorkers        int    `env:"MAX_WORKERS"        envDefault:"100"`
@@ -51,32 +48,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
-	if err != nil {
-		slog.Error("mongo connect failed", "error", err)
-		os.Exit(1)
-	}
-	db := mongoClient.Database(cfg.MongoDB)
-
 	cassSession, err := cassutil.Connect(strings.Split(cfg.CassandraHosts, ","), cfg.CassandraKeyspace)
 	if err != nil {
 		slog.Error("cassandra connect failed", "error", err)
 		os.Exit(1)
 	}
 
-	store := NewMongoStore(db, cassSession)
-	handler := NewHandler(store, cfg.SiteID, nc.PublishMsg)
+	store := NewCassandraStore(cassSession)
+	handler := NewHandler(store)
 
-	streamCfg := stream.Messages(cfg.SiteID)
+	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     streamCfg.Name,
-		Subjects: streamCfg.Subjects,
+		Name:     canonicalCfg.Name,
+		Subjects: canonicalCfg.Subjects,
 	}); err != nil {
-		slog.Error("create stream failed", "error", err)
+		slog.Error("create MESSAGES_CANONICAL stream failed", "error", err)
 		os.Exit(1)
 	}
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, jetstream.ConsumerConfig{
+	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
 		Durable:   "message-worker",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})
@@ -130,7 +120,6 @@ func main() {
 			}
 		},
 		func(ctx context.Context) error { return nc.Drain() },
-		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 	)
 }

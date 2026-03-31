@@ -21,7 +21,7 @@ type Publisher interface {
 	Publish(subject string, data []byte) error
 }
 
-// Handler processes fanout messages and sends notifications.
+// Handler processes MESSAGES_CANONICAL messages and sends notifications.
 type Handler struct {
 	members MemberLookup
 	pub     Publisher
@@ -38,14 +38,14 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal message event: %w", err)
 	}
 
-	subs, err := h.members.ListSubscriptions(ctx, evt.RoomID)
+	subs, err := h.members.ListSubscriptions(ctx, evt.Message.RoomID)
 	if err != nil {
-		return fmt.Errorf("list subscriptions for room %s: %w", evt.RoomID, err)
+		return fmt.Errorf("list subscriptions for room %s: %w", evt.Message.RoomID, err)
 	}
 
 	notif := model.NotificationEvent{
 		Type:    "new_message",
-		RoomID:  evt.RoomID,
+		RoomID:  evt.Message.RoomID,
 		Message: evt.Message,
 	}
 

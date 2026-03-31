@@ -16,7 +16,7 @@ func TestStreamConfigs(t *testing.T) {
 		wantSubj string
 	}{
 		{"Messages", stream.Messages(siteID), "MESSAGES_site-a", "chat.user.*.room.*.site-a.msg.>"},
-		{"Fanout", stream.Fanout(siteID), "FANOUT_site-a", "fanout.site-a.>"},
+		{"MessagesCanonical", stream.MessagesCanonical(siteID), "MESSAGES_CANONICAL_site-a", "chat.msg.canonical.site-a.>"},
 		{"Rooms", stream.Rooms(siteID), "ROOMS_site-a", "chat.user.*.request.room.*.site-a.member.>"},
 		{"Outbox", stream.Outbox(siteID), "OUTBOX_site-a", "outbox.site-a.>"},
 		{"Inbox", stream.Inbox(siteID), "INBOX_site-a", ""},

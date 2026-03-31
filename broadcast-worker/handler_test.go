@@ -53,7 +53,6 @@ var (
 
 func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 	evt := model.MessageEvent{
-		RoomID: roomID,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "msg-1", RoomID: roomID, UserID: "user-1",
@@ -178,7 +177,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			pub := &mockPublisher{}
 
 			evt := model.MessageEvent{
-				RoomID: "dm-1", SiteID: "site-a",
+				SiteID: "site-a",
 				Message: model.Message{
 					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id",
 					Content: tc.content, CreatedAt: msgTime,

@@ -79,16 +79,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	fanoutCfg := stream.Fanout(cfg.SiteID)
+	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     fanoutCfg.Name,
-		Subjects: fanoutCfg.Subjects,
+		Name:     canonicalCfg.Name,
+		Subjects: canonicalCfg.Subjects,
 	}); err != nil {
-		slog.Error("create fanout stream failed", "error", err)
+		slog.Error("create MESSAGES_CANONICAL stream failed", "error", err)
 		os.Exit(1)
 	}
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, fanoutCfg.Name, jetstream.ConsumerConfig{
+	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
 		Durable:   "notification-worker",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})
