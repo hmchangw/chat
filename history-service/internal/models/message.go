@@ -1,6 +1,32 @@
 package models
 
-import "github.com/hmchangw/chat/pkg/model"
+import "time"
+
+// Message represents a full message row from the messages_by_room Cassandra table.
+type Message struct {
+	RoomID                string                  `json:"roomId"`
+	CreatedAt             time.Time               `json:"createdAt"`
+	MessageID             string                  `json:"messageId"`
+	Sender                Participant             `json:"sender"`
+	TargetUser            *Participant            `json:"targetUser,omitempty"`
+	Msg                   string                  `json:"msg"`
+	Mentions              []Participant           `json:"mentions,omitempty"`
+	Attachments           [][]byte                `json:"attachments,omitempty"`
+	File                  *File                   `json:"file,omitempty"`
+	Card                  *Card                   `json:"card,omitempty"`
+	CardAction            *CardAction             `json:"cardAction,omitempty"`
+	TShow                 bool                    `json:"tshow,omitempty"`
+	ThreadParentCreatedAt *time.Time              `json:"threadParentCreatedAt,omitempty"`
+	VisibleTo             string                  `json:"visibleTo,omitempty"`
+	Unread                bool                    `json:"unread,omitempty"`
+	Reactions             map[string][]Participant `json:"reactions,omitempty"`
+	Deleted               bool                    `json:"deleted,omitempty"`
+	SysMsgType            string                  `json:"sysMsgType,omitempty"`
+	SysMsgData            []byte                  `json:"sysMsgData,omitempty"`
+	FederateFrom          string                  `json:"federateFrom,omitempty"`
+	EditedAt              *time.Time              `json:"editedAt,omitempty"`
+	UpdatedAt             *time.Time              `json:"updatedAt,omitempty"`
+}
 
 // LoadHistoryRequest is the payload for loading message history before a timestamp.
 type LoadHistoryRequest struct {
@@ -13,10 +39,10 @@ type LoadHistoryRequest struct {
 
 // LoadHistoryResponse is the response for LoadHistory.
 type LoadHistoryResponse struct {
-	Messages         []model.Message `json:"messages"`
-	FirstUnread      *model.Message  `json:"firstUnread,omitempty"`      // first unread message based on lastSeen
-	HasNextUnread    bool            `json:"hasNextUnread"`              // unread messages exist beyond firstUnread
-	NextUnreadCursor string          `json:"nextUnreadCursor,omitempty"` // cursor for fetching more unread messages
+	Messages         []Message `json:"messages"`
+	FirstUnread      *Message  `json:"firstUnread,omitempty"`
+	HasNextUnread    bool      `json:"hasNextUnread"`
+	NextUnreadCursor string    `json:"nextUnreadCursor,omitempty"`
 }
 
 // LoadNextMessagesRequest is the payload for loading messages after a timestamp.
@@ -29,9 +55,9 @@ type LoadNextMessagesRequest struct {
 
 // LoadNextMessagesResponse is the response for LoadNextMessages.
 type LoadNextMessagesResponse struct {
-	Messages   []model.Message `json:"messages"`
-	NextCursor string          `json:"nextCursor,omitempty"`
-	HasNext    bool            `json:"hasNext"`
+	Messages   []Message `json:"messages"`
+	NextCursor string    `json:"nextCursor,omitempty"`
+	HasNext    bool      `json:"hasNext"`
 }
 
 // LoadSurroundingMessagesRequest is the payload for loading messages around a central message.
@@ -43,9 +69,9 @@ type LoadSurroundingMessagesRequest struct {
 
 // LoadSurroundingMessagesResponse contains messages around the central message.
 type LoadSurroundingMessagesResponse struct {
-	Messages   []model.Message `json:"messages"` // before + central + after, chronological order
-	MoreBefore bool            `json:"moreBefore"`
-	MoreAfter  bool            `json:"moreAfter"`
+	Messages   []Message `json:"messages"`
+	MoreBefore bool      `json:"moreBefore"`
+	MoreAfter  bool      `json:"moreAfter"`
 }
 
 // GetMessageByIDRequest is the payload for fetching a single message.
