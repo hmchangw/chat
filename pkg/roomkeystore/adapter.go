@@ -1,0 +1,77 @@
+package roomkeystore
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+// redisAdapter wraps *redis.Client to satisfy hashCommander.
+type redisAdapter struct {
+	c *redis.Client
+}
+
+func (a *redisAdapter) hset(ctx context.Context, key string, pub, priv, ver string) error {
+	return a.c.HSet(ctx, key, "pub", pub, "priv", priv, "ver", ver).Err()
+}
+
+func (a *redisAdapter) hgetall(ctx context.Context, key string) (map[string]string, error) {
+	return a.c.HGetAll(ctx, key).Result()
+}
+
+// rotateScript atomically reads the current key, copies it to the previous
+// slot with a grace-period TTL, and writes the new key as current.
+// This runs as a single Lua script so no other client can interleave.
+var rotateScript = redis.NewScript(`
+local currentKey = KEYS[1]
+local prevKey    = KEYS[2]
+local newPub     = ARGV[1]
+local newPriv    = ARGV[2]
+local newVer     = ARGV[3]
+local graceSec   = tonumber(ARGV[4])
+
+local cur = redis.call('HGETALL', currentKey)
+if #cur == 0 then
+    return redis.error_reply('no current key')
+end
+
+redis.call('DEL', prevKey)
+redis.call('HSET', prevKey, unpack(cur))
+redis.call('EXPIRE', prevKey, graceSec)
+
+redis.call('HSET', currentKey, 'pub', newPub, 'priv', newPriv, 'ver', newVer)
+return 1
+`)
+
+func (a *redisAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv, ver string, gracePeriod time.Duration) error {
+	graceSec := int(gracePeriod.Seconds())
+	if graceSec < 1 {
+		graceSec = 1
+	}
+	err := rotateScript.Run(ctx, a.c, []string{currentKey, prevKey}, pub, priv, ver, graceSec).Err()
+	if err != nil && strings.Contains(err.Error(), "no current key") {
+		return ErrNoCurrentKey
+	}
+	return err
+}
+
+func (a *redisAdapter) deletePipeline(ctx context.Context, currentKey, prevKey string) error {
+	return a.c.Del(ctx, currentKey, prevKey).Err()
+}
+
+// NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
+func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
+	c := redis.NewClient(&redis.Options{
+		Addr:     cfg.Addr,
+		Password: cfg.Password,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Ping(ctx).Err(); err != nil {
+		return nil, fmt.Errorf("valkey connect: %w", err)
+	}
+	return &valkeyStore{client: &redisAdapter{c: c}, gracePeriod: cfg.GracePeriod}, nil
+}
