@@ -17,18 +17,18 @@ func (s *HistoryService) getAccessSince(ctx context.Context, username, roomID st
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}
 	if !subscribed {
-		return nil, natsrouter.ErrWithCode("forbidden", "not subscribed to room")
+		return nil, natsrouter.ErrForbidden("not subscribed to room")
 	}
 	return accessSince, nil
 }
 
 // resolveRoomID returns the authoritative roomID by reconciling the subject
 // param with the body value. Returns an error if both are present and differ.
-func resolveRoomID(p natsrouter.Params, bodyRoomID string) (string, error) {
-	subjectRoomID := p.Get("roomID")
+func resolveRoomID(c *natsrouter.Context, bodyRoomID string) (string, error) {
+	subjectRoomID := c.Param("roomID")
 	switch {
 	case subjectRoomID != "" && bodyRoomID != "" && subjectRoomID != bodyRoomID:
-		return "", natsrouter.ErrWithCode("bad_request", "roomId in body does not match subject")
+		return "", natsrouter.ErrBadRequest("roomId in body does not match subject")
 	case subjectRoomID != "":
 		return subjectRoomID, nil
 	default:
@@ -48,7 +48,7 @@ func millisToTime(millis *int64) time.Time {
 func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {
 	q, err := cassrepo.ParsePageRequest(cursor, limit)
 	if err != nil {
-		return cassrepo.PageRequest{}, natsrouter.ErrWithCode("bad_request", "invalid pagination cursor")
+		return cassrepo.PageRequest{}, natsrouter.ErrBadRequest("invalid pagination cursor")
 	}
 	return q, nil
 }

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
@@ -40,11 +39,9 @@ func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
 // RegisterHandlers wires all NATS endpoints for the history service.
 // Panics if any subscription fails (startup-only, fatal if broken).
 func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
-	pattern := func(action string) string {
-		return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.%s", siteID, action)
-	}
-	natsrouter.Register(r, pattern("history"), s.LoadHistory)
-	natsrouter.Register(r, pattern("next"), s.LoadNextMessages)
-	natsrouter.Register(r, pattern("surrounding"), s.LoadSurroundingMessages)
-	natsrouter.Register(r, pattern("get"), s.GetMessageByID)
+	msg := r.Group("chat.user.{username}.request.room.{roomID}." + siteID + ".msg")
+	natsrouter.Register(msg, "history", s.LoadHistory)
+	natsrouter.Register(msg, "next", s.LoadNextMessages)
+	natsrouter.Register(msg, "surrounding", s.LoadSurroundingMessages)
+	natsrouter.Register(msg, "get", s.GetMessageByID)
 }

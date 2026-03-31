@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -16,13 +15,13 @@ const (
 	maxPageSize         = 100
 )
 
-func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
-	roomID, err := resolveRoomID(p, req.RoomID)
+func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
+	roomID, err := resolveRoomID(c, req.RoomID)
 	if err != nil {
 		return nil, err
 	}
 
-	accessSince, err := s.getAccessSince(ctx, p.Get("username"), roomID)
+	accessSince, err := s.getAccessSince(c, c.Param("username"), roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -46,9 +45,9 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 
 	var page cassrepo.Page[models.Message]
 	if accessSince == nil {
-		page, err = s.messages.GetMessagesBefore(ctx, roomID, before, pageReq)
+		page, err = s.messages.GetMessagesBefore(c, roomID, before, pageReq)
 	} else {
-		page, err = s.messages.GetMessagesBetweenDesc(ctx, roomID, *accessSince, before, pageReq)
+		page, err = s.messages.GetMessagesBetweenDesc(c, roomID, *accessSince, before, pageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
@@ -57,13 +56,13 @@ func (s *HistoryService) LoadHistory(ctx context.Context, p natsrouter.Params, r
 	return &models.LoadHistoryResponse{Messages: page.Data}, nil
 }
 
-func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Params, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
-	roomID, err := resolveRoomID(p, req.RoomID)
+func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
+	roomID, err := resolveRoomID(c, req.RoomID)
 	if err != nil {
 		return nil, err
 	}
 
-	accessSince, err := s.getAccessSince(ctx, p.Get("username"), roomID)
+	accessSince, err := s.getAccessSince(c, c.Param("username"), roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -80,9 +79,9 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 
 	var page cassrepo.Page[models.Message]
 	if lowerBound.IsZero() {
-		page, err = s.messages.GetAllMessagesAsc(ctx, roomID, pageReq)
+		page, err = s.messages.GetAllMessagesAsc(c, roomID, pageReq)
 	} else {
-		page, err = s.messages.GetMessagesAfter(ctx, roomID, lowerBound, pageReq)
+		page, err = s.messages.GetMessagesAfter(c, roomID, lowerBound, pageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading next messages: %w", err)
@@ -95,26 +94,26 @@ func (s *HistoryService) LoadNextMessages(ctx context.Context, p natsrouter.Para
 	}, nil
 }
 
-func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrouter.Params, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
-	roomID, err := resolveRoomID(p, req.RoomID)
+func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
+	roomID, err := resolveRoomID(c, req.RoomID)
 	if err != nil {
 		return nil, err
 	}
 
-	accessSince, err := s.getAccessSince(ctx, p.Get("username"), roomID)
+	accessSince, err := s.getAccessSince(c, c.Param("username"), roomID)
 	if err != nil {
 		return nil, err
 	}
 
-	centralMsg, err := s.messages.GetMessageByID(ctx, roomID, req.MessageID)
+	centralMsg, err := s.messages.GetMessageByID(c, roomID, req.MessageID)
 	if err != nil {
 		return nil, fmt.Errorf("finding central message: %w", err)
 	}
 	if centralMsg == nil {
-		return nil, natsrouter.ErrWithCode("not_found", "message not found")
+		return nil, natsrouter.ErrNotFound("message not found")
 	}
 	if accessSince != nil && centralMsg.CreatedAt.Before(*accessSince) {
-		return nil, natsrouter.ErrWithCode("forbidden", "message is outside access window")
+		return nil, natsrouter.ErrForbidden("message is outside access window")
 	}
 
 	limit := req.Limit
@@ -136,16 +135,16 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	// Before-page: messages older than central, newest-first.
 	var beforePage cassrepo.Page[models.Message]
 	if accessSince == nil {
-		beforePage, err = s.messages.GetMessagesBefore(ctx, roomID, centralMsg.CreatedAt, halfPageReq)
+		beforePage, err = s.messages.GetMessagesBefore(c, roomID, centralMsg.CreatedAt, halfPageReq)
 	} else {
-		beforePage, err = s.messages.GetMessagesBetweenDesc(ctx, roomID, *accessSince, centralMsg.CreatedAt, halfPageReq)
+		beforePage, err = s.messages.GetMessagesBetweenDesc(c, roomID, *accessSince, centralMsg.CreatedAt, halfPageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding before: %w", err)
 	}
 
 	// After-page: messages newer than central, oldest-first.
-	afterPage, err := s.messages.GetMessagesAfter(ctx, roomID, centralMsg.CreatedAt, halfPageReq)
+	afterPage, err := s.messages.GetMessagesAfter(c, roomID, centralMsg.CreatedAt, halfPageReq)
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding after: %w", err)
 	}
@@ -165,27 +164,27 @@ func (s *HistoryService) LoadSurroundingMessages(ctx context.Context, p natsrout
 	}, nil
 }
 
-func (s *HistoryService) GetMessageByID(ctx context.Context, p natsrouter.Params, req models.GetMessageByIDRequest) (*models.Message, error) {
-	roomID, err := resolveRoomID(p, req.RoomID)
+func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMessageByIDRequest) (*models.Message, error) {
+	roomID, err := resolveRoomID(c, req.RoomID)
 	if err != nil {
 		return nil, err
 	}
 
-	accessSince, err := s.getAccessSince(ctx, p.Get("username"), roomID)
+	accessSince, err := s.getAccessSince(c, c.Param("username"), roomID)
 	if err != nil {
 		return nil, err
 	}
 
-	msg, err := s.messages.GetMessageByID(ctx, roomID, req.MessageID)
+	msg, err := s.messages.GetMessageByID(c, roomID, req.MessageID)
 	if err != nil {
 		return nil, fmt.Errorf("loading message: %w", err)
 	}
 	if msg == nil {
-		return nil, natsrouter.ErrWithCode("not_found", "message not found")
+		return nil, natsrouter.ErrNotFound("message not found")
 	}
 
 	if accessSince != nil && msg.CreatedAt.Before(*accessSince) {
-		return nil, natsrouter.ErrWithCode("forbidden", "message is outside access window")
+		return nil, natsrouter.ErrForbidden("message is outside access window")
 	}
 
 	return msg, nil
