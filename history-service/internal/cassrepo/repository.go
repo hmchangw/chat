@@ -158,11 +158,27 @@ func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q Pag
 	}, nil
 }
 
+// GetMessageByTimestamp returns a single message using the full primary key (room_id, created_at, message_id).
+// This is an O(1) lookup with no ALLOW FILTERING. Returns (nil, nil) if not found.
+func (r *Repository) GetMessageByTimestamp(ctx context.Context, roomID string, createdAt time.Time, messageID string) (*models.Message, error) {
+	var m models.Message
+	err := r.session.Query(
+		messageQuery+` WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, messageID,
+	).WithContext(ctx).Scan(messageScanDest(&m)...)
+	if err == gocql.ErrNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying message by timestamp: %w", err)
+	}
+	return &m, nil
+}
+
 // GetMessageByID returns a single message by ID within a room.
 // Returns (nil, nil) if the message is not found.
 // NOTE: Uses ALLOW FILTERING to push the id filter server-side within a single
-// partition (room_id). Consider adding a messages_by_id lookup table if this
-// becomes a bottleneck in rooms with very large message counts.
+// partition (room_id). Prefer GetMessageByTimestamp when created_at is available.
 func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID string) (*models.Message, error) {
 	var m models.Message
 	err := r.session.Query(
