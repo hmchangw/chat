@@ -396,6 +396,74 @@ func TestContext_Abort(t *testing.T) {
 	assert.False(t, handlerCalled)
 }
 
+func TestRequestID_Generated(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+	r.Use(RequestID())
+
+	var capturedID string
+	Register(r, "test.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			val, ok := c.Get("requestID")
+			require.True(t, ok)
+			capturedID = val.(string)
+			return &testResp{}, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	_, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+	assert.NotEmpty(t, capturedID)
+}
+
+func TestRequestID_FromHeader(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+	r.Use(RequestID())
+
+	var capturedID string
+	Register(r, "test.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			capturedID = c.MustGet("requestID").(string)
+			return &testResp{}, nil
+		})
+
+	msg := nats.NewMsg("test.123")
+	msg.Data, _ = json.Marshal(testReq{Name: "test"})
+	msg.Header = nats.Header{}
+	msg.Header.Set("X-Request-ID", "custom-req-id-42")
+
+	resp, err := nc.RequestMsg(msg, 2*time.Second)
+	require.NoError(t, err)
+	assert.NotEmpty(t, string(resp.Data))
+	assert.Equal(t, "custom-req-id-42", capturedID)
+}
+
+func TestReplyRouteError(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	r.Use(func(c *Context) {
+		c.ReplyRouteError(ErrForbidden("access denied"))
+		c.Abort()
+	})
+
+	Register(r, "test.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			t.Fatal("handler should not be called")
+			return nil, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result RouteError
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "access denied", result.Message)
+	assert.Equal(t, "forbidden", result.Code)
+}
+
 func TestErrConstants(t *testing.T) {
 	e := ErrBadRequest("invalid input")
 	assert.Equal(t, "bad_request", e.Code)

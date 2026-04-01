@@ -2,6 +2,7 @@ package cassrepo
 
 import (
 	"encoding/base64"
+	"fmt"
 
 	"github.com/gocql/gocql"
 )
@@ -20,7 +21,7 @@ func NewCursor(encoded string) (*Cursor, error) {
 	}
 	state, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode cursor: %w", err)
 	}
 	return &Cursor{state: state}, nil
 }
@@ -63,7 +64,7 @@ const (
 func ParsePageRequest(cursorStr string, pageSize int) (PageRequest, error) {
 	cursor, err := NewCursor(cursorStr)
 	if err != nil {
-		return PageRequest{}, err
+		return PageRequest{}, fmt.Errorf("parse page request cursor: %w", err)
 	}
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
@@ -103,6 +104,9 @@ func (b *QueryBuilder) WithPageSize(size int) *QueryBuilder {
 // Fetch executes the query and passes the iterator to the callback for scanning.
 // The caller controls the scan loop. Returns the encoded next cursor and any error.
 func (b *QueryBuilder) Fetch(scan func(iter *gocql.Iter)) (string, error) {
+	if b.query == nil {
+		return "", fmt.Errorf("execute paged query: nil query")
+	}
 	q := b.query.PageSize(b.pageSize)
 	if b.cursor != nil {
 		q = q.PageState(b.cursor.Raw())
@@ -112,5 +116,8 @@ func (b *QueryBuilder) Fetch(scan func(iter *gocql.Iter)) (string, error) {
 	scan(iter)
 
 	nextCursor := (&Cursor{state: iter.PageState()}).Encode()
-	return nextCursor, iter.Close()
+	if err := iter.Close(); err != nil {
+		return "", fmt.Errorf("close cassandra iterator: %w", err)
+	}
+	return nextCursor, nil
 }
