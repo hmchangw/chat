@@ -61,21 +61,6 @@ func MemberInvite(username, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", username, roomID, siteID)
 }
 
-func MsgHistory(username, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.history", username, roomID, siteID)
-}
-
-func MsgNext(username, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.next", username, roomID, siteID)
-}
-
-func MsgSurrounding(username, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.surrounding", username, roomID, siteID)
-}
-
-func MsgGet(username, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", username, roomID, siteID)
-}
 
 func SubscriptionUpdate(username string) string {
 	return fmt.Sprintf("chat.user.%s.event.subscription.update", username)

@@ -26,8 +26,6 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.stream.msg"},
 		{"MemberInvite", subject.MemberInvite("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.member.invite"},
-		{"MsgHistory", subject.MsgHistory("alice", "r1", "site-a"),
-			"chat.user.alice.request.room.r1.site-a.msg.history"},
 		{"SubscriptionUpdate", subject.SubscriptionUpdate("alice"),
 			"chat.user.alice.event.subscription.update"},
 		{"RoomMetadataChanged", subject.RoomMetadataChanged("alice"),
