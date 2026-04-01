@@ -15,6 +15,9 @@ func unmarshalUDTField(ptr any, name string, info gocql.TypeInfo, data []byte) e
 		return fmt.Errorf("unmarshal UDT field %q: expected non-nil pointer, got %T", name, ptr)
 	}
 	v := rv.Elem()
+	if v.Kind() != reflect.Struct {
+		return fmt.Errorf("unmarshal UDT field %q: expected pointer to struct, got pointer to %s", name, v.Kind())
+	}
 	t := v.Type()
 	for i := range t.NumField() {
 		if t.Field(i).Tag.Get("cql") == name {
@@ -35,6 +38,9 @@ func marshalUDTField(ptr any, name string, info gocql.TypeInfo) ([]byte, error) 
 		return nil, fmt.Errorf("marshal UDT field %q: expected non-nil pointer, got %T", name, ptr)
 	}
 	v := rv.Elem()
+	if v.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("marshal UDT field %q: expected pointer to struct, got pointer to %s", name, v.Kind())
+	}
 	t := v.Type()
 	for i := range t.NumField() {
 		if t.Field(i).Tag.Get("cql") == name {
@@ -56,6 +62,9 @@ func verifyUDTTags(samplePtr any) {
 		panic(fmt.Sprintf("models: verifyUDTTags requires a pointer, got %T", samplePtr))
 	}
 	t := rv.Elem()
+	if t.Kind() != reflect.Struct {
+		panic(fmt.Sprintf("models: verifyUDTTags requires a pointer to struct, got pointer to %s", t.Kind()))
+	}
 	for i := range t.NumField() {
 		f := t.Field(i)
 		if f.Tag.Get("cql") == "" {

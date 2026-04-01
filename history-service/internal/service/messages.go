@@ -125,8 +125,14 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	beforeCount := (remaining + 1) / 2
 	afterCount := remaining / 2
 
-	beforePageReq, _ := parsePageRequest("", beforeCount)
-	afterPageReq, _ := parsePageRequest("", afterCount)
+	beforePageReq, err := parsePageRequest("", beforeCount)
+	if err != nil {
+		return nil, err
+	}
+	afterPageReq, err := parsePageRequest("", afterCount)
+	if err != nil {
+		return nil, err
+	}
 
 	// Before-page: messages older than central, newest-first.
 	var beforePage cassrepo.Page[models.Message]
