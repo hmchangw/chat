@@ -65,6 +65,18 @@ func MsgHistory(username, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.history", username, roomID, siteID)
 }
 
+func MsgNext(username, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.next", username, roomID, siteID)
+}
+
+func MsgSurrounding(username, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.surrounding", username, roomID, siteID)
+}
+
+func MsgGet(username, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", username, roomID, siteID)
+}
+
 func SubscriptionUpdate(username string) string {
 	return fmt.Sprintf("chat.user.%s.event.subscription.update", username)
 }
@@ -125,6 +137,22 @@ func MsgCanonicalWildcard(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.>", siteID)
 }
 
+func MsgNextWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.next", siteID)
+}
+
+func MsgSurroundingWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.surrounding", siteID)
+}
+
+func MsgGetWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.get", siteID)
+}
+
+func FanoutWildcard(siteID string) string {
+	return fmt.Sprintf("fanout.%s.>", siteID)
+}
+
 func OutboxWildcard(siteID string) string {
 	return fmt.Sprintf("outbox.%s.>", siteID)
 }
@@ -139,4 +167,22 @@ func RoomsListWildcard() string {
 
 func RoomsGetWildcard() string {
 	return "chat.user.*.request.rooms.get.*"
+}
+
+// --- natsrouter patterns (use {param} placeholders for named extraction) ---
+
+func MsgHistoryPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.history", siteID)
+}
+
+func MsgNextPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.next", siteID)
+}
+
+func MsgSurroundingPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.surrounding", siteID)
+}
+
+func MsgGetPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.get", siteID)
 }
