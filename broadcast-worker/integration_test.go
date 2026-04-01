@@ -86,7 +86,7 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
-		RoomID: "r1", SiteID: "site-a",
+		SiteID: "site-a",
 		Message: model.Message{
 			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice", Content: "hello", CreatedAt: msgTime,
 		},
@@ -132,7 +132,7 @@ func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
-		RoomID: "r2", SiteID: "site-a",
+		SiteID: "site-a",
 		Message: model.Message{
 			ID: "m2", RoomID: "r2", UserID: "u1", Username: "alice", Content: "hello @All", CreatedAt: msgTime,
 		},
@@ -171,7 +171,7 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
-		RoomID: "r3", SiteID: "site-a",
+		SiteID: "site-a",
 		Message: model.Message{
 			ID: "m3", RoomID: "r3", UserID: "u1", Username: "alice", Content: "hey @bob", CreatedAt: msgTime,
 		},
@@ -223,7 +223,7 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
-		RoomID: "dm-1", SiteID: "site-a",
+		SiteID: "site-a",
 		Message: model.Message{
 			ID: "m4", RoomID: "dm-1", UserID: "u1", Username: "alice", Content: "hey", CreatedAt: msgTime,
 		},
