@@ -7,10 +7,7 @@
 #   docker compose logs -f history  # follow service logs
 #   docker compose down             # stop all services
 #   docker compose down -v          # stop and remove volumes (clean slate)
-#
-# Run the demo from another terminal:
-#   cd history-service-demo
-#   docker compose up
+
 
 services:
   nats:
