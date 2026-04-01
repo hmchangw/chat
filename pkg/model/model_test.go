@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -18,7 +21,6 @@ func TestRoomJSON(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
-		Origin:           "site-a",
 		LastMsgAt:        time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		LastMsgID:        "m1",
 		LastMentionAllAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
@@ -104,14 +106,14 @@ func TestRoomEventJSON(t *testing.T) {
 			Timestamp:  now,
 			RoomName:   "General",
 			RoomType:   model.RoomTypeGroup,
-			Origin:     "site-a",
+			SiteID:     "site-a",
 			UserCount:  5,
 			LastMsgAt:  now,
 			LastMsgID:  "msg-1",
-			Mentions:   []string{"user-2", "user-3"},
+			Mentions:   []model.Participant{{Username: "user-2", ChineseName: "user-2", EngName: "user-2"}, {Username: "user-3", ChineseName: "user-3", EngName: "user-3"}},
 			MentionAll: true,
 			HasMention: true,
-			Message:    &msg,
+			Message:    &model.ClientMessage{Message: msg, Sender: &model.Participant{UserID: "user-1", Username: "alice", ChineseName: "愛麗絲", EngName: "Alice Wang"}},
 		}
 
 		data, err := json.Marshal(src)
@@ -134,7 +136,7 @@ func TestRoomEventJSON(t *testing.T) {
 			Timestamp: now,
 			RoomName:  "Lobby",
 			RoomType:  model.RoomTypeGroup,
-			Origin:    "site-b",
+			SiteID:    "site-b",
 			UserCount: 3,
 			LastMsgAt: now,
 			LastMsgID: "msg-2",
@@ -169,6 +171,164 @@ func TestRoomEventTypeValues(t *testing.T) {
 	if model.RoomEventNewMessage != "new_message" {
 		t.Errorf("RoomEventNewMessage = %q", model.RoomEventNewMessage)
 	}
+}
+
+func TestParticipantJSON(t *testing.T) {
+	t.Run("with userID", func(t *testing.T) {
+		p := model.Participant{
+			UserID:      "u1",
+			Username:    "alice",
+			ChineseName: "愛麗絲",
+			EngName:     "Alice Wang",
+		}
+		roundTrip(t, &p, &model.Participant{})
+	})
+
+	t.Run("without userID omitted", func(t *testing.T) {
+		p := model.Participant{
+			Username:    "bob",
+			ChineseName: "鮑勃",
+			EngName:     "Bob Chen",
+		}
+		data, err := json.Marshal(p)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasUserID := raw["userId"]
+		assert.False(t, hasUserID, "userId should be omitted when empty")
+
+		var dst model.Participant
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, p, dst)
+	})
+}
+
+func TestClientMessageJSON(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	cm := model.ClientMessage{
+		Message: model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			Content: "hello", CreatedAt: now,
+		},
+		Sender: &model.Participant{
+			UserID:      "u1",
+			Username:    "alice",
+			ChineseName: "愛麗絲",
+			EngName:     "Alice Wang",
+		},
+	}
+	data, err := json.Marshal(cm)
+	require.NoError(t, err)
+
+	var dst model.ClientMessage
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, cm, dst)
+
+	// Verify inline embedding — message fields should be at top level
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Contains(t, raw, "id")
+	assert.Contains(t, raw, "roomId")
+	assert.Contains(t, raw, "sender")
+}
+
+func TestClientMessage_NilSender(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	cm := model.ClientMessage{
+		Message: model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			Content: "hello", CreatedAt: now,
+		},
+		Sender: nil,
+	}
+	data, err := json.Marshal(cm)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, hasSender := raw["sender"]
+	assert.False(t, hasSender, "sender should be omitted when nil")
+
+	var dst model.ClientMessage
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Nil(t, dst.Sender)
+	assert.Equal(t, "m1", dst.ID)
+}
+
+func TestRoomEvent_SiteIDJSONKey(t *testing.T) {
+	now := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
+	evt := model.RoomEvent{
+		Type:      model.RoomEventNewMessage,
+		RoomID:    "room-1",
+		Timestamp: now,
+		RoomName:  "General",
+		RoomType:  model.RoomTypeGroup,
+		SiteID:    "site-xyz",
+		UserCount: 10,
+		LastMsgAt: now,
+		LastMsgID: "msg-42",
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	val, ok := raw["siteId"]
+	require.True(t, ok, "siteId key must be present in JSON output")
+	assert.Equal(t, "site-xyz", val)
+	_, hasOrigin := raw["origin"]
+	assert.False(t, hasOrigin, "origin key must not be present in JSON output")
+}
+
+func TestParticipant_ChineseAndEngNameKeys(t *testing.T) {
+	p := model.Participant{
+		Username:    "carol",
+		ChineseName: "卡羅爾",
+		EngName:     "Carol Yu",
+	}
+	data, err := json.Marshal(p)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Equal(t, "carol", raw["username"])
+	assert.Equal(t, "卡羅爾", raw["chineseName"])
+	assert.Equal(t, "Carol Yu", raw["engName"])
+	_, hasUserID := raw["userId"]
+	assert.False(t, hasUserID)
+
+	var dst model.Participant
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, p, dst)
+}
+
+func TestRoomEvent_MentionsAsParticipants(t *testing.T) {
+	now := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
+	mentions := []model.Participant{
+		{Username: "alice", ChineseName: "愛麗絲", EngName: "Alice Wang"},
+		{Username: "bob", ChineseName: "鮑勃", EngName: "Bob Chen"},
+	}
+	evt := model.RoomEvent{
+		Type:      model.RoomEventNewMessage,
+		RoomID:    "r1",
+		Timestamp: now,
+		RoomType:  model.RoomTypeGroup,
+		SiteID:    "site-a",
+		LastMsgAt: now,
+		LastMsgID: "m1",
+		Mentions:  mentions,
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	var dst model.RoomEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	require.Len(t, dst.Mentions, 2)
+	assert.Equal(t, "alice", dst.Mentions[0].Username)
+	assert.Equal(t, "愛麗絲", dst.Mentions[0].ChineseName)
+	assert.Empty(t, dst.Mentions[0].UserID)
+	assert.Equal(t, "bob", dst.Mentions[1].Username)
 }
 
 func TestRoomKeyEventJSON(t *testing.T) {
