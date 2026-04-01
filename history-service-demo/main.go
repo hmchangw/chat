@@ -3,8 +3,9 @@
 //
 // Two-terminal setup:
 //
-//	Terminal 1:  cd history-service/docker-local && docker compose up
-//	Terminal 2:  cd history-service-demo && docker compose up
+//	Terminal 1:  cd history-service/docker-local && docker compose up -d
+//	Terminal 2:  cd history-service/docker-local && docker compose logs -f history
+//	Terminal 3:  cd history-service-demo && docker compose up
 package main
 
 import (
@@ -76,6 +77,51 @@ func (f *fileUDT) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
 	return nil, nil
 }
 
+type cardUDT struct {
+	Template string
+	Data     []byte
+}
+
+func (c *cardUDT) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+	switch name {
+	case "template":
+		return gocql.Marshal(info, c.Template)
+	case "data":
+		return gocql.Marshal(info, c.Data)
+	}
+	return nil, nil
+}
+
+type cardActionUDT struct {
+	Verb        string
+	Text        string
+	CardID      string
+	DisplayText string
+	HideExecLog bool
+	CardTmID    string
+	Data        []byte
+}
+
+func (ca *cardActionUDT) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+	switch name {
+	case "verb":
+		return gocql.Marshal(info, ca.Verb)
+	case "text":
+		return gocql.Marshal(info, ca.Text)
+	case "card_id":
+		return gocql.Marshal(info, ca.CardID)
+	case "display_text":
+		return gocql.Marshal(info, ca.DisplayText)
+	case "hide_exec_log":
+		return gocql.Marshal(info, ca.HideExecLog)
+	case "card_tmid":
+		return gocql.Marshal(info, ca.CardTmID)
+	case "data":
+		return gocql.Marshal(info, ca.Data)
+	}
+	return nil, nil
+}
+
 // --- Demo data ---
 
 const (
@@ -85,31 +131,118 @@ const (
 )
 
 var users = []participantUDT{
-	{ID: "alice", UserName: "alice", EngName: "Alice Chen"},
-	{ID: "bob", UserName: "bob", EngName: "Bob Wang"},
-	{ID: "charlie", UserName: "charlie", EngName: "Charlie Liu", IsBot: true},
+	{ID: "alice", UserName: "alice", EngName: "Alice Chen", CompanyName: "Acme Corp", AppID: "web", AppName: "Chat Web"},
+	{ID: "bob", UserName: "bob", EngName: "Bob Wang", CompanyName: "Acme Corp", AppID: "mobile", AppName: "Chat Mobile"},
+	{ID: "charlie", UserName: "charlie", EngName: "Charlie Liu", CompanyName: "Acme Corp", AppID: "bot-1", AppName: "CI Bot", IsBot: true},
 }
 
-var chatMessages = []struct {
-	senderIdx int
-	text      string
-	file      *fileUDT
-	mentions  []int
-	reaction  string
-	reactBy   int
-}{
-	{0, "Hey team! The new deployment pipeline is ready for review", nil, nil, "thumbsup", 1},
-	{1, "Nice work Alice! I'll take a look this afternoon", nil, nil, "", 0},
-	{0, "Here's the architecture doc for reference", &fileUDT{ID: "f1", Name: "pipeline-arch.pdf", Type: "application/pdf"}, nil, "", 0},
-	{2, "I've run the automated checks - all 47 tests passing", nil, nil, "white_check_mark", 0},
-	{1, "Quick question - are we using blue-green or canary for the rollout?", nil, []int{0}, "", 0},
-	{0, "Canary with 10% traffic initially, then ramp up over 30 min", nil, nil, "", 0},
-	{1, "Perfect. That matches what I had in mind", nil, nil, "", 0},
-	{2, "Monitoring dashboard is configured. I'll alert on error rate > 0.1%", nil, nil, "eyes", 1},
-	{0, "Let's target Thursday for the first canary. @bob can you prep staging?", nil, []int{1}, "", 0},
-	{1, "On it! Will have staging ready by EOD Wednesday", nil, nil, "rocket", 0},
-	{0, "Great - meeting at 2pm Thursday to kick off. Everyone good?", nil, []int{1, 2}, "thumbsup", 1},
-	{2, "I'll monitor the rollout metrics in real-time", nil, nil, "", 0},
+// seedRow holds ALL 22 columns of messages_by_room for a single message.
+type seedRow struct {
+	senderIdx              int
+	targetIdx              int // -1 = no target
+	msg                    string
+	mentions               []int // indices into users
+	attachments            [][]byte
+	file                   *fileUDT
+	card                   *cardUDT
+	cardAction             *cardActionUDT
+	tshow                  bool
+	threadParentOffsetMins int // 0 = nil
+	visibleTo              string
+	unread                 bool
+	reactions              map[string]int // emoji → reactBy user index
+	deleted                bool
+	sysMsgType             string
+	sysMsgData             []byte
+	federateFrom           string
+	editedOffsetMins       int // 0 = nil, positive = edited at ts+offset
+	updatedOffsetMins      int // 0 = nil
+}
+
+var chatMessages = []seedRow{
+	{
+		senderIdx: 0, targetIdx: -1,
+		msg:       "Hey team! The new deployment pipeline is ready for review",
+		reactions: map[string]int{"thumbsup": 1},
+		unread:    true,
+	},
+	{
+		senderIdx: 1, targetIdx: 0,
+		msg:       "Nice work Alice! I'll take a look this afternoon",
+		visibleTo: "",
+	},
+	{
+		senderIdx: 0, targetIdx: -1,
+		msg:  "Here's the architecture doc for reference",
+		file: &fileUDT{ID: "f1", Name: "pipeline-arch.pdf", Type: "application/pdf"},
+		attachments: [][]byte{
+			[]byte("blob-attachment-preview-1"),
+		},
+	},
+	{
+		senderIdx: 2, targetIdx: -1,
+		msg: "I've run the automated checks - all 47 tests passing",
+		card: &cardUDT{
+			Template: "ci-report",
+			Data:     []byte(`{"passed":47,"failed":0,"skipped":0}`),
+		},
+		reactions: map[string]int{"white_check_mark": 0},
+	},
+	{
+		senderIdx: 1, targetIdx: -1,
+		msg:      "Quick question - are we using blue-green or canary for the rollout?",
+		mentions: []int{0},
+	},
+	{
+		senderIdx: 0, targetIdx: -1,
+		msg:               "Canary with 10% traffic initially, then ramp up over 30 min",
+		editedOffsetMins:  2,
+		updatedOffsetMins: 2,
+	},
+	{
+		senderIdx: 1, targetIdx: -1,
+		msg: "Perfect. That matches what I had in mind",
+	},
+	{
+		senderIdx: 2, targetIdx: -1,
+		msg: "Monitoring dashboard is configured. I'll alert on error rate > 0.1%",
+		cardAction: &cardActionUDT{
+			Verb:        "open_dashboard",
+			Text:        "Open Dashboard",
+			CardID:      "card-monitor-1",
+			DisplayText: "Click to open monitoring",
+			HideExecLog: false,
+			CardTmID:    "tmpl-monitor",
+			Data:        []byte(`{"url":"https://grafana.internal/d/deploy"}`),
+		},
+		reactions: map[string]int{"eyes": 1},
+	},
+	{
+		senderIdx: 0, targetIdx: -1,
+		msg:                    "Let's target Thursday for the first canary. @bob can you prep staging?",
+		mentions:               []int{1},
+		tshow:                  true,
+		threadParentOffsetMins: -9, // points back to msg-005 (3 min intervals, msg-005 is at offset 15)
+	},
+	{
+		senderIdx: 1, targetIdx: -1,
+		msg:       "On it! Will have staging ready by EOD Wednesday",
+		reactions: map[string]int{"rocket": 0},
+	},
+	{
+		senderIdx: 0, targetIdx: -1,
+		msg:          "Great - meeting at 2pm Thursday to kick off. Everyone good?",
+		mentions:     []int{1, 2},
+		reactions:    map[string]int{"thumbsup": 1},
+		sysMsgType:   "meeting_scheduled",
+		sysMsgData:   []byte(`{"time":"2026-04-03T14:00:00Z","title":"Canary Kickoff"}`),
+		federateFrom: "site-remote",
+	},
+	{
+		senderIdx: 2, targetIdx: -1,
+		msg:     "I'll monitor the rollout metrics in real-time",
+		deleted: false,
+	},
 }
 
 func main() {
@@ -185,14 +318,25 @@ func run() error {
 	}
 	var msgs []seeded
 
-	for i, cm := range chatMessages {
+	const insertCQL = `INSERT INTO messages_by_room (
+		room_id, created_at, message_id, sender, target_user, msg,
+		mentions, attachments, file, card, card_action,
+		tshow, thread_parent_created_at, visible_to, unread,
+		reactions, deleted, sys_msg_type, sys_msg_data,
+		federate_from, edited_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	for i := range chatMessages {
+		cm := &chatMessages[i]
 		ts := baseTime.Add(time.Duration(i) * 3 * time.Minute)
 		msgID := fmt.Sprintf("msg-%03d", i)
+
 		sender := users[cm.senderIdx]
 
-		var file *fileUDT
-		if cm.file != nil {
-			file = cm.file
+		var target *participantUDT
+		if cm.targetIdx >= 0 {
+			t := users[cm.targetIdx]
+			target = &t
 		}
 
 		var mentions []participantUDT
@@ -201,31 +345,75 @@ func run() error {
 		}
 
 		var reactions map[string][]participantUDT
-		if cm.reaction != "" {
-			reactions = map[string][]participantUDT{
-				cm.reaction: {users[cm.reactBy]},
+		if len(cm.reactions) > 0 {
+			reactions = make(map[string][]participantUDT)
+			for emoji, userIdx := range cm.reactions {
+				reactions[emoji] = []participantUDT{users[userIdx]}
 			}
 		}
 
-		if err := cassSession.Query(
-			`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, file, mentions, reactions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			roomID, ts, msgID, &sender, cm.text, file, mentions, reactions,
+		var threadParent *time.Time
+		if cm.threadParentOffsetMins != 0 {
+			tp := ts.Add(time.Duration(cm.threadParentOffsetMins) * time.Minute)
+			threadParent = &tp
+		}
+
+		var editedAt *time.Time
+		if cm.editedOffsetMins > 0 {
+			ea := ts.Add(time.Duration(cm.editedOffsetMins) * time.Minute)
+			editedAt = &ea
+		}
+
+		var updatedAt *time.Time
+		if cm.updatedOffsetMins > 0 {
+			ua := ts.Add(time.Duration(cm.updatedOffsetMins) * time.Minute)
+			updatedAt = &ua
+		}
+
+		if err := cassSession.Query(insertCQL,
+			roomID, ts, msgID,
+			&sender, target, cm.msg,
+			mentions, cm.attachments, cm.file, cm.card, cm.cardAction,
+			cm.tshow, threadParent, cm.visibleTo, cm.unread,
+			reactions, cm.deleted, cm.sysMsgType, cm.sysMsgData,
+			cm.federateFrom, editedAt, updatedAt,
 		).Exec(); err != nil {
 			return fmt.Errorf("seed message %d: %w", i, err)
 		}
 		msgs = append(msgs, seeded{msgID, ts})
 	}
-	ok("Seeded %d messages from %d participants", len(msgs), len(users))
+	ok("Seeded %d messages (all 22 columns) from %d participants", len(msgs), len(users))
 	fmt.Println()
-	for i, cm := range chatMessages {
-		tag := ""
+	for i := range chatMessages {
+		cm := &chatMessages[i]
+		tags := ""
 		if cm.file != nil {
-			tag = " [file]"
+			tags += " [file]"
 		}
-		if cm.reaction != "" {
-			tag += " :" + cm.reaction + ":"
+		if cm.card != nil {
+			tags += " [card]"
 		}
-		fmt.Printf("    %s  %-8s  %s%s\n", msgs[i].time.Format("15:04"), users[cm.senderIdx].UserName, truncate(cm.text, 50), tag)
+		if cm.cardAction != nil {
+			tags += " [action]"
+		}
+		if cm.tshow {
+			tags += " [thread]"
+		}
+		if cm.editedOffsetMins > 0 {
+			tags += " [edited]"
+		}
+		if cm.sysMsgType != "" {
+			tags += " [sys:" + cm.sysMsgType + "]"
+		}
+		if cm.federateFrom != "" {
+			tags += " [fed]"
+		}
+		if len(cm.reactions) > 0 {
+			for emoji := range cm.reactions {
+				tags += " :" + emoji + ":"
+			}
+		}
+		fmt.Printf("    %s  %-8s  %s%s\n", msgs[i].time.Format("15:04"), users[cm.senderIdx].UserName, truncate(cm.msg, 45), tags)
 	}
 
 	timeout := 5 * time.Second
@@ -234,8 +422,7 @@ func run() error {
 	header("1. LoadHistory - last 5 messages")
 	info("Fetch the most recent 5 messages (no 'before' = now)")
 	historyReq, _ := json.Marshal(map[string]any{
-		"roomId": roomID,
-		"limit":  5,
+		"limit": 5,
 	})
 	printResponse(request(nc, subject.MsgHistory(username, roomID, siteID), historyReq, timeout))
 
@@ -243,7 +430,6 @@ func run() error {
 	header("2. LoadHistory - paginate backwards from msg-007")
 	info("Pass 'before' = msg-007 timestamp to get older messages")
 	historyBefore, _ := json.Marshal(map[string]any{
-		"roomId": roomID,
 		"before": msgs[7].time.UnixMilli(),
 		"limit":  3,
 	})
@@ -253,42 +439,58 @@ func run() error {
 	header("3. LoadNextMessages - from msg-003 forward")
 	info("Fetch messages after msg-003 timestamp (ascending order)")
 	nextReq, _ := json.Marshal(map[string]any{
-		"roomId": roomID,
-		"after":  msgs[3].time.UnixMilli(),
-		"limit":  4,
+		"after": msgs[3].time.UnixMilli(),
+		"limit": 4,
 	})
 	printResponse(request(nc, subject.MsgNext(username, roomID, siteID), nextReq, timeout))
 
-	// --- 4. GetMessageByID ---
-	header("4. GetMessageByID - fetch msg-002 (has file attachment)")
-	getReq, _ := json.Marshal(map[string]any{
-		"roomId":    roomID,
+	// --- 4. GetMessageByID - file message ---
+	header("4. GetMessageByID - msg-002 (file attachment)")
+	getFileReq, _ := json.Marshal(map[string]any{
 		"messageId": "msg-002",
 	})
-	printResponse(request(nc, subject.MsgGet(username, roomID, siteID), getReq, timeout))
+	printResponse(request(nc, subject.MsgGet(username, roomID, siteID), getFileReq, timeout))
 
-	// --- 5. LoadSurroundingMessages ---
-	header("5. LoadSurroundingMessages - context around msg-005")
+	// --- 5. GetMessageByID - card message ---
+	header("5. GetMessageByID - msg-003 (CI report card)")
+	getCardReq, _ := json.Marshal(map[string]any{
+		"messageId": "msg-003",
+	})
+	printResponse(request(nc, subject.MsgGet(username, roomID, siteID), getCardReq, timeout))
+
+	// --- 6. GetMessageByID - card action message ---
+	header("6. GetMessageByID - msg-007 (card action + reactions)")
+	getActionReq, _ := json.Marshal(map[string]any{
+		"messageId": "msg-007",
+	})
+	printResponse(request(nc, subject.MsgGet(username, roomID, siteID), getActionReq, timeout))
+
+	// --- 7. GetMessageByID - edited + federated message ---
+	header("7. GetMessageByID - msg-010 (sys_msg + federated + mentions)")
+	getSysReq, _ := json.Marshal(map[string]any{
+		"messageId": "msg-010",
+	})
+	printResponse(request(nc, subject.MsgGet(username, roomID, siteID), getSysReq, timeout))
+
+	// --- 8. LoadSurroundingMessages ---
+	header("8. LoadSurroundingMessages - context around msg-005")
 	info("3 before + msg-005 + 3 after = up to 7 messages")
 	surroundReq, _ := json.Marshal(map[string]any{
-		"roomId":    roomID,
 		"messageId": "msg-005",
 		"limit":     7,
 	})
 	printResponse(request(nc, subject.MsgSurrounding(username, roomID, siteID), surroundReq, timeout))
 
 	// --- Error cases ---
-	header("6. Error: message not found")
+	header("9. Error: message not found")
 	notFoundReq, _ := json.Marshal(map[string]any{
-		"roomId":    roomID,
 		"messageId": "msg-nonexistent",
 	})
 	printResponse(request(nc, subject.MsgGet(username, roomID, siteID), notFoundReq, timeout))
 
-	header("7. Error: not subscribed (unknown user)")
+	header("10. Error: not subscribed (unknown user)")
 	notSubReq, _ := json.Marshal(map[string]any{
-		"roomId": roomID,
-		"limit":  5,
+		"limit": 5,
 	})
 	printResponse(request(nc, subject.MsgHistory("unknown-user", roomID, siteID), notSubReq, timeout))
 
