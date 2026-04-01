@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -169,6 +172,66 @@ func TestRoomEventTypeValues(t *testing.T) {
 	if model.RoomEventNewMessage != "new_message" {
 		t.Errorf("RoomEventNewMessage = %q", model.RoomEventNewMessage)
 	}
+}
+
+func TestParticipantJSON(t *testing.T) {
+	t.Run("with userID", func(t *testing.T) {
+		p := model.Participant{
+			UserID:      "u1",
+			Username:    "alice",
+			ChineseName: "愛麗絲",
+			EngName:     "Alice Wang",
+		}
+		roundTrip(t, &p, &model.Participant{})
+	})
+
+	t.Run("without userID omitted", func(t *testing.T) {
+		p := model.Participant{
+			Username:    "bob",
+			ChineseName: "鮑勃",
+			EngName:     "Bob Chen",
+		}
+		data, err := json.Marshal(p)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasUserID := raw["userId"]
+		assert.False(t, hasUserID, "userId should be omitted when empty")
+
+		var dst model.Participant
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, p, dst)
+	})
+}
+
+func TestClientMessageJSON(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	cm := model.ClientMessage{
+		Message: model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			Content: "hello", CreatedAt: now,
+		},
+		Sender: &model.Participant{
+			UserID:      "u1",
+			Username:    "alice",
+			ChineseName: "愛麗絲",
+			EngName:     "Alice Wang",
+		},
+	}
+	data, err := json.Marshal(cm)
+	require.NoError(t, err)
+
+	var dst model.ClientMessage
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, cm, dst)
+
+	// Verify inline embedding — message fields should be at top level
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Contains(t, raw, "id")
+	assert.Contains(t, raw, "roomId")
+	assert.Contains(t, raw, "sender")
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.

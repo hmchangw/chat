@@ -42,6 +42,27 @@ type OutboxEvent struct {
 	Payload    []byte `json:"payload"` // JSON-encoded inner event
 }
 
+// Participant represents a user with display name info for client rendering.
+type Participant struct {
+	UserID      string `json:"userId,omitempty" bson:"userId,omitempty"`
+	Username    string `json:"username" bson:"username"`
+	ChineseName string `json:"chineseName" bson:"chineseName"`
+	EngName     string `json:"engName" bson:"engName"`
+}
+
+// Employee holds employee data looked up from the employee MongoDB collection.
+type Employee struct {
+	AccountName string `bson:"accountName"`
+	Name        string `bson:"name"`
+	EngName     string `bson:"engName"`
+}
+
+// ClientMessage wraps Message with enriched sender info for client consumption.
+type ClientMessage struct {
+	Message `json:",inline" bson:",inline"`
+	Sender  *Participant `json:"sender,omitempty"`
+}
+
 type RoomEventType string
 
 const (
