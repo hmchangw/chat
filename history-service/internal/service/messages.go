@@ -114,28 +114,33 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	if limit > maxPageSize {
 		limit = maxPageSize
 	}
-	half := limit / 2
-	if half == 0 {
+	// Split limit-1 (excluding central message) across before and after.
+	// before gets the larger half on odd splits.
+	remaining := limit - 1
+	if remaining <= 0 {
 		return &models.LoadSurroundingMessagesResponse{
 			Messages: []models.Message{*centralMsg},
 		}, nil
 	}
+	beforeCount := (remaining + 1) / 2
+	afterCount := remaining / 2
 
-	halfPageReq := cassrepo.PageRequest{Cursor: &cassrepo.Cursor{}, PageSize: half}
+	beforePageReq := cassrepo.PageRequest{Cursor: &cassrepo.Cursor{}, PageSize: beforeCount}
+	afterPageReq := cassrepo.PageRequest{Cursor: &cassrepo.Cursor{}, PageSize: afterCount}
 
 	// Before-page: messages older than central, newest-first.
 	var beforePage cassrepo.Page[models.Message]
 	if accessSince == nil {
-		beforePage, err = s.messages.GetMessagesBefore(c, roomID, centralMsg.CreatedAt, halfPageReq)
+		beforePage, err = s.messages.GetMessagesBefore(c, roomID, centralMsg.CreatedAt, beforePageReq)
 	} else {
-		beforePage, err = s.messages.GetMessagesBetweenDesc(c, roomID, *accessSince, centralMsg.CreatedAt, halfPageReq)
+		beforePage, err = s.messages.GetMessagesBetweenDesc(c, roomID, *accessSince, centralMsg.CreatedAt, beforePageReq)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding before: %w", err)
 	}
 
 	// After-page: messages newer than central, oldest-first.
-	afterPage, err := s.messages.GetMessagesAfter(c, roomID, centralMsg.CreatedAt, halfPageReq)
+	afterPage, err := s.messages.GetMessagesAfter(c, roomID, centralMsg.CreatedAt, afterPageReq)
 	if err != nil {
 		return nil, fmt.Errorf("loading surrounding after: %w", err)
 	}

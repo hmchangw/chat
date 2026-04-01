@@ -28,6 +28,7 @@ func startTestNATS(t *testing.T) *nats.Conn {
 	ns, err := natsserver.NewServer(opts)
 	require.NoError(t, err)
 	ns.Start()
+	require.True(t, ns.ReadyForConnections(5*time.Second), "nats server did not become ready")
 	t.Cleanup(ns.Shutdown)
 
 	nc, err := nats.Connect(ns.ClientURL())

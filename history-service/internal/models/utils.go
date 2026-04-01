@@ -14,7 +14,10 @@ func unmarshalUDTField(ptr any, name string, info gocql.TypeInfo, data []byte) e
 	t := v.Type()
 	for i := range t.NumField() {
 		if t.Field(i).Tag.Get("cql") == name {
-			return gocql.Unmarshal(info, data, v.Field(i).Addr().Interface())
+			if err := gocql.Unmarshal(info, data, v.Field(i).Addr().Interface()); err != nil {
+				return fmt.Errorf("unmarshal UDT field %q: %w", name, err)
+			}
+			return nil
 		}
 	}
 	return nil
@@ -27,7 +30,11 @@ func marshalUDTField(ptr any, name string, info gocql.TypeInfo) ([]byte, error) 
 	t := v.Type()
 	for i := range t.NumField() {
 		if t.Field(i).Tag.Get("cql") == name {
-			return gocql.Marshal(info, v.Field(i).Interface())
+			data, err := gocql.Marshal(info, v.Field(i).Interface())
+			if err != nil {
+				return nil, fmt.Errorf("marshal UDT field %q: %w", name, err)
+			}
+			return data, nil
 		}
 	}
 	return nil, nil
