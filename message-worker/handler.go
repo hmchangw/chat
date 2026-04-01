@@ -20,8 +20,7 @@ func NewHandler(store Store) *Handler {
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES_CANONICAL stream.
-func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
-	ctx := context.Background()
+func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	if err := h.processMessage(ctx, msg.Data()); err != nil {
 		slog.Error("process message failed", "error", err)
 		if err := msg.Nak(); err != nil {

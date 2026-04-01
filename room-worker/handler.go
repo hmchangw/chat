@@ -16,15 +16,15 @@ import (
 type Handler struct {
 	store   SubscriptionStore
 	siteID  string
-	publish func(subj string, data []byte) error
+	publish func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store SubscriptionStore, siteID string, publish func(string, []byte) error) *Handler {
+func NewHandler(store SubscriptionStore, siteID string, publish func(context.Context, string, []byte) error) *Handler {
 	return &Handler{store: store, siteID: siteID, publish: publish}
 }
 
-func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
-	if err := h.processInvite(context.Background(), msg.Data()); err != nil {
+func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
+	if err := h.processInvite(ctx, msg.Data()); err != nil {
 		slog.Error("process invite failed", "error", err)
 	}
 	if err := msg.Ack(); err != nil {
@@ -69,7 +69,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 		}
 		outboxData, _ := json.Marshal(outbox)
 		outboxSubj := subject.Outbox(h.siteID, req.SiteID, "member_added")
-		if err := h.publish(outboxSubj, outboxData); err != nil {
+		if err := h.publish(ctx, outboxSubj, outboxData); err != nil {
 			slog.Error("outbox publish failed", "error", err)
 		}
 	}
@@ -77,7 +77,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 	// Notify invitee: subscription update
 	subEvt := model.SubscriptionUpdateEvent{UserID: req.InviteeID, Subscription: sub, Action: "added"}
 	subEvtData, _ := json.Marshal(subEvt)
-	if err := h.publish(subject.SubscriptionUpdate(req.InviteeUsername), subEvtData); err != nil {
+	if err := h.publish(ctx, subject.SubscriptionUpdate(req.InviteeUsername), subEvtData); err != nil {
 		slog.Error("subscription update publish failed", "error", err)
 	}
 
@@ -94,7 +94,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 
 		members, _ := h.store.ListByRoom(ctx, req.RoomID)
 		for i := range members {
-			if err := h.publish(subject.RoomMetadataChanged(members[i].User.Username), metaData); err != nil {
+			if err := h.publish(ctx, subject.RoomMetadataChanged(members[i].User.Username), metaData); err != nil {
 				slog.Error("room metadata publish failed", "error", err, "username", members[i].User.Username)
 			}
 		}

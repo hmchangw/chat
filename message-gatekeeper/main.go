@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
@@ -36,12 +38,18 @@ func main() {
 
 	ctx := context.Background()
 
-	nc, err := nats.Connect(cfg.NatsURL)
+	tracerShutdown, err := otelutil.InitTracer(ctx, "message-gatekeeper")
+	if err != nil {
+		slog.Error("init tracer failed", "error", err)
+		os.Exit(1)
+	}
+
+	nc, err := otelnats.Connect(cfg.NatsURL)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)
 	}
-	js, err := jetstream.New(nc)
+	js, err := oteljetstream.New(nc)
 	if err != nil {
 		slog.Error("jetstream init failed", "error", err)
 		os.Exit(1)
@@ -55,11 +63,11 @@ func main() {
 	db := mongoClient.Database(cfg.MongoDB)
 
 	store := NewMongoStore(db)
-	pub := func(subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
-		return js.Publish(context.Background(), subj, data, opts...)
+	pub := func(ctx context.Context, subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		return js.Publish(ctx, subj, data, opts...)
 	}
-	reply := func(subj string, data []byte) error {
-		return nc.Publish(subj, data)
+	reply := func(ctx context.Context, subj string, data []byte) error {
+		return nc.Publish(ctx, subj, data)
 	}
 	handler := NewHandler(store, pub, reply, cfg.SiteID)
 
@@ -103,7 +111,7 @@ func main() {
 
 	go func() {
 		for {
-			msg, err := iter.Next()
+			msgCtx, msg, err := iter.Next()
 			if err != nil {
 				return
 			}
@@ -114,7 +122,7 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handler.HandleJetStreamMsg(msg)
+				handler.HandleJetStreamMsg(msgCtx, msg)
 			}()
 		}
 	}()
@@ -136,6 +144,7 @@ func main() {
 				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
 		},
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)

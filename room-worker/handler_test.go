@@ -35,7 +35,7 @@ func TestHandler_ProcessInvite(t *testing.T) {
 		}, nil)
 
 	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(subj string, data []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}}
