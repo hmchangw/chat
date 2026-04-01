@@ -171,6 +171,27 @@ func TestRoomEventTypeValues(t *testing.T) {
 	}
 }
 
+func TestRoomKeyEventJSON(t *testing.T) {
+	src := model.RoomKeyEvent{
+		RoomID:     "room-1",
+		VersionID:  "v-abc-123",
+		PublicKey:  []byte{0x04, 0x01, 0x02, 0x03},
+		PrivateKey: []byte{0x0a, 0x0b, 0x0c},
+	}
+
+	data, err := json.Marshal(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst model.RoomKeyEvent
+	if err := json.Unmarshal(data, &dst); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
+
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
 	t.Helper()
