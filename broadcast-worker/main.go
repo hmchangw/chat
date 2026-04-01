@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
-
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 type config struct {
@@ -37,6 +38,12 @@ func main() {
 
 	ctx := context.Background()
 
+	tracerShutdown, err := otelutil.InitTracer(ctx, "broadcast-worker")
+	if err != nil {
+		slog.Error("init tracer failed", "error", err)
+		os.Exit(1)
+	}
+
 	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
 	if err != nil {
 		slog.Error("mongo connect failed", "error", err)
@@ -45,13 +52,13 @@ func main() {
 	db := mongoClient.Database(cfg.MongoDB)
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 
-	nc, err := nats.Connect(cfg.NatsURL)
+	nc, err := otelnats.Connect(cfg.NatsURL)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)
 	}
 
-	js, err := jetstream.New(nc)
+	js, err := oteljetstream.New(nc)
 	if err != nil {
 		slog.Error("jetstream init failed", "error", err)
 		os.Exit(1)
@@ -89,7 +96,7 @@ func main() {
 
 	go func() {
 		for {
-			msg, err := iter.Next()
+			msgCtx, msg, err := iter.Next()
 			if err != nil {
 				return
 			}
@@ -100,7 +107,7 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				if err := handler.HandleMessage(ctx, msg.Data()); err != nil {
+				if err := handler.HandleMessage(msgCtx, msg.Data()); err != nil {
 					slog.Error("handle message failed", "error", err)
 					if err := msg.Nak(); err != nil {
 						slog.Error("failed to nak message", "error", err)
@@ -131,16 +138,17 @@ func main() {
 				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
 		},
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }
 
-// natsPublisher adapts *nats.Conn to the Publisher interface.
+// natsPublisher adapts *otelnats.Conn to the Publisher interface.
 type natsPublisher struct {
-	nc *nats.Conn
+	nc *otelnats.Conn
 }
 
-func (p *natsPublisher) Publish(subject string, data []byte) error {
-	return p.nc.Publish(subject, data)
+func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte) error {
+	return p.nc.Publish(ctx, subject, data)
 }

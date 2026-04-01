@@ -24,7 +24,7 @@ type mockPublisher struct {
 	records []publishRecord
 }
 
-func (m *mockPublisher) Publish(subj string, data []byte) error {
+func (m *mockPublisher) Publish(_ context.Context, subj string, data []byte) error {
 	m.records = append(m.records, publishRecord{subject: subj, data: data})
 	return nil
 }

@@ -13,7 +13,7 @@ import (
 
 // Publisher abstracts NATS publishing so the handler is testable.
 type Publisher interface {
-	Publish(subject string, data []byte) error
+	Publish(ctx context.Context, subject string, data []byte) error
 }
 
 // Handler processes MESSAGES_CANONICAL messages and broadcasts room events.
@@ -55,7 +55,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 
 	switch room.Type {
 	case model.RoomTypeGroup:
-		return h.publishGroupEvent(room, &msg, mentionAll, mentionedUsernames)
+		return h.publishGroupEvent(ctx, room, &msg, mentionAll, mentionedUsernames)
 	case model.RoomTypeDM:
 		return h.publishDMEvents(ctx, room, &msg, mentionedUsernames)
 	default:
@@ -64,7 +64,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 }
 
-func (h *Handler) publishGroupEvent(room *model.Room, msg *model.Message, mentionAll bool, mentions []string) error {
+func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, msg *model.Message, mentionAll bool, mentions []string) error {
 	evt := buildRoomEvent(room, msg)
 	evt.MentionAll = mentionAll
 	if len(mentions) > 0 {
@@ -75,7 +75,7 @@ func (h *Handler) publishGroupEvent(room *model.Room, msg *model.Message, mentio
 	if err != nil {
 		return fmt.Errorf("marshal group room event: %w", err)
 	}
-	return h.pub.Publish(subject.RoomEvent(room.ID), payload)
+	return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)
 }
 
 func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, msg *model.Message, mentionedUsernames []string) error {
@@ -100,7 +100,7 @@ func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, msg *mo
 		if err != nil {
 			return fmt.Errorf("marshal DM event for user %s: %w", subs[i].User.Username, err)
 		}
-		if err := h.pub.Publish(subject.UserRoomEvent(subs[i].User.Username), payload); err != nil {
+		if err := h.pub.Publish(ctx, subject.UserRoomEvent(subs[i].User.Username), payload); err != nil {
 			slog.Error("publish DM event failed", "error", err, "username", subs[i].User.Username)
 		}
 	}
