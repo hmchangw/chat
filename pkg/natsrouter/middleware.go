@@ -2,6 +2,7 @@ package natsrouter
 
 import (
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,7 +50,7 @@ func Recovery() HandlerFunc {
 	return func(c *Context) {
 		defer func() {
 			if r := recover(); r != nil {
-				attrs := append(requestAttrs(c), "panic", r)
+				attrs := append(requestAttrs(c), "panic", r, "stack", string(debug.Stack()))
 				slog.Error("panic recovered", attrs...)
 				c.ReplyError("internal error")
 				c.Abort()
