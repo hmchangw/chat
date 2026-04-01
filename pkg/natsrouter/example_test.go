@@ -144,32 +144,3 @@ func Example_customMiddleware() {
 		},
 	)
 }
-
-// Example_routeGroups demonstrates using Groups for subject prefixes and scoped middleware.
-func Example_routeGroups() {
-	nc, _ := nats.Connect(nats.DefaultURL)
-	router := natsrouter.New(nc, "my-service")
-
-	// Create a group with a subject prefix and optional middleware.
-	userRoutes := router.Group("chat.user.{userID}.request")
-
-	// Routes registered on the group inherit the prefix.
-	// Full subject: chat.user.{userID}.request.rooms.list
-	natsrouter.RegisterNoBody[[]Room](
-		userRoutes,
-		"rooms.list",
-		func(c *natsrouter.Context) (*[]Room, error) {
-			_ = c.Param("userID") // extracted from group prefix
-			return &[]Room{}, nil
-		},
-	)
-
-	// Full subject: chat.user.{userID}.request.rooms.get.{roomID}
-	natsrouter.RegisterNoBody[Room](
-		userRoutes,
-		"rooms.get.{roomID}",
-		func(c *natsrouter.Context) (*Room, error) {
-			return &Room{ID: c.Param("roomID"), Name: "General"}, nil
-		},
-	)
-}

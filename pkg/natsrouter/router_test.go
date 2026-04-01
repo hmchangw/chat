@@ -355,61 +355,6 @@ func TestRouteError_WrappedInFmtErrorf(t *testing.T) {
 	assert.Equal(t, "forbidden", result.Code)
 }
 
-func TestGroup_Registration(t *testing.T) {
-	nc := startTestNATS(t)
-	r := New(nc, "test-service")
-
-	g := r.Group("chat.user.{userID}.request")
-	Register(g, "rooms.list",
-		func(c *Context, req testReq) (*testResp, error) {
-			return &testResp{Greeting: "rooms for " + c.Param("userID")}, nil
-		})
-
-	data, _ := json.Marshal(testReq{})
-	resp, err := nc.Request("chat.user.alice.request.rooms.list", data, 2*time.Second)
-	require.NoError(t, err)
-
-	var result testResp
-	require.NoError(t, json.Unmarshal(resp.Data, &result))
-	assert.Equal(t, "rooms for alice", result.Greeting)
-}
-
-func TestGroup_ScopedMiddleware(t *testing.T) {
-	nc := startTestNATS(t)
-	r := New(nc, "test-service")
-
-	var middlewareRan bool
-	g := r.Group("scoped.{id}", func(c *Context) {
-		middlewareRan = true
-		c.Next()
-	})
-
-	Register(g, "action",
-		func(c *Context, req testReq) (*testResp, error) {
-			return &testResp{Greeting: "ok"}, nil
-		})
-
-	// Also register a route directly on the router (no group middleware)
-	Register(r, "direct.action",
-		func(c *Context, req testReq) (*testResp, error) {
-			return &testResp{Greeting: "direct"}, nil
-		})
-
-	data, _ := json.Marshal(testReq{})
-
-	// Group route should trigger group middleware
-	middlewareRan = false
-	_, err := nc.Request("scoped.123.action", data, 2*time.Second)
-	require.NoError(t, err)
-	assert.True(t, middlewareRan)
-
-	// Direct route should NOT trigger group middleware
-	middlewareRan = false
-	_, err = nc.Request("direct.action", data, 2*time.Second)
-	require.NoError(t, err)
-	assert.False(t, middlewareRan)
-}
-
 func TestContext_SetGet(t *testing.T) {
 	c := NewContext(map[string]string{"id": "123"})
 	c.Set("user", "alice")

@@ -30,7 +30,6 @@ type Message struct {
 
 // LoadHistoryRequest is the payload for loading message history before a timestamp.
 type LoadHistoryRequest struct {
-	RoomID string `json:"roomId"`
 	Before *int64 `json:"before,omitempty"` // UTC millis — fetch messages before this (nil = now)
 	Limit  int    `json:"limit"`            // default 20
 }
@@ -42,7 +41,6 @@ type LoadHistoryResponse struct {
 
 // LoadNextMessagesRequest is the payload for loading messages after a timestamp.
 type LoadNextMessagesRequest struct {
-	RoomID string `json:"roomId"`
 	After  *int64 `json:"after,omitempty"` // UTC millis — fetch messages after this (nil = no lower bound)
 	Limit  int    `json:"limit"`           // default 50
 	Cursor string `json:"cursor"`          // pagination cursor from previous response
@@ -57,7 +55,6 @@ type LoadNextMessagesResponse struct {
 
 // LoadSurroundingMessagesRequest is the payload for loading messages around a central message.
 type LoadSurroundingMessagesRequest struct {
-	RoomID    string `json:"roomId"`
 	MessageID string `json:"messageId"` // central message ID
 	Limit     int    `json:"limit"`     // total messages including central
 }
@@ -71,6 +68,5 @@ type LoadSurroundingMessagesResponse struct {
 
 // GetMessageByIDRequest is the payload for fetching a single message.
 type GetMessageByIDRequest struct {
-	RoomID    string `json:"roomId"`
 	MessageID string `json:"messageId"`
 }

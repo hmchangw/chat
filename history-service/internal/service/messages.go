@@ -16,12 +16,10 @@ const (
 )
 
 func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
-	roomID, err := resolveRoomID(c, req.RoomID)
-	if err != nil {
-		return nil, err
-	}
+	username := c.Param("username")
+	roomID := c.Param("roomID")
 
-	accessSince, err := s.getAccessSince(c, c.Param("username"), roomID)
+	accessSince, err := s.getAccessSince(c, username, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -57,12 +55,10 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 }
 
 func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
-	roomID, err := resolveRoomID(c, req.RoomID)
-	if err != nil {
-		return nil, err
-	}
+	username := c.Param("username")
+	roomID := c.Param("roomID")
 
-	accessSince, err := s.getAccessSince(c, c.Param("username"), roomID)
+	accessSince, err := s.getAccessSince(c, username, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -95,12 +91,10 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 }
 
 func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
-	roomID, err := resolveRoomID(c, req.RoomID)
-	if err != nil {
-		return nil, err
-	}
+	username := c.Param("username")
+	roomID := c.Param("roomID")
 
-	accessSince, err := s.getAccessSince(c, c.Param("username"), roomID)
+	accessSince, err := s.getAccessSince(c, username, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -165,12 +159,10 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 }
 
 func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMessageByIDRequest) (*models.Message, error) {
-	roomID, err := resolveRoomID(c, req.RoomID)
-	if err != nil {
-		return nil, err
-	}
+	username := c.Param("username")
+	roomID := c.Param("roomID")
 
-	accessSince, err := s.getAccessSince(c, c.Param("username"), roomID)
+	accessSince, err := s.getAccessSince(c, username, roomID)
 	if err != nil {
 		return nil, err
 	}

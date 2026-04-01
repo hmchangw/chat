@@ -7,6 +7,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 //go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageRepository,SubscriptionRepository
@@ -39,9 +40,8 @@ func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
 // RegisterHandlers wires all NATS endpoints for the history service.
 // Panics if any subscription fails (startup-only, fatal if broken).
 func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
-	msg := r.Group("chat.user.{username}.request.room.{roomID}." + siteID + ".msg")
-	natsrouter.Register(msg, "history", s.LoadHistory)
-	natsrouter.Register(msg, "next", s.LoadNextMessages)
-	natsrouter.Register(msg, "surrounding", s.LoadSurroundingMessages)
-	natsrouter.Register(msg, "get", s.GetMessageByID)
+	natsrouter.Register(r, subject.MsgHistoryPattern(siteID), s.LoadHistory)
+	natsrouter.Register(r, subject.MsgNextPattern(siteID), s.LoadNextMessages)
+	natsrouter.Register(r, subject.MsgSurroundingPattern(siteID), s.LoadSurroundingMessages)
+	natsrouter.Register(r, subject.MsgGetPattern(siteID), s.GetMessageByID)
 }

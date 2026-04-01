@@ -22,20 +22,6 @@ func (s *HistoryService) getAccessSince(ctx context.Context, username, roomID st
 	return accessSince, nil
 }
 
-// resolveRoomID returns the authoritative roomID by reconciling the subject
-// param with the body value. Returns an error if both are present and differ.
-func resolveRoomID(c *natsrouter.Context, bodyRoomID string) (string, error) {
-	subjectRoomID := c.Param("roomID")
-	switch {
-	case subjectRoomID != "" && bodyRoomID != "" && subjectRoomID != bodyRoomID:
-		return "", natsrouter.ErrBadRequest("roomId in body does not match subject")
-	case subjectRoomID != "":
-		return subjectRoomID, nil
-	default:
-		return bodyRoomID, nil
-	}
-}
-
 // millisToTime converts a UTC millisecond timestamp to time.Time.
 // Returns zero time if millis is nil (meaning "not provided").
 func millisToTime(millis *int64) time.Time {

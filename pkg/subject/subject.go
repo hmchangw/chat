@@ -156,3 +156,21 @@ func RoomsListWildcard() string {
 func RoomsGetWildcard() string {
 	return "chat.user.*.request.rooms.get.*"
 }
+
+// --- natsrouter patterns (use {param} placeholders for named extraction) ---
+
+func MsgHistoryPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.history", siteID)
+}
+
+func MsgNextPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.next", siteID)
+}
+
+func MsgSurroundingPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.surrounding", siteID)
+}
+
+func MsgGetPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.get", siteID)
+}

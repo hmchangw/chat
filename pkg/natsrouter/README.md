@@ -2,7 +2,7 @@
 
 Gin-style pattern-based routing for NATS request/reply services.
 
-Handles subject pattern matching, parameter extraction, JSON marshal/unmarshal, middleware, route groups, and error handling — so your handlers focus on business logic.
+Handles subject pattern matching, parameter extraction, JSON marshal/unmarshal, middleware, and error handling — so your handlers focus on business logic.
 
 ## Quick Start
 
@@ -22,7 +22,6 @@ natsrouter.Register(router, "chat.user.{userID}.msg.send", svc.SendMessage)
 - [API Reference](#api-reference)
 - [Registration Functions](#registration-functions)
 - [Context](#context)
-- [Route Groups](#route-groups)
 - [Middleware](#middleware)
 - [Error Handling](#error-handling)
 - [Pattern Routing](#pattern-routing)
@@ -59,14 +58,11 @@ func New(nc *nats.Conn, queue string) *Router
 
 // Append middleware to the router's chain. Runs for ALL routes.
 func (r *Router) Use(mw ...HandlerFunc)
-
-// Create a sub-router with a subject prefix and optional middleware.
-func (r *Router) Group(prefix string, mw ...HandlerFunc) *Group
 ```
 
 ### Registration Functions
 
-All accept a `Registrar` (either `*Router` or `*Group`).
+All accept a `Registrar` (currently `*Router`).
 
 ```go
 // Request body + JSON response. The standard request/reply handler.
@@ -275,46 +271,6 @@ func (s *Service) CreateRoom(c *natsrouter.Context, req CreateReq) (*Room, error
 }
 ```
 
-## Route Groups
-
-Groups share a subject prefix and optional middleware:
-
-```go
-router := natsrouter.New(nc, "history-service")
-router.Use(natsrouter.Recovery())
-router.Use(natsrouter.Logging())
-
-// All routes in this group share the prefix.
-msg := router.Group("chat.user.{username}.request.room.{roomID}.site-1.msg")
-natsrouter.Register(msg, "history", svc.LoadHistory)       // chat.user.*.request.room.*.site-1.msg.history
-natsrouter.Register(msg, "next", svc.LoadNextMessages)     // chat.user.*.request.room.*.site-1.msg.next
-natsrouter.Register(msg, "surrounding", svc.LoadSurrounding) // ...
-natsrouter.Register(msg, "get", svc.GetMessageByID)
-```
-
-### Scoped Middleware
-
-Group middleware runs only for routes in that group:
-
-```go
-// Admin routes require admin auth.
-admin := router.Group("admin.{userID}", adminAuthMiddleware())
-natsrouter.Register(admin, "users.delete", svc.DeleteUser)
-natsrouter.Register(admin, "rooms.purge", svc.PurgeRoom)
-
-// Public routes skip admin auth.
-natsrouter.Register(router, "rooms.list", svc.ListRooms)
-```
-
-### Nested Groups
-
-```go
-api := router.Group("chat.user.{userID}.request")
-rooms := api.Group("rooms")
-natsrouter.RegisterNoBody(rooms, "list", svc.ListRooms)     // chat.user.*.request.rooms.list
-natsrouter.RegisterNoBody(rooms, "get.{roomID}", svc.GetRoom) // chat.user.*.request.rooms.get.*
-```
-
 ## Middleware
 
 Middleware is a `HandlerFunc` that calls `c.Next()` to continue the chain:
@@ -444,6 +400,4 @@ See `example_test.go` for runnable examples:
 - `Example_errorHandling` — user-facing vs internal errors
 - `Example_fireAndForget` — RegisterVoid for events
 - `Example_customMiddleware` — write your own middleware
-- `Example_routeGroups` — Group with subject prefix
-
 See `history-service/internal/service/` for a production usage example.
