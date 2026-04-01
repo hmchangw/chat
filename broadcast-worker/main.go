@@ -43,7 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 	db := mongoClient.Database(cfg.MongoDB)
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
 
 	nc, err := nats.Connect(cfg.NatsURL)
 	if err != nil {

@@ -55,7 +55,11 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 
 	switch room.Type {
 	case model.RoomTypeGroup:
-		return h.publishGroupEvent(room, &msg, mentionAll, mentionedUsernames)
+		mentionParticipants := make([]model.Participant, len(mentionedUsernames))
+		for i, u := range mentionedUsernames {
+			mentionParticipants[i] = model.Participant{Username: u}
+		}
+		return h.publishGroupEvent(room, &msg, mentionAll, mentionParticipants)
 	case model.RoomTypeDM:
 		return h.publishDMEvents(ctx, room, &msg, mentionedUsernames)
 	default:
@@ -64,7 +68,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 }
 
-func (h *Handler) publishGroupEvent(room *model.Room, msg *model.Message, mentionAll bool, mentions []string) error {
+func (h *Handler) publishGroupEvent(room *model.Room, msg *model.Message, mentionAll bool, mentions []model.Participant) error {
 	evt := buildRoomEvent(room, msg)
 	evt.MentionAll = mentionAll
 	if len(mentions) > 0 {
@@ -94,7 +98,7 @@ func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, msg *mo
 
 		evt := buildRoomEvent(room, msg)
 		evt.HasMention = hasMention
-		evt.Message = msg
+		evt.Message = &model.ClientMessage{Message: *msg}
 
 		payload, err := json.Marshal(evt)
 		if err != nil {
@@ -114,7 +118,7 @@ func buildRoomEvent(room *model.Room, msg *model.Message) model.RoomEvent {
 		Timestamp: msg.CreatedAt,
 		RoomName:  room.Name,
 		RoomType:  room.Type,
-		Origin:    room.Origin,
+		SiteID:    room.SiteID,
 		UserCount: room.UserCount,
 		LastMsgAt: msg.CreatedAt,
 		LastMsgID: msg.ID,
