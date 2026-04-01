@@ -34,7 +34,10 @@ func RequestID() HandlerFunc {
 
 // requestAttrs returns common log attributes including the request ID if present.
 func requestAttrs(c *Context) []any {
-	attrs := []any{"subject", c.Msg.Subject}
+	var attrs []any
+	if c.Msg != nil {
+		attrs = append(attrs, "subject", c.Msg.Subject)
+	}
 	if id, ok := c.Get(requestIDKey); ok {
 		attrs = append(attrs, "requestID", id)
 	}
