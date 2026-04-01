@@ -4,7 +4,29 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
+
+func TestHasRole(t *testing.T) {
+	tests := []struct {
+		name   string
+		roles  []model.Role
+		target model.Role
+		want   bool
+	}{
+		{"found", []model.Role{model.RoleOwner}, model.RoleOwner, true},
+		{"not found", []model.Role{model.RoleMember}, model.RoleOwner, false},
+		{"empty", []model.Role{}, model.RoleOwner, false},
+		{"nil", nil, model.RoleOwner, false},
+		{"multiple roles", []model.Role{model.RoleMember, model.RoleOwner}, model.RoleOwner, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, HasRole(tt.roles, tt.target))
+		})
+	}
+}
 
 func TestDedup(t *testing.T) {
 	tests := []struct {

@@ -22,4 +22,9 @@ type RoomStore interface {
 	GetUserSite(ctx context.Context, username string) (string, error)
 	CountSubscriptions(ctx context.Context, roomID string) (int, error)
 	ListSubscriptionsByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
+	DeleteSubscription(ctx context.Context, username, roomID string) error
+	DeleteRoomMember(ctx context.Context, username, roomID string) error
+	DeleteOrgRoomMember(ctx context.Context, orgID, roomID string) error
+	UpdateSubscriptionRole(ctx context.Context, username, roomID string, role model.Role) error
+	CountOwners(ctx context.Context, roomID string) (int, error)
 }

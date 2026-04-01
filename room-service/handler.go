@@ -61,6 +61,12 @@ func (h *Handler) RegisterCRUD(nc *nats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MemberAddWildcard(h.siteID), queue, h.natsAddMembers); err != nil {
 		return err
 	}
+	if _, err := nc.QueueSubscribe(subject.MemberRemoveWildcard(h.siteID), queue, h.natsRemoveMember); err != nil {
+		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.MemberRoleUpdateWildcard(h.siteID), queue, h.natsUpdateRole); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -146,8 +152,8 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		User:               model.SubscriptionUser{ID: req.CreatedBy, Username: req.CreatedByUsername},
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
-		Role:               model.RoleOwner,
-		HistorySharedSince: &now,
+		Roles:              []model.Role{model.RoleOwner},
+		SharedHistorySince: now,
 		JoinedAt:           now,
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
@@ -169,7 +175,7 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 	if err != nil {
 		return nil, fmt.Errorf("inviter not found: %w", err)
 	}
-	if sub.Role != model.RoleOwner {
+	if !HasRole(sub.Roles, model.RoleOwner) {
 		return nil, fmt.Errorf("only owners can invite members")
 	}
 
@@ -191,6 +197,130 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 	// Publish to ROOMS stream for room-worker processing
 	if err := h.publishToStream(subj, data); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+
+	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+func (h *Handler) natsRemoveMember(msg *nats.Msg) {
+	resp, err := h.handleRemoveMember(context.Background(), msg.Subject, msg.Data)
+	if err != nil {
+		natsutil.ReplyError(msg, err.Error())
+		return
+	}
+	if err := msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to remove-member message", "error", err)
+	}
+}
+
+func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	requester, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid subject: %s", subj)
+	}
+
+	var req model.RemoveMemberRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	isOrgRemoval := req.OrgID != ""
+	isSelfLeave := !isOrgRemoval && req.Username == requester
+
+	// Authorization: self-leave needs no check; org removal and remove-other require owner
+	if !isSelfLeave {
+		sub, err := h.store.GetSubscription(ctx, requester, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("requester not found: %w", err)
+		}
+		if !HasRole(sub.Roles, model.RoleOwner) {
+			return nil, fmt.Errorf("only owners can remove other members")
+		}
+	}
+
+	if isOrgRemoval {
+		name, locationURL, err := h.store.GetOrgData(ctx, req.OrgID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve org %q: %w", req.OrgID, err)
+		}
+		var orgUsername string
+		if locationURL == h.currentDomain {
+			orgUsername = name
+		} else {
+			orgUsername = name + "@" + extractDomain(locationURL)
+		}
+		if err := h.store.DeleteSubscription(ctx, orgUsername, roomID); err != nil {
+			return nil, fmt.Errorf("delete org subscription: %w", err)
+		}
+		if err := h.store.DeleteOrgRoomMember(ctx, req.OrgID, roomID); err != nil {
+			return nil, fmt.Errorf("delete org room member: %w", err)
+		}
+	} else {
+		if err := h.store.DeleteSubscription(ctx, req.Username, roomID); err != nil {
+			return nil, fmt.Errorf("delete subscription: %w", err)
+		}
+		if err := h.store.DeleteRoomMember(ctx, req.Username, roomID); err != nil {
+			return nil, fmt.Errorf("delete room member: %w", err)
+		}
+	}
+
+	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+func (h *Handler) natsUpdateRole(msg *nats.Msg) {
+	resp, err := h.handleUpdateRole(context.Background(), msg.Subject, msg.Data)
+	if err != nil {
+		natsutil.ReplyError(msg, err.Error())
+		return
+	}
+	if err := msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to update-role message", "error", err)
+	}
+}
+
+func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	requester, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid subject: %s", subj)
+	}
+
+	var req model.UpdateRoleRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Authorization: only owners can change roles
+	sub, err := h.store.GetSubscription(ctx, requester, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("requester not found: %w", err)
+	}
+	if !HasRole(sub.Roles, model.RoleOwner) {
+		return nil, fmt.Errorf("only owners can change roles")
+	}
+
+	// Validate role
+	if req.NewRole != model.RoleOwner && req.NewRole != model.RoleMember {
+		return nil, fmt.Errorf("invalid role: %q", req.NewRole)
+	}
+
+	// Guard: federation users cannot be promoted to owner
+	if req.NewRole == model.RoleOwner && strings.Contains(req.Username, "@") {
+		return nil, fmt.Errorf("federation users cannot be promoted to owner")
+	}
+
+	// Guard: last owner cannot demote themselves
+	if req.NewRole == model.RoleMember && req.Username == requester {
+		count, err := h.store.CountOwners(ctx, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("count owners: %w", err)
+		}
+		if count <= 1 {
+			return nil, fmt.Errorf("cannot demote the last owner")
+		}
+	}
+
+	if err := h.store.UpdateSubscriptionRole(ctx, req.Username, roomID, req.NewRole); err != nil {
+		return nil, fmt.Errorf("update role: %w", err)
 	}
 
 	return json.Marshal(map[string]string{"status": "ok"})
@@ -323,7 +453,7 @@ func (h *Handler) buildSubscriptions(ctx context.Context, usernames []string, ro
 			User:     model.SubscriptionUser{ID: userID, Username: username},
 			RoomID:   roomID,
 			SiteID:   h.siteID,
-			Role:     model.RoleMember,
+			Roles:    []model.Role{model.RoleMember},
 			JoinedAt: now,
 		}
 		if mode != model.HistoryModeAll {

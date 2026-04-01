@@ -3,7 +3,19 @@ package main
 import (
 	"net/url"
 	"strings"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
+
+// HasRole returns true if the given role is present in the roles slice.
+func HasRole(roles []model.Role, target model.Role) bool {
+	for _, r := range roles {
+		if r == target {
+			return true
+		}
+	}
+	return false
+}
 
 // isBot returns true for system/bot accounts that should be excluded from membership.
 func isBot(username string) bool {

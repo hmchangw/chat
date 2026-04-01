@@ -64,7 +64,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test CreateSubscription and GetSubscription
-	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Username: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Username: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
 	if err := store.CreateSubscription(ctx, &sub); err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
@@ -72,8 +72,8 @@ func TestMongoStore_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSubscription: %v", err)
 	}
-	if gotSub.Role != model.RoleOwner {
-		t.Errorf("Role = %q, want owner", gotSub.Role)
+	if len(gotSub.Roles) != 1 || gotSub.Roles[0] != model.RoleOwner {
+		t.Errorf("Roles = %v, want [owner]", gotSub.Roles)
 	}
 
 	// Test not found
@@ -132,8 +132,8 @@ func TestMongoStore_BulkCreateSubscriptions(t *testing.T) {
 	ctx := context.Background()
 
 	subs := []*model.Subscription{
-		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
-		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
+		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
 	}
 	if err := store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		t.Fatalf("BulkCreateSubscriptions: %v", err)
@@ -143,8 +143,8 @@ func TestMongoStore_BulkCreateSubscriptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSubscription alice: %v", err)
 	}
-	if got.Role != model.RoleMember {
-		t.Errorf("Role = %q, want member", got.Role)
+	if len(got.Roles) != 1 || got.Roles[0] != model.RoleMember {
+		t.Errorf("Roles = %v, want [member]", got.Roles)
 	}
 
 	got2, err := store.GetSubscription(ctx, "bob", "r1")
@@ -261,11 +261,11 @@ func TestMongoStore_CountSubscriptions(t *testing.T) {
 	}
 
 	subs := []*model.Subscription{
-		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
-		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
+		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
 		// bot usernames — must be excluded
-		{ID: "s3", User: model.SubscriptionUser{Username: "notify.bot"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
-		{ID: "s4", User: model.SubscriptionUser{Username: "p_webhook"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s3", User: model.SubscriptionUser{Username: "notify.bot"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
+		{ID: "s4", User: model.SubscriptionUser{Username: "p_webhook"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
 	}
 	if err := store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		t.Fatalf("BulkCreateSubscriptions: %v", err)
@@ -277,6 +277,174 @@ func TestMongoStore_CountSubscriptions(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("expected 2 (bots excluded), got %d", count)
+	}
+}
+
+func TestMongoStore_DeleteSubscription(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	sub := &model.Subscription{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}
+	if err := store.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	// Verify it exists
+	if _, err := store.GetSubscription(ctx, "alice", "r1"); err != nil {
+		t.Fatalf("GetSubscription before delete: %v", err)
+	}
+
+	// Delete it
+	if err := store.DeleteSubscription(ctx, "alice", "r1"); err != nil {
+		t.Fatalf("DeleteSubscription: %v", err)
+	}
+
+	// Verify it's gone
+	_, err := store.GetSubscription(ctx, "alice", "r1")
+	if err == nil {
+		t.Error("expected error after deletion, got nil")
+	}
+}
+
+func TestMongoStore_DeleteRoomMember(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	member := &model.RoomMember{ID: "m1", RoomID: "r1", Member: model.RoomMemberEntry{ID: "user-alice", Type: model.RoomMemberTypeIndividual, Username: "alice"}}
+	if err := store.CreateRoomMember(ctx, member); err != nil {
+		t.Fatalf("CreateRoomMember: %v", err)
+	}
+
+	// Verify it exists
+	members, err := store.GetRoomMembers(ctx, "r1")
+	if err != nil {
+		t.Fatalf("GetRoomMembers before delete: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("expected 1 member, got %d", len(members))
+	}
+
+	// Delete it
+	if err := store.DeleteRoomMember(ctx, "alice", "r1"); err != nil {
+		t.Fatalf("DeleteRoomMember: %v", err)
+	}
+
+	// Verify it's gone
+	members, err = store.GetRoomMembers(ctx, "r1")
+	if err != nil {
+		t.Fatalf("GetRoomMembers after delete: %v", err)
+	}
+	if len(members) != 0 {
+		t.Errorf("expected 0 members after delete, got %d", len(members))
+	}
+}
+
+func TestMongoStore_DeleteRoomMember_NoMatch(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Delete nonexistent member should not error
+	if err := store.DeleteRoomMember(ctx, "nobody", "r-unknown"); err != nil {
+		t.Errorf("DeleteRoomMember nonexistent: expected nil error, got %v", err)
+	}
+}
+
+func TestMongoStore_DeleteOrgRoomMember(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	orgMember := &model.RoomMember{ID: "m1", RoomID: "r1", Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberTypeOrg}}
+	if err := store.CreateRoomMember(ctx, orgMember); err != nil {
+		t.Fatalf("CreateRoomMember: %v", err)
+	}
+
+	// Verify it exists
+	members, err := store.GetRoomMembers(ctx, "r1")
+	if err != nil {
+		t.Fatalf("GetRoomMembers before delete: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("expected 1 member, got %d", len(members))
+	}
+
+	// Delete it
+	if err := store.DeleteOrgRoomMember(ctx, "org-eng", "r1"); err != nil {
+		t.Fatalf("DeleteOrgRoomMember: %v", err)
+	}
+
+	// Verify it's gone
+	members, err = store.GetRoomMembers(ctx, "r1")
+	if err != nil {
+		t.Fatalf("GetRoomMembers after delete: %v", err)
+	}
+	if len(members) != 0 {
+		t.Errorf("expected 0 members after delete, got %d", len(members))
+	}
+}
+
+func TestMongoStore_UpdateSubscriptionRole(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	sub := &model.Subscription{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}
+	if err := store.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	// Update to owner
+	if err := store.UpdateSubscriptionRole(ctx, "alice", "r1", model.RoleOwner); err != nil {
+		t.Fatalf("UpdateSubscriptionRole: %v", err)
+	}
+
+	// Verify role changed
+	got, err := store.GetSubscription(ctx, "alice", "r1")
+	if err != nil {
+		t.Fatalf("GetSubscription after update: %v", err)
+	}
+	if len(got.Roles) != 1 || got.Roles[0] != model.RoleOwner {
+		t.Errorf("Roles = %v, want [owner]", got.Roles)
+	}
+
+	// Update nonexistent subscription should error
+	err = store.UpdateSubscriptionRole(ctx, "nobody", "r-unknown", model.RoleOwner)
+	if err == nil {
+		t.Error("expected error for nonexistent subscription, got nil")
+	}
+}
+
+func TestMongoStore_CountOwners(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Empty room
+	count, err := store.CountOwners(ctx, "r1")
+	if err != nil {
+		t.Fatalf("CountOwners empty: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0, got %d", count)
+	}
+
+	subs := []*model.Subscription{
+		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}},
+		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+	}
+	if err := store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		t.Fatalf("BulkCreateSubscriptions: %v", err)
+	}
+
+	count, err = store.CountOwners(ctx, "r1")
+	if err != nil {
+		t.Fatalf("CountOwners: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 owner, got %d", count)
 	}
 }
 
@@ -295,9 +463,9 @@ func TestMongoStore_ListSubscriptionsByRoom(t *testing.T) {
 	}
 
 	seed := []*model.Subscription{
-		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
-		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
-		{ID: "s3", User: model.SubscriptionUser{Username: "carol"}, RoomID: "r2", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s1", User: model.SubscriptionUser{Username: "alice"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
+		{ID: "s2", User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
+		{ID: "s3", User: model.SubscriptionUser{Username: "carol"}, RoomID: "r2", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
 	}
 	if err := store.BulkCreateSubscriptions(ctx, seed); err != nil {
 		t.Fatalf("BulkCreateSubscriptions: %v", err)

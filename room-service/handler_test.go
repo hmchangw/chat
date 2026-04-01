@@ -50,7 +50,7 @@ func TestHandler_InviteOwner_Success(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 	store.EXPECT().
 		CountSubscriptions(gomock.Any(), "r1").
 		Return(1, nil)
@@ -79,7 +79,7 @@ func TestHandler_InviteMember_Rejected(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r1", Role: model.RoleMember}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ string, _ []byte) error { return nil },
@@ -101,7 +101,7 @@ func TestHandler_InviteExceedsMaxSize(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 	store.EXPECT().
 		CountSubscriptions(gomock.Any(), "r1").
 		Return(1000, nil)
@@ -860,6 +860,157 @@ func TestHandler_buildSubscriptions(t *testing.T) {
 	}
 }
 
+func TestHandler_RemoveMember(t *testing.T) {
+	tests := []struct {
+		name    string
+		subj    string
+		payload any
+		setup   func(store *MockRoomStore)
+		wantErr bool
+	}{
+		{
+			name: "self-leave: member removes themselves",
+			subj: subject.MemberRemove("alice", "r1", "site-a"),
+			payload: model.RemoveMemberRequest{
+				Username: "alice",
+				RoomID:   "r1",
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().DeleteSubscription(gomock.Any(), "alice", "r1").Return(nil)
+				store.EXPECT().DeleteRoomMember(gomock.Any(), "alice", "r1").Return(nil)
+			},
+		},
+		{
+			name: "owner removes individual member",
+			subj: subject.MemberRemove("owner1", "r1", "site-a"),
+			payload: model.RemoveMemberRequest{
+				Username: "bob",
+				RoomID:   "r1",
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "owner1", "r1").
+					Return(&model.Subscription{Roles: []model.Role{model.RoleOwner}}, nil)
+				store.EXPECT().DeleteSubscription(gomock.Any(), "bob", "r1").Return(nil)
+				store.EXPECT().DeleteRoomMember(gomock.Any(), "bob", "r1").Return(nil)
+			},
+		},
+		{
+			name: "non-owner cannot remove another member",
+			subj: subject.MemberRemove("bob", "r1", "site-a"),
+			payload: model.RemoveMemberRequest{
+				Username: "carol",
+				RoomID:   "r1",
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "bob", "r1").
+					Return(&model.Subscription{Roles: []model.Role{model.RoleMember}}, nil)
+			},
+			wantErr: true,
+		},
+		{
+			name: "owner removes org",
+			subj: subject.MemberRemove("owner1", "r1", "site-a"),
+			payload: model.RemoveMemberRequest{
+				OrgID:  "org-eng",
+				RoomID: "r1",
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "owner1", "r1").
+					Return(&model.Subscription{Roles: []model.Role{model.RoleOwner}}, nil)
+				store.EXPECT().
+					GetOrgData(gomock.Any(), "org-eng").
+					Return("Eng", "http://site-a", nil)
+				store.EXPECT().DeleteSubscription(gomock.Any(), "Eng", "r1").Return(nil)
+				store.EXPECT().DeleteOrgRoomMember(gomock.Any(), "org-eng", "r1").Return(nil)
+			},
+		},
+		{
+			name: "non-owner cannot remove org",
+			subj: subject.MemberRemove("bob", "r1", "site-a"),
+			payload: model.RemoveMemberRequest{
+				OrgID:  "org-eng",
+				RoomID: "r1",
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "bob", "r1").
+					Return(&model.Subscription{Roles: []model.Role{model.RoleMember}}, nil)
+			},
+			wantErr: true,
+		},
+		{
+			name:    "invalid subject",
+			subj:    "chat.invalid",
+			payload: model.RemoveMemberRequest{RoomID: "r1", Username: "alice"},
+			setup:   func(store *MockRoomStore) {},
+			wantErr: true,
+		},
+		{
+			name:    "malformed json",
+			subj:    subject.MemberRemove("alice", "r1", "site-a"),
+			payload: nil,
+			setup:   func(store *MockRoomStore) {},
+			wantErr: true,
+		},
+		{
+			name: "delete subscription fails",
+			subj: subject.MemberRemove("alice", "r1", "site-a"),
+			payload: model.RemoveMemberRequest{
+				Username: "alice",
+				RoomID:   "r1",
+			},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().DeleteSubscription(gomock.Any(), "alice", "r1").Return(fmt.Errorf("db error"))
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			tt.setup(store)
+
+			h := &Handler{
+				store: store, siteID: "site-a", currentDomain: "http://site-a", maxRoomSize: 1000,
+				publishToStream: func(_ string, _ []byte) error { return nil },
+				publishLocal:    func(_ string, _ []byte) error { return nil },
+				publishOutbox:   func(_ string, _ []byte) error { return nil },
+			}
+
+			var data []byte
+			if tt.payload != nil {
+				data, _ = json.Marshal(tt.payload)
+			} else {
+				data = []byte("{invalid")
+			}
+
+			resp, err := h.handleRemoveMember(context.Background(), tt.subj, data)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			var result map[string]string
+			if err := json.Unmarshal(resp, &result); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			if result["status"] != "ok" {
+				t.Errorf("expected status=ok, got %v", result)
+			}
+		})
+	}
+}
+
 func TestHandler_writeRoomMembers(t *testing.T) {
 	now := time.Now().UTC()
 
@@ -958,6 +1109,164 @@ func TestHandler_writeRoomMembers(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestHandler_UpdateRole(t *testing.T) {
+	makeSubj := func(username, roomID string) string {
+		return subject.MemberRoleUpdate(username, roomID, "site-a")
+	}
+
+	tests := []struct {
+		name    string
+		subj    string
+		payload any
+		setup   func(store *MockRoomStore)
+		wantErr bool
+	}{
+		{
+			name:    "owner promotes member to owner",
+			subj:    makeSubj("owner1", "r1"),
+			payload: model.UpdateRoleRequest{Username: "bob", NewRole: model.RoleOwner},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "owner1", "r1").
+					Return(&model.Subscription{User: model.SubscriptionUser{Username: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+				store.EXPECT().
+					UpdateSubscriptionRole(gomock.Any(), "bob", "r1", model.RoleOwner).
+					Return(nil)
+			},
+		},
+		{
+			name:    "owner demotes another owner to member",
+			subj:    makeSubj("owner1", "r1"),
+			payload: model.UpdateRoleRequest{Username: "owner2", NewRole: model.RoleMember},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "owner1", "r1").
+					Return(&model.Subscription{User: model.SubscriptionUser{Username: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+				store.EXPECT().
+					UpdateSubscriptionRole(gomock.Any(), "owner2", "r1", model.RoleMember).
+					Return(nil)
+			},
+		},
+		{
+			name:    "non-owner cannot change roles",
+			subj:    makeSubj("bob", "r1"),
+			payload: model.UpdateRoleRequest{Username: "alice", NewRole: model.RoleOwner},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "bob", "r1").
+					Return(&model.Subscription{User: model.SubscriptionUser{Username: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
+			},
+			wantErr: true,
+		},
+		{
+			name:    "cannot promote federation user to owner",
+			subj:    makeSubj("owner1", "r1"),
+			payload: model.UpdateRoleRequest{Username: "Eng@site-b.example.com", NewRole: model.RoleOwner},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "owner1", "r1").
+					Return(&model.Subscription{User: model.SubscriptionUser{Username: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+			},
+			wantErr: true,
+		},
+		{
+			name:    "last owner cannot demote themselves",
+			subj:    makeSubj("owner1", "r1"),
+			payload: model.UpdateRoleRequest{Username: "owner1", NewRole: model.RoleMember},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "owner1", "r1").
+					Return(&model.Subscription{User: model.SubscriptionUser{Username: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+				store.EXPECT().
+					CountOwners(gomock.Any(), "r1").
+					Return(1, nil)
+			},
+			wantErr: true,
+		},
+		{
+			name:    "owner with co-owners can demote themselves",
+			subj:    makeSubj("owner1", "r1"),
+			payload: model.UpdateRoleRequest{Username: "owner1", NewRole: model.RoleMember},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "owner1", "r1").
+					Return(&model.Subscription{User: model.SubscriptionUser{Username: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+				store.EXPECT().
+					CountOwners(gomock.Any(), "r1").
+					Return(2, nil)
+				store.EXPECT().
+					UpdateSubscriptionRole(gomock.Any(), "owner1", "r1", model.RoleMember).
+					Return(nil)
+			},
+		},
+		{
+			name:    "invalid role value",
+			subj:    makeSubj("owner1", "r1"),
+			payload: model.UpdateRoleRequest{Username: "bob", NewRole: "admin"},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().
+					GetSubscription(gomock.Any(), "owner1", "r1").
+					Return(&model.Subscription{User: model.SubscriptionUser{Username: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+			},
+			wantErr: true,
+		},
+		{
+			name:    "invalid subject",
+			subj:    "chat.invalid",
+			payload: model.UpdateRoleRequest{Username: "bob", NewRole: model.RoleOwner},
+			setup:   func(store *MockRoomStore) {},
+			wantErr: true,
+		},
+		{
+			name:    "malformed json",
+			subj:    makeSubj("owner1", "r1"),
+			payload: nil,
+			setup:   func(store *MockRoomStore) {},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			tt.setup(store)
+
+			h := &Handler{
+				store: store, siteID: "site-a", currentDomain: "http://site-a", maxRoomSize: 1000,
+				publishToStream: func(_ string, _ []byte) error { return nil },
+				publishLocal:    func(_ string, _ []byte) error { return nil },
+				publishOutbox:   func(_ string, _ []byte) error { return nil },
+			}
+
+			var data []byte
+			if tt.payload != nil {
+				data, _ = json.Marshal(tt.payload)
+			}
+
+			resp, err := h.handleUpdateRole(context.Background(), tt.subj, data)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			var result map[string]string
+			if err := json.Unmarshal(resp, &result); err != nil {
+				t.Fatalf("failed to unmarshal response: %v", err)
+			}
+			if result["status"] != "ok" {
+				t.Errorf("expected status=ok, got %v", result)
 			}
 		})
 	}

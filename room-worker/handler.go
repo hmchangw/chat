@@ -46,8 +46,8 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 		User:               model.SubscriptionUser{ID: req.InviteeID, Username: req.InviteeUsername},
 		RoomID:             req.RoomID,
 		SiteID:             req.SiteID,
-		Role:               model.RoleMember,
-		HistorySharedSince: &now,
+		Roles:              []model.Role{model.RoleMember},
+		SharedHistorySince: now,
 		JoinedAt:           now,
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {

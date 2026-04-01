@@ -134,8 +134,8 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	if sub.SiteID != "site-b" {
 		t.Errorf("subscription SiteID = %q, want %q", sub.SiteID, "site-b")
 	}
-	if sub.Role != model.RoleMember {
-		t.Errorf("subscription Role = %q, want %q", sub.Role, model.RoleMember)
+	if len(sub.Roles) != 1 || sub.Roles[0] != model.RoleMember {
+		t.Errorf("subscription Roles = %v, want [member]", sub.Roles)
 	}
 	if sub.ID == "" {
 		t.Error("subscription ID should be non-empty (generated UUID)")

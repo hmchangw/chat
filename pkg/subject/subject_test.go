@@ -58,6 +58,38 @@ func TestSubjectBuilders(t *testing.T) {
 	}
 }
 
+func TestMemberRemove(t *testing.T) {
+	got := subject.MemberRemove("alice", "r1", "site-a")
+	want := "chat.user.alice.request.room.r1.site-a.member.remove"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMemberRemoveWildcard(t *testing.T) {
+	got := subject.MemberRemoveWildcard("site-a")
+	want := "chat.user.*.request.room.*.site-a.member.remove"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMemberRoleUpdate(t *testing.T) {
+	got := subject.MemberRoleUpdate("alice", "r1", "site-a")
+	want := "chat.user.alice.request.room.r1.site-a.member.role-update"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMemberRoleUpdateWildcard(t *testing.T) {
+	got := subject.MemberRoleUpdateWildcard("site-a")
+	want := "chat.user.*.request.room.*.site-a.member.role-update"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestParseUserRoomSubject(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -122,7 +154,7 @@ func TestWildcardPatterns(t *testing.T) {
 		{"MsgSendWild", subject.MsgSendWildcard("site-a"),
 			"chat.user.*.room.*.site-a.msg.send"},
 		{"MemberInviteWild", subject.MemberInviteWildcard("site-a"),
-			"chat.user.*.request.room.*.site-a.member.>"},
+			"chat.user.*.request.room.*.site-a.member.invite"},
 		{"MsgHistoryWild", subject.MsgHistoryWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.msg.history"},
 		{"MsgCanonicalWild", subject.MsgCanonicalWildcard("site-a"),

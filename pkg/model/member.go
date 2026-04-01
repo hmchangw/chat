@@ -39,6 +39,20 @@ type RoomMemberEntry struct {
 	Username string         `json:"username,omitempty" bson:"username,omitempty"` // individual only
 }
 
+// RemoveMemberRequest is the JSON payload for a member.remove NATS request.
+type RemoveMemberRequest struct {
+	RoomID   string `json:"roomId"          bson:"roomId"`
+	Username string `json:"username"        bson:"username"`
+	OrgID    string `json:"orgId,omitempty" bson:"orgId,omitempty"`
+}
+
+// UpdateRoleRequest is the JSON payload for a member.role-update NATS request.
+type UpdateRoleRequest struct {
+	RoomID   string `json:"roomId"   bson:"roomId"`
+	Username string `json:"username" bson:"username"`
+	NewRole  Role   `json:"newRole"  bson:"newRole"`
+}
+
 // RoomMember is a document in the room_members collection.
 type RoomMember struct {
 	ID     string          `json:"id"     bson:"_id"`

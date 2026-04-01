@@ -66,8 +66,13 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) 
 		User:               model.SubscriptionUser{ID: invite.InviteeID, Username: invite.InviteeUsername},
 		RoomID:             invite.RoomID,
 		SiteID:             invite.SiteID,
+<<<<<<< HEAD
 		Role:               model.RoleMember,
 		HistorySharedSince: &now,
+=======
+		Roles:              []model.Role{model.RoleMember},
+		SharedHistorySince: now,
+>>>>>>> e8cc819 (feat: add remove-member, role-update handlers and refactor add-members)
 		JoinedAt:           now,
 	}
 

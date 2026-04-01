@@ -30,8 +30,8 @@ func TestHandler_ProcessInvite(t *testing.T) {
 	store.EXPECT().
 		ListByRoom(gomock.Any(), "r1").
 		Return([]model.Subscription{
-			{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleOwner},
-			{User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r1", Role: model.RoleMember},
+			{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}},
+			{User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
 		}, nil)
 
 	var published []publishedMsg

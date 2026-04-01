@@ -156,3 +156,49 @@ func (s *MongoStore) ListSubscriptionsByRoom(ctx context.Context, roomID string)
 	}
 	return subs, nil
 }
+
+func (s *MongoStore) DeleteSubscription(ctx context.Context, username, roomID string) error {
+	_, err := s.subscriptions.DeleteOne(ctx, bson.M{"u.username": username, "roomId": roomID})
+	if err != nil {
+		return fmt.Errorf("delete subscription for %q in room %q: %w", username, roomID, err)
+	}
+	return nil
+}
+
+func (s *MongoStore) DeleteRoomMember(ctx context.Context, username, roomID string) error {
+	_, err := s.roomMembers.DeleteOne(ctx, bson.M{"member.username": username, "rid": roomID})
+	if err != nil {
+		return fmt.Errorf("delete room member %q in room %q: %w", username, roomID, err)
+	}
+	return nil
+}
+
+func (s *MongoStore) DeleteOrgRoomMember(ctx context.Context, orgID, roomID string) error {
+	_, err := s.roomMembers.DeleteOne(ctx, bson.M{"member.id": orgID, "rid": roomID})
+	if err != nil {
+		return fmt.Errorf("delete org room member %q in room %q: %w", orgID, roomID, err)
+	}
+	return nil
+}
+
+func (s *MongoStore) UpdateSubscriptionRole(ctx context.Context, username, roomID string, role model.Role) error {
+	filter := bson.M{"u.username": username, "roomId": roomID}
+	update := bson.M{"$set": bson.M{"roles": []model.Role{role}}}
+	result, err := s.subscriptions.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("update role for %q in room %q: %w", username, roomID, err)
+	}
+	if result.MatchedCount == 0 {
+		return fmt.Errorf("subscription not found for %q in room %q", username, roomID)
+	}
+	return nil
+}
+
+func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {
+	filter := bson.M{"roomId": roomID, "roles": model.RoleOwner}
+	count, err := s.subscriptions.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("count owners for room %q: %w", roomID, err)
+	}
+	return int(count), nil
+}
