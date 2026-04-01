@@ -66,7 +66,7 @@ type mockPublisher struct {
 	records []publishRecord
 }
 
-func (m *mockPublisher) Publish(subject string, data []byte) error {
+func (m *mockPublisher) Publish(_ context.Context, subject string, data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.records = append(m.records, publishRecord{subject: subject, data: data})
