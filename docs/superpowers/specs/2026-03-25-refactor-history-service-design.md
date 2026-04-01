@@ -30,6 +30,11 @@ Refactor `history-service` from its current flat, pre-generated structure into a
 
 ## Folder Structure
 
+> **Note:** This service intentionally uses `cmd/` + `internal/` subdirectories instead of the
+> standard flat `package main` layout. This deviation is approved because the history-service has
+> multiple independent repository packages (cassrepo, mongorepo) and a clean service layer that
+> benefit from internal package boundaries and separate testability.
+
 ```
 history-service/
 ├── cmd/

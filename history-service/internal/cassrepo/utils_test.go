@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"github.com/gocql/gocql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -76,4 +77,25 @@ func TestQueryBuilder_Chaining(t *testing.T) {
 
 	assert.Equal(t, cursor, b.cursor)
 	assert.Equal(t, 25, b.pageSize)
+}
+
+func TestQueryBuilder_Fetch_NilQuery(t *testing.T) {
+	b := NewQueryBuilder(nil)
+	_, err := b.Fetch(func(iter *gocql.Iter) {
+		t.Fatal("scan should not be called for nil query")
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil query")
+}
+
+func TestNewCursor_Invalid_WrapsError(t *testing.T) {
+	_, err := NewCursor("not-valid-base64!!!")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode cursor")
+}
+
+func TestParsePageRequest_InvalidCursor_WrapsError(t *testing.T) {
+	_, err := ParsePageRequest("bad!!!", 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse page request cursor")
 }

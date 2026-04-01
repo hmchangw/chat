@@ -396,6 +396,128 @@ func TestContext_Abort(t *testing.T) {
 	assert.False(t, handlerCalled)
 }
 
+func TestRequestID_Generated(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+	r.Use(RequestID())
+
+	var capturedID string
+	Register(r, "test.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			val, ok := c.Get("requestID")
+			require.True(t, ok)
+			capturedID = val.(string)
+			return &testResp{}, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	_, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+	assert.NotEmpty(t, capturedID)
+}
+
+func TestRequestID_FromHeader(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+	r.Use(RequestID())
+
+	var capturedID string
+	Register(r, "test.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			capturedID = c.MustGet("requestID").(string)
+			return &testResp{}, nil
+		})
+
+	msg := nats.NewMsg("test.123")
+	msg.Data, _ = json.Marshal(testReq{Name: "test"})
+	msg.Header = nats.Header{}
+	msg.Header.Set("X-Request-ID", "custom-req-id-42")
+
+	resp, err := nc.RequestMsg(msg, 2*time.Second)
+	require.NoError(t, err)
+	assert.NotEmpty(t, string(resp.Data))
+	assert.Equal(t, "custom-req-id-42", capturedID)
+}
+
+func TestRegisterNoBody_HandlerError(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	RegisterNoBody(r, "test.{id}",
+		func(c *Context) (*testResp, error) {
+			return nil, fmt.Errorf("something failed")
+		})
+
+	resp, err := nc.Request("test.123", nil, 2*time.Second)
+	require.NoError(t, err)
+
+	var errResp model.ErrorResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
+	assert.Equal(t, "internal error", errResp.Error)
+}
+
+func TestRegisterNoBody_RouteError(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	RegisterNoBody(r, "test.{id}",
+		func(c *Context) (*testResp, error) {
+			return nil, ErrNotFound("item not found")
+		})
+
+	resp, err := nc.Request("test.123", nil, 2*time.Second)
+	require.NoError(t, err)
+
+	var result RouteError
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "item not found", result.Message)
+	assert.Equal(t, "not_found", result.Code)
+}
+
+func TestLogging_LogsRequest(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+	r.Use(Logging())
+
+	Register(r, "test.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "ok"}, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result testResp
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "ok", result.Greeting)
+}
+
+func TestReplyRouteError(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	r.Use(func(c *Context) {
+		c.ReplyRouteError(ErrForbidden("access denied"))
+		c.Abort()
+	})
+
+	Register(r, "test.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			t.Fatal("handler should not be called")
+			return nil, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result RouteError
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "access denied", result.Message)
+	assert.Equal(t, "forbidden", result.Code)
+}
+
 func TestErrConstants(t *testing.T) {
 	e := ErrBadRequest("invalid input")
 	assert.Equal(t, "bad_request", e.Code)

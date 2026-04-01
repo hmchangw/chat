@@ -124,3 +124,9 @@ func (c *Context) ReplyJSON(v any) {
 func (c *Context) ReplyError(msg string) {
 	natsutil.ReplyError(c.Msg, msg)
 }
+
+// ReplyRouteError sends a structured error response with an optional code.
+// Use this from middleware when you need machine-readable error codes.
+func (c *Context) ReplyRouteError(e *RouteError) {
+	natsutil.ReplyJSON(c.Msg, e)
+}
