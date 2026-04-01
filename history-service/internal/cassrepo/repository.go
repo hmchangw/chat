@@ -2,6 +2,7 @@ package cassrepo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -166,7 +167,7 @@ func (r *Repository) GetMessageByTimestamp(ctx context.Context, roomID string, c
 		messageQuery+` WHERE room_id = ? AND created_at = ? AND message_id = ?`,
 		roomID, createdAt, messageID,
 	).WithContext(ctx).Scan(messageScanDest(&m)...)
-	if err == gocql.ErrNotFound {
+	if errors.Is(err, gocql.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -185,7 +186,7 @@ func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID strin
 		messageQuery+` WHERE room_id = ? AND message_id = ? ALLOW FILTERING`,
 		roomID, messageID,
 	).WithContext(ctx).Scan(messageScanDest(&m)...)
-	if err == gocql.ErrNotFound {
+	if errors.Is(err, gocql.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
