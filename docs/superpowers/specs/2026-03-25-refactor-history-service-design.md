@@ -35,7 +35,7 @@ Refactor `history-service` from its current flat, pre-generated structure into a
 > multiple independent repository packages (cassrepo, mongorepo) and a clean service layer that
 > benefit from internal package boundaries and separate testability.
 
-```
+```text
 history-service/
 ├── cmd/
 │   └── main.go                    # Config, wiring, NATS subscriptions, graceful shutdown

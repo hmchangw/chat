@@ -27,7 +27,7 @@ A shared Go library at `pkg/natsrouter/` that provides pattern-based routing for
 
 ## Package Structure
 
-```
+```text
 pkg/natsrouter/
 ├── router.go         # Router struct, New(), Use()
 ├── register.go       # Register[Req,Resp], RegisterNoBody[Resp]
@@ -187,7 +187,7 @@ func (r route) extractParams(subject string) Params
 
 ## Pattern → Wildcard Conversion
 
-```
+```text
 Input:  "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history"
 Output: "chat.user.*.request.room.*.*.msg.history"
 
@@ -209,7 +209,7 @@ Rules:
 
 Given `router.Use(A, B, C)` and a handler `H`, the execution order is:
 
-```
+```text
 A.before → B.before → C.before → H → C.after → B.after → A.after
 ```
 
