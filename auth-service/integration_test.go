@@ -3,62 +3,71 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 )
 
-type mockVerifier struct {
+type fakeValidator struct {
 	username string
-	err      error
 }
 
-func (v *mockVerifier) Verify(token string) (string, error) {
-	return v.username, v.err
+func (v *fakeValidator) Validate(_ context.Context, _ string) (pkgoidc.Claims, error) {
+	return pkgoidc.Claims{
+		Subject:           "uuid-" + v.username,
+		PreferredUsername: v.username,
+		Email:             v.username + "@example.com",
+		Description:       "E001, Test User, 測試用戶",
+		DeptName:          "QA",
+		DeptID:            "ABC"
+	}, nil
 }
 
 func TestAuthHandler_Integration(t *testing.T) {
-	// Generate test signing key
 	kp, err := nkeys.CreateAccount()
-	if err != nil {
-		t.Fatalf("create account key: %v", err)
-	}
+	require.NoError(t, err)
 
 	userKP, err := nkeys.CreateUser()
-	if err != nil {
-		t.Fatalf("create user key: %v", err)
-	}
-	userPub, _ := userKP.PublicKey()
+	require.NoError(t, err)
+	userPub, err := userKP.PublicKey()
+	require.NoError(t, err)
 
-	verifier := &mockVerifier{username: "testuser"}
-	handler := NewAuthHandler(verifier, kp)
+	validator := &fakeValidator{username: "testuser"}
+	handler := NewAuthHandler(validator, kp, 2*time.Hour)
 
-	req := &jwt.AuthorizationRequest{
-		UserNkey:       userPub,
-		ConnectOptions: jwt.ConnectOptions{Token: "valid-token"},
-	}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	registerRoutes(r, handler)
 
-	encoded, err := handler.Handle(req)
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	body := fmt.Sprintf(`{"ssoToken":"valid-token","natsPublicKey":"%s"}`, userPub)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
 
-	// Decode and verify the JWT
-	claims, err := jwt.DecodeUserClaims(encoded)
-	if err != nil {
-		t.Fatalf("decode claims: %v", err)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
-	// Verify publish permissions contain user namespace
-	found := false
-	for _, p := range claims.Pub.Allow {
-		if p == "chat.user.testuser.>" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("missing publish permission for testuser, got: %v", claims.Pub.Allow)
-	}
+	var resp authResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+
+	// Decode and verify the JWT.
+	claims, err := jwt.DecodeUserClaims(resp.NATSJWT)
+	require.NoError(t, err)
+
+	// Verify publish permissions contain user namespace.
+	assert.Contains(t, []string(claims.Pub.Allow), "chat.user.testuser.>")
+	assert.Contains(t, []string(claims.Sub.Allow), "chat.room.>")
 }

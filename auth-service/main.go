@@ -4,21 +4,28 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
 	"github.com/caarlos0/env/v11"
-	"github.com/nats-io/nats.go"
+	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nkeys"
-	callout "github.com/synadia-io/callout.go"
 
+	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
 type config struct {
-	NatsURL        string `env:"NATS_URL"          envDefault:"nats://localhost:4222"`
-	NatsCreds      string `env:"NATS_CREDS"`
-	AuthSigningKey string `env:"AUTH_SIGNING_KEY,required"`
+	Port           string        `env:"PORT"                  envDefault:"8080"`
+	AuthSigningKey string        `env:"AUTH_SIGNING_KEY,required"`
+	NATSJWTExpiry  time.Duration `env:"NATS_JWT_EXPIRY"       envDefault:"2h"`
+
+	// OIDC settings for SSO token verification.
+	OIDCIssuerURL string `env:"OIDC_ISSUER_URL,required"`
+	OIDCAudience  string `env:"OIDC_AUDIENCE,required"`
+	OIDCVerifyAZP bool   `env:"OIDC_VERIFY_AZP"           envDefault:"false"`
+	TLSSkipVerify bool   `env:"TLS_SKIP_VERIFY"            envDefault:"false"`
 }
 
 func main() {
@@ -41,48 +48,57 @@ func run() error {
 		return fmt.Errorf("parse signing key: %w", err)
 	}
 
-	var opts []nats.Option
-	if cfg.NatsCreds != "" {
-		opts = append(opts, nats.UserCredentials(cfg.NatsCreds))
-	}
-	opts = append(opts, nats.Name("auth-service"))
+	ctx := context.Background()
 
-	nc, err := nats.Connect(cfg.NatsURL, opts...)
-	if err != nil {
-		return fmt.Errorf("nats connect: %w", err)
-	}
-	defer nc.Close()
-	slog.Info("connected to NATS", "url", cfg.NatsURL)
-
-	// TODO: Replace SSOTokenVerifier with actual SSO implementation.
-	verifier := &SSOTokenVerifier{}
-	handler := NewAuthHandler(verifier, signingKP)
-
-	svc, err := callout.NewAuthorizationService(nc,
-		callout.Authorizer(handler.Authorizer()),
-		callout.ResponseSignerKey(signingKP),
-	)
-	if err != nil {
-		return fmt.Errorf("create auth callout service: %w", err)
-	}
-	slog.Info("auth callout service started")
-
-	shutdown.Wait(context.Background(), 25*time.Second, func(ctx context.Context) error {
-		slog.Info("stopping auth callout service")
-		if err := svc.Stop(); err != nil {
-			return fmt.Errorf("stop callout service: %w", err)
-		}
-		return nil
+	// Initialize OIDC validator — connects to issuer and fetches JWKS keys.
+	oidcValidator, err := pkgoidc.NewValidator(ctx, pkgoidc.Config{
+		IssuerURL:     cfg.OIDCIssuerURL,
+		Audience:      cfg.OIDCAudience,
+		VerifyAZP:     cfg.OIDCVerifyAZP,
+		TLSSkipVerify: cfg.TLSSkipVerify,
 	})
+	if err != nil {
+		return fmt.Errorf("create oidc validator: %w", err)
+	}
+	slog.Info("oidc validator initialized", "issuer", cfg.OIDCIssuerURL)
+
+	handler := NewAuthHandler(oidcValidator, signingKP, cfg.NATSJWTExpiry)
+
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(requestIDMiddleware())
+	r.Use(accessLogMiddleware())
+	registerRoutes(r, handler)
+
+	addr := fmt.Sprintf(":%s", cfg.Port)
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      r,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	srvErr := make(chan error, 1)
+	go func() {
+		slog.Info("auth service starting", "addr", addr)
+		srvErr <- srv.ListenAndServe()
+	}()
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		shutdown.Wait(ctx, 25*time.Second, func(ctx context.Context) error {
+			slog.Info("shutting down auth service")
+			return srv.Shutdown(ctx)
+		})
+	}()
+
+	err = <-srvErr
+	if err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("listen auth server: %w", err)
+	}
+	<-shutdownDone
 
 	return nil
-}
-
-// SSOTokenVerifier implements TokenVerifier using actual SSO validation.
-// This is a placeholder — replace with real SSO/OAuth token verification.
-type SSOTokenVerifier struct{}
-
-func (v *SSOTokenVerifier) Verify(token string) (string, error) {
-	// TODO: Implement actual SSO token verification.
-	return "", fmt.Errorf("SSO token verification not implemented")
 }
