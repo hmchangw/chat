@@ -10,6 +10,7 @@ require (
 	github.com/gocql/gocql v1.7.0
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/jwt/v2 v2.7.4
+	github.com/nats-io/nats-server/v2 v2.11.0
 	github.com/nats-io/nats.go v1.41.1
 	github.com/nats-io/nkeys v0.4.12
 	github.com/redis/go-redis/v9 v9.18.0
@@ -32,8 +33,6 @@ require (
 	dario.cat/mergo v1.0.1 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/minio/highwayhash v1.0.3 // indirect
-	github.com/nats-io/nats-server/v2 v2.11.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
