@@ -1,6 +1,6 @@
 module github.com/hmchangw/chat
 
-go 1.24.7
+go 1.25.8
 
 require (
 	github.com/caarlos0/env/v11 v11.4.0
