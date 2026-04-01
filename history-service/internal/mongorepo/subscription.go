@@ -27,7 +27,7 @@ func NewSubscriptionRepo(db *mongo.Database) *SubscriptionRepo {
 // GetSubscription returns the full subscription for a user in a room.
 // Returns (nil, nil) when the user is not subscribed.
 func (r *SubscriptionRepo) GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error) {
-	return r.subscriptions.FindOne(ctx, bson.M{"u._id": username, "roomId": roomID})
+	return r.subscriptions.FindOne(ctx, bson.M{"u.username": username, "roomId": roomID})
 }
 
 // GetHistorySharedSince returns the HistorySharedSince timestamp for a subscription.
@@ -36,7 +36,7 @@ func (r *SubscriptionRepo) GetSubscription(ctx context.Context, username, roomID
 // Returns (nil, false, nil) when not subscribed.
 func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, username, roomID string) (*time.Time, bool, error) {
 	sub, err := r.subscriptions.FindOne(ctx,
-		bson.M{"u._id": username, "roomId": roomID},
+		bson.M{"u.username": username, "roomId": roomID},
 		WithProjection(bson.M{"historySharedSince": 1, "_id": 0}),
 	)
 	if err != nil {

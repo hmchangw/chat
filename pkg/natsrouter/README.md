@@ -114,6 +114,7 @@ func (c *Context) IsAborted() bool
 // Reply helpers.
 func (c *Context) ReplyJSON(v any)
 func (c *Context) ReplyError(msg string)
+func (c *Context) ReplyRouteError(e *RouteError)
 
 // The raw NATS message (for advanced use cases).
 c.Msg *nats.Msg
@@ -180,10 +181,14 @@ const (
 ### Built-in Middleware
 
 ```go
-// Catches panics, logs them, replies with "internal error".
+// Generates or extracts a request ID (from X-Request-ID header or new UUID).
+// Stores it via c.Set("requestID", id). Recovery and Logging include it automatically.
+func RequestID() HandlerFunc
+
+// Catches panics, logs them with request ID, replies with "internal error".
 func Recovery() HandlerFunc
 
-// Logs subject and duration for each request.
+// Logs subject, duration, and request ID for each request.
 func Logging() HandlerFunc
 ```
 
