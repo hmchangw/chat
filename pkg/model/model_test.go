@@ -21,7 +21,6 @@ func TestRoomJSON(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
-		Origin:           "site-a",
 		LastMsgAt:        time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		LastMsgID:        "m1",
 		LastMentionAllAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
@@ -107,14 +106,14 @@ func TestRoomEventJSON(t *testing.T) {
 			Timestamp:  now,
 			RoomName:   "General",
 			RoomType:   model.RoomTypeGroup,
-			Origin:     "site-a",
+			SiteID:     "site-a",
 			UserCount:  5,
 			LastMsgAt:  now,
 			LastMsgID:  "msg-1",
-			Mentions:   []string{"user-2", "user-3"},
+			Mentions:   []model.Participant{{Username: "user-2", ChineseName: "user-2", EngName: "user-2"}, {Username: "user-3", ChineseName: "user-3", EngName: "user-3"}},
 			MentionAll: true,
 			HasMention: true,
-			Message:    &msg,
+			Message:    &model.ClientMessage{Message: msg, Sender: &model.Participant{UserID: "user-1", Username: "alice", ChineseName: "愛麗絲", EngName: "Alice Wang"}},
 		}
 
 		data, err := json.Marshal(src)
@@ -137,7 +136,7 @@ func TestRoomEventJSON(t *testing.T) {
 			Timestamp: now,
 			RoomName:  "Lobby",
 			RoomType:  model.RoomTypeGroup,
-			Origin:    "site-b",
+			SiteID:    "site-b",
 			UserCount: 3,
 			LastMsgAt: now,
 			LastMsgID: "msg-2",

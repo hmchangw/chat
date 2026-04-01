@@ -76,15 +76,15 @@ type RoomEvent struct {
 
 	RoomName  string    `json:"roomName"`
 	RoomType  RoomType  `json:"roomType"`
-	Origin    string    `json:"origin"`
+	SiteID    string    `json:"siteId"`
 	UserCount int       `json:"userCount"`
 	LastMsgAt time.Time `json:"lastMsgAt"`
 	LastMsgID string    `json:"lastMsgId"`
 
-	Mentions   []string `json:"mentions,omitempty"`
-	MentionAll bool     `json:"mentionAll,omitempty"`
+	Mentions   []Participant  `json:"mentions,omitempty"`
+	MentionAll bool           `json:"mentionAll,omitempty"`
 
-	HasMention bool `json:"hasMention,omitempty"`
+	HasMention bool           `json:"hasMention,omitempty"`
 
-	Message *Message `json:"message,omitempty"`
+	Message *ClientMessage `json:"message,omitempty"`
 }
