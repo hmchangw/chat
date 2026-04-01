@@ -295,7 +295,7 @@ func RequestIDMiddleware() natsrouter.HandlerFunc {
 
 ### Execution Order
 
-```
+```text
 router.Use(A, B, C) + handler
 
 A:before → B:before → C:before → handler → C:after → B:after → A:after
@@ -348,7 +348,7 @@ return nil, fmt.Errorf("access check: %w", natsrouter.ErrForbidden("denied"))
 
 Patterns use `{name}` placeholders that convert to NATS single-token wildcards (`*`):
 
-```
+```text
 Pattern:  "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history"
 NATS:     "chat.user.*.request.room.*.*.msg.history"
 Params:   {userID: pos 2, roomID: pos 5, siteID: pos 6}
