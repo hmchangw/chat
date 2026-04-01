@@ -81,10 +81,10 @@ type RoomEvent struct {
 	LastMsgAt time.Time `json:"lastMsgAt"`
 	LastMsgID string    `json:"lastMsgId"`
 
-	Mentions   []Participant  `json:"mentions,omitempty"`
-	MentionAll bool           `json:"mentionAll,omitempty"`
+	Mentions   []Participant `json:"mentions,omitempty"`
+	MentionAll bool          `json:"mentionAll,omitempty"`
 
-	HasMention bool           `json:"hasMention,omitempty"`
+	HasMention bool `json:"hasMention,omitempty"`
 
 	Message *ClientMessage `json:"message,omitempty"`
 }
