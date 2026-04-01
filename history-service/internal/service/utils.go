@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
@@ -35,6 +36,7 @@ func millisToTime(millis *int64) time.Time {
 func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {
 	q, err := cassrepo.ParsePageRequest(cursor, limit)
 	if err != nil {
+		slog.Error("invalid pagination cursor", "error", err, "cursor", cursor)
 		return cassrepo.PageRequest{}, natsrouter.ErrBadRequest("invalid pagination cursor")
 	}
 	return q, nil
