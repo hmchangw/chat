@@ -308,6 +308,87 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		assert.Empty(t, pub.records)
 	})
 
+	t.Run("set subscription mentions fails", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
+
+		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
+		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.Any()).Return(errors.New("db error"))
+
+		h := NewHandler(store, pub)
+		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hey @alice", msgTime))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "set subscription mentions")
+		assert.Empty(t, pub.records)
+	})
+
+	t.Run("unknown room type", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
+
+		unknownRoom := &model.Room{
+			ID: "room-1", Name: "general", Type: "unknown",
+			SiteID: "site-a", UserCount: 5,
+		}
+		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(unknownRoom, nil)
+		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(nil, nil)
+
+		h := NewHandler(store, pub)
+		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
+		require.NoError(t, err)
+		assert.Empty(t, pub.records)
+	})
+
+	t.Run("list subscriptions fails for DM", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
+
+		store.EXPECT().GetRoom(gomock.Any(), "dm-1").Return(testDMRoom, nil)
+		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(nil, nil)
+		store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(nil, errors.New("db error"))
+
+		h := NewHandler(store, pub)
+		evt := model.MessageEvent{
+			SiteID: "site-a",
+			Message: model.Message{
+				ID: "msg-1", RoomID: "dm-1", UserID: "user-1", Username: "sender",
+				Content: "hello", CreatedAt: msgTime,
+			},
+		}
+		data, _ := json.Marshal(evt)
+		err := h.HandleMessage(context.Background(), data)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "list subscriptions")
+		assert.Empty(t, pub.records)
+	})
+
+	t.Run("sender mentioned deduplicates lookup", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
+
+		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
+		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", []string{"sender"}).Return(nil)
+		expectEmployeeLookup(store, []string{"sender"}, []model.Employee{{AccountName: "sender", Name: "寄件者", EngName: "Sender Lin"}})
+
+		h := NewHandler(store, pub)
+		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hey @sender", msgTime))
+		require.NoError(t, err)
+
+		require.Len(t, pub.records, 1)
+		evt := decodeRoomEvent(t, pub.records[0].data)
+		require.Len(t, evt.Mentions, 1)
+		assert.Equal(t, "sender", evt.Mentions[0].Username)
+		assert.Equal(t, "寄件者", evt.Mentions[0].ChineseName)
+	})
+
 	t.Run("employee lookup fails fallback to username", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
@@ -328,6 +409,110 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		assert.Equal(t, "sender", evt.Message.Sender.Username)
 		assert.Equal(t, "sender", evt.Message.Sender.ChineseName)
 		assert.Equal(t, "sender", evt.Message.Sender.EngName)
+	})
+}
+
+type failingPublisher struct {
+	callCount int
+	failAfter int
+	records   []publishRecord
+}
+
+func (p *failingPublisher) Publish(subj string, data []byte) error {
+	p.callCount++
+	if p.callCount > p.failAfter {
+		return errors.New("publish failed")
+	}
+	p.records = append(p.records, publishRecord{subject: subj, data: data})
+	return nil
+}
+
+func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
+	msgTime := time.Date(2026, 3, 26, 11, 0, 0, 0, time.UTC)
+
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	pub := &failingPublisher{failAfter: 0}
+
+	store.EXPECT().GetRoom(gomock.Any(), "dm-1").Return(testDMRoom, nil)
+	store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
+	store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
+	store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(testEmployees, nil)
+
+	h := NewHandler(store, pub)
+	evt := model.MessageEvent{
+		SiteID: "site-a",
+		Message: model.Message{
+			ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", Username: "alice",
+			Content: "hello", CreatedAt: msgTime,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	err := h.HandleMessage(context.Background(), data)
+	require.NoError(t, err)
+	assert.Equal(t, 2, pub.callCount)
+}
+
+func TestBuildMentionParticipants(t *testing.T) {
+	employees := map[string]model.Employee{
+		"alice": {AccountName: "alice", Name: "愛麗絲", EngName: "Alice Wang"},
+	}
+
+	t.Run("empty usernames returns nil", func(t *testing.T) {
+		result := buildMentionParticipants(nil, employees)
+		assert.Nil(t, result)
+	})
+
+	t.Run("employee found uses employee data", func(t *testing.T) {
+		result := buildMentionParticipants([]string{"alice"}, employees)
+		require.Len(t, result, 1)
+		assert.Equal(t, "alice", result[0].Username)
+		assert.Equal(t, "愛麗絲", result[0].ChineseName)
+		assert.Equal(t, "Alice Wang", result[0].EngName)
+		assert.Empty(t, result[0].UserID)
+	})
+
+	t.Run("employee not found falls back to username", func(t *testing.T) {
+		result := buildMentionParticipants([]string{"unknown"}, employees)
+		require.Len(t, result, 1)
+		assert.Equal(t, "unknown", result[0].Username)
+		assert.Equal(t, "unknown", result[0].ChineseName)
+		assert.Equal(t, "unknown", result[0].EngName)
+	})
+
+	t.Run("mixed found and not found", func(t *testing.T) {
+		result := buildMentionParticipants([]string{"alice", "unknown"}, employees)
+		require.Len(t, result, 2)
+		assert.Equal(t, "愛麗絲", result[0].ChineseName)
+		assert.Equal(t, "unknown", result[1].ChineseName)
+	})
+}
+
+func TestBuildClientMessage(t *testing.T) {
+	msg := &model.Message{
+		ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+		Content: "hello", CreatedAt: time.Now(),
+	}
+
+	t.Run("employee found", func(t *testing.T) {
+		employees := map[string]model.Employee{
+			"alice": {AccountName: "alice", Name: "愛麗絲", EngName: "Alice Wang"},
+		}
+		cm := buildClientMessage(msg, employees)
+		assert.Equal(t, "m1", cm.ID)
+		require.NotNil(t, cm.Sender)
+		assert.Equal(t, "u1", cm.Sender.UserID)
+		assert.Equal(t, "alice", cm.Sender.Username)
+		assert.Equal(t, "愛麗絲", cm.Sender.ChineseName)
+		assert.Equal(t, "Alice Wang", cm.Sender.EngName)
+	})
+
+	t.Run("employee not found", func(t *testing.T) {
+		cm := buildClientMessage(msg, map[string]model.Employee{})
+		require.NotNil(t, cm.Sender)
+		assert.Equal(t, "alice", cm.Sender.ChineseName)
+		assert.Equal(t, "alice", cm.Sender.EngName)
 	})
 }
 
