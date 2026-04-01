@@ -86,7 +86,7 @@ type QueryBuilder struct {
 
 // NewQueryBuilder wraps an existing gocql.Query with pagination.
 func NewQueryBuilder(q *gocql.Query) *QueryBuilder {
-	return &QueryBuilder{query: q, pageSize: 10}
+	return &QueryBuilder{query: q, pageSize: defaultPageSize}
 }
 
 // WithCursor sets the pagination cursor for resuming from a previous page.

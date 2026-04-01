@@ -439,6 +439,60 @@ func TestRequestID_FromHeader(t *testing.T) {
 	assert.Equal(t, "custom-req-id-42", capturedID)
 }
 
+func TestRegisterNoBody_HandlerError(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	RegisterNoBody(r, "test.{id}",
+		func(c *Context) (*testResp, error) {
+			return nil, fmt.Errorf("something failed")
+		})
+
+	resp, err := nc.Request("test.123", nil, 2*time.Second)
+	require.NoError(t, err)
+
+	var errResp model.ErrorResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
+	assert.Equal(t, "internal error", errResp.Error)
+}
+
+func TestRegisterNoBody_RouteError(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	RegisterNoBody(r, "test.{id}",
+		func(c *Context) (*testResp, error) {
+			return nil, ErrNotFound("item not found")
+		})
+
+	resp, err := nc.Request("test.123", nil, 2*time.Second)
+	require.NoError(t, err)
+
+	var result RouteError
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "item not found", result.Message)
+	assert.Equal(t, "not_found", result.Code)
+}
+
+func TestLogging_LogsRequest(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+	r.Use(Logging())
+
+	Register(r, "test.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "ok"}, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request("test.123", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result testResp
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "ok", result.Greeting)
+}
+
 func TestReplyRouteError(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
