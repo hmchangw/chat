@@ -4,7 +4,7 @@
 
 **Goal:** Upgrade natsrouter to a Gin-style API with request context, middleware data passing, route groups, standard error codes, and param helpers.
 
-**Architecture:** Introduce a `Context` type (implements `context.Context`) that flows through the middleware chain and carries params, key-value store, and the raw NATS message. Middleware uses `c.Next()` / `c.Abort()` (Gin pattern). Handler signatures change from `func(ctx, params, req)` to `func(c *Context, req)`. A `Registrar` interface allows both `Router` and `Group` to register routes. The `context.Context` embedded in `Context` is created from NATS headers when available, enabling trace propagation and deadlines.
+**Architecture:** Introduce a `Context` type (implements `context.Context`) that flows through the middleware chain and carries params, key-value store, and the raw NATS message. Middleware uses `c.Next()` / `c.Abort()` (Gin pattern). Handler signatures change from `func(ctx, params, req)` to `func(c *Context, req)`. A `Registrar` interface allows both `Router` and `Group` to register routes. The `context.Context` embedded in `Context` currently uses `context.Background()`; trace propagation from NATS headers is deferred to a future task.
 
 **Tech Stack:** Go 1.24, github.com/nats-io/nats.go, generics
 
