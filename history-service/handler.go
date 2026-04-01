@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"

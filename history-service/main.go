@@ -10,6 +10,7 @@ import (
 	"github.com/caarlos0/env/v11"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
