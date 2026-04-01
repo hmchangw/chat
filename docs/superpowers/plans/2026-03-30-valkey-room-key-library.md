@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `pkg/roomkeystore` — a shared library that stores and retrieves P-256 room encryption key pairs in Valkey using a hash-per-room layout with configurable TTL.
+**Goal:** Build `pkg/roomkeystore` — a shared library that stores and retrieves P-256 room encryption key pairs in Valkey using a hash-per-room layout.
 
 **Architecture:** A single package with a `RoomKeyStore` interface, a `valkeyStore` implementation backed by `go-redis/v9`, and an internal `hashCommander` interface that enables unit testing without a real Valkey connection. The `redisAdapter` bridges `*redis.Client` to `hashCommander`. Integration tests use `testcontainers-go` with a `valkey/valkey:8` generic container.
 
@@ -84,18 +84,18 @@ type RoomKeyStore interface {
 	Delete(ctx context.Context, roomID string) error
 }
 
-// Config holds Valkey connection and TTL configuration, parsed via caarlos0/env.
+// Config holds Valkey connection and grace period configuration, parsed via caarlos0/env.
 type Config struct {
 	Addr     string        `env:"VALKEY_ADDR,required"`
 	Password string        `env:"VALKEY_PASSWORD"`
-	KeyTTL   time.Duration `env:"VALKEY_KEY_TTL,required"`
+	GracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
 }
 
 // hashCommander is a minimal internal interface over the Valkey hash commands used by valkeyStore.
 // Unexported and command-specific so unit tests can inject a fake without a live Valkey connection.
 type hashCommander interface {
 	hset(ctx context.Context, key string, pub, priv string) error
-	expire(ctx context.Context, key string, ttl time.Duration) error
+	rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv, ver string, gracePeriod time.Duration) error
 	hgetall(ctx context.Context, key string) (map[string]string, error)
 	del(ctx context.Context, key string) error
 }
@@ -103,7 +103,7 @@ type hashCommander interface {
 // valkeyStore is the Valkey-backed implementation of RoomKeyStore.
 type valkeyStore struct {
 	client hashCommander
-	ttl    time.Duration
+	gracePeriod time.Duration
 }
 
 // redisAdapter wraps *redis.Client to satisfy hashCommander.
@@ -115,8 +115,9 @@ func (a *redisAdapter) hset(ctx context.Context, key string, pub, priv string) e
 	return a.c.HSet(ctx, key, "pub", pub, "priv", priv).Err()
 }
 
-func (a *redisAdapter) expire(ctx context.Context, key string, ttl time.Duration) error {
-	return a.c.Expire(ctx, key, ttl).Err()
+func (a *redisAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv, ver string, gracePeriod time.Duration) error {
+	// Atomic rotation via Lua script — see rotation spec for details.
+	return nil
 }
 
 func (a *redisAdapter) hgetall(ctx context.Context, key string) (map[string]string, error) {
@@ -138,7 +139,7 @@ func NewValkeyStore(cfg Config) (*valkeyStore, error) {
 	if err := c.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("valkey connect: %w", err)
 	}
-	return &valkeyStore{client: &redisAdapter{c: c}, ttl: cfg.KeyTTL}, nil
+	return &valkeyStore{client: &redisAdapter{c: c}, gracePeriod: cfg.GracePeriod}, nil
 }
 
 // roomkey returns the Valkey hash key for a room's key pair.
@@ -146,7 +147,7 @@ func roomkey(roomID string) string {
 	return "room:" + roomID + ":key"
 }
 
-// Set stores pair in Valkey and (re)sets the TTL on the hash key.
+// Set stores pair in Valkey as a hash with no TTL.
 func (s *valkeyStore) Set(_ context.Context, _ string, _ RoomKeyPair) error {
 	return errors.New("not implemented")
 }
@@ -183,7 +184,7 @@ import (
 type fakeHashClient struct {
 	store      map[string]map[string]string
 	hsetErr    error
-	expireErr  error
+	rotateErr  error
 	hgetallErr error
 	delErr     error
 }
@@ -199,8 +200,8 @@ func (f *fakeHashClient) hset(_ context.Context, key string, pub, priv string) e
 	return nil
 }
 
-func (f *fakeHashClient) expire(_ context.Context, _ string, _ time.Duration) error {
-	return f.expireErr
+func (f *fakeHashClient) rotatePipeline(_ context.Context, _, _ string, _, _, _ string, _ time.Duration) error {
+	return f.rotateErr
 }
 
 func (f *fakeHashClient) hgetall(_ context.Context, key string) (map[string]string, error) {
@@ -229,7 +230,7 @@ func (f *fakeHashClient) del(_ context.Context, key string) error {
 
 // newTestStore creates a valkeyStore backed by the given fake for unit tests.
 func newTestStore(fake *fakeHashClient) *valkeyStore {
-	return &valkeyStore{client: fake, ttl: time.Hour}
+	return &valkeyStore{client: fake, gracePeriod: time.Hour}
 }
 
 func TestValkeyStore_Set(t *testing.T) {
@@ -257,11 +258,11 @@ func TestValkeyStore_Set(t *testing.T) {
 			errContains: "set room key",
 		},
 		{
-			name:        "expire error — returns wrapped error",
-			fake:        &fakeHashClient{expireErr: errors.New("timeout")},
+			name:        "rotate error — returns wrapped error",
+			fake:        &fakeHashClient{rotateErr: errors.New("timeout")},
 			roomID:      "room-1",
 			wantErr:     true,
-			errContains: "set room key ttl",
+			errContains: "rotate room key",
 		},
 	}
 
@@ -305,7 +306,7 @@ Expected: FAIL — `"not implemented"` error from the stub.
 Replace the `Set` method in `pkg/roomkeystore/roomkeystore.go`:
 
 ```go
-// Set stores pair in Valkey as a hash and (re)sets the TTL on the hash key.
+// Set stores pair in Valkey as a hash with no TTL.
 func (s *valkeyStore) Set(ctx context.Context, roomID string, pair RoomKeyPair) error {
 	pub := base64.StdEncoding.EncodeToString(pair.PublicKey)
 	priv := base64.StdEncoding.EncodeToString(pair.PrivateKey)
@@ -313,9 +314,7 @@ func (s *valkeyStore) Set(ctx context.Context, roomID string, pair RoomKeyPair) 
 	if err := s.client.hset(ctx, key, pub, priv); err != nil {
 		return fmt.Errorf("set room key: %w", err)
 	}
-	if err := s.client.expire(ctx, key, s.ttl); err != nil {
-		return fmt.Errorf("set room key ttl: %w", err)
-	}
+	// No TTL on current keys — they persist until explicitly deleted or rotated.
 	return nil
 }
 ```
@@ -334,7 +333,7 @@ Expected: PASS for all `TestValkeyStore_Set` subtests.
 
 ```bash
 git add pkg/roomkeystore/roomkeystore.go pkg/roomkeystore/roomkeystore_test.go
-git commit -m "feat(roomkeystore): implement Set with base64 encoding and TTL"
+git commit -m "feat(roomkeystore): implement Set with base64 encoding"
 ```
 
 ---
@@ -644,7 +643,7 @@ import (
 
 // setupValkey starts a valkey/valkey:8 container and returns a connected valkeyStore.
 // The container is terminated via t.Cleanup.
-func setupValkey(t *testing.T, ttl time.Duration) *valkeyStore {
+func setupValkey(t *testing.T, gracePeriod time.Duration) RoomKeyStore {
 	t.Helper()
 	ctx := context.Background()
 
@@ -668,7 +667,7 @@ func setupValkey(t *testing.T, ttl time.Duration) *valkeyStore {
 
 	store, err := NewValkeyStore(Config{
 		Addr:   fmt.Sprintf("%s:%s", host, port.Port()),
-		KeyTTL: ttl,
+		GracePeriod: gracePeriod,
 	})
 	require.NoError(t, err, "create valkeyStore")
 	return store
@@ -712,30 +711,30 @@ func TestValkeyStore_Integration_MissingKey(t *testing.T) {
 	assert.Nil(t, got, "Get on missing key must return nil, nil")
 }
 
-func TestValkeyStore_Integration_TTLExpiry(t *testing.T) {
-	// Use a 1-second TTL so the test completes quickly.
+func TestValkeyStore_Integration_GracePeriodExpiry(t *testing.T) {
+	// Use a 1-second grace period so the test completes quickly.
 	store := setupValkey(t, 1*time.Second)
 	ctx := context.Background()
 
 	pubKey := bytes.Repeat([]byte{0x01}, 65)
 	privKey := bytes.Repeat([]byte{0x02}, 32)
 
-	err := store.Set(ctx, "room-ttl", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+	err := store.Set(ctx, "room-grace", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
 	require.NoError(t, err)
 
 	// Confirm key exists before expiry.
-	got, err := store.Get(ctx, "room-ttl")
+	got, err := store.Get(ctx, "room-grace")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 
-	// Wait for TTL to elapse. This sleep is intentional — we are waiting for
-	// an external Valkey TTL, not synchronising goroutines.
+	// Wait for grace period to elapse. This sleep is intentional — we are waiting for
+	// an external Valkey expiry, not synchronising goroutines.
 	time.Sleep(2 * time.Second)
 
 	// Key should now be gone.
-	got, err = store.Get(ctx, "room-ttl")
+	got, err = store.Get(ctx, "room-grace")
 	require.NoError(t, err)
-	assert.Nil(t, got, "key should be expired after TTL")
+	assert.Nil(t, got, "key should be expired after grace period")
 }
 ```
 

@@ -10,7 +10,7 @@ Introduce `pkg/roomkeystore` — a shared library for storing and retrieving roo
 
 ## Motivation
 
-The `pkg/roomcrypto` package encrypts messages using a room's P-256 public key, but there is currently no storage layer for room key material. This library provides that storage using Valkey (Redis-compatible in-memory store), giving fast key lookups at encryption time with configurable TTL-based expiry.
+The `pkg/roomcrypto` package encrypts messages using a room's P-256 public key, but there is currently no storage layer for room key material. This library provides that storage using Valkey (Redis-compatible in-memory store), giving fast key lookups at encryption time.
 
 ## Architecture
 
@@ -47,7 +47,7 @@ room:{roomID}:key
 | `pub` | 65-byte P-256 uncompressed public key | standard base64 |
 | `priv` | 32-byte P-256 private key scalar | standard base64 |
 
-TTL is applied to the hash key on every `Set` call, resetting the expiry. Keys persist until TTL elapses or `Delete` is called explicitly.
+Keys persist indefinitely until explicitly deleted or rotated. No TTL is applied to current keys.
 
 ## Interface & Constructor
 
@@ -59,9 +59,9 @@ type RoomKeyStore interface {
 }
 
 type Config struct {
-    Addr     string        `env:"VALKEY_ADDR,required"`
-    Password string        `env:"VALKEY_PASSWORD"`
-    KeyTTL   time.Duration `env:"VALKEY_KEY_TTL,required"`
+    Addr        string        `env:"VALKEY_ADDR,required"`
+    Password    string        `env:"VALKEY_PASSWORD" envDefault:""`
+    GracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
 }
 
 func NewValkeyStore(cfg Config) (*valkeyStore, error)
@@ -69,7 +69,7 @@ func NewValkeyStore(cfg Config) (*valkeyStore, error)
 
 ### Behaviour Contract
 
-- `Set` — stores both fields in the hash and (re)sets the TTL on the key. Wraps all errors with context.
+- `Set` — stores both fields in the hash with no TTL. Wraps all errors with context.
 - `Get` — returns `(nil, nil)` when the key does not exist (missing key is an expected condition, not an error). Returns a decoded `*RoomKeyPair` on success. Returns a non-nil error on Valkey failures or corrupted base64.
 - `Delete` — removes the hash key. No-op if the key doesn't exist. Wraps errors with context.
 
@@ -87,9 +87,9 @@ Environment variables parsed via `caarlos0/env`:
 |---|---|---|
 | `VALKEY_ADDR` | yes | `host:port` of the Valkey instance |
 | `VALKEY_PASSWORD` | no | Auth password (empty = no auth) |
-| `VALKEY_KEY_TTL` | yes | Duration string, e.g. `24h`, `168h` |
+| `VALKEY_KEY_GRACE_PERIOD` | yes | Duration for previous key retention after rotation, e.g. `1h`, `24h` |
 
-`KeyTTL` has no default — services must set it explicitly to avoid accidental indefinite storage.
+`GracePeriod` controls how long the previous key remains readable after a rotation.
 
 ## Dependencies
 
@@ -130,14 +130,14 @@ Table-driven tests covering:
 | Delete missing key is no-op | `Delete` |
 | Valkey error on `Delete` | `Delete` |
 
-The `go-redis` client does not ship a mock. Unit tests inject a fake by defining a minimal local interface over the Valkey commands used (`HSet`, `HGetAll`, `Del`, `Expire`) and substituting a test double. This keeps unit tests fast and free of Docker.
+The `go-redis` client does not ship a mock. Unit tests inject a fake by defining a minimal local interface over the Valkey commands used (`HSet`, `HGetAll`, `Del`) and substituting a test double. This keeps unit tests fast and free of Docker.
 
 ### Integration Tests (`integration_test.go`, `//go:build integration`)
 
 Uses `testcontainers-go` with a generic `valkey/valkey:8` container (no official testcontainers module exists — follows the same pattern as `pkg/roomcrypto`'s Node container). Tests:
 
 - Full round-trip: `Set` → `Get` → `Delete`
-- TTL expiry: set with a short TTL (1s), sleep, verify `Get` returns `nil`
+- Grace period expiry: rotate with a short grace period (1s), verify old key expires after sleep
 - Missing key returns `(nil, nil)`
 
 ### Coverage Target
