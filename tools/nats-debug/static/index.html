@@ -354,6 +354,39 @@
     /* ── Publish panel ───────────────────────────────────── */
     .publish-panel textarea { min-height: 100px; }
 
+    /* ── Request/Reply panel ────────────────────────────────── */
+    .request-timeout-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .request-timeout-row input {
+      width: 80px;
+      flex-shrink: 0;
+    }
+    .request-timeout-row span {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .response-area {
+      margin-top: 8px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 60px;
+      max-height: 200px;
+      overflow-y: auto;
+      color: var(--muted);
+    }
+    .response-area.has-reply { color: var(--text); }
+    .response-area.has-error { color: var(--danger); }
+
     /* ── Toast ───────────────────────────────────────────── */
     #toast {
       position: fixed;
@@ -431,6 +464,31 @@
       <label>Payload (JSON)</label>
       <textarea id="pub-payload" placeholder='{"content": "hello world"}'></textarea>
       <button class="btn btn-primary btn-full" onclick="doPublish()">Publish</button>
+    </div>
+
+    <!-- Request / Reply -->
+    <div class="panel">
+      <div class="panel-title">Request / Reply</div>
+      <label>NATS URL</label>
+      <input id="req-url" type="text" placeholder="nats://localhost:4222" value="nats://localhost:4222" />
+      <div class="conn-status">
+        <span id="req-dot" class="dot"></span><span>Request conn</span>
+      </div>
+      <div class="connect-actions">
+        <button id="btn-req-connect"    class="btn btn-primary" onclick="doRequestConnect()">Connect</button>
+        <button id="btn-req-disconnect" class="btn btn-ghost"   onclick="doRequestDisconnect()" disabled>Disconnect</button>
+      </div>
+      <label style="margin-top:12px">Subject</label>
+      <input id="req-subject" type="text" placeholder="chat.msg.validate" />
+      <label>Timeout (ms)</label>
+      <div class="request-timeout-row">
+        <input id="req-timeout" type="number" value="5000" min="1" />
+        <span>ms</span>
+      </div>
+      <label>Payload (JSON)</label>
+      <textarea id="req-payload" placeholder='{"content": "hello"}'></textarea>
+      <button id="btn-send-request" class="btn btn-primary btn-full" onclick="doRequest()">Send Request</button>
+      <div id="req-response" class="response-area">—</div>
     </div>
 
     <!-- Quick samples -->
@@ -546,6 +604,7 @@ async function refreshStatus() {
     const connected = s.sourceConnected || s.destConnected;
     document.getElementById('btn-connect').disabled    =  connected;
     document.getElementById('btn-disconnect').disabled = !connected;
+    updateRequestStatus(s);
   } catch {}
 }
 
@@ -688,6 +747,58 @@ function copyMsg(id) {
 function toggleAutoscroll() {
   state.autoscroll = !state.autoscroll;
   document.getElementById('autoscroll-btn').style.color = state.autoscroll ? 'var(--success)' : 'var(--muted)';
+}
+
+// ── Request / Reply ──────────────────────────────────────
+async function doRequestConnect() {
+  const url = document.getElementById('req-url').value.trim();
+  try {
+    const s = await api('POST', '/api/request/connect', { url });
+    updateRequestStatus(s);
+    toast('Request conn connected ✓', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function doRequestDisconnect() {
+  try {
+    await api('POST', '/api/request/disconnect');
+    updateRequestStatus({ requestConnected: false });
+    toast('Request conn disconnected', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function updateRequestStatus(s) {
+  document.getElementById('req-dot').className = 'dot' + (s.requestConnected ? ' on' : '');
+  document.getElementById('btn-req-connect').disabled    =  s.requestConnected;
+  document.getElementById('btn-req-disconnect').disabled = !s.requestConnected;
+}
+
+async function doRequest() {
+  const subject   = document.getElementById('req-subject').value.trim();
+  const payload   = document.getElementById('req-payload').value.trim();
+  const timeoutMs = parseInt(document.getElementById('req-timeout').value, 10);
+  const respEl    = document.getElementById('req-response');
+  const btn       = document.getElementById('btn-send-request');
+
+  if (!subject) { toast('Enter a subject', 'err'); return; }
+  if (!timeoutMs || timeoutMs <= 0) { toast('Timeout must be > 0', 'err'); return; }
+
+  btn.textContent = 'Waiting…';
+  btn.disabled = true;
+  respEl.className = 'response-area';
+  respEl.innerHTML = '—';
+
+  try {
+    const data = await api('POST', '/api/request', { subject, payload, timeoutMs });
+    respEl.className = 'response-area has-reply';
+    respEl.innerHTML = prettyJSON(data.payload);
+  } catch (e) {
+    respEl.className = 'response-area has-error';
+    respEl.textContent = e.message;
+  } finally {
+    btn.textContent = 'Send Request';
+    btn.disabled = false;
+  }
 }
 
 // ── Quick samples ────────────────────────────────────────

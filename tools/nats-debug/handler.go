@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+
+	"github.com/nats-io/nats.go"
 )
 
 type handler struct {
@@ -157,6 +160,73 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+type requestConnectRequest struct {
+	URL string `json:"url"`
+}
+
+func (h *handler) requestConnect(w http.ResponseWriter, r *http.Request) {
+	var req requestConnectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.URL == "" {
+		http.Error(w, "url is required", http.StatusBadRequest)
+		return
+	}
+	if err := h.hub.ConnectRequest(req.URL); err != nil {
+		slog.Error("connect to request NATS failed", "error", err)
+		http.Error(w, fmt.Sprintf("connection failed: %s", err.Error()), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.hub.Status())
+}
+
+func (h *handler) requestDisconnect(w http.ResponseWriter, _ *http.Request) {
+	h.hub.DisconnectRequest()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "disconnected"})
+}
+
+type natsRequestBody struct {
+	Subject   string `json:"subject"`
+	Payload   string `json:"payload"`
+	TimeoutMs int    `json:"timeoutMs"`
+}
+
+func (h *handler) request(w http.ResponseWriter, r *http.Request) {
+	var req natsRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Subject == "" {
+		http.Error(w, "subject is required", http.StatusBadRequest)
+		return
+	}
+	if req.TimeoutMs <= 0 {
+		http.Error(w, "timeoutMs must be greater than 0", http.StatusBadRequest)
+		return
+	}
+
+	reply, err := h.hub.Request(req.Subject, req.Payload, req.TimeoutMs)
+	if err != nil {
+		switch {
+		case errors.Is(err, nats.ErrNoResponders):
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "no responders available for subject"})
+		case errors.Is(err, nats.ErrTimeout):
+			writeJSON(w, http.StatusRequestTimeout, map[string]string{"error": "request timed out"})
+		case err.Error() == "not connected to request NATS":
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "not connected"})
+		default:
+			slog.Error("nats request failed", "subject", req.Subject, "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("request failed: %s", err.Error())})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"payload": reply})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

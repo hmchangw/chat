@@ -12,5 +12,8 @@ func (h *handler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/subscriptions", h.listSubscriptions)
 	mux.HandleFunc("POST /api/publish", h.publish)
 	mux.HandleFunc("GET /api/events", h.events)
+	mux.HandleFunc("POST /api/request/connect", h.requestConnect)
+	mux.HandleFunc("POST /api/request/disconnect", h.requestDisconnect)
+	mux.HandleFunc("POST /api/request", h.request)
 	mux.HandleFunc("GET /", h.serveUI)
 }

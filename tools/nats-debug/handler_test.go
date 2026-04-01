@@ -10,9 +10,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+)
+
+var (
+	errNoResponders = nats.ErrNoResponders
+	errTimeout      = nats.ErrTimeout
 )
 
 func TestHandler_Connect(t *testing.T) {
@@ -389,4 +395,181 @@ func newCancelableRequest(t *testing.T, path string) (*http.Request, context.Can
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	ctx, cancel := context.WithCancel(req.Context())
 	return req.WithContext(ctx), cancel
+}
+
+func TestHandler_RequestConnect(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       any
+		setupMock  func(*MockHub)
+		wantStatus int
+	}{
+		{
+			name: "successful connect",
+			body: map[string]string{"url": "nats://req:4222"},
+			setupMock: func(m *MockHub) {
+				m.EXPECT().ConnectRequest("nats://req:4222").Return(nil)
+				m.EXPECT().Status().Return(ConnectionStatus{RequestConnected: true, RequestURL: "nats://req:4222"})
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "missing url",
+			body:       map[string]string{"url": ""},
+			setupMock:  func(m *MockHub) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid JSON body",
+			body:       "not-json",
+			setupMock:  func(m *MockHub) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "connection error",
+			body: map[string]string{"url": "nats://req:4222"},
+			setupMock: func(m *MockHub) {
+				m.EXPECT().ConnectRequest("nats://req:4222").Return(errors.New("refused"))
+			},
+			wantStatus: http.StatusBadGateway,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			m := NewMockHub(ctrl)
+			tc.setupMock(m)
+			h := newHandler(m)
+
+			var body bytes.Buffer
+			if s, ok := tc.body.(string); ok {
+				body.WriteString(s)
+			} else {
+				require.NoError(t, json.NewEncoder(&body).Encode(tc.body))
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/request/connect", &body)
+			w := httptest.NewRecorder()
+			h.requestConnect(w, req)
+
+			assert.Equal(t, tc.wantStatus, w.Code)
+		})
+	}
+}
+
+func TestHandler_RequestDisconnect(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := NewMockHub(ctrl)
+	m.EXPECT().DisconnectRequest()
+
+	h := newHandler(m)
+	req := httptest.NewRequest(http.MethodPost, "/api/request/disconnect", nil)
+	w := httptest.NewRecorder()
+	h.requestDisconnect(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestHandler_Request(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        any
+		setupMock   func(*MockHub)
+		wantStatus  int
+		wantPayload string
+	}{
+		{
+			name: "successful request",
+			body: map[string]any{"subject": "chat.validate", "payload": `{"msg":"hi"}`, "timeoutMs": 3000},
+			setupMock: func(m *MockHub) {
+				m.EXPECT().Request("chat.validate", `{"msg":"hi"}`, 3000).Return(`{"ok":true}`, nil)
+			},
+			wantStatus:  http.StatusOK,
+			wantPayload: `{"ok":true}`,
+		},
+		{
+			name:       "missing subject",
+			body:       map[string]any{"subject": "", "payload": "{}", "timeoutMs": 1000},
+			setupMock:  func(m *MockHub) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "timeout zero",
+			body:       map[string]any{"subject": "chat.validate", "payload": "{}", "timeoutMs": 0},
+			setupMock:  func(m *MockHub) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "timeout negative",
+			body:       map[string]any{"subject": "chat.validate", "payload": "{}", "timeoutMs": -1},
+			setupMock:  func(m *MockHub) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid JSON body",
+			body:       "bad",
+			setupMock:  func(m *MockHub) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "not connected",
+			body: map[string]any{"subject": "chat.validate", "payload": "{}", "timeoutMs": 1000},
+			setupMock: func(m *MockHub) {
+				m.EXPECT().Request("chat.validate", "{}", 1000).Return("", errors.New("not connected to request NATS"))
+			},
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name: "no responders",
+			body: map[string]any{"subject": "chat.validate", "payload": "{}", "timeoutMs": 1000},
+			setupMock: func(m *MockHub) {
+				m.EXPECT().Request("chat.validate", "{}", 1000).Return("", errNoResponders)
+			},
+			wantStatus: http.StatusBadGateway,
+		},
+		{
+			name: "timeout error",
+			body: map[string]any{"subject": "chat.validate", "payload": "{}", "timeoutMs": 100},
+			setupMock: func(m *MockHub) {
+				m.EXPECT().Request("chat.validate", "{}", 100).Return("", errTimeout)
+			},
+			wantStatus: http.StatusRequestTimeout,
+		},
+		{
+			name: "generic hub error",
+			body: map[string]any{"subject": "chat.validate", "payload": "{}", "timeoutMs": 1000},
+			setupMock: func(m *MockHub) {
+				m.EXPECT().Request("chat.validate", "{}", 1000).Return("", errors.New("something broke"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			m := NewMockHub(ctrl)
+			tc.setupMock(m)
+			h := newHandler(m)
+
+			var body bytes.Buffer
+			if s, ok := tc.body.(string); ok {
+				body.WriteString(s)
+			} else {
+				require.NoError(t, json.NewEncoder(&body).Encode(tc.body))
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/request", &body)
+			w := httptest.NewRecorder()
+			h.request(w, req)
+
+			assert.Equal(t, tc.wantStatus, w.Code)
+			if tc.wantPayload != "" {
+				var got map[string]string
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
+				assert.Equal(t, tc.wantPayload, got["payload"])
+			}
+		})
+	}
 }
