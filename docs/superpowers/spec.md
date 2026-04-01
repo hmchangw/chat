@@ -147,7 +147,7 @@ history-service (Site A)
     |                                             |
     | 3a. Query local Cassandra                   |
     |     WHERE room_id = ? AND created_at > ?    |
-    |     (bounded by sharedHistorySince)         |
+    |     (bounded by historySharedSince)         |
     | 4a. Return HistoryResponse to client        |
     |                                             |
     +--- Room is REMOTE (siteID != local site) --+
@@ -215,7 +215,7 @@ Room types: `"group"`, `"dm"`
 | RoomID | string | `roomId` | `roomId` |
 | SiteID | string | `siteId` | `siteId` |
 | Role | Role | `role` | `role` |
-| SharedHistorySince | time.Time | `sharedHistorySince` | `sharedHistorySince` |
+| HistorySharedSince | time.Time | `historySharedSince` | `historySharedSince` |
 | JoinedAt | time.Time | `joinedAt` | `joinedAt` |
 
 Roles: `"owner"`, `"member"`
@@ -461,7 +461,7 @@ All client publishes are under `chat.user.{userID}.>`:
 **Flow**:
 1. Parse userID, roomID from subject
 2. Verify user has subscription to room (MongoDB)
-3. Use `sharedHistorySince` from subscription as lower bound
+3. Use `historySharedSince` from subscription as lower bound
 4. Query Cassandra for messages (descending by `createdAt`, with limit)
 5. Fetch `limit+1` to determine `hasMore`
 6. Return `HistoryResponse`
@@ -617,7 +617,7 @@ Per-service `docker-compose.yml` files in `build/<service>/` include only requir
 
 7. **Partial failure tolerance**: DM fan-out and notification delivery continue to remaining members when individual publishes fail.
 
-8. **SharedHistorySince**: Users only see messages from after they joined a room. The history-service uses subscription's `sharedHistorySince` as the lower bound for queries.
+8. **HistorySharedSince**: Users only see messages from after they joined a room. The history-service uses subscription's `historySharedSince` as the lower bound for queries.
 
 9. **Cross-site Outbox/Inbox**: Local events go to `OUTBOX_{siteID}`, remote sites source them into their `INBOX_{siteID}` via JetStream cross-account sourcing. The inbox-worker processes them locally.
 
