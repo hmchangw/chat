@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -20,15 +20,15 @@ type Handler struct {
 	store           RoomStore
 	siteID          string
 	maxRoomSize     int
-	publishToStream func(data []byte) error
+	publishToStream func(ctx context.Context, data []byte) error
 }
 
-func NewHandler(store RoomStore, siteID string, maxRoomSize int, publishToStream func([]byte) error) *Handler {
+func NewHandler(store RoomStore, siteID string, maxRoomSize int, publishToStream func(context.Context, []byte) error) *Handler {
 	return &Handler{store: store, siteID: siteID, maxRoomSize: maxRoomSize, publishToStream: publishToStream}
 }
 
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
-func (h *Handler) RegisterCRUD(nc *nats.Conn) error {
+func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	const queue = "room-service"
 	if _, err := nc.QueueSubscribe(subject.RoomsCreateWildcard(), queue, h.natsCreateRoom); err != nil {
 		return err
@@ -42,45 +42,45 @@ func (h *Handler) RegisterCRUD(nc *nats.Conn) error {
 	return nil
 }
 
-func (h *Handler) natsCreateRoom(msg *nats.Msg) {
-	resp, err := h.handleCreateRoom(context.Background(), msg.Data)
+func (h *Handler) natsCreateRoom(m otelnats.MsgWithContext) {
+	resp, err := h.handleCreateRoom(m.Context(), m.Msg.Data)
 	if err != nil {
-		natsutil.ReplyError(msg, err.Error())
+		natsutil.ReplyError(m.Msg, err.Error())
 		return
 	}
-	if err := msg.Respond(resp); err != nil {
+	if err := m.Msg.Respond(resp); err != nil {
 		slog.Error("failed to respond to message", "error", err)
 	}
 }
 
-func (h *Handler) natsListRooms(msg *nats.Msg) {
-	rooms, err := h.store.ListRooms(context.Background())
+func (h *Handler) natsListRooms(m otelnats.MsgWithContext) {
+	rooms, err := h.store.ListRooms(m.Context())
 	if err != nil {
-		natsutil.ReplyError(msg, err.Error())
+		natsutil.ReplyError(m.Msg, err.Error())
 		return
 	}
-	natsutil.ReplyJSON(msg, model.ListRoomsResponse{Rooms: rooms})
+	natsutil.ReplyJSON(m.Msg, model.ListRoomsResponse{Rooms: rooms})
 }
 
-func (h *Handler) natsGetRoom(msg *nats.Msg) {
-	parts := strings.Split(msg.Subject, ".")
+func (h *Handler) natsGetRoom(m otelnats.MsgWithContext) {
+	parts := strings.Split(m.Msg.Subject, ".")
 	roomID := parts[len(parts)-1]
-	room, err := h.store.GetRoom(context.Background(), roomID)
+	room, err := h.store.GetRoom(m.Context(), roomID)
 	if err != nil {
-		natsutil.ReplyError(msg, err.Error())
+		natsutil.ReplyError(m.Msg, err.Error())
 		return
 	}
-	natsutil.ReplyJSON(msg, room)
+	natsutil.ReplyJSON(m.Msg, room)
 }
 
 // NatsHandleInvite handles invite authorization requests.
-func (h *Handler) NatsHandleInvite(msg *nats.Msg) {
-	resp, err := h.handleInvite(context.Background(), msg.Subject, msg.Data)
+func (h *Handler) NatsHandleInvite(m otelnats.MsgWithContext) {
+	resp, err := h.handleInvite(m.Context(), m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		natsutil.ReplyError(msg, err.Error())
+		natsutil.ReplyError(m.Msg, err.Error())
 		return
 	}
-	if err := msg.Respond(resp); err != nil {
+	if err := m.Msg.Respond(resp); err != nil {
 		slog.Error("failed to respond to message", "error", err)
 	}
 }
@@ -156,7 +156,7 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 	}
 
 	// Publish to ROOMS stream for room-worker processing
-	if err := h.publishToStream(data); err != nil {
+	if err := h.publishToStream(ctx, data); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 

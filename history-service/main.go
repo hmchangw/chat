@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
-	"github.com/nats-io/nats.go"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -36,7 +37,13 @@ func main() {
 
 	ctx := context.Background()
 
-	nc, err := nats.Connect(cfg.NatsURL)
+	tracerShutdown, err := otelutil.InitTracer(ctx, "history-service")
+	if err != nil {
+		slog.Error("init tracer failed", "error", err)
+		os.Exit(1)
+	}
+
+	nc, err := otelnats.Connect(cfg.NatsURL)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)
@@ -66,6 +73,7 @@ func main() {
 	slog.Info("history-service running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -41,7 +42,7 @@ func TestHandler_HandleHistory_Success(t *testing.T) {
 	req := model.HistoryRequest{RoomID: "r1", Limit: 3}
 	data, _ := json.Marshal(req)
 
-	resp, err := h.handleHistory("alice", "r1", data)
+	resp, err := h.handleHistory(context.Background(), "alice", "r1", data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestHandler_HandleHistory_NotSubscribed(t *testing.T) {
 	req := model.HistoryRequest{RoomID: "r1", Limit: 10}
 	data, _ := json.Marshal(req)
 
-	_, err := h.handleHistory("alice", "r1", data)
+	_, err := h.handleHistory(context.Background(), "alice", "r1", data)
 	if err == nil {
 		t.Fatal("expected error for unsubscribed user")
 	}
@@ -99,7 +100,7 @@ func TestHandler_HandleHistory_SharedHistorySinceFilter(t *testing.T) {
 	req := model.HistoryRequest{RoomID: "r1", Limit: 100}
 	data, _ := json.Marshal(req)
 
-	resp, err := h.handleHistory("alice", "r1", data)
+	resp, err := h.handleHistory(context.Background(), "alice", "r1", data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

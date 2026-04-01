@@ -7,8 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/nats-io/nats.go"
-
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -24,25 +23,24 @@ func NewHandler(store HistoryStore) *Handler {
 
 // NatsHandleHistory handles NATS request/reply for message history.
 // Subject: chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history
-func (h *Handler) NatsHandleHistory(msg *nats.Msg) {
-	username, roomID, ok := subject.ParseUserRoomSubject(msg.Subject)
+func (h *Handler) NatsHandleHistory(m otelnats.MsgWithContext) {
+	username, roomID, ok := subject.ParseUserRoomSubject(m.Msg.Subject)
 	if !ok {
-		natsutil.ReplyError(msg, "invalid subject")
+		natsutil.ReplyError(m.Msg, "invalid subject")
 		return
 	}
 
-	resp, err := h.handleHistory(username, roomID, msg.Data)
+	resp, err := h.handleHistory(m.Context(), username, roomID, m.Msg.Data)
 	if err != nil {
-		natsutil.ReplyError(msg, err.Error())
+		natsutil.ReplyError(m.Msg, err.Error())
 		return
 	}
-	if err := msg.Respond(resp); err != nil {
+	if err := m.Msg.Respond(resp); err != nil {
 		slog.Error("failed to respond to message", "error", err)
 	}
 }
 
-func (h *Handler) handleHistory(username, roomID string, data []byte) ([]byte, error) {
-	ctx := context.Background()
+func (h *Handler) handleHistory(ctx context.Context, username, roomID string, data []byte) ([]byte, error) {
 
 	// Verify subscription before unmarshalling request data for performance
 	sub, err := h.store.GetSubscription(ctx, username, roomID)
