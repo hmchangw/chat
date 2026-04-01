@@ -61,7 +61,6 @@ func MemberInvite(username, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", username, roomID, siteID)
 }
 
-
 func SubscriptionUpdate(username string) string {
 	return fmt.Sprintf("chat.user.%s.event.subscription.update", username)
 }
@@ -120,22 +119,6 @@ func MsgHistoryWildcard(siteID string) string {
 
 func MsgCanonicalWildcard(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.>", siteID)
-}
-
-func MsgNextWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.next", siteID)
-}
-
-func MsgSurroundingWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.surrounding", siteID)
-}
-
-func MsgGetWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.get", siteID)
-}
-
-func FanoutWildcard(siteID string) string {
-	return fmt.Sprintf("fanout.%s.>", siteID)
 }
 
 func OutboxWildcard(siteID string) string {

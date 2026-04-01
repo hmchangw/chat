@@ -55,8 +55,9 @@ type LoadNextMessagesResponse struct {
 
 // LoadSurroundingMessagesRequest is the payload for loading messages around a central message.
 type LoadSurroundingMessagesRequest struct {
-	MessageID string `json:"messageId"` // central message ID
-	Limit     int    `json:"limit"`     // total messages including central
+	MessageID string `json:"messageId"`           // central message ID
+	CreatedAt *int64 `json:"createdAt,omitempty"` // optional UTC millis hint for O(1) lookup
+	Limit     int    `json:"limit"`               // total messages including central
 }
 
 // LoadSurroundingMessagesResponse contains messages around the central message.
@@ -69,4 +70,5 @@ type LoadSurroundingMessagesResponse struct {
 // GetMessageByIDRequest is the payload for fetching a single message.
 type GetMessageByIDRequest struct {
 	MessageID string `json:"messageId"`
+	CreatedAt *int64 `json:"createdAt,omitempty"` // optional UTC millis hint for O(1) lookup
 }

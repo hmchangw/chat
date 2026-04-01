@@ -99,12 +99,9 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, err
 	}
 
-	centralMsg, err := s.messages.GetMessageByID(c, roomID, req.MessageID)
+	centralMsg, err := s.findMessage(c, roomID, req.MessageID, req.CreatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("finding central message: %w", err)
-	}
-	if centralMsg == nil {
-		return nil, natsrouter.ErrNotFound("message not found")
+		return nil, err
 	}
 	if accessSince != nil && centralMsg.CreatedAt.Before(*accessSince) {
 		return nil, natsrouter.ErrForbidden("message is outside access window")
@@ -167,12 +164,9 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 		return nil, err
 	}
 
-	msg, err := s.messages.GetMessageByID(c, roomID, req.MessageID)
+	msg, err := s.findMessage(c, roomID, req.MessageID, req.CreatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("loading message: %w", err)
-	}
-	if msg == nil {
-		return nil, natsrouter.ErrNotFound("message not found")
+		return nil, err
 	}
 
 	if accessSince != nil && msg.CreatedAt.Before(*accessSince) {

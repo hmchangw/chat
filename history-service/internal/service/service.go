@@ -18,6 +18,7 @@ type MessageRepository interface {
 	GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessageByTimestamp(ctx context.Context, roomID string, createdAt time.Time, messageID string) (*models.Message, error)
 	GetMessageByID(ctx context.Context, roomID, messageID string) (*models.Message, error)
 }
 
