@@ -168,6 +168,59 @@ func splitOutput(r io.Reader) (stdout, combined string) {
 	return outBuf.String(), outBuf.String() + errBuf.String()
 }
 
+func TestRoomKeySender_TypeScriptClient_Unencrypted(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Start infrastructure.
+	nw := setupNetwork(t)
+	nc, wsURL := setupNATS(t, nw)
+	nodeContainer := setupNode(t, nw)
+
+	// 2. Test parameters.
+	username := "alice"
+	roomID := "room-1"
+	plaintext := "hello unencrypted"
+
+	// 3. Start the TypeScript client in background.
+	clientDone := make(chan struct {
+		exitCode int
+		stdout   string
+		combined string
+		err      error
+	}, 1)
+
+	go func() {
+		exitCode, reader, err := nodeContainer.Exec(ctx, []string{
+			"tsx", "--require", "/ws-polyfill.cjs", "/client.ts", wsURL, username, roomID,
+		})
+		stdout, combined := splitOutput(reader)
+		clientDone <- struct {
+			exitCode int
+			stdout   string
+			combined string
+			err      error
+		}{exitCode, stdout, combined, err}
+	}()
+
+	// 4. Brief delay for TypeScript subscriptions to establish.
+	time.Sleep(3 * time.Second)
+
+	// 5. Publish plain message WITHOUT X-Room-Key-Version header.
+	msgSubject := fmt.Sprintf("test.room.%s.msg", roomID)
+	err := nc.Publish(msgSubject, []byte(plaintext))
+	require.NoError(t, err, "publish unencrypted message")
+
+	// 6. Wait for TypeScript client to finish.
+	select {
+	case result := <-clientDone:
+		require.NoError(t, result.err, "exec client.ts")
+		require.Equal(t, 0, result.exitCode, "client.ts exited non-zero:\n%s", result.combined)
+		assert.Equal(t, plaintext, strings.TrimRight(result.stdout, "\n"))
+	case <-time.After(30 * time.Second):
+		t.Fatal("TypeScript client timed out after 30s")
+	}
+}
+
 func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	ctx := context.Background()
 
