@@ -174,7 +174,7 @@ func TestRoomEventTypeValues(t *testing.T) {
 func TestRoomKeyEventJSON(t *testing.T) {
 	src := model.RoomKeyEvent{
 		RoomID:     "room-1",
-		VersionID:  "v-abc-123",
+		Version:    42,
 		PublicKey:  []byte{0x04, 0x01, 0x02, 0x03},
 		PrivateKey: []byte{0x0a, 0x0b, 0x0c},
 	}
