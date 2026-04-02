@@ -58,34 +58,19 @@ func (mr *MockMessageRepositoryMockRecorder) GetAllMessagesAsc(ctx, roomID, q an
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllMessagesAsc", reflect.TypeOf((*MockMessageRepository)(nil).GetAllMessagesAsc), ctx, roomID, q)
 }
 
-// GetMessageByID mocks base method.
-func (m *MockMessageRepository) GetMessageByID(ctx context.Context, roomID, messageID string) (*models.Message, error) {
+// GetMessage mocks base method.
+func (m *MockMessageRepository) GetMessage(ctx context.Context, roomID string, createdAt time.Time, messageID string) (*models.Message, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMessageByID", ctx, roomID, messageID)
+	ret := m.ctrl.Call(m, "GetMessage", ctx, roomID, createdAt, messageID)
 	ret0, _ := ret[0].(*models.Message)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetMessageByID indicates an expected call of GetMessageByID.
-func (mr *MockMessageRepositoryMockRecorder) GetMessageByID(ctx, roomID, messageID any) *gomock.Call {
+// GetMessage indicates an expected call of GetMessage.
+func (mr *MockMessageRepositoryMockRecorder) GetMessage(ctx, roomID, createdAt, messageID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessageByID", reflect.TypeOf((*MockMessageRepository)(nil).GetMessageByID), ctx, roomID, messageID)
-}
-
-// GetMessageByTimestamp mocks base method.
-func (m *MockMessageRepository) GetMessageByTimestamp(ctx context.Context, roomID string, createdAt time.Time, messageID string) (*models.Message, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMessageByTimestamp", ctx, roomID, createdAt, messageID)
-	ret0, _ := ret[0].(*models.Message)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetMessageByTimestamp indicates an expected call of GetMessageByTimestamp.
-func (mr *MockMessageRepositoryMockRecorder) GetMessageByTimestamp(ctx, roomID, createdAt, messageID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessageByTimestamp", reflect.TypeOf((*MockMessageRepository)(nil).GetMessageByTimestamp), ctx, roomID, createdAt, messageID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessage", reflect.TypeOf((*MockMessageRepository)(nil).GetMessage), ctx, roomID, createdAt, messageID)
 }
 
 // GetMessagesAfter mocks base method.

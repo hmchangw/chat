@@ -42,18 +42,16 @@ func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {
 	return q, nil
 }
 
-// findMessage looks up a message by ID, using the fast primary-key path when
-// createdAtMillis is provided, falling back to ALLOW FILTERING otherwise.
-func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID string, createdAtMillis *int64) (*models.Message, error) {
-	var (
-		msg *models.Message
-		err error
-	)
-	if createdAtMillis != nil {
-		msg, err = s.messages.GetMessageByTimestamp(ctx, roomID, millisToTime(createdAtMillis), messageID)
-	} else {
-		msg, err = s.messages.GetMessageByID(ctx, roomID, messageID)
+// findMessage looks up a message using the full Cassandra primary key.
+// Returns a user-facing error if messageID or createdAtMillis is missing.
+func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID string, createdAtMillis int64) (*models.Message, error) {
+	if messageID == "" {
+		return nil, natsrouter.ErrBadRequest("messageId is required")
 	}
+	if createdAtMillis == 0 {
+		return nil, natsrouter.ErrBadRequest("createdAt is required")
+	}
+	msg, err := s.messages.GetMessage(ctx, roomID, time.UnixMilli(createdAtMillis).UTC(), messageID)
 	if err != nil {
 		return nil, fmt.Errorf("finding message: %w", err)
 	}

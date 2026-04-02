@@ -159,9 +159,9 @@ func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q Pag
 	}, nil
 }
 
-// GetMessageByTimestamp returns a single message using the full primary key (room_id, created_at, message_id).
-// This is an O(1) lookup with no ALLOW FILTERING. Returns (nil, nil) if not found.
-func (r *Repository) GetMessageByTimestamp(ctx context.Context, roomID string, createdAt time.Time, messageID string) (*models.Message, error) {
+// GetMessage returns a single message using the full primary key (room_id, created_at, message_id).
+// Returns (nil, nil) if the message is not found.
+func (r *Repository) GetMessage(ctx context.Context, roomID string, createdAt time.Time, messageID string) (*models.Message, error) {
 	var m models.Message
 	err := r.session.Query(
 		messageQuery+` WHERE room_id = ? AND created_at = ? AND message_id = ?`,
@@ -171,26 +171,7 @@ func (r *Repository) GetMessageByTimestamp(ctx context.Context, roomID string, c
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("querying message by timestamp: %w", err)
-	}
-	return &m, nil
-}
-
-// GetMessageByID returns a single message by ID within a room.
-// Returns (nil, nil) if the message is not found.
-// NOTE: Uses ALLOW FILTERING to push the id filter server-side within a single
-// partition (room_id). Prefer GetMessageByTimestamp when created_at is available.
-func (r *Repository) GetMessageByID(ctx context.Context, roomID, messageID string) (*models.Message, error) {
-	var m models.Message
-	err := r.session.Query(
-		messageQuery+` WHERE room_id = ? AND message_id = ? ALLOW FILTERING`,
-		roomID, messageID,
-	).WithContext(ctx).Scan(messageScanDest(&m)...)
-	if errors.Is(err, gocql.ErrNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("querying message by id: %w", err)
+		return nil, fmt.Errorf("querying message: %w", err)
 	}
 	return &m, nil
 }
