@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -25,10 +26,10 @@ type VersionedKeyPair struct {
 
 // RoomKeyStore defines storage operations for room encryption key pairs.
 type RoomKeyStore interface {
-	Set(ctx context.Context, roomID string, versionID string, pair RoomKeyPair) error
+	Set(ctx context.Context, roomID string, pair RoomKeyPair) (int, error)
 	Get(ctx context.Context, roomID string) (*VersionedKeyPair, error)
-	GetByVersion(ctx context.Context, roomID, versionID string) (*RoomKeyPair, error)
-	Rotate(ctx context.Context, roomID string, versionID string, newPair RoomKeyPair) error
+	GetByVersion(ctx context.Context, roomID string, version int) (*RoomKeyPair, error)
+	Rotate(ctx context.Context, roomID string, newPair RoomKeyPair) (int, error)
 	Delete(ctx context.Context, roomID string) error
 }
 
@@ -64,16 +65,16 @@ func roomprevkey(roomID string) string {
 	return "room:" + roomID + ":key:prev"
 }
 
-// Set stores pair in Valkey as a hash with no TTL.
+// Set stores pair in Valkey as a hash with no TTL, assigning version 0.
 // Does not touch the previous key slot.
-func (s *valkeyStore) Set(ctx context.Context, roomID string, versionID string, pair RoomKeyPair) error {
+func (s *valkeyStore) Set(ctx context.Context, roomID string, pair RoomKeyPair) (int, error) {
 	pub := base64.StdEncoding.EncodeToString(pair.PublicKey)
 	priv := base64.StdEncoding.EncodeToString(pair.PrivateKey)
 	key := roomkey(roomID)
-	if err := s.client.hset(ctx, key, pub, priv, versionID); err != nil {
-		return fmt.Errorf("set room key: %w", err)
+	if err := s.client.hset(ctx, key, pub, priv); err != nil {
+		return 0, fmt.Errorf("set room key: %w", err)
 	}
-	return nil
+	return 0, nil
 }
 
 // Get retrieves the current key pair for roomID. Returns (nil, nil) if the key does not exist.
@@ -85,19 +86,25 @@ func (s *valkeyStore) Get(ctx context.Context, roomID string) (*VersionedKeyPair
 	if len(fields) == 0 {
 		return nil, nil
 	}
+	ver, err := strconv.Atoi(fields["ver"])
+	if err != nil {
+		return nil, fmt.Errorf("get room key: parse version: %w", err)
+	}
 	pair, err := decodeKeyPair(fields)
 	if err != nil {
 		return nil, fmt.Errorf("get room key: %w", err)
 	}
 	return &VersionedKeyPair{
-		VersionID: fields["ver"],
-		KeyPair:   *pair,
+		Version: ver,
+		KeyPair: *pair,
 	}, nil
 }
 
-// GetByVersion retrieves the key pair matching versionID from either the current or previous slot.
+// GetByVersion retrieves the key pair matching version from either the current or previous slot.
 // Returns (nil, nil) if neither matches or both are absent.
-func (s *valkeyStore) GetByVersion(ctx context.Context, roomID, versionID string) (*RoomKeyPair, error) {
+func (s *valkeyStore) GetByVersion(ctx context.Context, roomID string, version int) (*RoomKeyPair, error) {
+	versionID := strconv.Itoa(version)
+
 	// Check current key.
 	currentFields, err := s.client.hgetall(ctx, roomkey(roomID))
 	if err != nil {
@@ -127,15 +134,17 @@ func (s *valkeyStore) GetByVersion(ctx context.Context, roomID, versionID string
 	return nil, nil
 }
 
-// Rotate atomically moves the current key to the previous slot (with grace period TTL)
-// and writes newPair as the current key. Returns ErrNoCurrentKey if no current key exists.
-func (s *valkeyStore) Rotate(ctx context.Context, roomID string, versionID string, newPair RoomKeyPair) error {
+// Rotate atomically moves the current key to the previous slot (with grace period TTL),
+// increments the version, and writes newPair as the current key.
+// Returns the new version number. Returns ErrNoCurrentKey if no current key exists.
+func (s *valkeyStore) Rotate(ctx context.Context, roomID string, newPair RoomKeyPair) (int, error) {
 	pub := base64.StdEncoding.EncodeToString(newPair.PublicKey)
 	priv := base64.StdEncoding.EncodeToString(newPair.PrivateKey)
-	if err := s.client.rotatePipeline(ctx, roomkey(roomID), roomprevkey(roomID), pub, priv, versionID, s.gracePeriod); err != nil {
-		return fmt.Errorf("rotate room key: %w", err)
+	version, err := s.client.rotatePipeline(ctx, roomkey(roomID), roomprevkey(roomID), pub, priv, s.gracePeriod)
+	if err != nil {
+		return 0, fmt.Errorf("rotate room key: %w", err)
 	}
-	return nil
+	return version, nil
 }
 
 // Delete removes both the current and previous key pairs for roomID.
