@@ -44,14 +44,14 @@ func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {
 
 // findMessage looks up a message using the full Cassandra primary key.
 // Returns a user-facing error if messageID or createdAtMillis is missing.
-func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID string, createdAtMillis int64) (*models.Message, error) {
+func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID string, createdAtMillis *int64) (*models.Message, error) {
 	if messageID == "" {
 		return nil, natsrouter.ErrBadRequest("messageId is required")
 	}
-	if createdAtMillis == 0 {
+	if createdAtMillis == nil {
 		return nil, natsrouter.ErrBadRequest("createdAt is required")
 	}
-	msg, err := s.messages.GetMessage(ctx, roomID, time.UnixMilli(createdAtMillis).UTC(), messageID)
+	msg, err := s.messages.GetMessage(ctx, roomID, time.UnixMilli(*createdAtMillis).UTC(), messageID)
 	if err != nil {
 		return nil, fmt.Errorf("finding message: %w", err)
 	}
