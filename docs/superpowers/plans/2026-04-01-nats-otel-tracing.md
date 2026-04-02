@@ -321,6 +321,42 @@ git push -u origin claude/add-nats-tracing-ch72M
 
 ---
 
+### Task 11: Upgrade Go from 1.25.1 to 1.25.8
+
+**Files:**
+- Modify: `go.mod`
+- Modify: `go.sum` (via `go mod tidy`)
+
+- [x] **Step 1: Update go directive**
+
+```bash
+go mod edit -go=1.25.8
+```
+
+- [x] **Step 2: Run go mod tidy to prune stale go.sum entries**
+
+```bash
+go mod tidy
+```
+
+- [x] **Step 3: Verify build, tests, and lint**
+
+```bash
+go build ./...
+go test -race -count=1 ./...
+make lint
+```
+Expected: All 18 test suites pass, 0 lint issues.
+
+- [x] **Step 4: Commit**
+
+```bash
+git add go.mod go.sum
+git commit -m "Upgrade Go from 1.25.1 to 1.25.8"
+```
+
+---
+
 ## Commit History
 
 | Commit | Description |
@@ -330,10 +366,11 @@ git push -u origin claude/add-nats-tracing-ch72M
 | 3 | notification-worker + inbox-worker tracing integration |
 | 4 | message-worker + message-gatekeeper + room-worker tracing integration |
 | 5 | history-service + room-service tracing integration |
+| 6 | Upgrade Go from 1.25.1 to 1.25.8 |
 
 ## Files Changed Summary
 
-- `go.mod`, `go.sum` — Go 1.25 + new dependency + transitive upgrades
+- `go.mod`, `go.sum` — Go 1.25.8 + new dependency + transitive upgrades
 - `pkg/otelutil/otel.go` — global TracerProvider + propagator registration
 - 10 Dockerfiles — `golang:1.24-alpine` → `golang:1.25-alpine`
 - 8 `main.go` files — `otelnats.Connect`, `oteljetstream.New`, `InitTracer`, traced iterators

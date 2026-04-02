@@ -242,3 +242,33 @@ Run `make generate SERVICE=<name>` for any service whose store interface or publ
 ### Totals
 
 ~20 files modified, 0 new files created.
+
+---
+
+## Addendum: Go 1.25.1 → 1.25.8 Upgrade
+
+**Date:** 2026-04-02
+**Status:** Approved
+
+### Summary
+
+Upgrade Go from 1.25.1 to 1.25.8 to pick up security and bug fixes from patch releases 1.25.2–1.25.8. Patch releases are backwards compatible per Go's release policy — no behavioral changes.
+
+### Decision
+
+| Decision | Choice |
+|----------|--------|
+| Approach | Bump go directive only (Approach 1) |
+| Dockerfiles | No change — `golang:1.25-alpine` auto-resolves to latest 1.25.x |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `go.mod` | `go 1.25.1` → `go 1.25.8` |
+| `go.sum` | Pruned by `go mod tidy` (74 stale entries removed, 4 added) |
+
+### Verification
+
+- All 18 test suites pass with `go test -race -count=1 ./...`
+- Lint clean with `make lint`
