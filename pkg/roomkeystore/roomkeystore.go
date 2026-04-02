@@ -17,10 +17,10 @@ type RoomKeyPair struct {
 	PrivateKey []byte // 32-byte scalar
 }
 
-// VersionedKeyPair pairs a key pair with its caller-assigned version identifier.
+// VersionedKeyPair pairs a key pair with its store-assigned version number.
 type VersionedKeyPair struct {
-	VersionID string
-	KeyPair   RoomKeyPair
+	Version int
+	KeyPair RoomKeyPair
 }
 
 // RoomKeyStore defines storage operations for room encryption key pairs.
