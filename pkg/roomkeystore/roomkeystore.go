@@ -42,9 +42,9 @@ type Config struct {
 // hashCommander is a minimal internal interface over the Valkey hash commands used by valkeyStore.
 // Unexported and command-specific so unit tests can inject a fake without a live Valkey connection.
 type hashCommander interface {
-	hset(ctx context.Context, key string, pub, priv, ver string) error
+	hset(ctx context.Context, key string, pub, priv string) error
 	hgetall(ctx context.Context, key string) (map[string]string, error)
-	rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv, ver string, gracePeriod time.Duration) error
+	rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv string, gracePeriod time.Duration) (int, error)
 	deletePipeline(ctx context.Context, currentKey, prevKey string) error
 }
 
