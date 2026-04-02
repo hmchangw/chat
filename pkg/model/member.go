@@ -14,7 +14,7 @@ const (
 type HistoryMode string
 
 const (
-	HistoryModeNone HistoryMode = "none" // SharedHistorySince = now, blocks old history
+	HistoryModeNone HistoryMode = "none" // HistorySharedSince = now, blocks old history
 	HistoryModeAll  HistoryMode = "all"  // no restriction, full history visible
 )
 

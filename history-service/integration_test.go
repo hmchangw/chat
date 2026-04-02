@@ -84,7 +84,7 @@ func TestRealStore_Integration(t *testing.T) {
 	joinTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleMember},
-		SharedHistorySince: joinTime,
+		HistorySharedSince: joinTime,
 	})
 
 	// Test GetSubscription

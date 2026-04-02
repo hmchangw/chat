@@ -20,7 +20,7 @@ func TestHandler_HandleHistory_Success(t *testing.T) {
 		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{
 			User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember},
-			SharedHistorySince: joinTime,
+			HistorySharedSince: joinTime,
 		}, nil)
 
 	var msgs []model.Message
@@ -75,7 +75,7 @@ func TestHandler_HandleHistory_NotSubscribed(t *testing.T) {
 	}
 }
 
-func TestHandler_HandleHistory_SharedHistorySinceFilter(t *testing.T) {
+func TestHandler_HandleHistory_HistorySharedSinceFilter(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockHistoryStore(ctrl)
 
@@ -84,7 +84,7 @@ func TestHandler_HandleHistory_SharedHistorySinceFilter(t *testing.T) {
 		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{
 			User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1",
-			SharedHistorySince: joinTime,
+			HistorySharedSince: joinTime,
 		}, nil)
 
 	// Only messages after join should be returned by the store

@@ -153,7 +153,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
 		Roles:              []model.Role{model.RoleOwner},
-		SharedHistorySince: now,
+		HistorySharedSince: now,
 		JoinedAt:           now,
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
@@ -457,7 +457,7 @@ func (h *Handler) buildSubscriptions(ctx context.Context, usernames []string, ro
 			JoinedAt: now,
 		}
 		if mode != model.HistoryModeAll {
-			sub.SharedHistorySince = now
+			sub.HistorySharedSince = now
 		}
 		subs = append(subs, sub)
 		resolvedUsernames = append(resolvedUsernames, username)

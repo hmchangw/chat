@@ -154,9 +154,9 @@ func TestHandler_AddMembers(t *testing.T) {
 						if usernames[0] != "bob" || usernames[1] != "carol" {
 							t.Errorf("unexpected usernames: %v", usernames)
 						}
-						// history=none: SharedHistorySince must be set
-						if subs[0].SharedHistorySince.IsZero() {
-							t.Error("expected SharedHistorySince to be set for history=none")
+						// history=none: HistorySharedSince must be set
+						if subs[0].HistorySharedSince.IsZero() {
+							t.Error("expected HistorySharedSince to be set for history=none")
 						}
 						// userID must be set
 						if subs[0].User.ID != "u-bob" {
@@ -173,7 +173,7 @@ func TestHandler_AddMembers(t *testing.T) {
 			},
 		},
 		{
-			name: "history=all: SharedHistorySince is zero",
+			name: "history=all: HistorySharedSince is zero",
 			subj: makeSubj("alice", "r1"),
 			payload: model.AddMembersRequest{
 				RoomID:  "r1",
@@ -185,8 +185,8 @@ func TestHandler_AddMembers(t *testing.T) {
 				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
-						if !subs[0].SharedHistorySince.IsZero() {
-							t.Error("expected SharedHistorySince to be zero for history=all")
+						if !subs[0].HistorySharedSince.IsZero() {
+							t.Error("expected HistorySharedSince to be zero for history=all")
 						}
 						return nil
 					})
@@ -803,7 +803,7 @@ func TestHandler_buildSubscriptions(t *testing.T) {
 			wantResolvedCount: 0,
 		},
 		{
-			name:      "history mode all: SharedHistorySince zero",
+			name:      "history mode all: HistorySharedSince zero",
 			usernames: []string{"alice"},
 			roomID:    "r1",
 			mode:      model.HistoryModeAll,
@@ -814,13 +814,13 @@ func TestHandler_buildSubscriptions(t *testing.T) {
 			wantResolvedCount: 1,
 			checkSubs: func(t *testing.T, subs []*model.Subscription, _ []string) {
 				t.Helper()
-				if !subs[0].SharedHistorySince.IsZero() {
-					t.Error("expected SharedHistorySince to be zero for history=all")
+				if !subs[0].HistorySharedSince.IsZero() {
+					t.Error("expected HistorySharedSince to be zero for history=all")
 				}
 			},
 		},
 		{
-			name:      "history mode none: SharedHistorySince set",
+			name:      "history mode none: HistorySharedSince set",
 			usernames: []string{"alice"},
 			roomID:    "r1",
 			mode:      model.HistoryModeNone,
@@ -831,8 +831,8 @@ func TestHandler_buildSubscriptions(t *testing.T) {
 			wantResolvedCount: 1,
 			checkSubs: func(t *testing.T, subs []*model.Subscription, _ []string) {
 				t.Helper()
-				if subs[0].SharedHistorySince.IsZero() {
-					t.Error("expected SharedHistorySince to be set for history=none")
+				if subs[0].HistorySharedSince.IsZero() {
+					t.Error("expected HistorySharedSince to be set for history=none")
 				}
 			},
 		},

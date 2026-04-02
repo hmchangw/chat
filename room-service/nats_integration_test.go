@@ -276,7 +276,7 @@ func TestNATS_RoomMember(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "u-alice", sub.User.ID)
 		assert.True(t, HasRole(sub.Roles, model.RoleMember))
-		assert.False(t, sub.SharedHistorySince.IsZero(), "SharedHistorySince should be set for mode=none")
+		assert.False(t, sub.HistorySharedSince.IsZero(), "HistorySharedSince should be set for mode=none")
 
 		sub2, err := store.GetSubscription(ctx, "bob", "am-iu-r1")
 		require.NoError(t, err)
@@ -303,7 +303,7 @@ func TestNATS_RoomMember(t *testing.T) {
 
 		sub, err := store.GetSubscription(ctx, "carol", "am-ha-r1")
 		require.NoError(t, err)
-		assert.True(t, sub.SharedHistorySince.IsZero(), "SharedHistorySince should be zero for mode=all")
+		assert.True(t, sub.HistorySharedSince.IsZero(), "HistorySharedSince should be zero for mode=all")
 	})
 
 	t.Run("AddMembers_WithOrg", func(t *testing.T) {

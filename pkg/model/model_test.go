@@ -68,7 +68,7 @@ func TestSubscriptionJSON(t *testing.T) {
 		User:   model.SubscriptionUser{ID: "u1", Username: "alice"},
 		RoomID: "r1", SiteID: "site-a",
 		Roles:              []model.Role{model.RoleOwner},
-		SharedHistorySince: hss,
+		HistorySharedSince: hss,
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		HasMention:         true,

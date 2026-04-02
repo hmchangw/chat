@@ -30,14 +30,14 @@ func (r *SubscriptionRepo) GetSubscription(ctx context.Context, username, roomID
 	return r.subscriptions.FindOne(ctx, bson.M{"u.username": username, "roomId": roomID})
 }
 
-// GetHistorySharedSince returns the SharedHistorySince timestamp for a subscription.
-// Returns (nil, true, nil) when subscribed but SharedHistorySince is zero (owner — full history access).
+// GetHistorySharedSince returns the HistorySharedSince timestamp for a subscription.
+// Returns (nil, true, nil) when subscribed but HistorySharedSince is zero (owner — full history access).
 // Returns (&t, true, nil) when subscribed with a restriction.
 // Returns (nil, false, nil) when not subscribed.
 func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, username, roomID string) (*time.Time, bool, error) {
 	sub, err := r.subscriptions.FindOne(ctx,
 		bson.M{"u.username": username, "roomId": roomID},
-		WithProjection(bson.M{"sharedHistorySince": 1, "_id": 0}),
+		WithProjection(bson.M{"historySharedSince": 1, "_id": 0}),
 	)
 	if err != nil {
 		return nil, false, err
@@ -45,8 +45,8 @@ func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, username, 
 	if sub == nil {
 		return nil, false, nil
 	}
-	if sub.SharedHistorySince.IsZero() {
+	if sub.HistorySharedSince.IsZero() {
 		return nil, true, nil
 	}
-	return &sub.SharedHistorySince, true, nil
+	return &sub.HistorySharedSince, true, nil
 }
