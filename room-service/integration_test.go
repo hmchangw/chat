@@ -6,37 +6,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-func setupMongo(t *testing.T) *mongo.Database {
-	t.Helper()
-	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:8")
-	if err != nil {
-		t.Fatalf("start mongo: %v", err)
-	}
-	t.Cleanup(func() { container.Terminate(ctx) })
-
-	uri, err := container.ConnectionString(ctx)
-	if err != nil {
-		t.Fatalf("get mongo uri: %v", err)
-	}
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
-	if err != nil {
-		t.Fatalf("connect mongo: %v", err)
-	}
-	t.Cleanup(func() { client.Disconnect(ctx) })
-	return client.Database("chat_test")
-}
-
 func TestMongoStore_Integration(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -84,7 +60,7 @@ func TestMongoStore_Integration(t *testing.T) {
 }
 
 func TestMongoStore_RoomMembers(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -127,7 +103,7 @@ func TestMongoStore_RoomMembers(t *testing.T) {
 }
 
 func TestMongoStore_BulkCreateSubscriptions(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -162,7 +138,7 @@ func TestMongoStore_BulkCreateSubscriptions(t *testing.T) {
 }
 
 func TestMongoStore_GetOrgData(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -193,7 +169,7 @@ func TestMongoStore_GetOrgData(t *testing.T) {
 }
 
 func TestMongoStore_GetUserID(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -220,7 +196,7 @@ func TestMongoStore_GetUserID(t *testing.T) {
 }
 
 func TestMongoStore_GetUserSite(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -247,7 +223,7 @@ func TestMongoStore_GetUserSite(t *testing.T) {
 }
 
 func TestMongoStore_CountSubscriptions(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -281,7 +257,7 @@ func TestMongoStore_CountSubscriptions(t *testing.T) {
 }
 
 func TestMongoStore_DeleteSubscription(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -308,7 +284,7 @@ func TestMongoStore_DeleteSubscription(t *testing.T) {
 }
 
 func TestMongoStore_DeleteRoomMember(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -342,7 +318,7 @@ func TestMongoStore_DeleteRoomMember(t *testing.T) {
 }
 
 func TestMongoStore_DeleteRoomMember_NoMatch(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -353,7 +329,7 @@ func TestMongoStore_DeleteRoomMember_NoMatch(t *testing.T) {
 }
 
 func TestMongoStore_DeleteOrgRoomMember(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -387,7 +363,7 @@ func TestMongoStore_DeleteOrgRoomMember(t *testing.T) {
 }
 
 func TestMongoStore_UpdateSubscriptionRole(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -418,7 +394,7 @@ func TestMongoStore_UpdateSubscriptionRole(t *testing.T) {
 }
 
 func TestMongoStore_CountOwners(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
@@ -449,7 +425,7 @@ func TestMongoStore_CountOwners(t *testing.T) {
 }
 
 func TestMongoStore_ListSubscriptionsByRoom(t *testing.T) {
-	db := setupMongo(t)
+	db := freshDB(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
