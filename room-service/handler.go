@@ -3,28 +3,85 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
+// notifTask is a unit of work for the background notification workers.
+type notifTask struct {
+	subs   []*model.Subscription
+	roomID string
+}
+
 type Handler struct {
 	store           RoomStore
 	siteID          string
+	currentDomain   string
 	maxRoomSize     int
-	publishToStream func(data []byte) error
+	publishToStream func(subj string, data []byte) error
+	publishLocal    func(subj string, data []byte) error
+	publishOutbox   func(subj string, data []byte) error
+
+	notifCh    chan notifTask
+	notifWg    sync.WaitGroup
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
 }
 
-func NewHandler(store RoomStore, siteID string, maxRoomSize int, publishToStream func([]byte) error) *Handler {
-	return &Handler{store: store, siteID: siteID, maxRoomSize: maxRoomSize, publishToStream: publishToStream}
+func NewHandler(
+	store RoomStore,
+	siteID string,
+	currentDomain string,
+	maxRoomSize int,
+	publishToStream func(string, []byte) error,
+	publishLocal func(string, []byte) error,
+	publishOutbox func(string, []byte) error,
+) *Handler {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Handler{
+		store:           store,
+		siteID:          siteID,
+		currentDomain:   currentDomain,
+		maxRoomSize:     maxRoomSize,
+		publishToStream: publishToStream,
+		publishLocal:    publishLocal,
+		publishOutbox:   publishOutbox,
+		notifCh:         make(chan notifTask, 64),
+		stopCtx:         ctx,
+		stopCancel:      cancel,
+	}
+}
+
+// StartNotificationWorkers launches n goroutines that drain notifCh.
+func (h *Handler) StartNotificationWorkers(n int) {
+	for i := 0; i < n; i++ {
+		h.notifWg.Add(1)
+		go func() {
+			defer h.notifWg.Done()
+			for task := range h.notifCh {
+				h.dispatchMemberEvents(h.stopCtx, task.subs, task.roomID)
+			}
+		}()
+	}
+}
+
+// StopNotificationWorkers signals workers to stop and waits for drain.
+func (h *Handler) StopNotificationWorkers() {
+	h.stopCancel()
+	close(h.notifCh)
+	h.notifWg.Wait()
 }
 
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
@@ -37,6 +94,15 @@ func (h *Handler) RegisterCRUD(nc *nats.Conn) error {
 		return err
 	}
 	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
+		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.MemberAddWildcard(h.siteID), queue, h.natsAddMembers); err != nil {
+		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.MemberRemoveWildcard(h.siteID), queue, h.natsRemoveMember); err != nil {
+		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.MemberRoleUpdateWildcard(h.siteID), queue, h.natsUpdateRole); err != nil {
 		return err
 	}
 	return nil
@@ -85,6 +151,18 @@ func (h *Handler) NatsHandleInvite(msg *nats.Msg) {
 	}
 }
 
+func (h *Handler) natsAddMembers(msg *nats.Msg) {
+	resp, err := h.handleAddMembers(context.Background(), msg.Subject, msg.Data)
+	if err != nil {
+		slog.Error("add members failed", "error", err)
+		natsutil.ReplyError(msg, sanitizeError(err))
+		return
+	}
+	if err := msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to add-members message", "error", err)
+	}
+}
+
 func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, error) {
 	var req model.CreateRoomRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -113,8 +191,8 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		User:               model.SubscriptionUser{ID: req.CreatedBy, Username: req.CreatedByUsername},
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
-		Role:               model.RoleOwner,
-		HistorySharedSince: &now,
+		Roles:              []model.Role{model.RoleOwner},
+		HistorySharedSince: now,
 		JoinedAt:           now,
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
@@ -136,16 +214,16 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 	if err != nil {
 		return nil, fmt.Errorf("inviter not found: %w", err)
 	}
-	if sub.Role != model.RoleOwner {
+	if !HasRole(sub.Roles, model.RoleOwner) {
 		return nil, fmt.Errorf("only owners can invite members")
 	}
 
-	// Check room size
-	room, err := h.store.GetRoom(ctx, roomID)
+	// Check room size via live subscription count (bots excluded)
+	count, err := h.store.CountSubscriptions(ctx, roomID)
 	if err != nil {
-		return nil, fmt.Errorf("room not found: %w", err)
+		return nil, fmt.Errorf("count subscriptions: %w", err)
 	}
-	if room.UserCount >= h.maxRoomSize {
+	if count >= h.maxRoomSize {
 		return nil, fmt.Errorf("room is at maximum capacity (%d)", h.maxRoomSize)
 	}
 
@@ -155,10 +233,423 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// Room-ID drift check: payload roomID must match subject roomID
+	if req.RoomID != roomID {
+		return nil, fmt.Errorf("invalid request: room ID mismatch (subject=%s, body=%s)", roomID, req.RoomID)
+	}
+
 	// Publish to ROOMS stream for room-worker processing
-	if err := h.publishToStream(data); err != nil {
+	if err := h.publishToStream(subj, data); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
 	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+func (h *Handler) natsRemoveMember(msg *nats.Msg) {
+	resp, err := h.handleRemoveMember(context.Background(), msg.Subject, msg.Data)
+	if err != nil {
+		slog.Error("remove member failed", "error", err)
+		natsutil.ReplyError(msg, sanitizeError(err))
+		return
+	}
+	if err := msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to remove-member message", "error", err)
+	}
+}
+
+func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	requester, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid subject: %s", subj)
+	}
+
+	var req model.RemoveMemberRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	isOrgRemoval := req.OrgID != ""
+	hasUsername := req.Username != ""
+
+	// Ambiguous request validation: must specify exactly one of orgId or username
+	if isOrgRemoval && hasUsername {
+		return nil, fmt.Errorf("ambiguous request: specify either orgId or username, not both")
+	}
+	if !isOrgRemoval && !hasUsername {
+		return nil, fmt.Errorf("invalid request: one of orgId or username is required")
+	}
+
+	isSelfLeave := !isOrgRemoval && req.Username == requester
+
+	// Authorization: self-leave needs no check; org removal and remove-other require owner
+	if !isSelfLeave {
+		sub, err := h.store.GetSubscription(ctx, requester, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("requester not found: %w", err)
+		}
+		if !HasRole(sub.Roles, model.RoleOwner) {
+			return nil, fmt.Errorf("only owners can remove other members")
+		}
+	}
+
+	// Last-owner self-leave guard
+	if isSelfLeave {
+		sub, err := h.store.GetSubscription(ctx, requester, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("requester not found: %w", err)
+		}
+		if HasRole(sub.Roles, model.RoleOwner) {
+			count, err := h.store.CountOwners(ctx, roomID)
+			if err != nil {
+				return nil, fmt.Errorf("count owners: %w", err)
+			}
+			if count <= 1 {
+				return nil, fmt.Errorf("last owner cannot leave the room")
+			}
+		}
+	}
+
+	if isOrgRemoval {
+		name, locationURL, err := h.store.GetOrgData(ctx, req.OrgID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve org %q: %w", req.OrgID, err)
+		}
+		var orgUsername string
+		if extractDomain(locationURL) == extractDomain(h.currentDomain) {
+			orgUsername = name
+		} else {
+			orgUsername = name + "@" + extractDomain(locationURL)
+		}
+		if err := h.store.DeleteSubscription(ctx, orgUsername, roomID); err != nil {
+			return nil, fmt.Errorf("delete org subscription: %w", err)
+		}
+		if err := h.store.DeleteOrgRoomMember(ctx, req.OrgID, roomID); err != nil {
+			return nil, fmt.Errorf("delete org room member: %w", err)
+		}
+		// Clean up derived individual room_member row for the org username
+		if err := h.store.DeleteRoomMember(ctx, orgUsername, roomID); err != nil {
+			return nil, fmt.Errorf("delete org individual room member: %w", err)
+		}
+	} else {
+		if err := h.store.DeleteSubscription(ctx, req.Username, roomID); err != nil {
+			return nil, fmt.Errorf("delete subscription: %w", err)
+		}
+		if err := h.store.DeleteRoomMember(ctx, req.Username, roomID); err != nil {
+			return nil, fmt.Errorf("delete room member: %w", err)
+		}
+	}
+
+	// Decrement room user count after successful removal
+	if err := h.store.DecrementUserCount(ctx, roomID); err != nil {
+		slog.Warn("decrement user count failed", "error", err, "roomID", roomID)
+	}
+
+	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+func (h *Handler) natsUpdateRole(msg *nats.Msg) {
+	resp, err := h.handleUpdateRole(context.Background(), msg.Subject, msg.Data)
+	if err != nil {
+		slog.Error("update role failed", "error", err)
+		natsutil.ReplyError(msg, sanitizeError(err))
+		return
+	}
+	if err := msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to update-role message", "error", err)
+	}
+}
+
+func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	requester, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid subject: %s", subj)
+	}
+
+	var req model.UpdateRoleRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Authorization: only owners can change roles
+	sub, err := h.store.GetSubscription(ctx, requester, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("requester not found: %w", err)
+	}
+	if !HasRole(sub.Roles, model.RoleOwner) {
+		return nil, fmt.Errorf("only owners can change roles")
+	}
+
+	// Validate role
+	if req.NewRole != model.RoleOwner && req.NewRole != model.RoleMember {
+		return nil, fmt.Errorf("invalid role: %q", req.NewRole)
+	}
+
+	// Guard: federation users cannot be promoted to owner
+	if req.NewRole == model.RoleOwner && strings.Contains(req.Username, "@") {
+		return nil, fmt.Errorf("federation users cannot be promoted to owner")
+	}
+
+	// Guard: last owner cannot demote themselves
+	if req.NewRole == model.RoleMember && req.Username == requester {
+		count, err := h.store.CountOwners(ctx, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("count owners: %w", err)
+		}
+		if count <= 1 {
+			return nil, fmt.Errorf("cannot demote the last owner")
+		}
+	}
+
+	if err := h.store.UpdateSubscriptionRole(ctx, req.Username, roomID, req.NewRole); err != nil {
+		return nil, fmt.Errorf("update role: %w", err)
+	}
+
+	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	// 1. Extract roomID from subject
+	_, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid subject: %s", subj)
+	}
+
+	// 2. Unmarshal request
+	var req model.AddMembersRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// 3. Expand channels → channel-sourced org IDs and usernames
+	channelOrgIDs, channelUsernames, err := h.expandChannels(ctx, req.Channels)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. Merge and deduplicate org IDs
+	orgIDs := dedup(append(req.Orgs, channelOrgIDs...))
+
+	// 5. Resolve orgs → org-derived usernames
+	orgUsernames, err := h.resolveOrgs(ctx, orgIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// 6. Merge, deduplicate, and filter bots from all usernames
+	usernames := filterBots(dedup(append(append(req.Users, channelUsernames...), orgUsernames...)))
+
+	// 7. Build subscriptions (skips users whose IDs cannot be resolved)
+	now := time.Now().UTC()
+	subs, resolvedUsernames, err := h.buildSubscriptions(ctx, usernames, roomID, req.History.Mode, now)
+	if err != nil {
+		return nil, err
+	}
+
+	// 8. Capacity check (after buildSubscriptions to use actual resolved count)
+	existingCount, err := h.store.CountSubscriptions(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("count subscriptions: %w", err)
+	}
+	if existingCount+len(subs) > h.maxRoomSize {
+		return nil, fmt.Errorf("room is at maximum capacity (%d)", h.maxRoomSize)
+	}
+
+	// 9. Persist subscriptions
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return nil, fmt.Errorf("create subscriptions: %w", err)
+	}
+
+	// 10. Write room_members documents conditionally
+	if err := h.writeRoomMembers(ctx, roomID, orgIDs, resolvedUsernames, now); err != nil {
+		// Compensating rollback: remove subscriptions that were just created
+		if rbErr := h.store.BulkDeleteSubscriptions(ctx, subs); rbErr != nil {
+			slog.Error("rollback subscriptions failed", "error", rbErr)
+		}
+		return nil, err
+	}
+
+	// 11. Dispatch per-user notifications via worker pool
+	select {
+	case h.notifCh <- notifTask{subs: subs, roomID: roomID}:
+	case <-h.stopCtx.Done():
+		slog.Warn("notification dispatch skipped, shutting down", "roomID", roomID)
+	}
+
+	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+// expandChannels resolves channel room IDs into org IDs and individual usernames.
+// It always merges both room_members and subscriptions for each channel.
+func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgIDs, usernames []string, err error) {
+	for _, channelID := range channelIDs {
+		channelMembers, err := h.store.GetRoomMembers(ctx, channelID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("get room members for channel %q: %w", channelID, err)
+		}
+		for _, m := range channelMembers {
+			switch m.Member.Type {
+			case model.RoomMemberTypeOrg:
+				orgIDs = append(orgIDs, m.Member.ID)
+			case model.RoomMemberTypeIndividual:
+				usernames = append(usernames, m.Member.Username)
+			}
+		}
+
+		subs, err := h.store.ListSubscriptionsByRoom(ctx, channelID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("list subscriptions for channel %q: %w", channelID, err)
+		}
+		for i := range subs {
+			usernames = append(usernames, subs[i].User.Username)
+		}
+	}
+	return orgIDs, usernames, nil
+}
+
+// resolveOrgs converts org IDs into usernames by looking up org data.
+// Local orgs (matching currentDomain) produce a plain username; remote orgs produce name@domain.
+func (h *Handler) resolveOrgs(ctx context.Context, orgIDs []string) ([]string, error) {
+	usernames := make([]string, 0, len(orgIDs))
+	for _, orgID := range orgIDs {
+		name, locationURL, err := h.store.GetOrgData(ctx, orgID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve org %q: %w", orgID, err)
+		}
+		var username string
+		if extractDomain(locationURL) == extractDomain(h.currentDomain) {
+			username = name
+		} else {
+			username = name + "@" + extractDomain(locationURL)
+		}
+		usernames = append(usernames, username)
+	}
+	return usernames, nil
+}
+
+// buildSubscriptions creates Subscription structs for the given usernames.
+// Users whose IDs cannot be resolved via mongo.ErrNoDocuments are logged and skipped.
+// Any other error is returned immediately.
+// Returns the built subscriptions, the corresponding slice of resolved usernames, and an error.
+func (h *Handler) buildSubscriptions(ctx context.Context, usernames []string, roomID string, mode model.HistoryMode, now time.Time) ([]*model.Subscription, []string, error) {
+	var subs []*model.Subscription
+	var resolvedUsernames []string
+	for _, username := range usernames {
+		userID, err := h.store.GetUserID(ctx, username)
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				slog.Warn("skipping user, id not found", "username", username)
+				continue
+			}
+			return nil, nil, fmt.Errorf("get user id for %q: %w", username, err)
+		}
+
+		siteID, err := h.store.GetUserSite(ctx, username)
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				slog.Warn("skipping user, site not found", "username", username)
+				continue
+			}
+			return nil, nil, fmt.Errorf("get user site for %q: %w", username, err)
+		}
+
+		sub := &model.Subscription{
+			ID:       uuid.New().String(),
+			User:     model.SubscriptionUser{ID: userID, Username: username},
+			RoomID:   roomID,
+			SiteID:   siteID,
+			Roles:    []model.Role{model.RoleMember},
+			JoinedAt: now,
+		}
+		if mode != model.HistoryModeAll {
+			sub.HistorySharedSince = now
+		}
+		subs = append(subs, sub)
+		resolvedUsernames = append(resolvedUsernames, username)
+	}
+	return subs, resolvedUsernames, nil
+}
+
+// writeRoomMembers conditionally writes org and individual room_members documents.
+// Org docs are written when orgIDs is non-empty; individual docs are written when
+// orgIDs is non-empty or the room already has existing members.
+func (h *Handler) writeRoomMembers(ctx context.Context, roomID string, orgIDs, resolvedUsernames []string, now time.Time) error {
+	existingMembers, err := h.store.GetRoomMembers(ctx, roomID)
+	if err != nil {
+		return fmt.Errorf("get room members: %w", err)
+	}
+	hasOrgs := len(orgIDs) > 0
+	hasExistingMembers := len(existingMembers) > 0
+
+	if hasOrgs {
+		for _, orgID := range orgIDs {
+			orgMember := &model.RoomMember{
+				ID:     uuid.New().String(),
+				RoomID: roomID,
+				Ts:     now,
+				Member: model.RoomMemberEntry{ID: orgID, Type: model.RoomMemberTypeOrg},
+			}
+			if err := h.store.CreateRoomMember(ctx, orgMember); err != nil {
+				return fmt.Errorf("create org room member %q: %w", orgID, err)
+			}
+		}
+	}
+	if hasOrgs || hasExistingMembers {
+		for _, username := range resolvedUsernames {
+			indMember := &model.RoomMember{
+				ID:     uuid.New().String(),
+				RoomID: roomID,
+				Ts:     now,
+				Member: model.RoomMemberEntry{Type: model.RoomMemberTypeIndividual, Username: username},
+			}
+			if err := h.store.CreateRoomMember(ctx, indMember); err != nil {
+				return fmt.Errorf("create individual room member %q: %w", username, err)
+			}
+		}
+	}
+	return nil
+}
+
+// dispatchMemberEvents sends a notification to each added user.
+// Users on the same site receive a direct NATS publish; remote users receive an OUTBOX event.
+func (h *Handler) dispatchMemberEvents(ctx context.Context, subs []*model.Subscription, roomID string) {
+	for _, sub := range subs {
+		if ctx.Err() != nil {
+			return
+		}
+
+		payload, err := json.Marshal(model.InviteMemberRequest{
+			InviteeID:       sub.User.ID,
+			InviteeUsername: sub.User.Username,
+			RoomID:          roomID,
+			SiteID:          sub.SiteID,
+		})
+		if err != nil {
+			slog.Error("marshal notification payload failed", "username", sub.User.Username, "error", err)
+			continue
+		}
+
+		if sub.SiteID == h.siteID {
+			notifSubj := subject.Notification(sub.User.Username)
+			if err := h.publishLocal(notifSubj, payload); err != nil {
+				slog.Error("publish local notification failed", "username", sub.User.Username, "error", err)
+			}
+		} else {
+			event := model.OutboxEvent{
+				Type:       "member_added",
+				SiteID:     h.siteID,
+				DestSiteID: sub.SiteID,
+				Payload:    payload,
+			}
+			eventData, err := json.Marshal(event)
+			if err != nil {
+				slog.Error("marshal outbox event failed", "username", sub.User.Username, "error", err)
+				continue
+			}
+			outboxSubj := subject.Outbox(h.siteID, sub.SiteID, "member_added")
+			if err := h.publishOutbox(outboxSubj, eventData); err != nil {
+				slog.Error("publish outbox event failed", "username", sub.User.Username, "error", err)
+			}
+		}
+	}
 }

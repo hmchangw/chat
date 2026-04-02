@@ -43,7 +43,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r1", Name: "general", UserCount: 1})
 
 	// Test CreateSubscription
-	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
 	if err := store.CreateSubscription(ctx, &sub); err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}

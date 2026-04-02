@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -35,7 +36,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 	var req model.InviteMemberRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return err
+		return fmt.Errorf("unmarshal invite request: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -46,12 +47,12 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 		User:               model.SubscriptionUser{ID: req.InviteeID, Username: req.InviteeUsername},
 		RoomID:             req.RoomID,
 		SiteID:             req.SiteID,
-		Role:               model.RoleMember,
-		HistorySharedSince: &now,
+		Roles:              []model.Role{model.RoleMember},
+		HistorySharedSince: now,
 		JoinedAt:           now,
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
-		return err
+		return fmt.Errorf("create subscription: %w", err)
 	}
 
 	// Increment room user count

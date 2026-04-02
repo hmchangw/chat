@@ -31,7 +31,7 @@ func (r *SubscriptionRepo) GetSubscription(ctx context.Context, username, roomID
 }
 
 // GetHistorySharedSince returns the HistorySharedSince timestamp for a subscription.
-// Returns (nil, true, nil) when subscribed but no HSS is set (owner — full history access).
+// Returns (nil, true, nil) when subscribed but HistorySharedSince is zero (owner — full history access).
 // Returns (&t, true, nil) when subscribed with a restriction.
 // Returns (nil, false, nil) when not subscribed.
 func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, username, roomID string) (*time.Time, bool, error) {
@@ -45,5 +45,8 @@ func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, username, 
 	if sub == nil {
 		return nil, false, nil
 	}
-	return sub.HistorySharedSince, true, nil
+	if sub.HistorySharedSince.IsZero() {
+		return nil, true, nil
+	}
+	return &sub.HistorySharedSince, true, nil
 }

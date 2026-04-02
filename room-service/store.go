@@ -14,4 +14,19 @@ type RoomStore interface {
 	ListRooms(ctx context.Context) ([]model.Room, error)
 	GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error)
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+	GetRoomMembers(ctx context.Context, roomID string) ([]model.RoomMember, error)
+	CreateRoomMember(ctx context.Context, member *model.RoomMember) error
+	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
+	GetOrgData(ctx context.Context, orgID string) (name, locationURL string, err error)
+	GetUserID(ctx context.Context, username string) (string, error)
+	GetUserSite(ctx context.Context, username string) (string, error)
+	CountSubscriptions(ctx context.Context, roomID string) (int, error)
+	ListSubscriptionsByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
+	DeleteSubscription(ctx context.Context, username, roomID string) error
+	DeleteRoomMember(ctx context.Context, username, roomID string) error
+	DeleteOrgRoomMember(ctx context.Context, orgID, roomID string) error
+	UpdateSubscriptionRole(ctx context.Context, username, roomID string, role model.Role) error
+	CountOwners(ctx context.Context, roomID string) (int, error)
+	BulkDeleteSubscriptions(ctx context.Context, subs []*model.Subscription) error
+	DecrementUserCount(ctx context.Context, roomID string) error
 }

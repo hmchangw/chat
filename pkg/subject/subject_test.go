@@ -46,6 +46,10 @@ func TestSubjectBuilders(t *testing.T) {
 		{"UserRoomEvent", subject.UserRoomEvent("alice"), "chat.user.alice.event.room"},
 		{"RoomKeyUpdate", subject.RoomKeyUpdate("alice"),
 			"chat.user.alice.event.room.key"},
+		{"MemberAdd", subject.MemberAdd("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.member.add"},
+		{"MsgHistory", subject.MsgHistory("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.msg.history"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -53,6 +57,38 @@ func TestSubjectBuilders(t *testing.T) {
 				t.Errorf("got %q, want %q", tt.got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMemberRemove(t *testing.T) {
+	got := subject.MemberRemove("alice", "r1", "site-a")
+	want := "chat.user.alice.request.room.r1.site-a.member.remove"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMemberRemoveWildcard(t *testing.T) {
+	got := subject.MemberRemoveWildcard("site-a")
+	want := "chat.user.*.request.room.*.site-a.member.remove"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMemberRoleUpdate(t *testing.T) {
+	got := subject.MemberRoleUpdate("alice", "r1", "site-a")
+	want := "chat.user.alice.request.room.r1.site-a.member.role-update"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMemberRoleUpdateWildcard(t *testing.T) {
+	got := subject.MemberRoleUpdateWildcard("site-a")
+	want := "chat.user.*.request.room.*.site-a.member.role-update"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -65,6 +101,7 @@ func TestParseUserRoomSubject(t *testing.T) {
 		wantOK       bool
 	}{
 		{"invite", "chat.user.alice.request.room.r1.site-a.member.invite", "alice", "r1", true},
+		{"member_add", "chat.user.alice.request.room.r1.site-a.member.add", "alice", "r1", true},
 		{"history", "chat.user.alice.request.room.r1.site-a.msg.history", "alice", "r1", true},
 		{"msg_send", "chat.user.alice.room.r1.site-a.msg.send", "alice", "r1", true},
 		{"too_short", "chat.user.alice", "", "", false},
@@ -119,7 +156,7 @@ func TestWildcardPatterns(t *testing.T) {
 		{"MsgSendWild", subject.MsgSendWildcard("site-a"),
 			"chat.user.*.room.*.site-a.msg.send"},
 		{"MemberInviteWild", subject.MemberInviteWildcard("site-a"),
-			"chat.user.*.request.room.*.site-a.member.>"},
+			"chat.user.*.request.room.*.site-a.member.invite"},
 		{"MsgHistoryWild", subject.MsgHistoryWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.msg.history"},
 		{"MsgCanonicalWild", subject.MsgCanonicalWildcard("site-a"),
@@ -132,6 +169,8 @@ func TestWildcardPatterns(t *testing.T) {
 			"chat.user.*.request.rooms.list"},
 		{"RoomsGetWild", subject.RoomsGetWildcard(),
 			"chat.user.*.request.rooms.get.*"},
+		{"MemberAddWild", subject.MemberAddWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.member.add"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -134,8 +134,8 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	if sub.SiteID != "site-b" {
 		t.Errorf("subscription SiteID = %q, want %q", sub.SiteID, "site-b")
 	}
-	if sub.Role != model.RoleMember {
-		t.Errorf("subscription Role = %q, want %q", sub.Role, model.RoleMember)
+	if len(sub.Roles) != 1 || sub.Roles[0] != model.RoleMember {
+		t.Errorf("subscription Roles = %v, want [member]", sub.Roles)
 	}
 	if sub.ID == "" {
 		t.Error("subscription ID should be non-empty (generated UUID)")
@@ -205,7 +205,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	if sub.JoinedAt.Before(before) || sub.JoinedAt.After(after) {
 		t.Errorf("JoinedAt = %v, want between %v and %v", sub.JoinedAt, before, after)
 	}
-	if sub.HistorySharedSince == nil || sub.HistorySharedSince.Before(before) || sub.HistorySharedSince.After(after) {
+	if sub.HistorySharedSince.IsZero() || sub.HistorySharedSince.Before(before) || sub.HistorySharedSince.After(after) {
 		t.Errorf("HistorySharedSince = %v, want between %v and %v", sub.HistorySharedSince, before, after)
 	}
 }
