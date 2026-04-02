@@ -28,7 +28,7 @@ type RoomKeyEvent struct {
 }
 ```
 
-`[]byte` fields automatically base64-encode when marshaled to JSON, consistent with the existing `roomcrypto.EncryptedMessage` pattern. No `bson` tags since this type is never stored in MongoDB.
+`[]byte` fields automatically base64-encode when marshaled to JSON, consistent with the existing `roomcrypto.EncryptedMessage` pattern. No `bson` tags since this type is only transmitted over NATS, not persisted to a database.
 
 ## NATS Subject
 
@@ -113,5 +113,5 @@ This library will be consumed by:
 | No retry logic | Caller owns retry strategy; keeps library simple |
 | No recipient lookup | Single-responsibility; caller determines who receives keys |
 | `[]byte` for keys (not base64 string) | Matches `roomkeystore.RoomKeyPair`; JSON encoding handles base64 automatically |
-| No `bson` tags on `RoomKeyEvent` | Event is transmitted over NATS, never persisted to MongoDB |
+| No `bson` tags on `RoomKeyEvent` | Event is transmitted over NATS, not persisted to a database |
 | Subject uses `username` not `userID` | Consistent with system-wide migration to username-based subjects |

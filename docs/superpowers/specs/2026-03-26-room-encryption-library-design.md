@@ -7,7 +7,7 @@
 
 ## Overview
 
-A shared Go library at `pkg/roomcrypto/` that encrypts room messages on the server side. The server encodes; clients (JavaScript, Swift) decode. Encryption is asymmetric: each room has a P-256 key pair stored in MongoDB. This spec covers only the `Encode` function — the initial scope.
+A shared Go library at `pkg/roomcrypto/` that encrypts room messages on the server side. The server encodes; clients (JavaScript, Swift) decode. Encryption is asymmetric: each room has a P-256 key pair stored in Valkey. This spec covers only the `Encode` function — the initial scope.
 
 ---
 
@@ -36,8 +36,8 @@ package roomcrypto
 // EncryptedMessage holds the output of Encode.
 // []byte fields marshal to base64 in JSON automatically.
 //
-// Note: this struct intentionally deviates from the project convention of including bson tags.
-// It is a serialisation-only type sent to clients over JSON; it is never written to MongoDB.
+// Note: this struct uses only json tags (no bson tags) because it is a
+// serialisation-only type sent to clients over JSON, not persisted to a database.
 type EncryptedMessage struct {
     EphemeralPublicKey []byte `json:"ephemeralPublicKey"` // 65 bytes, uncompressed P-256 point
     Nonce              []byte `json:"nonce"`              // 12 bytes, AES-GCM nonce
@@ -45,11 +45,11 @@ type EncryptedMessage struct {
 }
 
 // Encode encrypts content using the room's P-256 public key.
-// roomPublicKey is the uncompressed point (65 bytes) as stored in MongoDB.
+// roomPublicKey is the uncompressed point (65 bytes).
 func Encode(content string, roomPublicKey []byte) (*EncryptedMessage, error)
 ```
 
-`[]byte` fields on `EncryptedMessage` marshal to base64 strings in JSON automatically, which JavaScript and Swift can consume without transformation. `EncryptedMessage` is a crypto result type — it is serialised and sent to clients, not stored in MongoDB, so `bson` tags are not required.
+`[]byte` fields on `EncryptedMessage` marshal to base64 strings in JSON automatically, which JavaScript and Swift can consume without transformation. `EncryptedMessage` is a crypto result type — it is serialised and sent to clients, not persisted to a database, so `bson` tags are not required.
 
 ---
 

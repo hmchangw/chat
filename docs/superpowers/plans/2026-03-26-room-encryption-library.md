@@ -212,8 +212,8 @@ import (
 // EncryptedMessage holds the output of Encode.
 // []byte fields marshal to base64 in JSON automatically.
 //
-// Note: this struct intentionally deviates from the project convention of including bson tags.
-// It is a serialisation-only type sent to clients over JSON; it is never written to MongoDB.
+// Note: this struct uses only json tags (no bson tags) because it is a
+// serialisation-only type sent to clients over JSON, not persisted to a database.
 type EncryptedMessage struct {
 	EphemeralPublicKey []byte `json:"ephemeralPublicKey"` // 65 bytes, uncompressed P-256 point
 	Nonce              []byte `json:"nonce"`              // 12 bytes, AES-GCM nonce
@@ -221,7 +221,7 @@ type EncryptedMessage struct {
 }
 
 // Encode encrypts content using the room's P-256 public key.
-// roomPublicKey is the uncompressed point (65 bytes) as stored in MongoDB.
+// roomPublicKey is the uncompressed point (65 bytes).
 func Encode(content string, roomPublicKey []byte) (*EncryptedMessage, error) {
 	// Step 1: parse and validate the room public key
 	roomPubKey, err := ecdh.P256().NewPublicKey(roomPublicKey)
