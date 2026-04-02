@@ -90,8 +90,8 @@ func main() {
 	slog.Info("room-service running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
-		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }

@@ -132,8 +132,8 @@ func main() {
 			cctx.Stop()
 			return nil
 		},
-		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }
