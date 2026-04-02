@@ -115,7 +115,7 @@ async function main(): Promise<void> {
   const keySubject = `chat.user.${username}.event.room.key`;
   const msgSubject = `test.room.${roomID}.msg`;
 
-  // Store received keys indexed by versionId.
+  // Store received keys indexed by version number.
   const keys = new Map<number, { publicKey: string; privateKey: string }>();
 
   const nc: NatsConnection = await connect({ servers: natsURL });

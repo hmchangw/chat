@@ -38,7 +38,7 @@ if #cur == 0 then
     return redis.error_reply('no current key')
 end
 
-local curVer = tonumber(redis.call('HGET', currentKey, 'ver'))
+local curVer = tonumber(redis.call('HGET', currentKey, 'ver')) or 0
 local newVer = curVer + 1
 
 redis.call('DEL', prevKey)
