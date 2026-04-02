@@ -17,12 +17,12 @@ import (
 )
 
 type config struct {
-	NatsURL       string `env:"NATS_URL"       envDefault:"nats://localhost:4222"`
-	SiteID        string `env:"SITE_ID"        envDefault:"site-local"`
-	MongoURI      string `env:"MONGO_URI"      envDefault:"mongodb://localhost:27017"`
-	MongoDB       string `env:"MONGO_DB"       envDefault:"chat"`
-	MaxRoomSize   int    `env:"MAX_ROOM_SIZE"  envDefault:"1000"`
-	CurrentDomain string `env:"CURRENT_DOMAIN"      envRequired:"true"`
+	NatsURL       string `env:"NATS_URL"        envRequired:"true"`
+	SiteID        string `env:"SITE_ID"         envDefault:"site-local"`
+	MongoURI      string `env:"MONGO_URI"       envRequired:"true"`
+	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
+	MaxRoomSize   int    `env:"MAX_ROOM_SIZE"   envDefault:"1000"`
+	CurrentDomain string `env:"CURRENT_DOMAIN"  envRequired:"true"`
 }
 
 func main() {
@@ -54,23 +54,44 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
-	streamCfg := stream.Rooms(cfg.SiteID)
+	// Create ROOMS stream for invite processing
+	roomsStreamCfg := stream.Rooms(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: streamCfg.Name, Subjects: streamCfg.Subjects,
+		Name: roomsStreamCfg.Name, Subjects: roomsStreamCfg.Subjects,
 	}); err != nil {
-		slog.Error("create stream failed", "error", err)
+		slog.Error("create rooms stream failed", "error", err)
+		os.Exit(1)
+	}
+
+	// Create OUTBOX stream for cross-site federation events
+	outboxStreamCfg := stream.Outbox(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: outboxStreamCfg.Name, Subjects: outboxStreamCfg.Subjects,
+	}); err != nil {
+		slog.Error("create outbox stream failed", "error", err)
 		os.Exit(1)
 	}
 
 	store := NewMongoStore(db)
+
+	if err := store.EnsureIndexes(ctx); err != nil {
+		slog.Error("ensure indexes failed", "error", err)
+		os.Exit(1)
+	}
+
 	handler := NewHandler(store, cfg.SiteID, cfg.CurrentDomain, cfg.MaxRoomSize,
+		// publishToStream: publish to ROOMS JetStream stream for room-worker processing
 		func(subj string, data []byte) error {
 			_, err := js.Publish(ctx, subj, data)
 			return err
 		},
+		// publishLocal: publish directly to NATS for local user notifications
 		func(subj string, data []byte) error { return nc.Publish(subj, data) },
+		// publishOutbox: publish to OUTBOX JetStream stream for cross-site federation
 		func(subj string, data []byte) error { _, err := js.Publish(ctx, subj, data); return err },
 	)
+
+	handler.StartNotificationWorkers(10)
 
 	if err := handler.RegisterCRUD(nc); err != nil {
 		slog.Error("register CRUD handlers failed", "error", err)
@@ -86,6 +107,7 @@ func main() {
 	slog.Info("room-service running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
+		func(ctx context.Context) error { handler.StopNotificationWorkers(); return nil },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)

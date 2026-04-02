@@ -27,4 +27,6 @@ type RoomStore interface {
 	DeleteOrgRoomMember(ctx context.Context, orgID, roomID string) error
 	UpdateSubscriptionRole(ctx context.Context, username, roomID string, role model.Role) error
 	CountOwners(ctx context.Context, roomID string) (int, error)
+	BulkDeleteSubscriptions(ctx context.Context, subs []*model.Subscription) error
+	DecrementUserCount(ctx context.Context, roomID string) error
 }

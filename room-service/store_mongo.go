@@ -6,6 +6,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -28,6 +29,25 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		users:         db.Collection("users"),
 		orgs:          db.Collection("orgs"),
 	}
+}
+
+// EnsureIndexes creates unique indexes on subscriptions and room_members.
+func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
+	_, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "u.username", Value: 1}, {Key: "roomId", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		return fmt.Errorf("create subscriptions index: %w", err)
+	}
+	_, err = s.roomMembers.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "member.username", Value: 1}, {Key: "rid", Value: 1}},
+		Options: options.Index().SetUnique(true).SetPartialFilterExpression(bson.M{"member.username": bson.M{"$exists": true}}),
+	})
+	if err != nil {
+		return fmt.Errorf("create room_members index: %w", err)
+	}
+	return nil
 }
 
 func (s *MongoStore) CreateRoom(ctx context.Context, room *model.Room) error {
@@ -83,7 +103,13 @@ func (s *MongoStore) GetRoomMembers(ctx context.Context, roomID string) ([]model
 
 func (s *MongoStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
 	_, err := s.roomMembers.InsertOne(ctx, member)
-	return err
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil // idempotent: already exists
+		}
+		return fmt.Errorf("insert room member: %w", err)
+	}
+	return nil
 }
 
 func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
@@ -95,7 +121,13 @@ func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.
 		docs[i] = sub
 	}
 	_, err := s.subscriptions.InsertMany(ctx, docs)
-	return err
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil // idempotent: duplicates ignored
+		}
+		return fmt.Errorf("bulk insert subscriptions: %w", err)
+	}
+	return nil
 }
 
 func (s *MongoStore) GetOrgData(ctx context.Context, orgID string) (name, locationURL string, err error) {
@@ -201,4 +233,29 @@ func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error
 		return 0, fmt.Errorf("count owners for room %q: %w", roomID, err)
 	}
 	return int(count), nil
+}
+
+func (s *MongoStore) BulkDeleteSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+	if len(subs) == 0 {
+		return nil
+	}
+	ids := make([]string, len(subs))
+	for i, sub := range subs {
+		ids[i] = sub.ID
+	}
+	_, err := s.subscriptions.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return fmt.Errorf("bulk delete subscriptions: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoStore) DecrementUserCount(ctx context.Context, roomID string) error {
+	filter := bson.M{"_id": roomID}
+	update := bson.M{"$inc": bson.M{"userCount": -1}}
+	_, err := s.rooms.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("decrement user count for room %q: %w", roomID, err)
+	}
+	return nil
 }

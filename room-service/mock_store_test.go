@@ -55,6 +55,20 @@ func (mr *MockRoomStoreMockRecorder) BulkCreateSubscriptions(ctx, subs any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkCreateSubscriptions", reflect.TypeOf((*MockRoomStore)(nil).BulkCreateSubscriptions), ctx, subs)
 }
 
+// BulkDeleteSubscriptions mocks base method.
+func (m *MockRoomStore) BulkDeleteSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BulkDeleteSubscriptions", ctx, subs)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// BulkDeleteSubscriptions indicates an expected call of BulkDeleteSubscriptions.
+func (mr *MockRoomStoreMockRecorder) BulkDeleteSubscriptions(ctx, subs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkDeleteSubscriptions", reflect.TypeOf((*MockRoomStore)(nil).BulkDeleteSubscriptions), ctx, subs)
+}
+
 // CountOwners mocks base method.
 func (m *MockRoomStore) CountOwners(ctx context.Context, roomID string) (int, error) {
 	m.ctrl.T.Helper()
@@ -125,6 +139,20 @@ func (m *MockRoomStore) CreateSubscription(ctx context.Context, sub *model.Subsc
 func (mr *MockRoomStoreMockRecorder) CreateSubscription(ctx, sub any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateSubscription", reflect.TypeOf((*MockRoomStore)(nil).CreateSubscription), ctx, sub)
+}
+
+// DecrementUserCount mocks base method.
+func (m *MockRoomStore) DecrementUserCount(ctx context.Context, roomID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DecrementUserCount", ctx, roomID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DecrementUserCount indicates an expected call of DecrementUserCount.
+func (mr *MockRoomStoreMockRecorder) DecrementUserCount(ctx, roomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DecrementUserCount", reflect.TypeOf((*MockRoomStore)(nil).DecrementUserCount), ctx, roomID)
 }
 
 // DeleteOrgRoomMember mocks base method.

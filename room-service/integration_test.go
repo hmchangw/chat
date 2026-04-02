@@ -30,7 +30,9 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test ListRooms
-	store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeGroup})
+	if err := store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeGroup}); err != nil {
+		t.Fatalf("CreateRoom r2: %v", err)
+	}
 	rooms, err := store.ListRooms(ctx)
 	if err != nil {
 		t.Fatalf("ListRooms: %v", err)
@@ -144,11 +146,14 @@ func TestMongoStore_GetOrgData(t *testing.T) {
 
 	// Seed orgs collection directly
 	orgsCol := db.Collection("orgs")
-	_, _ = orgsCol.InsertOne(ctx, bson.M{
+	_, err := orgsCol.InsertOne(ctx, bson.M{
 		"_id":         "org-eng",
 		"name":        "Engineering",
 		"locationUrl": "http://site-a/orgs/eng",
 	})
+	if err != nil {
+		t.Fatalf("InsertOne org: %v", err)
+	}
 
 	name, locationURL, err := store.GetOrgData(ctx, "org-eng")
 	if err != nil {
@@ -175,10 +180,13 @@ func TestMongoStore_GetUserID(t *testing.T) {
 
 	// Seed users collection directly
 	usersCol := db.Collection("users")
-	_, _ = usersCol.InsertOne(ctx, bson.M{
+	_, err := usersCol.InsertOne(ctx, bson.M{
 		"_id":      "user-123",
 		"username": "alice",
 	})
+	if err != nil {
+		t.Fatalf("InsertOne user: %v", err)
+	}
 
 	id, err := store.GetUserID(ctx, "alice")
 	if err != nil {
@@ -202,10 +210,13 @@ func TestMongoStore_GetUserSite(t *testing.T) {
 
 	// Seed users collection directly
 	usersCol := db.Collection("users")
-	_, _ = usersCol.InsertOne(ctx, bson.M{
+	_, err := usersCol.InsertOne(ctx, bson.M{
 		"username":   "alice",
 		"federation": bson.M{"origin": "site-a"},
 	})
+	if err != nil {
+		t.Fatalf("InsertOne user: %v", err)
+	}
 
 	site, err := store.GetUserSite(ctx, "alice")
 	if err != nil {

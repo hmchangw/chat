@@ -44,6 +44,30 @@ func dedup(ss []string) []string {
 	return result
 }
 
+// sanitizeError returns a user-safe error message.
+// If the error message starts with a known user-facing prefix, it is returned as-is.
+// Otherwise a generic message is returned to avoid leaking internal details.
+func sanitizeError(err error) string {
+	msg := err.Error()
+	userFacingPrefixes := []string{
+		"invalid",
+		"only owners",
+		"room is at maximum",
+		"cannot demote",
+		"federation users",
+		"inviter not found",
+		"requester not found",
+		"ambiguous",
+		"last owner cannot",
+	}
+	for _, pfx := range userFacingPrefixes {
+		if strings.HasPrefix(msg, pfx) {
+			return msg
+		}
+	}
+	return "internal error"
+}
+
 // filterBots returns a new slice with bot usernames removed.
 func filterBots(ss []string) []string {
 	result := make([]string, 0, len(ss))

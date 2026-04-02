@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -331,6 +332,9 @@ func TestHandler_AddMembers(t *testing.T) {
 					{ID: "m1", RoomID: "r-source", Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberTypeOrg}},
 					{ID: "m2", RoomID: "r-source", Member: model.RoomMemberEntry{Type: model.RoomMemberTypeIndividual, Username: "dave"}},
 				}, nil)
+				store.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r-source").Return([]model.Subscription{
+					{User: model.SubscriptionUser{Username: "dave"}},
+				}, nil)
 				store.EXPECT().GetOrgData(gomock.Any(), "org-eng").Return("Eng", "http://site-a", nil)
 				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 				store.EXPECT().GetUserID(gomock.Any(), "dave").Return("u-dave", nil)
@@ -413,6 +417,8 @@ func TestHandler_AddMembers(t *testing.T) {
 				Users:  []string{"bob"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
+				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
 				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(1000, nil)
 			},
 			wantErr: true,
@@ -444,8 +450,9 @@ func TestHandler_AddMembers(t *testing.T) {
 				Users:  []string{"bob"},
 			},
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
+				store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
+				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(fmt.Errorf("write failed"))
 			},
 			wantErr: true,
@@ -468,11 +475,16 @@ func TestHandler_AddMembers(t *testing.T) {
 			store := NewMockRoomStore(ctrl)
 			tt.setup(store)
 
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			h := &Handler{
 				store: store, siteID: "site-a", currentDomain: "http://site-a", maxRoomSize: 1000,
 				publishToStream: func(_ string, _ []byte) error { return nil },
 				publishLocal:    func(s string, d []byte) error { return nil },
 				publishOutbox:   func(s string, d []byte) error { return nil },
+				notifCh:         make(chan notifTask, 100),
+				stopCtx:         ctx,
+				stopCancel:      cancel,
 			}
 
 			var data []byte
@@ -508,8 +520,6 @@ func TestHandler_dispatchMemberEvents_LocalUser(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
-	store.EXPECT().GetUserSite(gomock.Any(), "bob").Return("site-a", nil)
-
 	var localPublishes []string
 	h := &Handler{
 		store: store, siteID: "site-a",
@@ -517,7 +527,9 @@ func TestHandler_dispatchMemberEvents_LocalUser(t *testing.T) {
 		publishOutbox: func(_ string, _ []byte) error { t.Error("unexpected outbox publish"); return nil },
 	}
 
-	h.dispatchMemberEvents(context.Background(), []string{"bob"}, "r1")
+	h.dispatchMemberEvents(context.Background(), []*model.Subscription{
+		{User: model.SubscriptionUser{ID: "u-bob", Username: "bob"}, RoomID: "r1", SiteID: "site-a"},
+	}, "r1")
 
 	if len(localPublishes) != 1 {
 		t.Fatalf("expected 1 local publish, got %d", len(localPublishes))
@@ -531,8 +543,6 @@ func TestHandler_dispatchMemberEvents_RemoteUser(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
-	store.EXPECT().GetUserSite(gomock.Any(), "carol").Return("site-b", nil)
-
 	var outboxSubjects []string
 	h := &Handler{
 		store: store, siteID: "site-a",
@@ -540,7 +550,9 @@ func TestHandler_dispatchMemberEvents_RemoteUser(t *testing.T) {
 		publishOutbox: func(s string, _ []byte) error { outboxSubjects = append(outboxSubjects, s); return nil },
 	}
 
-	h.dispatchMemberEvents(context.Background(), []string{"carol"}, "r1")
+	h.dispatchMemberEvents(context.Background(), []*model.Subscription{
+		{User: model.SubscriptionUser{ID: "u-carol", Username: "carol"}, RoomID: "r1", SiteID: "site-b"},
+	}, "r1")
 
 	if len(outboxSubjects) != 1 {
 		t.Fatalf("expected 1 outbox publish, got %d", len(outboxSubjects))
@@ -551,11 +563,9 @@ func TestHandler_dispatchMemberEvents_RemoteUser(t *testing.T) {
 	}
 }
 
-func TestHandler_dispatchMemberEvents_GetUserSiteFails(t *testing.T) {
+func TestHandler_dispatchMemberEvents_ContextCancelled(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-
-	store.EXPECT().GetUserSite(gomock.Any(), "bob").Return("", fmt.Errorf("users collection unavailable"))
 
 	h := &Handler{
 		store: store, siteID: "site-a",
@@ -563,8 +573,12 @@ func TestHandler_dispatchMemberEvents_GetUserSiteFails(t *testing.T) {
 		publishOutbox: func(_ string, _ []byte) error { t.Error("unexpected outbox publish"); return nil },
 	}
 
-	// Must not panic — errors are logged and skipped
-	h.dispatchMemberEvents(context.Background(), []string{"bob"}, "r1")
+	// Cancelled context should cause immediate return
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.dispatchMemberEvents(ctx, []*model.Subscription{
+		{User: model.SubscriptionUser{ID: "u-bob", Username: "bob"}, RoomID: "r1", SiteID: "site-a"},
+	}, "r1")
 }
 
 func TestHandler_expandChannels(t *testing.T) {
@@ -577,16 +591,20 @@ func TestHandler_expandChannels(t *testing.T) {
 		wantErr       bool
 	}{
 		{
-			name:       "room_members non-empty: orgs and individuals split",
+			name:       "room_members non-empty: merged with subscriptions",
 			channelIDs: []string{"r-src"},
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().GetRoomMembers(gomock.Any(), "r-src").Return([]model.RoomMember{
 					{ID: "m1", RoomID: "r-src", Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberTypeOrg}},
 					{ID: "m2", RoomID: "r-src", Member: model.RoomMemberEntry{Type: model.RoomMemberTypeIndividual, Username: "alice"}},
 				}, nil)
+				store.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r-src").Return([]model.Subscription{
+					{User: model.SubscriptionUser{Username: "alice"}},
+					{User: model.SubscriptionUser{Username: "bob"}},
+				}, nil)
 			},
 			wantOrgIDs:    []string{"org-eng"},
-			wantUsernames: []string{"alice"},
+			wantUsernames: []string{"alice", "alice", "bob"},
 		},
 		{
 			name:       "room_members empty: fallback to subscriptions",
@@ -776,7 +794,7 @@ func TestHandler_buildSubscriptions(t *testing.T) {
 			mode:      model.HistoryModeNone,
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().GetUserID(gomock.Any(), "alice").Return("u-alice", nil)
-				store.EXPECT().GetUserID(gomock.Any(), "bad-user").Return("", fmt.Errorf("not found"))
+				store.EXPECT().GetUserID(gomock.Any(), "bad-user").Return("", fmt.Errorf("get user id for %q: %w", "bad-user", mongo.ErrNoDocuments))
 				store.EXPECT().GetUserID(gomock.Any(), "bob").Return("u-bob", nil)
 			},
 			wantSubCount:      2,
@@ -796,8 +814,8 @@ func TestHandler_buildSubscriptions(t *testing.T) {
 			roomID:    "r1",
 			mode:      model.HistoryModeNone,
 			setup: func(store *MockRoomStore) {
-				store.EXPECT().GetUserID(gomock.Any(), "bad1").Return("", fmt.Errorf("not found"))
-				store.EXPECT().GetUserID(gomock.Any(), "bad2").Return("", fmt.Errorf("not found"))
+				store.EXPECT().GetUserID(gomock.Any(), "bad1").Return("", fmt.Errorf("get user id for %q: %w", "bad1", mongo.ErrNoDocuments))
+				store.EXPECT().GetUserID(gomock.Any(), "bad2").Return("", fmt.Errorf("get user id for %q: %w", "bad2", mongo.ErrNoDocuments))
 			},
 			wantSubCount:      0,
 			wantResolvedCount: 0,
@@ -844,8 +862,13 @@ func TestHandler_buildSubscriptions(t *testing.T) {
 			store := NewMockRoomStore(ctrl)
 			tt.setup(store)
 
+			store.EXPECT().GetUserSite(gomock.Any(), gomock.Any()).Return("site-a", nil).AnyTimes()
+
 			h := &Handler{store: store, siteID: "site-a"}
-			subs, resolved := h.buildSubscriptions(context.Background(), tt.usernames, tt.roomID, tt.mode, now)
+			subs, resolved, err := h.buildSubscriptions(context.Background(), tt.usernames, tt.roomID, tt.mode, now)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
 			if len(subs) != tt.wantSubCount {
 				t.Errorf("subs count: got %d, want %d", len(subs), tt.wantSubCount)
@@ -876,8 +899,11 @@ func TestHandler_RemoveMember(t *testing.T) {
 				RoomID:   "r1",
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+					Return(&model.Subscription{Roles: []model.Role{model.RoleMember}}, nil)
 				store.EXPECT().DeleteSubscription(gomock.Any(), "alice", "r1").Return(nil)
 				store.EXPECT().DeleteRoomMember(gomock.Any(), "alice", "r1").Return(nil)
+				store.EXPECT().DecrementUserCount(gomock.Any(), "r1").Return(nil)
 			},
 		},
 		{
@@ -893,6 +919,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 					Return(&model.Subscription{Roles: []model.Role{model.RoleOwner}}, nil)
 				store.EXPECT().DeleteSubscription(gomock.Any(), "bob", "r1").Return(nil)
 				store.EXPECT().DeleteRoomMember(gomock.Any(), "bob", "r1").Return(nil)
+				store.EXPECT().DecrementUserCount(gomock.Any(), "r1").Return(nil)
 			},
 		},
 		{
@@ -925,6 +952,8 @@ func TestHandler_RemoveMember(t *testing.T) {
 					Return("Eng", "http://site-a", nil)
 				store.EXPECT().DeleteSubscription(gomock.Any(), "Eng", "r1").Return(nil)
 				store.EXPECT().DeleteOrgRoomMember(gomock.Any(), "org-eng", "r1").Return(nil)
+				store.EXPECT().DeleteRoomMember(gomock.Any(), "Eng", "r1").Return(nil)
+				store.EXPECT().DecrementUserCount(gomock.Any(), "r1").Return(nil)
 			},
 		},
 		{
@@ -963,6 +992,8 @@ func TestHandler_RemoveMember(t *testing.T) {
 				RoomID:   "r1",
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+					Return(&model.Subscription{Roles: []model.Role{model.RoleMember}}, nil)
 				store.EXPECT().DeleteSubscription(gomock.Any(), "alice", "r1").Return(fmt.Errorf("db error"))
 			},
 			wantErr: true,

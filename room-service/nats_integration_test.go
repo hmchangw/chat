@@ -46,7 +46,9 @@ func natsRequest(t *testing.T, nc *nats.Conn, subj string, payload any, ps publi
 
 	t.Logf("  Reply:   %s", string(msg.Data))
 
-	// Allow async publishes (e.g., dispatchMemberEvents) to settle
+	// Allow async publishes (e.g., dispatchMemberEvents) to settle.
+	// This sleep is intentional for observability: it gives background
+	// notification workers time to process so we can log their publishes.
 	time.Sleep(50 * time.Millisecond)
 
 	// Log any publishes that occurred during this request
@@ -93,6 +95,9 @@ func TestNATS_RoomMember(t *testing.T) {
 		logPublish("(local)"),
 		logPublish("OUTBOX_"+testSiteID),
 	)
+
+	handler.StartNotificationWorkers(2)
+	t.Cleanup(func() { handler.StopNotificationWorkers() })
 
 	require.NoError(t, handler.RegisterCRUD(nc))
 	_, err := nc.QueueSubscribe(subject.MemberInviteWildcard(testSiteID), "room-service", handler.NatsHandleInvite)
@@ -239,17 +244,19 @@ func TestNATS_RoomMember(t *testing.T) {
 	// Helper: seed a user into the users collection (needed for GetUserID in addMembers flow)
 	seedUser := func(t *testing.T, id, username string) {
 		t.Helper()
-		_, _ = db.Collection("users").InsertOne(context.Background(), bson.M{
+		_, err := db.Collection("users").InsertOne(context.Background(), bson.M{
 			"_id": id, "username": username, "federation": bson.M{"origin": testSiteID},
 		})
+		require.NoError(t, err)
 	}
 
 	// Helper: seed an org into the orgs collection
 	seedOrg := func(t *testing.T, id, name, locationURL string) {
 		t.Helper()
-		_, _ = db.Collection("orgs").InsertOne(context.Background(), bson.M{
+		_, err := db.Collection("orgs").InsertOne(context.Background(), bson.M{
 			"_id": id, "name": name, "locationUrl": locationURL,
 		})
+		require.NoError(t, err)
 	}
 
 	t.Run("AddMembers_IndividualUsers", func(t *testing.T) {
@@ -408,6 +415,7 @@ func TestNATS_RoomMember(t *testing.T) {
 			}
 		}
 		require.NoError(t, store.BulkCreateSubscriptions(ctx, subs))
+		seedUser(t, "u-newuser", "newuser")
 
 		subj := subject.MemberAdd("requester", "am-rc-r1", testSiteID)
 		req := model.AddMembersRequest{

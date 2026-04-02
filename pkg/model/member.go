@@ -20,16 +20,16 @@ const (
 
 // HistoryConfig is the history section of AddMembersRequest.
 type HistoryConfig struct {
-	Mode HistoryMode `json:"mode"`
+	Mode HistoryMode `json:"mode" bson:"mode"`
 }
 
 // AddMembersRequest is the JSON payload for a member.add NATS request.
 type AddMembersRequest struct {
-	RoomID   string        `json:"roomId"`
-	Users    []string      `json:"users"`    // direct usernames
-	Orgs     []string      `json:"orgs"`     // orgIds to expand via hr_data
-	Channels []string      `json:"channels"` // roomIds to copy members from
-	History  HistoryConfig `json:"history"`
+	RoomID   string        `json:"roomId"   bson:"roomId"`
+	Users    []string      `json:"users"    bson:"users"`       // direct usernames
+	Orgs     []string      `json:"orgs"     bson:"orgs"`        // orgIds to expand via hr_data
+	Channels []string      `json:"channels" bson:"channels"`    // roomIds to copy members from
+	History  HistoryConfig `json:"history"  bson:"history"`
 }
 
 // RoomMemberEntry is the nested member sub-document in a RoomMember document.
