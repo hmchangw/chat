@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -184,7 +185,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	// 3. Test parameters.
 	username := "alice"
 	roomID := "room-1"
-	versionID := "v-test-001"
+	version := 0
 	plaintext := "hello from Go integration test"
 
 	// 4. Start the TypeScript client (blocks until it prints output or times out).
@@ -216,7 +217,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	sender := roomkeysender.NewSender(nc)
 	evt := &model.RoomKeyEvent{
 		RoomID:     roomID,
-		VersionID:  versionID,
+		Version:    version,
 		PublicKey:  pubKeyBytes,
 		PrivateKey: privKeyBytes,
 	}
@@ -237,7 +238,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	natsMsg := &nats.Msg{
 		Subject: msgSubject,
 		Data:    encryptedJSON,
-		Header:  nats.Header{"X-Room-Key-Version": []string{versionID}},
+		Header:  nats.Header{"X-Room-Key-Version": []string{strconv.Itoa(version)}},
 	}
 	err = nc.PublishMsg(natsMsg)
 	require.NoError(t, err, "publish encrypted message")

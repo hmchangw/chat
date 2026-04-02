@@ -49,7 +49,7 @@ func TestSender_Send(t *testing.T) {
 			username: "alice",
 			evt: model.RoomKeyEvent{
 				RoomID:     "room-1",
-				VersionID:  "v-abc-123",
+				Version:    0,
 				PublicKey:  pub65,
 				PrivateKey: priv32,
 			},
@@ -60,7 +60,7 @@ func TestSender_Send(t *testing.T) {
 			username: "bob",
 			evt: model.RoomKeyEvent{
 				RoomID:     "room-2",
-				VersionID:  "v-def-456",
+				Version:    1,
 				PublicKey:  []byte{0x04, 0x01},
 				PrivateKey: []byte{0x0a},
 			},
@@ -71,7 +71,7 @@ func TestSender_Send(t *testing.T) {
 			username: "carol",
 			evt: model.RoomKeyEvent{
 				RoomID:     "room-3",
-				VersionID:  "v-ghi-789",
+				Version:    2,
 				PublicKey:  []byte{0x04},
 				PrivateKey: []byte{0x01},
 			},
@@ -101,7 +101,7 @@ func TestSender_Send(t *testing.T) {
 			var got model.RoomKeyEvent
 			require.NoError(t, json.Unmarshal(pub.data, &got))
 			assert.Equal(t, tt.evt.RoomID, got.RoomID)
-			assert.Equal(t, tt.evt.VersionID, got.VersionID)
+			assert.Equal(t, tt.evt.Version, got.Version)
 			assert.Equal(t, tt.evt.PublicKey, got.PublicKey)
 			assert.Equal(t, tt.evt.PrivateKey, got.PrivateKey)
 		})
