@@ -15,7 +15,6 @@ type Room struct {
 	Type             RoomType  `json:"type" bson:"type"`
 	CreatedBy        string    `json:"createdBy" bson:"createdBy"`
 	SiteID           string    `json:"siteId" bson:"siteId"`
-	Origin           string    `json:"origin" bson:"origin"`
 	UserCount        int       `json:"userCount" bson:"userCount"`
 	LastMsgAt        time.Time `json:"lastMsgAt" bson:"lastMsgAt"`
 	LastMsgID        string    `json:"lastMsgId" bson:"lastMsgId"`
