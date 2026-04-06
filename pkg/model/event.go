@@ -70,7 +70,7 @@ type RoomEvent struct {
 
 type RoomKeyEvent struct {
 	RoomID     string `json:"roomId"`
-	VersionID  string `json:"versionId"`
+	Version    int    `json:"version"`
 	PublicKey  []byte `json:"publicKey"`
 	PrivateKey []byte `json:"privateKey"`
 }
