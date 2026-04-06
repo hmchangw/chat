@@ -3,16 +3,17 @@ module github.com/hmchangw/chat
 go 1.25.8
 
 require (
+	github.com/Marz32onE/instrumentation-go/otel-nats v0.2.0
 	github.com/caarlos0/env/v11 v11.4.0
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/docker/docker v27.1.1+incompatible
 	github.com/gin-gonic/gin v1.10.1
 	github.com/gocql/gocql v1.7.0
 	github.com/google/uuid v1.6.0
-	github.com/nats-io/jwt/v2 v2.8.0
-	github.com/nats-io/nats-server/v2 v2.12.4
+	github.com/nats-io/jwt/v2 v2.8.1
+	github.com/nats-io/nats-server/v2 v2.12.6
 	github.com/nats-io/nats.go v1.49.0
-	github.com/nats-io/nkeys v0.4.12
+	github.com/nats-io/nkeys v0.4.15
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/stretchr/testify v1.11.1
 	github.com/synadia-io/callout.go v0.2.1
@@ -26,15 +27,14 @@ require (
 	go.opentelemetry.io/otel/sdk v1.42.0
 	go.opentelemetry.io/otel/sdk/metric v1.42.0
 	go.uber.org/mock v0.6.0
-	golang.org/x/crypto v0.48.0
+	golang.org/x/crypto v0.49.0
 )
 
 require (
 	dario.cat/mergo v1.0.1 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
-	github.com/Marz32onE/instrumentation-go/otel-nats v0.2.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/antithesishq/antithesis-sdk-go v0.5.0-default-no-op // indirect
+	github.com/antithesishq/antithesis-sdk-go v0.6.0-default-no-op // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
@@ -69,7 +69,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.3 // indirect
+	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
@@ -121,10 +121,10 @@ require (
 	golang.org/x/arch v0.8.0 // indirect
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
