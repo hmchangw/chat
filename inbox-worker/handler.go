@@ -67,7 +67,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) 
 		RoomID:             invite.RoomID,
 		SiteID:             invite.SiteID,
 		Role:               model.RoleMember,
-		SharedHistorySince: now,
+		HistorySharedSince: &now,
 		JoinedAt:           now,
 	}
 

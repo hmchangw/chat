@@ -34,7 +34,7 @@ services:
 
   nats-debug:
     build:
-      context: ../..
+      context: ../../..
       dockerfile: nats-debug/deploy/Dockerfile
     ports:
       - "8090:8090"

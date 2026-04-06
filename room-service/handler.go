@@ -42,7 +42,7 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	return nil
 }
 
-func (h *Handler) natsCreateRoom(m otelnats.MsgWithContext) {
+func (h *Handler) natsCreateRoom(m otelnats.Msg) {
 	resp, err := h.handleCreateRoom(m.Context(), m.Msg.Data)
 	if err != nil {
 		natsutil.ReplyError(m.Msg, err.Error())
@@ -53,7 +53,7 @@ func (h *Handler) natsCreateRoom(m otelnats.MsgWithContext) {
 	}
 }
 
-func (h *Handler) natsListRooms(m otelnats.MsgWithContext) {
+func (h *Handler) natsListRooms(m otelnats.Msg) {
 	rooms, err := h.store.ListRooms(m.Context())
 	if err != nil {
 		natsutil.ReplyError(m.Msg, err.Error())
@@ -62,7 +62,7 @@ func (h *Handler) natsListRooms(m otelnats.MsgWithContext) {
 	natsutil.ReplyJSON(m.Msg, model.ListRoomsResponse{Rooms: rooms})
 }
 
-func (h *Handler) natsGetRoom(m otelnats.MsgWithContext) {
+func (h *Handler) natsGetRoom(m otelnats.Msg) {
 	parts := strings.Split(m.Msg.Subject, ".")
 	roomID := parts[len(parts)-1]
 	room, err := h.store.GetRoom(m.Context(), roomID)
@@ -74,7 +74,7 @@ func (h *Handler) natsGetRoom(m otelnats.MsgWithContext) {
 }
 
 // NatsHandleInvite handles invite authorization requests.
-func (h *Handler) NatsHandleInvite(m otelnats.MsgWithContext) {
+func (h *Handler) NatsHandleInvite(m otelnats.Msg) {
 	resp, err := h.handleInvite(m.Context(), m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		natsutil.ReplyError(m.Msg, err.Error())
@@ -114,7 +114,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
 		Role:               model.RoleOwner,
-		SharedHistorySince: now,
+		HistorySharedSince: &now,
 		JoinedAt:           now,
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {

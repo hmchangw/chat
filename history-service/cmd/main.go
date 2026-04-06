@@ -7,30 +7,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/caarlos0/env/v11"
-
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
+	"github.com/hmchangw/chat/history-service/internal/cassrepo"
+	"github.com/hmchangw/chat/history-service/internal/config"
+	"github.com/hmchangw/chat/history-service/internal/mongorepo"
+	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
-	"github.com/hmchangw/chat/pkg/subject"
 )
-
-type config struct {
-	NatsURL           string `env:"NATS_URL"            envDefault:"nats://localhost:4222"`
-	SiteID            string `env:"SITE_ID"             envDefault:"site-local"`
-	MongoURI          string `env:"MONGO_URI"           envDefault:"mongodb://localhost:27017"`
-	MongoDB           string `env:"MONGO_DB"            envDefault:"chat"`
-	CassandraHosts    string `env:"CASSANDRA_HOSTS"     envDefault:"localhost"`
-	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE"  envDefault:"chat"`
-}
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	cfg, err := env.ParseAs[config]()
+	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
@@ -44,32 +37,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	nc, err := otelnats.Connect(cfg.NatsURL)
+	nc, err := otelnats.Connect(cfg.NATS.URL)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)
 	}
 
-	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
+	mongoClient, err := mongoutil.Connect(ctx, cfg.Mongo.URI)
 	if err != nil {
 		slog.Error("mongo connect failed", "error", err)
 		os.Exit(1)
 	}
 
-	cassSession, err := cassutil.Connect(strings.Split(cfg.CassandraHosts, ","), cfg.CassandraKeyspace)
+	cassSession, err := cassutil.Connect(strings.Split(cfg.Cassandra.Hosts, ","), cfg.Cassandra.Keyspace)
 	if err != nil {
 		slog.Error("cassandra connect failed", "error", err)
 		os.Exit(1)
 	}
 
-	store := NewRealStore(mongoClient.Database(cfg.MongoDB), cassSession)
-	handler := NewHandler(store)
+	cassRepo := cassrepo.NewRepository(cassSession)
+	mongoRepo := mongorepo.NewSubscriptionRepo(mongoClient.Database(cfg.Mongo.DB))
+	svc := service.New(cassRepo, mongoRepo)
+	router := natsrouter.New(nc.NatsConn(), "history-service")
+	router.Use(natsrouter.Recovery())
+	router.Use(natsrouter.Logging())
 
-	histSubj := subject.MsgHistoryWildcard(cfg.SiteID)
-	if _, err := nc.QueueSubscribe(histSubj, "history-service", handler.NatsHandleHistory); err != nil {
-		slog.Error("subscribe failed", "error", err)
-		os.Exit(1)
-	}
+	svc.RegisterHandlers(router, cfg.SiteID)
 
 	slog.Info("history-service running", "site", cfg.SiteID)
 

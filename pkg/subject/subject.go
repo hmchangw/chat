@@ -61,10 +61,6 @@ func MemberInvite(username, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", username, roomID, siteID)
 }
 
-func MsgHistory(username, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.history", username, roomID, siteID)
-}
-
 func SubscriptionUpdate(username string) string {
 	return fmt.Sprintf("chat.user.%s.event.subscription.update", username)
 }
@@ -91,6 +87,10 @@ func RoomEvent(roomID string) string {
 
 func UserRoomEvent(username string) string {
 	return fmt.Sprintf("chat.user.%s.event.room", username)
+}
+
+func RoomKeyUpdate(username string) string {
+	return fmt.Sprintf("chat.user.%s.event.room.key", username)
 }
 
 // --- Room CRUD request builders ---
@@ -139,4 +139,22 @@ func RoomsListWildcard() string {
 
 func RoomsGetWildcard() string {
 	return "chat.user.*.request.rooms.get.*"
+}
+
+// --- natsrouter patterns (use {param} placeholders for named extraction) ---
+
+func MsgHistoryPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.history", siteID)
+}
+
+func MsgNextPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.next", siteID)
+}
+
+func MsgSurroundingPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.surrounding", siteID)
+}
+
+func MsgGetPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{username}.request.room.{roomID}.%s.msg.get", siteID)
 }

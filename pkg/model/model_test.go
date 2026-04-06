@@ -59,17 +59,30 @@ func TestMessageEventJSON(t *testing.T) {
 }
 
 func TestSubscriptionJSON(t *testing.T) {
+	hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := model.Subscription{
-		ID:     "s1",
-		User:   model.SubscriptionUser{ID: "u1", Username: "alice"},
-		RoomID: "r1", SiteID: "site-a",
+		ID:                 "s1",
+		User:               model.SubscriptionUser{ID: "u1", Username: "alice"},
+		RoomID:             "r1",
+		SiteID:             "site-a",
 		Role:               model.RoleOwner,
-		SharedHistorySince: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		HistorySharedSince: &hss,
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		HasMention:         true,
 	}
-	roundTrip(t, &s, &model.Subscription{})
+
+	data, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst model.Subscription
+	if err := json.Unmarshal(data, &dst); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(s, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
+	}
 }
 
 func TestRoomTypeValues(t *testing.T) {
@@ -168,6 +181,27 @@ func TestRoomEventJSON(t *testing.T) {
 func TestRoomEventTypeValues(t *testing.T) {
 	if model.RoomEventNewMessage != "new_message" {
 		t.Errorf("RoomEventNewMessage = %q", model.RoomEventNewMessage)
+	}
+}
+
+func TestRoomKeyEventJSON(t *testing.T) {
+	src := model.RoomKeyEvent{
+		RoomID:     "room-1",
+		VersionID:  "v-abc-123",
+		PublicKey:  []byte{0x04, 0x01, 0x02, 0x03},
+		PrivateKey: []byte{0x0a, 0x0b, 0x0c},
+	}
+
+	data, err := json.Marshal(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst model.RoomKeyEvent
+	if err := json.Unmarshal(data, &dst); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
 	}
 }
 

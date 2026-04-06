@@ -67,3 +67,10 @@ type RoomEvent struct {
 
 	Message *Message `json:"message,omitempty"`
 }
+
+type RoomKeyEvent struct {
+	RoomID     string `json:"roomId"`
+	VersionID  string `json:"versionId"`
+	PublicKey  []byte `json:"publicKey"`
+	PrivateKey []byte `json:"privateKey"`
+}
