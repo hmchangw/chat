@@ -272,3 +272,52 @@ Upgrade Go from 1.25.1 to 1.25.8 to pick up security and bug fixes from patch re
 
 - All 18 test suites pass with `go test -race -count=1 ./...`
 - Lint clean with `make lint`
+
+---
+
+## Addendum: natsrouter Tracing for history-service
+
+**Date:** 2026-04-06
+**Status:** Approved
+**Approach:** Modify natsrouter.Router to accept `*otelnats.Conn` (Approach 1)
+
+### Summary
+
+The refactored history-service uses `pkg/natsrouter` for request/reply routing. The router accepted `*nats.Conn`, bypassing otelnats tracing. This addendum updates the router to accept `*otelnats.Conn` so that every incoming NATS request automatically gets a trace span with W3C TraceContext propagation.
+
+### Decision
+
+| Decision | Choice |
+|----------|--------|
+| Approach | Modify router to accept `*otelnats.Conn` directly |
+| Alternative rejected | Tracing middleware — would duplicate span logic that otelnats already provides |
+| Alternative rejected | Interface abstraction — overengineered for one consumer |
+
+### Changes
+
+#### `pkg/natsrouter/router.go`
+
+- `Router.nc` field: `*nats.Conn` → `*otelnats.Conn`
+- `New()` parameter: `nc *nats.Conn` → `nc *otelnats.Conn`
+- `addRoute()`: `r.nc.QueueSubscribe` now receives `otelnats.MsgHandler` (`func(m otelnats.Msg)`) instead of `nats.MsgHandler`. The handler passes `m.Context()` (trace context) and `m.Msg` (the `*nats.Msg`) into `acquireContext`.
+
+#### `pkg/natsrouter/context.go`
+
+- `acquireContext()` signature: adds `ctx context.Context` parameter
+- `c.ctx` set to the passed-in trace context instead of `context.Background()`
+- All downstream code using `c` as `context.Context` (handler DB calls, etc.) automatically carries trace
+
+#### `history-service/cmd/main.go`
+
+- Remove `nc.NatsConn()` workaround — pass `nc` (`*otelnats.Conn`) directly to `natsrouter.New(nc, "history-service")`
+
+#### `pkg/natsrouter/router_test.go`
+
+- Tests use `otelnats.Connect(server.ClientURL())` instead of raw `nats.Connect`
+
+### Files NOT changed
+
+- `pkg/natsrouter/context.go` methods (`Deadline`, `Done`, `Err`, `Value`) — delegate to `c.ctx`, trace flows automatically
+- `pkg/natsrouter/register.go` — generic handler registration unchanged
+- `pkg/natsrouter/middleware.go` — existing middleware unchanged
+- `history-service/internal/service/*.go` — handlers already use `c` as `context.Context`
