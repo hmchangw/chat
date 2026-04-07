@@ -2,7 +2,9 @@
 
 ## Overview
 
-Update message-worker to match its position in the pipeline: persist full-schema messages to Cassandra (`messages_by_room`) and publish to a new `SEARCH_INDEX` JetStream stream for downstream search indexing (ES/OpenSearch).
+Update message-worker to match its position in the pipeline: persist full-schema messages to Cassandra (`messages_by_room` with 22 columns and UDT types). Promote shared UDT types to `pkg/model/` so both message-worker and history-service use the same definitions.
+
+Search indexing is handled by a separate future `search-indexer` service consuming directly from MESSAGES_CANONICAL — see `PROPOSAL-search-indexing.md`.
 
 ---
 
@@ -13,18 +15,13 @@ Update message-worker to match its position in the pipeline: persist full-schema
 | 1 | Move UDT types (`Participant`, `File`, `Card`, `CardAction`) from `history-service/internal/models/` to `pkg/model/` | `pkg/model/types.go`, `pkg/model/utils.go` |
 | 2 | Expand `model.Message` to full 22-field schema | `pkg/model/message.go` |
 | 3 | Update `model.MessageEvent` if needed | `pkg/model/event.go` |
-| 4 | Define `SearchIndex` stream config | `pkg/stream/stream.go` |
-| 5 | Add `SearchIndexCreated` subject builder | `pkg/subject/subject.go` |
-| 6 | Define `SearchIndexEvent` model | `pkg/model/event.go` |
-| 7 | Update `Store` interface — `SaveMessage` accepts expanded `model.Message` | `message-worker/store.go` |
-| 8 | Rewrite `CassandraStore.SaveMessage` — insert all 22 columns into `messages_by_room` | `message-worker/store_cassandra.go` |
-| 9 | Add `publishFunc` to `Handler` — publish `SearchIndexEvent` after Cassandra persist | `message-worker/handler.go` |
-| 10 | Update `main.go` — create `SEARCH_INDEX` stream, wire `publishFunc` into handler | `message-worker/main.go` |
-| 11 | Write handler unit tests (TDD red-green) | `message-worker/handler_test.go` |
-| 12 | Regenerate mocks | `message-worker/mock_store_test.go` |
-| 13 | Update integration test — new schema with UDTs, `messages_by_room` table | `message-worker/integration_test.go` |
-| 14 | Update `history-service` to import UDTs from `pkg/model/` instead of local `models` | `history-service/internal/models/types.go`, `history-service/internal/cassrepo/` |
-| 15 | Lint, test, verify | `make lint && make test SERVICE=message-worker` |
+| 4 | Update `Store` interface — `SaveMessage` accepts expanded `model.Message` | `message-worker/store.go` |
+| 5 | Rewrite `CassandraStore.SaveMessage` — insert all 22 columns into `messages_by_room` | `message-worker/store_cassandra.go` |
+| 6 | Write handler unit tests (TDD red-green) | `message-worker/handler_test.go` |
+| 7 | Regenerate mocks | `message-worker/mock_store_test.go` |
+| 8 | Update integration test — new schema with UDTs, `messages_by_room` table | `message-worker/integration_test.go` |
+| 9 | Update `history-service` to import UDTs from `pkg/model/` instead of local `models` | `history-service/internal/models/types.go`, `history-service/internal/cassrepo/` |
+| 10 | Lint, test, verify | `make lint && make test SERVICE=message-worker` |
 
 ---
 
@@ -59,7 +56,7 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg model.Message) err
 }
 ```
 
-### `message-worker/handler.go` — persist only, no publish
+### `message-worker/handler.go` — persist only
 ```go
 type Handler struct {
     store Store
@@ -70,16 +67,6 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
     json.Unmarshal(data, &evt)
     return h.store.SaveMessage(ctx, evt.Message)
 }
-```
-
-### `pkg/stream/stream.go` — no search index stream
-```
-Messages, MessagesCanonical, Rooms, Outbox, Inbox
-```
-
-### `pkg/subject/subject.go` — no search index subject
-```
-MsgCanonicalCreated, RoomEvent, Notification, Outbox, ...
 ```
 
 ### UDT types — locked inside history-service
@@ -158,82 +145,20 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg model.Message) err
 }
 ```
 
-### `message-worker/handler.go` — persist + publish to search index
+### `message-worker/handler.go` — persist only (unchanged responsibility)
 ```go
-// publishFunc is the function signature for publishing to JetStream.
-type publishFunc func(subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
-
 type Handler struct {
-    store   Store
-    publish publishFunc
-    siteID  string
+    store Store
 }
 
 func (h *Handler) processMessage(ctx context.Context, data []byte) error {
     var evt model.MessageEvent
     json.Unmarshal(data, &evt)
-
-    // 1. Persist to Cassandra
-    if err := h.store.SaveMessage(ctx, evt.Message); err != nil {
-        return fmt.Errorf("save message: %w", err)
-    }
-
-    // 2. Publish to SEARCH_INDEX stream
-    idxEvt := model.SearchIndexEvent{Message: evt.Message, SiteID: evt.SiteID}
-    payload, _ := json.Marshal(idxEvt)
-    if _, err := h.publish(
-        subject.SearchIndexCreated(evt.SiteID),
-        payload,
-        jetstream.WithMsgID(evt.Message.ID),
-    ); err != nil {
-        return fmt.Errorf("publish search index event: %w", err)
-    }
-
-    return nil
+    return h.store.SaveMessage(ctx, evt.Message)
 }
 ```
 
-### `pkg/model/event.go` — new SearchIndexEvent
-```go
-// SearchIndexEvent carries indexable message fields for the search pipeline.
-type SearchIndexEvent struct {
-    Message Message `json:"message"`
-    SiteID  string  `json:"siteId"`
-}
-```
-
-### `pkg/stream/stream.go` — new stream
-```go
-func SearchIndex(siteID string) Config {
-    return Config{
-        Name:     fmt.Sprintf("SEARCH_INDEX_%s", siteID),
-        Subjects: []string{fmt.Sprintf("chat.search.index.%s.>", siteID)},
-    }
-}
-```
-
-### `pkg/subject/subject.go` — new subject builder
-```go
-func SearchIndexCreated(siteID string) string {
-    return fmt.Sprintf("chat.search.index.%s.created", siteID)
-}
-```
-
-### `message-worker/main.go` — wires search index stream + publishFunc
-```go
-// Create SEARCH_INDEX stream
-searchCfg := stream.SearchIndex(cfg.SiteID)
-js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-    Name:     searchCfg.Name,
-    Subjects: searchCfg.Subjects,
-})
-
-// Wire publishFunc
-pub := func(subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
-    return js.Publish(ctx, subj, data, opts...)
-}
-handler := NewHandler(store, pub, cfg.SiteID)
-```
+> Handler signature stays the same. The expanded `model.Message` flows through transparently.
 
 ### `history-service/internal/models/` — imports from `pkg/model/`
 ```go
@@ -249,19 +174,13 @@ type Participant = model.Participant
 
 ```
 MESSAGES_CANONICAL_{siteID}
-        │
-        ▼
-  message-worker
-        │
-        ├──► Cassandra (messages_by_room, 22 cols)
-        │         │
-        │         ▼
-        │    history-service (reads)
-        │
-        └──► SEARCH_INDEX_{siteID} (JetStream)
-                  │
-                  ▼
-             future search-indexer (ES / OpenSearch)
+    ├──► message-worker       (durable: "message-worker")       ──► Cassandra (messages_by_room)
+    │                                                                    │
+    │                                                                    ▼
+    │                                                               history-service (reads)
+    ├──► broadcast-worker     (durable: "broadcast-worker")     ──► room delivery
+    ├──► notification-worker  (durable: "notification-worker")  ──► push notifications
+    └──► search-indexer       (durable: "search-indexer")       ──► ES / OpenSearch (future)
 ```
 
 ---
@@ -270,6 +189,4 @@ MESSAGES_CANONICAL_{siteID}
 
 - **Breaking change to `model.Message`**: `UserID`/`Username` replaced by `Sender` (`Participant`). All consumers of `model.Message` (message-gatekeeper, broadcast-worker, notification-worker) will need updates. We handle message-worker first; other services follow.
 - **UDT relocation**: Moving types from `history-service/internal/models/` to `pkg/model/` means history-service imports change. This is a pure refactor with no logic change.
-- **Search index event shape = full Message**: The search consumer gets the complete message. Index field selection is the search-indexer's concern, not message-worker's.
-- **Deduplication**: `WithMsgID(msg.ID)` on the search index publish prevents duplicate index writes on retries.
-- **Atomicity**: If Cassandra write succeeds but search publish fails, the message is NAK'd and retried. Cassandra INSERT is idempotent (same primary key overwrites), so re-persist is safe.
+- **Cassandra idempotency**: INSERT with the same primary key `(room_id, created_at, message_id)` overwrites — safe for retries after NAK.
