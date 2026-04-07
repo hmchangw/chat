@@ -5,6 +5,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
@@ -18,7 +20,7 @@ type GreetResponse struct {
 
 // Example_basicUsage demonstrates registering a handler with params.
 func Example_basicUsage() {
-	nc, _ := nats.Connect(nats.DefaultURL)
+	nc, _ := otelnats.Connect(nats.DefaultURL)
 	router := natsrouter.New(nc, "my-service")
 
 	// Register a handler — {userID} and {roomID} are extracted from the subject.
@@ -37,7 +39,7 @@ func Example_basicUsage() {
 
 // Example_withMiddleware demonstrates using built-in middleware.
 func Example_withMiddleware() {
-	nc, _ := nats.Connect(nats.DefaultURL)
+	nc, _ := otelnats.Connect(nats.DefaultURL)
 	router := natsrouter.New(nc, "my-service")
 
 	// Recovery catches panics, Logging logs subject + duration.
@@ -61,7 +63,7 @@ type Room struct {
 
 // Example_noBodyHandler demonstrates RegisterNoBody for GET-style endpoints.
 func Example_noBodyHandler() {
-	nc, _ := nats.Connect(nats.DefaultURL)
+	nc, _ := otelnats.Connect(nats.DefaultURL)
 	router := natsrouter.New(nc, "room-service")
 
 	// No request body needed — the roomID comes from the subject.
@@ -77,7 +79,7 @@ func Example_noBodyHandler() {
 
 // Example_errorHandling demonstrates user-facing vs internal errors.
 func Example_errorHandling() {
-	nc, _ := nats.Connect(nats.DefaultURL)
+	nc, _ := otelnats.Connect(nats.DefaultURL)
 	router := natsrouter.New(nc, "room-service")
 
 	natsrouter.Register(
@@ -105,7 +107,7 @@ type TypingEvent struct {
 
 // Example_fireAndForget demonstrates RegisterVoid for events with no response.
 func Example_fireAndForget() {
-	nc, _ := nats.Connect(nats.DefaultURL)
+	nc, _ := otelnats.Connect(nats.DefaultURL)
 	router := natsrouter.New(nc, "chat-service")
 
 	// No response sent — the sender publishes and moves on.
@@ -121,7 +123,7 @@ func Example_fireAndForget() {
 
 // Example_customMiddleware demonstrates writing custom middleware.
 func Example_customMiddleware() {
-	nc, _ := nats.Connect(nats.DefaultURL)
+	nc, _ := otelnats.Connect(nats.DefaultURL)
 	router := natsrouter.New(nc, "my-service")
 
 	// Custom middleware that rejects requests with empty payloads.

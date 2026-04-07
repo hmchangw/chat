@@ -58,7 +58,7 @@ func main() {
 	cassRepo := cassrepo.NewRepository(cassSession)
 	mongoRepo := mongorepo.NewSubscriptionRepo(mongoClient.Database(cfg.Mongo.DB))
 	svc := service.New(cassRepo, mongoRepo)
-	router := natsrouter.New(nc.NatsConn(), "history-service")
+	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
 
