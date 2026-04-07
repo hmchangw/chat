@@ -26,8 +26,6 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.stream.msg"},
 		{"MemberInvite", subject.MemberInvite("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.member.invite"},
-		{"MsgHistory", subject.MsgHistory("alice", "r1", "site-a"),
-			"chat.user.alice.request.room.r1.site-a.msg.history"},
 		{"SubscriptionUpdate", subject.SubscriptionUpdate("alice"),
 			"chat.user.alice.event.subscription.update"},
 		{"RoomMetadataChanged", subject.RoomMetadataChanged("alice"),
@@ -46,6 +44,8 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.request.rooms.get.r1"},
 		{"RoomEvent", subject.RoomEvent("r1"), "chat.room.r1.event"},
 		{"UserRoomEvent", subject.UserRoomEvent("alice"), "chat.user.alice.event.room"},
+		{"RoomKeyUpdate", subject.RoomKeyUpdate("alice"),
+			"chat.user.alice.event.room.key"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

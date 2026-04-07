@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -18,7 +21,6 @@ func TestRoomJSON(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
-		Origin:           "site-a",
 		LastMsgAt:        time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		LastMsgID:        "m1",
 		LastMentionAllAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
@@ -59,17 +61,30 @@ func TestMessageEventJSON(t *testing.T) {
 }
 
 func TestSubscriptionJSON(t *testing.T) {
+	hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := model.Subscription{
-		ID:     "s1",
-		User:   model.SubscriptionUser{ID: "u1", Username: "alice"},
-		RoomID: "r1", SiteID: "site-a",
+		ID:                 "s1",
+		User:               model.SubscriptionUser{ID: "u1", Username: "alice"},
+		RoomID:             "r1",
+		SiteID:             "site-a",
 		Role:               model.RoleOwner,
-		SharedHistorySince: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		HistorySharedSince: &hss,
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		HasMention:         true,
 	}
-	roundTrip(t, &s, &model.Subscription{})
+
+	data, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst model.Subscription
+	if err := json.Unmarshal(data, &dst); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(s, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
+	}
 }
 
 func TestRoomTypeValues(t *testing.T) {
@@ -104,14 +119,14 @@ func TestRoomEventJSON(t *testing.T) {
 			Timestamp:  now,
 			RoomName:   "General",
 			RoomType:   model.RoomTypeGroup,
-			Origin:     "site-a",
+			SiteID:     "site-a",
 			UserCount:  5,
 			LastMsgAt:  now,
 			LastMsgID:  "msg-1",
-			Mentions:   []string{"user-2", "user-3"},
+			Mentions:   []model.Participant{{Username: "user-2", ChineseName: "user-2", EngName: "user-2"}, {Username: "user-3", ChineseName: "user-3", EngName: "user-3"}},
 			MentionAll: true,
 			HasMention: true,
-			Message:    &msg,
+			Message:    &model.ClientMessage{Message: msg, Sender: &model.Participant{UserID: "user-1", Username: "alice", ChineseName: "愛麗絲", EngName: "Alice Wang"}},
 		}
 
 		data, err := json.Marshal(src)
@@ -134,7 +149,7 @@ func TestRoomEventJSON(t *testing.T) {
 			Timestamp: now,
 			RoomName:  "Lobby",
 			RoomType:  model.RoomTypeGroup,
-			Origin:    "site-b",
+			SiteID:    "site-b",
 			UserCount: 3,
 			LastMsgAt: now,
 			LastMsgID: "msg-2",
@@ -168,6 +183,87 @@ func TestRoomEventJSON(t *testing.T) {
 func TestRoomEventTypeValues(t *testing.T) {
 	if model.RoomEventNewMessage != "new_message" {
 		t.Errorf("RoomEventNewMessage = %q", model.RoomEventNewMessage)
+	}
+}
+
+func TestParticipantJSON(t *testing.T) {
+	t.Run("with userID", func(t *testing.T) {
+		p := model.Participant{
+			UserID:      "u1",
+			Username:    "alice",
+			ChineseName: "愛麗絲",
+			EngName:     "Alice Wang",
+		}
+		roundTrip(t, &p, &model.Participant{})
+	})
+
+	t.Run("without userID omitted", func(t *testing.T) {
+		p := model.Participant{
+			Username:    "bob",
+			ChineseName: "鮑勃",
+			EngName:     "Bob Chen",
+		}
+		data, err := json.Marshal(p)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasUserID := raw["userId"]
+		assert.False(t, hasUserID, "userId should be omitted when empty")
+
+		var dst model.Participant
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, p, dst)
+	})
+}
+
+func TestClientMessageJSON(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	cm := model.ClientMessage{
+		Message: model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			Content: "hello", CreatedAt: now,
+		},
+		Sender: &model.Participant{
+			UserID:      "u1",
+			Username:    "alice",
+			ChineseName: "愛麗絲",
+			EngName:     "Alice Wang",
+		},
+	}
+	data, err := json.Marshal(cm)
+	require.NoError(t, err)
+
+	var dst model.ClientMessage
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, cm, dst)
+
+	// Verify inline embedding — message fields should be at top level
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Contains(t, raw, "id")
+	assert.Contains(t, raw, "roomId")
+	assert.Contains(t, raw, "sender")
+}
+
+func TestRoomKeyEventJSON(t *testing.T) {
+	src := model.RoomKeyEvent{
+		RoomID:     "room-1",
+		Version:    42,
+		PublicKey:  []byte{0x04, 0x01, 0x02, 0x03},
+		PrivateKey: []byte{0x0a, 0x0b, 0x0c},
+	}
+
+	data, err := json.Marshal(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst model.RoomKeyEvent
+	if err := json.Unmarshal(data, &dst); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
 	}
 }
 
