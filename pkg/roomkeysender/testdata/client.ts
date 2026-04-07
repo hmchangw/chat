@@ -4,7 +4,7 @@ import { connect, type NatsConnection, type Msg } from "nats.ws";
 
 interface RoomKeyEvent {
   roomId: string;
-  versionId: string;
+  version: number;
   publicKey: string;  // base64-encoded 65-byte uncompressed P-256 point
   privateKey: string; // base64-encoded 32-byte scalar
 }
@@ -115,8 +115,8 @@ async function main(): Promise<void> {
   const keySubject = `chat.user.${username}.event.room.key`;
   const msgSubject = `test.room.${roomID}.msg`;
 
-  // Store received keys indexed by versionId.
-  const keys = new Map<string, { publicKey: string; privateKey: string }>();
+  // Store received keys indexed by version number.
+  const keys = new Map<number, { publicKey: string; privateKey: string }>();
 
   const nc: NatsConnection = await connect({ servers: natsURL });
 
@@ -129,21 +129,23 @@ async function main(): Promise<void> {
   (async () => {
     for await (const msg of keySub) {
       const evt: RoomKeyEvent = JSON.parse(new TextDecoder().decode(msg.data));
-      keys.set(evt.versionId, { publicKey: evt.publicKey, privateKey: evt.privateKey });
+      keys.set(evt.version, { publicKey: evt.publicKey, privateKey: evt.privateKey });
     }
   })();
 
   // Process encrypted messages — decrypt first one and exit.
   for await (const msg of msgSub) {
-    const versionId = msg.headers?.get("X-Room-Key-Version");
-    if (!versionId) {
-      process.stderr.write("missing X-Room-Key-Version header\n");
-      process.exit(1);
+    const versionStr = msg.headers?.get("X-Room-Key-Version");
+    if (!versionStr) {
+      // No header means the message is not encrypted — print raw and exit.
+      process.stdout.write(new TextDecoder().decode(msg.data));
+      break;
     }
 
-    const keyPair = keys.get(versionId);
+    const version = parseInt(versionStr, 10);
+    const keyPair = keys.get(version);
     if (!keyPair) {
-      process.stderr.write(`no key found for version ${versionId}\n`);
+      process.stderr.write(`no key found for version ${version}\n`);
       process.exit(1);
     }
 

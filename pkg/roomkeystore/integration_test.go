@@ -57,14 +57,15 @@ func TestValkeyStore_Integration_RoundTrip(t *testing.T) {
 	pair := RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey}
 
 	// Set
-	err := store.Set(ctx, "room-1", "v1", pair)
+	ver, err := store.Set(ctx, "room-1", pair)
 	require.NoError(t, err)
+	assert.Equal(t, 0, ver)
 
 	// Get — should return the stored pair with version
 	got, err := store.Get(ctx, "room-1")
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.Equal(t, "v1", got.VersionID)
+	assert.Equal(t, 0, got.Version)
 	assert.Equal(t, pubKey, got.KeyPair.PublicKey)
 	assert.Equal(t, privKey, got.KeyPair.PrivateKey)
 
@@ -97,37 +98,39 @@ func TestValkeyStore_Integration_RotateRoundTrip(t *testing.T) {
 	newPriv := bytes.Repeat([]byte{0xDD}, 32)
 
 	// Set initial key pair.
-	err := store.Set(ctx, "room-rot", "v1", RoomKeyPair{PublicKey: oldPub, PrivateKey: oldPriv})
+	ver, err := store.Set(ctx, "room-rot", RoomKeyPair{PublicKey: oldPub, PrivateKey: oldPriv})
 	require.NoError(t, err)
+	assert.Equal(t, 0, ver)
 
 	// Rotate to new key pair.
-	err = store.Rotate(ctx, "room-rot", "v2", RoomKeyPair{PublicKey: newPub, PrivateKey: newPriv})
+	ver, err = store.Rotate(ctx, "room-rot", RoomKeyPair{PublicKey: newPub, PrivateKey: newPriv})
 	require.NoError(t, err)
+	assert.Equal(t, 1, ver)
 
 	// Get — should return new key pair as current.
 	got, err := store.Get(ctx, "room-rot")
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.Equal(t, "v2", got.VersionID)
+	assert.Equal(t, 1, got.Version)
 	assert.Equal(t, newPub, got.KeyPair.PublicKey)
 	assert.Equal(t, newPriv, got.KeyPair.PrivateKey)
 
 	// GetByVersion with old version — should return old key pair from previous slot.
-	oldPair, err := store.GetByVersion(ctx, "room-rot", "v1")
+	oldPair, err := store.GetByVersion(ctx, "room-rot", 0)
 	require.NoError(t, err)
 	require.NotNil(t, oldPair)
 	assert.Equal(t, oldPub, oldPair.PublicKey)
 	assert.Equal(t, oldPriv, oldPair.PrivateKey)
 
 	// GetByVersion with new version — should return new key pair from current slot.
-	newPair, err := store.GetByVersion(ctx, "room-rot", "v2")
+	newPair, err := store.GetByVersion(ctx, "room-rot", 1)
 	require.NoError(t, err)
 	require.NotNil(t, newPair)
 	assert.Equal(t, newPub, newPair.PublicKey)
 	assert.Equal(t, newPriv, newPair.PrivateKey)
 
 	// GetByVersion with unknown version — should return nil, nil.
-	unknown, err := store.GetByVersion(ctx, "room-rot", "v-unknown")
+	unknown, err := store.GetByVersion(ctx, "room-rot", 999)
 	require.NoError(t, err)
 	assert.Nil(t, unknown)
 }
@@ -142,14 +145,14 @@ func TestValkeyStore_Integration_GracePeriodExpiry(t *testing.T) {
 	newPub := bytes.Repeat([]byte{0x03}, 65)
 	newPriv := bytes.Repeat([]byte{0x04}, 32)
 
-	err := store.Set(ctx, "room-grace", "v1", RoomKeyPair{PublicKey: oldPub, PrivateKey: oldPriv})
+	_, err := store.Set(ctx, "room-grace", RoomKeyPair{PublicKey: oldPub, PrivateKey: oldPriv})
 	require.NoError(t, err)
 
-	err = store.Rotate(ctx, "room-grace", "v2", RoomKeyPair{PublicKey: newPub, PrivateKey: newPriv})
+	_, err = store.Rotate(ctx, "room-grace", RoomKeyPair{PublicKey: newPub, PrivateKey: newPriv})
 	require.NoError(t, err)
 
 	// Immediately after rotate, old key should still be retrievable.
-	oldPair, err := store.GetByVersion(ctx, "room-grace", "v1")
+	oldPair, err := store.GetByVersion(ctx, "room-grace", 0)
 	require.NoError(t, err)
 	require.NotNil(t, oldPair, "old key should be retrievable during grace period")
 
@@ -158,7 +161,7 @@ func TestValkeyStore_Integration_GracePeriodExpiry(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Old key should now be expired.
-	oldPair, err = store.GetByVersion(ctx, "room-grace", "v1")
+	oldPair, err = store.GetByVersion(ctx, "room-grace", 0)
 	require.NoError(t, err)
 	assert.Nil(t, oldPair, "old key should be expired after grace period")
 
@@ -166,14 +169,14 @@ func TestValkeyStore_Integration_GracePeriodExpiry(t *testing.T) {
 	got, err := store.Get(ctx, "room-grace")
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.Equal(t, "v2", got.VersionID)
+	assert.Equal(t, 1, got.Version)
 }
 
 func TestValkeyStore_Integration_RotateNoCurrentKey(t *testing.T) {
 	store := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
-	err := store.Rotate(ctx, "room-empty", "v1", RoomKeyPair{
+	_, err := store.Rotate(ctx, "room-empty", RoomKeyPair{
 		PublicKey:  bytes.Repeat([]byte{0x01}, 65),
 		PrivateKey: bytes.Repeat([]byte{0x02}, 32),
 	})
@@ -186,13 +189,13 @@ func TestValkeyStore_Integration_DeleteBothKeys(t *testing.T) {
 	ctx := context.Background()
 
 	// Set + Rotate to create both current and previous keys.
-	err := store.Set(ctx, "room-del", "v1", RoomKeyPair{
+	_, err := store.Set(ctx, "room-del", RoomKeyPair{
 		PublicKey:  bytes.Repeat([]byte{0xAA}, 65),
 		PrivateKey: bytes.Repeat([]byte{0xBB}, 32),
 	})
 	require.NoError(t, err)
 
-	err = store.Rotate(ctx, "room-del", "v2", RoomKeyPair{
+	_, err = store.Rotate(ctx, "room-del", RoomKeyPair{
 		PublicKey:  bytes.Repeat([]byte{0xCC}, 65),
 		PrivateKey: bytes.Repeat([]byte{0xDD}, 32),
 	})
@@ -208,7 +211,7 @@ func TestValkeyStore_Integration_DeleteBothKeys(t *testing.T) {
 	assert.Nil(t, got)
 
 	// Previous key should also be gone.
-	prev, err := store.GetByVersion(ctx, "room-del", "v1")
+	prev, err := store.GetByVersion(ctx, "room-del", 0)
 	require.NoError(t, err)
 	assert.Nil(t, prev)
 }
