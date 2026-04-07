@@ -41,6 +41,17 @@ CREATE TYPE IF NOT EXISTS "File"(
   type TEXT
 );
 ```
+#### QuotedParentMessage
+```cql
+CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
+  message_id TEXT,
+  room_id TEXT,
+  thread_room_id TEXT,
+  sender FROZEN<"Participant">,
+  created_at TIMESTAMP,
+  msg TEXT
+);
+```
 ### Table
 #### messages_by_room
 ```cql
@@ -59,6 +70,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   tshow BOOLEAN, // means from thread [also send to channel]
   thread_parent_id TEXT,
   thread_parent_created_at TIMESTAMP, // for FE to query thread parent message 
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
@@ -87,6 +99,7 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   file FROZEN<"File">,
   card FROZEN<"Card">,
   card_action FROZEN<"CardAction">,
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
@@ -113,6 +126,7 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   file FROZEN<"File">,
   card FROZEN<"Card">,
   card_action FROZEN<"CardAction">,
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
