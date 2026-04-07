@@ -32,7 +32,7 @@ func (v *fakeValidator) Validate(_ context.Context, _ string) (pkgoidc.Claims, e
 		Email:             v.username + "@example.com",
 		Description:       "E001, Test User, 測試用戶",
 		DeptName:          "QA",
-		DeptID:            "ABC"
+		DeptID:            "ABC",
 	}, nil
 }
 
