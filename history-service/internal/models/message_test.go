@@ -1,10 +1,12 @@
 package models
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMessage_JSON(t *testing.T) {
@@ -81,4 +83,15 @@ func TestMessage_JSON_Minimal(t *testing.T) {
 	assert.False(t, got.TShow)
 	assert.False(t, got.Unread)
 	assert.False(t, got.Deleted)
+}
+
+// roundTrip marshals src to JSON and unmarshals into dst, verifying they match.
+func roundTrip[T any](t *testing.T, src T) T {
+	t.Helper()
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+	var dst T
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+	return dst
 }

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -29,12 +31,60 @@ func TestRoomJSON(t *testing.T) {
 }
 
 func TestMessageJSON(t *testing.T) {
-	m := model.Message{
-		ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
-		Content:   "hello",
-		CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+	now := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	edited := now.Add(5 * time.Minute)
+	updated := now.Add(10 * time.Minute)
+	threadParent := now.Add(-1 * time.Hour)
+
+	msg := model.Message{
+		ID:                    "m1",
+		RoomID:                "r1",
+		CreatedAt:             now,
+		Sender:                model.Participant{ID: "u1", UserName: "alice"},
+		TargetUser:            &model.Participant{ID: "u2", UserName: "bob"},
+		Content:               "hello world",
+		Mentions:              []model.Participant{{ID: "u3", UserName: "charlie"}},
+		Attachments:           [][]byte{[]byte("attach1")},
+		File:                  &model.File{ID: "f1", Name: "doc.pdf", Type: "application/pdf"},
+		Card:                  &model.Card{Template: "approval", Data: []byte(`{"k":"v"}`)},
+		CardAction:            &model.CardAction{Verb: "approve", CardID: "c1"},
+		TShow:                 true,
+		ThreadParentCreatedAt: &threadParent,
+		VisibleTo:             "u1",
+		Unread:                true,
+		Reactions:             map[string][]model.Participant{"thumbsup": {{ID: "u2", UserName: "bob"}}},
+		Deleted:               false,
+		SysMsgType:            "user_joined",
+		SysMsgData:            []byte(`{"userId":"u3"}`),
+		FederateFrom:          "site-remote",
+		EditedAt:              &edited,
+		UpdatedAt:             &updated,
 	}
-	roundTrip(t, &m, &model.Message{})
+
+	roundTripDeep(t, &msg, &model.Message{})
+}
+
+func TestMessageJSON_Minimal(t *testing.T) {
+	msg := model.Message{
+		ID:        "m1",
+		RoomID:    "r1",
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Sender:    model.Participant{ID: "u1", UserName: "alice"},
+		Content:   "hi",
+	}
+	got := roundTripDeep(t, &msg, &model.Message{})
+	if got.TargetUser != nil {
+		t.Error("expected nil TargetUser")
+	}
+	if got.File != nil {
+		t.Error("expected nil File")
+	}
+	if got.Mentions != nil {
+		t.Error("expected nil Mentions")
+	}
+	if got.Reactions != nil {
+		t.Error("expected nil Reactions")
+	}
 }
 
 func TestSendMessageRequestJSON(t *testing.T) {
@@ -49,13 +99,15 @@ func TestSendMessageRequestJSON(t *testing.T) {
 func TestMessageEventJSON(t *testing.T) {
 	e := model.MessageEvent{
 		Message: model.Message{
-			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
-			Content:   "hello",
+			ID:        "m1",
+			RoomID:    "r1",
 			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			Sender:    model.Participant{ID: "u1", UserName: "alice"},
+			Content:   "hello",
 		},
 		SiteID: "site-a",
 	}
-	roundTrip(t, &e, &model.MessageEvent{})
+	roundTripDeep(t, &e, &model.MessageEvent{})
 }
 
 func TestSubscriptionJSON(t *testing.T) {
@@ -106,8 +158,11 @@ func TestRoleValues(t *testing.T) {
 func TestRoomEventJSON(t *testing.T) {
 	now := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
 	msg := model.Message{
-		ID: "msg-1", RoomID: "room-1", UserID: "user-1",
-		Username: "alice", Content: "hello", CreatedAt: now,
+		ID:        "msg-1",
+		RoomID:    "room-1",
+		Sender:    model.Participant{ID: "user-1", UserName: "alice"},
+		Content:   "hello",
+		CreatedAt: now,
 	}
 
 	t.Run("all fields populated", func(t *testing.T) {
@@ -205,7 +260,84 @@ func TestRoomKeyEventJSON(t *testing.T) {
 	}
 }
 
-// roundTrip marshals src to JSON, unmarshals into dst, and compares.
+func TestParticipantJSON(t *testing.T) {
+	p := model.Participant{
+		ID:          "u1",
+		UserName:    "alice",
+		EngName:     "Alice Smith",
+		CompanyName: "Acme Corp",
+		AppID:       "app-1",
+		AppName:     "MyApp",
+		IsBot:       true,
+	}
+	roundTrip(t, &p, &model.Participant{})
+}
+
+func TestParticipantJSON_Minimal(t *testing.T) {
+	p := model.Participant{ID: "u1", UserName: "alice"}
+	roundTrip(t, &p, &model.Participant{})
+}
+
+func TestFileJSON(t *testing.T) {
+	f := model.File{ID: "f1", Name: "doc.pdf", Type: "application/pdf"}
+	roundTrip(t, &f, &model.File{})
+}
+
+func TestCardJSON(t *testing.T) {
+	c := model.Card{Template: "approval", Data: []byte(`{"key":"value"}`)}
+	roundTripDeep(t, &c, &model.Card{})
+}
+
+func TestCardJSON_NilData(t *testing.T) {
+	c := model.Card{Template: "simple"}
+	roundTripDeep(t, &c, &model.Card{})
+}
+
+func TestCardActionJSON(t *testing.T) {
+	ca := model.CardAction{
+		Verb:        "approve",
+		Text:        "Approve",
+		CardID:      "c1",
+		DisplayText: "Click to approve",
+		HideExecLog: true,
+		CardTmID:    "tm1",
+		Data:        []byte(`{"action":"yes"}`),
+	}
+	roundTripDeep(t, &ca, &model.CardAction{})
+}
+
+func TestCardActionJSON_Minimal(t *testing.T) {
+	ca := model.CardAction{Verb: "click"}
+	roundTripDeep(t, &ca, &model.CardAction{})
+}
+
+func TestUnmarshalUDT_UnknownField(t *testing.T) {
+	assert.NoError(t, (&model.Participant{}).UnmarshalUDT("nonexistent", nil, nil))
+	assert.NoError(t, (&model.File{}).UnmarshalUDT("nonexistent", nil, nil))
+	assert.NoError(t, (&model.Card{}).UnmarshalUDT("nonexistent", nil, nil))
+	assert.NoError(t, (&model.CardAction{}).UnmarshalUDT("nonexistent", nil, nil))
+}
+
+func TestMarshalUDT_UnknownField(t *testing.T) {
+	data, err := (&model.Participant{}).MarshalUDT("nonexistent", nil)
+	assert.NoError(t, err)
+	assert.Nil(t, data)
+
+	data, err = (&model.File{}).MarshalUDT("nonexistent", nil)
+	assert.NoError(t, err)
+	assert.Nil(t, data)
+
+	data, err = (&model.Card{}).MarshalUDT("nonexistent", nil)
+	assert.NoError(t, err)
+	assert.Nil(t, data)
+
+	data, err = (&model.CardAction{}).MarshalUDT("nonexistent", nil)
+	assert.NoError(t, err)
+	assert.Nil(t, data)
+}
+
+// roundTrip marshals src to JSON, unmarshals into dst, and compares using ==.
+// Use for types satisfying comparable (no slices/maps).
 func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
 	t.Helper()
 	data, err := json.Marshal(src)
@@ -218,4 +350,21 @@ func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
 	if *dst != *src {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", *dst, *src)
 	}
+}
+
+// roundTripDeep marshals src to JSON, unmarshals into dst, and compares using
+// reflect.DeepEqual. Use for types with slices, maps, or byte fields.
+func roundTripDeep[T any](t *testing.T, src *T, dst *T) *T {
+	t.Helper()
+	data, err := json.Marshal(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := json.Unmarshal(data, dst); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(*dst, *src) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", *dst, *src)
+	}
+	return dst
 }
