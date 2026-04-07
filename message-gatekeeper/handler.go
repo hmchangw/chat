@@ -147,12 +147,13 @@ func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID s
 	// Build Message
 	now := time.Now().UTC()
 	msg := model.Message{
-		ID:        req.ID,
-		RoomID:    roomID,
-		UserID:    sub.User.ID,
-		Username:  sub.User.Username,
-		Content:   req.Content,
-		CreatedAt: now,
+		ID:                    req.ID,
+		RoomID:                roomID,
+		UserID:                sub.User.ID,
+		Username:              sub.User.Username,
+		Content:               req.Content,
+		CreatedAt:             now,
+		ThreadParentMessageID: req.ThreadParentMessageID,
 	}
 
 	// Publish MessageEvent to MESSAGES_CANONICAL

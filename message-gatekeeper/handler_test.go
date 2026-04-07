@@ -95,6 +95,42 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 		},
 		{
+			name:     "happy path with thread parent",
+			username: validUsername,
+			roomID:   validRoomID,
+			siteID:   validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{
+					ID:                    validID,
+					Content:               validContent,
+					ThreadParentMessageID: "parent-msg-uuid",
+				}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validUsername, validRoomID).
+					Return(sub, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr: false,
+			checkResult: func(t *testing.T, data []byte, published []publishedMsg) {
+				require.NotNil(t, data)
+				var msg model.Message
+				require.NoError(t, json.Unmarshal(data, &msg))
+				assert.Equal(t, "parent-msg-uuid", msg.ThreadParentMessageID)
+
+				require.Len(t, published, 1)
+				var evt model.MessageEvent
+				require.NoError(t, json.Unmarshal(published[0].data, &evt))
+				assert.Equal(t, "parent-msg-uuid", evt.Message.ThreadParentMessageID)
+			},
+		},
+		{
 			name:     "invalid UUID",
 			username: validUsername,
 			roomID:   validRoomID,
