@@ -11,7 +11,8 @@ CREATE TYPE IF NOT EXISTS "Participant"(
   company_name TEXT, // need to change internal
   app_id TEXT,
   app_name TEXT,
-  is_bot BOOLEAN
+  is_bot BOOLEAN,
+  account TEXT
 );
 ```
 #### Card
@@ -46,10 +47,11 @@ CREATE TYPE IF NOT EXISTS "File"(
 CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
   message_id TEXT,
   room_id TEXT,
-  thread_room_id TEXT,
   sender FROZEN<"Participant">,
   created_at TIMESTAMP,
-  msg TEXT
+  msg TEXT,
+  mentions SET<FROZEN<"Participant">>,
+  attachments LIST<BLOB>
 );
 ```
 ### Table
@@ -139,4 +141,30 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   pinned_by FROZEN<"Participant">,
   PRIMARY KEY((room_id),created_at,message_id)
 )WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+```
+#### messages_by_id
+```cql
+CREATE TABLE IF NOT EXISTS messages_by_id(
+  message_id TEXT,
+  sender FROZEN<"Participant">,
+  target_user FROZEN<"Participant">,
+  msg TEXT,
+  mentions SET<FROZEN<"Participant">>,
+  attachments LIST<BLOB>,
+  file FROZEN<"File">,
+  card FROZEN<"Card">,
+  card_action FROZEN<"CardAction">,
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
+  visible_to TEXT,
+  unread BOOLEAN,
+  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  deleted BOOLEAN,
+  type TEXT,
+  sys_msg_data BLOB,
+  site_id TEXT,
+  edited_at TIMESTAMP,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP,
+  PRIMARY KEY(message_id,created_at)
+)WITH CLUSTERING ORDER BY (created_at DESC);
 ```
