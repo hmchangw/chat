@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -23,14 +24,14 @@ type fakeHashClient struct {
 	deletePipelineErr error
 }
 
-func (f *fakeHashClient) hset(_ context.Context, key string, pub, priv, ver string) error {
+func (f *fakeHashClient) hset(_ context.Context, key string, pub, priv string) error {
 	if f.hsetErr != nil {
 		return f.hsetErr
 	}
 	if f.store == nil {
 		f.store = make(map[string]map[string]string)
 	}
-	f.store[key] = map[string]string{"pub": pub, "priv": priv, "ver": ver}
+	f.store[key] = map[string]string{"pub": pub, "priv": priv, "ver": "0"}
 	return nil
 }
 
@@ -49,22 +50,24 @@ func (f *fakeHashClient) hgetall(_ context.Context, key string) (map[string]stri
 	return m, nil
 }
 
-func (f *fakeHashClient) rotatePipeline(_ context.Context, currentKey, prevKey string, pub, priv, ver string, _ time.Duration) error {
+func (f *fakeHashClient) rotatePipeline(_ context.Context, currentKey, prevKey string, pub, priv string, _ time.Duration) (int, error) {
 	if f.rotatePipelineErr != nil {
-		return f.rotatePipelineErr
+		return 0, f.rotatePipelineErr
 	}
 	if f.store == nil {
-		return ErrNoCurrentKey
+		return 0, ErrNoCurrentKey
 	}
 	cur, ok := f.store[currentKey]
 	if !ok {
-		return ErrNoCurrentKey
+		return 0, ErrNoCurrentKey
 	}
+	curVer, _ := strconv.Atoi(cur["ver"])
+	newVer := curVer + 1
 	// Copy current to prev.
 	f.store[prevKey] = map[string]string{"pub": cur["pub"], "priv": cur["priv"], "ver": cur["ver"]}
 	// Write new current.
-	f.store[currentKey] = map[string]string{"pub": pub, "priv": priv, "ver": ver}
-	return nil
+	f.store[currentKey] = map[string]string{"pub": pub, "priv": priv, "ver": strconv.Itoa(newVer)}
+	return newVer, nil
 }
 
 func (f *fakeHashClient) deletePipeline(_ context.Context, currentKey, prevKey string) error {
@@ -92,21 +95,18 @@ func TestValkeyStore_Set(t *testing.T) {
 		name        string
 		fake        *fakeHashClient
 		roomID      string
-		versionID   string
 		wantErr     bool
 		errContains string
 	}{
 		{
-			name:      "happy path — stores key pair with no TTL",
-			fake:      &fakeHashClient{},
-			roomID:    "room-1",
-			versionID: "v1",
+			name:   "happy path — stores key pair with no TTL",
+			fake:   &fakeHashClient{},
+			roomID: "room-1",
 		},
 		{
 			name:        "hset error — returns wrapped error",
 			fake:        &fakeHashClient{hsetErr: errors.New("connection refused")},
 			roomID:      "room-1",
-			versionID:   "v1",
 			wantErr:     true,
 			errContains: "set room key",
 		},
@@ -115,19 +115,20 @@ func TestValkeyStore_Set(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newTestStore(tt.fake)
-			err := store.Set(context.Background(), tt.roomID, tt.versionID, pair)
+			ver, err := store.Set(context.Background(), tt.roomID, pair)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errContains)
 				return
 			}
 			require.NoError(t, err)
+			assert.Equal(t, 0, ver)
 			// Verify the hash was written under the correct Valkey key.
 			stored := tt.fake.store[roomkey(tt.roomID)]
 			require.NotNil(t, stored, "hash should exist in fake store")
 			assert.NotEmpty(t, stored["pub"], "pub field should be set")
 			assert.NotEmpty(t, stored["priv"], "priv field should be set")
-			assert.Equal(t, tt.versionID, stored["ver"], "ver field should match")
+			assert.Equal(t, "0", stored["ver"], "ver field should be 0")
 		})
 	}
 }
@@ -141,21 +142,21 @@ func TestValkeyStore_Get(t *testing.T) {
 		fake        *fakeHashClient
 		roomID      string
 		wantPair    *RoomKeyPair
-		wantVer     string
+		wantVer     int
 		wantErr     bool
 		errContains string
 	}{
 		{
-			name: "happy path — returns VersionedKeyPair with correct VersionID",
+			name: "happy path — returns VersionedKeyPair with correct Version",
 			fake: func() *fakeHashClient {
 				f := &fakeHashClient{}
 				store := newTestStore(f)
-				_ = store.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = store.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
 				return f
 			}(),
 			roomID:   "room-1",
 			wantPair: &RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey},
-			wantVer:  "v1",
+			wantVer:  0,
 		},
 		{
 			name:   "missing key — returns nil, nil",
@@ -173,7 +174,7 @@ func TestValkeyStore_Get(t *testing.T) {
 			name: "corrupted pub base64 — returns error",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"): {"pub": "!!!notbase64!!!", "priv": "AQID", "ver": "v1"},
+					roomkey("room-1"): {"pub": "!!!notbase64!!!", "priv": "AQID", "ver": "0"},
 				},
 			},
 			roomID:      "room-1",
@@ -184,12 +185,23 @@ func TestValkeyStore_Get(t *testing.T) {
 			name: "corrupted priv base64 — returns error",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"): {"pub": "AQID", "priv": "!!!notbase64!!!", "ver": "v1"},
+					roomkey("room-1"): {"pub": "AQID", "priv": "!!!notbase64!!!", "ver": "0"},
 				},
 			},
 			roomID:      "room-1",
 			wantErr:     true,
 			errContains: "get room key",
+		},
+		{
+			name: "non-numeric version — returns error containing parse version",
+			fake: &fakeHashClient{
+				store: map[string]map[string]string{
+					roomkey("room-1"): {"pub": "AQID", "priv": "AQID", "ver": "not-a-number"},
+				},
+			},
+			roomID:      "room-1",
+			wantErr:     true,
+			errContains: "parse version",
 		},
 	}
 
@@ -209,7 +221,7 @@ func TestValkeyStore_Get(t *testing.T) {
 				return
 			}
 			require.NotNil(t, got)
-			assert.Equal(t, tt.wantVer, got.VersionID)
+			assert.Equal(t, tt.wantVer, got.Version)
 			assert.Equal(t, tt.wantPair.PublicKey, got.KeyPair.PublicKey)
 			assert.Equal(t, tt.wantPair.PrivateKey, got.KeyPair.PrivateKey)
 		})
@@ -226,7 +238,7 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 		name        string
 		fake        *fakeHashClient
 		roomID      string
-		versionID   string
+		version     int
 		wantPair    *RoomKeyPair
 		wantErr     bool
 		errContains string
@@ -236,48 +248,48 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 			fake: func() *fakeHashClient {
 				f := &fakeHashClient{}
 				s := newTestStore(f)
-				_ = s.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
 				return f
 			}(),
-			roomID:    "room-1",
-			versionID: "v1",
-			wantPair:  &RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey},
+			roomID:   "room-1",
+			version:  0,
+			wantPair: &RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey},
 		},
 		{
 			name: "matches previous key after rotation",
 			fake: func() *fakeHashClient {
 				f := &fakeHashClient{}
 				s := newTestStore(f)
-				_ = s.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
-				_ = s.Rotate(context.Background(), "room-1", "v2", RoomKeyPair{PublicKey: pubKey2, PrivateKey: privKey2})
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Rotate(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey2, PrivateKey: privKey2})
 				return f
 			}(),
-			roomID:    "room-1",
-			versionID: "v1",
-			wantPair:  &RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey},
+			roomID:   "room-1",
+			version:  0,
+			wantPair: &RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey},
 		},
 		{
 			name: "no match — returns nil, nil",
 			fake: func() *fakeHashClient {
 				f := &fakeHashClient{}
 				s := newTestStore(f)
-				_ = s.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
 				return f
 			}(),
-			roomID:    "room-1",
-			versionID: "nonexistent-version",
+			roomID:  "room-1",
+			version: 999,
 		},
 		{
-			name:      "no keys at all — returns nil, nil",
-			fake:      &fakeHashClient{},
-			roomID:    "room-1",
-			versionID: "v1",
+			name:    "no keys at all — returns nil, nil",
+			fake:    &fakeHashClient{},
+			roomID:  "room-1",
+			version: 0,
 		},
 		{
 			name:        "hgetall error on current key — returns wrapped error",
 			fake:        &fakeHashClient{hgetallErr: errors.New("connection reset")},
 			roomID:      "room-1",
-			versionID:   "v1",
+			version:     0,
 			wantErr:     true,
 			errContains: "get room key by version",
 		},
@@ -287,13 +299,13 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 				f := &fakeHashClient{}
 				s := newTestStore(f)
 				// Set a current key with a different version so the code falls through to check previous.
-				_ = s.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
 				f.hgetallErr = errors.New("connection reset")
 				f.hgetallErrOnCall = 2 // error only on the second hgetall (previous key lookup)
 				return f
 			}(),
 			roomID:      "room-1",
-			versionID:   "v-old",
+			version:     99,
 			wantErr:     true,
 			errContains: "get room key by version",
 		},
@@ -301,12 +313,12 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 			name: "corrupted previous key base64 — returns error",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"):     {"pub": "AQID", "priv": "AQID", "ver": "v1"},
-					roomprevkey("room-1"): {"pub": "!!!bad!!!", "priv": "AQID", "ver": "v-old"},
+					roomkey("room-1"):     {"pub": "AQID", "priv": "AQID", "ver": "0"},
+					roomprevkey("room-1"): {"pub": "!!!bad!!!", "priv": "AQID", "ver": "99"},
 				},
 			},
 			roomID:      "room-1",
-			versionID:   "v-old",
+			version:     99,
 			wantErr:     true,
 			errContains: "get room key by version",
 		},
@@ -314,11 +326,11 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 			name: "corrupted current key base64 — returns error when version matches current",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"): {"pub": "!!!bad!!!", "priv": "AQID", "ver": "v1"},
+					roomkey("room-1"): {"pub": "!!!bad!!!", "priv": "AQID", "ver": "0"},
 				},
 			},
 			roomID:      "room-1",
-			versionID:   "v1",
+			version:     0,
 			wantErr:     true,
 			errContains: "get room key by version",
 		},
@@ -327,7 +339,7 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newTestStore(tt.fake)
-			got, err := store.GetByVersion(context.Background(), tt.roomID, tt.versionID)
+			got, err := store.GetByVersion(context.Background(), tt.roomID, tt.version)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errContains)
@@ -357,6 +369,7 @@ func TestValkeyStore_Rotate(t *testing.T) {
 		fake        *fakeHashClient
 		roomID      string
 		setupFn     func(s *valkeyStore)
+		wantVer     int
 		wantErr     bool
 		errContains string
 		errIs       error
@@ -366,8 +379,9 @@ func TestValkeyStore_Rotate(t *testing.T) {
 			fake:   &fakeHashClient{},
 			roomID: "room-1",
 			setupFn: func(s *valkeyStore) {
-				_ = s.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
 			},
+			wantVer: 1,
 		},
 		{
 			name:        "no current key — returns ErrNoCurrentKey",
@@ -382,10 +396,11 @@ func TestValkeyStore_Rotate(t *testing.T) {
 			fake:   &fakeHashClient{},
 			roomID: "room-1",
 			setupFn: func(s *valkeyStore) {
-				_ = s.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
 				// First rotation creates a previous key.
-				_ = s.Rotate(context.Background(), "room-1", "v2", RoomKeyPair{PublicKey: newPubKey, PrivateKey: newPrivKey})
+				_, _ = s.Rotate(context.Background(), "room-1", RoomKeyPair{PublicKey: newPubKey, PrivateKey: newPrivKey})
 			},
+			wantVer: 2,
 		},
 		{
 			name:   "pipeline error — returns wrapped error",
@@ -394,7 +409,7 @@ func TestValkeyStore_Rotate(t *testing.T) {
 			setupFn: func(s *valkeyStore) {
 				// Temporarily clear the error so Set works.
 				s.client.(*fakeHashClient).rotatePipelineErr = nil
-				_ = s.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
 				s.client.(*fakeHashClient).rotatePipelineErr = errors.New("pipeline broken")
 			},
 			wantErr:     true,
@@ -408,7 +423,7 @@ func TestValkeyStore_Rotate(t *testing.T) {
 			if tt.setupFn != nil {
 				tt.setupFn(store)
 			}
-			err := store.Rotate(context.Background(), tt.roomID, "v-new", RoomKeyPair{PublicKey: newPubKey, PrivateKey: newPrivKey})
+			ver, err := store.Rotate(context.Background(), tt.roomID, RoomKeyPair{PublicKey: newPubKey, PrivateKey: newPrivKey})
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errContains)
@@ -418,12 +433,13 @@ func TestValkeyStore_Rotate(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+			assert.Equal(t, tt.wantVer, ver)
 
 			// Verify new pair is current with correct version.
 			got, err := store.Get(context.Background(), tt.roomID)
 			require.NoError(t, err)
 			require.NotNil(t, got)
-			assert.Equal(t, "v-new", got.VersionID)
+			assert.Equal(t, tt.wantVer, got.Version)
 			assert.Equal(t, newPubKey, got.KeyPair.PublicKey)
 			assert.Equal(t, newPrivKey, got.KeyPair.PrivateKey)
 		})
@@ -446,8 +462,8 @@ func TestValkeyStore_Delete(t *testing.T) {
 			fake: func() *fakeHashClient {
 				f := &fakeHashClient{}
 				s := newTestStore(f)
-				_ = s.Set(context.Background(), "room-1", "v1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
-				_ = s.Rotate(context.Background(), "room-1", "v2", RoomKeyPair{
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Rotate(context.Background(), "room-1", RoomKeyPair{
 					PublicKey:  bytes.Repeat([]byte{0x11}, 65),
 					PrivateKey: bytes.Repeat([]byte{0x22}, 32),
 				})

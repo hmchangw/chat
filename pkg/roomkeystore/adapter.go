@@ -14,8 +14,8 @@ type redisAdapter struct {
 	c *redis.Client
 }
 
-func (a *redisAdapter) hset(ctx context.Context, key string, pub, priv, ver string) error {
-	return a.c.HSet(ctx, key, "pub", pub, "priv", priv, "ver", ver).Err()
+func (a *redisAdapter) hset(ctx context.Context, key string, pub, priv string) error {
+	return a.c.HSet(ctx, key, "pub", pub, "priv", priv, "ver", "0").Err()
 }
 
 func (a *redisAdapter) hgetall(ctx context.Context, key string) (map[string]string, error) {
@@ -23,39 +23,42 @@ func (a *redisAdapter) hgetall(ctx context.Context, key string) (map[string]stri
 }
 
 // rotateScript atomically reads the current key, copies it to the previous
-// slot with a grace-period TTL, and writes the new key as current.
+// slot with a grace-period TTL, increments the version, and writes the new key as current.
+// Returns the new version number.
 // This runs as a single Lua script so no other client can interleave.
 var rotateScript = redis.NewScript(`
 local currentKey = KEYS[1]
 local prevKey    = KEYS[2]
 local newPub     = ARGV[1]
 local newPriv    = ARGV[2]
-local newVer     = ARGV[3]
-local graceSec   = tonumber(ARGV[4])
+local graceSec   = tonumber(ARGV[3])
 
 local cur = redis.call('HGETALL', currentKey)
 if #cur == 0 then
     return redis.error_reply('no current key')
 end
 
+local curVer = tonumber(redis.call('HGET', currentKey, 'ver')) or 0
+local newVer = curVer + 1
+
 redis.call('DEL', prevKey)
 redis.call('HSET', prevKey, unpack(cur))
 redis.call('EXPIRE', prevKey, graceSec)
 
-redis.call('HSET', currentKey, 'pub', newPub, 'priv', newPriv, 'ver', newVer)
-return 1
+redis.call('HSET', currentKey, 'pub', newPub, 'priv', newPriv, 'ver', tostring(newVer))
+return newVer
 `)
 
-func (a *redisAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv, ver string, gracePeriod time.Duration) error {
+func (a *redisAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv string, gracePeriod time.Duration) (int, error) {
 	graceSec := int(gracePeriod.Seconds())
 	if graceSec < 1 {
 		graceSec = 1
 	}
-	err := rotateScript.Run(ctx, a.c, []string{currentKey, prevKey}, pub, priv, ver, graceSec).Err()
+	result, err := rotateScript.Run(ctx, a.c, []string{currentKey, prevKey}, pub, priv, graceSec).Int()
 	if err != nil && strings.Contains(err.Error(), "no current key") {
-		return ErrNoCurrentKey
+		return 0, ErrNoCurrentKey
 	}
-	return err
+	return result, err
 }
 
 func (a *redisAdapter) deletePipeline(ctx context.Context, currentKey, prevKey string) error {

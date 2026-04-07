@@ -8,7 +8,7 @@
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Go 1.24 |
+| Language | Go 1.25 |
 | Messaging | NATS + JetStream |
 | Operational DB | MongoDB (rooms, subscriptions, messages) |
 | History DB | Cassandra (message history / time-series) |
@@ -242,7 +242,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Always provide `envDefault` for non-critical config (port, database name, log level); never default secrets or connection strings — mark them `required`
 
 ### Docker
-- Multi-stage Dockerfiles: `golang:1.24-alpine` builder, `alpine:3.21` runtime
+- Multi-stage Dockerfiles: `golang:1.25-alpine` builder, `alpine:3.21` runtime
 - Location: `<service>/deploy/Dockerfile`
 - Build context: repo root so `pkg/` and `go.mod` are accessible
 - Docker Compose for local dev only — include only the dependencies the service needs
