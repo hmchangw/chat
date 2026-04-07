@@ -51,7 +51,8 @@ CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
   created_at TIMESTAMP,
   msg TEXT,
   mentions SET<FROZEN<"Participant">>,
-  attachments LIST<BLOB>
+  attachments LIST<BLOB>,
+  message_link TEXT
 );
 ```
 ### Table
