@@ -104,6 +104,7 @@ func TestSender_Send(t *testing.T) {
 			assert.Equal(t, tt.evt.Version, got.Version)
 			assert.Equal(t, tt.evt.PublicKey, got.PublicKey)
 			assert.Equal(t, tt.evt.PrivateKey, got.PrivateKey)
+			assert.Greater(t, got.Timestamp, int64(0))
 		})
 	}
 }
