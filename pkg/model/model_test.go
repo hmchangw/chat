@@ -54,6 +54,29 @@ func TestMessageJSON(t *testing.T) {
 		_, present := raw["threadParentMessageId"]
 		assert.False(t, present, "threadParentMessageId should be omitted when empty")
 	})
+
+	t.Run("threadParentMessageCreatedAt omitted when nil", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:   "hello",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["threadParentMessageCreatedAt"]
+		assert.False(t, present, "threadParentMessageCreatedAt should be omitted when nil")
+	})
+
+	t.Run("with threadParentMessageCreatedAt", func(t *testing.T) {
+		raw := `{"id":"m1","roomId":"r1","userId":"u1","userAccount":"alice","content":"reply","createdAt":"2026-01-01T12:00:00Z","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":"2026-01-01T11:00:00Z"}`
+		var m model.Message
+		require.NoError(t, json.Unmarshal([]byte(raw), &m))
+		assert.Equal(t, "parent-msg-uuid", m.ThreadParentMessageID)
+		require.NotNil(t, m.ThreadParentMessageCreatedAt)
+		assert.Equal(t, time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC), m.ThreadParentMessageCreatedAt.UTC())
+	})
 }
 
 func TestSendMessageRequestJSON(t *testing.T) {
@@ -79,6 +102,29 @@ func TestSendMessageRequestJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &raw))
 		_, present := raw["threadParentMessageId"]
 		assert.False(t, present, "threadParentMessageId should be omitted when empty")
+	})
+
+	t.Run("with threadParentMessageCreatedAt", func(t *testing.T) {
+		raw := `{"id":"msg-uuid-1","content":"reply","requestId":"req-1","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":"2026-01-01T11:00:00Z"}`
+		var r model.SendMessageRequest
+		require.NoError(t, json.Unmarshal([]byte(raw), &r))
+		assert.Equal(t, "parent-msg-uuid", r.ThreadParentMessageID)
+		require.NotNil(t, r.ThreadParentMessageCreatedAt)
+		assert.Equal(t, time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC), r.ThreadParentMessageCreatedAt.UTC())
+	})
+
+	t.Run("threadParentMessageCreatedAt omitted when nil", func(t *testing.T) {
+		r := model.SendMessageRequest{
+			ID:        "msg-uuid-1",
+			Content:   "hello world",
+			RequestID: "req-1",
+		}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["threadParentMessageCreatedAt"]
+		assert.False(t, present, "threadParentMessageCreatedAt should be omitted when nil")
 	})
 }
 
