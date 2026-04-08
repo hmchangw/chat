@@ -155,8 +155,16 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// Set event timestamp
+	req.Timestamp = time.Now().UTC().UnixMilli()
+
+	timestampedData, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal invite request: %w", err)
+	}
+
 	// Publish to ROOMS stream for room-worker processing
-	if err := h.publishToStream(data); err != nil {
+	if err := h.publishToStream(timestampedData); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
