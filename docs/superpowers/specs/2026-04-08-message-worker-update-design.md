@@ -202,19 +202,32 @@ New fields: `MongoURI`, `MongoDB` — same env var names and defaults as broadca
 | `message-worker/integration_test.go` | Update schema setup and assertions for new table structure |
 | `message-worker/deploy/docker-compose.yml` | Add MongoDB service |
 
-## Future Enrichment (Not In Scope)
+## Incremental Enrichment Roadmap
 
-The following `messages_by_room` fields are written as nil/empty because the canonical stream does not carry them yet. Each will require either enriching `MessageEvent` upstream or adding additional lookups in this worker:
+Fields not populated in this phase, organized by readiness.
+
+### Ready to Add (MongoDB connection already wired in)
+
+These can be added incrementally with minimal effort — the MongoDB connection, employee collection access, and MetadataStore interface are already in place from this phase.
+
+**`mentions` (SET<Participant>)** — Extract `@username` from `evt.Message.Content`, batch-lookup employees, build Participant UDTs. The extraction logic already exists in `broadcast-worker/handler.go` (`extractMentionedAccounts`). Implementation: add `FindEmployeesByAccounts` to MetadataStore (same pattern as `broadcast-worker/store_mongo.go:79`), add mention parsing to handler, populate the `mentions` column. Collection names may differ from broadcast-worker but the same MongoDB instance is used.
+
+### Requires Upstream Changes (MessageEvent enrichment needed)
+
+These fields have no data source in the current `MessageEvent`. Each requires changes to the upstream pipeline (message-gatekeeper or client) before this worker can persist them.
 
 - `target_user` — Participant UDT for DM target
-- `mentions` — Set of mentioned Participant UDTs
-- `attachments` — Binary attachment list
-- `file` — File UDT
-- `card` — Card UDT
+- `file` — File UDT (no file upload flow exists yet)
+- `card` — Card UDT (no card flow exists yet)
 - `card_action` — CardAction UDT
-- `quoted_parent_message` — QuotedParentMessage UDT
-- `visible_to` — Visibility restriction
-- `reactions` — Reaction map
+- `attachments` — Binary attachment list
+- `quoted_parent_message` — QuotedParentMessage UDT (no quoting flow exists yet)
+- `visible_to` — Visibility restriction (no visibility rules implemented yet)
 - `type` — Message type (system message, etc.)
 - `sys_msg_data` — System message payload
 - `tshow` — Thread "also send to channel" flag
+
+### Not Applicable on Creation
+
+- `reactions` — Always empty for new messages; populated later via a separate reaction flow
+- `edited_at` — Set on message edit, not creation
