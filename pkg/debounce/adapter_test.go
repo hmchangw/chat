@@ -14,9 +14,9 @@ import (
 // fakeSortedSetCommander simulates sorted-set behavior in memory.
 // It stores member->score mappings and supports injectable per-method errors.
 type fakeSortedSetCommander struct {
-	store    map[string]float64
-	zaddErr  error
-	claimErr error
+	store     map[string]float64
+	zaddErr   error
+	claimErr  error
 	removeErr error
 }
 
