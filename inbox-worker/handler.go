@@ -45,16 +45,16 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 
 	switch evt.Type {
 	case "member_added":
-		return h.handleMemberAdded(ctx, evt)
+		return h.handleMemberAdded(ctx, &evt)
 	case "room_sync":
-		return h.handleRoomSync(ctx, evt)
+		return h.handleRoomSync(ctx, &evt)
 	default:
 		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
 	}
 }
 
-func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) error {
+func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent) error {
 	var invite model.InviteMemberRequest
 	if err := json.Unmarshal(evt.Payload, &invite); err != nil {
 		return fmt.Errorf("unmarshal member_added payload: %w", err)
@@ -94,7 +94,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt model.OutboxEvent) 
 	return nil
 }
 
-func (h *Handler) handleRoomSync(ctx context.Context, evt model.OutboxEvent) error {
+func (h *Handler) handleRoomSync(ctx context.Context, evt *model.OutboxEvent) error {
 	var room model.Room
 	if err := json.Unmarshal(evt.Payload, &room); err != nil {
 		return fmt.Errorf("unmarshal room_sync payload: %w", err)
