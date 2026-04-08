@@ -55,6 +55,20 @@ func TestMessageJSON(t *testing.T) {
 		assert.False(t, present, "threadParentMessageId should be omitted when empty")
 	})
 
+	t.Run("threadParentMessageCreatedAt omitted when nil", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:   "hello",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["threadParentMessageCreatedAt"]
+		assert.False(t, present, "threadParentMessageCreatedAt should be omitted when nil")
+	})
+
 	t.Run("with threadParentMessageCreatedAt", func(t *testing.T) {
 		parentTS := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
 		m := model.Message{
