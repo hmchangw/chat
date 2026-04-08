@@ -22,14 +22,14 @@ import (
 )
 
 type fakeValidator struct {
-	username string
+	account string
 }
 
 func (v *fakeValidator) Validate(_ context.Context, _ string) (pkgoidc.Claims, error) {
 	return pkgoidc.Claims{
-		Subject:           "uuid-" + v.username,
-		PreferredUsername: v.username,
-		Email:             v.username + "@example.com",
+		Subject:           "uuid-" + v.account,
+		PreferredUsername: v.account,
+		Email:             v.account + "@example.com",
 		Description:       "E001, Test User, 測試用戶",
 		DeptName:          "QA",
 		DeptID:            "ABC",
@@ -45,7 +45,7 @@ func TestAuthHandler_Integration(t *testing.T) {
 	userPub, err := userKP.PublicKey()
 	require.NoError(t, err)
 
-	validator := &fakeValidator{username: "testuser"}
+	validator := &fakeValidator{account: "testuser"}
 	handler := NewAuthHandler(validator, kp, 2*time.Hour)
 
 	gin.SetMode(gin.TestMode)

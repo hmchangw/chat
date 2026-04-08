@@ -11,7 +11,7 @@ User → MESSAGES_{siteID} stream
                ├── save message (Cassandra)
                ├── update room lastMessage (MongoDB)
                ├── publish → FANOUT_{siteID} (broadcast-worker)
-               └── reply → chat.user.{userID}.response.{requestID}
+               └── reply → chat.user.{account}.response.{requestID}
 ```
 
 ## NATS Subject
@@ -19,7 +19,7 @@ User → MESSAGES_{siteID} stream
 Consumed subject pattern:
 
 ```
-chat.user.{userID}.room.{roomID}.{siteID}.msg.send
+chat.user.{account}.room.{roomID}.{siteID}.msg.send
 ```
 
 ## Configuration

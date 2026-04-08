@@ -11,7 +11,7 @@ A `pkg/roomkeysender` library that publishes a room's versioned encryption key p
 
 The library is a thin publisher wrapper. It:
 
-- Takes a username and a room key event, publishes it to the user's NATS subject
+- Takes a account and a room key event, publishes it to the user's NATS subject
 - Returns errors to the caller (no built-in retry)
 - Does **not** determine recipients — the caller decides who receives the key
 
@@ -35,12 +35,12 @@ type RoomKeyEvent struct {
 New builder in `pkg/subject/subject.go`:
 
 ```go
-func RoomKeyUpdate(username string) string {
-    return fmt.Sprintf("chat.user.%s.event.room.key", username)
+func RoomKeyUpdate(account string) string {
+    return fmt.Sprintf("chat.user.%s.event.room.key", account)
 }
 ```
 
-Follows the existing `chat.user.{username}.event.*` convention. Clients already have subscribe permissions for `chat.user.{theirUsername}.>` via auth-service JWT scoping.
+Follows the existing `chat.user.{account}.event.*` convention. Clients already have subscribe permissions for `chat.user.{theirUsername}.>` via auth-service JWT scoping.
 
 ## Sender
 
@@ -67,12 +67,12 @@ func NewSender(pub Publisher) *Sender {
     return &Sender{pub: pub}
 }
 
-func (s *Sender) Send(username string, evt model.RoomKeyEvent) error {
+func (s *Sender) Send(account string, evt model.RoomKeyEvent) error {
     data, err := json.Marshal(evt)
     if err != nil {
         return fmt.Errorf("marshal room key event: %w", err)
     }
-    subj := subject.RoomKeyUpdate(username)
+    subj := subject.RoomKeyUpdate(account)
     if err := s.pub.Publish(subj, data); err != nil {
         return fmt.Errorf("publish room key event: %w", err)
     }
@@ -92,7 +92,7 @@ pkg/roomkeysender/
 
 Unit tests use a mock publisher that captures the published subject and data:
 
-- **Valid send:** Verify correct subject (`chat.user.{username}.event.room.key`) and payload round-trips through JSON correctly (roomID, versionID, public key, private key all preserved)
+- **Valid send:** Verify correct subject (`chat.user.{account}.event.room.key`) and payload round-trips through JSON correctly (roomID, versionID, public key, private key all preserved)
 - **Publish error:** Verify the error from the publisher is wrapped and returned
 - **Multiple users:** Verify each call produces a distinct, correctly-addressed subject
 
@@ -113,4 +113,4 @@ This library will be consumed by:
 | No retry logic | Caller owns retry strategy; keeps library simple |
 | No recipient lookup | Single-responsibility; caller determines who receives keys |
 | `[]byte` for keys (not base64 string) | Matches `roomkeystore.RoomKeyPair`; JSON encoding handles base64 automatically |
-| Subject uses `username` not `userID` | Consistent with system-wide migration to username-based subjects |
+| Subject uses `username` not `userID` | Consistent with system-wide migration to account-based subjects |

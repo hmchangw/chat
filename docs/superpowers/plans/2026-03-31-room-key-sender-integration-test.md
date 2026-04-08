@@ -147,13 +147,13 @@ async function decryptMessage(
 // ---- Main ----
 
 async function main(): Promise<void> {
-  const [natsURL, username, roomID] = process.argv.slice(2);
-  if (!natsURL || !username || !roomID) {
+  const [natsURL, account, roomID] = process.argv.slice(2);
+  if (!natsURL || !account || !roomID) {
     process.stderr.write("usage: tsx client.ts <nats-ws-url> <username> <roomID>\n");
     process.exit(1);
   }
 
-  const keySubject = `chat.user.${username}.event.room.key`;
+  const keySubject = `chat.user.${account}.event.room.key`;
   const msgSubject = `test.room.${roomID}.msg`;
 
   // Store received keys indexed by versionId.
@@ -220,9 +220,9 @@ git commit -m "feat(roomkeysender): add TypeScript NATS WS client for integratio
 
 **Dependencies you need to know about:**
 
-- `roomkeysender.NewSender(pub)` creates a sender; `Send(username, *model.RoomKeyEvent)` publishes
+- `roomkeysender.NewSender(pub)` creates a sender; `Send(account, *model.RoomKeyEvent)` publishes
 - `roomcrypto.Encode(content, publicKey)` returns `*roomcrypto.EncryptedMessage`
-- `subject.RoomKeyUpdate(username)` returns `"chat.user.{username}.event.room.key"`
+- `subject.RoomKeyUpdate(account)` returns `"chat.user.{account}.event.room.key"`
 - `nats.Conn.PublishMsg(*nats.Msg)` sends a message with headers
 - NATS headers: `nats.Header` is `http.Header` (a `map[string][]string`)
 - The `testcontainers-go/network` package creates shared Docker networks so the Node container can reach the NATS container by hostname
@@ -414,7 +414,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	privKeyBytes := privKey.Bytes()
 
 	// 3. Test parameters.
-	username := "alice"
+	account := "alice"
 	roomID := "room-1"
 	versionID := "v-test-001"
 	plaintext := "hello from Go integration test"
@@ -430,7 +430,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 
 	go func() {
 		exitCode, reader, err := nodeContainer.Exec(ctx, []string{
-			"tsx", "/client.ts", wsURL, username, roomID,
+			"tsx", "/client.ts", wsURL, account, roomID,
 		})
 		stdout, combined := splitOutput(reader)
 		clientDone <- struct {
@@ -452,7 +452,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 		PublicKey:  pubKeyBytes,
 		PrivateKey: privKeyBytes,
 	}
-	err = sender.Send(username, evt)
+	err = sender.Send(account, evt)
 	require.NoError(t, err, "send room key event")
 
 	// 7. Small delay to ensure key is received before the encrypted message.

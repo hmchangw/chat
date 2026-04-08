@@ -10,7 +10,7 @@ All subjects are dot-delimited and organized into four namespaces:
 
 | Prefix | Scope | Description |
 |--------|-------|-------------|
-| `chat.user.{userID}.*` | Per-user | Events, streams, and requests scoped to a single user |
+| `chat.user.{account}.*` | Per-user | Events, streams, and requests scoped to a single user |
 | `chat.room.{roomID}.*` | Per-room | Events and streams scoped to a single room |
 | `fanout.{siteID}.*` | Backend | Internal message fan-out (JetStream only) |
 | `outbox.{siteID}.*` | Backend | Cross-site federation (JetStream only) |
@@ -19,15 +19,15 @@ All subjects are dot-delimited and organized into four namespaces:
 
 ### 1. User Wildcard (always subscribed)
 
-On connect, every client subscribes to `chat.user.{userID}.>`. This single wildcard captures all personal events:
+On connect, every client subscribes to `chat.user.{account}.>`. This single wildcard captures all personal events:
 
 | Subject | Direction | Publisher | Purpose |
 |---------|-----------|-----------|---------|
-| `chat.user.{userID}.stream.msg` | Server → Client | broadcast-worker | DM message delivery |
-| `chat.user.{userID}.notification` | Server → Client | notification-worker | Desktop banner notification (new message alert) |
-| `chat.user.{userID}.event.subscription.update` | Server → Client | room-worker, inbox-worker | Room added/removed from user's list |
-| `chat.user.{userID}.event.room.metadata.update` | Server → Client | room-worker | Room metadata changed (for rooms in sidebar) |
-| `chat.user.{userID}.response.{requestID}` | Server → Client | various services | Response to a client request |
+| `chat.user.{account}.stream.msg` | Server → Client | broadcast-worker | DM message delivery |
+| `chat.user.{account}.notification` | Server → Client | notification-worker | Desktop banner notification (new message alert) |
+| `chat.user.{account}.event.subscription.update` | Server → Client | room-worker, inbox-worker | Room added/removed from user's list |
+| `chat.user.{account}.event.room.metadata.update` | Server → Client | room-worker | Room metadata changed (for rooms in sidebar) |
+| `chat.user.{account}.response.{requestID}` | Server → Client | various services | Response to a client request |
 
 ### 2. Per-Room Subjects (subscribed for each room in sidebar)
 
@@ -47,7 +47,7 @@ For each user visible in the UI (room member list, DM list, etc.), the client su
 
 | Subject | Direction | Publisher | Purpose |
 |---------|-----------|-----------|---------|
-| `chat.user.{userID}.event.presence` | Server → Client | Presence service (future) / Client heartbeat | Online/offline/away status |
+| `chat.user.{account}.event.presence` | Server → Client | Presence service (future) / Client heartbeat | Online/offline/away status |
 
 Clients dynamically subscribe/unsubscribe to presence subjects as users appear/disappear from the viewport.
 
@@ -69,7 +69,7 @@ Mention badges use a hybrid approach: client-side detection while online, server
 
 **While online (client-derived):**
 
-Clients already subscribe to `chat.room.{roomID}.stream.msg` for every sidebar room and `chat.user.{userID}.stream.msg` for DMs. When a message arrives, the client checks the `mentionedUserIDs` field in the `Message` payload:
+Clients already subscribe to `chat.room.{roomID}.stream.msg` for every sidebar room and `chat.user.{account}.stream.msg` for DMs. When a message arrives, the client checks the `mentionedUserIDs` field in the `Message` payload:
 
 1. If the logged-in user's ID is in `mentionedUserIDs` → show `@` badge
 2. If `"all"` or `"here"` is in `mentionedUserIDs` → show `@` badge
@@ -84,36 +84,36 @@ This requires zero additional subjects, zero extra publishes, and zero write amp
 When offline, clients miss messages on non-active sidebar rooms. To restore mention badge state on reconnect, the server tracks mention counts per-user-per-room:
 
 1. **broadcast-worker** — when processing a message with non-empty `mentionedUserIDs`, atomically increments `mentionCountSinceLastSeen` on the `Subscription` record in MongoDB for each mentioned user (expanding `"all"`/`"here"` to the full member list)
-2. **Subscription list response** (`chat.user.{userID}.request.rooms.list`) — includes `mentionCountSinceLastSeen` per room, allowing the client to restore `@` badges without fetching message history for every sidebar room
+2. **Subscription list response** (`chat.user.{account}.request.rooms.list`) — includes `mentionCountSinceLastSeen` per room, allowing the client to restore `@` badges without fetching message history for every sidebar room
 3. **Mark as read** — when the user opens a room, the client sends a read-position update (advancing `lastSeenAt`); the server resets `mentionCountSinceLastSeen` to `0` for that user+room
 
 #### Desktop Banner Notifications
 
-notification-worker sends a `NotificationEvent` to `chat.user.{userID}.notification` for immediate desktop banners (including mention notifications). This is an interrupt-style notification, separate from the persistent badge state above.
+notification-worker sends a `NotificationEvent` to `chat.user.{account}.notification` for immediate desktop banners (including mention notifications). This is an interrupt-style notification, separate from the persistent badge state above.
 
 #### Reconnect Badge Restoration
 
 On reconnect:
-1. Client fetches subscription list via `chat.user.{userID}.request.rooms.list` — response includes `lastSeenAt` and `mentionCountSinceLastSeen` per room
+1. Client fetches subscription list via `chat.user.{account}.request.rooms.list` — response includes `lastSeenAt` and `mentionCountSinceLastSeen` per room
 2. For each sidebar room: if `mentionCountSinceLastSeen > 0`, show `@` badge
 3. Client re-subscribes to room streams and resumes client-side mention detection
 4. For the active room, client fetches message history and can highlight individual mentioned messages using `mentionedUserIDs` in each message
 
 ### 5. Client Publishes
 
-Clients publish exclusively to subjects under their own `chat.user.{userID}.>` namespace — no exceptions:
+Clients publish exclusively to subjects under their own `chat.user.{account}.>` namespace — no exceptions:
 
 | Subject | Direction | Consumer | Purpose |
 |---------|-----------|----------|---------|
-| `chat.user.{userID}.room.{roomID}.{siteID}.msg.send` | Client → Server | message-worker (MESSAGES stream) | Send a message to a room |
-| `chat.user.{userID}.request.room.{roomID}.{siteID}.member.invite` | Client → Server | room-service (validates), room-worker (ROOMS stream) | Invite a member to a room |
-| `chat.user.{userID}.room.{roomID}.typing` | Client → Server | room-service (relay) | Typing indicator |
+| `chat.user.{account}.room.{roomID}.{siteID}.msg.send` | Client → Server | message-worker (MESSAGES stream) | Send a message to a room |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.invite` | Client → Server | room-service (validates), room-worker (ROOMS stream) | Invite a member to a room |
+| `chat.user.{account}.room.{roomID}.typing` | Client → Server | room-service (relay) | Typing indicator |
 
 #### Typing Indicator Flow
 
 Clients never publish directly to room-scoped subjects. For typing indicators:
 
-1. Client publishes to `chat.user.{userID}.room.{roomID}.typing` (user-scoped)
+1. Client publishes to `chat.user.{account}.room.{roomID}.typing` (user-scoped)
 2. room-service subscribes to `chat.user.*.room.*.typing` and relays to `chat.room.{roomID}.event.typing`
 3. Clients with that room actively opened receive the typing event via their room subscription
 
@@ -121,24 +121,24 @@ This keeps all client publishes under the user namespace, simplifying auth permi
 
 ## Request/Reply Subjects
 
-All request subjects fall under the user's publish namespace. Responses are delivered to `chat.user.{userID}.response.{requestID}`, which the client receives via its user wildcard subscription:
+All request subjects fall under the user's publish namespace. Responses are delivered to `chat.user.{account}.response.{requestID}`, which the client receives via its user wildcard subscription:
 
 | Subject | Responder (Queue Group) | Purpose |
 |---------|------------------------|---------|
-| `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history` | history-service | Fetch message history for a room |
-| `chat.user.{userID}.request.room.{roomID}.{siteID}.member.invite` | room-service | Invite a member to a room |
-| `chat.user.{userID}.request.rooms.create` | room-service | Create a new room |
-| `chat.user.{userID}.request.rooms.list` | room-service | List user's rooms |
-| `chat.user.{userID}.request.rooms.get.{roomID}` | room-service | Get room details by ID |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history` | history-service | Fetch message history for a room |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.invite` | room-service | Invite a member to a room |
+| `chat.user.{account}.request.rooms.create` | room-service | Create a new room |
+| `chat.user.{account}.request.rooms.list` | room-service | List user's rooms |
+| `chat.user.{account}.request.rooms.get.{roomID}` | room-service | Get room details by ID |
 
 ### Reconnect Flow
 
 1. Client detects reconnect event from NATS connection
-2. Client subscribes to `chat.user.{userID}.>` (user wildcard)
-3. Client calls `chat.user.{userID}.request.rooms.list` to get current room list — response includes `lastSeenAt` and `mentionCountSinceLastSeen` per room
+2. Client subscribes to `chat.user.{account}.>` (user wildcard)
+3. Client calls `chat.user.{account}.request.rooms.list` to get current room list — response includes `lastSeenAt` and `mentionCountSinceLastSeen` per room
 4. Client restores badges: bold room name if `lastMessageAt > lastSeenAt`; `@` badge if `mentionCountSinceLastSeen > 0`
 5. Client subscribes to room subjects for each sidebar room
-6. For the **currently active room**, client calls `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history` with the last known message timestamp to fetch missed messages
+6. For the **currently active room**, client calls `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history` with the last known message timestamp to fetch missed messages
 7. Client resumes receiving real-time events and client-side mention detection
 
 ## Backend-Only Subjects (JetStream)
@@ -149,7 +149,7 @@ These subjects are used exclusively by backend services via JetStream. Clients n
 
 | Subject Pattern | Publisher | Consumer | Purpose |
 |-----------------|-----------|----------|---------|
-| `chat.user.{userID}.room.{roomID}.{siteID}.msg.send` | Client | message-worker | User message submissions |
+| `chat.user.{account}.room.{roomID}.{siteID}.msg.send` | Client | message-worker | User message submissions |
 
 Stream wildcard: `chat.user.*.room.*.{siteID}.msg.>`
 
@@ -167,7 +167,7 @@ Deduplication: message-worker sets the `Nats-Msg-Id` header to the message ID on
 
 | Subject Pattern | Publisher | Consumer | Purpose |
 |-----------------|-----------|----------|---------|
-| `chat.user.{userID}.request.room.{roomID}.{siteID}.member.invite` | room-service | room-worker | Member invitation (after authorization) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.invite` | room-service | room-worker | Member invitation (after authorization) |
 
 Stream wildcard: `chat.user.*.request.room.*.{siteID}.member.>`
 
@@ -189,13 +189,13 @@ The auth-service issues per-user JWTs with these permissions:
 
 | Type | Pattern | Rationale |
 |------|---------|-----------|
-| Pub.Allow | `chat.user.{userID}.>` | User can publish messages, requests, typing under own namespace |
+| Pub.Allow | `chat.user.{account}.>` | User can publish messages, requests, typing under own namespace |
 | Pub.Allow | `_INBOX.>` | Required for NATS core request/reply pattern |
-| Sub.Allow | `chat.user.{userID}.>` | User receives own events, responses, notifications |
+| Sub.Allow | `chat.user.{account}.>` | User receives own events, responses, notifications |
 | Sub.Allow | `chat.room.>` | User can subscribe to any room's message stream and events |
 | Sub.Allow | `_INBOX.>` | Required for NATS core request/reply pattern |
 
-All client publishes — message sends, member invites, room CRUD requests, typing indicators, and request/reply — fall under `chat.user.{userID}.>`. No additional publish permissions are needed. Room-scoped subjects (`chat.room.*`) are server-published only; clients can subscribe but never publish to them.
+All client publishes — message sends, member invites, room CRUD requests, typing indicators, and request/reply — fall under `chat.user.{account}.>`. No additional publish permissions are needed. Room-scoped subjects (`chat.room.*`) are server-published only; clients can subscribe but never publish to them.
 
 ## Subject Builders (`pkg/subject`)
 
@@ -203,20 +203,20 @@ All client publishes — message sends, member invites, room CRUD requests, typi
 
 | Function | Subject |
 |----------|---------|
-| `MsgSend(userID, roomID, siteID)` | `chat.user.{userID}.room.{roomID}.{siteID}.msg.send` |
-| `UserResponse(userID, requestID)` | `chat.user.{userID}.response.{requestID}` |
+| `MsgSend(account, roomID, siteID)` | `chat.user.{account}.room.{roomID}.{siteID}.msg.send` |
+| `UserResponse(account, requestID)` | `chat.user.{account}.response.{requestID}` |
 | `RoomMetadataUpdate(roomID)` | `chat.room.{roomID}.event.metadata.update` |
 | `RoomMsgStream(roomID)` | `chat.room.{roomID}.stream.msg` |
-| `UserRoomUpdate(userID)` | `chat.user.{userID}.event.room.update` |
-| `UserMsgStream(userID)` | `chat.user.{userID}.stream.msg` |
-| `MemberInvite(userID, roomID, siteID)` | `chat.user.{userID}.request.room.{roomID}.{siteID}.member.invite` |
-| `MsgHistory(userID, roomID, siteID)` | `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history` |
-| `SubscriptionUpdate(userID)` | `chat.user.{userID}.event.subscription.update` |
-| `RoomMetadataChanged(userID)` | `chat.user.{userID}.event.room.metadata.update` |
-| `Notification(userID)` | `chat.user.{userID}.notification` |
-| `RoomsCreate(userID)` | `chat.user.{userID}.request.rooms.create` |
-| `RoomsList(userID)` | `chat.user.{userID}.request.rooms.list` |
-| `RoomsGet(userID, roomID)` | `chat.user.{userID}.request.rooms.get.{roomID}` |
+| `UserRoomUpdate(account)` | `chat.user.{account}.event.room.update` |
+| `UserMsgStream(account)` | `chat.user.{account}.stream.msg` |
+| `MemberInvite(account, roomID, siteID)` | `chat.user.{account}.request.room.{roomID}.{siteID}.member.invite` |
+| `MsgHistory(account, roomID, siteID)` | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history` |
+| `SubscriptionUpdate(account)` | `chat.user.{account}.event.subscription.update` |
+| `RoomMetadataChanged(account)` | `chat.user.{account}.event.room.metadata.update` |
+| `Notification(account)` | `chat.user.{account}.notification` |
+| `RoomsCreate(account)` | `chat.user.{account}.request.rooms.create` |
+| `RoomsList(account)` | `chat.user.{account}.request.rooms.list` |
+| `RoomsGet(account, roomID)` | `chat.user.{account}.request.rooms.get.{roomID}` |
 | `Outbox(siteID, destSiteID, eventType)` | `outbox.{siteID}.to.{destSiteID}.{eventType}` |
 | `Fanout(siteID, roomID)` | `fanout.{siteID}.{roomID}` |
 
@@ -224,10 +224,10 @@ All client publishes — message sends, member invites, room CRUD requests, typi
 
 | Function | Subject | Purpose |
 |----------|---------|---------|
-| `UserTyping(userID, roomID)` | `chat.user.{userID}.room.{roomID}.typing` | Client publishes typing indicator |
+| `UserTyping(account, roomID)` | `chat.user.{account}.room.{roomID}.typing` | Client publishes typing indicator |
 | `RoomTyping(roomID)` | `chat.room.{roomID}.event.typing` | room-service relays typing to room |
-| `UserPresence(userID)` | `chat.user.{userID}.event.presence` | User presence status |
-| `UserWildcard(userID)` | `chat.user.{userID}.>` | Client subscribes to all personal events |
+| `UserPresence(account)` | `chat.user.{account}.event.presence` | User presence status |
+| `UserWildcard(account)` | `chat.user.{account}.>` | Client subscribes to all personal events |
 
 ### Wildcard Patterns (Service Subscriptions)
 
@@ -291,9 +291,9 @@ Client                              NATS                        Services
   |                                   |                             |
   |-- (reconnect detected) --------->|                             |
   |                                   |                             |
-  |-- sub: chat.user.{userID}.> ---->|                             |
+  |-- sub: chat.user.{account}.> ---->|                             |
   |                                   |                             |
-  |-- req: chat.user.{userID}        |                             |
+  |-- req: chat.user.{account}        |                             |
   |    .request.rooms.list --------->|-----> room-service          |
   |<-- resp: [rooms + lastSeenAt    -|<-----                       |
   |    + mentionCountSinceLastSeen]  |                             |

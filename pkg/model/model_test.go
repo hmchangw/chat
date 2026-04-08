@@ -13,7 +13,7 @@ import (
 )
 
 func TestUserJSON(t *testing.T) {
-	u := model.User{ID: "u1", Name: "alice", Username: "alice", SiteID: "site-a"}
+	u := model.User{ID: "u1", Name: "alice", Account: "alice", SiteID: "site-a"}
 	roundTrip(t, &u, &model.User{})
 }
 
@@ -33,7 +33,7 @@ func TestRoomJSON(t *testing.T) {
 func TestMessageJSON(t *testing.T) {
 	t.Run("with threadParentMessageId", func(t *testing.T) {
 		m := model.Message{
-			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
 			Content:               "hello",
 			CreatedAt:             time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 			ThreadParentMessageID: "parent-msg-uuid",
@@ -43,7 +43,7 @@ func TestMessageJSON(t *testing.T) {
 
 	t.Run("threadParentMessageId omitted when empty", func(t *testing.T) {
 		m := model.Message{
-			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
 			Content:   "hello",
 			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 		}
@@ -85,7 +85,7 @@ func TestSendMessageRequestJSON(t *testing.T) {
 func TestMessageEventJSON(t *testing.T) {
 	e := model.MessageEvent{
 		Message: model.Message{
-			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
 			Content:   "hello",
 			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 		},
@@ -98,7 +98,7 @@ func TestSubscriptionJSON(t *testing.T) {
 	hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := model.Subscription{
 		ID:                 "s1",
-		User:               model.SubscriptionUser{ID: "u1", Username: "alice"},
+		User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID:             "r1",
 		SiteID:             "site-a",
 		Role:               model.RoleOwner,
@@ -143,7 +143,7 @@ func TestRoomEventJSON(t *testing.T) {
 	now := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
 	msg := model.Message{
 		ID: "msg-1", RoomID: "room-1", UserID: "user-1",
-		Username: "alice", Content: "hello", CreatedAt: now,
+		UserAccount: "alice", Content: "hello", CreatedAt: now,
 	}
 
 	t.Run("all fields populated", func(t *testing.T) {
@@ -157,10 +157,10 @@ func TestRoomEventJSON(t *testing.T) {
 			UserCount:  5,
 			LastMsgAt:  now,
 			LastMsgID:  "msg-1",
-			Mentions:   []model.Participant{{Username: "user-2", ChineseName: "user-2", EngName: "user-2"}, {Username: "user-3", ChineseName: "user-3", EngName: "user-3"}},
+			Mentions:   []model.Participant{{Account: "user-2", ChineseName: "user-2", EngName: "user-2"}, {Account: "user-3", ChineseName: "user-3", EngName: "user-3"}},
 			MentionAll: true,
 			HasMention: true,
-			Message:    &model.ClientMessage{Message: msg, Sender: &model.Participant{UserID: "user-1", Username: "alice", ChineseName: "愛麗絲", EngName: "Alice Wang"}},
+			Message:    &model.ClientMessage{Message: msg, Sender: &model.Participant{UserID: "user-1", Account: "alice", ChineseName: "愛麗絲", EngName: "Alice Wang"}},
 		}
 
 		data, err := json.Marshal(src)
@@ -224,7 +224,7 @@ func TestParticipantJSON(t *testing.T) {
 	t.Run("with userID", func(t *testing.T) {
 		p := model.Participant{
 			UserID:      "u1",
-			Username:    "alice",
+			Account:     "alice",
 			ChineseName: "愛麗絲",
 			EngName:     "Alice Wang",
 		}
@@ -233,7 +233,7 @@ func TestParticipantJSON(t *testing.T) {
 
 	t.Run("without userID omitted", func(t *testing.T) {
 		p := model.Participant{
-			Username:    "bob",
+			Account:     "bob",
 			ChineseName: "鮑勃",
 			EngName:     "Bob Chen",
 		}
@@ -255,12 +255,12 @@ func TestClientMessageJSON(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	cm := model.ClientMessage{
 		Message: model.Message{
-			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
 			Content: "hello", CreatedAt: now,
 		},
 		Sender: &model.Participant{
 			UserID:      "u1",
-			Username:    "alice",
+			Account:     "alice",
 			ChineseName: "愛麗絲",
 			EngName:     "Alice Wang",
 		},

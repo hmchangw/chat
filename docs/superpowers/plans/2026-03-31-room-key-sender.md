@@ -4,7 +4,7 @@
 
 **Goal:** Create `pkg/roomkeysender`, a library that publishes a room's versioned encryption key pair to a user's NATS subject.
 
-**Architecture:** Thin publisher wrapper — a `Sender` struct accepts a `Publisher` interface (matching the pattern used by `broadcast-worker`, `inbox-worker`, `notification-worker`) and a `Send` method that marshals a `model.RoomKeyEvent` to JSON and publishes to `chat.user.{username}.event.room.key`. A new `RoomKeyUpdate` subject builder is added to `pkg/subject`. A new `RoomKeyEvent` model is added to `pkg/model`.
+**Architecture:** Thin publisher wrapper — a `Sender` struct accepts a `Publisher` interface (matching the pattern used by `broadcast-worker`, `inbox-worker`, `notification-worker`) and a `Send` method that marshals a `model.RoomKeyEvent` to JSON and publishes to `chat.user.{account}.event.room.key`. A new `RoomKeyUpdate` subject builder is added to `pkg/subject`. A new `RoomKeyEvent` model is added to `pkg/model`.
 
 **Tech Stack:** Go 1.24, NATS (publish interface), `encoding/json`, `stretchr/testify`
 
@@ -16,7 +16,7 @@
 
 | Action | File | Responsibility |
 |--------|------|----------------|
-| Modify | `pkg/subject/subject.go` | Add `RoomKeyUpdate(username)` subject builder |
+| Modify | `pkg/subject/subject.go` | Add `RoomKeyUpdate(account)` subject builder |
 | Modify | `pkg/subject/subject_test.go` | Add test case for new builder |
 | Modify | `pkg/model/event.go` | Add `RoomKeyEvent` struct |
 | Modify | `pkg/model/model_test.go` | Add round-trip JSON test for `RoomKeyEvent` |
@@ -50,8 +50,8 @@ Expected: Compilation error — `subject.RoomKeyUpdate` is undefined.
 Add the following function to `pkg/subject/subject.go`, after the `UserRoomEvent` function (after line 86):
 
 ```go
-func RoomKeyUpdate(username string) string {
-	return fmt.Sprintf("chat.user.%s.event.room.key", username)
+func RoomKeyUpdate(account string) string {
+	return fmt.Sprintf("chat.user.%s.event.room.key", account)
 }
 ```
 
@@ -201,7 +201,7 @@ func TestSender_Send(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		username   string
+		account   string
 		evt        model.RoomKeyEvent
 		publishErr error
 		wantSubj   string
@@ -248,7 +248,7 @@ func TestSender_Send(t *testing.T) {
 			pub := &mockPublisher{err: tt.publishErr}
 			sender := roomkeysender.NewSender(pub)
 
-			err := sender.Send(tt.username, tt.evt)
+			err := sender.Send(tt.account, tt.evt)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)
@@ -315,13 +315,13 @@ func NewSender(pub Publisher) *Sender {
 	return &Sender{pub: pub}
 }
 
-// Send publishes evt to the room key update subject for username.
-func (s *Sender) Send(username string, evt model.RoomKeyEvent) error {
+// Send publishes evt to the room key update subject for account.
+func (s *Sender) Send(account string, evt model.RoomKeyEvent) error {
 	data, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal room key event: %w", err)
 	}
-	subj := subject.RoomKeyUpdate(username)
+	subj := subject.RoomKeyUpdate(account)
 	if err := s.pub.Publish(subj, data); err != nil {
 		return fmt.Errorf("publish room key event: %w", err)
 	}

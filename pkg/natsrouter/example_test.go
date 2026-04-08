@@ -21,15 +21,15 @@ func Example_basicUsage() {
 	nc, _ := nats.Connect(nats.DefaultURL)
 	router := natsrouter.New(nc, "my-service")
 
-	// Register a handler — {userID} and {roomID} are extracted from the subject.
+	// Register a handler — {account} and {roomID} are extracted from the subject.
 	// The pattern is automatically converted to a NATS wildcard for subscription.
 	natsrouter.Register[GreetRequest, GreetResponse](
 		router,
-		"chat.user.{userID}.room.{roomID}.greet",
+		"chat.user.{account}.room.{roomID}.greet",
 		func(c *natsrouter.Context, req GreetRequest) (*GreetResponse, error) {
-			userID := c.Param("userID")
+			account := c.Param("account")
 			roomID := c.Param("roomID")
-			reply := fmt.Sprintf("%s says %s in room %s", userID, req.Message, roomID)
+			reply := fmt.Sprintf("%s says %s in room %s", account, req.Message, roomID)
 			return &GreetResponse{Reply: reply}, nil
 		},
 	)
@@ -47,9 +47,9 @@ func Example_withMiddleware() {
 
 	natsrouter.Register[GreetRequest, GreetResponse](
 		router,
-		"chat.user.{userID}.greet",
+		"chat.user.{account}.greet",
 		func(c *natsrouter.Context, req GreetRequest) (*GreetResponse, error) {
-			return &GreetResponse{Reply: "hello " + c.Param("userID")}, nil
+			return &GreetResponse{Reply: "hello " + c.Param("account")}, nil
 		},
 	)
 }
@@ -67,7 +67,7 @@ func Example_noBodyHandler() {
 	// No request body needed — the roomID comes from the subject.
 	natsrouter.RegisterNoBody[Room](
 		router,
-		"chat.user.{userID}.request.rooms.get.{roomID}",
+		"chat.user.{account}.request.rooms.get.{roomID}",
 		func(c *natsrouter.Context) (*Room, error) {
 			roomID := c.Param("roomID")
 			return &Room{ID: roomID, Name: "General"}, nil
@@ -82,7 +82,7 @@ func Example_errorHandling() {
 
 	natsrouter.Register(
 		router,
-		"chat.user.{userID}.request.rooms.get.{roomID}",
+		"chat.user.{account}.request.rooms.get.{roomID}",
 		func(c *natsrouter.Context, req GreetRequest) (*Room, error) {
 			room := findRoom(c.Param("roomID"))
 			if room == nil {
@@ -111,9 +111,9 @@ func Example_fireAndForget() {
 	// No response sent — the sender publishes and moves on.
 	natsrouter.RegisterVoid(
 		router,
-		"chat.user.{userID}.event.typing",
+		"chat.user.{account}.event.typing",
 		func(c *natsrouter.Context, req TypingEvent) error {
-			fmt.Printf("user %s is typing in room %s\n", c.Param("userID"), req.RoomID)
+			fmt.Printf("user %s is typing in room %s\n", c.Param("account"), req.RoomID)
 			return nil
 		},
 	)
@@ -138,7 +138,7 @@ func Example_customMiddleware() {
 
 	natsrouter.Register[GreetRequest, GreetResponse](
 		router,
-		"chat.user.{userID}.greet",
+		"chat.user.{account}.greet",
 		func(c *natsrouter.Context, req GreetRequest) (*GreetResponse, error) {
 			return &GreetResponse{Reply: "hello"}, nil
 		},

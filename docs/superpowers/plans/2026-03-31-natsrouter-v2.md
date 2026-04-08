@@ -641,7 +641,7 @@ git commit -m "docs(natsrouter): update package documentation for v2 API"
 
 ```go
 func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
-	msg := r.Group("chat.user.{username}.request.room.{roomID}." + siteID + ".msg")
+	msg := r.Group("chat.user.{account}.request.room.{roomID}." + siteID + ".msg")
 	natsrouter.Register(msg, "history", s.LoadHistory)
 	natsrouter.Register(msg, "next", s.LoadNextMessages)
 	natsrouter.Register(msg, "surrounding", s.LoadSurroundingMessages)
@@ -663,7 +663,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req ...) (*..., erro
 ```
 
 Inside each handler:
-- `p.Get("username")` → `c.Param("username")`
+- `p.Get("account")` → `c.Param("account")`
 - `resolveRoomID(p, req.RoomID)` → `resolveRoomID(c, req.RoomID)`
 - `s.getAccessSince(ctx, ...)` → `s.getAccessSince(c, ...)`
 - All `ctx` passed to repo calls → `c` (since Context implements context.Context)
@@ -702,7 +702,7 @@ git commit -m "feat(history): migrate handlers to natsrouter v2 Context API"
 
 Key changes:
 - `testParams = natsrouter.NewParams(map[string]string{...})` → `testCtx = natsrouter.NewContext(map[string]string{...})` (but note: create a fresh context per test since Context is mutable)
-- Replace `testParams` usage in each test with `natsrouter.NewContext(map[string]string{"username": "u1", "roomID": "r1"})`
+- Replace `testParams` usage in each test with `natsrouter.NewContext(map[string]string{"account": "u1", "roomID": "r1"})`
 - All handler calls: `svc.LoadHistory(ctx, testParams, req)` → `svc.LoadHistory(c, req)` where `c` is the new Context
 - Remove `ctx := context.Background()` lines — the Context carries the context
 - Update mock expectations: `ctx` parameter in mock calls changes from `context.Background()` to the `*natsrouter.Context` (use `gomock.Any()` for the context parameter since it's a different object each test)

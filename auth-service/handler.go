@@ -60,7 +60,7 @@ func NewAuthHandler(validator TokenValidator, signingKey nkeys.KeyPair, jwtExpir
 }
 
 // HandleAuth validates the SSO token, resolves permissions based on
-// the username, and returns a signed NATS JWT.
+// the account, and returns a signed NATS JWT.
 func (h *AuthHandler) HandleAuth(c *gin.Context) {
 	var req authRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -85,19 +85,19 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		return
 	}
 
-	username := claims.PreferredUsername
-	if username == "" {
-		username = claims.Name
+	account := claims.PreferredUsername
+	if account == "" {
+		account = claims.Name
 	}
 
-	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, username)
+	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, account)
 	if err != nil {
-		slog.Error("nats jwt signing failed", "error", err, "username", username)
+		slog.Error("nats jwt signing failed", "error", err, "account", account)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate NATS token"})
 		return
 	}
 
-	slog.Debug("auth success", "username", username, "subject", claims.Subject)
+	slog.Debug("auth success", "account", account, "subject", claims.Subject)
 
 	// Parse description field: "employeeId, engName, chineseName"
 	employeeID, engName, chineseName := parseDescription(claims.Description)
@@ -118,16 +118,16 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 
 // signNATSJWT creates a signed NATS user JWT with permissions scoped
 // to the user's namespace and standard chat subjects.
-func (h *AuthHandler) signNATSJWT(userPubKey, username string) (string, error) {
+func (h *AuthHandler) signNATSJWT(userPubKey, account string) (string, error) {
 	uc := jwt.NewUserClaims(userPubKey)
 	uc.Expires = time.Now().Add(h.jwtExpiry).Unix()
 
 	// Publish permissions: user's own namespace + inbox for request-reply.
-	uc.Pub.Allow.Add(fmt.Sprintf("chat.user.%s.>", username))
+	uc.Pub.Allow.Add(fmt.Sprintf("chat.user.%s.>", account))
 	uc.Pub.Allow.Add("_INBOX.>")
 
 	// Subscribe permissions: user's own namespace, all rooms, and inbox.
-	uc.Sub.Allow.Add(fmt.Sprintf("chat.user.%s.>", username))
+	uc.Sub.Allow.Add(fmt.Sprintf("chat.user.%s.>", account))
 	uc.Sub.Allow.Add("chat.room.>")
 	uc.Sub.Allow.Add("_INBOX.>")
 

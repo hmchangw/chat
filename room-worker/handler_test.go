@@ -30,8 +30,8 @@ func TestHandler_ProcessInvite(t *testing.T) {
 	store.EXPECT().
 		ListByRoom(gomock.Any(), "r1").
 		Return([]model.Subscription{
-			{User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleOwner},
-			{User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r1", Role: model.RoleMember},
+			{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Role: model.RoleOwner},
+			{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Role: model.RoleMember},
 		}, nil)
 
 	var published []publishedMsg
@@ -40,19 +40,19 @@ func TestHandler_ProcessInvite(t *testing.T) {
 		return nil
 	}}
 
-	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", InviteeUsername: "bob", RoomID: "r1", SiteID: "site-a"}
+	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", InviteeAccount: "bob", RoomID: "r1", SiteID: "site-a"}
 	data, _ := json.Marshal(req)
 
 	if err := h.processInvite(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify created subscription has the correct username
+	// Verify created subscription has the correct account
 	if createdSub == nil {
 		t.Fatal("expected subscription to be created")
 	}
-	if createdSub.User.Username != "bob" {
-		t.Errorf("expected subscription username %q, got %q", "bob", createdSub.User.Username)
+	if createdSub.User.Account != "bob" {
+		t.Errorf("expected subscription account %q, got %q", "bob", createdSub.User.Account)
 	}
 
 	// Verify notifications published (subscription update + room metadata for existing members)

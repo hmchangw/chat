@@ -19,7 +19,7 @@ import (
 var joinTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func testContext() *natsrouter.Context {
-	return natsrouter.NewContext(map[string]string{"username": "u1", "roomID": "r1"})
+	return natsrouter.NewContext(map[string]string{"account": "u1", "roomID": "r1"})
 }
 
 func millis(t time.Time) *int64 {

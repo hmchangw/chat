@@ -513,10 +513,10 @@ CREATE TABLE messages (
 
 The 4 endpoints need subject patterns. Currently only `HistoryRequest` exists in `pkg/subject`. The new subjects follow the established naming convention:
 
-- `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history` (exists)
-- `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.next` (new)
-- `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.surrounding` (new)
-- `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.get` (new)
+- `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history` (exists)
+- `chat.user.{account}.request.room.{roomID}.{siteID}.msg.next` (new)
+- `chat.user.{account}.request.room.{roomID}.{siteID}.msg.surrounding` (new)
+- `chat.user.{account}.request.room.{roomID}.{siteID}.msg.get` (new)
 
 New subject builder functions follow the existing `*Wildcard` naming convention:
 - `MsgHistoryWildcard(siteID)` — already exists

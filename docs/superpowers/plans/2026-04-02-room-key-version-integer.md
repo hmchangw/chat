@@ -1536,7 +1536,7 @@ func TestSender_Send(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		username   string
+		account   string
 		evt        model.RoomKeyEvent
 		publishErr error
 		wantSubj   string
@@ -1583,7 +1583,7 @@ func TestSender_Send(t *testing.T) {
 			pub := &mockPublisher{err: tt.publishErr}
 			sender := roomkeysender.NewSender(pub)
 
-			err := sender.Send(tt.username, &tt.evt)
+			err := sender.Send(tt.account, &tt.evt)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)

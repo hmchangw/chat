@@ -25,7 +25,7 @@ func TestParticipantJSON(t *testing.T) {
 	t.Run("with userID", func(t *testing.T) {
 		p := model.Participant{
 			UserID:      "u1",
-			Username:    "alice",
+			Account:    "alice",
 			ChineseName: "愛麗絲",
 			EngName:     "Alice Wang",
 		}
@@ -34,7 +34,7 @@ func TestParticipantJSON(t *testing.T) {
 
 	t.Run("without userID omitted", func(t *testing.T) {
 		p := model.Participant{
-			Username:    "bob",
+			Account:    "bob",
 			ChineseName: "鮑勃",
 			EngName:     "Bob Chen",
 		}
@@ -56,12 +56,12 @@ func TestClientMessageJSON(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	cm := model.ClientMessage{
 		Message: model.Message{
-			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+			ID: "m1", RoomID: "r1", UserID: "u1", Account: "alice",
 			Content: "hello", CreatedAt: now,
 		},
 		Sender: &model.Participant{
 			UserID:      "u1",
-			Username:    "alice",
+			Account:    "alice",
 			ChineseName: "愛麗絲",
 			EngName:     "Alice Wang",
 		},
@@ -95,7 +95,7 @@ Add to `pkg/model/event.go`, before the `RoomEvent` struct:
 // Participant represents a user with display name info for client rendering.
 type Participant struct {
 	UserID      string `json:"userId,omitempty" bson:"userId,omitempty"`
-	Username    string `json:"username" bson:"username"`
+	Account    string `json:"account" bson:"account"`
 	ChineseName string `json:"chineseName" bson:"chineseName"`
 	EngName     string `json:"engName" bson:"engName"`
 }
@@ -143,8 +143,8 @@ Update `TestRoomJSON` — remove `Origin: "site-a"` from the test Room literal.
 
 Update `TestRoomEventJSON` `"all fields populated"` subtest:
 - Replace `Origin: "site-a"` with `SiteID: "site-a"`
-- Change `Mentions` from `[]string{"user-2", "user-3"}` to `[]model.Participant{{Username: "user-2", ChineseName: "user-2", EngName: "user-2"}, {Username: "user-3", ChineseName: "user-3", EngName: "user-3"}}`
-- Change `Message: &msg` to `Message: &model.ClientMessage{Message: msg, Sender: &model.Participant{UserID: "user-1", Username: "alice", ChineseName: "愛麗絲", EngName: "Alice Wang"}}`
+- Change `Mentions` from `[]string{"user-2", "user-3"}` to `[]model.Participant{{Account: "user-2", ChineseName: "user-2", EngName: "user-2"}, {Account: "user-3", ChineseName: "user-3", EngName: "user-3"}}`
+- Change `Message: &msg` to `Message: &model.ClientMessage{Message: msg, Sender: &model.Participant{UserID: "user-1", Account: "alice", ChineseName: "愛麗絲", EngName: "Alice Wang"}}`
 
 Update `TestRoomEventJSON` `"nil message and empty mentions omitted"` subtest:
 - Replace `Origin: "site-b"` with `SiteID: "site-b"`
@@ -214,7 +214,7 @@ type Store interface {
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	ListSubscriptions(ctx context.Context, roomID string) ([]model.Subscription, error)
 	UpdateRoomOnNewMessage(ctx context.Context, roomID string, msgID string, msgAt time.Time, mentionAll bool) error
-	SetSubscriptionMentions(ctx context.Context, roomID string, usernames []string) error
+	SetSubscriptionMentions(ctx context.Context, roomID string, accounts []string) error
 	FindEmployeesByAccountNames(ctx context.Context, accountNames []string) ([]model.Employee, error)
 }
 ```
@@ -309,8 +309,8 @@ var (
 		SiteID: "site-a", UserCount: 2,
 	}
 	testDMSubs = []model.Subscription{
-		{User: model.SubscriptionUser{ID: "alice-id", Username: "alice"}, RoomID: "dm-1"},
-		{User: model.SubscriptionUser{ID: "bob-id", Username: "bob"}, RoomID: "dm-1"},
+		{User: model.SubscriptionUser{ID: "alice-id", Account: "alice"}, RoomID: "dm-1"},
+		{User: model.SubscriptionUser{ID: "bob-id", Account: "bob"}, RoomID: "dm-1"},
 	}
 	testEmployees = []model.Employee{
 		{AccountName: "alice", Name: "愛麗絲", EngName: "Alice Wang"},
@@ -326,7 +326,7 @@ func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "msg-1", RoomID: roomID, UserID: "user-1", Username: "sender",
+			ID: "msg-1", RoomID: roomID, UserID: "user-1", Account: "sender",
 			Content: content, CreatedAt: msgTime,
 		},
 	}
@@ -345,7 +345,7 @@ func expectEmployeeLookup(store *MockStore, accountNames []string, employees []m
 
 Update `TestHandler_HandleMessage_GroupRoom`:
 
-In each subtest, add `FindEmployeesByAccountNames` mock expectation after the existing `SetSubscriptionMentions` expectation. The sender username is `"sender"` (from `makeMessageEvent`), so the lookup includes `"sender"` plus any mentioned usernames.
+In each subtest, add `FindEmployeesByAccountNames` mock expectation after the existing `SetSubscriptionMentions` expectation. The sender account is `"sender"` (from `makeMessageEvent`), so the lookup includes `"sender"` plus any mentioned accounts.
 
 For the `"no mentions"` subtest:
 ```go
@@ -375,7 +375,7 @@ require.NotNil(t, evt.Message, "group room events must carry Message payload")
 assert.Equal(t, "msg-1", evt.Message.ID)
 require.NotNil(t, evt.Message.Sender)
 assert.Equal(t, "user-1", evt.Message.Sender.UserID)
-assert.Equal(t, "sender", evt.Message.Sender.Username)
+assert.Equal(t, "sender", evt.Message.Sender.Account)
 assert.Equal(t, "寄件者", evt.Message.Sender.ChineseName)
 assert.Equal(t, "Sender Lin", evt.Message.Sender.EngName)
 ```
@@ -386,7 +386,7 @@ if tc.wantMentions != nil {
 	require.Len(t, evt.Mentions, len(tc.wantMentions))
 	mentionUsernames := make([]string, len(evt.Mentions))
 	for i, m := range evt.Mentions {
-		mentionUsernames[i] = m.Username
+		mentionUsernames[i] = m.UserAccount
 	}
 	assert.ElementsMatch(t, tc.wantMentions, mentionUsernames)
 	for _, m := range evt.Mentions {
@@ -406,7 +406,7 @@ Add `FindEmployeesByAccountNames` mock expectation in each subtest. For `"no men
 expectEmployeeLookup(store, []string{"alice"}, testEmployees[:1])
 ```
 
-Note: The DM test uses `UserID: "alice-id"` and `Username: "alice"` as sender (from the message event constructed inline), so adjust accordingly. Actually, looking at the existing test, the DM message event is constructed inline with `UserID: "alice-id"`, `Content: tc.content`. The `Username` field is not set in the existing test — it needs to be added: `Username: "alice"`.
+Note: The DM test uses `UserID: "alice-id"` and `Account: "alice"` as sender (from the message event constructed inline), so adjust accordingly. Actually, looking at the existing test, the DM message event is constructed inline with `UserID: "alice-id"`, `Content: tc.content`. The `Username` field is not set in the existing test — it needs to be added: `Account: "alice"`.
 
 For `"with mention"` (`@bob` is mentioned):
 ```go
@@ -419,12 +419,12 @@ require.NotNil(t, aliceEvt.Message)
 assert.Equal(t, "msg-1", aliceEvt.Message.ID)
 require.NotNil(t, aliceEvt.Message.Sender)
 assert.Equal(t, "alice-id", aliceEvt.Message.Sender.UserID)
-assert.Equal(t, "alice", aliceEvt.Message.Sender.Username)
+assert.Equal(t, "alice", aliceEvt.Message.Sender.Account)
 ```
 
 Add a new error test case for employee lookup failure (fallback behavior):
 ```go
-t.Run("employee lookup fails fallback to username", func(t *testing.T) {
+t.Run("employee lookup fails fallback to account", func(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
 	pub := &mockPublisher{}
@@ -441,7 +441,7 @@ t.Run("employee lookup fails fallback to username", func(t *testing.T) {
 	evt := decodeRoomEvent(t, pub.records[0].data)
 	require.NotNil(t, evt.Message)
 	require.NotNil(t, evt.Message.Sender)
-	assert.Equal(t, "sender", evt.Message.Sender.Username)
+	assert.Equal(t, "sender", evt.Message.Sender.Account)
 	assert.Equal(t, "sender", evt.Message.Sender.ChineseName)
 	assert.Equal(t, "sender", evt.Message.Sender.EngName)
 })
@@ -457,11 +457,11 @@ Expected: FAIL — handler still uses `Origin`, `[]string` mentions, `*Message`,
 In `broadcast-worker/handler.go`, update the `HandleMessage` method. After the `SetSubscriptionMentions` block (after line 54) and before the switch statement, add employee lookup:
 
 ```go
-	// Collect all usernames for employee lookup (sender + mentioned)
-	lookupUsernames := make([]string, 0, 1+len(mentionedUsernames))
-	lookupUsernames = append(lookupUsernames, msg.Username)
-	for _, u := range mentionedUsernames {
-		if u != msg.Username {
+	// Collect all accounts for employee lookup (sender + mentioned)
+	lookupUsernames := make([]string, 0, 1+len(mentionedAccounts))
+	lookupUsernames = append(lookupUsernames, msg.UserAccount)
+	for _, u := range mentionedAccounts {
+		if u != msg.UserAccount {
 			lookupUsernames = append(lookupUsernames, u)
 		}
 	}
@@ -469,7 +469,7 @@ In `broadcast-worker/handler.go`, update the `HandleMessage` method. After the `
 	employeeMap := make(map[string]model.Employee)
 	employees, err := h.store.FindEmployeesByAccountNames(ctx, lookupUsernames)
 	if err != nil {
-		slog.Warn("employee lookup failed, falling back to usernames", "error", err)
+		slog.Warn("employee lookup failed, falling back to accounts", "error", err)
 	} else {
 		for _, emp := range employees {
 			employeeMap[emp.AccountName] = emp
@@ -477,7 +477,7 @@ In `broadcast-worker/handler.go`, update the `HandleMessage` method. After the `
 	}
 
 	clientMsg := buildClientMessage(&msg, employeeMap)
-	mentionParticipants := buildMentionParticipants(mentionedUsernames, employeeMap)
+	mentionParticipants := buildMentionParticipants(mentionedAccounts, employeeMap)
 ```
 
 Update `publishGroupEvent` signature and body:
@@ -501,29 +501,29 @@ func (h *Handler) publishGroupEvent(room *model.Room, clientMsg *model.ClientMes
 Update `publishDMEvents` signature and body:
 
 ```go
-func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionedUsernames []string) error {
+func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionedAccounts []string) error {
 	subs, err := h.store.ListSubscriptions(ctx, room.ID)
 	if err != nil {
 		return fmt.Errorf("list subscriptions for DM room %s: %w", room.ID, err)
 	}
 
-	mentionSet := make(map[string]struct{}, len(mentionedUsernames))
-	for _, name := range mentionedUsernames {
+	mentionSet := make(map[string]struct{}, len(mentionedAccounts))
+	for _, name := range mentionedAccounts {
 		mentionSet[name] = struct{}{}
 	}
 
 	for i := range subs {
-		_, hasMention := mentionSet[subs[i].User.Username]
+		_, hasMention := mentionSet[subs[i].User.Account]
 
 		evt := buildRoomEvent(room, clientMsg)
 		evt.HasMention = hasMention
 
 		payload, err := json.Marshal(evt)
 		if err != nil {
-			return fmt.Errorf("marshal DM event for user %s: %w", subs[i].User.Username, err)
+			return fmt.Errorf("marshal DM event for user %s: %w", subs[i].User.Account, err)
 		}
-		if err := h.pub.Publish(subject.UserRoomEvent(subs[i].User.Username), payload); err != nil {
-			slog.Error("publish DM event failed", "error", err, "username", subs[i].User.Username)
+		if err := h.pub.Publish(subject.UserRoomEvent(subs[i].User.Account), payload); err != nil {
+			slog.Error("publish DM event failed", "error", err, "account", subs[i].User.Account)
 		}
 	}
 	return nil
@@ -555,14 +555,14 @@ Add helper functions:
 func buildClientMessage(msg *model.Message, employeeMap map[string]model.Employee) *model.ClientMessage {
 	sender := model.Participant{
 		UserID:   msg.UserID,
-		Username: msg.Username,
+		Account: msg.UserAccount,
 	}
-	if emp, ok := employeeMap[msg.Username]; ok {
+	if emp, ok := employeeMap[msg.UserAccount]; ok {
 		sender.ChineseName = emp.Name
 		sender.EngName = emp.EngName
 	} else {
-		sender.ChineseName = msg.Username
-		sender.EngName = msg.Username
+		sender.ChineseName = msg.UserAccount
+		sender.EngName = msg.UserAccount
 	}
 	return &model.ClientMessage{
 		Message: *msg,
@@ -570,19 +570,19 @@ func buildClientMessage(msg *model.Message, employeeMap map[string]model.Employe
 	}
 }
 
-func buildMentionParticipants(mentionedUsernames []string, employeeMap map[string]model.Employee) []model.Participant {
-	if len(mentionedUsernames) == 0 {
+func buildMentionParticipants(mentionedAccounts []string, employeeMap map[string]model.Employee) []model.Participant {
+	if len(mentionedAccounts) == 0 {
 		return nil
 	}
-	participants := make([]model.Participant, len(mentionedUsernames))
-	for i, username := range mentionedUsernames {
-		p := model.Participant{Username: username}
+	participants := make([]model.Participant, len(mentionedAccounts))
+	for i, account := range mentionedAccounts {
+		p := model.Participant{Account: account}
 		if emp, ok := employeeMap[username]; ok {
 			p.ChineseName = emp.Name
 			p.EngName = emp.EngName
 		} else {
-			p.ChineseName = username
-			p.EngName = username
+			p.ChineseName = account
+			p.EngName = account
 		}
 		participants[i] = p
 	}
@@ -597,7 +597,7 @@ Update the switch statement in `HandleMessage` to use the new variables:
 	case model.RoomTypeGroup:
 		return h.publishGroupEvent(room, clientMsg, mentionAll, mentionParticipants)
 	case model.RoomTypeDM:
-		return h.publishDMEvents(ctx, room, clientMsg, mentionedUsernames)
+		return h.publishDMEvents(ctx, room, clientMsg, mentionedAccounts)
 	default:
 		slog.Warn("unknown room type, skipping fan-out", "type", room.Type, "roomID", room.ID)
 		return nil
@@ -691,11 +691,11 @@ require.NotNil(t, evt.Message.Sender)
 assert.Equal(t, "u1", evt.Message.Sender.UserID)
 ```
 
-Note: The message in this test has `UserID: "u1"` but no `Username`. Add `Username: "alice"` to the test message so the employee lookup works:
+Note: The message in this test has `UserID: "u1"` but no `Username`. Add `Account: "alice"` to the test message so the employee lookup works:
 
 ```go
 Message: model.Message{
-	ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice", Content: "hello", CreatedAt: msgTime,
+	ID: "m1", RoomID: "r1", UserID: "u1", Account: "alice", Content: "hello", CreatedAt: msgTime,
 },
 ```
 
@@ -712,7 +712,7 @@ assert.Equal(t, "Bob Chen", evt.Mentions[0].EngName)
 assert.Empty(t, evt.Mentions[0].UserID)
 ```
 
-For the DM test, add `Username: "alice"` to the message and verify sender:
+For the DM test, add `Account: "alice"` to the message and verify sender:
 
 ```go
 records := pub.getRecords()
@@ -722,7 +722,7 @@ for _, rec := range records {
 	require.NotNil(t, evt.Message)
 	require.NotNil(t, evt.Message.Sender)
 	assert.Equal(t, "u1", evt.Message.Sender.UserID)
-	assert.Equal(t, "alice", evt.Message.Sender.Username)
+	assert.Equal(t, "alice", evt.Message.Sender.Account)
 	assert.Equal(t, "愛麗絲", evt.Message.Sender.ChineseName)
 }
 ```

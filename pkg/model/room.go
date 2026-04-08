@@ -24,12 +24,12 @@ type Room struct {
 }
 
 type CreateRoomRequest struct {
-	Name              string   `json:"name"`
-	Type              RoomType `json:"type"`
-	CreatedBy         string   `json:"createdBy"`
-	CreatedByUsername string   `json:"createdByUsername"`
-	SiteID            string   `json:"siteId"`
-	Members           []string `json:"members,omitempty"`
+	Name             string   `json:"name"`
+	Type             RoomType `json:"type"`
+	CreatedBy        string   `json:"createdBy"`
+	CreatedByAccount string   `json:"createdByAccount"`
+	SiteID           string   `json:"siteId"`
+	Members          []string `json:"members,omitempty"`
 }
 
 type ListRoomsResponse struct {

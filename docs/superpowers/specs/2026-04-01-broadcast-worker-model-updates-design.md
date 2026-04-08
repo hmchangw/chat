@@ -2,7 +2,7 @@
 
 ## Overview
 
-Update the broadcast-worker to enrich room events with full message payloads and participant details (including employee name data from MongoDB), remove the redundant `Origin` field from Room (replaced by `SiteID`), and restructure `Mentions` from plain usernames to rich `Participant` objects.
+Update the broadcast-worker to enrich room events with full message payloads and participant details (including employee name data from MongoDB), remove the redundant `Origin` field from Room (replaced by `SiteID`), and restructure `Mentions` from plain accounts to rich `Participant` objects.
 
 ## Requirements
 
@@ -28,7 +28,7 @@ All references to `Origin` in `RoomEvent`, handler, and tests are replaced with 
 ```go
 type Participant struct {
     UserID      string `json:"userId,omitempty" bson:"userId,omitempty"`
-    Username    string `json:"username" bson:"username"`
+    Account    string `json:"account" bson:"account"`
     ChineseName string `json:"chineseName" bson:"chineseName"`
     EngName     string `json:"engName" bson:"engName"`
 }
@@ -94,7 +94,7 @@ type Store interface {
     GetRoom(ctx context.Context, roomID string) (*model.Room, error)
     ListSubscriptions(ctx context.Context, roomID string) ([]model.Subscription, error)
     UpdateRoomOnNewMessage(ctx context.Context, roomID string, msgID string, msgAt time.Time, mentionAll bool) error
-    SetSubscriptionMentions(ctx context.Context, roomID string, usernames []string) error
+    SetSubscriptionMentions(ctx context.Context, roomID string, accounts []string) error
     FindEmployeesByAccountNames(ctx context.Context, accountNames []string) ([]model.Employee, error)
 }
 ```
@@ -112,18 +112,18 @@ type Store interface {
 
 1. Unmarshal `MessageEvent` from JSON (unchanged)
 2. Get Room from store (unchanged)
-3. Detect `mentionAll` and extract mentioned usernames (unchanged)
+3. Detect `mentionAll` and extract mentioned accounts (unchanged)
 4. Update room metadata + subscription mentions (unchanged)
-5. **New:** Collect all usernames (sender username + mentioned usernames), deduplicate, call `FindEmployeesByAccountNames`
+5. **New:** Collect all accounts (sender account + mentioned accounts), deduplicate, call `FindEmployeesByAccountNames`
 6. **New:** Build `map[string]model.Employee` lookup from results
 7. **New:** Build `ClientMessage` — embed original `Message`, attach `Sender` as `Participant` with `UserID` from message, `Username`, and employee name data
-8. **New:** Build `Mentions` as `[]Participant` from mentioned usernames + employee lookup (no `UserID`)
+8. **New:** Build `Mentions` as `[]Participant` from mentioned accounts + employee lookup (no `UserID`)
 9. Route to `publishGroupEvent` or `publishDMEvents` (signatures updated)
 
 ### Fallback behavior
 
 - If `FindEmployeesByAccountNames` returns a DB error: log warning, build all `Participant` entries with `Username` as both `ChineseName` and `EngName`.
-- If an individual username has no matching employee record: that `Participant` gets `Username` as both `ChineseName` and `EngName`.
+- If an individual account has no matching employee record: that `Participant` gets `Username` as both `ChineseName` and `EngName`.
 - Message delivery is never blocked by employee lookup failures.
 
 ### `publishGroupEvent` changes
@@ -135,8 +135,8 @@ type Store interface {
 ### `publishDMEvents` changes
 
 - Uses `*ClientMessage` with `Sender` instead of raw `*Message`
-- Per-subscriber `HasMention` logic stays the same — checks `Participant.Username`
-- Publishes to `subject.UserRoomEvent(username)` (unchanged)
+- Per-subscriber `HasMention` logic stays the same — checks `Participant.Account`
+- Publishes to `subject.UserRoomEvent(account)` (unchanged)
 
 ## Files Affected
 

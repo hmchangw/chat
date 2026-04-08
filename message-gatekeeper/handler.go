@@ -53,7 +53,7 @@ func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
 func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
-	username, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(msg.Subject())
+	account, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(msg.Subject())
 	if !ok {
 		slog.Warn("invalid subject", "subject", msg.Subject())
 		if err := msg.Ack(); err != nil {
@@ -63,9 +63,9 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	}
 
 	ctx := context.Background()
-	replyData, err := h.processMessage(ctx, username, roomID, siteID, msg.Data())
+	replyData, err := h.processMessage(ctx, account, roomID, siteID, msg.Data())
 	if err != nil {
-		slog.Error("process message failed", "error", err, "username", username, "roomID", roomID)
+		slog.Error("process message failed", "error", err, "account", account, "roomID", roomID)
 		var ie *infraError
 		if errors.As(err, &ie) {
 			if err := msg.Nak(); err != nil {
@@ -73,7 +73,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 			}
 		} else {
 			// Validation error: reply with error and ack.
-			h.sendReply(username, msg.Data(), natsutil.MarshalError(err.Error()))
+			h.sendReply(account, msg.Data(), natsutil.MarshalError(err.Error()))
 			if err := msg.Ack(); err != nil {
 				slog.Error("failed to ack message", "error", err)
 			}
@@ -81,7 +81,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 		return
 	}
 
-	h.sendReply(username, msg.Data(), replyData)
+	h.sendReply(account, msg.Data(), replyData)
 
 	if err := msg.Ack(); err != nil {
 		slog.Error("failed to ack message", "err", err)
@@ -90,7 +90,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 
 // sendReply extracts the requestID from the raw message data and publishes the
 // reply payload to the user's response subject.
-func (h *Handler) sendReply(username string, rawData []byte, replyData []byte) {
+func (h *Handler) sendReply(account string, rawData []byte, replyData []byte) {
 	var req model.SendMessageRequest
 	if err := json.Unmarshal(rawData, &req); err != nil {
 		slog.Error("unmarshal request for reply", "error", err)
@@ -99,7 +99,7 @@ func (h *Handler) sendReply(username string, rawData []byte, replyData []byte) {
 	if req.RequestID == "" {
 		return
 	}
-	respSubj := subject.UserResponse(username, req.RequestID)
+	respSubj := subject.UserResponse(account, req.RequestID)
 	if err := h.reply(respSubj, replyData); err != nil {
 		slog.Error("reply to client failed", "error", err, "subject", respSubj)
 	}
@@ -108,7 +108,7 @@ func (h *Handler) sendReply(username string, rawData []byte, replyData []byte) {
 // processMessage validates a SendMessageRequest and publishes a MessageEvent to MESSAGES_CANONICAL.
 // Returns the serialized Message on success, or an error.
 // Validation errors (bad input) are plain errors; transient failures are *infraError.
-func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID string, data []byte) ([]byte, error) {
+func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID string, data []byte) ([]byte, error) {
 	// Validate siteID matches this service's siteID
 	if siteID != h.siteID {
 		return nil, fmt.Errorf("siteID mismatch: got %s, want %s", siteID, h.siteID)
@@ -136,12 +136,12 @@ func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID s
 	}
 
 	// Verify subscription
-	sub, err := h.store.GetSubscription(ctx, username, roomID)
+	sub, err := h.store.GetSubscription(ctx, account, roomID)
 	if err != nil {
 		if errors.Is(err, errNotSubscribed) {
-			return nil, fmt.Errorf("user %s is not subscribed to room %s", username, roomID)
+			return nil, fmt.Errorf("user %s is not subscribed to room %s", account, roomID)
 		}
-		return nil, &infraError{cause: fmt.Errorf("get subscription for user %s in room %s: %w", username, roomID, err)}
+		return nil, &infraError{cause: fmt.Errorf("get subscription for user %s in room %s: %w", account, roomID, err)}
 	}
 
 	// Build Message
@@ -150,7 +150,7 @@ func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID s
 		ID:                    req.ID,
 		RoomID:                roomID,
 		UserID:                sub.User.ID,
-		Username:              sub.User.Username,
+		UserAccount:           sub.User.Account,
 		Content:               req.Content,
 		CreatedAt:             now,
 		ThreadParentMessageID: req.ThreadParentMessageID,

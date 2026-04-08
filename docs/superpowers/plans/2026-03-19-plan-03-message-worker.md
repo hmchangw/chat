@@ -263,7 +263,7 @@ func NewHandler(store MessageStore, siteID string, publish func(string, []byte) 
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
 func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
-	// Extract userID and roomID from subject: chat.user.{userID}.room.{roomID}.{siteID}.msg.send
+	// Extract userID and roomID from subject: chat.user.{account}.room.{roomID}.{siteID}.msg.send
 	parts := strings.Split(msg.Subject(), ".")
 	if len(parts) < 7 {
 		log.Printf("invalid subject: %s", msg.Subject())

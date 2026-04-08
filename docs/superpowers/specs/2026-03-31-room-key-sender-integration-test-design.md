@@ -41,7 +41,7 @@ An integration test in `pkg/roomkeysender/integration_test.go` that validates th
 
 | Purpose | Subject | Transport |
 |---------|---------|-----------|
-| Room key delivery | `chat.user.{username}.event.room.key` | Via `roomkeysender.Send` |
+| Room key delivery | `chat.user.{account}.event.room.key` | Via `roomkeysender.Send` |
 | Encrypted message | `test.room.{roomID}.msg` | Direct `nats.Conn.PublishMsg` with header |
 
 ## Message Header
@@ -56,9 +56,9 @@ Encrypted messages carry the key version in a NATS header:
 2. Start Node container, install `tsx` + `nats`, copy `client.ts`
 3. Go connects to NATS over TCP
 4. Generate a fresh P-256 key pair
-5. Run `client.ts` in Node container, passing: NATS WS URL, username, roomID
+5. Run `client.ts` in Node container, passing: NATS WS URL, account, roomID
 6. Brief delay for TypeScript subscriptions to establish
-7. Go publishes room key via `roomkeysender.Send(username, &model.RoomKeyEvent{...})`
+7. Go publishes room key via `roomkeysender.Send(account, &model.RoomKeyEvent{...})`
 8. Go encrypts a plaintext message via `roomcrypto.Encode(content, publicKey)`
 9. Go publishes the encrypted message JSON to `test.room.{roomID}.msg` with `X-Room-Key-Version` header
 10. TypeScript client receives key, receives encrypted message, decrypts, prints plaintext to stdout
@@ -72,7 +72,7 @@ Encrypted messages carry the key version in a NATS header:
 
 **Behavior:**
 1. Connect to NATS via WebSocket using the `nats` npm package
-2. Subscribe to `chat.user.{username}.event.room.key`
+2. Subscribe to `chat.user.{account}.event.room.key`
 3. Subscribe to `test.room.{roomID}.msg`
 4. On key event: parse JSON as `RoomKeyEvent`, store key pair indexed by `versionId`
 5. On encrypted message: read `X-Room-Key-Version` header, look up stored key by version, decrypt using Web Crypto (ECDH + HKDF-SHA256 + AES-256-GCM — same algorithm as existing `decrypt.ts`)

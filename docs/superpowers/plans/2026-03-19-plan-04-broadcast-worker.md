@@ -26,7 +26,7 @@ broadcast-worker
     |      publish message to chat.room.{roomID}.stream.msg
     | 5. If room.Type == "dm":
     |      ListSubscriptions(roomID) from MongoDB
-    |      publish message to chat.user.{userID}.stream.msg for each member
+    |      publish message to chat.user.{account}.stream.msg for each member
     | 6. Ack the JetStream message
     v
 NATS core publish -> room/user stream subjects
@@ -784,6 +784,6 @@ git add broadcast-worker/Dockerfile && git commit -m "feat(broadcast-worker): ad
 2. **Publisher interface:** `handler.go` depends on a `Publisher` interface rather than `*nats.Conn` directly, making the handler fully unit-testable without a running NATS server.
 3. **RoomLookup interface:** The handler depends on `RoomLookup` (with both `GetRoom` and `ListSubscriptions`) rather than MongoDB directly. Tests use an in-memory stub; `main.go` provides the real MongoDB implementation via `mongoRoomLookup`.
 4. **Metadata-first publishing:** The `RoomMetadataUpdateEvent` is always published before the message fan-out, ensuring subscribers see updated room metadata (e.g., `lastMessageAt`) before or alongside the new message.
-5. **Room-type routing:** Group rooms publish to a single `chat.room.{roomID}.stream.msg` subject (subscribers pull from the room stream). DM rooms look up members and publish to each `chat.user.{userID}.stream.msg` individually, since DM participants subscribe to their personal stream rather than a shared room stream.
+5. **Room-type routing:** Group rooms publish to a single `chat.room.{roomID}.stream.msg` subject (subscribers pull from the room stream). DM rooms look up members and publish to each `chat.user.{account}.stream.msg` individually, since DM participants subscribe to their personal stream rather than a shared room stream.
 6. **Partial failure tolerance for DM fan-out:** If publishing to one DM member fails, the handler logs the error and continues delivering to the remaining members rather than failing the entire batch.
 7. **Two MongoDB collections:** `main.go` wires both `rooms` (for `GetRoom`) and `subscriptions` (for `ListSubscriptions`) collections into a single `mongoRoomLookup` struct.
