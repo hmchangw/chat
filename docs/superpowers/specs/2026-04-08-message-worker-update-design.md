@@ -2,11 +2,11 @@
 
 ## Overview
 
-Update `message-worker` to write the full `messages_by_room` Cassandra schema (and `thread_messages_by_room` for thread replies), enriched with employee metadata from MongoDB, with NAK+backoff resilience for Cassandra failures.
+Update `message-worker` to write to all Cassandra message tables (`messages_by_room`, `messages_by_id`, and `thread_messages_by_room` for thread replies), enriched with employee metadata from MongoDB, with NAK+backoff resilience for Cassandra failures.
 
 ## Context
 
-The current `message-worker` consumes `MessageEvent` from the `MESSAGES_CANONICAL` stream and writes only 5 columns (`room_id`, `created_at`, `id`, `user_id`, `content`) to a legacy `messages` table. The production Cassandra schema (`messages_by_room`) has 22 columns including UDTs (`Participant`, `File`, `Card`, etc.). The worker needs to be updated to write the full schema and enrich the sender with employee metadata from MongoDB.
+The current `message-worker` consumes `MessageEvent` from the `MESSAGES_CANONICAL` stream and writes only 5 columns (`room_id`, `created_at`, `id`, `user_id`, `content`) to a legacy `messages` table. The production Cassandra schema has three message tables: `messages_by_room` (partitioned by room), `messages_by_id` (partitioned by message ID, no room_id column), and `thread_messages_by_room` (partitioned by room with thread clustering). The message-worker is the sole writer to all Cassandra message tables. The worker needs to be updated to write the full schema across all tables and enrich the sender with employee metadata from MongoDB.
 
 ## Data Flow
 
@@ -27,11 +27,13 @@ MESSAGES_CANONICAL stream (MessageEvent)
   3. Build sender Participant UDT from event fields + employee data
         |
         v
-  4. Write to messages_by_room (always)
-     Write to thread_messages_by_room (if ThreadParentMessageID is set)
+  4. Write to all Cassandra tables:
+     - messages_by_room (always)
+     - messages_by_id (always)
+     - thread_messages_by_room (if ThreadParentMessageID is set)
         |
         v
-  5. ACK on success / NAK with exponential backoff on Cassandra failure
+  5. ACK only when ALL writes succeed / NAK with exponential backoff on any Cassandra failure
 ```
 
 ## Input: MessageEvent from MESSAGES_CANONICAL
@@ -99,6 +101,22 @@ type Message struct {
 | `app_name` | `""` — not available |
 | `is_bot` | `false` — not available |
 
+### messages_by_id (always written)
+
+Same data as `messages_by_room` but partitioned by `message_id` instead of `room_id`. No `room_id` column — intentionally omitted from this table's schema.
+
+| Cassandra column | Source | Notes |
+|---|---|---|
+| `message_id` | `evt.Message.ID` | Partition key |
+| `created_at` | `evt.Message.CreatedAt` | Clustering key |
+| `sender` | Employee lookup + event | Same Participant UDT as messages_by_room |
+| `msg` | `evt.Message.Content` | |
+| `site_id` | `evt.SiteID` | |
+| `deleted` | `false` | |
+| `unread` | `true` | |
+| `updated_at` | `evt.Message.CreatedAt` | |
+| All others | Same nil/empty values as messages_by_room | `target_user`, `mentions`, `attachments`, `file`, `card`, `card_action`, `quoted_parent_message`, `visible_to`, `reactions`, `type`, `sys_msg_data`, `edited_at` |
+
 ### thread_messages_by_room (only when ThreadParentMessageID is set)
 
 Same columns as `messages_by_room`, plus:
@@ -157,11 +175,14 @@ If Cassandra is down for an extended period, unacked messages accumulate in the 
 ```go
 type Store interface {
     SaveMessage(ctx context.Context, msg CassandraMessage) error
+    SaveMessageByID(ctx context.Context, msg CassandraMessage) error
     SaveThreadMessage(ctx context.Context, msg CassandraMessage) error
 }
 ```
 
-`CassandraMessage` is a struct internal to `message-worker` that maps 1:1 to the `messages_by_room` columns plus the extra thread columns. It uses the UDT types from `history-service/internal/models/types.go` (Participant, File, Card, CardAction).
+`CassandraMessage` is a struct internal to `message-worker` that contains all fields needed across all three tables. Each `Save*` method selects the appropriate columns for its table. Uses the UDT types from `history-service/internal/models/types.go` (Participant, File, Card, CardAction).
+
+**Write semantics:** The handler calls all applicable `Save*` methods. The JetStream message is ACK'd only when all writes succeed. If any write fails, the message is NAK'd with backoff — on retry, all writes are re-attempted (Cassandra INSERTs are idempotent).
 
 ### MetadataStore (MongoDB operations)
 
@@ -196,7 +217,7 @@ New fields: `MongoURI`, `MongoDB` — same env var names and defaults as broadca
 | `message-worker/main.go` | Add MongoDB connection, new config fields, pass MetadataStore to handler, add MongoDB disconnect to shutdown |
 | `message-worker/handler.go` | Add MetadataStore dependency, employee lookup with soft failure, build CassandraMessage, NAK with backoff logic, thread message detection |
 | `message-worker/store.go` | Update Store interface (SaveMessage + SaveThreadMessage), add MetadataStore interface, add CassandraMessage struct |
-| `message-worker/store_cassandra.go` | Rewrite SaveMessage for full `messages_by_room` schema, add SaveThreadMessage for `thread_messages_by_room` |
+| `message-worker/store_cassandra.go` | Rewrite SaveMessage for full `messages_by_room` schema, add SaveMessageByID for `messages_by_id`, add SaveThreadMessage for `thread_messages_by_room` |
 | `message-worker/store_mongo.go` | New file — MongoMetadataStore implementation |
 | `message-worker/handler_test.go` | Update for new handler signature, add test cases for: thread messages, employee lookup failure (soft), Cassandra failure with backoff |
 | `message-worker/integration_test.go` | Update schema setup and assertions for new table structure |
