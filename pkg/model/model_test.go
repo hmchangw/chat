@@ -54,6 +54,22 @@ func TestMessageJSON(t *testing.T) {
 		_, present := raw["threadParentMessageId"]
 		assert.False(t, present, "threadParentMessageId should be omitted when empty")
 	})
+
+	t.Run("with threadParentMessageCreatedAt", func(t *testing.T) {
+		parentTS := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:                      "reply",
+			CreatedAt:                    time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			ThreadParentMessageID:        "parent-msg-uuid",
+			ThreadParentMessageCreatedAt: &parentTS,
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var dst model.Message
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, m, dst)
+	})
 }
 
 func TestSendMessageRequestJSON(t *testing.T) {
@@ -79,6 +95,36 @@ func TestSendMessageRequestJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &raw))
 		_, present := raw["threadParentMessageId"]
 		assert.False(t, present, "threadParentMessageId should be omitted when empty")
+	})
+
+	t.Run("with threadParentMessageCreatedAt", func(t *testing.T) {
+		parentTS := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+		r := model.SendMessageRequest{
+			ID:                           "msg-uuid-1",
+			Content:                      "reply",
+			RequestID:                    "req-1",
+			ThreadParentMessageID:        "parent-msg-uuid",
+			ThreadParentMessageCreatedAt: &parentTS,
+		}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		var dst model.SendMessageRequest
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, r, dst)
+	})
+
+	t.Run("threadParentMessageCreatedAt omitted when nil", func(t *testing.T) {
+		r := model.SendMessageRequest{
+			ID:        "msg-uuid-1",
+			Content:   "hello world",
+			RequestID: "req-1",
+		}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["threadParentMessageCreatedAt"]
+		assert.False(t, present, "threadParentMessageCreatedAt should be omitted when nil")
 	})
 }
 
