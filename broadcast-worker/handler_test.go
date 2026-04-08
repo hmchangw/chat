@@ -24,7 +24,7 @@ type mockPublisher struct {
 	records []publishRecord
 }
 
-func (m *mockPublisher) Publish(subj string, data []byte) error {
+func (m *mockPublisher) Publish(_ context.Context, subj string, data []byte) error {
 	m.records = append(m.records, publishRecord{subject: subj, data: data})
 	return nil
 }
@@ -421,7 +421,7 @@ type failingPublisher struct {
 	records   []publishRecord
 }
 
-func (p *failingPublisher) Publish(subj string, data []byte) error {
+func (p *failingPublisher) Publish(_ context.Context, subj string, data []byte) error {
 	p.callCount++
 	if p.callCount > p.failAfter {
 		return errors.New("publish failed")

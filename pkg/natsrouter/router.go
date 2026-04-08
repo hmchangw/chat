@@ -3,7 +3,7 @@ package natsrouter
 import (
 	"fmt"
 
-	"github.com/nats-io/nats.go"
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 )
 
 // Registrar is the interface for registering route handlers.
@@ -13,13 +13,13 @@ type Registrar interface {
 
 // Router manages NATS subscriptions with pattern-based routing and middleware.
 type Router struct {
-	nc         *nats.Conn
+	nc         *otelnats.Conn
 	queue      string
 	middleware []HandlerFunc
 }
 
 // New creates a Router with the given NATS connection and queue group.
-func New(nc *nats.Conn, queue string) *Router {
+func New(nc *otelnats.Conn, queue string) *Router {
 	return &Router{nc: nc, queue: queue}
 }
 
@@ -34,8 +34,8 @@ func (r *Router) addRoute(pattern string, handlers []HandlerFunc) {
 	all = append(all, r.middleware...)
 	all = append(all, handlers...)
 
-	natsHandler := func(msg *nats.Msg) {
-		c := acquireContext(msg, rt.extractParams(msg.Subject), all)
+	natsHandler := func(m otelnats.Msg) {
+		c := acquireContext(m.Context(), m.Msg, rt.extractParams(m.Msg.Subject), all)
 		c.Next()
 		releaseContext(c)
 	}

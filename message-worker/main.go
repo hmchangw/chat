@@ -10,10 +10,13 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
 	"github.com/hmchangw/chat/pkg/cassutil"
+	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
@@ -37,12 +40,18 @@ func main() {
 
 	ctx := context.Background()
 
-	nc, err := nats.Connect(cfg.NatsURL)
+	tracerShutdown, err := otelutil.InitTracer(ctx, "message-worker")
+	if err != nil {
+		slog.Error("init tracer failed", "error", err)
+		os.Exit(1)
+	}
+
+	nc, err := otelnats.Connect(cfg.NatsURL)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)
 	}
-	js, err := jetstream.New(nc)
+	js, err := oteljetstream.New(nc)
 	if err != nil {
 		slog.Error("jetstream init failed", "error", err)
 		os.Exit(1)
@@ -86,7 +95,7 @@ func main() {
 
 	go func() {
 		for {
-			msg, err := iter.Next()
+			msgCtx, msg, err := iter.Next()
 			if err != nil {
 				return
 			}
@@ -97,7 +106,7 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handler.HandleJetStreamMsg(msg)
+				handler.HandleJetStreamMsg(msgCtx, msg)
 			}()
 		}
 	}()
@@ -119,6 +128,7 @@ func main() {
 				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
 		},
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 	)

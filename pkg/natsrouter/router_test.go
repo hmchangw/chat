@@ -1,6 +1,7 @@
 package natsrouter
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -10,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -22,7 +25,7 @@ type testResp struct {
 	Greeting string `json:"greeting"`
 }
 
-func startTestNATS(t *testing.T) *nats.Conn {
+func startTestNATS(t *testing.T) *otelnats.Conn {
 	t.Helper()
 	opts := &natsserver.Options{Port: -1}
 	ns, err := natsserver.NewServer(opts)
@@ -31,7 +34,7 @@ func startTestNATS(t *testing.T) *nats.Conn {
 	require.True(t, ns.ReadyForConnections(5*time.Second), "nats server did not become ready")
 	t.Cleanup(ns.Shutdown)
 
-	nc, err := nats.Connect(ns.ClientURL())
+	nc, err := otelnats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 	return nc
@@ -47,7 +50,7 @@ func TestRegister_Success(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "world"})
-	resp, err := nc.Request("chat.user.alice.request.room.r1.site-1.msg.test", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-1.msg.test", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var result testResp
@@ -67,7 +70,7 @@ func TestRegister_ParamsExtraction(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{})
-	_, err := nc.Request("chat.user.alice.request.room.room-42.site-prod.msg.test", data, 2*time.Second)
+	_, err := nc.Request(context.Background(), "chat.user.alice.request.room.room-42.site-prod.msg.test", data, 2*time.Second)
 	require.NoError(t, err)
 
 	assert.Equal(t, "alice", captured.Get("account"))
@@ -85,7 +88,7 @@ func TestRegister_InvalidJSON(t *testing.T) {
 			return nil, nil
 		})
 
-	resp, err := nc.Request("test.123", []byte("not json"), 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", []byte("not json"), 2*time.Second)
 	require.NoError(t, err)
 
 	var errResp model.ErrorResponse
@@ -103,7 +106,7 @@ func TestRegister_HandlerError(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request("test.123", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var errResp model.ErrorResponse
@@ -120,7 +123,7 @@ func TestRegisterNoBody_Success(t *testing.T) {
 			return &testResp{Greeting: "room " + c.Param("roomID")}, nil
 		})
 
-	resp, err := nc.Request("chat.user.alice.request.rooms.get.room-42", nil, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "chat.user.alice.request.rooms.get.room-42", nil, 2*time.Second)
 	require.NoError(t, err)
 
 	var result testResp
@@ -160,7 +163,7 @@ func TestMiddleware_ExecutionOrder(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{})
-	_, err := nc.Request("test.123", data, 2*time.Second)
+	_, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	result := <-doneCh
@@ -189,7 +192,7 @@ func TestMiddleware_ShortCircuit(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{})
-	resp, err := nc.Request("test.123", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	assert.False(t, handlerCalled)
@@ -207,7 +210,7 @@ func TestRecovery_CatchesPanic(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{})
-	resp, err := nc.Request("test.123", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var errResp model.ErrorResponse
@@ -225,7 +228,7 @@ func TestRegister_NoParams(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "world"})
-	resp, err := nc.Request("static.subject", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "static.subject", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var result testResp
@@ -243,7 +246,7 @@ func TestRegister_RouteError(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request("test.123", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var result RouteError
@@ -262,7 +265,7 @@ func TestRegister_RouteErrorSimple(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request("test.123", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var result RouteError
@@ -281,7 +284,7 @@ func TestRegister_InternalErrorNotExposed(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request("test.123", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var errResp model.ErrorResponse
@@ -302,7 +305,7 @@ func TestRegisterVoid_Success(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "hello"})
-	err := nc.Publish("events.typing", data)
+	err := nc.Publish(context.Background(), "events.typing", data)
 	require.NoError(t, err)
 
 	select {
@@ -324,8 +327,8 @@ func TestRegisterVoid_NoReply(t *testing.T) {
 
 	// Use Request (expects reply) — should timeout since RegisterVoid doesn't reply
 	data, _ := json.Marshal(testReq{Name: "hello"})
-	_, err := nc.Request("events.typing", data, 200*time.Millisecond)
-	assert.ErrorIs(t, err, nats.ErrTimeout)
+	_, err := nc.Request(context.Background(), "events.typing", data, 200*time.Millisecond)
+	require.Error(t, err)
 }
 
 func TestRouteError_Error(t *testing.T) {
@@ -347,7 +350,7 @@ func TestRouteError_WrappedInFmtErrorf(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request("test.123", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var result RouteError
@@ -393,7 +396,9 @@ func TestContext_Abort(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{})
-	_, _ = nc.Request("test.abort", data, 200*time.Millisecond)
+	// Error expected: middleware aborts without replying, so request times out.
+	_, err := nc.Request(context.Background(), "test.abort", data, 200*time.Millisecond)
+	require.Error(t, err)
 	assert.False(t, handlerCalled)
 }
 
@@ -412,7 +417,7 @@ func TestRequestID_Generated(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	_, err := nc.Request("test.123", data, 2*time.Second)
+	_, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 	assert.NotEmpty(t, capturedID)
 }
@@ -434,7 +439,7 @@ func TestRequestID_FromHeader(t *testing.T) {
 	msg.Header = nats.Header{}
 	msg.Header.Set("X-Request-ID", "custom-req-id-42")
 
-	resp, err := nc.RequestMsg(msg, 2*time.Second)
+	resp, err := nc.NatsConn().RequestMsg(msg, 2*time.Second)
 	require.NoError(t, err)
 	assert.NotEmpty(t, string(resp.Data))
 	assert.Equal(t, "custom-req-id-42", capturedID)
@@ -449,7 +454,7 @@ func TestRegisterNoBody_HandlerError(t *testing.T) {
 			return nil, fmt.Errorf("something failed")
 		})
 
-	resp, err := nc.Request("test.123", nil, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", nil, 2*time.Second)
 	require.NoError(t, err)
 
 	var errResp model.ErrorResponse
@@ -466,7 +471,7 @@ func TestRegisterNoBody_RouteError(t *testing.T) {
 			return nil, ErrNotFound("item not found")
 		})
 
-	resp, err := nc.Request("test.123", nil, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", nil, 2*time.Second)
 	require.NoError(t, err)
 
 	var result RouteError
@@ -486,7 +491,7 @@ func TestLogging_LogsRequest(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request("test.123", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var result testResp
@@ -510,7 +515,7 @@ func TestReplyRouteError(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request("test.123", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var result RouteError

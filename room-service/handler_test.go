@@ -55,7 +55,7 @@ func TestHandler_InviteOwner_Success(t *testing.T) {
 
 	var jsPublished []byte
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(data []byte) error { jsPublished = data; return nil },
+		publishToStream: func(_ context.Context, data []byte) error { jsPublished = data; return nil },
 	}
 
 	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", InviteeAccount: "bob", RoomID: "r1", SiteID: "site-a"}
@@ -89,7 +89,7 @@ func TestHandler_InviteMember_Rejected(t *testing.T) {
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Role: model.RoleMember}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(data []byte) error { return nil },
+		publishToStream: func(_ context.Context, data []byte) error { return nil },
 	}
 
 	req := model.InviteMemberRequest{InviterID: "u2", InviteeID: "u3", InviteeAccount: "charlie", RoomID: "r1", SiteID: "site-a"}
@@ -114,7 +114,7 @@ func TestHandler_InviteExceedsMaxSize(t *testing.T) {
 		Return(&model.Room{ID: "r1", Name: "general", UserCount: 1000}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(data []byte) error { return nil },
+		publishToStream: func(_ context.Context, data []byte) error { return nil },
 	}
 
 	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", InviteeAccount: "bob", RoomID: "r1", SiteID: "site-a"}

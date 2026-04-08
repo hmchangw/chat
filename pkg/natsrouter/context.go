@@ -30,9 +30,9 @@ var ctxPool = sync.Pool{
 	New: func() any { return &Context{} },
 }
 
-func acquireContext(msg *nats.Msg, params Params, handlers []HandlerFunc) *Context {
+func acquireContext(ctx context.Context, msg *nats.Msg, params Params, handlers []HandlerFunc) *Context {
 	c := ctxPool.Get().(*Context)
-	c.ctx = context.Background()
+	c.ctx = ctx
 	c.Msg = msg
 	c.Params = params
 	c.keys = nil // lazy init on first Set()
