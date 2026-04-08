@@ -137,7 +137,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 
 	// Validate thread parent fields are paired
 	if req.ThreadParentMessageID != "" && req.ThreadParentMessageCreatedAt == nil {
-		return nil, fmt.Errorf("threadParentMessageCreatedAt is required when threadParentMessageId is set")
+		return nil, fmt.Errorf("validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set")
 	}
 
 	// Verify subscription
