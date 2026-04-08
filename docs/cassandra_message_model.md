@@ -6,12 +6,12 @@ Description: This schema is for message-related operation in Cassandra, include 
 ```cql
 CREATE TYPE IF NOT EXISTS "Participant"(
   id TEXT,
-  user_name TEXT,
   eng_name TEXT,
   company_name TEXT, // need to change internal
   app_id TEXT,
   app_name TEXT,
-  is_bot BOOLEAN
+  is_bot BOOLEAN,
+  account TEXT
 );
 ```
 #### Card
@@ -41,6 +41,19 @@ CREATE TYPE IF NOT EXISTS "File"(
   type TEXT
 );
 ```
+#### QuotedParentMessage
+```cql
+CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
+  message_id TEXT,
+  room_id TEXT,
+  sender FROZEN<"Participant">,
+  created_at TIMESTAMP,
+  msg TEXT,
+  mentions SET<FROZEN<"Participant">>,
+  attachments LIST<BLOB>,
+  message_link TEXT
+);
+```
 ### Table
 #### messages_by_room
 ```cql
@@ -59,6 +72,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   tshow BOOLEAN, // means from thread [also send to channel]
   thread_parent_id TEXT,
   thread_parent_created_at TIMESTAMP, // for FE to query thread parent message 
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
@@ -87,6 +101,7 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   file FROZEN<"File">,
   card FROZEN<"Card">,
   card_action FROZEN<"CardAction">,
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
@@ -113,6 +128,7 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   file FROZEN<"File">,
   card FROZEN<"Card">,
   card_action FROZEN<"CardAction">,
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
   unread BOOLEAN,
   reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
@@ -125,4 +141,30 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   pinned_by FROZEN<"Participant">,
   PRIMARY KEY((room_id),created_at,message_id)
 )WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+```
+#### messages_by_id
+```cql
+CREATE TABLE IF NOT EXISTS messages_by_id(
+  message_id TEXT,
+  sender FROZEN<"Participant">,
+  target_user FROZEN<"Participant">,
+  msg TEXT,
+  mentions SET<FROZEN<"Participant">>,
+  attachments LIST<BLOB>,
+  file FROZEN<"File">,
+  card FROZEN<"Card">,
+  card_action FROZEN<"CardAction">,
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
+  visible_to TEXT,
+  unread BOOLEAN,
+  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  deleted BOOLEAN,
+  type TEXT,
+  sys_msg_data BLOB,
+  site_id TEXT,
+  edited_at TIMESTAMP,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP,
+  PRIMARY KEY(message_id,created_at)
+)WITH CLUSTERING ORDER BY (created_at DESC);
 ```
