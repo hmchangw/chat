@@ -47,9 +47,9 @@ func (s *MongoStore) ListRooms(ctx context.Context) ([]model.Room, error) {
 	return rooms, nil
 }
 
-func (s *MongoStore) GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error) {
+func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	var sub model.Subscription
-	filter := bson.M{"u.username": username, "roomId": roomID}
+	filter := bson.M{"u.account": account, "roomId": roomID}
 	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
 		return nil, fmt.Errorf("subscription not found: %w", err)
 	}

@@ -38,15 +38,15 @@ func TestSender_Send(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		username   string
+		account    string
 		evt        model.RoomKeyEvent
 		publishErr error
 		wantSubj   string
 		wantErr    string
 	}{
 		{
-			name:     "valid send",
-			username: "alice",
+			name:    "valid send",
+			account: "alice",
 			evt: model.RoomKeyEvent{
 				RoomID:     "room-1",
 				Version:    0,
@@ -56,8 +56,8 @@ func TestSender_Send(t *testing.T) {
 			wantSubj: "chat.user.alice.event.room.key",
 		},
 		{
-			name:     "different user produces different subject",
-			username: "bob",
+			name:    "different user produces different subject",
+			account: "bob",
 			evt: model.RoomKeyEvent{
 				RoomID:     "room-2",
 				Version:    1,
@@ -67,8 +67,8 @@ func TestSender_Send(t *testing.T) {
 			wantSubj: "chat.user.bob.event.room.key",
 		},
 		{
-			name:     "publish error is wrapped and returned",
-			username: "carol",
+			name:    "publish error is wrapped and returned",
+			account: "carol",
 			evt: model.RoomKeyEvent{
 				RoomID:     "room-3",
 				Version:    2,
@@ -85,7 +85,7 @@ func TestSender_Send(t *testing.T) {
 			pub := &mockPublisher{err: tt.publishErr}
 			sender := roomkeysender.NewSender(pub)
 
-			err := sender.Send(tt.username, &tt.evt)
+			err := sender.Send(tt.account, &tt.evt)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)

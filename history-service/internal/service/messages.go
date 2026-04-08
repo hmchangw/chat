@@ -16,10 +16,10 @@ const (
 )
 
 func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
-	username := c.Param("username")
+	account := c.Param("account")
 	roomID := c.Param("roomID")
 
-	accessSince, err := s.getAccessSince(c, username, roomID)
+	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -55,10 +55,10 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 }
 
 func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
-	username := c.Param("username")
+	account := c.Param("account")
 	roomID := c.Param("roomID")
 
-	accessSince, err := s.getAccessSince(c, username, roomID)
+	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -91,10 +91,10 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 }
 
 func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
-	username := c.Param("username")
+	account := c.Param("account")
 	roomID := c.Param("roomID")
 
-	accessSince, err := s.getAccessSince(c, username, roomID)
+	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -167,10 +167,10 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 }
 
 func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMessageByIDRequest) (*models.Message, error) {
-	username := c.Param("username")
+	account := c.Param("account")
 	roomID := c.Param("roomID")
 
-	accessSince, err := s.getAccessSince(c, username, roomID)
+	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
 		return nil, err
 	}

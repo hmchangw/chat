@@ -22,11 +22,11 @@ type SubscriptionUpdateEvent struct {
 }
 
 type InviteMemberRequest struct {
-	InviterID       string `json:"inviterId"`
-	InviteeID       string `json:"inviteeId"`
-	InviteeUsername string `json:"inviteeUsername"`
-	RoomID          string `json:"roomId"`
-	SiteID          string `json:"siteId"`
+	InviterID      string `json:"inviterId"`
+	InviteeID      string `json:"inviteeId"`
+	InviteeAccount string `json:"inviteeAccount"`
+	RoomID         string `json:"roomId"`
+	SiteID         string `json:"siteId"`
 }
 
 type NotificationEvent struct {
@@ -45,7 +45,7 @@ type OutboxEvent struct {
 // Participant represents a user with display name info for client rendering.
 type Participant struct {
 	UserID      string `json:"userId,omitempty" bson:"userId,omitempty"`
-	Username    string `json:"username" bson:"username"`
+	Account     string `json:"account" bson:"account"`
 	ChineseName string `json:"chineseName" bson:"chineseName"`
 	EngName     string `json:"engName" bson:"engName"`
 }

@@ -8,17 +8,17 @@ import (
 )
 
 func TestParsePattern_SingleParam(t *testing.T) {
-	r := parsePattern("chat.user.{userID}.request")
+	r := parsePattern("chat.user.{account}.request")
 
 	assert.Equal(t, "chat.user.*.request", r.natsSubject)
-	assert.Equal(t, map[int]string{2: "userID"}, r.params)
+	assert.Equal(t, map[int]string{2: "account"}, r.params)
 }
 
 func TestParsePattern_MultipleParams(t *testing.T) {
-	r := parsePattern("chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history")
+	r := parsePattern("chat.user.{account}.request.room.{roomID}.{siteID}.msg.history")
 
 	assert.Equal(t, "chat.user.*.request.room.*.*.msg.history", r.natsSubject)
-	assert.Equal(t, map[int]string{2: "userID", 5: "roomID", 6: "siteID"}, r.params)
+	assert.Equal(t, map[int]string{2: "account", 5: "roomID", 6: "siteID"}, r.params)
 }
 
 func TestParsePattern_NoParams(t *testing.T) {
@@ -43,10 +43,10 @@ func TestParsePattern_AllParams(t *testing.T) {
 }
 
 func TestExtractParams(t *testing.T) {
-	r := parsePattern("chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history")
+	r := parsePattern("chat.user.{account}.request.room.{roomID}.{siteID}.msg.history")
 	params := r.extractParams("chat.user.alice.request.room.room-42.site-1.msg.history")
 
-	assert.Equal(t, "alice", params.Get("userID"))
+	assert.Equal(t, "alice", params.Get("account"))
 	assert.Equal(t, "room-42", params.Get("roomID"))
 	assert.Equal(t, "site-1", params.Get("siteID"))
 }
@@ -59,16 +59,16 @@ func TestExtractParams_NoParams(t *testing.T) {
 }
 
 func TestParams_Get_NotFound(t *testing.T) {
-	p := Params{values: map[string]string{"userID": "abc"}}
+	p := Params{values: map[string]string{"account": "abc"}}
 
-	assert.Equal(t, "abc", p.Get("userID"))
+	assert.Equal(t, "abc", p.Get("account"))
 	assert.Equal(t, "", p.Get("nonexistent"))
 }
 
 func TestParams_MustGet_Success(t *testing.T) {
-	p := Params{values: map[string]string{"userID": "abc"}}
+	p := Params{values: map[string]string{"account": "abc"}}
 
-	assert.Equal(t, "abc", p.MustGet("userID"))
+	assert.Equal(t, "abc", p.MustGet("account"))
 }
 
 func TestParams_MustGet_Panics(t *testing.T) {
@@ -80,21 +80,21 @@ func TestParams_MustGet_Panics(t *testing.T) {
 }
 
 func TestParams_Require_Success(t *testing.T) {
-	p := Params{values: map[string]string{"userID": "abc"}}
-	v, err := p.Require("userID")
+	p := Params{values: map[string]string{"account": "abc"}}
+	v, err := p.Require("account")
 	require.NoError(t, err)
 	assert.Equal(t, "abc", v)
 }
 
 func TestParams_Require_Missing(t *testing.T) {
 	p := Params{values: map[string]string{}}
-	_, err := p.Require("userID")
+	_, err := p.Require("account")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing required param")
 }
 
 func TestParams_Require_Empty(t *testing.T) {
-	p := Params{values: map[string]string{"userID": ""}}
-	_, err := p.Require("userID")
+	p := Params{values: map[string]string{"account": ""}}
+	_, err := p.Require("account")
 	require.Error(t, err)
 }

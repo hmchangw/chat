@@ -63,10 +63,10 @@ func (m *mongoStore) UpdateRoomOnNewMessage(ctx context.Context, roomID string, 
 	return nil
 }
 
-func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string, usernames []string) error {
+func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string, accounts []string) error {
 	filter := bson.M{
-		"roomId":     roomID,
-		"u.username": bson.M{"$in": usernames},
+		"roomId":    roomID,
+		"u.account": bson.M{"$in": accounts},
 	}
 	update := bson.M{"$set": bson.M{"hasMention": true}}
 	_, err := m.subCol.UpdateMany(ctx, filter, update)

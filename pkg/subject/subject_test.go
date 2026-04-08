@@ -58,11 +58,11 @@ func TestSubjectBuilders(t *testing.T) {
 
 func TestParseUserRoomSubject(t *testing.T) {
 	tests := []struct {
-		name         string
-		subj         string
-		wantUsername string
-		wantRoomID   string
-		wantOK       bool
+		name        string
+		subj        string
+		wantAccount string
+		wantRoomID  string
+		wantOK      bool
 	}{
 		{"invite", "chat.user.alice.request.room.r1.site-a.member.invite", "alice", "r1", true},
 		{"history", "chat.user.alice.request.room.r1.site-a.msg.history", "alice", "r1", true},
@@ -73,10 +73,10 @@ func TestParseUserRoomSubject(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			username, rid, ok := subject.ParseUserRoomSubject(tt.subj)
-			if ok != tt.wantOK || username != tt.wantUsername || rid != tt.wantRoomID {
+			account, rid, ok := subject.ParseUserRoomSubject(tt.subj)
+			if ok != tt.wantOK || account != tt.wantAccount || rid != tt.wantRoomID {
 				t.Errorf("ParseUserRoomSubject(%q) = (%q, %q, %v), want (%q, %q, %v)",
-					tt.subj, username, rid, ok, tt.wantUsername, tt.wantRoomID, tt.wantOK)
+					tt.subj, account, rid, ok, tt.wantAccount, tt.wantRoomID, tt.wantOK)
 			}
 		})
 	}
@@ -84,12 +84,12 @@ func TestParseUserRoomSubject(t *testing.T) {
 
 func TestParseUserRoomSiteSubject(t *testing.T) {
 	tests := []struct {
-		name         string
-		subj         string
-		wantUsername string
-		wantRoomID   string
-		wantSiteID   string
-		wantOK       bool
+		name        string
+		subj        string
+		wantAccount string
+		wantRoomID  string
+		wantSiteID  string
+		wantOK      bool
 	}{
 		{"valid msg send", "chat.user.alice.room.r1.site-a.msg.send", "alice", "r1", "site-a", true},
 		{"different values", "chat.user.bob.room.room-42.site-b.msg.send", "bob", "room-42", "site-b", true},
@@ -101,10 +101,10 @@ func TestParseUserRoomSiteSubject(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			username, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(tt.subj)
-			if ok != tt.wantOK || username != tt.wantUsername || roomID != tt.wantRoomID || siteID != tt.wantSiteID {
+			account, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(tt.subj)
+			if ok != tt.wantOK || account != tt.wantAccount || roomID != tt.wantRoomID || siteID != tt.wantSiteID {
 				t.Errorf("ParseUserRoomSiteSubject(%q) = (%q, %q, %q, %v), want (%q, %q, %q, %v)",
-					tt.subj, username, roomID, siteID, ok, tt.wantUsername, tt.wantRoomID, tt.wantSiteID, tt.wantOK)
+					tt.subj, account, roomID, siteID, ok, tt.wantAccount, tt.wantRoomID, tt.wantSiteID, tt.wantOK)
 			}
 		})
 	}

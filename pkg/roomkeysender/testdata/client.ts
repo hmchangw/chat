@@ -106,13 +106,13 @@ async function decryptMessage(
 // ---- Main ----
 
 async function main(): Promise<void> {
-  const [natsURL, username, roomID] = process.argv.slice(2);
-  if (!natsURL || !username || !roomID) {
-    process.stderr.write("usage: tsx client.ts <nats-ws-url> <username> <roomID>\n");
+  const [natsURL, account, roomID] = process.argv.slice(2);
+  if (!natsURL || !account || !roomID) {
+    process.stderr.write("usage: tsx client.ts <nats-ws-url> <account> <roomID>\n");
     process.exit(1);
   }
 
-  const keySubject = `chat.user.${username}.event.room.key`;
+  const keySubject = `chat.user.${account}.event.room.key`;
   const msgSubject = `test.room.${roomID}.msg`;
 
   // Store received keys indexed by version number.
