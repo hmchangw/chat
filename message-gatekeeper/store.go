@@ -13,5 +13,5 @@ import (
 var errNotSubscribed = errors.New("not subscribed")
 
 type Store interface {
-	GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error)
+	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 }

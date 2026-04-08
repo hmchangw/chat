@@ -6,7 +6,7 @@ type Message struct {
 	ID                    string    `json:"id"                              bson:"_id"`
 	RoomID                string    `json:"roomId"                          bson:"roomId"`
 	UserID                string    `json:"userId"                          bson:"userId"`
-	Username              string    `json:"username"                        bson:"username"`
+	UserAccount           string    `json:"userAccount"                     bson:"userAccount"`
 	Content               string    `json:"content"                         bson:"content"`
 	CreatedAt             time.Time `json:"createdAt"                       bson:"createdAt"`
 	ThreadParentMessageID string    `json:"threadParentMessageId,omitempty" bson:"threadParentMessageId,omitempty"`

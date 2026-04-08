@@ -41,9 +41,9 @@ func TestRegister_Success(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	Register(r, "chat.user.{userID}.request.room.{roomID}.site-1.msg.test",
+	Register(r, "chat.user.{account}.request.room.{roomID}.site-1.msg.test",
 		func(c *Context, req testReq) (*testResp, error) {
-			return &testResp{Greeting: "hello " + req.Name + " from " + c.Param("userID")}, nil
+			return &testResp{Greeting: "hello " + req.Name + " from " + c.Param("account")}, nil
 		})
 
 	data, _ := json.Marshal(testReq{Name: "world"})
@@ -60,7 +60,7 @@ func TestRegister_ParamsExtraction(t *testing.T) {
 	r := New(nc, "test-service")
 
 	var captured Params
-	Register(r, "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.test",
+	Register(r, "chat.user.{account}.request.room.{roomID}.{siteID}.msg.test",
 		func(c *Context, req testReq) (*testResp, error) {
 			captured = c.Params
 			return &testResp{}, nil
@@ -70,7 +70,7 @@ func TestRegister_ParamsExtraction(t *testing.T) {
 	_, err := nc.Request("chat.user.alice.request.room.room-42.site-prod.msg.test", data, 2*time.Second)
 	require.NoError(t, err)
 
-	assert.Equal(t, "alice", captured.Get("userID"))
+	assert.Equal(t, "alice", captured.Get("account"))
 	assert.Equal(t, "room-42", captured.Get("roomID"))
 	assert.Equal(t, "site-prod", captured.Get("siteID"))
 }
@@ -115,7 +115,7 @@ func TestRegisterNoBody_Success(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	RegisterNoBody(r, "chat.user.{userID}.request.rooms.get.{roomID}",
+	RegisterNoBody(r, "chat.user.{account}.request.rooms.get.{roomID}",
 		func(c *Context) (*testResp, error) {
 			return &testResp{Greeting: "room " + c.Param("roomID")}, nil
 		})

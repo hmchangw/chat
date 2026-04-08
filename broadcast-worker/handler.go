@@ -41,31 +41,31 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 
 	mentionAll := detectMentionAll(msg.Content)
-	mentionedUsernames := extractMentionedUsernames(msg.Content)
+	mentionedAccounts := extractMentionedAccounts(msg.Content)
 
 	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, mentionAll); err != nil {
 		return fmt.Errorf("update room on new message: %w", err)
 	}
 
-	if len(mentionedUsernames) > 0 {
-		if err := h.store.SetSubscriptionMentions(ctx, room.ID, mentionedUsernames); err != nil {
+	if len(mentionedAccounts) > 0 {
+		if err := h.store.SetSubscriptionMentions(ctx, room.ID, mentionedAccounts); err != nil {
 			return fmt.Errorf("set subscription mentions: %w", err)
 		}
 	}
 
-	// Collect all usernames for employee lookup (sender + mentioned)
-	lookupUsernames := make([]string, 0, 1+len(mentionedUsernames))
-	lookupUsernames = append(lookupUsernames, msg.Username)
-	for _, u := range mentionedUsernames {
-		if u != msg.Username {
-			lookupUsernames = append(lookupUsernames, u)
+	// Collect all user accounts for employee lookup (sender + mentioned)
+	lookupAccounts := make([]string, 0, 1+len(mentionedAccounts))
+	lookupAccounts = append(lookupAccounts, msg.UserAccount)
+	for _, u := range mentionedAccounts {
+		if u != msg.UserAccount {
+			lookupAccounts = append(lookupAccounts, u)
 		}
 	}
 
 	employeeMap := make(map[string]model.Employee)
-	employees, err := h.store.FindEmployeesByAccountNames(ctx, lookupUsernames)
+	employees, err := h.store.FindEmployeesByAccountNames(ctx, lookupAccounts)
 	if err != nil {
-		slog.Warn("employee lookup failed, falling back to usernames", "error", err)
+		slog.Warn("employee lookup failed, falling back to accounts", "error", err)
 	} else {
 		for _, emp := range employees {
 			employeeMap[emp.AccountName] = emp
@@ -73,13 +73,13 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 
 	clientMsg := buildClientMessage(&msg, employeeMap)
-	mentionParticipants := buildMentionParticipants(mentionedUsernames, employeeMap)
+	mentionParticipants := buildMentionParticipants(mentionedAccounts, employeeMap)
 
 	switch room.Type {
 	case model.RoomTypeGroup:
 		return h.publishGroupEvent(room, clientMsg, mentionAll, mentionParticipants)
 	case model.RoomTypeDM:
-		return h.publishDMEvents(ctx, room, clientMsg, mentionedUsernames)
+		return h.publishDMEvents(ctx, room, clientMsg, mentionedAccounts)
 	default:
 		slog.Warn("unknown room type, skipping fan-out", "type", room.Type, "roomID", room.ID)
 		return nil
@@ -100,29 +100,29 @@ func (h *Handler) publishGroupEvent(room *model.Room, clientMsg *model.ClientMes
 	return h.pub.Publish(subject.RoomEvent(room.ID), payload)
 }
 
-func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionedUsernames []string) error {
+func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionedAccounts []string) error {
 	subs, err := h.store.ListSubscriptions(ctx, room.ID)
 	if err != nil {
 		return fmt.Errorf("list subscriptions for DM room %s: %w", room.ID, err)
 	}
 
-	mentionSet := make(map[string]struct{}, len(mentionedUsernames))
-	for _, name := range mentionedUsernames {
+	mentionSet := make(map[string]struct{}, len(mentionedAccounts))
+	for _, name := range mentionedAccounts {
 		mentionSet[name] = struct{}{}
 	}
 
 	for i := range subs {
-		_, hasMention := mentionSet[subs[i].User.Username]
+		_, hasMention := mentionSet[subs[i].User.Account]
 
 		evt := buildRoomEvent(room, clientMsg)
 		evt.HasMention = hasMention
 
 		payload, err := json.Marshal(evt)
 		if err != nil {
-			return fmt.Errorf("marshal DM event for user %s: %w", subs[i].User.Username, err)
+			return fmt.Errorf("marshal DM event for user %s: %w", subs[i].User.Account, err)
 		}
-		if err := h.pub.Publish(subject.UserRoomEvent(subs[i].User.Username), payload); err != nil {
-			slog.Error("publish DM event failed", "error", err, "username", subs[i].User.Username)
+		if err := h.pub.Publish(subject.UserRoomEvent(subs[i].User.Account), payload); err != nil {
+			slog.Error("publish DM event failed", "error", err, "account", subs[i].User.Account)
 		}
 	}
 	return nil
@@ -145,15 +145,15 @@ func buildRoomEvent(room *model.Room, clientMsg *model.ClientMessage) model.Room
 
 func buildClientMessage(msg *model.Message, employeeMap map[string]model.Employee) *model.ClientMessage {
 	sender := model.Participant{
-		UserID:   msg.UserID,
-		Username: msg.Username,
+		UserID:  msg.UserID,
+		Account: msg.UserAccount,
 	}
-	if emp, ok := employeeMap[msg.Username]; ok {
+	if emp, ok := employeeMap[msg.UserAccount]; ok {
 		sender.ChineseName = emp.Name
 		sender.EngName = emp.EngName
 	} else {
-		sender.ChineseName = msg.Username
-		sender.EngName = msg.Username
+		sender.ChineseName = msg.UserAccount
+		sender.EngName = msg.UserAccount
 	}
 	return &model.ClientMessage{
 		Message: *msg,
@@ -161,19 +161,19 @@ func buildClientMessage(msg *model.Message, employeeMap map[string]model.Employe
 	}
 }
 
-func buildMentionParticipants(mentionedUsernames []string, employeeMap map[string]model.Employee) []model.Participant {
-	if len(mentionedUsernames) == 0 {
+func buildMentionParticipants(mentionedAccounts []string, employeeMap map[string]model.Employee) []model.Participant {
+	if len(mentionedAccounts) == 0 {
 		return nil
 	}
-	participants := make([]model.Participant, len(mentionedUsernames))
-	for i, username := range mentionedUsernames {
-		p := model.Participant{Username: username}
-		if emp, ok := employeeMap[username]; ok {
+	participants := make([]model.Participant, len(mentionedAccounts))
+	for i, account := range mentionedAccounts {
+		p := model.Participant{Account: account}
+		if emp, ok := employeeMap[account]; ok {
 			p.ChineseName = emp.Name
 			p.EngName = emp.EngName
 		} else {
-			p.ChineseName = username
-			p.EngName = username
+			p.ChineseName = account
+			p.EngName = account
 		}
 		participants[i] = p
 	}
@@ -190,9 +190,9 @@ func detectMentionAll(content string) bool {
 	return false
 }
 
-func extractMentionedUsernames(content string) []string {
+func extractMentionedAccounts(content string) []string {
 	seen := make(map[string]struct{})
-	var usernames []string
+	var accounts []string
 	for _, token := range strings.Fields(content) {
 		if !strings.HasPrefix(token, "@") || len(token) == 1 {
 			continue
@@ -205,7 +205,7 @@ func extractMentionedUsernames(content string) []string {
 			continue
 		}
 		seen[name] = struct{}{}
-		usernames = append(usernames, name)
+		accounts = append(accounts, name)
 	}
-	return usernames
+	return accounts
 }

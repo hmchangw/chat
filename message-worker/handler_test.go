@@ -16,11 +16,11 @@ func TestHandler_ProcessMessage_Success(t *testing.T) {
 	store := NewMockStore(ctrl)
 
 	msg := model.Message{
-		ID:       "msg-1",
-		RoomID:   "r1",
-		UserID:   "u1",
-		Username: "alice",
-		Content:  "hello",
+		ID:          "msg-1",
+		RoomID:      "r1",
+		UserID:      "u1",
+		UserAccount: "alice",
+		Content:     "hello",
 	}
 	evt := model.MessageEvent{Message: msg, SiteID: "site-a"}
 
@@ -41,11 +41,11 @@ func TestHandler_ProcessMessage_SaveError(t *testing.T) {
 	store := NewMockStore(ctrl)
 
 	msg := model.Message{
-		ID:       "msg-1",
-		RoomID:   "r1",
-		UserID:   "u1",
-		Username: "alice",
-		Content:  "hello",
+		ID:          "msg-1",
+		RoomID:      "r1",
+		UserID:      "u1",
+		UserAccount: "alice",
+		Content:     "hello",
 	}
 	evt := model.MessageEvent{Message: msg, SiteID: "site-a"}
 

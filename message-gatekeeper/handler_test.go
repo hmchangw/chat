@@ -40,17 +40,17 @@ func TestHandler_ProcessMessage(t *testing.T) {
 	validContent := "hello world"
 	validSiteID := "site-a"
 	validRoomID := "room-1"
-	validUsername := "alice"
+	validAccount := "alice"
 
 	sub := &model.Subscription{
-		User:   model.SubscriptionUser{ID: "u1", Username: validUsername},
+		User:   model.SubscriptionUser{ID: "u1", Account: validAccount},
 		RoomID: validRoomID,
 		Role:   model.RoleMember,
 	}
 
 	tests := []struct {
 		name        string
-		username    string
+		account     string
 		roomID      string
 		siteID      string
 		buildData   func() []byte
@@ -61,10 +61,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		checkResult func(t *testing.T, data []byte, published []publishedMsg)
 	}{
 		{
-			name:     "happy path",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   validSiteID,
+			name:    "happy path",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
 			buildData: func() []byte {
 				req := model.SendMessageRequest{ID: validID, Content: validContent}
 				data, _ := json.Marshal(req)
@@ -72,7 +72,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().
-					GetSubscription(gomock.Any(), validUsername, validRoomID).
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(sub, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
@@ -88,17 +88,17 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				assert.Equal(t, validContent, msg.Content)
 				assert.Equal(t, "u1", msg.UserID)
 				assert.Equal(t, validRoomID, msg.RoomID)
-				assert.Equal(t, validUsername, msg.Username)
+				assert.Equal(t, validAccount, msg.UserAccount)
 				assert.NotEmpty(t, msg.ID)
 				assert.Len(t, published, 1)
 				assert.Equal(t, subject.MsgCanonicalCreated(validSiteID), published[0].subject)
 			},
 		},
 		{
-			name:     "happy path with thread parent",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   validSiteID,
+			name:    "happy path with thread parent",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
 			buildData: func() []byte {
 				req := model.SendMessageRequest{
 					ID:                    validID,
@@ -110,7 +110,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().
-					GetSubscription(gomock.Any(), validUsername, validRoomID).
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(sub, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
@@ -131,10 +131,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 		},
 		{
-			name:     "invalid UUID",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   validSiteID,
+			name:    "invalid UUID",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
 			buildData: func() []byte {
 				req := model.SendMessageRequest{ID: "not-a-uuid", Content: validContent}
 				data, _ := json.Marshal(req)
@@ -148,10 +148,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantInfra: false,
 		},
 		{
-			name:     "empty content",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   validSiteID,
+			name:    "empty content",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
 			buildData: func() []byte {
 				req := model.SendMessageRequest{ID: validID, Content: ""}
 				data, _ := json.Marshal(req)
@@ -165,10 +165,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantInfra: false,
 		},
 		{
-			name:     "content exceeds 20KB",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   validSiteID,
+			name:    "content exceeds 20KB",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
 			buildData: func() []byte {
 				req := model.SendMessageRequest{ID: validID, Content: strings.Repeat("x", 20*1024+1)}
 				data, _ := json.Marshal(req)
@@ -182,10 +182,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantInfra: false,
 		},
 		{
-			name:     "user not in room",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   validSiteID,
+			name:    "user not in room",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
 			buildData: func() []byte {
 				req := model.SendMessageRequest{ID: validID, Content: validContent}
 				data, _ := json.Marshal(req)
@@ -193,7 +193,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().
-					GetSubscription(gomock.Any(), validUsername, validRoomID).
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(nil, fmt.Errorf("user alice not subscribed to room room-1: %w", errNotSubscribed))
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
@@ -203,10 +203,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantInfra: false,
 		},
 		{
-			name:     "store infra error",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   validSiteID,
+			name:    "store infra error",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
 			buildData: func() []byte {
 				req := model.SendMessageRequest{ID: validID, Content: validContent}
 				data, _ := json.Marshal(req)
@@ -214,7 +214,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().
-					GetSubscription(gomock.Any(), validUsername, validRoomID).
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(nil, fmt.Errorf("connection refused"))
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
@@ -224,10 +224,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantInfra: true,
 		},
 		{
-			name:     "publish fails",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   validSiteID,
+			name:    "publish fails",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
 			buildData: func() []byte {
 				req := model.SendMessageRequest{ID: validID, Content: validContent}
 				data, _ := json.Marshal(req)
@@ -235,7 +235,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().
-					GetSubscription(gomock.Any(), validUsername, validRoomID).
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(sub, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
@@ -245,10 +245,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantInfra: true,
 		},
 		{
-			name:     "malformed JSON",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   validSiteID,
+			name:    "malformed JSON",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
 			buildData: func() []byte {
 				return []byte("{not valid json}")
 			},
@@ -260,10 +260,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantInfra: false,
 		},
 		{
-			name:     "siteID mismatch",
-			username: validUsername,
-			roomID:   validRoomID,
-			siteID:   "site-b",
+			name:    "siteID mismatch",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  "site-b",
 			buildData: func() []byte {
 				req := model.SendMessageRequest{ID: validID, Content: validContent}
 				data, _ := json.Marshal(req)
@@ -292,7 +292,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				siteID:  validSiteID,
 			}
 
-			data, err := h.processMessage(context.Background(), tc.username, tc.roomID, tc.siteID, tc.buildData())
+			data, err := h.processMessage(context.Background(), tc.account, tc.roomID, tc.siteID, tc.buildData())
 
 			if tc.wantErr {
 				require.Error(t, err)

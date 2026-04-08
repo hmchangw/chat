@@ -177,7 +177,7 @@ func TestRoomKeySender_TypeScriptClient_Unencrypted(t *testing.T) {
 	nodeContainer := setupNode(t, nw)
 
 	// 2. Test parameters.
-	username := "alice"
+	account := "alice"
 	roomID := "room-1"
 	plaintext := "hello unencrypted"
 
@@ -191,7 +191,7 @@ func TestRoomKeySender_TypeScriptClient_Unencrypted(t *testing.T) {
 
 	go func() {
 		exitCode, reader, err := nodeContainer.Exec(ctx, []string{
-			"tsx", "--require", "/ws-polyfill.cjs", "/client.ts", wsURL, username, roomID,
+			"tsx", "--require", "/ws-polyfill.cjs", "/client.ts", wsURL, account, roomID,
 		})
 		stdout, combined := splitOutput(reader)
 		clientDone <- struct {
@@ -236,7 +236,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	privKeyBytes := privKey.Bytes()
 
 	// 3. Test parameters.
-	username := "alice"
+	account := "alice"
 	roomID := "room-1"
 	version := 0
 	plaintext := "hello from Go integration test"
@@ -252,7 +252,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 
 	go func() {
 		exitCode, reader, err := nodeContainer.Exec(ctx, []string{
-			"tsx", "--require", "/ws-polyfill.cjs", "/client.ts", wsURL, username, roomID,
+			"tsx", "--require", "/ws-polyfill.cjs", "/client.ts", wsURL, account, roomID,
 		})
 		stdout, combined := splitOutput(reader)
 		clientDone <- struct {
@@ -274,7 +274,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 		PublicKey:  pubKeyBytes,
 		PrivateKey: privKeyBytes,
 	}
-	err = sender.Send(username, evt)
+	err = sender.Send(account, evt)
 	require.NoError(t, err, "send room key event")
 
 	// 7. Small delay to ensure key is received before the encrypted message.

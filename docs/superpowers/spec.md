@@ -45,13 +45,13 @@ Client A (sender)
                         +--> broadcast-worker
                         |      | look up room, publish RoomMetadataUpdateEvent
                         |      | group: publish to chat.room.{roomID}.stream.msg
-                        |      | DM: publish to chat.user.{userID}.stream.msg per member
+                        |      | DM: publish to chat.user.{account}.stream.msg per member
                         |      v
                         |    Clients receive messages
                         |
                         +--> notification-worker
                                | look up members, exclude sender
-                               | publish NotificationEvent to chat.user.{userID}.notification
+                               | publish NotificationEvent to chat.user.{account}.notification
                                v
                              Desktop banner notifications
 ```
@@ -92,8 +92,8 @@ auth-service (callout handler)
     | 4. Extract token from AuthorizationRequest.ConnectOptions.Token
     | 5. Verify token with SSO provider (TokenVerifier.Verify)
     | 6. On success: build UserClaims JWT with scoped permissions
-    |      Pub.Allow: chat.user.{username}.>, _INBOX.>
-    |      Sub.Allow: chat.user.{username}.>, chat.room.>, _INBOX.>
+    |      Pub.Allow: chat.user.{account}.>, _INBOX.>
+    |      Sub.Allow: chat.user.{account}.>, chat.room.>, _INBOX.>
     |      Expires: 2 hours
     | 7. Sign JWT with account signing key
     | 8. Return signed JWT to NATS server
@@ -106,7 +106,7 @@ NATS Server
     v
 Client (connected)
     |
-    | 10. Subscribe to chat.user.{userID}.> (personal wildcard)
+    | 10. Subscribe to chat.user.{account}.> (personal wildcard)
     | 11. Subscribe to chat.room.{roomID}.* for each sidebar room
     | 12. Ready for real-time messaging
 ```
@@ -135,7 +135,7 @@ room-service
 ```
 Client (Site A)
     |
-    | req: chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history
+    | req: chat.user.{account}.request.room.{roomID}.{siteID}.msg.history
     |
     v
 history-service (Site A)
@@ -296,15 +296,15 @@ Roles: `"owner"`, `"member"`
 
 ### 6.1 Client Subjects
 
-**User wildcard** (always subscribed): `chat.user.{userID}.>`
+**User wildcard** (always subscribed): `chat.user.{account}.>`
 
 | Subject | Publisher | Purpose |
 |---------|-----------|---------|
-| `chat.user.{userID}.stream.msg` | broadcast-worker | DM message delivery |
-| `chat.user.{userID}.notification` | notification-worker | Desktop banner notification |
-| `chat.user.{userID}.event.subscription.update` | room-worker, inbox-worker | Room added/removed |
-| `chat.user.{userID}.event.room.metadata.update` | room-worker | Room metadata changed |
-| `chat.user.{userID}.response.{requestID}` | various | Request/reply response |
+| `chat.user.{account}.stream.msg` | broadcast-worker | DM message delivery |
+| `chat.user.{account}.notification` | notification-worker | Desktop banner notification |
+| `chat.user.{account}.event.subscription.update` | room-worker, inbox-worker | Room added/removed |
+| `chat.user.{account}.event.room.metadata.update` | room-worker | Room metadata changed |
+| `chat.user.{account}.response.{requestID}` | various | Request/reply response |
 
 **Per-room subjects** (subscribed per sidebar room):
 
@@ -316,22 +316,22 @@ Roles: `"owner"`, `"member"`
 
 ### 6.2 Client Publishes
 
-All client publishes are under `chat.user.{userID}.>`:
+All client publishes are under `chat.user.{account}.>`:
 
 | Subject | Purpose |
 |---------|---------|
-| `chat.user.{userID}.room.{roomID}.{siteID}.msg.send` | Send message |
-| `chat.user.{userID}.request.room.{roomID}.{siteID}.member.invite` | Invite member |
-| `chat.user.{userID}.room.{roomID}.typing` | Typing indicator |
+| `chat.user.{account}.room.{roomID}.{siteID}.msg.send` | Send message |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.invite` | Invite member |
+| `chat.user.{account}.room.{roomID}.typing` | Typing indicator |
 
 ### 6.3 Request/Reply Subjects
 
 | Subject | Responder | Purpose |
 |---------|-----------|---------|
-| `chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history` | history-service | Fetch message history |
-| `chat.user.{userID}.request.rooms.create` | room-service | Create room |
-| `chat.user.{userID}.request.rooms.list` | room-service | List user's rooms |
-| `chat.user.{userID}.request.rooms.get.{roomID}` | room-service | Get room details |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history` | history-service | Fetch message history |
+| `chat.user.{account}.request.rooms.create` | room-service | Create room |
+| `chat.user.{account}.request.rooms.list` | room-service | List user's rooms |
+| `chat.user.{account}.request.rooms.get.{roomID}` | room-service | Get room details |
 
 ### 6.4 Backend-Only Subjects
 
@@ -353,11 +353,11 @@ All client publishes are under `chat.user.{userID}.>`:
 **JWT Permissions**:
 | Type | Pattern |
 |------|---------|
-| Pub.Allow | `chat.user.{username}.>`, `_INBOX.>` |
-| Sub.Allow | `chat.user.{username}.>`, `chat.room.>`, `_INBOX.>` |
+| Pub.Allow | `chat.user.{account}.>`, `_INBOX.>` |
+| Sub.Allow | `chat.user.{account}.>`, `chat.room.>`, `_INBOX.>` |
 
 **Dependencies**: NATS
-**Key Interface**: `TokenVerifier` — `Verify(token string) (username string, err error)`
+**Key Interface**: `TokenVerifier` — `Verify(token string) (account string, err error)`
 **Config**: `NATS_URL`, `NATS_CREDS`, `AUTH_SIGNING_KEY` (required)
 
 ### 7.2 Message Worker (`message-worker/`)
@@ -369,7 +369,7 @@ All client publishes are under `chat.user.{userID}.>`:
 2. Parse userID, roomID, siteID from subject
 3. Validate sender has subscription to room
 4. Generate UUID, persist to Cassandra (time-series) + update room in MongoDB
-5. Reply to sender via `chat.user.{userID}.response.{requestID}`
+5. Reply to sender via `chat.user.{account}.response.{requestID}`
 6. Publish `MessageEvent` to `fanout.{siteID}.{roomID}.{msgID}`
 
 **Dependencies**: NATS + JetStream, MongoDB, Cassandra
@@ -386,7 +386,7 @@ All client publishes are under `chat.user.{userID}.>`:
 2. Look up room in MongoDB
 3. Publish `RoomMetadataUpdateEvent` to `chat.room.{roomID}.event.metadata.update`
 4. **Group room**: Publish message to `chat.room.{roomID}.stream.msg`
-5. **DM room**: Look up the other member (exclude sender), publish to `chat.user.{userID}.stream.msg`
+5. **DM room**: Look up the other member (exclude sender), publish to `chat.user.{account}.stream.msg`
 
 **Dependencies**: NATS + JetStream, MongoDB
 **Key Interface**: `RoomLookup` — `GetRoom`, `ListSubscriptions`
@@ -400,7 +400,7 @@ All client publishes are under `chat.user.{userID}.>`:
 **Flow**:
 1. Unmarshal `MessageEvent`
 2. Look up room members via `ListSubscriptions`
-3. For each member where `userID != sender`: publish `NotificationEvent` to `chat.user.{userID}.notification`
+3. For each member where `userID != sender`: publish `NotificationEvent` to `chat.user.{account}.notification`
 
 **Dependencies**: NATS + JetStream, MongoDB
 **Key Interface**: `MemberLookup` — `ListSubscriptions`
@@ -523,7 +523,7 @@ CREATE TABLE messages (
 ### 10.1 Connection & Subscriptions
 
 1. Connect to NATS with SSO token (auth-service issues JWT)
-2. Subscribe to `chat.user.{userID}.>` (personal wildcard)
+2. Subscribe to `chat.user.{account}.>` (personal wildcard)
 3. For each sidebar room: subscribe to `chat.room.{roomID}.stream.msg` and `chat.room.{roomID}.event.metadata.update`
 4. For active room only: subscribe to `chat.room.{roomID}.event.typing`
 
@@ -537,7 +537,7 @@ CREATE TABLE messages (
 
 ### 10.3 Reconnect Flow
 
-1. Re-subscribe to `chat.user.{userID}.>`
+1. Re-subscribe to `chat.user.{account}.>`
 2. Request room list (includes `lastSeenAt`, `mentionCountSinceLastSeen`)
 3. Restore badges
 4. Re-subscribe to room subjects
@@ -552,9 +552,9 @@ The auth-service issues per-user NATS JWTs:
 
 | Type | Pattern | Rationale |
 |------|---------|-----------|
-| Pub.Allow | `chat.user.{userID}.>` | All client publishes under own namespace |
+| Pub.Allow | `chat.user.{account}.>` | All client publishes under own namespace |
 | Pub.Allow | `_INBOX.>` | NATS request/reply pattern |
-| Sub.Allow | `chat.user.{userID}.>` | Personal events, responses, notifications |
+| Sub.Allow | `chat.user.{account}.>` | Personal events, responses, notifications |
 | Sub.Allow | `chat.room.>` | Room message streams and events |
 | Sub.Allow | `_INBOX.>` | NATS request/reply pattern |
 
@@ -611,7 +611,7 @@ Per-service `docker-compose.yml` files in `build/<service>/` include only requir
 
 4. **Dual-consumer FANOUT**: Both broadcast-worker and notification-worker consume from the same `FANOUT_{siteID}` stream via separate durable consumers, ensuring each independently processes every message.
 
-5. **Room-type routing**: Group rooms use a shared room stream (`chat.room.{roomID}.stream.msg`). DM rooms fan out to individual user streams (`chat.user.{userID}.stream.msg`), since DM participants subscribe to their personal stream.
+5. **Room-type routing**: Group rooms use a shared room stream (`chat.room.{roomID}.stream.msg`). DM rooms fan out to individual user streams (`chat.user.{account}.stream.msg`), since DM participants subscribe to their personal stream.
 
 6. **Metadata-first publishing**: `RoomMetadataUpdateEvent` is published before message fan-out, ensuring clients see updated metadata before or alongside new messages.
 
@@ -621,4 +621,4 @@ Per-service `docker-compose.yml` files in `build/<service>/` include only requir
 
 9. **Cross-site Outbox/Inbox**: Local events go to `OUTBOX_{siteID}`, remote sites source them into their `INBOX_{siteID}` via JetStream cross-account sourcing. The inbox-worker processes them locally.
 
-10. **Client namespace isolation**: All client publishes are under `chat.user.{userID}.>`. Room-scoped subjects are server-published only. This simplifies auth permissions to a single wildcard per user.
+10. **Client namespace isolation**: All client publishes are under `chat.user.{account}.>`. Room-scoped subjects are server-published only. This simplifies auth permissions to a single wildcard per user.

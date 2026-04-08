@@ -13,8 +13,8 @@ import (
 
 // getAccessSince verifies the user is subscribed to the room and returns the
 // historySharedSince lower bound (nil = full access).
-func (s *HistoryService) getAccessSince(ctx context.Context, username, roomID string) (*time.Time, error) {
-	accessSince, subscribed, err := s.subscriptions.GetHistorySharedSince(ctx, username, roomID)
+func (s *HistoryService) getAccessSince(ctx context.Context, account, roomID string) (*time.Time, error) {
+	accessSince, subscribed, err := s.subscriptions.GetHistorySharedSince(ctx, account, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("checking subscription: %w", err)
 	}

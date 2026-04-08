@@ -198,7 +198,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 
 ### NATS Subject Naming
 - Dot-delimited hierarchical subjects — use `pkg/subject` builders, never raw `fmt.Sprintf`
-- User-scoped: `chat.user.{username}.…`
+- User-scoped: `chat.user.{account}.…`
 - Room-scoped: `chat.room.{roomID}.…`
 - MESSAGES_CANONICAL: `chat.msg.canonical.{siteID}.created` (`.edited`, `.deleted` for future)
 - Outbox: `outbox.{siteID}.to.{destSiteID}.{eventType}`
