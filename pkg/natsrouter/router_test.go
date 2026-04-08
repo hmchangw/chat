@@ -396,7 +396,9 @@ func TestContext_Abort(t *testing.T) {
 		})
 
 	data, _ := json.Marshal(testReq{})
-	_, _ = nc.Request(context.Background(), "test.abort", data, 200*time.Millisecond)
+	// Error expected: middleware aborts without replying, so request times out.
+	_, err := nc.Request(context.Background(), "test.abort", data, 200*time.Millisecond)
+	require.Error(t, err)
 	assert.False(t, handlerCalled)
 }
 
