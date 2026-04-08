@@ -62,7 +62,6 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
-	ctx := context.Background()
 	replyData, err := h.processMessage(ctx, account, roomID, siteID, msg.Data())
 	if err != nil {
 		slog.Error("process message failed", "error", err, "account", account, "roomID", roomID)
@@ -100,7 +99,7 @@ func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte,
 		return
 	}
 	respSubj := subject.UserResponse(account, req.RequestID)
-	if err := h.reply(respSubj, replyData); err != nil {
+	if err := h.reply(ctx, respSubj, replyData); err != nil {
 		slog.Error("reply to client failed", "error", err, "subject", respSubj)
 	}
 }
