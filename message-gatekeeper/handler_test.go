@@ -93,6 +93,11 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				assert.NotEmpty(t, msg.ID)
 				assert.Len(t, published, 1)
 				assert.Equal(t, subject.MsgCanonicalCreated(validSiteID), published[0].subject)
+				// Verify MessageEvent has Timestamp set
+				var evt model.MessageEvent
+				err = json.Unmarshal(published[0].data, &evt)
+				require.NoError(t, err)
+				assert.Greater(t, evt.Timestamp, int64(0))
 			},
 		},
 		{
@@ -131,6 +136,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				assert.Equal(t, "parent-msg-uuid", evt.Message.ThreadParentMessageID)
 				require.NotNil(t, evt.Message.ThreadParentMessageCreatedAt)
 				assert.Equal(t, parentTS, evt.Message.ThreadParentMessageCreatedAt.UTC())
+				assert.Greater(t, evt.Timestamp, int64(0))
 			},
 		},
 		{
