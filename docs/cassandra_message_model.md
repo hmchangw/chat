@@ -6,7 +6,6 @@ Description: This schema is for message-related operation in Cassandra, include 
 ```cql
 CREATE TYPE IF NOT EXISTS "Participant"(
   id TEXT,
-  user_name TEXT,
   eng_name TEXT,
   company_name TEXT, // need to change internal
   app_id TEXT,
