@@ -106,7 +106,7 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		NATSJWT: natsJWT,
 		UserInfo: userInfoResp{
 			Email:       claims.Email,
-			Account:     claims.PreferredUsername,
+			Account:     account,
 			EmployeeID:  employeeID,
 			EngName:     engName,
 			ChineseName: chineseName,
