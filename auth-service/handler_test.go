@@ -21,7 +21,7 @@ import (
 
 // fakeValidator implements TokenValidator for testing.
 type fakeValidator struct {
-	username    string
+	account     string
 	subject     string
 	email       string
 	name        string
@@ -43,7 +43,7 @@ func (f *fakeValidator) Validate(_ context.Context, _ string) (pkgoidc.Claims, e
 		Subject:           f.subject,
 		Email:             f.email,
 		Name:              f.name,
-		PreferredUsername: f.username,
+		PreferredUsername: f.account,
 		Description:       f.description,
 		DeptName:          f.deptName,
 		DeptID:            f.deptId,
@@ -82,7 +82,7 @@ func TestHandleAuth_ValidToken(t *testing.T) {
 	userPub := mustUserNKey(t)
 
 	validator := &fakeValidator{
-		username:    "alice",
+		account:     "alice",
 		subject:     "uuid-alice",
 		email:       "alice@example.com",
 		description: "E001, Alice Wang, 王小明",
@@ -168,7 +168,7 @@ func TestHandleAuth_InvalidToken(t *testing.T) {
 
 func TestHandleAuth_InvalidNKey(t *testing.T) {
 	signingKP := mustAccountKP(t)
-	validator := &fakeValidator{username: "alice", subject: "uuid-alice"}
+	validator := &fakeValidator{account: "alice", subject: "uuid-alice"}
 	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
 	router := setupRouter(t, handler)
 
@@ -184,7 +184,7 @@ func TestHandleAuth_InvalidNKey(t *testing.T) {
 
 func TestHandleAuth_MissingFields(t *testing.T) {
 	signingKP := mustAccountKP(t)
-	validator := &fakeValidator{username: "alice"}
+	validator := &fakeValidator{account: "alice"}
 	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
 	router := setupRouter(t, handler)
 
@@ -211,15 +211,15 @@ func TestHandleAuth_MissingFields(t *testing.T) {
 func TestHandleAuth_PermissionsPerUser(t *testing.T) {
 	signingKP := mustAccountKP(t)
 
-	users := []string{"alice", "bob", "charlie"}
-	for _, username := range users {
-		t.Run(username, func(t *testing.T) {
-			validator := &fakeValidator{username: username, subject: "uuid-" + username}
+	accounts := []string{"alice", "bob", "charlie"}
+	for _, account := range accounts {
+		t.Run(account, func(t *testing.T) {
+			validator := &fakeValidator{account: account, subject: "uuid-" + account}
 			handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
 			router := setupRouter(t, handler)
 
 			userPub := mustUserNKey(t)
-			body := `{"ssoToken":"token-` + username + `","natsPublicKey":"` + userPub + `"}`
+			body := `{"ssoToken":"token-` + account + `","natsPublicKey":"` + userPub + `"}`
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -233,10 +233,10 @@ func TestHandleAuth_PermissionsPerUser(t *testing.T) {
 			claims, err := jwt.DecodeUserClaims(resp.NATSJWT)
 			require.NoError(t, err)
 
-			wantPub := "chat.user." + username + ".>"
+			wantPub := "chat.user." + account + ".>"
 			assert.Contains(t, []string(claims.Pub.Allow), wantPub)
 
-			wantSub := "chat.user." + username + ".>"
+			wantSub := "chat.user." + account + ".>"
 			assert.Contains(t, []string(claims.Sub.Allow), wantSub)
 		})
 	}

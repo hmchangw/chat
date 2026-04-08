@@ -88,17 +88,17 @@ func (mr *MockStoreMockRecorder) ListSubscriptions(ctx, roomID any) *gomock.Call
 }
 
 // SetSubscriptionMentions mocks base method.
-func (m *MockStore) SetSubscriptionMentions(ctx context.Context, roomID string, usernames []string) error {
+func (m *MockStore) SetSubscriptionMentions(ctx context.Context, roomID string, accounts []string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetSubscriptionMentions", ctx, roomID, usernames)
+	ret := m.ctrl.Call(m, "SetSubscriptionMentions", ctx, roomID, accounts)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // SetSubscriptionMentions indicates an expected call of SetSubscriptionMentions.
-func (mr *MockStoreMockRecorder) SetSubscriptionMentions(ctx, roomID, usernames any) *gomock.Call {
+func (mr *MockStoreMockRecorder) SetSubscriptionMentions(ctx, roomID, accounts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetSubscriptionMentions", reflect.TypeOf((*MockStore)(nil).SetSubscriptionMentions), ctx, roomID, usernames)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetSubscriptionMentions", reflect.TypeOf((*MockStore)(nil).SetSubscriptionMentions), ctx, roomID, accounts)
 }
 
 // UpdateRoomOnNewMessage mocks base method.

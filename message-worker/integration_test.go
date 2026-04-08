@@ -40,7 +40,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	if err := session.Query(`CREATE KEYSPACE IF NOT EXISTS chat_test WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`).Exec(); err != nil {
 		t.Fatalf("create keyspace: %v", err)
 	}
-	if err := session.Query(`CREATE TABLE IF NOT EXISTS chat_test.messages (room_id text, created_at timestamp, id text, user_id text, username text, content text, PRIMARY KEY (room_id, created_at)) WITH CLUSTERING ORDER BY (created_at DESC)`).Exec(); err != nil {
+	if err := session.Query(`CREATE TABLE IF NOT EXISTS chat_test.messages (room_id text, created_at timestamp, id text, user_id text, user_account text, content text, PRIMARY KEY (room_id, created_at)) WITH CLUSTERING ORDER BY (created_at DESC)`).Exec(); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 
@@ -60,23 +60,22 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	msg := model.Message{
-		ID:        "m1",
-		RoomID:    "r1",
-		UserID:    "u1",
-		Username:  "alice",
-		Content:   "hello",
-		CreatedAt: now,
+		ID:          "m1",
+		RoomID:      "r1",
+		UserID:      "u1",
+		UserAccount: "alice",
+		Content:     "hello",
+		CreatedAt:   now,
 	}
 	err := store.SaveMessage(ctx, msg)
 	require.NoError(t, err)
 
-	var gotContent, gotUsername, gotUserID string
+	var gotContent, gotUserID string
 	err = cassSession.Query(
-		`SELECT content, username, user_id FROM messages WHERE room_id = ? AND created_at = ?`,
+		`SELECT content, user_id FROM messages WHERE room_id = ? AND created_at = ?`,
 		"r1", now,
-	).Scan(&gotContent, &gotUsername, &gotUserID)
+	).Scan(&gotContent, &gotUserID)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", gotContent)
-	assert.Equal(t, "alice", gotUsername)
 	assert.Equal(t, "u1", gotUserID)
 }

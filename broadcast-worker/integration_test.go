@@ -70,8 +70,8 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1"},
-		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r1"},
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("employee").InsertMany(ctx, []interface{}{
@@ -88,7 +88,7 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice", Content: "hello", CreatedAt: msgTime,
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", Content: "hello", CreatedAt: msgTime,
 		},
 	}
 	data, _ := json.Marshal(evt)
@@ -134,7 +134,7 @@ func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "m2", RoomID: "r2", UserID: "u1", Username: "alice", Content: "hello @All", CreatedAt: msgTime,
+			ID: "m2", RoomID: "r2", UserID: "u1", UserAccount: "alice", Content: "hello @All", CreatedAt: msgTime,
 		},
 	}
 	data, _ := json.Marshal(evt)
@@ -155,8 +155,8 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s5", User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r3"},
-		model.Subscription{ID: "s6", User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "r3"},
+		model.Subscription{ID: "s5", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r3"},
+		model.Subscription{ID: "s6", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r3"},
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("employee").InsertMany(ctx, []interface{}{
@@ -173,7 +173,7 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "m3", RoomID: "r3", UserID: "u1", Username: "alice", Content: "hey @bob", CreatedAt: msgTime,
+			ID: "m3", RoomID: "r3", UserID: "u1", UserAccount: "alice", Content: "hey @bob", CreatedAt: msgTime,
 		},
 	}
 	data, _ := json.Marshal(evt)
@@ -184,17 +184,17 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	var roomEvt model.RoomEvent
 	require.NoError(t, json.Unmarshal(records[0].data, &roomEvt))
 	require.Len(t, roomEvt.Mentions, 1)
-	assert.Equal(t, "bob", roomEvt.Mentions[0].Username)
+	assert.Equal(t, "bob", roomEvt.Mentions[0].Account)
 	assert.Equal(t, "鮑勃", roomEvt.Mentions[0].ChineseName)
 	assert.Equal(t, "Bob Chen", roomEvt.Mentions[0].EngName)
 	assert.Empty(t, roomEvt.Mentions[0].UserID)
 
 	var subBob model.Subscription
-	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"u.username": "bob", "roomId": "r3"}).Decode(&subBob))
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"u.account": "bob", "roomId": "r3"}).Decode(&subBob))
 	assert.True(t, subBob.HasMention)
 
 	var subAlice model.Subscription
-	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"u.username": "alice", "roomId": "r3"}).Decode(&subAlice))
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"u.account": "alice", "roomId": "r3"}).Decode(&subAlice))
 	assert.False(t, subAlice.HasMention)
 }
 
@@ -207,8 +207,8 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s7", User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "dm-1"},
-		model.Subscription{ID: "s8", User: model.SubscriptionUser{ID: "u2", Username: "bob"}, RoomID: "dm-1"},
+		model.Subscription{ID: "s7", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "dm-1"},
+		model.Subscription{ID: "s8", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "dm-1"},
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("employee").InsertMany(ctx, []interface{}{
@@ -225,7 +225,7 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "m4", RoomID: "dm-1", UserID: "u1", Username: "alice", Content: "hey", CreatedAt: msgTime,
+			ID: "m4", RoomID: "dm-1", UserID: "u1", UserAccount: "alice", Content: "hey", CreatedAt: msgTime,
 		},
 	}
 	data, _ := json.Marshal(evt)
@@ -249,7 +249,7 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 		require.NotNil(t, roomEvt.Message)
 		require.NotNil(t, roomEvt.Message.Sender)
 		assert.Equal(t, "u1", roomEvt.Message.Sender.UserID)
-		assert.Equal(t, "alice", roomEvt.Message.Sender.Username)
+		assert.Equal(t, "alice", roomEvt.Message.Sender.Account)
 		assert.Equal(t, "愛麗絲", roomEvt.Message.Sender.ChineseName)
 	}
 

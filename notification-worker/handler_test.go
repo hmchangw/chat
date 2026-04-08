@@ -52,9 +52,9 @@ func TestHandleMessage_FanOutSkipsSender(t *testing.T) {
 	lookup := &stubMemberLookup{
 		subs: map[string][]model.Subscription{
 			"room-1": {
-				{ID: "s1", User: model.SubscriptionUser{ID: "alice", Username: "username-alice"}, RoomID: "room-1"},
-				{ID: "s2", User: model.SubscriptionUser{ID: "bob", Username: "username-bob"}, RoomID: "room-1"},
-				{ID: "s3", User: model.SubscriptionUser{ID: "carol", Username: "username-carol"}, RoomID: "room-1"},
+				{ID: "s1", User: model.SubscriptionUser{ID: "alice", Account: "account-alice"}, RoomID: "room-1"},
+				{ID: "s2", User: model.SubscriptionUser{ID: "bob", Account: "account-bob"}, RoomID: "room-1"},
+				{ID: "s3", User: model.SubscriptionUser{ID: "carol", Account: "account-carol"}, RoomID: "room-1"},
 			},
 		},
 	}
@@ -106,13 +106,13 @@ func TestHandleMessage_FanOutSkipsSender(t *testing.T) {
 		}
 	}
 
-	if !subjects["chat.user.username-bob.notification"] {
+	if !subjects["chat.user.account-bob.notification"] {
 		t.Error("missing notification for bob")
 	}
-	if !subjects["chat.user.username-carol.notification"] {
+	if !subjects["chat.user.account-carol.notification"] {
 		t.Error("missing notification for carol")
 	}
-	if subjects["chat.user.username-alice.notification"] {
+	if subjects["chat.user.account-alice.notification"] {
 		t.Error("sender alice should NOT receive notification")
 	}
 }
@@ -150,7 +150,7 @@ func TestHandleMessage_SoleMember(t *testing.T) {
 	lookup := &stubMemberLookup{
 		subs: map[string][]model.Subscription{
 			"room-solo": {
-				{ID: "s1", User: model.SubscriptionUser{ID: "alice", Username: "username-alice"}, RoomID: "room-solo"},
+				{ID: "s1", User: model.SubscriptionUser{ID: "alice", Account: "account-alice"}, RoomID: "room-solo"},
 			},
 		},
 	}

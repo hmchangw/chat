@@ -46,8 +46,8 @@ var (
 		SiteID: "site-a", UserCount: 2,
 	}
 	testDMSubs = []model.Subscription{
-		{User: model.SubscriptionUser{ID: "alice-id", Username: "alice"}, RoomID: "dm-1"},
-		{User: model.SubscriptionUser{ID: "bob-id", Username: "bob"}, RoomID: "dm-1"},
+		{User: model.SubscriptionUser{ID: "alice-id", Account: "alice"}, RoomID: "dm-1"},
+		{User: model.SubscriptionUser{ID: "bob-id", Account: "bob"}, RoomID: "dm-1"},
 	}
 	testEmployees = []model.Employee{
 		{AccountName: "alice", Name: "愛麗絲", EngName: "Alice Wang"},
@@ -59,7 +59,7 @@ func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "msg-1", RoomID: roomID, UserID: "user-1", Username: "sender",
+			ID: "msg-1", RoomID: roomID, UserID: "user-1", UserAccount: "sender",
 			Content: content, CreatedAt: msgTime,
 		},
 	}
@@ -156,17 +156,17 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 			assert.Equal(t, "msg-1", evt.Message.ID)
 			require.NotNil(t, evt.Message.Sender)
 			assert.Equal(t, "user-1", evt.Message.Sender.UserID)
-			assert.Equal(t, "sender", evt.Message.Sender.Username)
+			assert.Equal(t, "sender", evt.Message.Sender.Account)
 			assert.Equal(t, "寄件者", evt.Message.Sender.ChineseName)
 			assert.Equal(t, "Sender Lin", evt.Message.Sender.EngName)
 
 			if tc.wantMentions != nil {
 				require.Len(t, evt.Mentions, len(tc.wantMentions))
-				mentionUsernames := make([]string, len(evt.Mentions))
+				mentionAccounts := make([]string, len(evt.Mentions))
 				for i, m := range evt.Mentions {
-					mentionUsernames[i] = m.Username
+					mentionAccounts[i] = m.Account
 				}
-				assert.ElementsMatch(t, tc.wantMentions, mentionUsernames)
+				assert.ElementsMatch(t, tc.wantMentions, mentionAccounts)
 				for _, m := range evt.Mentions {
 					assert.Empty(t, m.UserID, "mention participants should not have userID")
 					assert.NotEmpty(t, m.ChineseName)
@@ -216,7 +216,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			evt := model.MessageEvent{
 				SiteID: "site-a",
 				Message: model.Message{
-					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", Username: "alice",
+					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice",
 					Content: tc.content, CreatedAt: msgTime,
 				},
 			}
@@ -255,7 +255,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			assert.Equal(t, "msg-1", aliceEvt.Message.ID)
 			require.NotNil(t, aliceEvt.Message.Sender)
 			assert.Equal(t, "alice-id", aliceEvt.Message.Sender.UserID)
-			assert.Equal(t, "alice", aliceEvt.Message.Sender.Username)
+			assert.Equal(t, "alice", aliceEvt.Message.Sender.Account)
 			assert.Equal(t, tc.aliceHasMention, aliceEvt.HasMention)
 
 			bobEvt := evtBySubject[subject.UserRoomEvent("bob")]
@@ -357,7 +357,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		evt := model.MessageEvent{
 			SiteID: "site-a",
 			Message: model.Message{
-				ID: "msg-1", RoomID: "dm-1", UserID: "user-1", Username: "sender",
+				ID: "msg-1", RoomID: "dm-1", UserID: "user-1", UserAccount: "sender",
 				Content: "hello", CreatedAt: msgTime,
 			},
 		}
@@ -385,11 +385,11 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		require.Len(t, pub.records, 1)
 		evt := decodeRoomEvent(t, pub.records[0].data)
 		require.Len(t, evt.Mentions, 1)
-		assert.Equal(t, "sender", evt.Mentions[0].Username)
+		assert.Equal(t, "sender", evt.Mentions[0].Account)
 		assert.Equal(t, "寄件者", evt.Mentions[0].ChineseName)
 	})
 
-	t.Run("employee lookup fails fallback to username", func(t *testing.T) {
+	t.Run("employee lookup fails fallback to account", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		pub := &mockPublisher{}
@@ -406,7 +406,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		evt := decodeRoomEvent(t, pub.records[0].data)
 		require.NotNil(t, evt.Message)
 		require.NotNil(t, evt.Message.Sender)
-		assert.Equal(t, "sender", evt.Message.Sender.Username)
+		assert.Equal(t, "sender", evt.Message.Sender.Account)
 		assert.Equal(t, "sender", evt.Message.Sender.ChineseName)
 		assert.Equal(t, "sender", evt.Message.Sender.EngName)
 	})
@@ -443,7 +443,7 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", Username: "alice",
+			ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice",
 			Content: "hello", CreatedAt: msgTime,
 		},
 	}
@@ -459,7 +459,7 @@ func TestBuildMentionParticipants(t *testing.T) {
 		"alice": {AccountName: "alice", Name: "愛麗絲", EngName: "Alice Wang"},
 	}
 
-	t.Run("empty usernames returns nil", func(t *testing.T) {
+	t.Run("empty accounts returns nil", func(t *testing.T) {
 		result := buildMentionParticipants(nil, employees)
 		assert.Nil(t, result)
 	})
@@ -467,16 +467,16 @@ func TestBuildMentionParticipants(t *testing.T) {
 	t.Run("employee found uses employee data", func(t *testing.T) {
 		result := buildMentionParticipants([]string{"alice"}, employees)
 		require.Len(t, result, 1)
-		assert.Equal(t, "alice", result[0].Username)
+		assert.Equal(t, "alice", result[0].Account)
 		assert.Equal(t, "愛麗絲", result[0].ChineseName)
 		assert.Equal(t, "Alice Wang", result[0].EngName)
 		assert.Empty(t, result[0].UserID)
 	})
 
-	t.Run("employee not found falls back to username", func(t *testing.T) {
+	t.Run("employee not found falls back to account", func(t *testing.T) {
 		result := buildMentionParticipants([]string{"unknown"}, employees)
 		require.Len(t, result, 1)
-		assert.Equal(t, "unknown", result[0].Username)
+		assert.Equal(t, "unknown", result[0].Account)
 		assert.Equal(t, "unknown", result[0].ChineseName)
 		assert.Equal(t, "unknown", result[0].EngName)
 	})
@@ -491,7 +491,7 @@ func TestBuildMentionParticipants(t *testing.T) {
 
 func TestBuildClientMessage(t *testing.T) {
 	msg := &model.Message{
-		ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
+		ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
 		Content: "hello", CreatedAt: time.Now(),
 	}
 
@@ -503,7 +503,7 @@ func TestBuildClientMessage(t *testing.T) {
 		assert.Equal(t, "m1", cm.ID)
 		require.NotNil(t, cm.Sender)
 		assert.Equal(t, "u1", cm.Sender.UserID)
-		assert.Equal(t, "alice", cm.Sender.Username)
+		assert.Equal(t, "alice", cm.Sender.Account)
 		assert.Equal(t, "愛麗絲", cm.Sender.ChineseName)
 		assert.Equal(t, "Alice Wang", cm.Sender.EngName)
 	})
@@ -536,7 +536,7 @@ func TestDetectMentionAll(t *testing.T) {
 	}
 }
 
-func TestExtractMentionedUsernames(t *testing.T) {
+func TestExtractMentionedAccounts(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
@@ -551,7 +551,7 @@ func TestExtractMentionedUsernames(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractMentionedUsernames(tc.content)
+			got := extractMentionedAccounts(tc.content)
 			if tc.want == nil {
 				assert.Empty(t, got)
 			} else {

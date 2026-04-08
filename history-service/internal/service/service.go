@@ -23,7 +23,7 @@ type MessageRepository interface {
 
 // SubscriptionRepository defines MongoDB-backed subscription lookups.
 type SubscriptionRepository interface {
-	GetHistorySharedSince(ctx context.Context, username, roomID string) (*time.Time, bool, error)
+	GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error)
 }
 
 // HistoryService handles message history queries. Transport-agnostic.

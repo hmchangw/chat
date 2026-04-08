@@ -12,7 +12,7 @@ router := natsrouter.New(nc, "my-service")
 router.Use(natsrouter.Recovery())
 router.Use(natsrouter.Logging())
 
-natsrouter.Register(router, "chat.user.{userID}.msg.send", svc.SendMessage)
+natsrouter.Register(router, "chat.user.{account}.msg.send", svc.SendMessage)
 ```
 
 ## Table of Contents
@@ -211,23 +211,23 @@ Three handler shapes for three use cases:
 
 ```go
 // Request/reply — the most common pattern.
-natsrouter.Register(router, "chat.user.{userID}.msg.send",
+natsrouter.Register(router, "chat.user.{account}.msg.send",
     func(c *natsrouter.Context, req SendRequest) (*SendResponse, error) {
-        userID := c.Param("userID")
+        account := c.Param("account")
         // ... business logic ...
         return &SendResponse{ID: msg.ID}, nil
     })
 
 // GET-style — no request body needed.
-natsrouter.RegisterNoBody(router, "chat.user.{userID}.rooms.get.{roomID}",
+natsrouter.RegisterNoBody(router, "chat.user.{account}.rooms.get.{roomID}",
     func(c *natsrouter.Context) (*Room, error) {
         return store.FindRoom(c, c.Param("roomID"))
     })
 
 // Fire-and-forget — no response sent.
-natsrouter.RegisterVoid(router, "chat.user.{userID}.event.typing",
+natsrouter.RegisterVoid(router, "chat.user.{account}.event.typing",
     func(c *natsrouter.Context, req TypingEvent) error {
-        return broadcast(c, c.Param("userID"), req)
+        return broadcast(c, c.Param("account"), req)
     })
 ```
 
@@ -308,7 +308,7 @@ Don't call `c.Next()` (and optionally call `c.Abort()`) to stop the chain:
 ```go
 func RateLimiter() natsrouter.HandlerFunc {
     return func(c *natsrouter.Context) {
-        if isRateLimited(c.Param("userID")) {
+        if isRateLimited(c.Param("account")) {
             c.ReplyError("rate limited")
             c.Abort()
             return
@@ -349,9 +349,9 @@ return nil, fmt.Errorf("access check: %w", natsrouter.ErrForbidden("denied"))
 Patterns use `{name}` placeholders that convert to NATS single-token wildcards (`*`):
 
 ```text
-Pattern:  "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history"
+Pattern:  "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history"
 NATS:     "chat.user.*.request.room.*.*.msg.history"
-Params:   {userID: pos 2, roomID: pos 5, siteID: pos 6}
+Params:   {account: pos 2, roomID: pos 5, siteID: pos 6}
 ```
 
 At request time, the incoming subject is split by `.` and param values are extracted by position.
@@ -364,8 +364,8 @@ Use `NewContext` to create a `*Context` for unit testing handlers without a NATS
 func TestLoadHistory(t *testing.T) {
     svc := service.New(mockMsgs, mockSubs)
     c := natsrouter.NewContext(map[string]string{
-        "username": "alice",
-        "roomID":   "room-1",
+        "account": "alice",
+        "roomID":  "room-1",
     })
 
     resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{RoomID: "room-1"})

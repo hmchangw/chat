@@ -48,7 +48,7 @@ func (p Params) Require(key string) (string, error) {
 // mapping for param extraction.
 type route struct {
 	natsSubject string         // "chat.user.*.request.room.*.*.msg.history"
-	params      map[int]string // {2: "userID", 5: "roomID", 6: "siteID"}
+	params      map[int]string // {2: "account", 5: "roomID", 6: "siteID"}
 }
 
 // parsePattern converts a pattern with {name} placeholders into a route.
@@ -57,10 +57,10 @@ type route struct {
 //
 // Example:
 //
-//	parsePattern("chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history")
+//	parsePattern("chat.user.{account}.request.room.{roomID}.{siteID}.msg.history")
 //	→ route{
 //	    natsSubject: "chat.user.*.request.room.*.*.msg.history",
-//	    params:      map[int]string{2: "userID", 5: "roomID", 6: "siteID"},
+//	    params:      map[int]string{2: "account", 5: "roomID", 6: "siteID"},
 //	  }
 func parsePattern(pattern string) route {
 	parts := strings.Split(pattern, ".")
