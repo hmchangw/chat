@@ -60,7 +60,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		return fmt.Errorf("unmarshal member_added payload: %w", err)
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	sub := model.Subscription{
 		ID:                 uuid.New().String(),
 		User:               model.SubscriptionUser{ID: invite.InviteeID, Account: invite.InviteeAccount},
@@ -79,6 +79,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		UserID:       invite.InviteeID,
 		Subscription: sub,
 		Action:       "added",
+		Timestamp:    now.UnixMilli(),
 	}
 
 	updateData, err := natsutil.MarshalResponse(updateEvt)
