@@ -74,7 +74,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 	now := time.Now().UTC()
 	sub := model.Subscription{
 		ID: uuid.New().String(), User: model.SubscriptionUser{ID: req.InviteeID, Account: req.InviteeAccount},
-		RoomID: req.RoomID, SiteID: req.SiteID, Role: model.RoleMember,
+		RoomID: req.RoomID, SiteID: req.SiteID, Roles: []model.Role{model.RoleMember},
 		HistorySharedSince: &now, JoinedAt: now,
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
@@ -128,7 +128,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 		sub := &model.Subscription{
 			ID: uuid.New().String(), User: model.SubscriptionUser{ID: user.ID, Account: user.Account},
-			RoomID: req.RoomID, SiteID: user.SiteID, Role: model.RoleMember, JoinedAt: now,
+			RoomID: req.RoomID, SiteID: user.SiteID, Roles: []model.Role{model.RoleMember}, JoinedAt: now,
 		}
 		if req.History.Mode != model.HistoryModeAll {
 			sub.HistorySharedSince = &now
@@ -288,7 +288,7 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 		return fmt.Errorf("update subscription role: %w", err)
 	}
 	evt := model.SubscriptionUpdateEvent{
-		Subscription: model.Subscription{RoomID: req.RoomID, User: model.SubscriptionUser{Account: req.Username}, Role: req.NewRole},
+		Subscription: model.Subscription{RoomID: req.RoomID, User: model.SubscriptionUser{Account: req.Username}, Roles: []model.Role{req.NewRole}},
 		Action: "role_updated", Timestamp: time.Now().UnixMilli(),
 	}
 	evtData, _ := json.Marshal(evt)

@@ -151,7 +151,7 @@ func (s *MongoStore) ListSubscriptionsByRoom(ctx context.Context, roomID string)
 }
 
 func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {
-	filter := bson.M{"roomId": roomID, "role": model.RoleOwner}
+	filter := bson.M{"roomId": roomID, "roles": model.RoleOwner}
 	count, err := s.subscriptions.CountDocuments(ctx, filter)
 	if err != nil {
 		return 0, fmt.Errorf("count owners for room %q: %w", roomID, err)

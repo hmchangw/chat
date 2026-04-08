@@ -46,7 +46,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 	sub := &model.Subscription{
 		User:   model.SubscriptionUser{ID: "u1", Account: validAccount},
 		RoomID: validRoomID,
-		Role:   model.RoleMember,
+		Roles:  []model.Role{model.RoleMember},
 	}
 
 	tests := []struct {

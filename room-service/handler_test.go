@@ -47,7 +47,7 @@ func TestHandler_InviteOwner_Success(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 	store.EXPECT().
 		CountSubscriptions(gomock.Any(), "r1").
 		Return(1, nil)
@@ -77,7 +77,7 @@ func TestHandler_InviteMember_Rejected(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Role: model.RoleMember}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
@@ -97,7 +97,7 @@ func TestHandler_InviteExceedsMaxSize(t *testing.T) {
 
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 	store.EXPECT().
 		CountSubscriptions(gomock.Any(), "r1").
 		Return(1000, nil)
@@ -390,7 +390,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				// Self-leave: GetSubscription to check if owner for last-owner guard
 				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleMember}, nil)
+					Return(&model.Subscription{Roles: []model.Role{model.RoleMember}}, nil)
 			},
 		},
 		{
@@ -402,7 +402,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			},
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{Roles: []model.Role{model.RoleOwner}}, nil)
 				store.EXPECT().CountOwners(gomock.Any(), "r1").Return(2, nil)
 			},
 		},
@@ -415,7 +415,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			},
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{Roles: []model.Role{model.RoleOwner}}, nil)
 				store.EXPECT().CountOwners(gomock.Any(), "r1").Return(1, nil)
 			},
 			wantErr: true,
@@ -430,7 +430,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "owner1", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{Roles: []model.Role{model.RoleOwner}}, nil)
 			},
 		},
 		{
@@ -443,7 +443,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "bob", "r1").
-					Return(&model.Subscription{Role: model.RoleMember}, nil)
+					Return(&model.Subscription{Roles: []model.Role{model.RoleMember}}, nil)
 			},
 			wantErr: true,
 		},
@@ -457,7 +457,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "owner1", "r1").
-					Return(&model.Subscription{Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{Roles: []model.Role{model.RoleOwner}}, nil)
 			},
 		},
 		{
@@ -470,7 +470,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "bob", "r1").
-					Return(&model.Subscription{Role: model.RoleMember}, nil)
+					Return(&model.Subscription{Roles: []model.Role{model.RoleMember}}, nil)
 			},
 			wantErr: true,
 		},
@@ -573,11 +573,11 @@ func TestHandler_UpdateRole(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "owner1", "r1").
-					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 				// Federation guard: check target user's site
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "bob", "r1").
-					Return(&model.Subscription{User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember}, nil)
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}}, nil)
 			},
 		},
 		{
@@ -587,7 +587,7 @@ func TestHandler_UpdateRole(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "owner1", "r1").
-					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 			},
 		},
 		{
@@ -597,7 +597,7 @@ func TestHandler_UpdateRole(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "bob", "r1").
-					Return(&model.Subscription{User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", Role: model.RoleMember}, nil)
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
 			},
 			wantErr: true,
 		},
@@ -608,10 +608,10 @@ func TestHandler_UpdateRole(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "owner1", "r1").
-					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "Eng@site-b.example.com", "r1").
-					Return(&model.Subscription{User: model.SubscriptionUser{Account: "Eng@site-b.example.com"}, RoomID: "r1", SiteID: "site-b", Role: model.RoleMember}, nil)
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: "Eng@site-b.example.com"}, RoomID: "r1", SiteID: "site-b", Roles: []model.Role{model.RoleMember}}, nil)
 			},
 			wantErr: true,
 		},
@@ -622,7 +622,7 @@ func TestHandler_UpdateRole(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "owner1", "r1").
-					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 				store.EXPECT().
 					CountOwners(gomock.Any(), "r1").
 					Return(1, nil)
@@ -636,7 +636,7 @@ func TestHandler_UpdateRole(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "owner1", "r1").
-					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 				store.EXPECT().
 					CountOwners(gomock.Any(), "r1").
 					Return(2, nil)
@@ -649,7 +649,7 @@ func TestHandler_UpdateRole(t *testing.T) {
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
 					GetSubscription(gomock.Any(), "owner1", "r1").
-					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Role: model.RoleOwner}, nil)
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: "owner1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 			},
 			wantErr: true,
 		},

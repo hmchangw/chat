@@ -90,7 +90,7 @@ func (s *MongoStore) DeleteSubscription(ctx context.Context, account, roomID str
 func (s *MongoStore) UpdateSubscriptionRole(ctx context.Context, account, roomID string, role model.Role) error {
 	_, err := s.subscriptions.UpdateOne(ctx,
 		bson.M{"u.account": account, "roomId": roomID},
-		bson.M{"$set": bson.M{"role": role}},
+		bson.M{"$set": bson.M{"roles": []model.Role{role}}},
 	)
 	if err != nil {
 		return fmt.Errorf("update subscription role: %w", err)

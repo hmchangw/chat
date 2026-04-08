@@ -171,7 +171,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		User:               model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByAccount},
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
-		Role:               model.RoleOwner,
+		Roles:              []model.Role{model.RoleOwner},
 		HistorySharedSince: &now,
 		JoinedAt:           now,
 	}
@@ -194,7 +194,7 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 	if err != nil {
 		return nil, fmt.Errorf("inviter not found: %w", err)
 	}
-	if sub.Role != model.RoleOwner {
+	if !HasRole(sub.Roles, model.RoleOwner) {
 		return nil, fmt.Errorf("only owners can invite members")
 	}
 
@@ -269,7 +269,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		if err != nil {
 			return nil, fmt.Errorf("requester not found: %w", err)
 		}
-		if sub.Role != model.RoleOwner {
+		if !HasRole(sub.Roles, model.RoleOwner) {
 			return nil, fmt.Errorf("only owners can remove other members")
 		}
 	}
@@ -280,7 +280,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		if err != nil {
 			return nil, fmt.Errorf("requester not found: %w", err)
 		}
-		if sub.Role == model.RoleOwner {
+		if HasRole(sub.Roles, model.RoleOwner) {
 			count, err := h.store.CountOwners(ctx, roomID)
 			if err != nil {
 				return nil, fmt.Errorf("count owners: %w", err)
@@ -326,7 +326,7 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("requester not found: %w", err)
 	}
-	if sub.Role != model.RoleOwner {
+	if !HasRole(sub.Roles, model.RoleOwner) {
 		return nil, fmt.Errorf("only owners can change roles")
 	}
 

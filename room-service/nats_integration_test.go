@@ -118,7 +118,7 @@ func TestNATS_RoomMember(t *testing.T) {
 
 		require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "rm-sl-r1", Name: "general", Type: model.RoomTypeGroup, SiteID: testSiteID}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "rm-sl-s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "rm-sl-r1", SiteID: testSiteID, Role: model.RoleMember,
+			ID: "rm-sl-s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "rm-sl-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 		}))
 
 		pubMu.Lock()
@@ -144,10 +144,10 @@ func TestNATS_RoomMember(t *testing.T) {
 
 		require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "rm-or-r1", Name: "general", Type: model.RoomTypeGroup, SiteID: testSiteID}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "rm-or-s1", User: model.SubscriptionUser{ID: "u1", Account: "owner1"}, RoomID: "rm-or-r1", SiteID: testSiteID, Role: model.RoleOwner,
+			ID: "rm-or-s1", User: model.SubscriptionUser{ID: "u1", Account: "owner1"}, RoomID: "rm-or-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleOwner},
 		}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "rm-or-s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "rm-or-r1", SiteID: testSiteID, Role: model.RoleMember,
+			ID: "rm-or-s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "rm-or-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 		}))
 
 		pubMu.Lock()
@@ -172,10 +172,10 @@ func TestNATS_RoomMember(t *testing.T) {
 
 		require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "rm-no-r1", Name: "general", Type: model.RoomTypeGroup, SiteID: testSiteID}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "rm-no-s1", User: model.SubscriptionUser{ID: "u1", Account: "bob"}, RoomID: "rm-no-r1", SiteID: testSiteID, Role: model.RoleMember,
+			ID: "rm-no-s1", User: model.SubscriptionUser{ID: "u1", Account: "bob"}, RoomID: "rm-no-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 		}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "rm-no-s2", User: model.SubscriptionUser{ID: "u2", Account: "carol"}, RoomID: "rm-no-r1", SiteID: testSiteID, Role: model.RoleMember,
+			ID: "rm-no-s2", User: model.SubscriptionUser{ID: "u2", Account: "carol"}, RoomID: "rm-no-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 		}))
 
 		subj := subject.MemberRemove("bob", "rm-no-r1", testSiteID)
@@ -193,7 +193,7 @@ func TestNATS_RoomMember(t *testing.T) {
 
 		require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "rm-lo-r1", Name: "general", Type: model.RoomTypeGroup, SiteID: testSiteID}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "rm-lo-s1", User: model.SubscriptionUser{ID: "u1", Account: "onlyowner"}, RoomID: "rm-lo-r1", SiteID: testSiteID, Role: model.RoleOwner,
+			ID: "rm-lo-s1", User: model.SubscriptionUser{ID: "u1", Account: "onlyowner"}, RoomID: "rm-lo-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleOwner},
 		}))
 
 		subj := subject.MemberRemove("onlyowner", "rm-lo-r1", testSiteID)
@@ -211,10 +211,10 @@ func TestNATS_RoomMember(t *testing.T) {
 
 		require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "ur-pm-r1", Name: "general", Type: model.RoomTypeGroup, SiteID: testSiteID}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "ur-pm-s1", User: model.SubscriptionUser{ID: "u1", Account: "owner1"}, RoomID: "ur-pm-r1", SiteID: testSiteID, Role: model.RoleOwner,
+			ID: "ur-pm-s1", User: model.SubscriptionUser{ID: "u1", Account: "owner1"}, RoomID: "ur-pm-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleOwner},
 		}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "ur-pm-s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "ur-pm-r1", SiteID: testSiteID, Role: model.RoleMember,
+			ID: "ur-pm-s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "ur-pm-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 		}))
 
 		pubMu.Lock()
@@ -236,7 +236,7 @@ func TestNATS_RoomMember(t *testing.T) {
 		// role should NOT have changed in DB yet (room-service only validates and publishes)
 		sub, err := store.GetSubscription(ctx, "bob", "ur-pm-r1")
 		require.NoError(t, err)
-		assert.True(t, sub.Role == model.RoleMember, "bob should still be member — room-worker has not processed yet")
+		assert.True(t, sub.Roles[0] == model.RoleMember, "bob should still be member — room-worker has not processed yet")
 	})
 
 	t.Run("UpdateRole_LastOwnerCannotDemote", func(t *testing.T) {
@@ -244,7 +244,7 @@ func TestNATS_RoomMember(t *testing.T) {
 
 		require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "ur-lo-r1", Name: "general", Type: model.RoomTypeGroup, SiteID: testSiteID}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "ur-lo-s1", User: model.SubscriptionUser{ID: "u1", Account: "owner1"}, RoomID: "ur-lo-r1", SiteID: testSiteID, Role: model.RoleOwner,
+			ID: "ur-lo-s1", User: model.SubscriptionUser{ID: "u1", Account: "owner1"}, RoomID: "ur-lo-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleOwner},
 		}))
 
 		subj := subject.MemberRoleUpdate("owner1", "ur-lo-r1", testSiteID)
@@ -258,7 +258,7 @@ func TestNATS_RoomMember(t *testing.T) {
 
 		sub, err := store.GetSubscription(ctx, "owner1", "ur-lo-r1")
 		require.NoError(t, err)
-		assert.True(t, sub.Role == model.RoleOwner, "owner1 should still be owner")
+		assert.True(t, sub.Roles[0] == model.RoleOwner, "owner1 should still be owner")
 	})
 
 	t.Run("UpdateRole_FederationUserCannotBeOwner", func(t *testing.T) {
@@ -266,10 +266,10 @@ func TestNATS_RoomMember(t *testing.T) {
 
 		require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "ur-fu-r1", Name: "general", Type: model.RoomTypeGroup, SiteID: testSiteID}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "ur-fu-s1", User: model.SubscriptionUser{ID: "u1", Account: "owner1"}, RoomID: "ur-fu-r1", SiteID: testSiteID, Role: model.RoleOwner,
+			ID: "ur-fu-s1", User: model.SubscriptionUser{ID: "u1", Account: "owner1"}, RoomID: "ur-fu-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleOwner},
 		}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "ur-fu-s2", User: model.SubscriptionUser{ID: "u2", Account: "Eng@site-b.example.com"}, RoomID: "ur-fu-r1", SiteID: "site-b", Role: model.RoleMember,
+			ID: "ur-fu-s2", User: model.SubscriptionUser{ID: "u2", Account: "Eng@site-b.example.com"}, RoomID: "ur-fu-r1", SiteID: "site-b", Roles: []model.Role{model.RoleMember},
 		}))
 
 		subj := subject.MemberRoleUpdate("owner1", "ur-fu-r1", testSiteID)
@@ -402,10 +402,10 @@ func TestNATS_RoomMember(t *testing.T) {
 		// Source channel with subscriptions (no room_members)
 		require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "am-cs-source", Name: "source", Type: model.RoomTypeGroup, SiteID: testSiteID}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "am-cs-ss1", User: model.SubscriptionUser{ID: "u-eve", Account: "eve"}, RoomID: "am-cs-source", SiteID: testSiteID, Role: model.RoleMember,
+			ID: "am-cs-ss1", User: model.SubscriptionUser{ID: "u-eve", Account: "eve"}, RoomID: "am-cs-source", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 		}))
 		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "am-cs-ss2", User: model.SubscriptionUser{ID: "u-frank", Account: "frank"}, RoomID: "am-cs-source", SiteID: testSiteID, Role: model.RoleMember,
+			ID: "am-cs-ss2", User: model.SubscriptionUser{ID: "u-frank", Account: "frank"}, RoomID: "am-cs-source", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 		}))
 
 		// Target room
@@ -444,7 +444,7 @@ func TestNATS_RoomMember(t *testing.T) {
 		for i := range docs {
 			docs[i] = model.Subscription{
 				ID: fmt.Sprintf("am-rc-s%d", i), User: model.SubscriptionUser{ID: fmt.Sprintf("u%d", i), Account: fmt.Sprintf("user%d", i)},
-				RoomID: "am-rc-r1", SiteID: testSiteID, Role: model.RoleMember,
+				RoomID: "am-rc-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 			}
 		}
 		_, err := db.Collection("subscriptions").InsertMany(ctx, docs)

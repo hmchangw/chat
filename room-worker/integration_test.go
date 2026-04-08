@@ -53,7 +53,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test CreateSubscription
-	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
 	require.NoError(t, store.CreateSubscription(ctx, &sub))
 
 	// Test ListByRoom
@@ -80,7 +80,7 @@ func TestProcessInvite_Integration(t *testing.T) {
 
 	// Seed an existing subscription so ListByRoom returns something for metadata events
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-		ID: "s-owner", User: model.SubscriptionUser{ID: "u-owner", Account: "owner"}, RoomID: "r1", SiteID: testSiteID, Role: model.RoleOwner,
+		ID: "s-owner", User: model.SubscriptionUser{ID: "u-owner", Account: "owner"}, RoomID: "r1", SiteID: testSiteID, Roles: []model.Role{model.RoleOwner},
 	}))
 
 	handler := NewHandler(store, testSiteID, noopPublish, noopPublish)
@@ -197,7 +197,7 @@ func TestProcessRemoveMember_Integration(t *testing.T) {
 
 	// Seed subscription
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-		ID: "s-alice", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, RoomID: "r-rm", SiteID: testSiteID, Role: model.RoleMember,
+		ID: "s-alice", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, RoomID: "r-rm", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 	}))
 
 	handler := NewHandler(store, testSiteID, noopPublish, noopPublish)
@@ -243,10 +243,10 @@ func TestProcessRemoveMember_OrgRemoval_Integration(t *testing.T) {
 
 	// Seed subscriptions for org members
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-		ID: "s-alice", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, RoomID: "r-org-rm", SiteID: testSiteID, Role: model.RoleMember,
+		ID: "s-alice", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, RoomID: "r-org-rm", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 	}))
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-		ID: "s-bob", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"}, RoomID: "r-org-rm", SiteID: testSiteID, Role: model.RoleMember,
+		ID: "s-bob", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"}, RoomID: "r-org-rm", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 	}))
 
 	handler := NewHandler(store, testSiteID, noopPublish, noopPublish)
@@ -276,7 +276,7 @@ func TestProcessRoleUpdate_Integration(t *testing.T) {
 
 	// Seed subscription
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-		ID: "s-bob", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"}, RoomID: "r-role", SiteID: testSiteID, Role: model.RoleMember,
+		ID: "s-bob", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"}, RoomID: "r-role", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
 	}))
 
 	handler := NewHandler(store, testSiteID, noopPublish, noopPublish)
@@ -305,7 +305,7 @@ func TestProcessRoleUpdate_Demote_Integration(t *testing.T) {
 
 	// Seed subscription as owner
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-		ID: "s-carol", User: model.SubscriptionUser{ID: "u-carol", Account: "carol"}, RoomID: "r-demote", SiteID: testSiteID, Role: model.RoleOwner,
+		ID: "s-carol", User: model.SubscriptionUser{ID: "u-carol", Account: "carol"}, RoomID: "r-demote", SiteID: testSiteID, Roles: []model.Role{model.RoleOwner},
 	}))
 
 	handler := NewHandler(store, testSiteID, noopPublish, noopPublish)

@@ -75,8 +75,8 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscription not found: %v", err)
 	}
-	if sub.Role != model.RoleMember {
-		t.Errorf("subscription Role = %v, want member", sub.Role)
+	if !HasRole(sub.Roles, model.RoleMember) {
+		t.Errorf("subscription Role = %v, want member", sub.Roles)
 	}
 
 	// Verify notification was published

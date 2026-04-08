@@ -66,7 +66,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		User:               model.SubscriptionUser{ID: invite.InviteeID, Account: invite.InviteeAccount},
 		RoomID:             invite.RoomID,
 		SiteID:             invite.SiteID,
-		Role: model.RoleMember,
+		Roles: []model.Role{model.RoleMember},
 		HistorySharedSince: &now,
 		JoinedAt:           now,
 	}

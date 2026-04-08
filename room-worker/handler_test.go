@@ -40,8 +40,8 @@ func TestHandler_ProcessInvite(t *testing.T) {
 	store.EXPECT().
 		ListByRoom(gomock.Any(), "r1").
 		Return([]model.Subscription{
-			{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Role: model.RoleOwner},
-			{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Role: model.RoleMember},
+			{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}},
+			{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
 		}, nil)
 
 	var published []publishedMsg
@@ -403,7 +403,7 @@ func TestHandler_ProcessRoleUpdate(t *testing.T) {
 				require.NoError(t, json.Unmarshal(published[0].data, &evt))
 				assert.Equal(t, "role_updated", evt.Action)
 				assert.Equal(t, "r1", evt.Subscription.RoomID)
-				assert.Equal(t, model.RoleOwner, evt.Subscription.Role)
+				assert.Equal(t, model.RoleOwner, evt.Subscription.Roles[0])
 			},
 		},
 		{

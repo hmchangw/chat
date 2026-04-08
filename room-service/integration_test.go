@@ -34,7 +34,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	assert.Len(t, rooms, 2)
 
 	// Test CreateSubscription and GetSubscription
-	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
 	require.NoError(t, store.CreateSubscription(ctx, &sub))
 
 	gotSub, err := store.GetSubscription(ctx, "u1", "r1")
@@ -108,11 +108,11 @@ func TestMongoStore_CountSubscriptions(t *testing.T) {
 
 	// Seed subscriptions individually (BulkCreateSubscriptions no longer in room-service store)
 	subs := []model.Subscription{
-		{ID: "s1", User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
-		{ID: "s2", User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s1", User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
+		{ID: "s2", User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
 		// bot usernames -- must be excluded
-		{ID: "s3", User: model.SubscriptionUser{Account: "notify.bot"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
-		{ID: "s4", User: model.SubscriptionUser{Account: "p_webhook"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s3", User: model.SubscriptionUser{Account: "notify.bot"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
+		{ID: "s4", User: model.SubscriptionUser{Account: "p_webhook"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
 	}
 	for i := range subs {
 		require.NoError(t, store.CreateSubscription(ctx, &subs[i]))
@@ -134,8 +134,8 @@ func TestMongoStore_CountOwners(t *testing.T) {
 	assert.Equal(t, 0, count)
 
 	subs := []model.Subscription{
-		{ID: "s1", User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1", Role: model.RoleOwner},
-		{ID: "s2", User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", Role: model.RoleMember},
+		{ID: "s1", User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}},
+		{ID: "s2", User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
 	}
 	for i := range subs {
 		require.NoError(t, store.CreateSubscription(ctx, &subs[i]))
@@ -157,9 +157,9 @@ func TestMongoStore_ListSubscriptionsByRoom(t *testing.T) {
 	assert.Empty(t, subs)
 
 	seed := []model.Subscription{
-		{ID: "s1", User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
-		{ID: "s2", User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", SiteID: "site-a", Role: model.RoleMember},
-		{ID: "s3", User: model.SubscriptionUser{Account: "carol"}, RoomID: "r2", SiteID: "site-a", Role: model.RoleMember},
+		{ID: "s1", User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
+		{ID: "s2", User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
+		{ID: "s3", User: model.SubscriptionUser{Account: "carol"}, RoomID: "r2", SiteID: "site-a", Roles: []model.Role{model.RoleMember}},
 	}
 	for i := range seed {
 		require.NoError(t, store.CreateSubscription(ctx, &seed[i]))
