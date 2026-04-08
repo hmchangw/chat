@@ -5,9 +5,9 @@ import (
 	"strings"
 )
 
-// ParseUserRoomSubject extracts the account and roomID from subjects matching
-// the pattern "chat.user.{account}.*.room.{roomID}.…".
-// Returns account, roomID, and ok=true on success.
+// ParseUserRoomSubject extracts the user account and roomID from subjects
+// matching the pattern "chat.user.{account}.*.room.{roomID}.…".
+// Returns the user account, roomID, and ok=true on success.
 func ParseUserRoomSubject(subj string) (account, roomID string, ok bool) {
 	parts := strings.Split(subj, ".")
 	if len(parts) < 5 || parts[0] != "chat" || parts[1] != "user" {

@@ -125,7 +125,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 }
 
 func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([]byte, error) {
-	// Extract account and roomID from the subject before unmarshalling for performance.
+	// Extract user account and roomID from the subject before unmarshalling for performance.
 	inviterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
 		return nil, fmt.Errorf("invalid invite subject: %s", subj)

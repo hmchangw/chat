@@ -47,7 +47,7 @@ func TestHandler_ProcessInvite(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify created subscription has the correct account
+	// Verify created subscription has the correct user account
 	if createdSub == nil {
 		t.Fatal("expected subscription to be created")
 	}

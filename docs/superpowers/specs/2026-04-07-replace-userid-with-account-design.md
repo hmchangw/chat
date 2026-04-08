@@ -1,14 +1,14 @@
-# Replace `{account}` / `username` with `account` — Design
+# Replace `{userID}` / `username` with `account` — Design
 
 ## Goal
 
-Replace the ambiguous `{account}` placeholder in NATS subject naming and the
+Replace the ambiguous `{userID}` placeholder in NATS subject naming and the
 `username` field in user-related model types with the more explicit term
 `account`, throughout code, tests, and documentation.
 
 The existing terminology is confusing:
 
-- Docs (`nats-subject-naming.md`, `CLAUDE.md`) use `chat.user.{account}.*`, but
+- Docs (`nats-subject-naming.md`, `CLAUDE.md`) use `chat.user.{userID}.*`, but
   the code in `pkg/subject/subject.go` already uses a parameter named
   `username`. Both refer to the same thing — the human-readable user handle.
 - The model field `User.Username` is really the account identifier used in
@@ -22,7 +22,7 @@ After this change:
 
 - The account handle (previously `username`) is consistently called `account`
   in code, BSON, JSON, and documentation.
-- The NATS subject placeholder `{account}` becomes `{account}`.
+- The NATS subject placeholder `{userID}` becomes `{account}`.
 - UUID-bearing fields remain untouched.
 
 ## Non-goals
@@ -46,7 +46,7 @@ After this change:
 | `SubscriptionUser` | `Username` | `Account` | `account` | `account` |
 | `Participant` | `Username` | `Account` | `account` | `account` |
 | `Message` | `Username` | `UserAccount` | `userAccount` | `userAccount` |
-| `InviteMemberRequest` | `InviteeAccount` | `InviteeAccount` | `inviteeAccount` | — |
+| `InviteMemberRequest` | `InviteeUsername` | `InviteeAccount` | `inviteeAccount` | — |
 | `CreateRoomRequest` | `CreatedByUsername` | `CreatedByAccount` | `createdByAccount` | — |
 
 Rationale:
@@ -65,27 +65,27 @@ Rationale:
 - `ParseUserRoomSubject` and `ParseUserRoomSiteSubject` return named values
   `account, roomID[, siteID], ok`.
 - `MsgHistoryPattern`, `MsgNextPattern`, `MsgSurroundingPattern`,
-  `MsgGetPattern` replace `{account}` placeholders with `{account}`.
+  `MsgGetPattern` replace `{username}` placeholders with `{account}`.
 - Update `subject_test.go` accordingly.
 
 ### 3. NATS router (`pkg/natsrouter/`)
 
 - Update `params.go`, `params_test.go`, `router_test.go`, `example_test.go`,
   and `README.md` to use `{account}` as the placeholder example wherever
-  `{account}` is currently used.
+  `{userID}` is currently used.
 
 ### 4. Services
 
-Every service that currently references `model.User.Account`,
-`model.Message.UserAccount`, `model.Participant.Account`,
-`model.SubscriptionUser.Account`, `InviteeAccount`, or `CreatedByUsername`
+Every service that currently references `model.User.Username`,
+`model.Message.Username`, `model.Participant.Username`,
+`model.SubscriptionUser.Username`, `InviteeUsername`, or `CreatedByUsername`
 must be updated:
 
 - Struct field accesses → new field names.
 - Local variables/parameters named `username` that hold the account string →
   renamed to `account`.
 - Method names like `GetUserByUsername` → `GetUserByAccount`.
-- MongoDB query keys `"account"` → `"account"` where they target the
+- MongoDB query keys `"username"` → `"account"` where they target the
   renamed fields.
 - Mocks regenerated via `make generate`.
 - All unit and integration tests updated.
@@ -106,13 +106,13 @@ Services affected (based on grep):
 
 Files to update:
 
-- `docs/nats-subject-naming.md` — all `{account}` → `{account}`, plus
+- `docs/nats-subject-naming.md` — all `{userID}` → `{account}`, plus
   text/table references.
-- `CLAUDE.md` — `chat.user.{account}.…` examples in the Subject Naming section.
+- `CLAUDE.md` — `chat.user.{userID}.…` examples in the Subject Naming section.
 - `pkg/natsrouter/README.md`
 - `message-worker/README.md`
-- All existing specs under `docs/superpowers/specs/` that use `{account}`.
-- All existing plans under `docs/superpowers/plans/` that use `{account}`.
+- All existing specs under `docs/superpowers/specs/` that use `{userID}`.
+- All existing plans under `docs/superpowers/plans/` that use `{userID}`.
 
 ## Verification
 
@@ -131,8 +131,8 @@ need Docker), but they will be updated for compilation and must lint-clean.
 | Accidentally renaming UUID-bearing fields (`Message.UserID` etc.) | Only rename fields listed in the table above; never rename on the word `UserID` alone. Grep for `UserID` hits and confirm they refer to UUIDs before editing. |
 | BSON tag change breaks existing data | Acceptable — dev-branch refactor; no prod data migration in scope. |
 | Keycloak `username` references in realm export | Explicitly out of scope; do not edit `auth-service/deploy/keycloak/realm-export.json`. |
-| Test helpers seeding `"account"` BSON documents | Update the helpers and any `testdata/` fixtures. |
-| Missed references in comments/docs | Final `grep -n "{account}"` and `grep -n "account"` sweep before commit, manually review remaining hits (Keycloak, external clients). |
+| Test helpers seeding `"username"` BSON documents | Update the helpers and any `testdata/` fixtures. |
+| Missed references in comments/docs | Final `grep -n "{userID}"` and `grep -n "username"` sweep before commit, manually review remaining hits (Keycloak, external clients). |
 
 ## Execution order
 

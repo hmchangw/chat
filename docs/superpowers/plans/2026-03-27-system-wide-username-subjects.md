@@ -1,10 +1,10 @@
-# System-Wide Account Subject Migration Implementation Plan
+# System-Wide Username Subject Migration Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate all NATS `chat.user.{account}.*` subject patterns to use `{account}` instead, and update store queries from `u._id` to `u.username`.
+**Goal:** Migrate all NATS `chat.user.{userID}.*` subject patterns to use `{username}` instead, and update store queries from `u._id` to `u.username`.
 
-**Architecture:** Rename subject builder parameters from `userID` to `username` (format strings unchanged). Update `GetSubscription` store interfaces/implementations to query by `u.username`. Services that need `userID` (e.g. for `Message.UserID`) get it from `sub.User.ID`. Add `InviteeAccount` and `CreatedByUsername` to request models so downstream services can populate subscription accounts and route to correct subjects.
+**Architecture:** Rename subject builder parameters from `userID` to `username` (format strings unchanged). Update `GetSubscription` store interfaces/implementations to query by `u.username`. Services that need `userID` (e.g. for `Message.UserID`) get it from `sub.User.ID`. Add `InviteeUsername` and `CreatedByUsername` to request models so downstream services can populate subscription usernames and route to correct subjects.
 
 **Tech Stack:** Go 1.24, NATS JetStream, MongoDB (`go.mongodb.org/mongo-driver/v2`), `go.uber.org/mock` (mockgen), `stretchr/testify`
 
@@ -17,12 +17,12 @@
 | File | Action | Responsibility |
 |------|--------|----------------|
 | `pkg/subject/subject.go` | Modify | Rename all `userID` params to `username` |
-| `pkg/subject/subject_test.go` | Modify | Update test values to use accounts |
+| `pkg/subject/subject_test.go` | Modify | Update test values to use usernames |
 | `pkg/model/room.go` | Modify | Add `CreatedByUsername` to `CreateRoomRequest` |
-| `pkg/model/event.go` | Modify | Add `InviteeAccount` to `InviteMemberRequest` |
+| `pkg/model/event.go` | Modify | Add `InviteeUsername` to `InviteMemberRequest` |
 | `message-worker/store.go` | Modify | Rename `GetSubscription` param to `username` |
 | `message-worker/store_mongo.go` | Modify | Rename param, change filter `u._id` → `u.username` |
-| `message-worker/handler.go` | Modify | Extract account from subject, use `sub.User.ID` for Message |
+| `message-worker/handler.go` | Modify | Extract username from subject, use `sub.User.ID` for Message |
 | `message-worker/handler_test.go` | Modify | Update mock expectations and assertions |
 | `history-service/store.go` | Modify | Rename `GetSubscription` param to `username` |
 | `history-service/store_real.go` | Modify | Rename param, change filter `u._id` → `u.username` |
@@ -32,12 +32,12 @@
 | `room-service/store_mongo.go` | Modify | Rename param, change filter `u._id` → `u.username` |
 | `room-service/handler.go` | Modify | Use `inviterUsername`, populate `Username` in subscription |
 | `room-service/handler_test.go` | Modify | Update mock expectations |
-| `room-worker/handler.go` | Modify | Use `req.InviteeAccount`, `sub.User.Account` for subjects |
+| `room-worker/handler.go` | Modify | Use `req.InviteeUsername`, `sub.User.Username` for subjects |
 | `room-worker/handler_test.go` | Modify | Add `Username` to fixtures |
-| `notification-worker/handler.go` | Modify | Use `sub.User.Account` for Notification subject |
+| `notification-worker/handler.go` | Modify | Use `sub.User.Username` for Notification subject |
 | `notification-worker/handler_test.go` | Modify | Add `Username` to fixtures |
-| `inbox-worker/handler.go` | Modify | Use `invite.InviteeAccount` for SubscriptionUpdate subject |
-| `inbox-worker/handler_test.go` | Modify | Add `InviteeAccount` to test data |
+| `inbox-worker/handler.go` | Modify | Use `invite.InviteeUsername` for SubscriptionUpdate subject |
+| `inbox-worker/handler_test.go` | Modify | Add `InviteeUsername` to test data |
 
 ---
 
@@ -45,7 +45,7 @@
 
 **Files:**
 - Modify: `pkg/model/room.go` — add `CreatedByUsername` to `CreateRoomRequest`
-- Modify: `pkg/model/event.go` — add `InviteeAccount` to `InviteMemberRequest`
+- Modify: `pkg/model/event.go` — add `InviteeUsername` to `InviteMemberRequest`
 - Modify: `pkg/subject/subject.go` — rename all `userID` params to `username`
 - Modify: `pkg/subject/subject_test.go` — update test values from `"u1"` to `"alice"`
 
@@ -70,19 +70,19 @@ type CreateRoomRequest struct {
 	Name              string   `json:"name"`
 	Type              RoomType `json:"type"`
 	CreatedBy         string   `json:"createdBy"`
-	CreatedByAccount string   `json:"createdByUsername"`
+	CreatedByUsername string   `json:"createdByUsername"`
 	SiteID            string   `json:"siteId"`
 	Members           []string `json:"members,omitempty"`
 }
 ```
 
-- [ ] **Step 5: Add `InviteeAccount` to `InviteMemberRequest` in `pkg/model/event.go`**
+- [ ] **Step 5: Add `InviteeUsername` to `InviteMemberRequest` in `pkg/model/event.go`**
 
 ```go
 type InviteMemberRequest struct {
 	InviterID       string `json:"inviterId"`
 	InviteeID       string `json:"inviteeId"`
-	InviteeAccount string `json:"inviteeAccount"`
+	InviteeUsername string `json:"inviteeUsername"`
 	RoomID          string `json:"roomId"`
 	SiteID          string `json:"siteId"`
 }
@@ -99,7 +99,7 @@ make test
 ```bash
 make fmt && make lint
 git add pkg/subject/subject.go pkg/subject/subject_test.go pkg/model/room.go pkg/model/event.go
-git commit -m "refactor: rename userID to account in subject builders, add account fields to request models"
+git commit -m "refactor: rename userID to username in subject builders, add username fields to request models"
 ```
 
 ---
@@ -118,7 +118,7 @@ In each `store.go`:
 // Before
 GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error)
 // After
-GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
+GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error)
 ```
 
 - [ ] **Step 2: Rename parameter and change MongoDB filter in all 3 implementations**
@@ -129,8 +129,8 @@ In each `store_mongo.go` / `store_real.go`:
 func (s *MongoStore) GetSubscription(ctx context.Context, userID, roomID string) (*model.Subscription, error) {
 	filter := bson.M{"u._id": userID, "roomId": roomID}
 // After
-func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
-	filter := bson.M{"u.username": account, "roomId": roomID}
+func (s *MongoStore) GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error) {
+	filter := bson.M{"u.username": username, "roomId": roomID}
 ```
 
 - [ ] **Step 3: Regenerate mocks**
@@ -147,12 +147,12 @@ make generate SERVICE=room-service
 git add message-worker/store.go message-worker/store_mongo.go message-worker/mock_store_test.go \
        history-service/store.go history-service/store_real.go history-service/mock_store_test.go \
        room-service/store.go room-service/store_mongo.go room-service/mock_store_test.go
-git commit -m "refactor(stores): rename GetSubscription userID to account, query u.username"
+git commit -m "refactor(stores): rename GetSubscription userID to username, query u.username"
 ```
 
 ---
 
-### Task 3: Update message-worker to use account
+### Task 3: Update message-worker to use username
 
 **Files:**
 - Modify: `message-worker/handler.go`
@@ -160,13 +160,13 @@ git commit -m "refactor(stores): rename GetSubscription userID to account, query
 
 - [ ] **Step 1: Update `handler_test.go` (Red phase)**
 
-Change `GetSubscription` mock: `"u1"` → `"alice"`. Return subscription with `Account: "alice"`. Call `processMessage(ctx, "alice", "r1", "site-a", data)`. Verify `msg.UserID == "u1"` (from `sub.User.ID`, NOT from account param).
+Change `GetSubscription` mock: `"u1"` → `"alice"`. Return subscription with `Username: "alice"`. Call `processMessage(ctx, "alice", "r1", "site-a", data)`. Verify `msg.UserID == "u1"` (from `sub.User.ID`, NOT from username param).
 
 ```go
 store.EXPECT().
 	GetSubscription(gomock.Any(), "alice", "r1").
 	Return(&model.Subscription{
-		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Role: model.RoleMember,
+		User: model.SubscriptionUser{ID: "u1", Username: "alice"}, RoomID: "r1", Role: model.RoleMember,
 	}, nil)
 ```
 
@@ -184,9 +184,9 @@ make test SERVICE=message-worker
 
 - [ ] **Step 3: Update `handler.go`**
 
-In `HandleJetStreamMsg`: rename `userID := parts[2]` to `account := parts[2]`. Pass `username` to `processMessage` and `subject.UserResponse(account, reqID)`.
+In `HandleJetStreamMsg`: rename `userID := parts[2]` to `username := parts[2]`. Pass `username` to `processMessage` and `subject.UserResponse(username, reqID)`.
 
-In `processMessage`: change param from `userID` to `username`. Capture subscription: `sub, err := h.store.GetSubscription(ctx, account, roomID)` (was `_, err`). Use `sub.User.ID` for `Message.UserID`:
+In `processMessage`: change param from `userID` to `username`. Capture subscription: `sub, err := h.store.GetSubscription(ctx, username, roomID)` (was `_, err`). Use `sub.User.ID` for `Message.UserID`:
 
 ```go
 msg := model.Message{
@@ -209,12 +209,12 @@ make test SERVICE=message-worker
 ```bash
 make fmt && make lint
 git add message-worker/handler.go message-worker/handler_test.go
-git commit -m "feat(message-worker): use account from subject, derive UserID from subscription"
+git commit -m "feat(message-worker): use username from subject, derive UserID from subscription"
 ```
 
 ---
 
-### Task 4: Update history-service to use account
+### Task 4: Update history-service to use username
 
 **Files:**
 - Modify: `history-service/handler.go`
@@ -222,7 +222,7 @@ git commit -m "feat(message-worker): use account from subject, derive UserID fro
 
 - [ ] **Step 1: Update `handler_test.go` (Red phase)**
 
-Change `GetSubscription` mocks: `"u1"` → `"alice"`. Return subscription with `Account: "alice"`.
+Change `GetSubscription` mocks: `"u1"` → `"alice"`. Return subscription with `Username: "alice"`.
 
 - [ ] **Step 2: Run tests — expect failure**
 
@@ -235,9 +235,9 @@ make test SERVICE=history-service
 Rename `userID` to `username` where extracted from `ParseUserRoomSubject`. Pass `username` to `GetSubscription`:
 
 ```go
-account, roomID, ok := subject.ParseUserRoomSubject(subj)
+username, roomID, ok := subject.ParseUserRoomSubject(subj)
 // ...
-sub, err := h.store.GetSubscription(ctx, account, roomID)
+sub, err := h.store.GetSubscription(ctx, username, roomID)
 ```
 
 - [ ] **Step 4: Run tests**
@@ -251,12 +251,12 @@ make test SERVICE=history-service
 ```bash
 make fmt && make lint
 git add history-service/handler.go history-service/handler_test.go
-git commit -m "feat(history-service): pass account to GetSubscription"
+git commit -m "feat(history-service): pass username to GetSubscription"
 ```
 
 ---
 
-### Task 5: Update room-service to use account
+### Task 5: Update room-service to use username
 
 **Files:**
 - Modify: `room-service/handler.go`
@@ -264,7 +264,7 @@ git commit -m "feat(history-service): pass account to GetSubscription"
 
 - [ ] **Step 1: Update `handler_test.go` (Red phase)**
 
-Change `GetSubscription` mocks: `"u1"` → `"alice"`, `"u2"` → `"bob"`. Return subscriptions with `Username`. Update `InviteMemberRequest` fixtures to include `InviteeAccount`. Update `subject.MemberInvite` calls to pass `"alice"` instead of `"u1"`. For `handleCreateRoom` test, add `CreatedByAccount: "alice"` and assert created subscription has `User.Account == "alice"`.
+Change `GetSubscription` mocks: `"u1"` → `"alice"`, `"u2"` → `"bob"`. Return subscriptions with `Username`. Update `InviteMemberRequest` fixtures to include `InviteeUsername`. Update `subject.MemberInvite` calls to pass `"alice"` instead of `"u1"`. For `handleCreateRoom` test, add `CreatedByUsername: "alice"` and assert created subscription has `User.Username == "alice"`.
 
 - [ ] **Step 2: Run tests — expect failure**
 
@@ -278,7 +278,7 @@ In `handleInvite`: rename `inviterID` → `inviterUsername`, pass to `GetSubscri
 
 In `handleCreateRoom`: populate `Username` on owner subscription:
 ```go
-User: model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByUsername},
+User: model.SubscriptionUser{ID: req.CreatedBy, Username: req.CreatedByUsername},
 ```
 
 - [ ] **Step 4: Run tests**
@@ -292,12 +292,12 @@ make test SERVICE=room-service
 ```bash
 make fmt && make lint
 git add room-service/handler.go room-service/handler_test.go
-git commit -m "feat(room-service): use account for invite auth and owner subscription"
+git commit -m "feat(room-service): use username for invite auth and owner subscription"
 ```
 
 ---
 
-### Task 6: Update room-worker to use account
+### Task 6: Update room-worker to use username
 
 **Files:**
 - Modify: `room-worker/handler.go`
@@ -305,7 +305,7 @@ git commit -m "feat(room-service): use account for invite auth and owner subscri
 
 - [ ] **Step 1: Update `handler_test.go` (Red phase)**
 
-Add `Username` to subscription fixtures in `ListByRoom` return. Add `InviteeAccount: "bob"` to `InviteMemberRequest`. Assert published subjects use accounts:
+Add `Username` to subscription fixtures in `ListByRoom` return. Add `InviteeUsername: "bob"` to `InviteMemberRequest`. Assert published subjects use usernames:
 - `subject.SubscriptionUpdate("bob")` → `"chat.user.bob.event.subscription.update"`
 - `subject.RoomMetadataChanged("alice")` → `"chat.user.alice.event.room.metadata.update"`
 - `subject.RoomMetadataChanged("bob")` → `"chat.user.bob.event.room.metadata.update"`
@@ -319,9 +319,9 @@ make test SERVICE=room-worker
 - [ ] **Step 3: Update `handler.go`**
 
 Three changes in `processInvite`:
-1. Subscription creation: `User: model.SubscriptionUser{ID: req.InviteeID, Account: req.InviteeAccount}`
-2. SubscriptionUpdate subject: `subject.SubscriptionUpdate(req.InviteeAccount)`
-3. RoomMetadataChanged subject: `subject.RoomMetadataChanged(members[i].User.Account)`
+1. Subscription creation: `User: model.SubscriptionUser{ID: req.InviteeID, Username: req.InviteeUsername}`
+2. SubscriptionUpdate subject: `subject.SubscriptionUpdate(req.InviteeUsername)`
+3. RoomMetadataChanged subject: `subject.RoomMetadataChanged(members[i].User.Username)`
 
 - [ ] **Step 4: Run tests**
 
@@ -334,12 +334,12 @@ make test SERVICE=room-worker
 ```bash
 make fmt && make lint
 git add room-worker/handler.go room-worker/handler_test.go
-git commit -m "feat(room-worker): route subscription and metadata events to account subjects"
+git commit -m "feat(room-worker): route subscription and metadata events to username subjects"
 ```
 
 ---
 
-### Task 7: Update notification-worker and inbox-worker to use account
+### Task 7: Update notification-worker and inbox-worker to use username
 
 **Files:**
 - Modify: `notification-worker/handler.go`, `notification-worker/handler_test.go`
@@ -347,11 +347,11 @@ git commit -m "feat(room-worker): route subscription and metadata events to acco
 
 - [ ] **Step 1: Update `notification-worker/handler_test.go` (Red phase)**
 
-Add `Username` to subscription fixtures with distinct values from `ID` (e.g. `ID: "alice", Account: "username-alice"`) to prove subjects route by `Username` not `ID`. Update subject assertions: `"chat.user.username-bob.notification"`.
+Add `Username` to subscription fixtures with distinct values from `ID` (e.g. `ID: "alice", Username: "username-alice"`) to prove subjects route by `Username` not `ID`. Update subject assertions: `"chat.user.username-bob.notification"`.
 
 - [ ] **Step 2: Update `notification-worker/handler.go` (Green phase)**
 
-Change notification subject: `subject.Notification(subs[i].User.Account)` (was `subs[i].User.ID`). Keep sender-skip on `User.ID` unchanged.
+Change notification subject: `subject.Notification(subs[i].User.Username)` (was `subs[i].User.ID`). Keep sender-skip on `User.ID` unchanged.
 
 - [ ] **Step 3: Run notification-worker tests**
 
@@ -361,13 +361,13 @@ make test SERVICE=notification-worker
 
 - [ ] **Step 4: Update `inbox-worker/handler_test.go` (Red phase)**
 
-Add `InviteeAccount` to `InviteMemberRequest` fixtures. Add test `TestHandleEvent_MemberAdded_UsernameRoutedSubject` with distinct `InviteeID: "uid-bob"` and `InviteeAccount: "username-bob"` to prove subject uses account.
+Add `InviteeUsername` to `InviteMemberRequest` fixtures. Add test `TestHandleEvent_MemberAdded_UsernameRoutedSubject` with distinct `InviteeID: "uid-bob"` and `InviteeUsername: "username-bob"` to prove subject uses username.
 
 - [ ] **Step 5: Update `inbox-worker/handler.go` (Green phase)**
 
 Two changes in `handleMemberAdded`:
-1. Subscription creation: `User: model.SubscriptionUser{ID: invite.InviteeID, Account: invite.InviteeAccount}`
-2. SubscriptionUpdate subject: `subject.SubscriptionUpdate(invite.InviteeAccount)`
+1. Subscription creation: `User: model.SubscriptionUser{ID: invite.InviteeID, Username: invite.InviteeUsername}`
+2. SubscriptionUpdate subject: `subject.SubscriptionUpdate(invite.InviteeUsername)`
 
 - [ ] **Step 6: Run inbox-worker tests**
 
@@ -382,5 +382,5 @@ make test
 make fmt && make lint
 git add notification-worker/handler.go notification-worker/handler_test.go \
        inbox-worker/handler.go inbox-worker/handler_test.go
-git commit -m "feat(notification,inbox): route events to account-based subjects"
+git commit -m "feat(notification,inbox): route events to username-based subjects"
 ```

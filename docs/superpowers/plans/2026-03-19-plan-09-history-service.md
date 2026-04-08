@@ -314,7 +314,7 @@ func NewHandler(store HistoryStore) *Handler {
 }
 
 // NatsHandleHistory handles NATS request/reply for message history.
-// Subject: chat.user.{account}.request.room.{roomID}.{siteID}.msg.history
+// Subject: chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history
 func (h *Handler) NatsHandleHistory(msg *nats.Msg) {
 	parts := strings.Split(msg.Subject, ".")
 	if len(parts) < 8 {

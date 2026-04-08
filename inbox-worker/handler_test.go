@@ -419,7 +419,7 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 		t.Fatalf("HandleEvent: %v", err)
 	}
 
-	// Verify subscription carries both ID and Account
+	// Verify subscription carries both user ID and user account
 	subs := store.getSubscriptions()
 	if len(subs) != 1 {
 		t.Fatalf("expected 1 subscription, got %d", len(subs))
@@ -432,7 +432,7 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 		t.Errorf("subscription User.Account = %q, want %q", sub.User.Account, "account-bob")
 	}
 
-	// Verify subject is routed by account, not ID
+	// Verify subject is routed by user account, not user ID
 	records := pub.getRecords()
 	if len(records) != 1 {
 		t.Fatalf("expected 1 publish, got %d", len(records))

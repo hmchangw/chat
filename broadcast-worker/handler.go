@@ -53,7 +53,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		}
 	}
 
-	// Collect all accounts for employee lookup (sender + mentioned)
+	// Collect all user accounts for employee lookup (sender + mentioned)
 	lookupAccounts := make([]string, 0, 1+len(mentionedAccounts))
 	lookupAccounts = append(lookupAccounts, msg.UserAccount)
 	for _, u := range mentionedAccounts {

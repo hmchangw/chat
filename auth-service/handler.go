@@ -60,7 +60,7 @@ func NewAuthHandler(validator TokenValidator, signingKey nkeys.KeyPair, jwtExpir
 }
 
 // HandleAuth validates the SSO token, resolves permissions based on
-// the account, and returns a signed NATS JWT.
+// the user account, and returns a signed NATS JWT.
 func (h *AuthHandler) HandleAuth(c *gin.Context) {
 	var req authRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

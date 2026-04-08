@@ -11,7 +11,7 @@ A shared Go library at `pkg/natsrouter/` that provides pattern-based routing for
 
 ## Goals
 
-- Pattern-based subject routing with named params: `chat.user.{account}.request.room.{roomID}.msg.history`
+- Pattern-based subject routing with named params: `chat.user.{userID}.request.room.{roomID}.msg.history`
 - Generic `Register[Req, Resp]` — one line to add a new endpoint
 - Composable middleware: `func(next nats.MsgHandler) nats.MsgHandler`
 - Built-in recovery and logging middleware
@@ -82,7 +82,7 @@ func (r *Router) Use(mw ...Middleware)
 //
 //   natsrouter.Register[LoadHistoryRequest, LoadHistoryResponse](
 //       router,
-//       "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history",
+//       "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history",
 //       func(ctx context.Context, p natsrouter.Params, req LoadHistoryRequest) (*LoadHistoryResponse, error) {
 //           userID := p.Get("userID")
 //           roomID := p.Get("roomID")
@@ -103,7 +103,7 @@ func Register[Req, Resp any](
 //
 //   natsrouter.RegisterNoBody[Room](
 //       router,
-//       "chat.user.{account}.request.rooms.get.{roomID}",
+//       "chat.user.{userID}.request.rooms.get.{roomID}",
 //       func(ctx context.Context, p natsrouter.Params) (*Room, error) {
 //           return svc.GetRoom(ctx, p.Get("roomID"))
 //       },
@@ -171,7 +171,7 @@ type route struct {
 // recorded in the params map for extraction at request time.
 //
 // Example:
-//   parsePattern("chat.user.{account}.request.room.{roomID}.{siteID}.msg.history")
+//   parsePattern("chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history")
 //   → route{
 //       natsSubject: "chat.user.*.request.room.*.*.msg.history",
 //       params:      map[int]string{2: "userID", 5: "roomID", 6: "siteID"},
@@ -188,10 +188,10 @@ func (r route) extractParams(subject string) Params
 ## Pattern → Wildcard Conversion
 
 ```text
-Input:  "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history"
+Input:  "chat.user.{userID}.request.room.{roomID}.{siteID}.msg.history"
 Output: "chat.user.*.request.room.*.*.msg.history"
 
-Input:  "chat.user.{account}.request.rooms.create"
+Input:  "chat.user.{userID}.request.rooms.create"
 Output: "chat.user.*.request.rooms.create"
 
 Input:  "fanout.{siteID}.{roomID}"

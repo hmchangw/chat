@@ -29,7 +29,7 @@ inbox-worker
     |          - Unmarshal Payload as InviteMemberRequest
     |          - Create local Subscription doc in MongoDB
     |          - Publish SubscriptionUpdateEvent to
-    |            chat.user.{account}.event.subscription.update
+    |            chat.user.{userID}.event.subscription.update
     |      "room_sync":
     |          - Unmarshal Payload as Room
     |          - Upsert room metadata in local MongoDB

@@ -63,7 +63,7 @@
 - Modify: `pkg/model/event.go`
 - Modify: `pkg/model/model_test.go`
 
-- [ ] **Step 1: Update TestMessageJSON to expect Account field**
+- [ ] **Step 1: Update TestMessageJSON to expect Username field**
 
 In `pkg/model/model_test.go`, replace:
 
@@ -82,7 +82,7 @@ With:
 ```go
 func TestMessageJSON(t *testing.T) {
 	m := model.Message{
-		ID: "m1", RoomID: "r1", UserID: "u1", Account: "alice",
+		ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
 		Content:   "hello",
 		CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 	}
@@ -107,7 +107,7 @@ func TestSendMessageRequestJSON(t *testing.T) {
 func TestMessageEventJSON(t *testing.T) {
 	e := model.MessageEvent{
 		Message: model.Message{
-			ID: "m1", RoomID: "r1", UserID: "u1", Account: "alice",
+			ID: "m1", RoomID: "r1", UserID: "u1", Username: "alice",
 			Content:   "hello",
 			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 		},
@@ -133,7 +133,7 @@ With:
 ```go
 	msg := model.Message{
 		ID: "msg-1", RoomID: "room-1", UserID: "user-1",
-		Account: "alice", Content: "hello", CreatedAt: now,
+		Username: "alice", Content: "hello", CreatedAt: now,
 	}
 ```
 
@@ -145,7 +145,7 @@ make test SERVICE=pkg/model
 
 Expected: FAIL — `model.Message` has no field `Username`, `model.SendMessageRequest` has no field `ID`.
 
-- [ ] **Step 5: Update Message struct with Account and bson tags**
+- [ ] **Step 5: Update Message struct with Username and bson tags**
 
 In `pkg/model/message.go`, replace:
 
@@ -166,7 +166,7 @@ type Message struct {
 	ID        string    `json:"id"        bson:"_id"`
 	RoomID    string    `json:"roomId"    bson:"roomId"`
 	UserID    string    `json:"userId"    bson:"userId"`
-	Account  string    `json:"account"  bson:"account"`
+	Username  string    `json:"username"  bson:"username"`
 	Content   string    `json:"content"   bson:"content"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 }
@@ -233,7 +233,7 @@ make lint
 
 ```bash
 git add pkg/model/message.go pkg/model/event.go pkg/model/model_test.go
-git commit -m "feat: update domain models — add Account to Message, add ID to SendMessageRequest, remove redundant RoomID"
+git commit -m "feat: update domain models — add Username to Message, add ID to SendMessageRequest, remove redundant RoomID"
 ```
 
 ---
@@ -350,7 +350,7 @@ func TestParseUserRoomSiteSubject(t *testing.T) {
 	tests := []struct {
 		name         string
 		subj         string
-		wantAccount string
+		wantUsername string
 		wantRoomID   string
 		wantSiteID   string
 		wantOK       bool
@@ -365,10 +365,10 @@ func TestParseUserRoomSiteSubject(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			account, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(tt.subj)
-			if ok != tt.wantOK || account != tt.wantAccount || roomID != tt.wantRoomID || siteID != tt.wantSiteID {
+			username, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(tt.subj)
+			if ok != tt.wantOK || username != tt.wantUsername || roomID != tt.wantRoomID || siteID != tt.wantSiteID {
 				t.Errorf("ParseUserRoomSiteSubject(%q) = (%q, %q, %q, %v), want (%q, %q, %q, %v)",
-					tt.subj, account, roomID, siteID, ok, tt.wantUsername, tt.wantRoomID, tt.wantSiteID, tt.wantOK)
+					tt.subj, username, roomID, siteID, ok, tt.wantUsername, tt.wantRoomID, tt.wantSiteID, tt.wantOK)
 			}
 		})
 	}
@@ -382,9 +382,9 @@ Run: `make test SERVICE=pkg/subject` — Expected: FAIL
 In `pkg/subject/subject.go`, add after `ParseUserRoomSubject`:
 
 ```go
-// ParseUserRoomSiteSubject extracts account, roomID, and siteID from subjects
-// matching "chat.user.{account}.room.{roomID}.{siteID}.…" (at least 7 parts).
-func ParseUserRoomSiteSubject(subj string) (account, roomID, siteID string, ok bool) {
+// ParseUserRoomSiteSubject extracts username, roomID, and siteID from subjects
+// matching "chat.user.{username}.room.{roomID}.{siteID}.…" (at least 7 parts).
+func ParseUserRoomSiteSubject(subj string) (username, roomID, siteID string, ok bool) {
 	parts := strings.Split(subj, ".")
 	if len(parts) < 7 || parts[0] != "chat" || parts[1] != "user" || parts[3] != "room" {
 		return "", "", "", false
@@ -467,7 +467,7 @@ import (
 
 // Store defines persistence operations for the message gatekeeper.
 type Store interface {
-	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
+	GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error)
 }
 ```
 
@@ -506,14 +506,14 @@ func TestHandler_processMessage(t *testing.T) {
 	)
 
 	happySub := &model.Subscription{
-		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+		User:   model.SubscriptionUser{ID: "u1", Username: "alice"},
 		RoomID: "r1",
 		Role:   model.RoleMember,
 	}
 
 	tests := []struct {
 		name          string
-		account      string
+		username      string
 		roomID        string
 		siteID        string
 		payload       any
@@ -539,28 +539,28 @@ func TestHandler_processMessage(t *testing.T) {
 			wantPublished: true,
 		},
 		{
-			name: "invalid UUID format", account: "alice", roomID: "r1", siteID: siteID,
+			name: "invalid UUID format", username: "alice", roomID: "r1", siteID: siteID,
 			payload:       model.SendMessageRequest{ID: "not-a-uuid", Content: "hello", RequestID: "req-1"},
 			setupStore:    func(m *MockStore) {},
 			wantErr:       true,
 			wantErrSubstr: "invalid message ID",
 		},
 		{
-			name: "empty content", account: "alice", roomID: "r1", siteID: siteID,
+			name: "empty content", username: "alice", roomID: "r1", siteID: siteID,
 			payload:       model.SendMessageRequest{ID: validUUID, Content: "", RequestID: "req-1"},
 			setupStore:    func(m *MockStore) {},
 			wantErr:       true,
 			wantErrSubstr: "content is empty",
 		},
 		{
-			name: "content exceeding 20KB", account: "alice", roomID: "r1", siteID: siteID,
+			name: "content exceeding 20KB", username: "alice", roomID: "r1", siteID: siteID,
 			payload:       model.SendMessageRequest{ID: validUUID, Content: strings.Repeat("a", 20*1024+1), RequestID: "req-1"},
 			setupStore:    func(m *MockStore) {},
 			wantErr:       true,
 			wantErrSubstr: "content exceeds",
 		},
 		{
-			name: "user not in room", account: "alice", roomID: "r1", siteID: siteID,
+			name: "user not in room", username: "alice", roomID: "r1", siteID: siteID,
 			payload: model.SendMessageRequest{ID: validUUID, Content: "hello", RequestID: "req-1"},
 			setupStore: func(m *MockStore) {
 				m.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(nil, errors.New("subscription not found"))
@@ -568,7 +568,7 @@ func TestHandler_processMessage(t *testing.T) {
 			wantErr: true, wantInfraErr: true, wantErrSubstr: "not subscribed",
 		},
 		{
-			name: "store infra error", account: "alice", roomID: "r1", siteID: siteID,
+			name: "store infra error", username: "alice", roomID: "r1", siteID: siteID,
 			payload: model.SendMessageRequest{ID: validUUID, Content: "hello", RequestID: "req-1"},
 			setupStore: func(m *MockStore) {
 				m.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(nil, errors.New("connection refused"))
@@ -576,7 +576,7 @@ func TestHandler_processMessage(t *testing.T) {
 			wantErr: true, wantInfraErr: true,
 		},
 		{
-			name: "publish to MESSAGES_CANONICAL fails", account: "alice", roomID: "r1", siteID: siteID,
+			name: "publish to MESSAGES_CANONICAL fails", username: "alice", roomID: "r1", siteID: siteID,
 			payload: model.SendMessageRequest{ID: validUUID, Content: "hello", RequestID: "req-1"},
 			setupStore: func(m *MockStore) {
 				m.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(happySub, nil)
@@ -584,12 +584,12 @@ func TestHandler_processMessage(t *testing.T) {
 			publishErr: errors.New("nats publish failed"), wantErr: true, wantInfraErr: true,
 		},
 		{
-			name: "malformed JSON", account: "alice", roomID: "r1", siteID: siteID,
+			name: "malformed JSON", username: "alice", roomID: "r1", siteID: siteID,
 			rawPayload: []byte("{invalid json"), setupStore: func(m *MockStore) {},
 			wantErr: true, wantErrSubstr: "unmarshal",
 		},
 		{
-			name: "siteID mismatch", account: "alice", roomID: "r1", siteID: "site-other",
+			name: "siteID mismatch", username: "alice", roomID: "r1", siteID: "site-other",
 			payload:       model.SendMessageRequest{ID: validUUID, Content: "hello", RequestID: "req-1"},
 			setupStore:    func(m *MockStore) {},
 			wantErr:       true,
@@ -628,7 +628,7 @@ func TestHandler_processMessage(t *testing.T) {
 				data, _ = json.Marshal(tc.payload)
 			}
 
-			replyData, err := h.processMessage(context.Background(), tc.account, tc.roomID, tc.siteID, data)
+			replyData, err := h.processMessage(context.Background(), tc.username, tc.roomID, tc.siteID, data)
 
 			if tc.wantErr {
 				require.Error(t, err)
@@ -653,7 +653,7 @@ func TestHandler_processMessage(t *testing.T) {
 			assert.Equal(t, validUUID, msg.ID)
 			assert.Equal(t, tc.roomID, msg.RoomID)
 			assert.Equal(t, "u1", msg.UserID)
-			assert.Equal(t, "alice", msg.UserAccount)
+			assert.Equal(t, "alice", msg.Username)
 			assert.Equal(t, "hello world", msg.Content)
 			assert.False(t, msg.CreatedAt.IsZero())
 
@@ -720,7 +720,7 @@ func NewHandler(store Store, siteID string, publish publishFunc, reply func(stri
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
 func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
-	account, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(msg.Subject())
+	username, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(msg.Subject())
 	if !ok {
 		slog.Warn("invalid subject", "subject", msg.Subject())
 		if err := msg.Ack(); err != nil {
@@ -730,9 +730,9 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	}
 
 	ctx := context.Background()
-	replyData, err := h.processMessage(ctx, account, roomID, siteID, msg.Data())
+	replyData, err := h.processMessage(ctx, username, roomID, siteID, msg.Data())
 	if err != nil {
-		slog.Error("process message failed", "error", err, "account", account, "roomID", roomID)
+		slog.Error("process message failed", "error", err, "username", username, "roomID", roomID)
 
 		var ie *infraError
 		if errors.As(err, &ie) {
@@ -743,7 +743,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 		}
 
 		if reqID := extractRequestID(msg.Data()); reqID != "" {
-			respSubj := subject.UserResponse(account, reqID)
+			respSubj := subject.UserResponse(username, reqID)
 			errData := natsutil.MarshalError(err.Error())
 			if pubErr := h.reply(respSubj, errData); pubErr != nil {
 				slog.Error("reply error publish failed", "error", pubErr)
@@ -756,7 +756,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	}
 
 	if reqID := extractRequestID(msg.Data()); reqID != "" {
-		respSubj := subject.UserResponse(account, reqID)
+		respSubj := subject.UserResponse(username, reqID)
 		if pubErr := h.reply(respSubj, replyData); pubErr != nil {
 			slog.Error("reply publish failed", "error", pubErr)
 		}
@@ -766,7 +766,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 	}
 }
 
-func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID string, data []byte) ([]byte, error) {
+func (h *Handler) processMessage(ctx context.Context, username, roomID, siteID string, data []byte) ([]byte, error) {
 	if siteID != h.siteID {
 		return nil, fmt.Errorf("site ID mismatch: got %s, want %s", siteID, h.siteID)
 	}
@@ -787,7 +787,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		return nil, fmt.Errorf("content exceeds %d bytes", maxContentBytes)
 	}
 
-	sub, err := h.store.GetSubscription(ctx, account, roomID)
+	sub, err := h.store.GetSubscription(ctx, username, roomID)
 	if err != nil {
 		return nil, &infraError{err: fmt.Errorf("not subscribed: %w", err)}
 	}
@@ -796,7 +796,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		ID:        req.ID,
 		RoomID:    roomID,
 		UserID:    sub.User.ID,
-		Account:  sub.User.Account,
+		Username:  sub.User.Username,
 		Content:   req.Content,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -851,11 +851,11 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{subscriptions: db.Collection("subscriptions")}
 }
 
-func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
+func (s *MongoStore) GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error) {
 	var sub model.Subscription
-	filter := bson.M{"u.username": account, "roomId": roomID}
+	filter := bson.M{"u.username": username, "roomId": roomID}
 	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
-		return nil, fmt.Errorf("find subscription for user %s in room %s: %w", account, roomID, err)
+		return nil, fmt.Errorf("find subscription for user %s in room %s: %w", username, roomID, err)
 	}
 	return &sub, nil
 }
@@ -1130,7 +1130,7 @@ func TestHandler_processMessage(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	validEvt := model.MessageEvent{
 		Message: model.Message{
-			ID: "msg-1", RoomID: "r1", UserID: "u1", Account: "alice",
+			ID: "msg-1", RoomID: "r1", UserID: "u1", Username: "alice",
 			Content: "hello", CreatedAt: now,
 		},
 		SiteID: "site-a",
@@ -1276,8 +1276,8 @@ func NewCassandraStore(session *gocql.Session) *CassandraStore {
 
 func (s *CassandraStore) SaveMessage(ctx context.Context, msg model.Message) error {
 	return s.session.Query(
-		`INSERT INTO messages (room_id, created_at, id, user_id, account, content) VALUES (?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.CreatedAt, msg.ID, msg.UserID, msg.UserAccount, msg.Content,
+		`INSERT INTO messages (room_id, created_at, id, user_id, username, content) VALUES (?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, msg.CreatedAt, msg.ID, msg.UserID, msg.Username, msg.Content,
 	).WithContext(ctx).Exec()
 }
 ```

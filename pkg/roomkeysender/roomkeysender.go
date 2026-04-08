@@ -23,7 +23,7 @@ func NewSender(pub Publisher) *Sender {
 	return &Sender{pub: pub}
 }
 
-// Send publishes evt to the room key update subject for account.
+// Send publishes evt to the room key update subject for the given user account.
 func (s *Sender) Send(account string, evt *model.RoomKeyEvent) error {
 	data, err := json.Marshal(evt)
 	if err != nil {

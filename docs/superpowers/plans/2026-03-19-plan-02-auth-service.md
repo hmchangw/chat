@@ -38,16 +38,16 @@ import (
 
 // mockVerifier implements TokenVerifier for testing.
 type mockVerifier struct {
-	// account is returned on success; err is returned on failure.
-	account string
+	// username is returned on success; err is returned on failure.
+	username string
 	err      error
 }
 
-func (m *mockVerifier) Verify(token string) (account string, err error) {
+func (m *mockVerifier) Verify(token string) (username string, err error) {
 	if m.err != nil {
 		return "", m.err
 	}
-	return m.account, nil
+	return m.username, nil
 }
 
 // helper: create a fresh account signing key pair for tests.
@@ -178,15 +178,15 @@ func TestHandleAuth_PermissionsPerUser(t *testing.T) {
 	signingKP := mustAccountKP(t)
 
 	users := []string{"alice", "bob", "charlie"}
-	for _, account := range users {
-		t.Run(account, func(t *testing.T) {
-			verifier := &mockVerifier{username: account}
+	for _, username := range users {
+		t.Run(username, func(t *testing.T) {
+			verifier := &mockVerifier{username: username}
 			handler := NewAuthHandler(verifier, signingKP)
 
 			userNKey := mustUserNKey(t)
 			req := &jwt.AuthorizationRequest{}
 			req.UserNkey = userNKey
-			req.ConnectOptions.Token = "token-for-" + account
+			req.ConnectOptions.Token = "token-for-" + username
 
 			encoded, err := handler.Handle(req)
 			if err != nil {
@@ -198,12 +198,12 @@ func TestHandleAuth_PermissionsPerUser(t *testing.T) {
 				t.Fatalf("decode: %v", err)
 			}
 
-			wantPub := fmt.Sprintf("chat.user.%s.>", account)
+			wantPub := fmt.Sprintf("chat.user.%s.>", username)
 			if !containsSubject(claims.Pub.Allow, wantPub) {
 				t.Errorf("publish allow = %v, want %q", claims.Pub.Allow, wantPub)
 			}
 
-			wantSub := fmt.Sprintf("chat.user.%s.>", account)
+			wantSub := fmt.Sprintf("chat.user.%s.>", username)
 			if !containsSubject(claims.Sub.Allow, wantSub) {
 				t.Errorf("subscribe allow = %v, want %q", claims.Sub.Allow, wantSub)
 			}
@@ -241,10 +241,10 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// TokenVerifier verifies an SSO token and returns the account.
+// TokenVerifier verifies an SSO token and returns the username.
 // Implementations handle the actual SSO/OAuth verification logic.
 type TokenVerifier interface {
-	Verify(token string) (account string, err error)
+	Verify(token string) (username string, err error)
 }
 
 // AuthHandler processes NATS auth_callout requests.
@@ -271,7 +271,7 @@ func (h *AuthHandler) Handle(req *jwt.AuthorizationRequest) (string, error) {
 		return "", errors.New("missing auth token")
 	}
 
-	account, err := h.verifier.Verify(token)
+	username, err := h.verifier.Verify(token)
 	if err != nil {
 		return "", err
 	}
@@ -281,11 +281,11 @@ func (h *AuthHandler) Handle(req *jwt.AuthorizationRequest) (string, error) {
 	uc.Expires = time.Now().Add(2 * time.Hour).Unix()
 
 	// Publish permissions: user's own namespace + inbox for request-reply.
-	uc.Pub.Allow.Add(fmt.Sprintf("chat.user.%s.>", account))
+	uc.Pub.Allow.Add(fmt.Sprintf("chat.user.%s.>", username))
 	uc.Pub.Allow.Add("_INBOX.>")
 
 	// Subscribe permissions: user's own namespace, all rooms, and inbox.
-	uc.Sub.Allow.Add(fmt.Sprintf("chat.user.%s.>", account))
+	uc.Sub.Allow.Add(fmt.Sprintf("chat.user.%s.>", username))
 	uc.Sub.Allow.Add("chat.room.>")
 	uc.Sub.Allow.Add("_INBOX.>")
 
@@ -421,7 +421,7 @@ type SSOTokenVerifier struct{}
 func (v *SSOTokenVerifier) Verify(token string) (string, error) {
 	// TODO: Implement actual SSO token verification.
 	// This should validate the token against the SSO provider and
-	// return the authenticated account.
+	// return the authenticated username.
 	return "", fmt.Errorf("SSO token verification not implemented")
 }
 

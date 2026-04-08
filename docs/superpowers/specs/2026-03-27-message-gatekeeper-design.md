@@ -20,7 +20,7 @@ Client
   │
   ▼ publish SendMessageRequest
 MESSAGES_{siteID} stream
-  subject: chat.user.{account}.room.{roomID}.{siteID}.msg.send
+  subject: chat.user.{username}.room.{roomID}.{siteID}.msg.send
   │
   ▼ consume
 message-gatekeeper
@@ -103,7 +103,7 @@ type Message struct {
     ID        string    `json:"id"        bson:"_id"`
     RoomID    string    `json:"roomId"    bson:"roomId"`
     UserID    string    `json:"userId"    bson:"userId"`
-    Account  string    `json:"account"  bson:"account"`
+    Username  string    `json:"username"  bson:"username"`
     Content   string    `json:"content"   bson:"content"`
     CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 }
@@ -168,7 +168,7 @@ message-gatekeeper/
 
 ```go
 type Store interface {
-    GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
+    GetSubscription(ctx context.Context, username, roomID string) (*model.Subscription, error)
 }
 ```
 
@@ -194,10 +194,10 @@ type Handler struct {
 2. Unmarshal payload to `SendMessageRequest`
 3. **Validate ID**: `uuid.Parse(req.ID)` — must be a valid UUID
 4. **Validate Content**: non-empty and `len([]byte(req.Content)) <= 20480` (20KB)
-5. **Validate subscription**: `store.GetSubscription(ctx, account, roomID)` — confirms membership, retrieves `UserID`
-6. **Build Message**: `{ID: req.ID, RoomID: roomID, UserID: sub.User.ID, Account: account, Content: req.Content, CreatedAt: time.Now()}`
+5. **Validate subscription**: `store.GetSubscription(ctx, username, roomID)` — confirms membership, retrieves `UserID`
+6. **Build Message**: `{ID: req.ID, RoomID: roomID, UserID: sub.User.ID, Username: username, Content: req.Content, CreatedAt: time.Now()}`
 7. **Publish to MESSAGES_CANONICAL**: subject `chat.msg.canonical.{siteID}.created`, payload `MessageEvent{Message, SiteID}`, header `Nats-Msg-Id: message.ID`
-8. **Reply success**: `natsutil.ReplyJSON(msg, message)` to `chat.user.{account}.response.{requestID}`
+8. **Reply success**: `natsutil.ReplyJSON(msg, message)` to `chat.user.{username}.response.{requestID}`
 9. On any validation failure: `natsutil.ReplyError(msg, "<description>")`, ack the JetStream message (validation failures must not redeliver)
 
 ### Consumer Pattern
