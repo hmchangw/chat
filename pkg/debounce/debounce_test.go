@@ -409,3 +409,60 @@ func TestDebouncer_Close_waitsForInFlight(t *testing.T) {
 		t.Fatal("timed out waiting for Close to return")
 	}
 }
+
+func TestDebouncer_processEntry_removeError(t *testing.T) {
+	fa := newFakeAdapter()
+	fa.store["room-1"] = 100
+	fa.removeErr = errors.New("remove failed")
+	d := New(fa, func(_ context.Context, _ string) error {
+		return nil
+	}, testConfig())
+
+	d.processEntry(context.Background(), ClaimedEntry{Key: "room-1", ClaimedScore: 100})
+
+	// Callback succeeded, Remove was attempted but failed — entry still in store.
+	store := fa.getStore()
+	assert.Contains(t, store, "room-1", "entry should remain when Remove fails")
+}
+
+func TestDebouncer_processEntry_requeueError(t *testing.T) {
+	fa := newFakeAdapter()
+	fa.requeueErr = errors.New("requeue failed")
+	d := New(fa, func(_ context.Context, _ string) error {
+		return errors.New("permanent error")
+	}, testConfig())
+
+	d.processEntry(context.Background(), ClaimedEntry{Key: "room-1", ClaimedScore: 100})
+
+	// All retries exhausted, Requeue attempted but failed — entry not in store.
+	store := fa.getStore()
+	assert.NotContains(t, store, "room-1", "entry should not be in store when Requeue fails")
+}
+
+func TestDebouncer_Close_timesOut(t *testing.T) {
+	fa := newFakeAdapter()
+	d := New(fa, func(_ context.Context, _ string) error {
+		time.Sleep(10 * time.Second) // very long callback
+		return nil
+	}, Config{
+		Timeout:           time.Second,
+		PollInterval:      time.Second,
+		ProcessingTimeout: 50 * time.Millisecond, // short timeout for test
+		MaxRetries:        0,
+		InitialBackoff:    time.Millisecond,
+	})
+
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.processEntry(context.Background(), ClaimedEntry{Key: "room-1", ClaimedScore: 100})
+	}()
+
+	// Give the goroutine a moment to start.
+	time.Sleep(10 * time.Millisecond)
+
+	start := time.Now()
+	d.Close()
+	elapsed := time.Since(start)
+	assert.Less(t, elapsed, time.Second, "Close should return after ProcessingTimeout, not wait for callback")
+}
