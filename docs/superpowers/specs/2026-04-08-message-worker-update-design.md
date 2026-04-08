@@ -250,7 +250,7 @@ New fields: `MongoURI`, `MongoDB` — same env var names and defaults as broadca
 
 ## Incremental Enrichment Roadmap
 
-Fields not populated in this phase, organized by readiness.
+Fields not populated in this phase, organized by readiness. The `CassandraMessage` struct already has placeholder nil fields for all of these — once data becomes available, the change is: assign the value in the handler, the store writes it automatically.
 
 ### Ready to Add (MongoDB connection already wired in)
 
@@ -260,20 +260,31 @@ These can be added incrementally with minimal effort — the MongoDB connection,
 
 ### Requires Upstream Changes (MessageEvent enrichment needed)
 
-These fields have no data source in the current `MessageEvent`. Each requires changes to the upstream pipeline (message-gatekeeper or client) before this worker can persist them.
+These fields have no data source in the current `MessageEvent`. Each requires changes to the upstream pipeline (message-gatekeeper or client) before this worker can persist them. The pattern for each is the same:
 
-- `target_user` — Participant UDT for DM target
-- `file` — File UDT (no file upload flow exists yet)
-- `card` — Card UDT (no card flow exists yet)
-- `card_action` — CardAction UDT
-- `attachments` — Binary attachment list
-- `quoted_parent_message` — QuotedParentMessage UDT (no quoting flow exists yet)
-- `visible_to` — Visibility restriction (no visibility rules implemented yet)
-- `type` — Message type (system message, etc.)
-- `sys_msg_data` — System message payload
-- `tshow` — Thread "also send to channel" flag
+1. Add field to `SendMessageRequest` (if client-provided) or resolve in gatekeeper/worker
+2. Add field to `model.Message` in `pkg/model/message.go`
+3. It flows through `MessageEvent` on MESSAGES_CANONICAL automatically
+4. In message-worker handler, map the new field to `CassandraMessage` (remove the nil, assign the value)
+5. Store writes it — no store-layer changes needed since the CQL INSERT already includes the column
 
-### Not Applicable on Creation
+| Column | Upstream change needed |
+|---|---|
+| `file` | Client sends file metadata in `SendMessageRequest` → gatekeeper validates → add `File` to `Message` model |
+| `card` | Client sends card template + data → same flow as file |
+| `card_action` | Client sends card action payload → same flow |
+| `attachments` | Client sends attachment binaries/references → same flow |
+| `quoted_parent_message` | Client sends parent message ID → gatekeeper or message-worker looks up the parent from `messages_by_id` in Cassandra, builds `QuotedParentMessage` UDT |
+| `target_user` | Gatekeeper or message-worker resolves from room subscriptions for DMs |
+| `visible_to` | Client or gatekeeper sets visibility rule |
+| `type` | Client or gatekeeper tags message type (e.g., `"system"`) |
+| `sys_msg_data` | System generates this payload for system messages |
+| `tshow` | Client sets "also send to channel" flag on thread replies in `SendMessageRequest` |
 
-- `reactions` — Always empty for new messages; populated later via a separate reaction flow
-- `edited_at` — Set on message edit, not creation
+### Handled by Separate Flows (not part of message creation)
+
+These columns are written as defaults on creation and later **updated** by dedicated flows via separate MESSAGES_CANONICAL subjects (`.edited`, `.deleted`, etc.) or independent services:
+
+- `reactions` — Always empty on creation. A separate "add/remove reaction" flow will UPDATE the existing row in Cassandra
+- `edited_at` — Nil on creation. A future "edit message" flow (`.edited` subject on MESSAGES_CANONICAL) will UPDATE the row with the edit timestamp and new content
+- `deleted` — `false` on creation. A future "delete message" flow (`.deleted` subject) will UPDATE the row
