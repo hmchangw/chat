@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -132,7 +133,7 @@ func buildRoomEvent(room *model.Room, clientMsg *model.ClientMessage) model.Room
 	return model.RoomEvent{
 		Type:      model.RoomEventNewMessage,
 		RoomID:    room.ID,
-		Timestamp: clientMsg.CreatedAt,
+		Timestamp: time.Now().UTC().UnixMilli(),
 		RoomName:  room.Name,
 		RoomType:  room.Type,
 		SiteID:    room.SiteID,

@@ -3,8 +3,9 @@ package model
 import "time"
 
 type MessageEvent struct {
-	Message Message `json:"message"`
-	SiteID  string  `json:"siteId"`
+	Message   Message `json:"message"`
+	SiteID    string  `json:"siteId"`
+	Timestamp int64   `json:"timestamp" bson:"timestamp"`
 }
 
 type RoomMetadataUpdateEvent struct {
@@ -13,12 +14,14 @@ type RoomMetadataUpdateEvent struct {
 	UserCount     int       `json:"userCount"`
 	LastMessageAt time.Time `json:"lastMessageAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
+	Timestamp     int64     `json:"timestamp" bson:"timestamp"`
 }
 
 type SubscriptionUpdateEvent struct {
 	UserID       string       `json:"userId"`
 	Subscription Subscription `json:"subscription"`
 	Action       string       `json:"action"` // "added" | "removed"
+	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
 }
 
 type InviteMemberRequest struct {
@@ -27,12 +30,14 @@ type InviteMemberRequest struct {
 	InviteeAccount string `json:"inviteeAccount"`
 	RoomID         string `json:"roomId"`
 	SiteID         string `json:"siteId"`
+	Timestamp      int64  `json:"timestamp" bson:"timestamp"`
 }
 
 type NotificationEvent struct {
-	Type    string  `json:"type"` // "new_message"
-	RoomID  string  `json:"roomId"`
-	Message Message `json:"message"`
+	Type      string  `json:"type"` // "new_message"
+	RoomID    string  `json:"roomId"`
+	Message   Message `json:"message"`
+	Timestamp int64   `json:"timestamp" bson:"timestamp"`
 }
 
 type OutboxEvent struct {
@@ -40,6 +45,7 @@ type OutboxEvent struct {
 	SiteID     string `json:"siteId"`
 	DestSiteID string `json:"destSiteId"`
 	Payload    []byte `json:"payload"` // JSON-encoded inner event
+	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
 }
 
 // Participant represents a user with display name info for client rendering.
@@ -72,7 +78,7 @@ const (
 type RoomEvent struct {
 	Type      RoomEventType `json:"type"`
 	RoomID    string        `json:"roomId"`
-	Timestamp time.Time     `json:"timestamp"`
+	Timestamp int64         `json:"timestamp" bson:"timestamp"`
 
 	RoomName  string    `json:"roomName"`
 	RoomType  RoomType  `json:"roomType"`
@@ -94,4 +100,5 @@ type RoomKeyEvent struct {
 	Version    int    `json:"version"`
 	PublicKey  []byte `json:"publicKey"`
 	PrivateKey []byte `json:"privateKey"`
+	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
 }

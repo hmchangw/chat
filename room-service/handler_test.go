@@ -69,6 +69,15 @@ func TestHandler_InviteOwner_Success(t *testing.T) {
 	if jsPublished == nil {
 		t.Error("expected event published to JetStream")
 	}
+
+	// Verify the published InviteMemberRequest has a Timestamp set
+	var publishedReq model.InviteMemberRequest
+	if err := json.Unmarshal(jsPublished, &publishedReq); err != nil {
+		t.Fatalf("unmarshal published request: %v", err)
+	}
+	if publishedReq.Timestamp <= 0 {
+		t.Error("expected Timestamp > 0 on published InviteMemberRequest")
+	}
 }
 
 func TestHandler_InviteMember_Rejected(t *testing.T) {

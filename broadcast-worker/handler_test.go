@@ -150,6 +150,7 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 			assert.Equal(t, "site-a", evt.SiteID)
 			assert.Equal(t, 5, evt.UserCount)
 			assert.Equal(t, "msg-1", evt.LastMsgID)
+			assert.Greater(t, evt.Timestamp, int64(0))
 			assert.Equal(t, tc.wantMentionAll, evt.MentionAll)
 
 			require.NotNil(t, evt.Message, "group room events must carry Message payload")
@@ -251,6 +252,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 
 			aliceEvt := evtBySubject[subject.UserRoomEvent("alice")]
 			assert.Equal(t, model.RoomEventNewMessage, aliceEvt.Type)
+			assert.Greater(t, aliceEvt.Timestamp, int64(0))
 			require.NotNil(t, aliceEvt.Message, "DM events must carry Message payload")
 			assert.Equal(t, "msg-1", aliceEvt.Message.ID)
 			require.NotNil(t, aliceEvt.Message.Sender)
@@ -260,6 +262,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 
 			bobEvt := evtBySubject[subject.UserRoomEvent("bob")]
 			require.NotNil(t, bobEvt.Message)
+			assert.Greater(t, bobEvt.Timestamp, int64(0))
 			assert.Equal(t, "msg-1", bobEvt.Message.ID)
 			require.NotNil(t, bobEvt.Message.Sender)
 			assert.Equal(t, tc.bobHasMention, bobEvt.HasMention)

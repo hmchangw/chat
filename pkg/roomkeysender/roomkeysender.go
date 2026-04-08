@@ -3,6 +3,7 @@ package roomkeysender
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -25,6 +26,7 @@ func NewSender(pub Publisher) *Sender {
 
 // Send publishes evt to the room key update subject for the given user account.
 func (s *Sender) Send(account string, evt *model.RoomKeyEvent) error {
+	evt.Timestamp = time.Now().UTC().UnixMilli()
 	data, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal room key event: %w", err)

@@ -196,6 +196,11 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Use durable consumers named after the service
 - Use `js.CreateOrUpdateStream` at startup — it's idempotent
 
+### Event Timestamps
+- Every NATS event struct in `pkg/model` must include a `Timestamp int64 \`json:"timestamp" bson:"timestamp"\`` field
+- Set the timestamp at the publish site using `time.Now().UTC().UnixMilli()`
+- This is the event-level timestamp (when the event was published), distinct from any domain-level timestamps in embedded structs (e.g., `Message.CreatedAt`)
+
 ### NATS Subject Naming
 - Dot-delimited hierarchical subjects — use `pkg/subject` builders, never raw `fmt.Sprintf`
 - User-scoped: `chat.user.{account}.…`
