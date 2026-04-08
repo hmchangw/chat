@@ -41,7 +41,7 @@ type recordingPublisher struct {
 	subjects []string
 }
 
-func (p *recordingPublisher) Publish(subj string, data []byte) error {
+func (p *recordingPublisher) Publish(_ context.Context, subj string, _ []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.subjects = append(p.subjects, subj)
@@ -76,7 +76,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		t.Fatalf("subscription not found: %v", err)
 	}
 	if sub.Role != model.RoleMember {
-		t.Errorf("Role = %q, want member", sub.Role)
+		t.Errorf("subscription Role = %v, want member", sub.Role)
 	}
 
 	// Verify notification was published
