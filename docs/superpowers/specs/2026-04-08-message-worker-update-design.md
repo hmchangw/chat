@@ -182,7 +182,32 @@ type Store interface {
 
 `CassandraMessage` is a struct internal to `message-worker` that contains all fields needed across all three tables. Each `Save*` method selects the appropriate columns for its table. Uses the UDT types from `history-service/internal/models/types.go` (Participant, File, Card, CardAction).
 
-**Write semantics:** The handler calls all applicable `Save*` methods. The JetStream message is ACK'd only when all writes succeed. If any write fails, the message is NAK'd with backoff — on retry, all writes are re-attempted (Cassandra INSERTs are idempotent).
+Store methods are kept separate (not collapsed into a single `PersistMessage`) so that unit tests can mock each table write independently — test thread table skipped for non-thread messages, test one table failing while others succeed, etc.
+
+### Handler persistence orchestration
+
+The handler delegates to a private `persistAll` method that calls all applicable store methods and contains the conditional logic (e.g., thread table only when `ThreadParentID` is set):
+
+```go
+func (h *Handler) persistAll(ctx context.Context, msg CassandraMessage) error {
+    if err := h.store.SaveMessage(ctx, msg); err != nil {
+        return fmt.Errorf("save message_by_room: %w", err)
+    }
+    if err := h.store.SaveMessageByID(ctx, msg); err != nil {
+        return fmt.Errorf("save message_by_id: %w", err)
+    }
+    if msg.ThreadParentID != "" {
+        if err := h.store.SaveThreadMessage(ctx, msg); err != nil {
+            return fmt.Errorf("save thread_message: %w", err)
+        }
+    }
+    return nil
+}
+```
+
+**Adding a new table:** Add a `Save*` method to the Store interface, implement the CQL INSERT, add one call in `persistAll`. Handler's public methods and the ACK/NAK logic never change.
+
+**Write semantics:** The JetStream message is ACK'd only when `persistAll` succeeds (all writes complete). If any write fails, the message is NAK'd with backoff — on retry, all writes are re-attempted (Cassandra INSERTs are idempotent).
 
 ### MetadataStore (MongoDB operations)
 
