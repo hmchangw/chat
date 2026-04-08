@@ -101,15 +101,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				parentTS := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
-				req := model.SendMessageRequest{
-					ID:                           validID,
-					Content:                      validContent,
-					ThreadParentMessageID:        "parent-msg-uuid",
-					ThreadParentMessageCreatedAt: &parentTS,
-				}
-				data, _ := json.Marshal(req)
-				return data
+				return []byte(fmt.Sprintf(
+					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":"2026-01-01T10:00:00Z"}`,
+					validID, validContent,
+				))
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().
