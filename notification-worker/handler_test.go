@@ -104,6 +104,9 @@ func TestHandleMessage_FanOutSkipsSender(t *testing.T) {
 		if notif.Message.ID != "m1" {
 			t.Errorf("notification message ID = %q, want %q", notif.Message.ID, "m1")
 		}
+		if notif.Timestamp <= 0 {
+			t.Errorf("expected Timestamp > 0 on NotificationEvent")
+		}
 	}
 
 	if !subjects["chat.user.account-bob.notification"] {

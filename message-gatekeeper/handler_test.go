@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
@@ -92,6 +93,11 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				assert.NotEmpty(t, msg.ID)
 				assert.Len(t, published, 1)
 				assert.Equal(t, subject.MsgCanonicalCreated(validSiteID), published[0].subject)
+				// Verify MessageEvent has Timestamp set
+				var evt model.MessageEvent
+				err = json.Unmarshal(published[0].data, &evt)
+				require.NoError(t, err)
+				assert.Greater(t, evt.Timestamp, int64(0))
 			},
 		},
 		{
@@ -100,13 +106,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{
-					ID:                    validID,
-					Content:               validContent,
-					ThreadParentMessageID: "parent-msg-uuid",
-				}
-				data, _ := json.Marshal(req)
-				return data
+				return []byte(fmt.Sprintf(
+					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":"2026-01-01T10:00:00Z"}`,
+					validID, validContent,
+				))
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().
@@ -119,16 +122,43 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, data []byte, published []publishedMsg) {
+				parentTS := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 				require.NotNil(t, data)
 				var msg model.Message
 				require.NoError(t, json.Unmarshal(data, &msg))
 				assert.Equal(t, "parent-msg-uuid", msg.ThreadParentMessageID)
+				require.NotNil(t, msg.ThreadParentMessageCreatedAt)
+				assert.Equal(t, parentTS, msg.ThreadParentMessageCreatedAt.UTC())
 
 				require.Len(t, published, 1)
 				var evt model.MessageEvent
 				require.NoError(t, json.Unmarshal(published[0].data, &evt))
 				assert.Equal(t, "parent-msg-uuid", evt.Message.ThreadParentMessageID)
+				require.NotNil(t, evt.Message.ThreadParentMessageCreatedAt)
+				assert.Equal(t, parentTS, evt.Message.ThreadParentMessageCreatedAt.UTC())
+				assert.Greater(t, evt.Timestamp, int64(0))
 			},
+		},
+		{
+			name:    "thread parent ID without timestamp",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{
+					ID:                    validID,
+					Content:               validContent,
+					ThreadParentMessageID: "parent-msg-uuid",
+				}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				return makePublishFunc(nil, nil), nil
+			},
+			wantErr:   true,
+			wantInfra: false,
 		},
 		{
 			name:    "invalid UUID",

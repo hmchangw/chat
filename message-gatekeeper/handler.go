@@ -134,6 +134,11 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		return nil, fmt.Errorf("content exceeds maximum size of %d bytes", maxContentBytes)
 	}
 
+	// Validate thread parent fields are paired
+	if req.ThreadParentMessageID != "" && req.ThreadParentMessageCreatedAt == nil {
+		return nil, fmt.Errorf("validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set")
+	}
+
 	// Verify subscription
 	sub, err := h.store.GetSubscription(ctx, account, roomID)
 	if err != nil {
@@ -146,17 +151,18 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	// Build Message
 	now := time.Now().UTC()
 	msg := model.Message{
-		ID:                    req.ID,
-		RoomID:                roomID,
-		UserID:                sub.User.ID,
-		UserAccount:           sub.User.Account,
-		Content:               req.Content,
-		CreatedAt:             now,
-		ThreadParentMessageID: req.ThreadParentMessageID,
+		ID:                           req.ID,
+		RoomID:                       roomID,
+		UserID:                       sub.User.ID,
+		UserAccount:                  sub.User.Account,
+		Content:                      req.Content,
+		CreatedAt:                    now,
+		ThreadParentMessageID:        req.ThreadParentMessageID,
+		ThreadParentMessageCreatedAt: req.ThreadParentMessageCreatedAt,
 	}
 
 	// Publish MessageEvent to MESSAGES_CANONICAL
-	evt := model.MessageEvent{Message: msg, SiteID: siteID}
+	evt := model.MessageEvent{Message: msg, SiteID: siteID, Timestamp: now.UnixMilli()}
 	evtData, err := json.Marshal(evt)
 	if err != nil {
 		return nil, &infraError{cause: fmt.Errorf("marshal message event: %w", err)}

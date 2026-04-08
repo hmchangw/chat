@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -44,9 +45,10 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 
 	notif := model.NotificationEvent{
-		Type:    "new_message",
-		RoomID:  evt.Message.RoomID,
-		Message: evt.Message,
+		Type:      "new_message",
+		RoomID:    evt.Message.RoomID,
+		Message:   evt.Message,
+		Timestamp: time.Now().UTC().UnixMilli(),
 	}
 
 	notifData, err := natsutil.MarshalResponse(notif)

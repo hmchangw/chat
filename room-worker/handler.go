@@ -66,6 +66,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 			SiteID:     h.siteID,
 			DestSiteID: req.SiteID,
 			Payload:    data,
+			Timestamp:  now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
 		outboxSubj := subject.Outbox(h.siteID, req.SiteID, "member_added")
@@ -75,7 +76,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 	}
 
 	// Notify invitee: subscription update
-	subEvt := model.SubscriptionUpdateEvent{UserID: req.InviteeID, Subscription: sub, Action: "added"}
+	subEvt := model.SubscriptionUpdateEvent{UserID: req.InviteeID, Subscription: sub, Action: "added", Timestamp: now.UnixMilli()}
 	subEvtData, _ := json.Marshal(subEvt)
 	if err := h.publish(ctx, subject.SubscriptionUpdate(req.InviteeAccount), subEvtData); err != nil {
 		slog.Error("subscription update publish failed", "error", err)
@@ -89,6 +90,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 			Name:      room.Name,
 			UserCount: room.UserCount,
 			UpdatedAt: now,
+			Timestamp: now.UnixMilli(),
 		}
 		metaData, _ := json.Marshal(metaEvt)
 

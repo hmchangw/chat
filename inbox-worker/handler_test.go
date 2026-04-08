@@ -165,6 +165,9 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	if updateEvt.Subscription.RoomID != "room-1" {
 		t.Errorf("update event subscription RoomID = %q, want %q", updateEvt.Subscription.RoomID, "room-1")
 	}
+	if updateEvt.Timestamp <= 0 {
+		t.Error("expected Timestamp > 0 on SubscriptionUpdateEvent")
+	}
 }
 
 func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {

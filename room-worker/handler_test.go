@@ -74,6 +74,27 @@ func TestHandler_ProcessInvite(t *testing.T) {
 	if !subjectSet["chat.user.bob.event.room.metadata.update"] {
 		t.Errorf("expected room metadata published to chat.user.bob.event.room.metadata.update, subjects: %v", subjectSet)
 	}
+
+	// Verify all published events have Timestamp set to a non-zero value
+	for _, p := range published {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(p.data, &raw); err != nil {
+			t.Fatalf("unmarshal published data: %v", err)
+		}
+		tsRaw, ok := raw["timestamp"]
+		if !ok {
+			t.Errorf("published event to %s missing timestamp field", p.subj)
+			continue
+		}
+		var ts int64
+		if err := json.Unmarshal(tsRaw, &ts); err != nil {
+			t.Errorf("published event to %s has non-numeric timestamp: %v", p.subj, err)
+			continue
+		}
+		if ts == 0 {
+			t.Errorf("published event to %s has zero timestamp, expected non-zero", p.subj)
+		}
+	}
 }
 
 type publishedMsg struct {
