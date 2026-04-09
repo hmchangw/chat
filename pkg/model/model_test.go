@@ -2,6 +2,7 @@ package model_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestMessageJSON(t *testing.T) {
 		m := model.Message{
 			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
 			Content:               "hello",
-			CreatedAt:             time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			CreatedAt:             time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 			ThreadParentMessageID: "parent-msg-uuid",
 		}
 		roundTrip(t, &m, &model.Message{})
@@ -45,7 +46,7 @@ func TestMessageJSON(t *testing.T) {
 		m := model.Message{
 			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
 			Content:   "hello",
-			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 		}
 		data, err := json.Marshal(&m)
 		require.NoError(t, err)
@@ -59,7 +60,7 @@ func TestMessageJSON(t *testing.T) {
 		m := model.Message{
 			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
 			Content:   "hello",
-			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 		}
 		data, err := json.Marshal(&m)
 		require.NoError(t, err)
@@ -70,12 +71,14 @@ func TestMessageJSON(t *testing.T) {
 	})
 
 	t.Run("with threadParentMessageCreatedAt", func(t *testing.T) {
-		raw := `{"id":"m1","roomId":"r1","userId":"u1","userAccount":"alice","content":"reply","createdAt":"2026-01-01T12:00:00Z","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":"2026-01-01T11:00:00Z"}`
+		createdAtMillis := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+		parentMillis := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC).UnixMilli()
+		raw := fmt.Sprintf(`{"id":"m1","roomId":"r1","userId":"u1","userAccount":"alice","content":"reply","createdAt":%d,"threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":%d}`, createdAtMillis, parentMillis)
 		var m model.Message
 		require.NoError(t, json.Unmarshal([]byte(raw), &m))
 		assert.Equal(t, "parent-msg-uuid", m.ThreadParentMessageID)
 		require.NotNil(t, m.ThreadParentMessageCreatedAt)
-		assert.Equal(t, time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC), m.ThreadParentMessageCreatedAt.UTC())
+		assert.Equal(t, parentMillis, *m.ThreadParentMessageCreatedAt)
 	})
 }
 
@@ -105,12 +108,13 @@ func TestSendMessageRequestJSON(t *testing.T) {
 	})
 
 	t.Run("with threadParentMessageCreatedAt", func(t *testing.T) {
-		raw := `{"id":"msg-uuid-1","content":"reply","requestId":"req-1","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":"2026-01-01T11:00:00Z"}`
+		parentMillis := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC).UnixMilli()
+		raw := fmt.Sprintf(`{"id":"msg-uuid-1","content":"reply","requestId":"req-1","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":%d}`, parentMillis)
 		var r model.SendMessageRequest
 		require.NoError(t, json.Unmarshal([]byte(raw), &r))
 		assert.Equal(t, "parent-msg-uuid", r.ThreadParentMessageID)
 		require.NotNil(t, r.ThreadParentMessageCreatedAt)
-		assert.Equal(t, time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC), r.ThreadParentMessageCreatedAt.UTC())
+		assert.Equal(t, parentMillis, *r.ThreadParentMessageCreatedAt)
 	})
 
 	t.Run("threadParentMessageCreatedAt omitted when nil", func(t *testing.T) {
@@ -133,7 +137,7 @@ func TestMessageEventJSON(t *testing.T) {
 		Message: model.Message{
 			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
 			Content:   "hello",
-			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 		},
 		SiteID:    "site-a",
 		Timestamp: 1735689600000,
@@ -188,21 +192,22 @@ func TestRoleValues(t *testing.T) {
 
 func TestRoomEventJSON(t *testing.T) {
 	now := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
+	nowMillis := now.UnixMilli()
 	msg := model.Message{
 		ID: "msg-1", RoomID: "room-1", UserID: "user-1",
-		UserAccount: "alice", Content: "hello", CreatedAt: now,
+		UserAccount: "alice", Content: "hello", CreatedAt: nowMillis,
 	}
 
 	t.Run("all fields populated", func(t *testing.T) {
 		src := model.RoomEvent{
 			Type:       model.RoomEventNewMessage,
 			RoomID:     "room-1",
-			Timestamp:  now.UnixMilli(),
+			Timestamp:  nowMillis,
 			RoomName:   "General",
 			RoomType:   model.RoomTypeGroup,
 			SiteID:     "site-a",
 			UserCount:  5,
-			LastMsgAt:  now,
+			LastMsgAt:  nowMillis,
 			LastMsgID:  "msg-1",
 			Mentions:   []model.Participant{{Account: "user-2", ChineseName: "user-2", EngName: "user-2"}, {Account: "user-3", ChineseName: "user-3", EngName: "user-3"}},
 			MentionAll: true,
@@ -227,12 +232,12 @@ func TestRoomEventJSON(t *testing.T) {
 		src := model.RoomEvent{
 			Type:      model.RoomEventNewMessage,
 			RoomID:    "room-2",
-			Timestamp: now.UnixMilli(),
+			Timestamp: nowMillis,
 			RoomName:  "Lobby",
 			RoomType:  model.RoomTypeGroup,
 			SiteID:    "site-b",
 			UserCount: 3,
-			LastMsgAt: now,
+			LastMsgAt: nowMillis,
 			LastMsgID: "msg-2",
 		}
 
@@ -299,11 +304,11 @@ func TestParticipantJSON(t *testing.T) {
 }
 
 func TestClientMessageJSON(t *testing.T) {
-	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	nowMillis := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	cm := model.ClientMessage{
 		Message: model.Message{
 			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
-			Content: "hello", CreatedAt: now,
+			Content: "hello", CreatedAt: nowMillis,
 		},
 		Sender: &model.Participant{
 			UserID:      "u1",
@@ -355,7 +360,7 @@ func TestNotificationEventJSON(t *testing.T) {
 		RoomID: "room-1",
 		Message: model.Message{
 			ID: "m1", RoomID: "room-1", UserID: "u1", UserAccount: "alice",
-			Content: "hello", CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			Content: "hello", CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 		},
 		Timestamp: 1735689600000,
 	}
@@ -419,8 +424,8 @@ func TestRoomMetadataUpdateEventJSON(t *testing.T) {
 		RoomID:        "r1",
 		Name:          "general",
 		UserCount:     5,
-		LastMessageAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
-		UpdatedAt:     time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		LastMessageAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
+		UpdatedAt:     time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
 		Timestamp:     1735689600000,
 	}
 	roundTrip(t, &src, &model.RoomMetadataUpdateEvent{})

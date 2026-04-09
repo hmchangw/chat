@@ -88,7 +88,7 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", Content: "hello", CreatedAt: msgTime,
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", Content: "hello", CreatedAt: msgTime.UnixMilli(),
 		},
 	}
 	data, _ := json.Marshal(evt)
@@ -134,7 +134,7 @@ func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "m2", RoomID: "r2", UserID: "u1", UserAccount: "alice", Content: "hello @All", CreatedAt: msgTime,
+			ID: "m2", RoomID: "r2", UserID: "u1", UserAccount: "alice", Content: "hello @All", CreatedAt: msgTime.UnixMilli(),
 		},
 	}
 	data, _ := json.Marshal(evt)
@@ -173,7 +173,7 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "m3", RoomID: "r3", UserID: "u1", UserAccount: "alice", Content: "hey @bob", CreatedAt: msgTime,
+			ID: "m3", RoomID: "r3", UserID: "u1", UserAccount: "alice", Content: "hey @bob", CreatedAt: msgTime.UnixMilli(),
 		},
 	}
 	data, _ := json.Marshal(evt)
@@ -225,7 +225,7 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
-			ID: "m4", RoomID: "dm-1", UserID: "u1", UserAccount: "alice", Content: "hey", CreatedAt: msgTime,
+			ID: "m4", RoomID: "dm-1", UserID: "u1", UserAccount: "alice", Content: "hey", CreatedAt: msgTime.UnixMilli(),
 		},
 	}
 	data, _ := json.Marshal(evt)

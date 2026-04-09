@@ -69,7 +69,7 @@ func TestNotificationWorker_Integration(t *testing.T) {
 		RoomID: "r1",
 		Message: model.Message{
 			ID: "m1", RoomID: "r1", UserID: "u1", Content: "hello",
-			CreatedAt: time.Now().UTC(),
+			CreatedAt: time.Now().UTC().UnixMilli(),
 		},
 	}
 	data, _ := json.Marshal(evt)

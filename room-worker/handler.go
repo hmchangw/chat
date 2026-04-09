@@ -89,7 +89,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 			RoomID:    req.RoomID,
 			Name:      room.Name,
 			UserCount: room.UserCount,
-			UpdatedAt: now,
+			UpdatedAt: now.UnixMilli(),
 			Timestamp: now.UnixMilli(),
 		}
 		metaData, _ := json.Marshal(metaEvt)
