@@ -129,33 +129,51 @@ New `processCreateRoom` handler triggered by a `room.create` operation on the RO
 **Async (after ack):**
 
 1. **Write `room_members` docs** — only if orgs are involved. One doc per org (`RoomMemberTypeOrg`), one per individual account (`RoomMemberTypeIndividual`) including the requester
-2. **Publish `SubscriptionUpdateEvent`** (action: `"added"`) per member account — notifies connected clients of the new subscription
-3. **Publish `MemberChangeEvent`** (type: `"member-added"`) to `chat.room.{roomID}.event.member` — notifies room subscribers of new members
-4. **Cross-site federation** — if any member's `SiteID != local siteID`, wrap `MemberChangeEvent` in an `OutboxEvent` (type: `"member_added"`) and publish to OUTBOX stream
+2. **Publish two system messages** to the MESSAGES_CANONICAL stream (persisted to Cassandra via message-worker):
+   - **`room_created`** message — `type: "room_created"`, `msg: "A new room has been created"`, `sender` = requester
+   - **`members_added`** message — `type: "members_added"`, `msg: "{creator name} added members to the channel"`, `sender` = requester, `sys_msg_data` = JSON blob containing the `MembersAdded` struct (see Section 7)
+3. **Publish `SubscriptionUpdateEvent`** (action: `"added"`) per member account — notifies connected clients of the new subscription
+4. **Publish `MemberChangeEvent`** (type: `"member-added"`) to `chat.room.{roomID}.event.member` — notifies room subscribers of new members
+5. **Cross-site federation** — if any member's `SiteID != local siteID`, wrap `MemberChangeEvent` in an `OutboxEvent` (type: `"member_added"`) and publish to OUTBOX stream
 
 **New store methods on `SubscriptionStore`:**
 - `CreateRoom(ctx context.Context, room *model.Room) error` — inserts a room document
 
-### 7. Internal Message Format
+### 7. Internal Message Format and System Message Data
 
-The message published from room-service to the ROOMS stream for `processCreateRoom`:
+**CreateRoomMessage** — published from room-service to the ROOMS stream:
 
 ```go
 type CreateRoomMessage struct {
-    RoomID    string   `json:"roomId"`
-    Name      string   `json:"name"`
-    Type      RoomType `json:"type"`
-    CreatorID string   `json:"creatorId"`
-    CreatorAccount string `json:"creatorAccount"`
-    CreatorName    string `json:"creatorName"`
-    SiteID    string   `json:"siteId"`
-    Users     []string `json:"users"`    // resolved, deduped account list (excludes requester)
-    Orgs      []string `json:"orgs"`     // org IDs (for room_members docs)
-    HasOrgs   bool     `json:"hasOrgs"`  // controls whether room_members are written
+    RoomID         string   `json:"roomId"`
+    Name           string   `json:"name"`
+    Type           RoomType `json:"type"`
+    CreatorID      string   `json:"creatorId"`
+    CreatorAccount string   `json:"creatorAccount"`
+    CreatorName    string   `json:"creatorName"`
+    SiteID         string   `json:"siteId"`
+    Users          []string `json:"users"`        // resolved, deduped account list (excludes requester)
+    Orgs           []string `json:"orgs"`          // org IDs (for room_members docs)
+    Channels       []string `json:"channels"`      // original channel room IDs from payload
+    RawIndividuals []string `json:"rawIndividuals"` // original individual accounts from payload (before channel/org expansion)
+    HasOrgs        bool     `json:"hasOrgs"`       // controls whether room_members are written
 }
 ```
 
-This is an internal struct used only for the ROOMS stream message, not exposed to clients.
+`Channels`, `RawIndividuals`, and `Orgs` carry the original payload breakdown so the room-worker can construct the `MembersAdded` data for the system message. `Users` is the fully resolved/deduped list used for subscription creation.
+
+**MembersAdded** — stored as JSON in the `sys_msg_data` BLOB column on `messages_by_room`:
+
+```go
+type MembersAdded struct {
+    Individuals    []string `json:"individuals"`    // original individual accounts from payload
+    Orgs           []string `json:"orgs"`           // org IDs from payload
+    Channels       []string `json:"channels"`       // channel room IDs from payload
+    AddedUsersCount int     `json:"addedUsersCount"` // total resolved user count (excluding requester)
+}
+```
+
+Both structs are internal — `CreateRoomMessage` is used only on the ROOMS stream, `MembersAdded` is persisted in Cassandra but not a client-facing API model.
 
 ### 8. Data Flow Diagram
 
@@ -195,7 +213,7 @@ room-service (sync, no DB writes)
 |------|--------|
 | `pkg/model/room.go` | Replace `CreateRoomRequest`, remove `ListRoomsResponse`, change `Room.Type` bson tag to `"t"` |
 | `pkg/model/subscription.go` | Add `Name` and `Type` fields to `Subscription` |
-| `pkg/model/event.go` | Add `CreateRoomMessage` internal struct |
+| `pkg/model/event.go` | Add `CreateRoomMessage` and `MembersAdded` internal structs |
 | `pkg/model/model_test.go` | Add round-trip tests for new/changed models |
 | `room-service/handler.go` | Rewrite `handleCreateRoom` with expansion/dedup/type-derivation logic |
 | `room-service/handler_test.go` | Tests for all create-room scenarios |
@@ -227,10 +245,11 @@ room-service (sync, no DB writes)
 - DM subscription naming (names swapped)
 - Group subscription naming (room name)
 - room_members written only when hasOrgs is true
+- System messages published: `room_created` with correct text, `members_added` with correct text and `MembersAdded` data
 - SubscriptionUpdateEvent published per member
 - MemberChangeEvent published
 - Cross-site outbox publishing
 - Store errors for room creation, subscription creation
 
 **Model tests:**
-- Round-trip JSON/BSON for updated `CreateRoomRequest`, `Subscription`, `Room`, `CreateRoomMessage`
+- Round-trip JSON/BSON for updated `CreateRoomRequest`, `Subscription`, `Room`, `CreateRoomMessage`, `MembersAdded`
