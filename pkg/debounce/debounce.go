@@ -2,6 +2,7 @@ package debounce
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -27,18 +28,29 @@ type Debouncer struct {
 	callback Callback
 	cfg      Config
 	now      func() time.Time // for testing; defaults to time.Now
-	cancel   context.CancelFunc
+	stopCh   chan struct{}    // closed by Close() to signal Start() to stop
+	once     sync.Once        // ensures stopCh is closed exactly once
 	wg       sync.WaitGroup
 }
 
-// New creates a Debouncer.
-func New(adapter Adapter, callback Callback, cfg Config) *Debouncer {
+// New creates a Debouncer. Returns an error if Config has invalid values.
+func New(adapter Adapter, callback Callback, cfg Config) (*Debouncer, error) {
+	if cfg.PollInterval <= 0 {
+		return nil, errors.New("debounce: PollInterval must be positive")
+	}
+	if cfg.Timeout <= 0 {
+		return nil, errors.New("debounce: Timeout must be positive")
+	}
+	if cfg.ProcessingTimeout <= 0 {
+		return nil, errors.New("debounce: ProcessingTimeout must be positive")
+	}
 	return &Debouncer{
 		adapter:  adapter,
 		callback: callback,
 		cfg:      cfg,
 		now:      time.Now,
-	}
+		stopCh:   make(chan struct{}),
+	}, nil
 }
 
 // Trigger resets the debounce timer for the given key.
@@ -47,9 +59,10 @@ func (d *Debouncer) Trigger(ctx context.Context, key string) error {
 	return d.adapter.Trigger(ctx, key, deadline)
 }
 
-// Start begins the background poll loop. Blocks until ctx is cancelled.
+// Start begins the background poll loop. Blocks until ctx is cancelled or
+// Close is called. The passed-in context is used for adapter and callback calls;
+// Close signals the loop to stop via an internal channel.
 func (d *Debouncer) Start(ctx context.Context) error {
-	ctx, d.cancel = context.WithCancel(ctx)
 	ticker := time.NewTicker(d.cfg.PollInterval)
 	defer ticker.Stop()
 
@@ -57,6 +70,8 @@ func (d *Debouncer) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-d.stopCh:
+			return nil
 		case <-ticker.C:
 			d.poll(ctx)
 		}
@@ -64,10 +79,9 @@ func (d *Debouncer) Start(ctx context.Context) error {
 }
 
 // Close stops the poll loop and waits for in-flight callbacks to finish.
+// Safe to call multiple times and before Start.
 func (d *Debouncer) Close() {
-	if d.cancel != nil {
-		d.cancel()
-	}
+	d.once.Do(func() { close(d.stopCh) })
 	done := make(chan struct{})
 	go func() {
 		d.wg.Wait()

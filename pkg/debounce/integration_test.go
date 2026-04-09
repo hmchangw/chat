@@ -60,7 +60,7 @@ func TestDebouncer_Integration_EndToEnd(t *testing.T) {
 		return nil
 	}
 
-	d := New(adapter, cb, Config{
+	d := mustNew(t, adapter, cb, Config{
 		Timeout:           500 * time.Millisecond,
 		PollInterval:      100 * time.Millisecond,
 		ProcessingTimeout: 5 * time.Second,
@@ -96,7 +96,7 @@ func TestDebouncer_Integration_DebounceReset(t *testing.T) {
 		return nil
 	}
 
-	d := New(adapter, cb, Config{
+	d := mustNew(t, adapter, cb, Config{
 		Timeout:           500 * time.Millisecond,
 		PollInterval:      100 * time.Millisecond,
 		ProcessingTimeout: 5 * time.Second,
@@ -140,7 +140,7 @@ func TestDebouncer_Integration_MultipleKeys(t *testing.T) {
 		return nil
 	}
 
-	d := New(adapter, cb, Config{
+	d := mustNew(t, adapter, cb, Config{
 		Timeout:           300 * time.Millisecond,
 		PollInterval:      50 * time.Millisecond,
 		ProcessingTimeout: 5 * time.Second,
@@ -187,8 +187,8 @@ func TestDebouncer_Integration_MultiClaimSafety(t *testing.T) {
 	}
 
 	// Two debouncers sharing the same adapter (simulating two pods).
-	d1 := New(adapter, cb, cfg)
-	d2 := New(adapter, cb, cfg)
+	d1 := mustNew(t, adapter, cb, cfg)
+	d2 := mustNew(t, adapter, cb, cfg)
 
 	ctx := context.Background()
 	go func() { _ = d1.Start(ctx) }()
@@ -244,7 +244,7 @@ func TestDebouncer_Integration_ProcessingTimeout(t *testing.T) {
 
 	// Now start the debouncer. The entry's score is set to
 	// now + processingTimeout (1s), so after ~1s it becomes re-claimable.
-	d := New(adapter, cb, cfg)
+	d := mustNew(t, adapter, cb, cfg)
 	go func() { _ = d.Start(ctx) }()
 	t.Cleanup(func() { d.Close() })
 

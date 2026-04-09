@@ -98,6 +98,8 @@ func (f *fakeAdapter) Requeue(_ context.Context, key string, deadline time.Time)
 	return nil
 }
 
+func (f *fakeAdapter) Close() error { return nil }
+
 func (f *fakeAdapter) getStore() map[string]float64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -138,11 +140,19 @@ func fixedNow() time.Time {
 	return time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 }
 
+// mustNew is a test helper that calls New and fails the test on error.
+func mustNew(t *testing.T, adapter Adapter, callback Callback, cfg Config) *Debouncer {
+	t.Helper()
+	d, err := New(adapter, callback, cfg)
+	require.NoError(t, err)
+	return d
+}
+
 func TestDebouncer_Trigger(t *testing.T) {
 	t.Run("happy path — stores key with correct deadline", func(t *testing.T) {
 		fa := newFakeAdapter()
 		cfg := testConfig()
-		d := New(fa, nil, cfg)
+		d := mustNew(t, fa, nil, cfg)
 		d.now = fixedNow
 
 		err := d.Trigger(context.Background(), "room:123")
@@ -159,7 +169,7 @@ func TestDebouncer_Trigger(t *testing.T) {
 		fa := newFakeAdapter()
 		fa.triggerErr = errors.New("connection refused")
 		cfg := testConfig()
-		d := New(fa, nil, cfg)
+		d := mustNew(t, fa, nil, cfg)
 		d.now = fixedNow
 
 		err := d.Trigger(context.Background(), "room:123")
@@ -179,7 +189,7 @@ func TestDebouncer_processEntry_success(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	d := New(fa, callback, cfg)
+	d := mustNew(t, fa, callback, cfg)
 	d.now = fixedNow
 
 	entry := ClaimedEntry{Key: "room:42", ClaimedScore: 999999}
@@ -212,7 +222,7 @@ func TestDebouncer_processEntry_retryThenSuccess(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxRetries = 3
 	cfg.InitialBackoff = 1 * time.Millisecond
-	d := New(fa, callback, cfg)
+	d := mustNew(t, fa, callback, cfg)
 	d.now = fixedNow
 
 	entry := ClaimedEntry{Key: "room:99", ClaimedScore: 888888}
@@ -239,7 +249,7 @@ func TestDebouncer_processEntry_exhaustedRetries(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxRetries = 2
 	cfg.InitialBackoff = 1 * time.Millisecond
-	d := New(fa, callback, cfg)
+	d := mustNew(t, fa, callback, cfg)
 	d.now = fixedNow
 
 	entry := ClaimedEntry{Key: "room:fail", ClaimedScore: 777777}
@@ -275,7 +285,7 @@ func TestDebouncer_processEntry_contextCancelled(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxRetries = 5
 	cfg.InitialBackoff = 1 * time.Millisecond
-	d := New(fa, callback, cfg)
+	d := mustNew(t, fa, callback, cfg)
 	d.now = fixedNow
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -311,7 +321,7 @@ func TestDebouncer_poll_claimsAndProcesses(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	d := New(fa, callback, cfg)
+	d := mustNew(t, fa, callback, cfg)
 	d.now = func() time.Time { return now }
 
 	d.poll(context.Background())
@@ -337,7 +347,7 @@ func TestDebouncer_poll_claimError(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	d := New(fa, callback, cfg)
+	d := mustNew(t, fa, callback, cfg)
 	d.now = fixedNow
 
 	// Should not panic or crash.
@@ -365,7 +375,7 @@ func TestDebouncer_Close_waitsForInFlight(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.PollInterval = 1 * time.Millisecond
-	d := New(fa, callback, cfg)
+	d := mustNew(t, fa, callback, cfg)
 	d.now = func() time.Time { return now }
 
 	ctx := context.Background()
@@ -414,7 +424,7 @@ func TestDebouncer_processEntry_removeError(t *testing.T) {
 	fa := newFakeAdapter()
 	fa.store["room-1"] = 100
 	fa.removeErr = errors.New("remove failed")
-	d := New(fa, func(_ context.Context, _ string) error {
+	d := mustNew(t, fa, func(_ context.Context, _ string) error {
 		return nil
 	}, testConfig())
 
@@ -428,7 +438,7 @@ func TestDebouncer_processEntry_removeError(t *testing.T) {
 func TestDebouncer_processEntry_requeueError(t *testing.T) {
 	fa := newFakeAdapter()
 	fa.requeueErr = errors.New("requeue failed")
-	d := New(fa, func(_ context.Context, _ string) error {
+	d := mustNew(t, fa, func(_ context.Context, _ string) error {
 		return errors.New("permanent error")
 	}, testConfig())
 
@@ -441,7 +451,7 @@ func TestDebouncer_processEntry_requeueError(t *testing.T) {
 
 func TestDebouncer_Close_timesOut(t *testing.T) {
 	fa := newFakeAdapter()
-	d := New(fa, func(_ context.Context, _ string) error {
+	d := mustNew(t, fa, func(_ context.Context, _ string) error {
 		time.Sleep(10 * time.Second) // very long callback
 		return nil
 	}, Config{
@@ -465,4 +475,39 @@ func TestDebouncer_Close_timesOut(t *testing.T) {
 	d.Close()
 	elapsed := time.Since(start)
 	assert.Less(t, elapsed, time.Second, "Close should return after ProcessingTimeout, not wait for callback")
+}
+
+func TestNew_invalidConfig(t *testing.T) {
+	fa := newFakeAdapter()
+	cb := func(_ context.Context, _ string) error { return nil }
+
+	tests := []struct {
+		name        string
+		cfg         Config
+		errContains string
+	}{
+		{
+			name:        "zero PollInterval",
+			cfg:         Config{Timeout: time.Second, PollInterval: 0, ProcessingTimeout: time.Second},
+			errContains: "PollInterval",
+		},
+		{
+			name:        "zero Timeout",
+			cfg:         Config{Timeout: 0, PollInterval: time.Second, ProcessingTimeout: time.Second},
+			errContains: "Timeout",
+		},
+		{
+			name:        "zero ProcessingTimeout",
+			cfg:         Config{Timeout: time.Second, PollInterval: time.Second, ProcessingTimeout: 0},
+			errContains: "ProcessingTimeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(fa, cb, tt.cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContains)
+		})
+	}
 }

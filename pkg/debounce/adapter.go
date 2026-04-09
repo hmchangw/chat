@@ -20,6 +20,7 @@ type Adapter interface {
 	Claim(ctx context.Context, now time.Time, processingTimeout time.Duration, batchSize int) ([]ClaimedEntry, error)
 	Remove(ctx context.Context, key string, claimedScore float64) error
 	Requeue(ctx context.Context, key string, deadline time.Time) error
+	Close() error
 }
 
 // sortedSetCommander is a minimal internal interface over the Valkey sorted-set
@@ -34,6 +35,7 @@ type sortedSetCommander interface {
 // valkeyAdapter implements Adapter using a sortedSetCommander.
 type valkeyAdapter struct {
 	client sortedSetCommander
+	closer func() error // closes the underlying connection; nil if not applicable
 }
 
 func (a *valkeyAdapter) Trigger(ctx context.Context, key string, deadline time.Time) error {
@@ -82,6 +84,13 @@ func (a *valkeyAdapter) Requeue(ctx context.Context, key string, deadline time.T
 	return nil
 }
 
+func (a *valkeyAdapter) Close() error {
+	if a.closer != nil {
+		return a.closer()
+	}
+	return nil
+}
+
 // --- Redis/Valkey implementation of sortedSetCommander ---
 
 // redisAdapter wraps *redis.Client to satisfy sortedSetCommander.
@@ -97,6 +106,10 @@ func (a *redisAdapter) zadd(ctx context.Context, member string, score float64) e
 // claimScript atomically finds expired entries, updates their scores to a
 // processing deadline, and returns them as a flat list of member names.
 // Runs as a single Lua script so no other client can interleave.
+//
+// ZRANGEBYSCORE with LIMIT is O(log(N)+M) where N is the set size and M is
+// batchSize. After a long outage many entries may expire; the batch limit
+// prevents claiming too many at once.
 var claimScript = redis.NewScript(`
 local key = KEYS[1]
 local batchSize = tonumber(ARGV[3])
@@ -125,6 +138,10 @@ func (a *redisAdapter) claimExpired(ctx context.Context, now float64, processing
 // removeScript conditionally removes a member only if its current score
 // matches the expected score. Prevents removing a key that was re-triggered
 // during processing.
+//
+// The tonumber() comparison is safe because scores are always integer
+// millisecond timestamps (via time.UnixMilli), which are within the
+// safe integer range for IEEE 754 float64 (up to 2^53).
 var removeScript = redis.NewScript(`
 local key = KEYS[1]
 local member = ARGV[1]
@@ -157,7 +174,11 @@ func NewValkeyAdapter(cfg AdapterConfig) (Adapter, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := c.Ping(ctx).Err(); err != nil {
+		_ = c.Close()
 		return nil, fmt.Errorf("valkey connect: %w", err)
 	}
-	return &valkeyAdapter{client: &redisAdapter{c: c, key: cfg.Key}}, nil
+	return &valkeyAdapter{
+		client: &redisAdapter{c: c, key: cfg.Key},
+		closer: c.Close,
+	}, nil
 }
