@@ -20,7 +20,7 @@ type RoomMetadataUpdateEvent struct {
 type SubscriptionUpdateEvent struct {
 	UserID       string       `json:"userId"`
 	Subscription Subscription `json:"subscription"`
-	Action       string       `json:"action"` // "added" | "removed"
+	Action       string       `json:"action"` // "added" | "removed" | "role_updated"
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
 }
 
@@ -94,4 +94,11 @@ type RoomKeyEvent struct {
 	PublicKey  []byte `json:"publicKey"`
 	PrivateKey []byte `json:"privateKey"`
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
+}
+
+type MemberChangeEvent struct {
+	Type     string   `json:"type"     bson:"type"` // "member-added" or "member-removed"
+	RoomID   string   `json:"roomId"   bson:"roomId"`
+	Accounts []string `json:"accounts" bson:"accounts"`
+	SiteID   string   `json:"siteId"   bson:"siteId"`
 }
