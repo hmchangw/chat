@@ -16,9 +16,11 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/pkg/cassutil"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 type config struct {
@@ -27,6 +29,8 @@ type config struct {
 	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
 	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
 	MaxWorkers        int    `env:"MAX_WORKERS"        envDefault:"100"`
+	MongoURI          string `env:"MONGO_URI,required"`
+	MongoDB           string `env:"MONGO_DB"           envDefault:"chat"`
 }
 
 func main() {
@@ -63,8 +67,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
+	if err != nil {
+		slog.Error("mongodb connect failed", "error", err)
+		os.Exit(1)
+	}
+	db := mongoClient.Database(cfg.MongoDB)
+	us := userstore.NewMongoStore(db.Collection("users"))
+
 	store := NewCassandraStore(cassSession)
-	handler := NewHandler(store, nil)
+	handler := NewHandler(store, us)
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
@@ -131,5 +143,6 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
+		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }
