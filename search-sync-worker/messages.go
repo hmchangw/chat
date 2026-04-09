@@ -42,6 +42,15 @@ func (c *messageCollection) BuildAction(data []byte) (searchengine.BulkAction, e
 	if err := json.Unmarshal(data, &evt); err != nil {
 		return searchengine.BulkAction{}, fmt.Errorf("unmarshal message event: %w", err)
 	}
+	if evt.Message.ID == "" {
+		return searchengine.BulkAction{}, fmt.Errorf("build message action: missing message id")
+	}
+	if evt.Message.CreatedAt.IsZero() {
+		return searchengine.BulkAction{}, fmt.Errorf("build message action: missing createdAt")
+	}
+	if evt.Timestamp <= 0 {
+		return searchengine.BulkAction{}, fmt.Errorf("build message action: missing timestamp")
+	}
 	return buildMessageAction(&evt, c.indexPrefix), nil
 }
 

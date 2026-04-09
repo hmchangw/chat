@@ -253,12 +253,14 @@ func TestSearchSyncIntegration(t *testing.T) {
 		// Route to correct canonical subject based on event type
 		var subj string
 		switch evt.Event {
+		case model.EventCreated:
+			subj = subject.MsgCanonicalCreated(siteID)
 		case model.EventUpdated:
 			subj = subject.MsgCanonicalUpdated(siteID)
 		case model.EventDeleted:
 			subj = subject.MsgCanonicalDeleted(siteID)
 		default:
-			subj = subject.MsgCanonicalCreated(siteID)
+			t.Fatalf("unsupported event type in fixture: %q", evt.Event)
 		}
 		_, pubErr := js.Publish(ctx, subj, data)
 		require.NoError(t, pubErr, "publish event %s", evt.Message.ID)

@@ -77,6 +77,16 @@ func (h *Handler) Flush(ctx context.Context) {
 		return
 	}
 
+	if len(results) != len(items) {
+		slog.Error("bulk result count mismatch", "expected", len(items), "actual", len(results))
+		for _, item := range items {
+			if nakErr := item.jsMsg.Nak(); nakErr != nil {
+				slog.Error("nak failed", "error", nakErr)
+			}
+		}
+		return
+	}
+
 	for i, result := range results {
 		if result.Status == 409 || (result.Status >= 200 && result.Status < 300) {
 			if ackErr := items[i].jsMsg.Ack(); ackErr != nil {

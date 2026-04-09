@@ -232,7 +232,10 @@ ctx._source.updatedAt = params.now;
 
 **Remove script (removed):**
 ```painless
-if (ctx._source.rooms != null) { ctx._source.rooms.remove(ctx._source.rooms.indexOf(params.rid)); }
+if (ctx._source.rooms != null) {
+  int idx = ctx._source.rooms.indexOf(params.rid);
+  if (idx >= 0) { ctx._source.rooms.remove(idx); }
+}
 ctx._source.updatedAt = params.now;
 ```
 
@@ -299,7 +302,7 @@ For `ActionUpdate`, the `Doc` field contains the update body:
 
 ### Bulk NDJSON for update
 
-```
+```json
 {"update":{"_index":"user-room-site1","_id":"alice"}}
 {"script":{"source":"...","params":{...}},"upsert":{...}}
 ```
