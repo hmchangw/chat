@@ -10,7 +10,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageRepository,SubscriptionRepository
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageRepository,SubscriptionRepository,ContentDecryptor
 
 // MessageRepository defines Cassandra-backed message operations.
 type MessageRepository interface {
@@ -26,15 +26,21 @@ type SubscriptionRepository interface {
 	GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error)
 }
 
+// ContentDecryptor decrypts message content after reading from storage.
+type ContentDecryptor interface {
+	Decrypt(ctx context.Context, roomID, ciphertext string) (string, error)
+}
+
 // HistoryService handles message history queries. Transport-agnostic.
 type HistoryService struct {
 	messages      MessageRepository
 	subscriptions SubscriptionRepository
+	decryptor     ContentDecryptor
 }
 
 // New creates a HistoryService with the given repositories.
-func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
-	return &HistoryService{messages: msgs, subscriptions: subs}
+func New(msgs MessageRepository, subs SubscriptionRepository, dec ContentDecryptor) *HistoryService {
+	return &HistoryService{messages: msgs, subscriptions: subs, decryptor: dec}
 }
 
 // RegisterHandlers wires all NATS endpoints for the history service.

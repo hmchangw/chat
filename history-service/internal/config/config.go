@@ -22,12 +22,21 @@ type NATSConfig struct {
 	URL string `env:"URL" required:"true"`
 }
 
+// ValkeyConfig holds Valkey connection settings.
+// Env vars: VALKEY_ADDR, VALKEY_PASSWORD, VALKEY_DBKEY_GRACE_PERIOD
+type ValkeyConfig struct {
+	Addr        string `env:"ADDR"             required:"true"`
+	Password    string `env:"PASSWORD"         envDefault:""`
+	GracePeriod string `env:"DBKEY_GRACE_PERIOD" envDefault:"720h"`
+}
+
 // Config is the top-level configuration for history-service.
 type Config struct {
 	SiteID    string          `env:"SITE_ID" envDefault:"site-local"`
 	Cassandra CassandraConfig `envPrefix:"CASSANDRA_"`
 	Mongo     MongoConfig     `envPrefix:"MONGO_"`
 	NATS      NATSConfig      `envPrefix:"NATS_"`
+	Valkey    ValkeyConfig    `envPrefix:"VALKEY_"`
 }
 
 // Load parses environment variables into Config. Returns error if required vars are missing.

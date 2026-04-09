@@ -15,6 +15,8 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/msgcrypto"
+	"github.com/hmchangw/chat/pkg/msgkeystore"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
@@ -48,9 +50,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	gracePeriod, err := time.ParseDuration(cfg.Valkey.GracePeriod)
+	if err != nil {
+		slog.Error("invalid valkey grace period", "error", err)
+		os.Exit(1)
+	}
+	dbKeyStore, err := msgkeystore.NewValkeyStore(msgkeystore.Config{
+		Addr:        cfg.Valkey.Addr,
+		Password:    cfg.Valkey.Password,
+		GracePeriod: gracePeriod,
+	})
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
+	}
+	encryptor := msgcrypto.NewEncryptor(dbKeyStore)
+
 	cassRepo := cassrepo.NewRepository(cassSession)
 	mongoRepo := mongorepo.NewSubscriptionRepo(mongoClient.Database(cfg.Mongo.DB))
-	svc := service.New(cassRepo, mongoRepo)
+	svc := service.New(cassRepo, mongoRepo, encryptor)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())

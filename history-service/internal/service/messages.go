@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -14,6 +15,17 @@ const (
 	surroundingPageSize = 25
 	maxPageSize         = 100
 )
+
+func (s *HistoryService) decryptMessages(ctx context.Context, messages []models.Message) error {
+	for i := range messages {
+		plaintext, err := s.decryptor.Decrypt(ctx, messages[i].RoomID, messages[i].Msg)
+		if err != nil {
+			return fmt.Errorf("decrypting message %s: %w", messages[i].MessageID, err)
+		}
+		messages[i].Msg = plaintext
+	}
+	return nil
+}
 
 func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
 	account := c.Param("account")
@@ -51,6 +63,10 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 		return nil, fmt.Errorf("loading history: %w", err)
 	}
 
+	if err := s.decryptMessages(c, page.Data); err != nil {
+		return nil, err
+	}
+
 	return &models.LoadHistoryResponse{Messages: page.Data}, nil
 }
 
@@ -81,6 +97,10 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading next messages: %w", err)
+	}
+
+	if err := s.decryptMessages(c, page.Data); err != nil {
+		return nil, err
 	}
 
 	return &models.LoadNextMessagesResponse{
@@ -118,8 +138,12 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	// before gets the larger half on odd splits.
 	remaining := limit - 1
 	if remaining <= 0 {
+		msgs := []models.Message{*centralMsg}
+		if err := s.decryptMessages(c, msgs); err != nil {
+			return nil, err
+		}
 		return &models.LoadSurroundingMessagesResponse{
-			Messages: []models.Message{*centralMsg},
+			Messages: msgs,
 		}, nil
 	}
 	beforeCount := (remaining + 1) / 2
@@ -159,6 +183,10 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	messages = append(messages, *centralMsg)
 	messages = append(messages, afterPage.Data...)
 
+	if err := s.decryptMessages(c, messages); err != nil {
+		return nil, err
+	}
+
 	return &models.LoadSurroundingMessagesResponse{
 		Messages:   messages,
 		MoreBefore: beforePage.HasNext,
@@ -183,6 +211,12 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 	if accessSince != nil && msg.CreatedAt.Before(*accessSince) {
 		return nil, natsrouter.ErrForbidden("message is outside access window")
 	}
+
+	plaintext, err := s.decryptor.Decrypt(c, msg.RoomID, msg.Msg)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting message %s: %w", msg.MessageID, err)
+	}
+	msg.Msg = plaintext
 
 	return msg, nil
 }
