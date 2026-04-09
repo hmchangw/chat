@@ -114,15 +114,15 @@ type cassParticipant struct {
 `SaveMessage` runs two inserts sequentially, populating only the fields available at this stage. All other columns (`mentions`, `attachments`, `file`, `card`, etc.) are omitted and default to `null` in Cassandra:
 
 ```go
-INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 
-INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
 ```
 
-Columns populated: `room_id`, `created_at`, `message_id`, `sender` (UDT), `msg` (`Message.Content`), `site_id`.
-Columns left null for now: `mentions`, `attachments`, `file`, `card`, `card_action`, `quoted_parent_message`, `target_user`, `visible_to`, `unread`, `reactions`, `deleted`, `type`, `sys_msg_data`, `tshow`, `thread_parent_id`, `thread_parent_created_at`, `edited_at`, `updated_at`.
+Columns populated: `room_id`, `created_at`, `message_id`, `sender` (UDT), `msg` (`Message.Content`), `site_id`, `updated_at` (set to `msg.CreatedAt` on initial insert — equals `created_at` since the message has not been edited yet).
+Columns left null for now: `mentions`, `attachments`, `file`, `card`, `card_action`, `quoted_parent_message`, `target_user`, `visible_to`, `unread`, `reactions`, `deleted`, `type`, `sys_msg_data`, `tshow`, `thread_parent_id`, `thread_parent_created_at`, `edited_at`.
 
 Both use `gocql` UDT marshalling via the `cassParticipant` struct. If either insert fails, the error is returned immediately (no partial rollback — Cassandra has no transactions; the message will be retried via NAK and JetStream redelivery).
 
