@@ -1,0 +1,44 @@
+[
+  {
+    "event": "created",
+    "message": {"id": "msg-001", "roomId": "room-1", "userId": "u1", "userAccount": "alice", "content": "hello world", "createdAt": "2026-01-15T10:30:00Z"},
+    "siteId": "site-test",
+    "timestamp": 1000001
+  },
+  {
+    "event": "created",
+    "message": {"id": "msg-002", "roomId": "room-1", "userId": "u2", "userAccount": "bob", "content": "hey alice", "createdAt": "2026-01-15T10:31:00Z"},
+    "siteId": "site-test",
+    "timestamp": 1000002
+  },
+  {
+    "event": "created",
+    "message": {"id": "msg-003", "roomId": "room-2", "userId": "u1", "userAccount": "alice", "content": "different room", "createdAt": "2026-01-20T08:00:00Z"},
+    "siteId": "site-test",
+    "timestamp": 1000003
+  },
+  {
+    "event": "created",
+    "message": {"id": "msg-004", "roomId": "room-1", "userId": "u3", "userAccount": "charlie", "content": "february message", "createdAt": "2026-02-01T09:00:00Z"},
+    "siteId": "site-test",
+    "timestamp": 1000004
+  },
+  {
+    "event": "created",
+    "message": {"id": "msg-005", "roomId": "room-2", "userId": "u2", "userAccount": "bob", "content": "another feb msg", "createdAt": "2026-02-10T14:00:00Z"},
+    "siteId": "site-test",
+    "timestamp": 1000005
+  },
+  {
+    "event": "updated",
+    "message": {"id": "msg-001", "roomId": "room-1", "userId": "u1", "userAccount": "alice", "content": "hello world (edited)", "createdAt": "2026-01-15T10:30:00Z"},
+    "siteId": "site-test",
+    "timestamp": 1000006
+  },
+  {
+    "event": "deleted",
+    "message": {"id": "msg-002", "roomId": "room-1", "createdAt": "2026-01-15T10:31:00Z"},
+    "siteId": "site-test",
+    "timestamp": 1000007
+  }
+]

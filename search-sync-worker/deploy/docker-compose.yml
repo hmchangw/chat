@@ -1,0 +1,30 @@
+services:
+  nats:
+    image: nats:2.11-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--http_port", "8222"]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+
+  search-sync-worker:
+    build:
+      context: ../..
+      dockerfile: search-sync-worker/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - SEARCH_URL=http://elasticsearch:9200
+      - SEARCH_BACKEND=elasticsearch
+      - MSG_INDEX_PREFIX=messages-site-local-v1
+    depends_on:
+      - nats
+      - elasticsearch

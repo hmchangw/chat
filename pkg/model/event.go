@@ -2,10 +2,19 @@ package model
 
 import "time"
 
+type EventType string
+
+const (
+	EventCreated EventType = "created"
+	EventUpdated EventType = "updated"
+	EventDeleted EventType = "deleted"
+)
+
 type MessageEvent struct {
-	Message   Message `json:"message"`
-	SiteID    string  `json:"siteId"`
-	Timestamp int64   `json:"timestamp" bson:"timestamp"`
+	Event     EventType `json:"event,omitempty" bson:"event,omitempty"`
+	Message   Message   `json:"message"`
+	SiteID    string    `json:"siteId"`
+	Timestamp int64     `json:"timestamp" bson:"timestamp"`
 }
 
 type RoomMetadataUpdateEvent struct {

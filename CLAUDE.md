@@ -266,3 +266,10 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - JetStream workers cleanup order: `iter.Stop()` → `wg.Wait()` (with timeout) → `nc.Drain()` → disconnect databases
 - HTTP services cleanup order: `nc.Drain()` → disconnect databases
 - Shutdown timeout (25s) must be less than Kubernetes `terminationGracePeriodSeconds` (30s)
+
+### Search Sync (Elasticsearch)
+- The `search-sync-worker` uses a `Collection` interface to support syncing different data sources to Elasticsearch
+- Message sync is implemented as `messageCollection` in `search-sync-worker/messages.go`
+- **When modifying `pkg/model/Message`** (adding, removing, or renaming JSON fields): always update `MessageSearchIndex` in `search-sync-worker/messages.go` with corresponding `es` struct tags, and populate the field in `newMessageSearchIndex()` — the ES index template auto-generates from the struct tags
+- ES index templates use `dynamic: false` — fields not in the template are stored but not indexed, so missing `MessageSearchIndex` updates cause silent search gaps
+- To add a new searchable collection (e.g., room search), implement the `Collection` interface in a new file (e.g., `rooms.go`) following the `messageCollection` pattern
