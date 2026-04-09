@@ -19,6 +19,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.34.0
 	github.com/testcontainers/testcontainers-go/modules/cassandra v0.34.0
 	github.com/testcontainers/testcontainers-go/modules/mongodb v0.34.0
+	github.com/testcontainers/testcontainers-go/modules/nats v0.34.0
 	go.mongodb.org/mongo-driver/v2 v2.5.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0
