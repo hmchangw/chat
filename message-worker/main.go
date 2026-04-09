@@ -64,7 +64,7 @@ func main() {
 	}
 
 	store := NewCassandraStore(cassSession)
-	handler := NewHandler(store)
+	handler := NewHandler(store, nil)
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
