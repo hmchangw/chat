@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gocql/gocql"
 
@@ -51,7 +52,24 @@ func NewCassandraStore(session *gocql.Session) *CassandraStore {
 }
 
 // SaveMessage inserts msg into both messages_by_room and messages_by_id.
-// Full implementation added in Task 5.
+// updated_at is set to msg.CreatedAt (equals created_at on first insert — not yet edited).
+// If either insert fails the error is returned immediately; JetStream will redeliver the message.
 func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+	if err := s.cassSession.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert messages_by_room %s: %w", msg.ID, err)
+	}
+
+	if err := s.cassSession.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
+	}
+
 	return nil
 }
