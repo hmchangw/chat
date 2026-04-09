@@ -704,3 +704,57 @@ func TestHistoryService_GetMessageByID_DecryptError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decrypting message")
 }
+
+func TestHistoryService_LoadNextMessages_DecryptError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	msgs := mocks.NewMockMessageRepository(ctrl)
+	subs := mocks.NewMockSubscriptionRepository(ctrl)
+	dec := mocks.NewMockContentDecryptor(ctrl)
+	svc := service.New(msgs, subs, dec)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	messages := []models.Message{
+		{MessageID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute), Msg: "enc:v0:data"},
+	}
+	msgs.EXPECT().GetMessagesAfter(gomock.Any(), "r1", joinTime, gomock.Any()).Return(makePage(messages, false), nil)
+	dec.EXPECT().Decrypt(gomock.Any(), "r1", "enc:v0:data").Return("", fmt.Errorf("key expired"))
+
+	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decrypting message")
+}
+
+func TestHistoryService_LoadSurroundingMessages_DecryptError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	msgs := mocks.NewMockMessageRepository(ctrl)
+	subs := mocks.NewMockSubscriptionRepository(ctrl)
+	dec := mocks.NewMockContentDecryptor(ctrl)
+	svc := service.New(msgs, subs, dec)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	centralMsg := &models.Message{MessageID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), Msg: "enc:v0:central"}
+	msgs.EXPECT().GetMessage(gomock.Any(), "r1", centralMsg.CreatedAt, "m5").Return(centralMsg, nil)
+
+	beforeMsgs := []models.Message{{MessageID: "m4", RoomID: "r1", CreatedAt: joinTime.Add(4 * time.Minute), Msg: "enc:v0:before"}}
+	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(makePage(beforeMsgs, false), nil)
+
+	afterMsgs := []models.Message{{MessageID: "m6", RoomID: "r1", CreatedAt: joinTime.Add(6 * time.Minute), Msg: "enc:v0:after"}}
+	msgs.EXPECT().GetMessagesAfter(gomock.Any(), "r1", centralMsg.CreatedAt, gomock.Any()).Return(makePage(afterMsgs, false), nil)
+
+	// First two decrypt calls succeed (before + central), third fails (after)
+	gomock.InOrder(
+		dec.EXPECT().Decrypt(gomock.Any(), "r1", gomock.Any()).Return("plain", nil),
+		dec.EXPECT().Decrypt(gomock.Any(), "r1", gomock.Any()).Return("plain", nil),
+		dec.EXPECT().Decrypt(gomock.Any(), "r1", gomock.Any()).Return("", fmt.Errorf("key expired")),
+	)
+
+	_, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{
+		MessageID: "m5", CreatedAt: millis(joinTime.Add(5 * time.Minute)), Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decrypting message")
+}
