@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 func TestHandler_ProcessMessage(t *testing.T) {
@@ -62,7 +60,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			data: validData,
 			setupMocks: func(store *MockStore, us *MockUserStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").
-					Return(nil, fmt.Errorf("find user u-1: %w", userstore.ErrUserNotFound))
+					Return(nil, errors.New("user not found"))
 			},
 			wantErr: true,
 		},
