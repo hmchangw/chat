@@ -52,6 +52,6 @@ func NewCassandraStore(session *gocql.Session) *CassandraStore {
 
 // SaveMessage inserts msg into both messages_by_room and messages_by_id.
 // Full implementation added in Task 5.
-func (s *CassandraStore) SaveMessage(ctx context.Context, msg model.Message, sender cassParticipant, siteID string) error {
+func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
 	return nil
 }

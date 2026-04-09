@@ -54,7 +54,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			data: validData,
 			setupMocks: func(store *MockStore, us *MockUserStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
-				store.EXPECT().SaveMessage(gomock.Any(), &msg, expectedSender, "site-a").Return(nil)
+				store.EXPECT().SaveMessage(gomock.Any(), &msg, &expectedSender, "site-a").Return(nil)
 			},
 		},
 		{
@@ -80,7 +80,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			data: validData,
 			setupMocks: func(store *MockStore, us *MockUserStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
-				store.EXPECT().SaveMessage(gomock.Any(), &msg, expectedSender, "site-a").
+				store.EXPECT().SaveMessage(gomock.Any(), &msg, &expectedSender, "site-a").
 					Return(errors.New("cassandra: write timeout"))
 			},
 			wantErr: true,

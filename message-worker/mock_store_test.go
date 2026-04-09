@@ -42,7 +42,7 @@ func (m *MockStore) EXPECT() *MockStoreMockRecorder {
 }
 
 // SaveMessage mocks base method.
-func (m *MockStore) SaveMessage(ctx context.Context, msg model.Message, sender cassParticipant, siteID string) error {
+func (m *MockStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SaveMessage", ctx, msg, sender, siteID)
 	ret0, _ := ret[0].(error)
