@@ -13,7 +13,14 @@ import (
 )
 
 func TestUserJSON(t *testing.T) {
-	u := model.User{ID: "u1", Name: "alice", Account: "alice", SiteID: "site-a"}
+	u := model.User{
+		ID:          "u1",
+		Account:     "alice",
+		SiteID:      "site-a",
+		EngName:     "Alice Wang",
+		ChineseName: "愛麗絲",
+		EmployeeID:  "EMP001",
+	}
 	roundTrip(t, &u, &model.User{})
 }
 
