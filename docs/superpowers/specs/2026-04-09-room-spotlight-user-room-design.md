@@ -1,5 +1,7 @@
 # Design: Room Spotlight & User-Room Index via SUBSCRIPTIONS Stream
 
+**Architecture Diagram:** [View in FigJam](https://www.figma.com/online-whiteboard/create-diagram/6412fb79-8a38-40f0-8061-59b3b90fd10d?utm_source=claude&utm_content=edit_in_figjam)
+
 ## Context
 
 The search-sync-worker currently syncs messages to Elasticsearch. Two additional sync targets are needed:
