@@ -334,7 +334,7 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 				return
 			}
 			require.NotNil(t, got)
-			assert.Equal(t, tt.wantKey, *got)
+			assert.Equal(t, tt.wantKey, got)
 		})
 	}
 }

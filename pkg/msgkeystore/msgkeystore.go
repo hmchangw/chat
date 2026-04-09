@@ -22,7 +22,7 @@ type VersionedKey struct {
 type KeyStore interface {
 	Set(ctx context.Context, roomID string, key []byte) (int, error)
 	Get(ctx context.Context, roomID string) (*VersionedKey, error)
-	GetByVersion(ctx context.Context, roomID string, version int) (*[]byte, error)
+	GetByVersion(ctx context.Context, roomID string, version int) ([]byte, error)
 	Rotate(ctx context.Context, roomID string, newKey []byte) (int, error)
 	Delete(ctx context.Context, roomID string) error
 }
@@ -31,7 +31,7 @@ type KeyStore interface {
 type Config struct {
 	Addr        string        `env:"VALKEY_ADDR,required"`
 	Password    string        `env:"VALKEY_PASSWORD" envDefault:""`
-	GracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
+	GracePeriod time.Duration `env:"VALKEY_DBKEY_GRACE_PERIOD,required"`
 }
 
 // hashCommander is a minimal internal interface over the Valkey hash commands used by valkeyStore.
@@ -95,7 +95,7 @@ func (s *valkeyStore) Get(ctx context.Context, roomID string) (*VersionedKey, er
 
 // GetByVersion retrieves the key matching version from either the current or previous slot.
 // Returns (nil, nil) if neither matches or both are absent.
-func (s *valkeyStore) GetByVersion(ctx context.Context, roomID string, version int) (*[]byte, error) {
+func (s *valkeyStore) GetByVersion(ctx context.Context, roomID string, version int) ([]byte, error) {
 	versionID := strconv.Itoa(version)
 
 	// Check current key.
@@ -108,7 +108,7 @@ func (s *valkeyStore) GetByVersion(ctx context.Context, roomID string, version i
 		if err != nil {
 			return nil, fmt.Errorf("get db key by version: %w", err)
 		}
-		return &decoded, nil
+		return decoded, nil
 	}
 
 	// Check previous key.
@@ -121,7 +121,7 @@ func (s *valkeyStore) GetByVersion(ctx context.Context, roomID string, version i
 		if err != nil {
 			return nil, fmt.Errorf("get db key by version: %w", err)
 		}
-		return &decoded, nil
+		return decoded, nil
 	}
 
 	return nil, nil
