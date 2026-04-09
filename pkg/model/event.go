@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 type MessageEvent struct {
 	Message   Message `json:"message"`
 	SiteID    string  `json:"siteId"`
@@ -7,12 +9,12 @@ type MessageEvent struct {
 }
 
 type RoomMetadataUpdateEvent struct {
-	RoomID        string `json:"roomId"`
-	Name          string `json:"name"`
-	UserCount     int    `json:"userCount"`
-	LastMessageAt int64  `json:"lastMessageAt"`
-	UpdatedAt     int64  `json:"updatedAt"`
-	Timestamp     int64  `json:"timestamp" bson:"timestamp"`
+	RoomID        string    `json:"roomId"`
+	Name          string    `json:"name"`
+	UserCount     int       `json:"userCount"`
+	LastMessageAt time.Time `json:"lastMessageAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+	Timestamp     int64     `json:"timestamp" bson:"timestamp"`
 }
 
 type SubscriptionUpdateEvent struct {
@@ -71,12 +73,12 @@ type RoomEvent struct {
 	RoomID    string        `json:"roomId"`
 	Timestamp int64         `json:"timestamp" bson:"timestamp"`
 
-	RoomName  string   `json:"roomName"`
-	RoomType  RoomType `json:"roomType"`
-	SiteID    string   `json:"siteId"`
-	UserCount int      `json:"userCount"`
-	LastMsgAt int64    `json:"lastMsgAt"`
-	LastMsgID string   `json:"lastMsgId"`
+	RoomName  string    `json:"roomName"`
+	RoomType  RoomType  `json:"roomType"`
+	SiteID    string    `json:"siteId"`
+	UserCount int       `json:"userCount"`
+	LastMsgAt time.Time `json:"lastMsgAt"`
+	LastMsgID string    `json:"lastMsgId"`
 
 	Mentions   []Participant `json:"mentions,omitempty"`
 	MentionAll bool          `json:"mentionAll,omitempty"`

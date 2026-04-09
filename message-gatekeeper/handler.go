@@ -149,20 +149,27 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	}
 
 	// Build Message
-	nowMillis := time.Now().UTC().UnixMilli()
+	now := time.Now().UTC()
+
+	var threadParentCreatedAt *time.Time
+	if req.ThreadParentMessageCreatedAt != nil {
+		t := time.UnixMilli(*req.ThreadParentMessageCreatedAt).UTC()
+		threadParentCreatedAt = &t
+	}
+
 	msg := model.Message{
 		ID:                           req.ID,
 		RoomID:                       roomID,
 		UserID:                       sub.User.ID,
 		UserAccount:                  sub.User.Account,
 		Content:                      req.Content,
-		CreatedAt:                    nowMillis,
+		CreatedAt:                    now,
 		ThreadParentMessageID:        req.ThreadParentMessageID,
-		ThreadParentMessageCreatedAt: req.ThreadParentMessageCreatedAt,
+		ThreadParentMessageCreatedAt: threadParentCreatedAt,
 	}
 
 	// Publish MessageEvent to MESSAGES_CANONICAL
-	evt := model.MessageEvent{Message: msg, SiteID: siteID, Timestamp: nowMillis}
+	evt := model.MessageEvent{Message: msg, SiteID: siteID, Timestamp: now.UnixMilli()}
 	evtData, err := json.Marshal(evt)
 	if err != nil {
 		return nil, &infraError{cause: fmt.Errorf("marshal message event: %w", err)}

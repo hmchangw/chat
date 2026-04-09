@@ -123,20 +123,20 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, data []byte, published []publishedMsg) {
-				parentMillis := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC).UnixMilli()
+				parentTS := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 				require.NotNil(t, data)
 				var msg model.Message
 				require.NoError(t, json.Unmarshal(data, &msg))
 				assert.Equal(t, "parent-msg-uuid", msg.ThreadParentMessageID)
 				require.NotNil(t, msg.ThreadParentMessageCreatedAt)
-				assert.Equal(t, parentMillis, *msg.ThreadParentMessageCreatedAt)
+				assert.Equal(t, parentTS, msg.ThreadParentMessageCreatedAt.UTC())
 
 				require.Len(t, published, 1)
 				var evt model.MessageEvent
 				require.NoError(t, json.Unmarshal(published[0].data, &evt))
 				assert.Equal(t, "parent-msg-uuid", evt.Message.ThreadParentMessageID)
 				require.NotNil(t, evt.Message.ThreadParentMessageCreatedAt)
-				assert.Equal(t, parentMillis, *evt.Message.ThreadParentMessageCreatedAt)
+				assert.Equal(t, parentTS, evt.Message.ThreadParentMessageCreatedAt.UTC())
 				assert.Greater(t, evt.Timestamp, int64(0))
 			},
 		},

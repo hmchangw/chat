@@ -65,7 +65,7 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 		UserID:      "u1",
 		UserAccount: "alice",
 		Content:     "hello",
-		CreatedAt:   now.UnixMilli(),
+		CreatedAt:   now,
 	}
 	err := store.SaveMessage(ctx, msg)
 	require.NoError(t, err)

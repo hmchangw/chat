@@ -44,7 +44,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	mentionAll := detectMentionAll(msg.Content)
 	mentionedAccounts := extractMentionedAccounts(msg.Content)
 
-	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, time.UnixMilli(msg.CreatedAt).UTC(), mentionAll); err != nil {
+	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, mentionAll); err != nil {
 		return fmt.Errorf("update room on new message: %w", err)
 	}
 

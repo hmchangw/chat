@@ -60,7 +60,7 @@ func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "msg-1", RoomID: roomID, UserID: "user-1", UserAccount: "sender",
-			Content: content, CreatedAt: msgTime.UnixMilli(),
+			Content: content, CreatedAt: msgTime,
 		},
 	}
 	data, _ := json.Marshal(evt)
@@ -218,7 +218,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 				SiteID: "site-a",
 				Message: model.Message{
 					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice",
-					Content: tc.content, CreatedAt: msgTime.UnixMilli(),
+					Content: tc.content, CreatedAt: msgTime,
 				},
 			}
 			data, _ := json.Marshal(evt)
@@ -361,7 +361,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 			SiteID: "site-a",
 			Message: model.Message{
 				ID: "msg-1", RoomID: "dm-1", UserID: "user-1", UserAccount: "sender",
-				Content: "hello", CreatedAt: msgTime.UnixMilli(),
+				Content: "hello", CreatedAt: msgTime,
 			},
 		}
 		data, _ := json.Marshal(evt)
@@ -447,7 +447,7 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice",
-			Content: "hello", CreatedAt: msgTime.UnixMilli(),
+			Content: "hello", CreatedAt: msgTime,
 		},
 	}
 	data, _ := json.Marshal(evt)
@@ -495,7 +495,7 @@ func TestBuildMentionParticipants(t *testing.T) {
 func TestBuildClientMessage(t *testing.T) {
 	msg := &model.Message{
 		ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
-		Content: "hello", CreatedAt: time.Now().UTC().UnixMilli(),
+		Content: "hello", CreatedAt: time.Now(),
 	}
 
 	t.Run("employee found", func(t *testing.T) {
