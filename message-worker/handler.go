@@ -12,11 +12,12 @@ import (
 )
 
 type Handler struct {
-	store Store
+	store     Store
+	encryptor ContentEncryptor
 }
 
-func NewHandler(store Store) *Handler {
-	return &Handler{store: store}
+func NewHandler(store Store, encryptor ContentEncryptor) *Handler {
+	return &Handler{store: store, encryptor: encryptor}
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES_CANONICAL stream.
@@ -40,6 +41,12 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	if err := json.Unmarshal(data, &evt); err != nil {
 		return fmt.Errorf("unmarshal message event: %w", err)
 	}
+
+	encrypted, err := h.encryptor.Encrypt(ctx, evt.Message.RoomID, evt.Message.Content)
+	if err != nil {
+		return fmt.Errorf("encrypt message content: %w", err)
+	}
+	evt.Message.Content = encrypted
 
 	if err := h.store.SaveMessage(ctx, evt.Message); err != nil {
 		return fmt.Errorf("save message: %w", err)
