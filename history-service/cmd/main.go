@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/config"
@@ -18,6 +18,7 @@ import (
 	"github.com/hmchangw/chat/pkg/msgcrypto"
 	"github.com/hmchangw/chat/pkg/msgkeystore"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
@@ -32,7 +33,13 @@ func main() {
 
 	ctx := context.Background()
 
-	nc, err := nats.Connect(cfg.NATS.URL)
+	tracerShutdown, err := otelutil.InitTracer(ctx, "history-service")
+	if err != nil {
+		slog.Error("init tracer failed", "error", err)
+		os.Exit(1)
+	}
+
+	nc, err := otelnats.Connect(cfg.NATS.URL)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)
@@ -79,6 +86,7 @@ func main() {
 
 	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 	)

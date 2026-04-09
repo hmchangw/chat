@@ -20,7 +20,7 @@ import (
 )
 
 func makePublishFunc(published *[]publishedMsg, returnErr error) publishFunc {
-	return func(subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	return func(_ context.Context, subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 		if published != nil {
 			*published = append(*published, publishedMsg{subject: subj, data: data})
 		}

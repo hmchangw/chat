@@ -19,7 +19,7 @@ type MemberLookup interface {
 
 // Publisher abstracts NATS publishing so the handler is testable.
 type Publisher interface {
-	Publish(subject string, data []byte) error
+	Publish(ctx context.Context, subject string, data []byte) error
 }
 
 // Handler processes MESSAGES_CANONICAL messages and sends notifications.
@@ -63,7 +63,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 			continue
 		}
 		subj := subject.Notification(subs[i].User.Account)
-		if err := h.pub.Publish(subj, notifData); err != nil {
+		if err := h.pub.Publish(ctx, subj, notifData); err != nil {
 			slog.Error("publish notification failed", "error", err, "account", subs[i].User.Account)
 		}
 	}

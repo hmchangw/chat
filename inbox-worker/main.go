@@ -2,23 +2,24 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
 	"github.com/caarlos0/env/v11"
-
-	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/mongoutil"
-	"github.com/hmchangw/chat/pkg/shutdown"
-	"github.com/hmchangw/chat/pkg/stream"
-
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/shutdown"
+	"github.com/hmchangw/chat/pkg/stream"
 )
 
 type config struct {
@@ -58,6 +59,12 @@ func main() {
 
 	ctx := context.Background()
 
+	tracerShutdown, err := otelutil.InitTracer(ctx, "inbox-worker")
+	if err != nil {
+		slog.Error("init tracer failed", "error", err)
+		os.Exit(1)
+	}
+
 	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
 	if err != nil {
 		slog.Error("mongo connect failed", "error", err)
@@ -69,13 +76,13 @@ func main() {
 		roomCol: db.Collection("rooms"),
 	}
 
-	nc, err := nats.Connect(cfg.NatsURL)
+	nc, err := otelnats.Connect(cfg.NatsURL)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)
 	}
 
-	js, err := jetstream.New(nc)
+	js, err := oteljetstream.New(nc)
 	if err != nil {
 		slog.Error("jetstream init failed", "error", err)
 		os.Exit(1)
@@ -101,15 +108,15 @@ func main() {
 	publisher := &natsPublisher{nc: nc}
 	handler := NewHandler(store, publisher)
 
-	cctx, err := cons.Consume(func(msg jetstream.Msg) {
-		if err := handler.HandleEvent(ctx, msg.Data()); err != nil {
+	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
+		if err := handler.HandleEvent(m.Context(), m.Data()); err != nil {
 			slog.Error("handle event failed", "error", err)
-			if err := msg.Nak(); err != nil {
+			if err := m.Nak(); err != nil {
 				slog.Error("failed to nak message", "error", err)
 			}
 			return
 		}
-		if err := msg.Ack(); err != nil {
+		if err := m.Ack(); err != nil {
 			slog.Error("failed to ack message", "error", err)
 		}
 	})
@@ -122,24 +129,20 @@ func main() {
 
 	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error {
-			cctx.Drain()
-			select {
-			case <-cctx.Closed():
-				return nil
-			case <-ctx.Done():
-				return fmt.Errorf("consumer drain timed out: %w", ctx.Err())
-			}
+			cctx.Stop()
+			return nil
 		},
 		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }
 
-// natsPublisher adapts *nats.Conn to the Publisher interface.
+// natsPublisher adapts *otelnats.Conn to the Publisher interface.
 type natsPublisher struct {
-	nc *nats.Conn
+	nc *otelnats.Conn
 }
 
-func (p *natsPublisher) Publish(subject string, data []byte) error {
-	return p.nc.Publish(subject, data)
+func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte) error {
+	return p.nc.Publish(ctx, subject, data)
 }

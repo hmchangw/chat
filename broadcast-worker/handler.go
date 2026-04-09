@@ -14,7 +14,7 @@ import (
 
 // Publisher abstracts NATS publishing so the handler is testable.
 type Publisher interface {
-	Publish(subject string, data []byte) error
+	Publish(ctx context.Context, subject string, data []byte) error
 }
 
 // Handler processes MESSAGES_CANONICAL messages and broadcasts room events.
@@ -78,7 +78,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 
 	switch room.Type {
 	case model.RoomTypeGroup:
-		return h.publishGroupEvent(room, clientMsg, mentionAll, mentionParticipants)
+		return h.publishGroupEvent(ctx, room, clientMsg, mentionAll, mentionParticipants)
 	case model.RoomTypeDM:
 		return h.publishDMEvents(ctx, room, clientMsg, mentionedAccounts)
 	default:
@@ -87,7 +87,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 }
 
-func (h *Handler) publishGroupEvent(room *model.Room, clientMsg *model.ClientMessage, mentionAll bool, mentions []model.Participant) error {
+func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionAll bool, mentions []model.Participant) error {
 	evt := buildRoomEvent(room, clientMsg)
 	evt.MentionAll = mentionAll
 	if len(mentions) > 0 {
@@ -98,7 +98,7 @@ func (h *Handler) publishGroupEvent(room *model.Room, clientMsg *model.ClientMes
 	if err != nil {
 		return fmt.Errorf("marshal group room event: %w", err)
 	}
-	return h.pub.Publish(subject.RoomEvent(room.ID), payload)
+	return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)
 }
 
 func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionedAccounts []string) error {
@@ -122,7 +122,7 @@ func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, clientM
 		if err != nil {
 			return fmt.Errorf("marshal DM event for user %s: %w", subs[i].User.Account, err)
 		}
-		if err := h.pub.Publish(subject.UserRoomEvent(subs[i].User.Account), payload); err != nil {
+		if err := h.pub.Publish(ctx, subject.UserRoomEvent(subs[i].User.Account), payload); err != nil {
 			slog.Error("publish DM event failed", "error", err, "account", subs[i].User.Account)
 		}
 	}

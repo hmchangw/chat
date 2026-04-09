@@ -22,7 +22,7 @@ type InboxStore interface {
 
 // Publisher abstracts NATS publishing so the handler is testable.
 type Publisher interface {
-	Publish(subject string, data []byte) error
+	Publish(ctx context.Context, subject string, data []byte) error
 }
 
 // Handler processes incoming cross-site OutboxEvent messages.
@@ -88,7 +88,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 	}
 
 	subj := subject.SubscriptionUpdate(invite.InviteeAccount)
-	if err := h.pub.Publish(subj, updateData); err != nil {
+	if err := h.pub.Publish(ctx, subj, updateData); err != nil {
 		slog.Error("publish subscription update failed", "error", err, "account", invite.InviteeAccount)
 	}
 

@@ -32,10 +32,10 @@ func (e *infraError) Unwrap() error {
 }
 
 // replyFunc is the function signature for publishing a reply to a NATS subject.
-type replyFunc func(subject string, data []byte) error
+type replyFunc func(ctx context.Context, subject string, data []byte) error
 
 // publishFunc is the function signature for publishing to JetStream.
-type publishFunc func(subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
+type publishFunc func(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
 
 // Handler processes messages from the MESSAGES stream and validates them
 // before publishing to MESSAGES_CANONICAL.
@@ -52,7 +52,7 @@ func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
-func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
+func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	account, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(msg.Subject())
 	if !ok {
 		slog.Warn("invalid subject", "subject", msg.Subject())
@@ -62,7 +62,6 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 		return
 	}
 
-	ctx := context.Background()
 	replyData, err := h.processMessage(ctx, account, roomID, siteID, msg.Data())
 	if err != nil {
 		slog.Error("process message failed", "error", err, "account", account, "roomID", roomID)
@@ -73,7 +72,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 			}
 		} else {
 			// Validation error: reply with error and ack.
-			h.sendReply(account, msg.Data(), natsutil.MarshalError(err.Error()))
+			h.sendReply(ctx, account, msg.Data(), natsutil.MarshalError(err.Error()))
 			if err := msg.Ack(); err != nil {
 				slog.Error("failed to ack message", "error", err)
 			}
@@ -81,7 +80,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 		return
 	}
 
-	h.sendReply(account, msg.Data(), replyData)
+	h.sendReply(ctx, account, msg.Data(), replyData)
 
 	if err := msg.Ack(); err != nil {
 		slog.Error("failed to ack message", "err", err)
@@ -90,7 +89,7 @@ func (h *Handler) HandleJetStreamMsg(msg jetstream.Msg) {
 
 // sendReply extracts the requestID from the raw message data and publishes the
 // reply payload to the user's response subject.
-func (h *Handler) sendReply(account string, rawData []byte, replyData []byte) {
+func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte, replyData []byte) {
 	var req model.SendMessageRequest
 	if err := json.Unmarshal(rawData, &req); err != nil {
 		slog.Error("unmarshal request for reply", "error", err)
@@ -100,7 +99,7 @@ func (h *Handler) sendReply(account string, rawData []byte, replyData []byte) {
 		return
 	}
 	respSubj := subject.UserResponse(account, req.RequestID)
-	if err := h.reply(respSubj, replyData); err != nil {
+	if err := h.reply(ctx, respSubj, replyData); err != nil {
 		slog.Error("reply to client failed", "error", err, "subject", respSubj)
 	}
 }
@@ -170,7 +169,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	}
 
 	canonicalSubj := subject.MsgCanonicalCreated(siteID)
-	if _, err := h.publish(canonicalSubj, evtData, jetstream.WithMsgID(msg.ID)); err != nil {
+	if _, err := h.publish(ctx, canonicalSubj, evtData, jetstream.WithMsgID(msg.ID)); err != nil {
 		return nil, &infraError{cause: fmt.Errorf("publish to MESSAGES_CANONICAL: %w", err)}
 	}
 
