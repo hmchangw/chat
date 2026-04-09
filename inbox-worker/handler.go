@@ -17,6 +17,7 @@ import (
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+	DeleteSubscription(ctx context.Context, account string, roomID string) error
 	UpsertRoom(ctx context.Context, room *model.Room) error
 }
 
@@ -46,6 +47,8 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 	switch evt.Type {
 	case "member_added":
 		return h.handleMemberAdded(ctx, &evt)
+	case "member_removed":
+		return h.handleMemberRemoved(ctx, &evt)
 	case "room_sync":
 		return h.handleRoomSync(ctx, &evt)
 	default:
@@ -66,7 +69,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		User:               model.SubscriptionUser{ID: invite.InviteeID, Account: invite.InviteeAccount},
 		RoomID:             invite.RoomID,
 		SiteID:             invite.SiteID,
-		Role:               model.RoleMember,
+		Roles:              []model.Role{model.RoleMember},
 		HistorySharedSince: &now,
 		JoinedAt:           now,
 	}
@@ -90,6 +93,37 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 	subj := subject.SubscriptionUpdate(invite.InviteeAccount)
 	if err := h.pub.Publish(ctx, subj, updateData); err != nil {
 		slog.Error("publish subscription update failed", "error", err, "account", invite.InviteeAccount)
+	}
+
+	return nil
+}
+
+func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEvent) error {
+	var change model.MemberChangeEvent
+	if err := json.Unmarshal(evt.Payload, &change); err != nil {
+		return fmt.Errorf("unmarshal member_removed payload: %w", err)
+	}
+
+	for _, account := range change.Accounts {
+		if err := h.store.DeleteSubscription(ctx, account, change.RoomID); err != nil {
+			return fmt.Errorf("delete subscription for %q: %w", account, err)
+		}
+
+		updateEvt := model.SubscriptionUpdateEvent{
+			Subscription: model.Subscription{RoomID: change.RoomID, User: model.SubscriptionUser{Account: account}},
+			Action:       "removed",
+			Timestamp:    time.Now().UTC().UnixMilli(),
+		}
+
+		updateData, err := natsutil.MarshalResponse(updateEvt)
+		if err != nil {
+			return fmt.Errorf("marshal subscription update event: %w", err)
+		}
+
+		subj := subject.SubscriptionUpdate(account)
+		if err := h.pub.Publish(ctx, subj, updateData); err != nil {
+			slog.Error("publish subscription update failed", "error", err, "account", account)
+		}
 	}
 
 	return nil
