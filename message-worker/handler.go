@@ -41,7 +41,19 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal message event: %w", err)
 	}
 
-	if err := h.store.SaveMessage(ctx, evt.Message, cassParticipant{}, ""); err != nil {
+	user, err := h.userStore.FindUserByID(ctx, evt.Message.UserID)
+	if err != nil {
+		return fmt.Errorf("lookup user %s: %w", evt.Message.UserID, err)
+	}
+
+	sender := cassParticipant{
+		ID:          user.ID,
+		EngName:     user.EngName,
+		CompanyName: user.ChineseName,
+		Account:     evt.Message.UserAccount,
+	}
+
+	if err := h.store.SaveMessage(ctx, &evt.Message, sender, evt.SiteID); err != nil {
 		return fmt.Errorf("save message: %w", err)
 	}
 
