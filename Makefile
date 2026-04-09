@@ -1,4 +1,4 @@
-.PHONY: lint fmt test test-integration generate build
+.PHONY: lint fmt test test-integration test-integration-v generate build
 
 # Makefile for the distributed multi-site chat system.
 
@@ -24,6 +24,14 @@ ifdef SERVICE
 	go test -race -tags integration ./$(SERVICE)/...
 else
 	go test -race -tags integration ./...
+endif
+
+# Run integration tests with verbose logging (requires Docker)
+test-integration-v:
+ifdef SERVICE
+	go test -race -tags integration -v -count=1 ./$(SERVICE)/...
+else
+	go test -race -tags integration -v -count=1 ./...
 endif
 
 # Regenerate all mocks via go generate
