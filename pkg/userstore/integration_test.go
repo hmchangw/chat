@@ -12,7 +12,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/hmchangw/chat/pkg/mongoutil"
 )
 
 func setupMongo(t *testing.T) *mongo.Collection {
@@ -25,9 +26,9 @@ func setupMongo(t *testing.T) *mongo.Collection {
 	uri, err := container.ConnectionString(ctx)
 	require.NoError(t, err)
 
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	client, err := mongoutil.Connect(ctx, uri)
 	require.NoError(t, err)
-	t.Cleanup(func() { client.Disconnect(ctx) })
+	t.Cleanup(func() { mongoutil.Disconnect(ctx, client) })
 
 	return client.Database("userstore_test").Collection("users")
 }
