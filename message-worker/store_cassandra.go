@@ -56,17 +56,17 @@ func NewCassandraStore(session *gocql.Session) *CassandraStore {
 // If either insert fails the error is returned immediately; JetStream will redeliver the message.
 func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, type, sys_msg_data, site_id, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, msg.Type, msg.SysMsgData, siteID, msg.CreatedAt,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_room %s: %w", msg.ID, err)
 	}
 
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, type, sys_msg_data, site_id, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, sender, msg.Content, msg.Type, msg.SysMsgData, siteID, msg.CreatedAt,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
 	}
