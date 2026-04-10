@@ -12,11 +12,12 @@ import (
 )
 
 type Handler struct {
-	store Store
+	store     Store
+	userStore UserStore
 }
 
-func NewHandler(store Store) *Handler {
-	return &Handler{store: store}
+func NewHandler(store Store, userStore UserStore) *Handler {
+	return &Handler{store: store, userStore: userStore}
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES_CANONICAL stream.
@@ -40,7 +41,19 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal message event: %w", err)
 	}
 
-	if err := h.store.SaveMessage(ctx, evt.Message); err != nil {
+	user, err := h.userStore.FindUserByID(ctx, evt.Message.UserID)
+	if err != nil {
+		return fmt.Errorf("lookup user %s: %w", evt.Message.UserID, err)
+	}
+
+	sender := cassParticipant{
+		ID:          user.ID,
+		EngName:     user.EngName,
+		CompanyName: user.ChineseName,
+		Account:     evt.Message.UserAccount,
+	}
+
+	if err := h.store.SaveMessage(ctx, &evt.Message, &sender, evt.SiteID); err != nil {
 		return fmt.Errorf("save message: %w", err)
 	}
 
