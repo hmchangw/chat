@@ -18,10 +18,10 @@ type stubInboxStore struct {
 	subscriptions []model.Subscription
 	rooms         []model.Room
 
-	createSubErr      error
-	deleteSubErr      error
-	updateRoleErr     error
-	upsertRoomErr     error
+	createSubErr  error
+	deleteSubErr  error
+	updateRoleErr error
+	upsertRoomErr error
 }
 
 func (s *stubInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
