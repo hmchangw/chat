@@ -45,6 +45,14 @@ func (s *mongoInboxStore) DeleteSubscription(ctx context.Context, account string
 	return err
 }
 
+func (s *mongoInboxStore) UpdateSubscriptionRole(ctx context.Context, account string, roomID string, role model.Role) error {
+	_, err := s.subCol.UpdateOne(ctx,
+		bson.M{"u.account": account, "roomId": roomID},
+		bson.M{"$set": bson.M{"roles": []model.Role{role}}},
+	)
+	return err
+}
+
 func (s *mongoInboxStore) UpsertRoom(ctx context.Context, room *model.Room) error {
 	filter := bson.M{"_id": room.ID}
 	update := bson.M{"$set": room}

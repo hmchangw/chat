@@ -18,6 +18,7 @@ import (
 type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	DeleteSubscription(ctx context.Context, account string, roomID string) error
+	UpdateSubscriptionRole(ctx context.Context, account string, roomID string, role model.Role) error
 	UpsertRoom(ctx context.Context, room *model.Room) error
 }
 
@@ -49,6 +50,8 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleMemberAdded(ctx, &evt)
 	case "member_removed":
 		return h.handleMemberRemoved(ctx, &evt)
+	case "role_updated":
+		return h.handleRoleUpdated(ctx, &evt)
 	case "room_sync":
 		return h.handleRoomSync(ctx, &evt)
 	default:
@@ -127,6 +130,30 @@ func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEven
 		}
 	}
 
+	return nil
+}
+
+func (h *Handler) handleRoleUpdated(ctx context.Context, evt *model.OutboxEvent) error {
+	var subEvt model.SubscriptionUpdateEvent
+	if err := json.Unmarshal(evt.Payload, &subEvt); err != nil {
+		return fmt.Errorf("unmarshal role_updated payload: %w", err)
+	}
+	account := subEvt.Subscription.User.Account
+	roomID := subEvt.Subscription.RoomID
+	if len(subEvt.Subscription.Roles) == 0 {
+		return fmt.Errorf("no role in subscription update event")
+	}
+	newRole := subEvt.Subscription.Roles[0]
+	if err := h.store.UpdateSubscriptionRole(ctx, account, roomID, newRole); err != nil {
+		return fmt.Errorf("update subscription role for %q: %w", account, err)
+	}
+	updateData, err := natsutil.MarshalResponse(subEvt)
+	if err != nil {
+		return fmt.Errorf("marshal subscription update event: %w", err)
+	}
+	if err := h.pub.Publish(ctx, subject.SubscriptionUpdate(account), updateData); err != nil {
+		slog.Error("publish subscription update failed", "error", err, "account", account)
+	}
 	return nil
 }
 

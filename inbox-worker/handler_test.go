@@ -18,9 +18,10 @@ type stubInboxStore struct {
 	subscriptions []model.Subscription
 	rooms         []model.Room
 
-	createSubErr  error
-	deleteSubErr  error
-	upsertRoomErr error
+	createSubErr      error
+	deleteSubErr      error
+	updateRoleErr     error
+	upsertRoomErr     error
 }
 
 func (s *stubInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -46,6 +47,21 @@ func (s *stubInboxStore) DeleteSubscription(ctx context.Context, account string,
 		}
 	}
 	s.subscriptions = filtered
+	return nil
+}
+
+func (s *stubInboxStore) UpdateSubscriptionRole(ctx context.Context, account string, roomID string, role model.Role) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.updateRoleErr != nil {
+		return s.updateRoleErr
+	}
+	for i := range s.subscriptions {
+		if s.subscriptions[i].User.Account == account && s.subscriptions[i].RoomID == roomID {
+			s.subscriptions[i].Roles = []model.Role{role}
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -707,5 +723,54 @@ func TestHandleEvent_RoomSync_StoreError(t *testing.T) {
 	err := h.HandleEvent(context.Background(), evtData)
 	if err == nil {
 		t.Error("expected error when store.UpsertRoom fails, got nil")
+	}
+}
+
+func TestHandleEvent_RoleUpdated(t *testing.T) {
+	store := &stubInboxStore{}
+	store.subscriptions = []model.Subscription{
+		{ID: "s1", User: model.SubscriptionUser{Account: "bob"}, RoomID: "room-1", Roles: []model.Role{model.RoleMember}},
+	}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	subEvt := model.SubscriptionUpdateEvent{
+		Subscription: model.Subscription{
+			RoomID: "room-1",
+			User:   model.SubscriptionUser{Account: "bob"},
+			Roles:  []model.Role{model.RoleOwner},
+		},
+		Action:    "role_updated",
+		Timestamp: 1735689600000,
+	}
+	subEvtData, _ := json.Marshal(subEvt)
+
+	evt := model.OutboxEvent{
+		Type:       "role_updated",
+		SiteID:     "site-eu",
+		DestSiteID: "site-us",
+		Payload:    subEvtData,
+	}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	subs := store.getSubscriptions()
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subscription, got %d", len(subs))
+	}
+	if subs[0].Roles[0] != model.RoleOwner {
+		t.Errorf("role = %v, want owner", subs[0].Roles)
+	}
+
+	records := pub.getRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 publish, got %d", len(records))
+	}
+	if records[0].subject != "chat.user.bob.event.subscription.update" {
+		t.Errorf("subject = %q, want chat.user.bob.event.subscription.update", records[0].subject)
 	}
 }
