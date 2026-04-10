@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
@@ -69,44 +68,6 @@ func TestMongoStore_Integration(t *testing.T) {
 	assert.Equal(t, 2, room.UserCount)
 }
 
-func TestProcessInvite_Integration(t *testing.T) {
-	db := setupMongo(t)
-	store := NewMongoStore(db)
-	ctx := context.Background()
-
-	// Seed room
-	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r1", Name: "general", UserCount: 1, SiteID: testSiteID})
-	require.NoError(t, err)
-
-	// Seed an existing subscription so ListByRoom returns something for metadata events
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-		ID: "s-owner", User: model.SubscriptionUser{ID: "u-owner", Account: "owner"}, RoomID: "r1", SiteID: testSiteID, Roles: []model.Role{model.RoleOwner},
-	}))
-
-	handler := NewHandler(store, testSiteID, noopPublish, noopPublish)
-
-	req := model.InviteMemberRequest{
-		RoomID:         "r1",
-		InviteeID:      "u-alice",
-		InviteeAccount: "alice",
-		SiteID:         testSiteID,
-	}
-	data, err := json.Marshal(req)
-	require.NoError(t, err)
-
-	require.NoError(t, handler.processInvite(ctx, data))
-
-	// Verify subscription created
-	subs, err := store.ListByRoom(ctx, "r1")
-	require.NoError(t, err)
-	assert.Len(t, subs, 2, "should have owner + invitee")
-
-	// Verify user count incremented
-	room, err := store.GetRoom(ctx, "r1")
-	require.NoError(t, err)
-	assert.Equal(t, 2, room.UserCount)
-}
-
 func TestProcessAddMembers_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -135,9 +96,6 @@ func TestProcessAddMembers_Integration(t *testing.T) {
 
 	require.NoError(t, handler.processAddMembers(ctx, data))
 
-	// Wait for async goroutines to complete (room members, user count)
-	handler.asyncWg.Wait()
-
 	// Verify subscriptions created
 	subs, err := store.ListByRoom(ctx, "r-add")
 	require.NoError(t, err)
@@ -147,11 +105,6 @@ func TestProcessAddMembers_Integration(t *testing.T) {
 	for _, sub := range subs {
 		assert.NotNil(t, sub.HistorySharedSince, "HistorySharedSince should be set for mode=none")
 	}
-
-	// Verify room members created (async)
-	members, err := store.GetRoomMembers(ctx, "r-add")
-	require.NoError(t, err)
-	assert.Len(t, members, 2, "individual room member entries should be created")
 }
 
 func TestProcessAddMembers_HistoryAll_Integration(t *testing.T) {
@@ -195,6 +148,10 @@ func TestProcessRemoveMember_Integration(t *testing.T) {
 	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r-rm", Name: "general", UserCount: 2, SiteID: testSiteID})
 	require.NoError(t, err)
 
+	// Seed user
+	_, err = db.Collection("users").InsertOne(ctx, model.User{ID: "u-alice", Account: "alice", SiteID: testSiteID})
+	require.NoError(t, err)
+
 	// Seed subscription
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
 		ID: "s-alice", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, RoomID: "r-rm", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
@@ -203,16 +160,13 @@ func TestProcessRemoveMember_Integration(t *testing.T) {
 	handler := NewHandler(store, testSiteID, noopPublish, noopPublish)
 
 	req := model.RemoveMemberRequest{
-		RoomID:   "r-rm",
-		Username: "alice",
+		RoomID:  "r-rm",
+		Account: "alice",
 	}
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
 
 	require.NoError(t, handler.processRemoveMember(ctx, data))
-
-	// Wait for async goroutines to complete
-	handler.asyncWg.Wait()
 
 	// Verify subscription deleted
 	subs, err := store.ListByRoom(ctx, "r-rm")
@@ -234,10 +188,10 @@ func TestProcessRemoveMember_OrgRemoval_Integration(t *testing.T) {
 	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r-org-rm", Name: "general", UserCount: 3, SiteID: testSiteID})
 	require.NoError(t, err)
 
-	// Seed hr_data for org resolution
-	_, err = db.Collection("hr_data").InsertMany(ctx, []interface{}{
-		bson.M{"accountName": "alice", "sectId": "org-eng"},
-		bson.M{"accountName": "bob", "sectId": "org-eng"},
+	// Seed users in the users collection with sectId for org resolution
+	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
+		model.User{ID: "u-alice", Account: "alice", SiteID: testSiteID, SectID: "org-eng"},
+		model.User{ID: "u-bob", Account: "bob", SiteID: testSiteID, SectID: "org-eng"},
 	})
 	require.NoError(t, err)
 
@@ -260,9 +214,6 @@ func TestProcessRemoveMember_OrgRemoval_Integration(t *testing.T) {
 
 	require.NoError(t, handler.processRemoveMember(ctx, data))
 
-	// Wait for async goroutines to complete
-	handler.asyncWg.Wait()
-
 	// Verify subscriptions deleted
 	subs, err := store.ListByRoom(ctx, "r-org-rm")
 	require.NoError(t, err)
@@ -274,6 +225,14 @@ func TestProcessRoleUpdate_Integration(t *testing.T) {
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
+	// Seed room
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r-role", Name: "general", UserCount: 1, SiteID: testSiteID})
+	require.NoError(t, err)
+
+	// Seed user
+	_, err = db.Collection("users").InsertOne(ctx, model.User{ID: "u-bob", Account: "bob", SiteID: testSiteID})
+	require.NoError(t, err)
+
 	// Seed subscription
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
 		ID: "s-bob", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"}, RoomID: "r-role", SiteID: testSiteID, Roles: []model.Role{model.RoleMember},
@@ -282,9 +241,9 @@ func TestProcessRoleUpdate_Integration(t *testing.T) {
 	handler := NewHandler(store, testSiteID, noopPublish, noopPublish)
 
 	req := model.UpdateRoleRequest{
-		RoomID:   "r-role",
-		Username: "bob",
-		NewRole:  model.RoleOwner,
+		RoomID:  "r-role",
+		Account: "bob",
+		NewRole: model.RoleOwner,
 	}
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
@@ -295,13 +254,21 @@ func TestProcessRoleUpdate_Integration(t *testing.T) {
 	subs, err := store.ListByRoom(ctx, "r-role")
 	require.NoError(t, err)
 	require.Len(t, subs, 1)
-	assert.Equal(t, model.RoleOwner, subs[0].Role, "bob should now be owner")
+	assert.Equal(t, model.RoleOwner, subs[0].Roles[0], "bob should now be owner")
 }
 
 func TestProcessRoleUpdate_Demote_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
+
+	// Seed room
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r-demote", Name: "general", UserCount: 1, SiteID: testSiteID})
+	require.NoError(t, err)
+
+	// Seed user
+	_, err = db.Collection("users").InsertOne(ctx, model.User{ID: "u-carol", Account: "carol", SiteID: testSiteID})
+	require.NoError(t, err)
 
 	// Seed subscription as owner
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
@@ -311,9 +278,9 @@ func TestProcessRoleUpdate_Demote_Integration(t *testing.T) {
 	handler := NewHandler(store, testSiteID, noopPublish, noopPublish)
 
 	req := model.UpdateRoleRequest{
-		RoomID:   "r-demote",
-		Username: "carol",
-		NewRole:  model.RoleMember,
+		RoomID:  "r-demote",
+		Account: "carol",
+		NewRole: model.RoleMember,
 	}
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
@@ -324,5 +291,5 @@ func TestProcessRoleUpdate_Demote_Integration(t *testing.T) {
 	subs, err := store.ListByRoom(ctx, "r-demote")
 	require.NoError(t, err)
 	require.Len(t, subs, 1)
-	assert.Equal(t, model.RoleMember, subs[0].Role, "carol should now be member")
+	assert.Equal(t, model.RoleMember, subs[0].Roles[0], "carol should now be member")
 }

@@ -145,17 +145,9 @@ func main() {
 			go func() { wg.Wait(); close(done) }()
 			select {
 			case <-done:
-			case <-ctx.Done():
-				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
-			}
-			// Wait for async goroutines (room members, userCount, events) to finish
-			asyncDone := make(chan struct{})
-			go func() { handler.WaitAsync(); close(asyncDone) }()
-			select {
-			case <-asyncDone:
 				return nil
 			case <-ctx.Done():
-				return fmt.Errorf("async work drain timed out: %w", ctx.Err())
+				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
 		},
 		func(ctx context.Context) error { return tracerShutdown(ctx) },

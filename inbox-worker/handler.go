@@ -58,41 +58,42 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 }
 
 func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent) error {
-	var invite model.InviteMemberRequest
-	if err := json.Unmarshal(evt.Payload, &invite); err != nil {
+	var change model.MemberChangeEvent
+	if err := json.Unmarshal(evt.Payload, &change); err != nil {
 		return fmt.Errorf("unmarshal member_added payload: %w", err)
 	}
 
 	now := time.Now().UTC()
-	sub := model.Subscription{
-		ID:                 uuid.New().String(),
-		User:               model.SubscriptionUser{ID: invite.InviteeID, Account: invite.InviteeAccount},
-		RoomID:             invite.RoomID,
-		SiteID:             invite.SiteID,
-		Roles:              []model.Role{model.RoleMember},
-		HistorySharedSince: &now,
-		JoinedAt:           now,
-	}
+	for _, account := range change.Accounts {
+		sub := model.Subscription{
+			ID:                 uuid.New().String(),
+			User:               model.SubscriptionUser{Account: account},
+			RoomID:             change.RoomID,
+			SiteID:             change.SiteID,
+			Roles:              []model.Role{model.RoleMember},
+			HistorySharedSince: &now,
+			JoinedAt:           now,
+		}
 
-	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
-		return fmt.Errorf("create subscription: %w", err)
-	}
+		if err := h.store.CreateSubscription(ctx, &sub); err != nil {
+			return fmt.Errorf("create subscription for %q: %w", account, err)
+		}
 
-	updateEvt := model.SubscriptionUpdateEvent{
-		UserID:       invite.InviteeID,
-		Subscription: sub,
-		Action:       "added",
-		Timestamp:    now.UnixMilli(),
-	}
+		updateEvt := model.SubscriptionUpdateEvent{
+			Subscription: sub,
+			Action:       "added",
+			Timestamp:    now.UnixMilli(),
+		}
 
-	updateData, err := natsutil.MarshalResponse(updateEvt)
-	if err != nil {
-		return fmt.Errorf("marshal subscription update event: %w", err)
-	}
+		updateData, err := natsutil.MarshalResponse(updateEvt)
+		if err != nil {
+			return fmt.Errorf("marshal subscription update event: %w", err)
+		}
 
-	subj := subject.SubscriptionUpdate(invite.InviteeAccount)
-	if err := h.pub.Publish(ctx, subj, updateData); err != nil {
-		slog.Error("publish subscription update failed", "error", err, "account", invite.InviteeAccount)
+		subj := subject.SubscriptionUpdate(account)
+		if err := h.pub.Publish(ctx, subj, updateData); err != nil {
+			slog.Error("publish subscription update failed", "error", err, "account", account)
+		}
 	}
 
 	return nil
