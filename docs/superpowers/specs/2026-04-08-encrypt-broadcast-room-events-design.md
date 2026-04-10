@@ -6,16 +6,17 @@
 
 ## Summary
 
-Encrypt the `model.RoomEvent` payload published by `broadcast-worker` to group-room subjects. The worker fetches the room's current encryption key from Valkey via `pkg/roomkeystore`, encrypts the JSON-marshaled `RoomEvent` via `pkg/roomcrypto.Encode`, and publishes the resulting `roomcrypto.EncryptedMessage` to `subject.RoomEvent(roomID)` in place of the plaintext event.
+Encrypt the `Message` field (`*ClientMessage`) within `model.RoomEvent` for group-room broadcasts. All other `RoomEvent` metadata (type, roomId, roomName, mentions, timestamps, etc.) stays in plaintext so clients can read routing/display info without decryption. The worker fetches the room's current encryption key from Valkey via `pkg/roomkeystore`, encrypts the JSON-marshaled `ClientMessage` via `pkg/roomcrypto.Encode`, sets the result in a new `EncryptedMessage json.RawMessage` field on the `RoomEvent`, nils out the plaintext `Message` field, and publishes the modified `RoomEvent`.
 
 DM (direct message) broadcasts are explicitly **not** encrypted: per-user subjects (`chat.user.{account}.…`) are already isolated to a single recipient by NATS auth, so encryption adds no marginal protection there.
 
-The key version used for encryption is carried inside the `EncryptedMessage` envelope itself (new `Version int` field), not in a NATS header.
+The key version used for encryption is carried inside the `EncryptedMessage` envelope (within the `roomcrypto.EncryptedMessage.Version` field), not in a NATS header.
 
 ## Goals
 
-- Group-room broadcast events are unreadable on the wire to any subscriber that does not possess the room's current private key.
-- The receiver can identify the key version from a single JSON parse of the message body and reject/refetch if the cached version doesn't match.
+- The message content (`ClientMessage`) within group-room broadcast events is unreadable on the wire to any subscriber that does not possess the room's current private key.
+- Event metadata (room ID, type, mentions, timestamps) remains in plaintext so clients can render notifications, badges, and sort order without decrypting.
+- The receiver can identify the key version from a single JSON parse of the `encryptedMessage` field and reject/refetch if the cached version doesn't match.
 - DM broadcasts and all other services are unaffected.
 - Failure modes (missing key, Valkey down, encryption error) fail loudly via NAK + redelivery — no silent degradation.
 
@@ -31,7 +32,9 @@ The key version used for encryption is carried inside the `EncryptedMessage` env
 
 ## Threat Model
 
-This change protects group-room message broadcasts from being read by any NATS subscriber on `chat.room.{roomID}.event` who does not possess the room's current private key. Distribution of the room's private key to legitimate members is governed by the existing `pkg/roomkeysender` flow (out of scope here). This design assumes legitimate room members have the key cached locally and can decrypt with the version identifier embedded in `EncryptedMessage.Version`.
+This change protects the message content (`ClientMessage`) within group-room broadcast events from being read by any NATS subscriber on `chat.room.{roomID}.event` who does not possess the room's current private key. Event metadata (room ID, type, mentions, timestamps, user count) remains in plaintext — this is intentional; these fields contain no message body text and are needed by clients for UI rendering without decryption.
+
+Distribution of the room's private key to legitimate members is governed by the existing `pkg/roomkeysender` flow (out of scope here). This design assumes legitimate room members have the key cached locally and can decrypt with the version identifier embedded in the `encryptedMessage` field.
 
 DM events on per-user subjects are not in scope: NATS auth restricts those subjects to a single recipient, and encryption would add no marginal confidentiality.
 
@@ -49,26 +52,78 @@ Only `publishGroupEvent` is changed. `publishDMEvents` is untouched and continue
 ### New flow for `publishGroupEvent`
 
 1. Build the `RoomEvent` (existing logic: enrichment, mentions, etc.).
-2. JSON-marshal the event to bytes.
+2. JSON-marshal `evt.Message` (the `*ClientMessage`) to bytes.
 3. Fetch the room's current key via `keyStore.Get(ctx, room.ID)`.
 4. If `Get` returns an error or `(nil, nil)`, return a wrapped error → message is NAK'd → JetStream redelivers.
-5. Call `roomcrypto.Encode(string(plaintext), key.KeyPair.PublicKey, key.Version)`.
-6. JSON-marshal the resulting `*EncryptedMessage`.
-7. Publish that JSON to `subject.RoomEvent(room.ID)`.
+5. Call `roomcrypto.Encode(string(msgJSON), key.KeyPair.PublicKey, key.Version)`.
+6. JSON-marshal the resulting `*roomcrypto.EncryptedMessage` to bytes.
+7. Set `evt.EncryptedMessage = json.RawMessage(encJSON)`.
+8. Set `evt.Message = nil`.
+9. JSON-marshal the full `evt` and publish to `subject.RoomEvent(room.ID)`.
 
 The fetch happens inside the group-only branch (not at the top of `HandleMessage`) so the DM path stays zero-cost and DM rooms never need a key in Valkey.
 
+### Wire format (group room)
+
+The published JSON retains all metadata in plaintext. Only the `message` field is removed and replaced by `encryptedMessage`:
+
+```json
+{
+  "type": "new_message",
+  "roomId": "room-1",
+  "timestamp": 1712700000000,
+  "roomName": "general",
+  "roomType": "group",
+  "siteId": "site-a",
+  "userCount": 5,
+  "lastMsgAt": "2026-04-08T10:00:00Z",
+  "lastMsgId": "msg-1",
+  "mentionAll": false,
+  "mentions": [{"account": "alice", "chineseName": "愛麗絲", "engName": "Alice Wang"}],
+  "encryptedMessage": {
+    "version": 3,
+    "ephemeralPublicKey": "base64...",
+    "nonce": "base64...",
+    "ciphertext": "base64..."
+  }
+}
+```
+
+Client decryption flow:
+1. Parse the `RoomEvent` JSON — read metadata fields directly in plaintext.
+2. Parse `encryptedMessage` as `{version, ephemeralPublicKey, nonce, ciphertext}`.
+3. Compare `version` with the locally cached room private-key version; if mismatched, fetch the correct key version from the server.
+4. Decrypt `ciphertext` using ECDH + HKDF + AES-GCM to recover the `ClientMessage` JSON.
+
 ### Versioning scheme
 
-`roomcrypto.EncryptedMessage` gains a `Version int` field. The version is assigned by `roomkeystore` (`VersionedKeyPair.Version`) and stamped into the envelope by `roomcrypto.Encode`. The receiver reads `env.Version` from the same JSON parse it does to access `EphemeralPublicKey`/`Nonce`/`Ciphertext`, compares against its locally cached private-key version, and either decrypts or refetches the key for that version.
+`roomcrypto.EncryptedMessage` gains a `Version int` field. The version is assigned by `roomkeystore` (`VersionedKeyPair.Version`) and stamped into the envelope by `roomcrypto.Encode`. The receiver reads `version` from the `encryptedMessage` object within the `RoomEvent` body, compares against its locally cached private-key version, and either decrypts or refetches the key for that version.
 
 Rationale for body-field over NATS header:
-- The receiver always needs the version on every event and always parses the body anyway.
-- Atomic envelope: version and ciphertext are inseparable across logging, storage, replay.
+- The receiver always needs the version on every event and already parses the body.
+- Atomic envelope: version and ciphertext are inseparable within the `encryptedMessage` object.
 - No `Publisher` interface change in `broadcast-worker`.
 - Real-world crypto envelopes (JWE `kid`, COSE `kid`) embed key identifiers in the envelope; the boundary is conventional.
 
 ## Type & API Changes
+
+### `pkg/model/event.go` — new field on `RoomEvent`
+
+```go
+type RoomEvent struct {
+    // ... existing fields unchanged ...
+
+    Message          *ClientMessage  `json:"message,omitempty"`
+    EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"` // new
+}
+```
+
+`EncryptedMessage` holds the JSON-marshaled `roomcrypto.EncryptedMessage` (containing `version`, `ephemeralPublicKey`, `nonce`, `ciphertext`). Using `json.RawMessage` avoids a `model` → `roomcrypto` package dependency — the raw bytes are opaque to the model package. The handler marshals `*roomcrypto.EncryptedMessage` into this field; the client parses it as needed.
+
+When encrypted: `Message` is `nil`, `EncryptedMessage` is populated.
+When plaintext (DM events): `Message` is populated, `EncryptedMessage` is `nil`.
+
+`"encoding/json"` must be added to the import block of `pkg/model/event.go`.
 
 ### `pkg/roomcrypto/roomcrypto.go`
 
@@ -137,25 +192,20 @@ type RoomKeyProvider interface {
 func NewHandler(store Store, pub Publisher, keyStore RoomKeyProvider) *Handler
 ```
 
-`publishGroupEvent` rewritten:
+`publishGroupEvent` rewritten — encrypts only the `Message` field:
 
 ```go
-func (h *Handler) publishGroupEvent(
-    ctx context.Context,
-    room *model.Room,
-    clientMsg *model.ClientMessage,
-    mentionAll bool,
-    mentions []model.Participant,
-) error {
+func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionAll bool, mentions []model.Participant) error {
     evt := buildRoomEvent(room, clientMsg)
     evt.MentionAll = mentionAll
     if len(mentions) > 0 {
         evt.Mentions = mentions
     }
 
-    plaintext, err := json.Marshal(evt)
+    // Encrypt the ClientMessage, not the entire RoomEvent.
+    msgJSON, err := json.Marshal(evt.Message)
     if err != nil {
-        return fmt.Errorf("marshal group room event: %w", err)
+        return fmt.Errorf("marshal client message: %w", err)
     }
 
     key, err := h.keyStore.Get(ctx, room.ID)
@@ -166,24 +216,33 @@ func (h *Handler) publishGroupEvent(
         return fmt.Errorf("get room key for room %s: no current key", room.ID)
     }
 
-    encrypted, err := roomcrypto.Encode(string(plaintext), key.KeyPair.PublicKey, key.Version)
+    encrypted, err := roomcrypto.Encode(string(msgJSON), key.KeyPair.PublicKey, key.Version)
     if err != nil {
-        return fmt.Errorf("encrypt group room event for room %s: %w", room.ID, err)
+        return fmt.Errorf("encrypt message for room %s: %w", room.ID, err)
     }
 
-    payload, err := json.Marshal(encrypted)
+    encJSON, err := json.Marshal(encrypted)
     if err != nil {
-        return fmt.Errorf("marshal encrypted group room event: %w", err)
+        return fmt.Errorf("marshal encrypted message: %w", err)
+    }
+
+    evt.EncryptedMessage = json.RawMessage(encJSON)
+    evt.Message = nil
+
+    payload, err := json.Marshal(evt)
+    if err != nil {
+        return fmt.Errorf("marshal group room event: %w", err)
     }
 
     return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)
 }
 ```
 
-`publishDMEvents` is unchanged.
+`publishDMEvents` is unchanged — continues to set `Message` and leave `EncryptedMessage` nil.
 
 New imports in `handler.go`:
 ```go
+"encoding/json" // already present
 "github.com/hmchangw/chat/pkg/roomcrypto"
 "github.com/hmchangw/chat/pkg/roomkeystore"
 ```
@@ -235,7 +294,7 @@ A `valkey` service is added alongside the existing `mongo` and `nats` services, 
 - `VALKEY_ADDR=valkey:6379`
 - `VALKEY_KEY_GRACE_PERIOD=24h`
 
-The exact Valkey image tag will be matched against whichever tag is already used by other services in the repo (e.g., `room-service`) at implementation time, to keep image pinning consistent across services.
+The Valkey image uses `valkey/valkey:8-alpine` (current stable). No existing service in the repo runs Valkey yet, so this is the first pin.
 
 ## Test Plan
 
@@ -279,16 +338,26 @@ func testRoomKey(t *testing.T) *roomkeystore.VersionedKeyPair {
 **Decryption helper for tests:**
 
 ```go
-func decryptRoomEvent(t *testing.T, data []byte, key *roomkeystore.VersionedKeyPair) model.RoomEvent {
+// decryptClientMessage parses data as a RoomEvent, decrypts the EncryptedMessage
+// field to recover the ClientMessage, and returns both. Tests can assert metadata
+// fields on the RoomEvent directly (plaintext) and message content via the decrypted ClientMessage.
+func decryptClientMessage(t *testing.T, data []byte, key *roomkeystore.VersionedKeyPair) (model.RoomEvent, *model.ClientMessage) {
     t.Helper()
+    var evt model.RoomEvent
+    require.NoError(t, json.Unmarshal(data, &evt))
+    require.Nil(t, evt.Message, "Message must be nil when EncryptedMessage is set")
+    require.NotEmpty(t, evt.EncryptedMessage, "EncryptedMessage must be populated")
+
     var env roomcrypto.EncryptedMessage
-    require.NoError(t, json.Unmarshal(data, &env))
+    require.NoError(t, json.Unmarshal(evt.EncryptedMessage, &env))
     require.Equal(t, key.Version, env.Version)
+
     plaintext, err := decryptForTest(&env, key.KeyPair.PrivateKey)
     require.NoError(t, err)
-    var evt model.RoomEvent
-    require.NoError(t, json.Unmarshal([]byte(plaintext), &evt))
-    return evt
+
+    var msg model.ClientMessage
+    require.NoError(t, json.Unmarshal([]byte(plaintext), &msg))
+    return evt, &msg
 }
 ```
 
@@ -296,7 +365,7 @@ func decryptRoomEvent(t *testing.T, data []byte, key *roomkeystore.VersionedKeyP
 
 **Existing group-room tests** (`TestHandler_HandleMessage_GroupRoom`):
 - Each subtest registers a `MockRoomKeyProvider` expecting one `Get(ctx, "room-1")` call returning `testRoomKey(t)`.
-- Replace `decodeRoomEvent` with `decryptRoomEvent` so existing assertions on `evt.Type`, `evt.RoomID`, `evt.Mentions`, etc., all still apply unchanged.
+- Replace `decodeRoomEvent(t, data)` with `decryptClientMessage(t, data, key)`. Metadata assertions (`evt.Type`, `evt.RoomID`, `evt.RoomName`, `evt.Mentions`, etc.) use the returned `RoomEvent` directly (plaintext). Message content assertions (`msg.ID`, `msg.Sender`, etc.) use the returned `*ClientMessage`.
 
 **New encryption-specific cases** (added to `TestHandler_HandleMessage_Errors` or a new `TestHandler_HandleMessage_Encryption`):
 
@@ -305,7 +374,8 @@ func decryptRoomEvent(t *testing.T, data []byte, key *roomkeystore.VersionedKeyP
 | keystore returns nil | `Get` returns `(nil, nil)` | error wrapping `"no current key"`, no publish |
 | keystore returns error | `Get` returns `(nil, errors.New("valkey down"))` | error wrapping `"get room key"`, no publish |
 | DM path skips key fetch | DM room handler call | `MockRoomKeyProvider` has zero expectations |
-| published payload is encrypted | happy path | body unmarshals as `EncryptedMessage`; a direct `json.Unmarshal` into a `RoomEvent` either fails or yields zero values for required fields |
+| published event has encrypted message | happy path | `RoomEvent.Message` is nil, `RoomEvent.EncryptedMessage` is populated, metadata fields are plaintext |
+| decrypted message matches original | happy path | decrypted `ClientMessage` has correct ID, Content, Sender |
 | version round-trips | happy path | `env.Version == key.Version` |
 
 **`TestHandler_HandleMessage_DMRoom` updates:**
@@ -334,7 +404,7 @@ func (f *fakeRoomKeyProvider) Get(_ context.Context, _ string) (*roomkeystore.Ve
 All three group-room tests (`TestBroadcastWorker_GroupRoom_Integration`, `TestBroadcastWorker_GroupRoom_MentionAll_Integration`, `TestBroadcastWorker_GroupRoom_IndividualMention_Integration`):
 - Generate a P-256 key pair in setup
 - Wrap it in `&fakeRoomKeyProvider{pair: ...}` and pass to `NewHandler`
-- Decode published records via the same `decryptRoomEvent` helper used in unit tests, asserting both `Version` and the decrypted `RoomEvent` content
+- Parse published records as `RoomEvent` (metadata in plaintext); decrypt `EncryptedMessage` field via the shared `decryptClientMessage` helper to verify the `ClientMessage` content
 
 `TestBroadcastWorker_DMRoom_Integration`:
 - Constructs `&fakeRoomKeyProvider{pair: nil}` — verifies the DM path doesn't even need a real key
