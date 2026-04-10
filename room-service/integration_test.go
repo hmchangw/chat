@@ -39,7 +39,7 @@ func TestMongoStore_Integration(t *testing.T) {
 
 	gotSub, err := store.GetSubscription(ctx, "u1", "r1")
 	require.NoError(t, err)
-	assert.Equal(t, model.RoleOwner, gotSub.Role)
+	assert.Equal(t, model.RoleOwner, gotSub.Roles[0])
 
 	// Test not found
 	_, err = store.GetSubscription(ctx, "u2", "r1")

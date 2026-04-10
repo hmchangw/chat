@@ -60,7 +60,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	handler := NewHandler(store, pub)
 
 	// Create outbox event for member_added
-	invite := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", RoomID: "r1", SiteID: "site-b"}
+	invite := model.MemberChangeEvent{Type: "member-added", RoomID: "r1", Accounts: []string{"u2"}, SiteID: "site-b"}
 	inviteData, _ := json.Marshal(invite)
 	evt := model.OutboxEvent{Type: "member_added", SiteID: "site-a", DestSiteID: "site-b", Payload: inviteData}
 	evtData, _ := json.Marshal(evt)
@@ -71,12 +71,19 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 
 	// Verify subscription was created in MongoDB
 	var sub model.Subscription
-	err := db.Collection("subscriptions").FindOne(ctx, bson.M{"u._id": "u2", "roomId": "r1"}).Decode(&sub)
+	err := db.Collection("subscriptions").FindOne(ctx, bson.M{"u.account": "u2", "roomId": "r1"}).Decode(&sub)
 	if err != nil {
 		t.Fatalf("subscription not found: %v", err)
 	}
-	if !HasRole(sub.Roles, model.RoleMember) {
-		t.Errorf("subscription Role = %v, want member", sub.Roles)
+	hasMemberRole := false
+	for _, r := range sub.Roles {
+		if r == model.RoleMember {
+			hasMemberRole = true
+			break
+		}
+	}
+	if !hasMemberRole {
+		t.Errorf("subscription Roles = %v, want member", sub.Roles)
 	}
 
 	// Verify notification was published
