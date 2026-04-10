@@ -22,7 +22,7 @@ All member operations are processed at the **room's site**. When a user on site-
 | Cross-site owner promotion allowed | Federation guard removed; any member can be promoted to owner |
 | Outbox direction flipped | `outbox.{room.SiteID}.to.{user.SiteID}.{eventType}` — room's site pushes to each remote user's site |
 | System messages added | `members_added` and `member_removed` messages published to MESSAGES_CANONICAL |
-| `RemoveMemberRequest.Username` omitempty | Either `username` or `orgId`, never both |
+| `RemoveMemberRequest` fields omitempty | Either `account` or `orgId`, never both |
 | Message struct updated | `Type` and `SysMsgData` fields added for system messages |
 | Inbox-worker handles `role_updated` | New outbox event type for cross-site role changes |
 
@@ -109,13 +109,13 @@ type RoomMember struct {
 }
 
 type RoomMemberEntry struct {
-    ID       string         `json:"id"                 bson:"id"`
-    Type     RoomMemberType `json:"type"               bson:"type"`     // "individual" or "org"
-    Username string         `json:"username,omitempty" bson:"username,omitempty"`
+    ID      string         `json:"id"                bson:"id"`
+    Type    RoomMemberType `json:"type"              bson:"type"`    // "individual" or "org"
+    Account string         `json:"account,omitempty" bson:"account,omitempty"`
 }
 ```
 
-`room_members` docs are written only when orgs are involved. Unique index: `(rid, member.type, member.id, member.username)`.
+`room_members` docs are written only when orgs are involved. Unique index: `(rid, member.type, member.id, member.account)`.
 
 ### Request Payloads
 
@@ -129,15 +129,15 @@ type AddMembersRequest struct {
 }
 
 type RemoveMemberRequest struct {
-    RoomID   string `json:"roomId"            bson:"roomId"`
-    Username string `json:"username,omitempty" bson:"username,omitempty"`
-    OrgID    string `json:"orgId,omitempty"    bson:"orgId,omitempty"`
+    RoomID  string `json:"roomId"             bson:"roomId"`
+    Account string `json:"account,omitempty"  bson:"account,omitempty"`
+    OrgID   string `json:"orgId,omitempty"    bson:"orgId,omitempty"`
 }
 
 type UpdateRoleRequest struct {
-    RoomID   string `json:"roomId"   bson:"roomId"`
-    Username string `json:"username" bson:"username"`
-    NewRole  Role   `json:"newRole"  bson:"newRole"`
+    RoomID  string `json:"roomId"   bson:"roomId"`
+    Account string `json:"account"  bson:"account"`
+    NewRole Role   `json:"newRole"  bson:"newRole"`
 }
 ```
 
@@ -180,7 +180,7 @@ type MembersAdded struct {
 }
 
 type MembersRemoved struct {
-    Username          string `json:"username,omitempty"`
+    Account           string `json:"account,omitempty"`
     OrgID             string `json:"orgId,omitempty"`
     RemovedUsersCount int    `json:"removedUsersCount"`
 }
@@ -236,7 +236,7 @@ All operations are **fully synchronous before ack**. Any failure NAKs the messag
 
 **Add (room-service):** Resolve channels (copy `room_members` + `subscriptions` from source room), expand orgs via `users.find({sectId: orgId})`, deduplicate, filter bots (regex `\.bot$|^p_`), check capacity against `MAX_ROOM_SIZE`, publish to stream, reply `{"status":"accepted"}`.
 
-**Remove (room-service):** Parse requester and roomID from subject. Exactly one of `username` or `orgId` must be set (both are omitempty). Self-leave triggers last-owner guard. Non-self removal requires owner role.
+**Remove (room-service):** Parse requester and roomID from subject. Exactly one of `account` or `orgId` must be set (both are omitempty). Self-leave triggers last-owner guard. Non-self removal requires owner role.
 
 **Role update (room-service):** Requester must have owner role. `newRole` must be `"owner"` or `"member"`. Last-owner guard rejects demoting self when `CountOwners <= 1`. No federation guard — cross-site users can be promoted to owner.
 
@@ -285,4 +285,4 @@ For each processed event, inbox-worker publishes `SubscriptionUpdateEvent` to th
 | Cross-site owner promotion allowed | Business requirement; outbox handles replicating role changes |
 | Org resolution via users collection | Eliminates hr_data dependency; User.SectID is the single source of truth for org membership |
 | System messages via MESSAGES_CANONICAL | Reuses existing message-worker + broadcast-worker pipeline; no new delivery mechanism |
-| RemoveMemberRequest both fields omitempty | Clean payload — client sends exactly one of username or orgId |
+| RemoveMemberRequest both fields omitempty | Clean payload — client sends exactly one of account or orgId |
