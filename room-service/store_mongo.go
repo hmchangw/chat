@@ -15,7 +15,6 @@ type MongoStore struct {
 	rooms         *mongo.Collection
 	subscriptions *mongo.Collection
 	roomMembers   *mongo.Collection
-	hrData        *mongo.Collection
 	users         *mongo.Collection
 }
 
@@ -24,7 +23,6 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		rooms:         db.Collection("rooms"),
 		subscriptions: db.Collection("subscriptions"),
 		roomMembers:   db.Collection("room_members"),
-		hrData:        db.Collection("hr_data"),
 		users:         db.Collection("users"),
 	}
 }
@@ -32,13 +30,6 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 // EnsureIndexes creates unique indexes on subscriptions and room_members.
 func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	_, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "u.username", Value: 1}},
-		Options: options.Index().SetUnique(true),
-	})
-	if err != nil {
-		return fmt.Errorf("create subscriptions username index: %w", err)
-	}
-	_, err = s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "u.account", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
@@ -46,7 +37,7 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 		return fmt.Errorf("create subscriptions account index: %w", err)
 	}
 	_, err = s.roomMembers.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "rid", Value: 1}, {Key: "member.type", Value: 1}, {Key: "member.id", Value: 1}, {Key: "member.username", Value: 1}},
+		Keys:    bson.D{{Key: "rid", Value: 1}, {Key: "member.type", Value: 1}, {Key: "member.id", Value: 1}, {Key: "member.account", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
 	if err != nil {
@@ -107,19 +98,19 @@ func (s *MongoStore) GetRoomMembers(ctx context.Context, roomID string) ([]model
 }
 
 func (s *MongoStore) GetOrgAccounts(ctx context.Context, orgID string) ([]string, error) {
-	cursor, err := s.hrData.Find(ctx, bson.M{"sectId": orgID})
+	cursor, err := s.users.Find(ctx, bson.M{"sectId": orgID})
 	if err != nil {
 		return nil, fmt.Errorf("get org accounts for %q: %w", orgID, err)
 	}
 	var docs []struct {
-		AccountName string `bson:"accountName"`
+		Account string `bson:"account"`
 	}
 	if err := cursor.All(ctx, &docs); err != nil {
 		return nil, fmt.Errorf("decode org accounts for %q: %w", orgID, err)
 	}
 	accounts := make([]string, len(docs))
 	for i, d := range docs {
-		accounts[i] = d.AccountName
+		accounts[i] = d.Account
 	}
 	return accounts, nil
 }
@@ -127,7 +118,7 @@ func (s *MongoStore) GetOrgAccounts(ctx context.Context, orgID string) ([]string
 func (s *MongoStore) CountSubscriptions(ctx context.Context, roomID string) (int, error) {
 	filter := bson.M{
 		"roomId": roomID,
-		"u.username": bson.M{
+		"u.account": bson.M{
 			"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""},
 		},
 	}

@@ -58,9 +58,6 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MemberRoleUpdateWildcard(h.siteID), queue, h.natsUpdateRole); err != nil {
 		return err
 	}
-	if _, err := nc.QueueSubscribe(subject.MemberInviteWildcard(h.siteID), queue, h.NatsHandleInvite); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -95,17 +92,6 @@ func (h *Handler) natsGetRoom(m otelnats.Msg) {
 	natsutil.ReplyJSON(m.Msg, room)
 }
 
-// NatsHandleInvite handles invite authorization requests.
-func (h *Handler) NatsHandleInvite(m otelnats.Msg) {
-	resp, err := h.handleInvite(m.Context(), m.Msg.Subject, m.Msg.Data)
-	if err != nil {
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
-		return
-	}
-	if err := m.Msg.Respond(resp); err != nil {
-		slog.Error("failed to respond to message", "error", err)
-	}
-}
 
 func (h *Handler) natsAddMembers(m otelnats.Msg) {
 	resp, err := h.handleAddMembers(m.Context(), m.Msg.Subject, m.Msg.Data)
@@ -182,57 +168,6 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 	return json.Marshal(room)
 }
 
-func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([]byte, error) {
-	// Extract user account and roomID from the subject before unmarshalling for performance.
-	inviterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
-	if !ok {
-		return nil, fmt.Errorf("invalid invite subject: %s", subj)
-	}
-
-	// Verify inviter is owner (cheap DB lookup before expensive unmarshal)
-	sub, err := h.store.GetSubscription(ctx, inviterAccount, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("inviter not found: %w", err)
-	}
-	if !HasRole(sub.Roles, model.RoleOwner) {
-		return nil, fmt.Errorf("only owners can invite members")
-	}
-
-	// Check room size via live subscription count (bots excluded)
-	count, err := h.store.CountSubscriptions(ctx, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("count subscriptions: %w", err)
-	}
-	if count >= h.maxRoomSize {
-		return nil, fmt.Errorf("room is at maximum capacity (%d)", h.maxRoomSize)
-	}
-
-	// Only unmarshal after authorization checks pass
-	var req model.InviteMemberRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
-	// Room-ID drift check: payload roomID must match subject roomID
-	if req.RoomID != roomID {
-		return nil, fmt.Errorf("invalid request: room ID mismatch (subject=%s, body=%s)", roomID, req.RoomID)
-	}
-
-	// Set event timestamp
-	req.Timestamp = time.Now().UTC().UnixMilli()
-
-	timestampedData, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal invite request: %w", err)
-	}
-
-	// Publish to ROOMS stream for room-worker processing
-	if err := h.publishToStream(ctx, subj, timestampedData); err != nil {
-		return nil, fmt.Errorf("publish to stream: %w", err)
-	}
-
-	return json.Marshal(map[string]string{"status": "ok"})
-}
 
 func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []byte) ([]byte, error) {
 	requester, roomID, ok := subject.ParseUserRoomSubject(subj)
@@ -251,17 +186,17 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	req.RoomID = roomID
 
 	isOrgRemoval := req.OrgID != ""
-	hasUsername := req.Username != ""
+	hasAccount := req.Account != ""
 
-	// Ambiguous request validation: must specify exactly one of orgId or username
-	if isOrgRemoval && hasUsername {
-		return nil, fmt.Errorf("ambiguous request: specify either orgId or username, not both")
+	// Ambiguous request validation: must specify exactly one of orgId or account
+	if isOrgRemoval && hasAccount {
+		return nil, fmt.Errorf("ambiguous request: specify either orgId or account, not both")
 	}
-	if !isOrgRemoval && !hasUsername {
-		return nil, fmt.Errorf("invalid request: one of orgId or username is required")
+	if !isOrgRemoval && !hasAccount {
+		return nil, fmt.Errorf("invalid request: one of orgId or account is required")
 	}
 
-	isSelfLeave := !isOrgRemoval && req.Username == requester
+	isSelfLeave := !isOrgRemoval && req.Account == requester
 
 	// Authorization: self-leave needs no check; org removal and remove-other require owner
 	if !isSelfLeave {
@@ -335,19 +270,8 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 		return nil, fmt.Errorf("invalid role: %q", req.NewRole)
 	}
 
-	// Guard: federation users cannot be promoted to owner
-	if req.NewRole == model.RoleOwner {
-		targetSub, err := h.store.GetSubscription(ctx, req.Username, roomID)
-		if err != nil {
-			return nil, fmt.Errorf("target user not found: %w", err)
-		}
-		if targetSub.SiteID != h.siteID {
-			return nil, fmt.Errorf("federation users cannot be promoted to owner")
-		}
-	}
-
 	// Guard: last owner cannot demote themselves
-	if req.NewRole == model.RoleMember && req.Username == requester {
+	if req.NewRole == model.RoleMember && req.Account == requester {
 		count, err := h.store.CountOwners(ctx, roomID)
 		if err != nil {
 			return nil, fmt.Errorf("count owners: %w", err)
@@ -442,7 +366,7 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 			case model.RoomMemberTypeOrg:
 				orgIDs = append(orgIDs, m.Member.ID)
 			case model.RoomMemberTypeIndividual:
-				usernames = append(usernames, m.Member.Username)
+				usernames = append(usernames, m.Member.Account)
 			}
 		}
 
@@ -457,7 +381,7 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 	return orgIDs, usernames, nil
 }
 
-// resolveOrgs converts org IDs into account names by querying hr_data.
+// resolveOrgs converts org IDs into account names by querying users.
 func (h *Handler) resolveOrgs(ctx context.Context, orgIDs []string) ([]string, error) {
 	var accounts []string
 	for _, orgID := range orgIDs {
