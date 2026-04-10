@@ -34,6 +34,18 @@ func TestHandler_ProcessMessage(t *testing.T) {
 	evt := model.MessageEvent{Message: msg, SiteID: "site-a", Timestamp: now.UnixMilli()}
 	validData, _ := json.Marshal(evt)
 
+	threadMsg := model.Message{
+		ID:                    "msg-2",
+		RoomID:                "r1",
+		UserID:                "u-1",
+		UserAccount:           "alice",
+		Content:               "thread reply",
+		CreatedAt:             now,
+		ThreadParentMessageID: "msg-1",
+	}
+	threadEvt := model.MessageEvent{Message: threadMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
+	threadData, _ := json.Marshal(threadEvt)
+
 	expectedSender := cassParticipant{
 		ID:          user.ID,
 		EngName:     user.EngName,
@@ -88,6 +100,24 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			data:       []byte("{invalid"),
 			setupMocks: func(store *MockStore, us *MockUserStore) {},
 			wantErr:    true,
+		},
+		{
+			name: "thread message — calls SaveThreadMessage not SaveMessage",
+			data: threadData,
+			setupMocks: func(store *MockStore, us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a").Return(nil)
+			},
+		},
+		{
+			name: "thread message save error — NAK after user lookup",
+			data: threadData,
+			setupMocks: func(store *MockStore, us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a").
+					Return(errors.New("cassandra: write timeout"))
+			},
+			wantErr: true,
 		},
 	}
 

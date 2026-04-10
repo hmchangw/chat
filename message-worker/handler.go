@@ -53,8 +53,14 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		Account:     evt.Message.UserAccount,
 	}
 
-	if err := h.store.SaveMessage(ctx, &evt.Message, &sender, evt.SiteID); err != nil {
-		return fmt.Errorf("save message: %w", err)
+	if evt.Message.ThreadParentMessageID != "" {
+		if err := h.store.SaveThreadMessage(ctx, &evt.Message, &sender, evt.SiteID); err != nil {
+			return fmt.Errorf("save thread message: %w", err)
+		}
+	} else {
+		if err := h.store.SaveMessage(ctx, &evt.Message, &sender, evt.SiteID); err != nil {
+			return fmt.Errorf("save message: %w", err)
+		}
 	}
 
 	return nil
