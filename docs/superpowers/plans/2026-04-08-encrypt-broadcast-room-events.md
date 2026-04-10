@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Encrypt group-room broadcast events in `broadcast-worker` using `roomcrypto.Encode` with the room key fetched from Valkey via `roomkeystore`, carrying the key version inside the `EncryptedMessage` envelope.
+**Goal:** Encrypt the `Message` field (`*ClientMessage`) within group-room broadcast events in `broadcast-worker`, leaving event metadata (roomId, type, mentions, timestamps) in plaintext so clients can render UI without decryption.
 
-**Architecture:** `broadcast-worker` fetches the current room key from Valkey in `publishGroupEvent`, JSON-marshals the `RoomEvent`, encrypts via `roomcrypto.Encode` (which now stamps a `Version` field), and publishes the `EncryptedMessage` JSON to `subject.RoomEvent(roomID)`. DM events stay plaintext — per-user subjects already isolate recipients. Missing key or Valkey errors fail-loudly via NAK + JetStream redelivery; no plaintext fallback.
+**Architecture:** `broadcast-worker` fetches the current room key from Valkey in `publishGroupEvent`, JSON-marshals the `ClientMessage`, encrypts via `roomcrypto.Encode` (which now stamps a `Version` field), sets the result in a new `EncryptedMessage json.RawMessage` field on the `RoomEvent`, nils out `Message`, and publishes the modified `RoomEvent`. DM events stay plaintext — per-user subjects already isolate recipients. Missing key or Valkey errors fail-loudly via NAK + JetStream redelivery; no plaintext fallback.
 
 **Tech Stack:** Go 1.25, NATS JetStream, MongoDB, Valkey (via `go-redis` client in `pkg/roomkeystore`), `pkg/roomcrypto` (ECDH P-256 + HKDF-SHA256 + AES-256-GCM), `go.uber.org/mock`, `testify`, `testcontainers-go`.
 
@@ -17,22 +17,23 @@
 ## File Structure
 
 **Modified:**
+- `pkg/model/event.go` — add `EncryptedMessage json.RawMessage` field to `RoomEvent`; add `"encoding/json"` import
 - `pkg/roomcrypto/roomcrypto.go` — add `Version int` field to `EncryptedMessage`; add `version int` parameter to `Encode` and internal `encode`
 - `pkg/roomcrypto/roomcrypto_test.go` — update 4 existing `Encode` callers; add new tests asserting `Version` round-trips
 - `pkg/roomkeystore/roomkeystore.go` — add `Close() error` to `RoomKeyStore` interface; add `closeClient() error` to `hashCommander` interface; implement `valkeyStore.Close`
 - `pkg/roomkeystore/adapter.go` — implement `redisAdapter.closeClient` calling `a.c.Close()`
 - `pkg/roomkeystore/roomkeystore_test.go` — add `closeClient` to `fakeHashClient`; add `TestValkeyStore_Close`
 - `pkg/roomkeysender/integration_test.go` — update one call site (line ~284) to pass `version` to `roomcrypto.Encode`
-- `broadcast-worker/handler.go` — add `RoomKeyProvider` interface; add `keyStore` field to `Handler`; update `NewHandler` constructor; rewrite `publishGroupEvent` to encrypt
+- `broadcast-worker/handler.go` — add `RoomKeyProvider` interface; add `keyStore` field to `Handler`; update `NewHandler` constructor; rewrite `publishGroupEvent` to encrypt `Message` field only
 - `broadcast-worker/store.go` — add `//go:generate mockgen` directive for `RoomKeyProvider`
-- `broadcast-worker/handler_test.go` — add `testRoomKey`, `decryptRoomEvent`, `decryptForTest` helpers; update 11 `NewHandler` call sites; add encryption-specific tests
-- `broadcast-worker/integration_test.go` — fix pre-existing `recordingPublisher.Publish` signature bug; add `fakeRoomKeyProvider`; update 4 `NewHandler` call sites; update 3 group-room tests to decrypt
+- `broadcast-worker/handler_test.go` — add `testRoomKey`, `decryptClientMessage`, `decryptForTest` helpers; update 11 `NewHandler` call sites; add encryption-specific tests
+- `broadcast-worker/integration_test.go` — fix pre-existing `recordingPublisher.Publish` signature bug; add `fakeRoomKeyProvider`; update 4 `NewHandler` call sites; update 3 group-room tests to decrypt `EncryptedMessage` field
 - `broadcast-worker/main.go` — add Valkey config fields; call `roomkeystore.NewValkeyStore`; pass `keyStore` to `NewHandler`; add `keyStore.Close()` to graceful shutdown
 - `broadcast-worker/deploy/docker-compose.yml` — add `valkey` service; add Valkey env vars to `broadcast-worker` service
 
 **Created:**
 - `broadcast-worker/mock_keystore_test.go` — generated mock for `RoomKeyProvider`
-- `broadcast-worker/testhelpers_test.go` — shared `decryptForTest` helper visible to both unit and integration tests
+- `broadcast-worker/testhelpers_test.go` — shared `decryptForTest` and `decryptClientMessage` helpers visible to both unit and integration tests
 
 ---
 
@@ -711,14 +712,38 @@ EOF
 
 ---
 
-## Task 5: `broadcast-worker` — Implement encryption in `publishGroupEvent` (TDD)
+## Task 5: `broadcast-worker` — Implement Message-only encryption in `publishGroupEvent` (TDD)
 
 **Files:**
+- Modify: `pkg/model/event.go` — add `EncryptedMessage json.RawMessage` field to `RoomEvent`
 - Create: `broadcast-worker/testhelpers_test.go` — shared test helpers (no build tag, visible to both unit and integration builds)
 - Modify: `broadcast-worker/handler_test.go` — update group-room subtests; add new encryption-specific tests
-- Modify: `broadcast-worker/handler.go` — implement encryption in `publishGroupEvent`
+- Modify: `broadcast-worker/handler.go` — implement Message-only encryption in `publishGroupEvent`
 
-- [ ] **Step 1: Create `testhelpers_test.go` with shared crypto helpers**
+- [ ] **Step 1: Add `EncryptedMessage` field to `model.RoomEvent`**
+
+In `pkg/model/event.go`, add `"encoding/json"` to the import block:
+
+```go
+import (
+	"encoding/json"
+	"time"
+)
+```
+
+In the `RoomEvent` struct, add the new field after `Message`:
+
+```go
+	Message          *ClientMessage  `json:"message,omitempty"`
+	EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"`
+```
+
+- [ ] **Step 2: Verify the model change compiles**
+
+Run: `go build ./pkg/model/...`
+Expected: exit code 0.
+
+- [ ] **Step 3: Create `testhelpers_test.go` with shared crypto helpers**
 
 Create `broadcast-worker/testhelpers_test.go` with:
 
@@ -797,23 +822,31 @@ func decryptForTest(env *roomcrypto.EncryptedMessage, roomPrivateKey []byte) (st
 	return string(plaintext), nil
 }
 
-// decryptRoomEvent unmarshals the published body as an EncryptedMessage,
-// asserts Version matches the expected key version, decrypts, and returns
-// the parsed inner RoomEvent.
-func decryptRoomEvent(t *testing.T, data []byte, key *roomkeystore.VersionedKeyPair) model.RoomEvent {
+// decryptClientMessage parses data as a RoomEvent, asserts the EncryptedMessage
+// field is populated and Message is nil, decrypts the EncryptedMessage to recover
+// the ClientMessage, and returns both. Tests assert metadata on the RoomEvent
+// directly (plaintext) and message content on the decrypted ClientMessage.
+func decryptClientMessage(t *testing.T, data []byte, key *roomkeystore.VersionedKeyPair) (model.RoomEvent, *model.ClientMessage) {
 	t.Helper()
+	var evt model.RoomEvent
+	require.NoError(t, json.Unmarshal(data, &evt))
+	require.Nil(t, evt.Message, "Message must be nil when EncryptedMessage is set")
+	require.NotEmpty(t, evt.EncryptedMessage, "EncryptedMessage must be populated")
+
 	var env roomcrypto.EncryptedMessage
-	require.NoError(t, json.Unmarshal(data, &env))
+	require.NoError(t, json.Unmarshal(evt.EncryptedMessage, &env))
 	require.Equal(t, key.Version, env.Version, "EncryptedMessage.Version must match the key version")
+
 	plaintext, err := decryptForTest(&env, key.KeyPair.PrivateKey)
 	require.NoError(t, err)
-	var evt model.RoomEvent
-	require.NoError(t, json.Unmarshal([]byte(plaintext), &evt))
-	return evt
+
+	var msg model.ClientMessage
+	require.NoError(t, json.Unmarshal([]byte(plaintext), &msg))
+	return evt, &msg
 }
 ```
 
-- [ ] **Step 2: Update `TestHandler_HandleMessage_GroupRoom` to expect encryption**
+- [ ] **Step 4: Update `TestHandler_HandleMessage_GroupRoom` to expect Message-only encryption**
 
 In `broadcast-worker/handler_test.go`, inside the `for _, tc := range tests { t.Run(tc.name, func(t *testing.T) { ... }) }` block of `TestHandler_HandleMessage_GroupRoom` (starts around line 114):
 
@@ -854,47 +887,76 @@ Locate the existing decode call:
 
 Replace with:
 ```go
-				evt := decryptRoomEvent(t, pub.records[0].data, key)
+				evt, msg := decryptClientMessage(t, pub.records[0].data, key)
 ```
 
-- [ ] **Step 3: Update `TestHandler_HandleMessage_Errors` subtests that reach `publishGroupEvent`**
+Update all assertions that previously referenced `evt.Message` to use `msg` instead. The metadata assertions (`evt.Type`, `evt.RoomID`, `evt.RoomName`, `evt.SiteID`, `evt.UserCount`, `evt.LastMsgID`, `evt.Timestamp`, `evt.MentionAll`, `evt.Mentions`) stay unchanged. The message-content assertions change:
+
+```go
+				// Before:
+				require.NotNil(t, evt.Message, "group room events must carry Message payload")
+				assert.Equal(t, "msg-1", evt.Message.ID)
+				require.NotNil(t, evt.Message.Sender)
+				assert.Equal(t, "user-1", evt.Message.Sender.UserID)
+
+				// After:
+				require.NotNil(t, msg, "decrypted ClientMessage must not be nil")
+				assert.Equal(t, "msg-1", msg.ID)
+				require.NotNil(t, msg.Sender)
+				assert.Equal(t, "user-1", msg.Sender.UserID)
+```
+
+- [ ] **Step 5: Update `TestHandler_HandleMessage_Errors` subtests that reach `publishGroupEvent`**
 
 Two subtests in `TestHandler_HandleMessage_Errors` successfully reach `publishGroupEvent` and must be updated to expect encryption:
 
 **"sender mentioned deduplicates lookup"** (around line 374):
 
-Locate the setup block:
-```go
-		ctrl := gomock.NewController(t)
-		store := NewMockStore(ctrl)
-		pub := &mockPublisher{}
-		...
-		keyStore := NewMockRoomKeyProvider(ctrl)
-		h := NewHandler(store, pub, keyStore)
-```
-
-Replace `keyStore := NewMockRoomKeyProvider(ctrl)` with:
+Locate the setup block and replace `keyStore := NewMockRoomKeyProvider(ctrl)` with:
 ```go
 		key := testRoomKey(t)
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
 ```
 
-Locate at the end of the subtest:
+Locate the decode call:
 ```go
 		evt := decodeRoomEvent(t, pub.records[0].data)
 ```
 
 Replace with:
 ```go
-		evt := decryptRoomEvent(t, pub.records[0].data, key)
+		evt, _ := decryptClientMessage(t, pub.records[0].data, key)
 ```
+
+The existing assertions on `evt.Mentions` stay unchanged (mentions are plaintext metadata on the `RoomEvent`).
 
 **"employee lookup fails fallback to account"** (around line 395):
 
-Apply the exact same two replacements (add `key := testRoomKey(t)` and the `Get` expectation; change `decodeRoomEvent` to `decryptRoomEvent`).
+Apply the same `key := testRoomKey(t)` and `Get` expectation. Replace `decodeRoomEvent` with `decryptClientMessage`:
 
-- [ ] **Step 4: Add new encryption-specific test cases**
+```go
+		evt, msg := decryptClientMessage(t, pub.records[0].data, key)
+```
+
+Update the message-content assertions:
+```go
+		// Before:
+		require.NotNil(t, evt.Message)
+		require.NotNil(t, evt.Message.Sender)
+		assert.Equal(t, "sender", evt.Message.Sender.Account)
+		assert.Equal(t, "sender", evt.Message.Sender.ChineseName)
+		assert.Equal(t, "sender", evt.Message.Sender.EngName)
+
+		// After:
+		require.NotNil(t, msg)
+		require.NotNil(t, msg.Sender)
+		assert.Equal(t, "sender", msg.Sender.Account)
+		assert.Equal(t, "sender", msg.Sender.ChineseName)
+		assert.Equal(t, "sender", msg.Sender.EngName)
+```
+
+- [ ] **Step 6: Add new encryption-specific test cases**
 
 Append to `broadcast-worker/handler_test.go` at the end of the file (after `TestExtractMentionedAccounts`):
 
@@ -939,7 +1001,7 @@ func TestHandler_HandleMessage_GroupRoom_Encryption(t *testing.T) {
 		assert.Empty(t, pub.records)
 	})
 
-	t.Run("published payload is not a plaintext RoomEvent", func(t *testing.T) {
+	t.Run("published event has encrypted message and plaintext metadata", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		pub := &mockPublisher{}
@@ -956,41 +1018,51 @@ func TestHandler_HandleMessage_GroupRoom_Encryption(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, pub.records, 1)
 
-		// Body parses cleanly as an EncryptedMessage with matching version.
+		// Body is still a RoomEvent with metadata in plaintext.
+		var evt model.RoomEvent
+		require.NoError(t, json.Unmarshal(pub.records[0].data, &evt))
+		assert.Equal(t, model.RoomEventNewMessage, evt.Type)
+		assert.Equal(t, "room-1", evt.RoomID)
+		assert.Equal(t, "general", evt.RoomName)
+		assert.Equal(t, "site-a", evt.SiteID)
+
+		// Message field is nil; EncryptedMessage is populated.
+		assert.Nil(t, evt.Message)
+		require.NotEmpty(t, evt.EncryptedMessage)
+
+		// EncryptedMessage has the correct version and valid crypto fields.
 		var env roomcrypto.EncryptedMessage
-		require.NoError(t, json.Unmarshal(pub.records[0].data, &env))
+		require.NoError(t, json.Unmarshal(evt.EncryptedMessage, &env))
 		assert.Equal(t, key.Version, env.Version)
 		assert.Len(t, env.EphemeralPublicKey, 65)
 		assert.Len(t, env.Nonce, 12)
 		assert.NotEmpty(t, env.Ciphertext)
 
-		// Body does NOT parse as a RoomEvent with recognisable fields.
-		// A strict assertion would be brittle (json.Unmarshal into a typed struct
-		// ignores unknown keys), so we assert the decrypted content matches and
-		// rely on TestHandler_HandleMessage_GroupRoom for field-level checks.
-		decrypted := decryptRoomEvent(t, pub.records[0].data, key)
-		assert.Equal(t, model.RoomEventNewMessage, decrypted.Type)
-		assert.Equal(t, "room-1", decrypted.RoomID)
+		// Decrypted content is the ClientMessage.
+		_, msg := decryptClientMessage(t, pub.records[0].data, key)
+		assert.Equal(t, "msg-1", msg.ID)
+		assert.Equal(t, "hello", msg.Content)
 	})
 }
 ```
 
-Verify the `roomcrypto` import is present in `handler_test.go`'s import block. If not, add:
+Verify these imports are present in `handler_test.go`'s import block. If not, add:
 
 ```go
 	"github.com/hmchangw/chat/pkg/roomcrypto"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 ```
 
-- [ ] **Step 5: Run the updated tests to verify they FAIL (Red)**
+- [ ] **Step 7: Run the updated tests to verify they FAIL (Red)**
 
 Run: `make test SERVICE=broadcast-worker`
-Expected: multiple failures in `TestHandler_HandleMessage_GroupRoom` and `TestHandler_HandleMessage_GroupRoom_Encryption`. The failures should mention things like `json: cannot unmarshal object into Go value of type roomcrypto.EncryptedMessage` (because the current code publishes a plaintext `RoomEvent`), or `missing call(s) to mockRoomKeyProvider.Get` (gomock complaining that `publishGroupEvent` never called `Get`).
+Expected: multiple failures. The `decryptClientMessage` helper will fail because `evt.Message` is not nil (the current code still sets it) and `evt.EncryptedMessage` is empty. The `gomock` expectations on `keyStore.Get` will also fail because `publishGroupEvent` doesn't call `Get` yet.
 
 Write down the first two failure messages as evidence that the tests were actually red before the implementation.
 
-- [ ] **Step 6: Implement encryption in `publishGroupEvent` (Green)**
+- [ ] **Step 8: Implement Message-only encryption in `publishGroupEvent` (Green)**
 
-In `broadcast-worker/handler.go`, add `"github.com/hmchangw/chat/pkg/roomcrypto"` to the import block.
+In `broadcast-worker/handler.go`, add `"github.com/hmchangw/chat/pkg/roomcrypto"` to the import block (verify `"encoding/json"` is already present).
 
 Replace the entire `publishGroupEvent` function (currently lines 90–102) with:
 
@@ -1002,9 +1074,9 @@ func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clien
 		evt.Mentions = mentions
 	}
 
-	plaintext, err := json.Marshal(evt)
+	msgJSON, err := json.Marshal(evt.Message)
 	if err != nil {
-		return fmt.Errorf("marshal group room event: %w", err)
+		return fmt.Errorf("marshal client message: %w", err)
 	}
 
 	key, err := h.keyStore.Get(ctx, room.ID)
@@ -1015,21 +1087,29 @@ func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clien
 		return fmt.Errorf("get room key for room %s: no current key", room.ID)
 	}
 
-	encrypted, err := roomcrypto.Encode(string(plaintext), key.KeyPair.PublicKey, key.Version)
+	encrypted, err := roomcrypto.Encode(string(msgJSON), key.KeyPair.PublicKey, key.Version)
 	if err != nil {
-		return fmt.Errorf("encrypt group room event for room %s: %w", room.ID, err)
+		return fmt.Errorf("encrypt message for room %s: %w", room.ID, err)
 	}
 
-	payload, err := json.Marshal(encrypted)
+	encJSON, err := json.Marshal(encrypted)
 	if err != nil {
-		return fmt.Errorf("marshal encrypted group room event: %w", err)
+		return fmt.Errorf("marshal encrypted message: %w", err)
+	}
+
+	evt.EncryptedMessage = json.RawMessage(encJSON)
+	evt.Message = nil
+
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal group room event: %w", err)
 	}
 
 	return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)
 }
 ```
 
-- [ ] **Step 7: Run the tests to verify they PASS (Green)**
+- [ ] **Step 9: Run the tests to verify they PASS (Green)**
 
 Run: `make test SERVICE=broadcast-worker`
 Expected: PASS — all tests green, including:
@@ -1038,36 +1118,32 @@ Expected: PASS — all tests green, including:
 - `TestHandler_HandleMessage_Errors` (all subtests)
 - `TestHandler_HandleMessage_GroupRoom_Encryption` (all 3 new subtests)
 
-- [ ] **Step 8: Verify no lint regressions**
+- [ ] **Step 10: Verify no lint regressions**
 
 Run: `make lint`
-Expected: exit code 0. If `golangci-lint` reports issues, fix them in-place. Common issues from TDD cycles: unused imports, unused variables, goimports ordering.
+Expected: exit code 0. If `golangci-lint` reports issues, fix them in-place.
 
-- [ ] **Step 9: Verify integration test still compiles (it will fail at runtime; that's fine)**
+- [ ] **Step 11: Verify integration test still compiles (it will fail at runtime; that's fine)**
 
 Run: `go vet -tags=integration ./broadcast-worker/...`
-Expected: exit code 0, no output. (Integration tests won't be run here — Task 6 updates them to decrypt.)
+Expected: exit code 0, no output. (Integration tests won't be run here — Task 6 updates them.)
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add broadcast-worker/handler.go broadcast-worker/handler_test.go broadcast-worker/testhelpers_test.go
+git add pkg/model/event.go broadcast-worker/handler.go broadcast-worker/handler_test.go broadcast-worker/testhelpers_test.go
 git commit -m "$(cat <<'EOF'
-feat(broadcast-worker): encrypt group room broadcast events
+feat(broadcast-worker): encrypt Message field in group room broadcasts
 
-publishGroupEvent now fetches the room's current encryption key from
-Valkey via the injected RoomKeyProvider, encrypts the JSON-marshaled
-RoomEvent via roomcrypto.Encode, and publishes the EncryptedMessage
-(with Version stamped in the envelope) to subject.RoomEvent(roomID).
+publishGroupEvent now encrypts only the ClientMessage (not the entire
+RoomEvent), leaving metadata (roomId, type, mentions, timestamps) in
+plaintext so clients can render UI without decryption. The encrypted
+ClientMessage is set in a new EncryptedMessage json.RawMessage field
+on the RoomEvent, and the plaintext Message field is set to nil.
 
-Missing key and keystore errors return a wrapped error so the NATS
-message is NAK'd and redelivered — no plaintext fallback. DM events
-remain plaintext (per-user subjects already isolate recipients).
-
-Adds testhelpers_test.go with decryptForTest / decryptRoomEvent
-helpers shared between unit and integration tests. The group-room
-unit tests now round-trip through encryption to verify both the
-envelope shape and the decrypted content.
+Adds EncryptedMessage field to model.RoomEvent and testhelpers_test.go
+with decryptForTest / decryptClientMessage helpers shared between unit
+and integration tests.
 EOF
 )"
 ```
@@ -1076,7 +1152,7 @@ EOF
 
 ## Task 6: `broadcast-worker/integration_test.go` — Update integration tests for encrypted group events
 
-**Context:** After Task 5, the 3 group-room integration tests fail because they unmarshal the published body as a plaintext `model.RoomEvent`. This task updates them to populate a real key in `fakeRoomKeyProvider` and decrypt the published body via the shared `decryptRoomEvent` helper from `testhelpers_test.go`. The DM integration test stays plaintext.
+**Context:** After Task 5, the 3 group-room integration tests fail because they unmarshal the published body as a plaintext `model.RoomEvent`. This task updates them to populate a real key in `fakeRoomKeyProvider` and decrypt the published body via the shared `decryptClientMessage` helper from `testhelpers_test.go`. The DM integration test stays plaintext.
 
 **Files:**
 - Modify: `broadcast-worker/integration_test.go`
@@ -1084,7 +1160,7 @@ EOF
 - [ ] **Step 1: Confirm the integration tests are currently broken (expected failure)**
 
 Run: `make test-integration SERVICE=broadcast-worker`
-Expected: the 3 group-room tests fail; the DM test passes. Failure message will be something like `json: cannot unmarshal object into Go value of type model.RoomEvent` or an assertion on `roomEvt.SiteID` returning an empty string (because the body is now an `EncryptedMessage`, not a `RoomEvent`).
+Expected: the 3 group-room tests fail; the DM test passes. Failure message will be something like `Message must be nil when EncryptedMessage is set` (because the old `fakeRoomKeyProvider{pair: nil}` causes `publishGroupEvent` to fail with "no current key", or the test tries to decrypt a nil `EncryptedMessage` field).
 
 If Docker is unavailable in the development environment, skip this step — the compile-time check from Task 5 already verified the file builds.
 
@@ -1121,11 +1197,11 @@ Replace the decode block at the end of the test:
 
 with:
 ```go
-	roomEvt := decryptRoomEvent(t, records[0].data, key)
+	roomEvt, msg := decryptClientMessage(t, records[0].data, key)
 	assert.Equal(t, "site-a", roomEvt.SiteID)
-	require.NotNil(t, roomEvt.Message)
-	require.NotNil(t, roomEvt.Message.Sender)
-	assert.Equal(t, "u1", roomEvt.Message.Sender.UserID)
+	require.NotNil(t, msg)
+	require.NotNil(t, msg.Sender)
+	assert.Equal(t, "u1", msg.Sender.UserID)
 ```
 
 - [ ] **Step 3: Update `TestBroadcastWorker_GroupRoom_MentionAll_Integration`**
@@ -1187,7 +1263,7 @@ Replace the decode block near the end of the test:
 with:
 ```go
 	records := pub.getRecords()
-	roomEvt := decryptRoomEvent(t, records[0].data, key)
+	roomEvt, _ := decryptClientMessage(t, records[0].data, key)
 	require.Len(t, roomEvt.Mentions, 1)
 	assert.Equal(t, "bob", roomEvt.Mentions[0].Account)
 	assert.Equal(t, "鮑勃", roomEvt.Mentions[0].ChineseName)
@@ -1219,7 +1295,7 @@ test(broadcast-worker): update integration tests for encrypted group events
 
 Group-room integration tests now generate a real P-256 key pair,
 populate the fakeRoomKeyProvider with it, and decrypt published
-records via the shared decryptRoomEvent helper. The DM integration
+records via the shared decryptClientMessage helper. The DM integration
 test keeps pair: nil and continues to assert plaintext, verifying the
 DM path never consults the keystore.
 EOF
@@ -1377,7 +1453,8 @@ Expected: `nothing to commit, working tree clean`.
 
 | Spec requirement | Task(s) covering it |
 |---|---|
-| `EncryptedMessage.Version int` field | Task 1 |
+| `model.RoomEvent.EncryptedMessage json.RawMessage` field | Task 5 |
+| `roomcrypto.EncryptedMessage.Version int` field | Task 1 |
 | `Encode(content, pubKey, version int)` signature | Task 1 |
 | Update `pkg/roomkeysender/integration_test.go` caller | Task 1 |
 | `RoomKeyStore.Close()` method | Task 2 |
@@ -1392,13 +1469,13 @@ Expected: `nothing to commit, working tree clean`.
 | `main.go` `roomkeystore.NewValkeyStore` startup + `keyStore.Close` shutdown | Task 4 |
 | All 11 unit test `NewHandler` call sites updated | Task 4 |
 | All 4 integration test `NewHandler` call sites + `fakeRoomKeyProvider` | Task 4 |
-| `publishGroupEvent` encryption implementation | Task 5 |
-| Happy path decrypts to the same `RoomEvent` | Task 5 |
+| `publishGroupEvent` Message-only encryption implementation | Task 5 |
+| Happy path: metadata plaintext, decrypted `ClientMessage` matches | Task 5 |
 | Missing key → wrapped error with `"no current key"` | Task 5 |
 | Keystore error → wrapped error with `"get room key"` | Task 5 |
 | DM path makes zero keystore calls | Task 5 (unit) + Task 6 (integration) |
-| `testRoomKey`, `decryptForTest`, `decryptRoomEvent` shared helpers | Task 5 |
-| Group-room integration tests decrypt published body | Task 6 |
+| `testRoomKey`, `decryptForTest`, `decryptClientMessage` shared helpers | Task 5 |
+| Group-room integration tests decrypt `EncryptedMessage` field | Task 6 |
 | DM integration test stays plaintext | Task 6 |
 | Valkey service in `broadcast-worker/deploy/docker-compose.yml` | Task 7 |
 | `VALKEY_ADDR` + `VALKEY_KEY_GRACE_PERIOD` in broadcast-worker env block | Task 7 |
