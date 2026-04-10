@@ -55,6 +55,20 @@ func (mr *MockStoreMockRecorder) SaveMessage(ctx, msg, sender, siteID any) *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveMessage", reflect.TypeOf((*MockStore)(nil).SaveMessage), ctx, msg, sender, siteID)
 }
 
+// SaveThreadMessage mocks base method.
+func (m *MockStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SaveThreadMessage", ctx, msg, sender, siteID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SaveThreadMessage indicates an expected call of SaveThreadMessage.
+func (mr *MockStoreMockRecorder) SaveThreadMessage(ctx, msg, sender, siteID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveThreadMessage", reflect.TypeOf((*MockStore)(nil).SaveThreadMessage), ctx, msg, sender, siteID)
+}
+
 // MockUserStore is a mock of UserStore interface.
 type MockUserStore struct {
 	ctrl     *gomock.Controller
