@@ -85,10 +85,7 @@ func (a *valkeyAdapter) Requeue(ctx context.Context, key string, deadline time.T
 }
 
 func (a *valkeyAdapter) Close() error {
-	if a.closer != nil {
-		return a.closer()
-	}
-	return nil
+	return a.closer()
 }
 
 // --- Redis/Valkey implementation of sortedSetCommander ---

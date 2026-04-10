@@ -44,6 +44,9 @@ func New(adapter Adapter, callback Callback, cfg Config) (*Debouncer, error) {
 	if cfg.ProcessingTimeout <= 0 {
 		return nil, errors.New("debounce: ProcessingTimeout must be positive")
 	}
+	if cfg.MaxRetries > 0 && cfg.InitialBackoff <= 0 {
+		return nil, errors.New("debounce: InitialBackoff must be positive when MaxRetries > 0")
+	}
 	return &Debouncer{
 		adapter:  adapter,
 		callback: callback,
@@ -79,19 +82,22 @@ func (d *Debouncer) Start(ctx context.Context) error {
 }
 
 // Close stops the poll loop and waits for in-flight callbacks to finish.
-// Safe to call multiple times and before Start.
+// Safe to call multiple times and before Start. Only the first call
+// performs the shutdown; subsequent calls return immediately.
 func (d *Debouncer) Close() {
-	d.once.Do(func() { close(d.stopCh) })
-	done := make(chan struct{})
-	go func() {
-		d.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(d.cfg.ProcessingTimeout):
-		slog.Warn("debounce close timed out waiting for in-flight callbacks")
-	}
+	d.once.Do(func() {
+		close(d.stopCh)
+		done := make(chan struct{})
+		go func() {
+			d.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(d.cfg.ProcessingTimeout):
+			slog.Warn("debounce close timed out waiting for in-flight callbacks")
+		}
+	})
 }
 
 func (d *Debouncer) poll(ctx context.Context) {

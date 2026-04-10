@@ -79,7 +79,7 @@ func (f *fakeSortedSetCommander) removeIfScore(_ context.Context, member string,
 
 // newTestAdapter creates a valkeyAdapter backed by the given fake for unit tests.
 func newTestAdapter(fake *fakeSortedSetCommander) *valkeyAdapter {
-	return &valkeyAdapter{client: fake}
+	return &valkeyAdapter{client: fake, closer: func() error { return nil }}
 }
 
 func TestValkeyAdapter_Trigger(t *testing.T) {

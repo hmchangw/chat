@@ -501,6 +501,11 @@ func TestNew_invalidConfig(t *testing.T) {
 			cfg:         Config{Timeout: time.Second, PollInterval: time.Second, ProcessingTimeout: 0},
 			errContains: "ProcessingTimeout",
 		},
+		{
+			name:        "zero InitialBackoff with retries",
+			cfg:         Config{Timeout: time.Second, PollInterval: time.Second, ProcessingTimeout: time.Second, MaxRetries: 3, InitialBackoff: 0},
+			errContains: "InitialBackoff",
+		},
 	}
 
 	for _, tt := range tests {
