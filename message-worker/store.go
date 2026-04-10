@@ -6,9 +6,14 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-//go:generate mockgen -destination=mock_store_test.go -package=main . Store
+//go:generate mockgen -destination=mock_store_test.go -package=main . Store,UserStore
 
-// Store defines persistence operations for the message worker.
+// Store defines Cassandra persistence operations for the message worker.
 type Store interface {
-	SaveMessage(ctx context.Context, msg model.Message) error
+	SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error
+}
+
+// UserStore defines MongoDB user lookup operations for the message worker.
+type UserStore interface {
+	FindUserByID(ctx context.Context, id string) (*model.User, error)
 }
