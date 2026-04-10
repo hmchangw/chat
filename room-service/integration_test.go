@@ -34,7 +34,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	assert.Len(t, rooms, 2)
 
 	// Test CreateSubscription and GetSubscription
-	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
+	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
 	require.NoError(t, store.CreateSubscription(ctx, &sub))
 
 	gotSub, err := store.GetSubscription(ctx, "u1", "r1")
@@ -79,10 +79,10 @@ func TestMongoStore_GetOrgAccounts(t *testing.T) {
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
-	// Seed hr_data collection with individual account entries
-	_, err := db.Collection("hr_data").InsertMany(ctx, []interface{}{
-		bson.M{"sectId": "org-eng", "accountName": "alice"},
-		bson.M{"sectId": "org-eng", "accountName": "bob"},
+	// Seed users collection with individual account entries (GetOrgAccounts queries users by sectId)
+	_, err := db.Collection("users").InsertMany(ctx, []interface{}{
+		bson.M{"sectId": "org-eng", "account": "alice"},
+		bson.M{"sectId": "org-eng", "account": "bob"},
 	})
 	require.NoError(t, err)
 

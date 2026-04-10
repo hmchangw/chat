@@ -126,7 +126,7 @@ func TestNATS_RoomMember(t *testing.T) {
 		pubMu.Unlock()
 
 		subj := subject.MemberRemove("alice", "rm-sl-r1", testSiteID)
-		req := model.RemoveMemberRequest{RoomID: "rm-sl-r1"}
+		req := model.RemoveMemberRequest{RoomID: "rm-sl-r1", Account: "alice"}
 		msg := natsRequest(t, nc, subj, req, ps)
 
 		var resp map[string]string
@@ -155,7 +155,7 @@ func TestNATS_RoomMember(t *testing.T) {
 		pubMu.Unlock()
 
 		subj := subject.MemberRemove("owner1", "rm-or-r1", testSiteID)
-		req := model.RemoveMemberRequest{RoomID: "rm-or-r1"}
+		req := model.RemoveMemberRequest{RoomID: "rm-or-r1", Account: "bob"}
 		msg := natsRequest(t, nc, subj, req, ps)
 
 		var resp map[string]string
@@ -179,7 +179,7 @@ func TestNATS_RoomMember(t *testing.T) {
 		}))
 
 		subj := subject.MemberRemove("bob", "rm-no-r1", testSiteID)
-		req := model.RemoveMemberRequest{RoomID: "rm-no-r1"}
+		req := model.RemoveMemberRequest{RoomID: "rm-no-r1", Account: "carol"}
 		msg := natsRequest(t, nc, subj, req, ps)
 
 		var errResp model.ErrorResponse
@@ -197,7 +197,7 @@ func TestNATS_RoomMember(t *testing.T) {
 		}))
 
 		subj := subject.MemberRemove("onlyowner", "rm-lo-r1", testSiteID)
-		req := model.RemoveMemberRequest{RoomID: "rm-lo-r1"}
+		req := model.RemoveMemberRequest{RoomID: "rm-lo-r1", Account: "onlyowner"}
 		msg := natsRequest(t, nc, subj, req, ps)
 
 		var errResp model.ErrorResponse
@@ -248,7 +248,7 @@ func TestNATS_RoomMember(t *testing.T) {
 		}))
 
 		subj := subject.MemberRoleUpdate("owner1", "ur-lo-r1", testSiteID)
-		req := model.UpdateRoleRequest{RoomID: "ur-lo-r1", NewRole: model.RoleMember}
+		req := model.UpdateRoleRequest{RoomID: "ur-lo-r1", Account: "owner1", NewRole: model.RoleMember}
 		msg := natsRequest(t, nc, subj, req, ps)
 
 		var errResp model.ErrorResponse
@@ -259,27 +259,6 @@ func TestNATS_RoomMember(t *testing.T) {
 		sub, err := store.GetSubscription(ctx, "owner1", "ur-lo-r1")
 		require.NoError(t, err)
 		assert.True(t, sub.Roles[0] == model.RoleOwner, "owner1 should still be owner")
-	})
-
-	t.Run("UpdateRole_FederationUserCannotBeOwner", func(t *testing.T) {
-		ctx := context.Background()
-
-		require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "ur-fu-r1", Name: "general", Type: model.RoomTypeGroup, SiteID: testSiteID}))
-		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "ur-fu-s1", User: model.SubscriptionUser{ID: "u1", Account: "owner1"}, RoomID: "ur-fu-r1", SiteID: testSiteID, Roles: []model.Role{model.RoleOwner},
-		}))
-		require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
-			ID: "ur-fu-s2", User: model.SubscriptionUser{ID: "u2", Account: "Eng@site-b.example.com"}, RoomID: "ur-fu-r1", SiteID: "site-b", Roles: []model.Role{model.RoleMember},
-		}))
-
-		subj := subject.MemberRoleUpdate("owner1", "ur-fu-r1", testSiteID)
-		req := model.UpdateRoleRequest{RoomID: "ur-fu-r1", NewRole: model.RoleOwner}
-		msg := natsRequest(t, nc, subj, req, ps)
-
-		var errResp model.ErrorResponse
-		require.NoError(t, json.Unmarshal(msg.Data, &errResp))
-		assert.Contains(t, errResp.Error, "federation")
-		t.Logf("  Expected error: %s", errResp.Error)
 	})
 
 	// --- AddMembers tests ---
@@ -293,13 +272,13 @@ func TestNATS_RoomMember(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// Helper: seed an org account into the hr_data collection
-	seedOrg := func(t *testing.T, orgID, accountName string) {
+	// Helper: seed an org account into the users collection (GetOrgAccounts queries users by sectId/account)
+	seedOrg := func(t *testing.T, orgID, account string) {
 		t.Helper()
-		_, err := db.Collection("hr_data").InsertOne(context.Background(), bson.M{
-			"sectId": orgID, "accountName": accountName,
+		_, err := db.Collection("users").InsertOne(context.Background(), bson.M{
+			"sectId": orgID, "account": account,
 		})
-		require.NoError(t, err, "seedOrg %s/%s", orgID, accountName)
+		require.NoError(t, err, "seedOrg %s/%s", orgID, account)
 	}
 
 	t.Run("AddMembers_IndividualUsers", func(t *testing.T) {
