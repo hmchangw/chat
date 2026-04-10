@@ -92,7 +92,6 @@ func (h *Handler) natsGetRoom(m otelnats.Msg) {
 	natsutil.ReplyJSON(m.Msg, room)
 }
 
-
 func (h *Handler) natsAddMembers(m otelnats.Msg) {
 	resp, err := h.handleAddMembers(m.Context(), m.Msg.Subject, m.Msg.Data)
 	if err != nil {
@@ -167,7 +166,6 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 
 	return json.Marshal(room)
 }
-
 
 func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []byte) ([]byte, error) {
 	requester, roomID, ok := subject.ParseUserRoomSubject(subj)

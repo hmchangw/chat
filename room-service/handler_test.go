@@ -41,7 +41,6 @@ func TestHandler_CreateRoom(t *testing.T) {
 	assert.Equal(t, "alice", capturedSub.User.Account)
 }
 
-
 func TestHandler_AddMembers(t *testing.T) {
 	makeSubj := func(inviter, roomID string) string {
 		return subject.MemberAdd(inviter, roomID, "site-a")
@@ -313,7 +312,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			subj: subject.MemberRemove("alice", "r1", "site-a"),
 			payload: model.RemoveMemberRequest{
 				Account: "alice",
-				RoomID:   "r1",
+				RoomID:  "r1",
 			},
 			setup: func(store *MockRoomStore) {
 				// Self-leave: GetSubscription to check if owner for last-owner guard
@@ -326,7 +325,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			subj: subject.MemberRemove("alice", "r1", "site-a"),
 			payload: model.RemoveMemberRequest{
 				Account: "alice",
-				RoomID:   "r1",
+				RoomID:  "r1",
 			},
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
@@ -339,7 +338,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			subj: subject.MemberRemove("alice", "r1", "site-a"),
 			payload: model.RemoveMemberRequest{
 				Account: "alice",
-				RoomID:   "r1",
+				RoomID:  "r1",
 			},
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
@@ -353,7 +352,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			subj: subject.MemberRemove("owner1", "r1", "site-a"),
 			payload: model.RemoveMemberRequest{
 				Account: "bob",
-				RoomID:   "r1",
+				RoomID:  "r1",
 			},
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
@@ -366,7 +365,7 @@ func TestHandler_RemoveMember(t *testing.T) {
 			subj: subject.MemberRemove("bob", "r1", "site-a"),
 			payload: model.RemoveMemberRequest{
 				Account: "carol",
-				RoomID:   "r1",
+				RoomID:  "r1",
 			},
 			setup: func(store *MockRoomStore) {
 				store.EXPECT().
@@ -406,9 +405,9 @@ func TestHandler_RemoveMember(t *testing.T) {
 			name: "ambiguous request: both orgId and username",
 			subj: subject.MemberRemove("owner1", "r1", "site-a"),
 			payload: model.RemoveMemberRequest{
-				OrgID:    "org-eng",
+				OrgID:   "org-eng",
 				Account: "bob",
-				RoomID:   "r1",
+				RoomID:  "r1",
 			},
 			setup:   func(store *MockRoomStore) {},
 			wantErr: true,
