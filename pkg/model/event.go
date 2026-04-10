@@ -24,15 +24,6 @@ type SubscriptionUpdateEvent struct {
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
 }
 
-type InviteMemberRequest struct {
-	InviterID      string `json:"inviterId"`
-	InviteeID      string `json:"inviteeId"`
-	InviteeAccount string `json:"inviteeAccount"`
-	RoomID         string `json:"roomId"`
-	SiteID         string `json:"siteId"`
-	Timestamp      int64  `json:"timestamp" bson:"timestamp"`
-}
-
 type NotificationEvent struct {
 	Type      string  `json:"type"` // "new_message"
 	RoomID    string  `json:"roomId"`

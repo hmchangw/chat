@@ -9,8 +9,10 @@ type Message struct {
 	UserAccount                  string     `json:"userAccount"                          bson:"userAccount"`
 	Content                      string     `json:"content"                              bson:"content"`
 	CreatedAt                    time.Time  `json:"createdAt"                            bson:"createdAt"`
-	ThreadParentMessageID        string     `json:"threadParentMessageId,omitempty"      bson:"threadParentMessageId,omitempty"`
+	ThreadParentMessageID        string     `json:"threadParentMessageId,omitempty"        bson:"threadParentMessageId,omitempty"`
 	ThreadParentMessageCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty" bson:"threadParentMessageCreatedAt,omitempty"`
+	Type                         string     `json:"type,omitempty"                         bson:"type,omitempty"`
+	SysMsgData                   []byte     `json:"sysMsgData,omitempty"                   bson:"sysMsgData,omitempty"`
 }
 
 type SendMessageRequest struct {

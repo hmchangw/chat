@@ -18,6 +18,7 @@ func TestUserJSON(t *testing.T) {
 		ID:          "u1",
 		Account:     "alice",
 		SiteID:      "site-a",
+		SectID:      "sect-eng",
 		EngName:     "Alice Wang",
 		ChineseName: "愛麗絲",
 		EmployeeID:  "EMP001",
@@ -46,7 +47,11 @@ func TestMessageJSON(t *testing.T) {
 			CreatedAt:             time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 			ThreadParentMessageID: "parent-msg-uuid",
 		}
-		roundTrip(t, &m, &model.Message{})
+		data, err := json.Marshal(m)
+		require.NoError(t, err)
+		var dst model.Message
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, m, dst)
 	})
 
 	t.Run("threadParentMessageId omitted when empty", func(t *testing.T) {
@@ -147,7 +152,11 @@ func TestMessageEventJSON(t *testing.T) {
 		SiteID:    "site-a",
 		Timestamp: 1735689600000,
 	}
-	roundTrip(t, &e, &model.MessageEvent{})
+	data, err := json.Marshal(e)
+	require.NoError(t, err)
+	var dst model.MessageEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, e, dst)
 }
 
 func TestSubscriptionJSON(t *testing.T) {
@@ -383,7 +392,11 @@ func TestNotificationEventJSON(t *testing.T) {
 		},
 		Timestamp: 1735689600000,
 	}
-	roundTrip(t, &src, &model.NotificationEvent{})
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+	var dst model.NotificationEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
 }
 
 func TestSubscriptionUpdateEventJSON(t *testing.T) {
@@ -409,16 +422,94 @@ func TestSubscriptionUpdateEventJSON(t *testing.T) {
 	}
 }
 
-func TestInviteMemberRequestJSON(t *testing.T) {
-	src := model.InviteMemberRequest{
-		InviterID:      "u1",
-		InviteeID:      "u2",
-		InviteeAccount: "bob",
-		RoomID:         "r1",
-		SiteID:         "site-a",
-		Timestamp:      1735689600000,
+func TestMembersAddedJSON(t *testing.T) {
+	src := model.MembersAdded{
+		Individuals:     []string{"alice", "bob"},
+		Orgs:            []string{"org-eng"},
+		Channels:        []string{"room-2"},
+		AddedUsersCount: 5,
 	}
-	roundTrip(t, &src, &model.InviteMemberRequest{})
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+	var dst model.MembersAdded
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+}
+
+func TestMembersRemovedJSON(t *testing.T) {
+	t.Run("remove individual", func(t *testing.T) {
+		src := model.MembersRemoved{
+			Account:           "alice",
+			RemovedUsersCount: 1,
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+		var dst model.MembersRemoved
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasOrgID := raw["orgId"]
+		assert.False(t, hasOrgID, "orgId should be omitted when empty")
+	})
+
+	t.Run("remove org", func(t *testing.T) {
+		src := model.MembersRemoved{
+			OrgID:             "org-eng",
+			RemovedUsersCount: 10,
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+		var dst model.MembersRemoved
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasAccount := raw["account"]
+		assert.False(t, hasAccount, "account should be omitted when empty")
+	})
+}
+
+func TestMessageJSON_SystemMessage(t *testing.T) {
+	t.Run("with type and sysMsgData", func(t *testing.T) {
+		m := model.Message{
+			ID:          "m1",
+			RoomID:      "r1",
+			UserID:      "u1",
+			UserAccount: "system",
+			Content:     "",
+			CreatedAt:   time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			Type:        "member_added",
+			SysMsgData:  []byte(`{"individuals":["alice"],"addedUsersCount":1}`),
+		}
+		data, err := json.Marshal(m)
+		require.NoError(t, err)
+		var dst model.Message
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, m, dst)
+	})
+
+	t.Run("type and sysMsgData omitted when empty", func(t *testing.T) {
+		m := model.Message{
+			ID:          "m1",
+			RoomID:      "r1",
+			UserID:      "u1",
+			UserAccount: "alice",
+			Content:     "hello",
+			CreatedAt:   time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		}
+		data, err := json.Marshal(m)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasType := raw["type"]
+		assert.False(t, hasType, "type should be omitted when empty")
+		_, hasSysMsgData := raw["sysMsgData"]
+		assert.False(t, hasSysMsgData, "sysMsgData should be omitted when nil")
+	})
 }
 
 func TestOutboxEventJSON(t *testing.T) {
@@ -474,7 +565,7 @@ func TestRoomMemberJSON(t *testing.T) {
 		assert.Equal(t, src, dst)
 	})
 	t.Run("individual member", func(t *testing.T) {
-		src := model.RoomMember{ID: "m2", RoomID: "r1", Member: model.RoomMemberEntry{Type: model.RoomMemberTypeIndividual, Username: "alice"}}
+		src := model.RoomMember{ID: "m2", RoomID: "r1", Member: model.RoomMemberEntry{Type: model.RoomMemberTypeIndividual, Account: "alice"}}
 		data, err := json.Marshal(src)
 		require.NoError(t, err)
 		var dst model.RoomMember
@@ -499,17 +590,17 @@ func TestAddMembersRequestJSON(t *testing.T) {
 
 func TestRemoveMemberRequestJSON(t *testing.T) {
 	src := model.RemoveMemberRequest{
-		RoomID:   "r1",
-		Username: "alice",
-		OrgID:    "org-eng",
+		RoomID:  "r1",
+		Account: "alice",
+		OrgID:   "org-eng",
 	}
 	roundTrip(t, &src, &model.RemoveMemberRequest{})
 }
 
 func TestRemoveMemberRequestJSON_NoOrg(t *testing.T) {
 	src := model.RemoveMemberRequest{
-		RoomID:   "r1",
-		Username: "alice",
+		RoomID:  "r1",
+		Account: "alice",
 	}
 	data, err := json.Marshal(src)
 	require.NoError(t, err)
@@ -527,11 +618,30 @@ func TestRemoveMemberRequestJSON_NoOrg(t *testing.T) {
 	assert.Equal(t, src, dst)
 }
 
+func TestRemoveMemberRequestJSON_AccountOmitempty(t *testing.T) {
+	src := model.RemoveMemberRequest{
+		RoomID: "r1",
+		OrgID:  "org-eng",
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	if _, ok := raw["account"]; ok {
+		t.Error("expected account to be omitted when empty")
+	}
+
+	var dst model.RemoveMemberRequest
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+}
+
 func TestUpdateRoleRequestJSON(t *testing.T) {
 	src := model.UpdateRoleRequest{
-		RoomID:   "r1",
-		Username: "alice",
-		NewRole:  model.RoleMember,
+		RoomID:  "r1",
+		Account: "alice",
+		NewRole: model.RoleMember,
 	}
 	roundTrip(t, &src, &model.UpdateRoleRequest{})
 }
