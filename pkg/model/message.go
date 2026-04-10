@@ -14,9 +14,9 @@ type Message struct {
 }
 
 type SendMessageRequest struct {
-	ID                           string     `json:"id"`
-	Content                      string     `json:"content"`
-	RequestID                    string     `json:"requestId"`
-	ThreadParentMessageID        string     `json:"threadParentMessageId,omitempty"`
-	ThreadParentMessageCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty"`
+	ID                           string `json:"id"`
+	Content                      string `json:"content"`
+	RequestID                    string `json:"requestId"`
+	ThreadParentMessageID        string `json:"threadParentMessageId,omitempty"`
+	ThreadParentMessageCreatedAt *int64 `json:"threadParentMessageCreatedAt,omitempty"`
 }

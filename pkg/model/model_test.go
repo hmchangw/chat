@@ -2,6 +2,7 @@ package model_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -105,12 +106,13 @@ func TestSendMessageRequestJSON(t *testing.T) {
 	})
 
 	t.Run("with threadParentMessageCreatedAt", func(t *testing.T) {
-		raw := `{"id":"msg-uuid-1","content":"reply","requestId":"req-1","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":"2026-01-01T11:00:00Z"}`
+		parentMillis := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC).UnixMilli()
+		raw := fmt.Sprintf(`{"id":"msg-uuid-1","content":"reply","requestId":"req-1","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":%d}`, parentMillis)
 		var r model.SendMessageRequest
 		require.NoError(t, json.Unmarshal([]byte(raw), &r))
 		assert.Equal(t, "parent-msg-uuid", r.ThreadParentMessageID)
 		require.NotNil(t, r.ThreadParentMessageCreatedAt)
-		assert.Equal(t, time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC), r.ThreadParentMessageCreatedAt.UTC())
+		assert.Equal(t, parentMillis, *r.ThreadParentMessageCreatedAt)
 	})
 
 	t.Run("threadParentMessageCreatedAt omitted when nil", func(t *testing.T) {

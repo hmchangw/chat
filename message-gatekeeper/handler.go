@@ -150,6 +150,13 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 
 	// Build Message
 	now := time.Now().UTC()
+
+	var threadParentCreatedAt *time.Time
+	if req.ThreadParentMessageCreatedAt != nil {
+		t := time.UnixMilli(*req.ThreadParentMessageCreatedAt).UTC()
+		threadParentCreatedAt = &t
+	}
+
 	msg := model.Message{
 		ID:                           req.ID,
 		RoomID:                       roomID,
@@ -158,7 +165,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		Content:                      req.Content,
 		CreatedAt:                    now,
 		ThreadParentMessageID:        req.ThreadParentMessageID,
-		ThreadParentMessageCreatedAt: req.ThreadParentMessageCreatedAt,
+		ThreadParentMessageCreatedAt: threadParentCreatedAt,
 	}
 
 	// Publish MessageEvent to MESSAGES_CANONICAL
