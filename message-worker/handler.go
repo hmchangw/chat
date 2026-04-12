@@ -9,14 +9,15 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 type Handler struct {
 	store     Store
-	userStore UserStore
+	userStore userstore.UserStore
 }
 
-func NewHandler(store Store, userStore UserStore) *Handler {
+func NewHandler(store Store, userStore userstore.UserStore) *Handler {
 	return &Handler{store: store, userStore: userStore}
 }
 
