@@ -42,21 +42,6 @@ func (m *MockStore) EXPECT() *MockStoreMockRecorder {
 	return m.recorder
 }
 
-// FindEmployeesByAccountNames mocks base method.
-func (m *MockStore) FindEmployeesByAccountNames(ctx context.Context, accountNames []string) ([]model.Employee, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindEmployeesByAccountNames", ctx, accountNames)
-	ret0, _ := ret[0].([]model.Employee)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FindEmployeesByAccountNames indicates an expected call of FindEmployeesByAccountNames.
-func (mr *MockStoreMockRecorder) FindEmployeesByAccountNames(ctx, accountNames any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindEmployeesByAccountNames", reflect.TypeOf((*MockStore)(nil).FindEmployeesByAccountNames), ctx, accountNames)
-}
-
 // GetRoom mocks base method.
 func (m *MockStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
 	m.ctrl.T.Helper()

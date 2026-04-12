@@ -14,12 +14,18 @@ import (
 // ErrUserNotFound is returned by FindUserByID when no user matches the given ID.
 var ErrUserNotFound = errors.New("user not found")
 
+// UserStore defines read operations for user records.
+type UserStore interface {
+	FindUserByID(ctx context.Context, id string) (*model.User, error)
+	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
+}
+
 type mongoStore struct {
 	col *mongo.Collection
 }
 
-// NewMongoStore returns a new MongoDB-backed user store using col as the users collection.
-func NewMongoStore(col *mongo.Collection) *mongoStore {
+// NewMongoStore returns a UserStore backed by the given MongoDB collection.
+func NewMongoStore(col *mongo.Collection) UserStore {
 	return &mongoStore{col: col}
 }
 

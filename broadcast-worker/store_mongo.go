@@ -7,7 +7,6 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -15,11 +14,10 @@ import (
 type mongoStore struct {
 	roomCol *mongo.Collection
 	subCol  *mongo.Collection
-	empCol  *mongo.Collection
 }
 
-func NewMongoStore(roomCol, subCol, empCol *mongo.Collection) *mongoStore {
-	return &mongoStore{roomCol: roomCol, subCol: subCol, empCol: empCol}
+func NewMongoStore(roomCol, subCol *mongo.Collection) *mongoStore {
+	return &mongoStore{roomCol: roomCol, subCol: subCol}
 }
 
 func (m *mongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
@@ -74,20 +72,4 @@ func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string,
 		return fmt.Errorf("set subscription mentions for room %s: %w", roomID, err)
 	}
 	return nil
-}
-
-func (m *mongoStore) FindEmployeesByAccountNames(ctx context.Context, accountNames []string) ([]model.Employee, error) {
-	filter := bson.M{"accountName": bson.M{"$in": accountNames}}
-	projection := bson.M{"accountName": 1, "name": 1, "engName": 1, "_id": 0}
-	opts := options.Find().SetProjection(projection)
-	cursor, err := m.empCol.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, fmt.Errorf("query employees by account names: %w", err)
-	}
-	defer cursor.Close(ctx)
-	var employees []model.Employee
-	if err := cursor.All(ctx, &employees); err != nil {
-		return nil, fmt.Errorf("decode employees: %w", err)
-	}
-	return employees, nil
 }

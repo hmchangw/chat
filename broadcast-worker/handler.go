@@ -10,6 +10,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 // Publisher abstracts NATS publishing so the handler is testable.
@@ -19,12 +20,13 @@ type Publisher interface {
 
 // Handler processes MESSAGES_CANONICAL messages and broadcasts room events.
 type Handler struct {
-	store Store
-	pub   Publisher
+	store     Store
+	userStore userstore.UserStore
+	pub       Publisher
 }
 
-func NewHandler(store Store, pub Publisher) *Handler {
-	return &Handler{store: store, pub: pub}
+func NewHandler(store Store, userStore userstore.UserStore, pub Publisher) *Handler {
+	return &Handler{store: store, userStore: userStore, pub: pub}
 }
 
 // HandleMessage processes a single MESSAGES_CANONICAL message payload.
@@ -54,7 +56,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		}
 	}
 
-	// Collect all user accounts for employee lookup (sender + mentioned)
+	// Collect all user accounts for lookup (sender + mentioned)
 	lookupAccounts := make([]string, 0, 1+len(mentionedAccounts))
 	lookupAccounts = append(lookupAccounts, msg.UserAccount)
 	for _, u := range mentionedAccounts {
@@ -63,18 +65,18 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		}
 	}
 
-	employeeMap := make(map[string]model.Employee)
-	employees, err := h.store.FindEmployeesByAccountNames(ctx, lookupAccounts)
+	userMap := make(map[string]model.User)
+	users, err := h.userStore.FindUsersByAccounts(ctx, lookupAccounts)
 	if err != nil {
-		slog.Warn("employee lookup failed, falling back to accounts", "error", err)
+		slog.Warn("user lookup failed, falling back to accounts", "error", err)
 	} else {
-		for _, emp := range employees {
-			employeeMap[emp.AccountName] = emp
+		for _, u := range users {
+			userMap[u.Account] = u
 		}
 	}
 
-	clientMsg := buildClientMessage(&msg, employeeMap)
-	mentionParticipants := buildMentionParticipants(mentionedAccounts, employeeMap)
+	clientMsg := buildClientMessage(&msg, userMap)
+	mentionParticipants := buildMentionParticipants(mentionedAccounts, userMap)
 
 	switch room.Type {
 	case model.RoomTypeGroup:
@@ -144,14 +146,14 @@ func buildRoomEvent(room *model.Room, clientMsg *model.ClientMessage) model.Room
 	}
 }
 
-func buildClientMessage(msg *model.Message, employeeMap map[string]model.Employee) *model.ClientMessage {
+func buildClientMessage(msg *model.Message, userMap map[string]model.User) *model.ClientMessage {
 	sender := model.Participant{
 		UserID:  msg.UserID,
 		Account: msg.UserAccount,
 	}
-	if emp, ok := employeeMap[msg.UserAccount]; ok {
-		sender.ChineseName = emp.Name
-		sender.EngName = emp.EngName
+	if u, ok := userMap[msg.UserAccount]; ok {
+		sender.ChineseName = u.ChineseName
+		sender.EngName = u.EngName
 	} else {
 		sender.ChineseName = msg.UserAccount
 		sender.EngName = msg.UserAccount
@@ -162,16 +164,16 @@ func buildClientMessage(msg *model.Message, employeeMap map[string]model.Employe
 	}
 }
 
-func buildMentionParticipants(mentionedAccounts []string, employeeMap map[string]model.Employee) []model.Participant {
+func buildMentionParticipants(mentionedAccounts []string, userMap map[string]model.User) []model.Participant {
 	if len(mentionedAccounts) == 0 {
 		return nil
 	}
 	participants := make([]model.Participant, len(mentionedAccounts))
 	for i, account := range mentionedAccounts {
 		p := model.Participant{Account: account}
-		if emp, ok := employeeMap[account]; ok {
-			p.ChineseName = emp.Name
-			p.EngName = emp.EngName
+		if u, ok := userMap[account]; ok {
+			p.ChineseName = u.ChineseName
+			p.EngName = u.EngName
 		} else {
 			p.ChineseName = account
 			p.EngName = account
