@@ -7,6 +7,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -47,7 +48,9 @@ func (s *mongoStore) FindUsersByAccounts(ctx context.Context, accounts []string)
 	if len(accounts) == 0 {
 		return nil, nil
 	}
-	cursor, err := s.col.Find(ctx, bson.M{"account": bson.M{"$in": accounts}})
+	filter := bson.M{"account": bson.M{"$in": accounts}}
+	projection := bson.M{"_id": 1, "account": 1, "siteId": 1, "engName": 1, "chineseName": 1, "employeeId": 1}
+	cursor, err := s.col.Find(ctx, filter, options.Find().SetProjection(projection))
 	if err != nil {
 		return nil, fmt.Errorf("find users by accounts: %w", err)
 	}

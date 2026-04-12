@@ -62,6 +62,15 @@ func (p *recordingPublisher) getRecords() []publishRecord {
 	return cp
 }
 
+func seedUsers(t *testing.T, db *mongo.Database) {
+	t.Helper()
+	_, err := db.Collection("users").InsertMany(context.Background(), []interface{}{
+		model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice Wang", ChineseName: "愛麗絲", EmployeeID: "E001"},
+		model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", EngName: "Bob Chen", ChineseName: "鮑勃", EmployeeID: "E002"},
+	})
+	require.NoError(t, err)
+}
+
 func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
@@ -75,11 +84,7 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
 	})
 	require.NoError(t, err)
-	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
-		model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice Wang", ChineseName: "愛麗絲", EmployeeID: "E001"},
-		model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", EngName: "Bob Chen", ChineseName: "鮑勃", EmployeeID: "E002"},
-	})
-	require.NoError(t, err)
+	seedUsers(t, db)
 
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
@@ -122,11 +127,7 @@ func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
 		ID: "r2", Name: "announcements", Type: model.RoomTypeGroup, UserCount: 2, SiteID: "site-a",
 	})
 	require.NoError(t, err)
-	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
-		model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice Wang", ChineseName: "愛麗絲", EmployeeID: "E001"},
-		model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", EngName: "Bob Chen", ChineseName: "鮑勃", EmployeeID: "E002"},
-	})
-	require.NoError(t, err)
+	seedUsers(t, db)
 
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
@@ -162,11 +163,7 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 		model.Subscription{ID: "s6", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r3"},
 	})
 	require.NoError(t, err)
-	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
-		model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice Wang", ChineseName: "愛麗絲", EmployeeID: "E001"},
-		model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", EngName: "Bob Chen", ChineseName: "鮑勃", EmployeeID: "E002"},
-	})
-	require.NoError(t, err)
+	seedUsers(t, db)
 
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
@@ -215,11 +212,7 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 		model.Subscription{ID: "s8", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "dm-1"},
 	})
 	require.NoError(t, err)
-	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
-		model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice Wang", ChineseName: "愛麗絲", EmployeeID: "E001"},
-		model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", EngName: "Bob Chen", ChineseName: "鮑勃", EmployeeID: "E002"},
-	})
-	require.NoError(t, err)
+	seedUsers(t, db)
 
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
