@@ -12,6 +12,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomcrypto"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -117,6 +118,10 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 			store := NewMockStore(ctrl)
 			pub := &mockPublisher{}
 
+			key := testRoomKey(t)
+			keyStore := NewMockRoomKeyProvider(ctrl)
+			keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
+
 			store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
 			store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, tc.wantMentionAll).Return(nil)
 
@@ -136,14 +141,14 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 				expectEmployeeLookup(store, []string{"sender", "alice"}, []model.Employee{{AccountName: "sender", Name: "寄件者", EngName: "Sender Lin"}, testEmployees[0]})
 			}
 
-			h := NewHandler(store, pub)
+			h := NewHandler(store, pub, keyStore)
 			err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", tc.content, msgTime))
 			require.NoError(t, err)
 
 			require.Len(t, pub.records, 1)
 			assert.Equal(t, subject.RoomEvent("room-1"), pub.records[0].subject)
 
-			evt := decodeRoomEvent(t, pub.records[0].data)
+			evt, msg := decryptClientMessage(t, pub.records[0].data, key)
 			assert.Equal(t, model.RoomEventNewMessage, evt.Type)
 			assert.Equal(t, "room-1", evt.RoomID)
 			assert.Equal(t, "general", evt.RoomName)
@@ -153,13 +158,12 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 			assert.Greater(t, evt.Timestamp, int64(0))
 			assert.Equal(t, tc.wantMentionAll, evt.MentionAll)
 
-			require.NotNil(t, evt.Message, "group room events must carry Message payload")
-			assert.Equal(t, "msg-1", evt.Message.ID)
-			require.NotNil(t, evt.Message.Sender)
-			assert.Equal(t, "user-1", evt.Message.Sender.UserID)
-			assert.Equal(t, "sender", evt.Message.Sender.Account)
-			assert.Equal(t, "寄件者", evt.Message.Sender.ChineseName)
-			assert.Equal(t, "Sender Lin", evt.Message.Sender.EngName)
+			assert.Equal(t, "msg-1", msg.ID)
+			require.NotNil(t, msg.Sender)
+			assert.Equal(t, "user-1", msg.Sender.UserID)
+			assert.Equal(t, "sender", msg.Sender.Account)
+			assert.Equal(t, "寄件者", msg.Sender.ChineseName)
+			assert.Equal(t, "Sender Lin", msg.Sender.EngName)
 
 			if tc.wantMentions != nil {
 				require.Len(t, evt.Mentions, len(tc.wantMentions))
@@ -239,7 +243,8 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 				expectEmployeeLookup(store, []string{"alice", "bob"}, testEmployees)
 			}
 
-			h := NewHandler(store, pub)
+			keyStore := NewMockRoomKeyProvider(ctrl)
+			h := NewHandler(store, pub, keyStore)
 			err := h.HandleMessage(context.Background(), data)
 			require.NoError(t, err)
 
@@ -277,7 +282,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		pub := &mockPublisher{}
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 
 		err := h.HandleMessage(context.Background(), []byte("not json"))
 		require.Error(t, err)
@@ -291,7 +297,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(nil, errors.New("not found"))
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.Error(t, err)
 		assert.Empty(t, pub.records)
@@ -305,7 +312,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(errors.New("db error"))
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.Error(t, err)
 		assert.Empty(t, pub.records)
@@ -320,7 +328,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.Any()).Return(errors.New("db error"))
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hey @alice", msgTime))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "set subscription mentions")
@@ -340,7 +349,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
 		store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(nil, nil)
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.NoError(t, err)
 		assert.Empty(t, pub.records)
@@ -356,7 +366,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(nil, nil)
 		store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(nil, errors.New("db error"))
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		evt := model.MessageEvent{
 			SiteID: "site-a",
 			Message: model.Message{
@@ -376,17 +387,21 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store := NewMockStore(ctrl)
 		pub := &mockPublisher{}
 
+		key := testRoomKey(t)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
+
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", []string{"sender"}).Return(nil)
 		expectEmployeeLookup(store, []string{"sender"}, []model.Employee{{AccountName: "sender", Name: "寄件者", EngName: "Sender Lin"}})
 
-		h := NewHandler(store, pub)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hey @sender", msgTime))
 		require.NoError(t, err)
 
 		require.Len(t, pub.records, 1)
-		evt := decodeRoomEvent(t, pub.records[0].data)
+		evt, _ := decryptClientMessage(t, pub.records[0].data, key)
 		require.Len(t, evt.Mentions, 1)
 		assert.Equal(t, "sender", evt.Mentions[0].Account)
 		assert.Equal(t, "寄件者", evt.Mentions[0].ChineseName)
@@ -397,21 +412,24 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store := NewMockStore(ctrl)
 		pub := &mockPublisher{}
 
+		key := testRoomKey(t)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
+
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
 		store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(nil, errors.New("db error"))
 
-		h := NewHandler(store, pub)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.NoError(t, err)
 
 		require.Len(t, pub.records, 1)
-		evt := decodeRoomEvent(t, pub.records[0].data)
-		require.NotNil(t, evt.Message)
-		require.NotNil(t, evt.Message.Sender)
-		assert.Equal(t, "sender", evt.Message.Sender.Account)
-		assert.Equal(t, "sender", evt.Message.Sender.ChineseName)
-		assert.Equal(t, "sender", evt.Message.Sender.EngName)
+		_, msg := decryptClientMessage(t, pub.records[0].data, key)
+		require.NotNil(t, msg.Sender)
+		assert.Equal(t, "sender", msg.Sender.Account)
+		assert.Equal(t, "sender", msg.Sender.ChineseName)
+		assert.Equal(t, "sender", msg.Sender.EngName)
 	})
 }
 
@@ -442,7 +460,8 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
 	store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(testEmployees, nil)
 
-	h := NewHandler(store, pub)
+	keyStore := NewMockRoomKeyProvider(ctrl)
+	h := NewHandler(store, pub, keyStore)
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{
@@ -455,6 +474,103 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	err := h.HandleMessage(context.Background(), data)
 	require.NoError(t, err)
 	assert.Equal(t, 2, pub.callCount)
+}
+
+func TestHandler_HandleMessage_GroupRoom_Encryption(t *testing.T) {
+	msgTime := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
+
+	t.Run("keystore returns nil key", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
+
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(nil, nil)
+
+		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
+		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		expectEmployeeLookup(store, []string{"sender"}, []model.Employee{{AccountName: "sender", Name: "寄件者", EngName: "Sender Lin"}})
+
+		h := NewHandler(store, pub, keyStore)
+		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errNoCurrentKey)
+		assert.Empty(t, pub.records)
+	})
+
+	t.Run("keystore returns error", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
+
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(nil, errors.New("valkey down"))
+
+		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
+		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		expectEmployeeLookup(store, []string{"sender"}, []model.Employee{{AccountName: "sender", Name: "寄件者", EngName: "Sender Lin"}})
+
+		h := NewHandler(store, pub, keyStore)
+		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "get room key")
+		assert.Contains(t, err.Error(), "valkey down")
+		assert.Empty(t, pub.records)
+	})
+
+	t.Run("published event has encrypted message and plaintext metadata", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		pub := &mockPublisher{}
+
+		key := testRoomKey(t)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
+
+		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
+		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		expectEmployeeLookup(store, []string{"sender"}, []model.Employee{{AccountName: "sender", Name: "寄件者", EngName: "Sender Lin"}})
+
+		h := NewHandler(store, pub, keyStore)
+		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
+		require.NoError(t, err)
+
+		require.Len(t, pub.records, 1)
+		assert.Equal(t, subject.RoomEvent("room-1"), pub.records[0].subject)
+
+		// Verify plaintext metadata on the RoomEvent
+		var rawEvt map[string]any
+		require.NoError(t, json.Unmarshal(pub.records[0].data, &rawEvt))
+		assert.Equal(t, "room-1", rawEvt["roomId"])
+		assert.Equal(t, "general", rawEvt["roomName"])
+		assert.Equal(t, "site-a", rawEvt["siteId"])
+		assert.Nil(t, rawEvt["message"], "message must be nil in published JSON")
+		assert.NotNil(t, rawEvt["encryptedMessage"], "encryptedMessage must be present")
+
+		// Verify encrypted message structure
+		var evt model.RoomEvent
+		require.NoError(t, json.Unmarshal(pub.records[0].data, &evt))
+		require.Nil(t, evt.Message)
+		require.NotEmpty(t, evt.EncryptedMessage)
+
+		var env roomcrypto.EncryptedMessage
+		require.NoError(t, json.Unmarshal(evt.EncryptedMessage, &env))
+		assert.Equal(t, key.Version, env.Version)
+		assert.NotEmpty(t, env.EphemeralPublicKey)
+		assert.NotEmpty(t, env.Nonce)
+		assert.NotEmpty(t, env.Ciphertext)
+
+		// Decrypt and verify the ClientMessage
+		_, msg := decryptClientMessage(t, pub.records[0].data, key)
+		assert.Equal(t, "msg-1", msg.ID)
+		assert.Equal(t, "room-1", msg.RoomID)
+		assert.Equal(t, "hello", msg.Content)
+		require.NotNil(t, msg.Sender)
+		assert.Equal(t, "user-1", msg.Sender.UserID)
+		assert.Equal(t, "sender", msg.Sender.Account)
+		assert.Equal(t, "寄件者", msg.Sender.ChineseName)
+		assert.Equal(t, "Sender Lin", msg.Sender.EngName)
+	})
 }
 
 func TestBuildMentionParticipants(t *testing.T) {
