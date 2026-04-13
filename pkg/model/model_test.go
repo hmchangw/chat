@@ -455,12 +455,48 @@ func TestRoomEventJSON(t *testing.T) {
 		if err := json.Unmarshal(data, &raw); err != nil {
 			t.Fatalf("unmarshal raw: %v", err)
 		}
-		for _, key := range []string{"mentions", "mentionAll", "hasMention", "message"} {
+		for _, key := range []string{"mentions", "mentionAll", "hasMention", "message", "encryptedMessage"} {
 			if _, ok := raw[key]; ok {
 				t.Errorf("expected %q to be omitted from JSON", key)
 			}
 		}
 
+		var dst model.RoomEvent
+		if err := json.Unmarshal(data, &dst); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !reflect.DeepEqual(src, dst) {
+			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+		}
+	})
+
+	t.Run("encrypted message populated with nil plaintext message", func(t *testing.T) {
+		src := model.RoomEvent{
+			Type:             model.RoomEventNewMessage,
+			RoomID:           "room-3",
+			Timestamp:        now.UnixMilli(),
+			RoomName:         "Encrypted",
+			RoomType:         model.RoomTypeGroup,
+			SiteID:           "site-c",
+			UserCount:        4,
+			LastMsgAt:        now,
+			LastMsgID:        "msg-3",
+			EncryptedMessage: json.RawMessage(`{"version":3,"ephemeralPublicKey":"AQID","nonce":"BAUG","ciphertext":"BwgJ"}`),
+		}
+		data, err := json.Marshal(src)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("unmarshal raw: %v", err)
+		}
+		if _, ok := raw["encryptedMessage"]; !ok {
+			t.Error("expected encryptedMessage to be present in JSON")
+		}
+		if _, ok := raw["message"]; ok {
+			t.Error("expected message to be omitted when nil")
+		}
 		var dst model.RoomEvent
 		if err := json.Unmarshal(data, &dst); err != nil {
 			t.Fatalf("unmarshal: %v", err)
