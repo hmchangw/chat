@@ -28,6 +28,7 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
       const room = await request(`chat.user.${account}.request.rooms.create`, {
         name: name.trim(),
         type: roomType,
+        createdBy: account,
         createdByAccount: account,
         siteId: siteId,
         members: memberList,

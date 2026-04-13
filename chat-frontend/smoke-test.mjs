@@ -1,6 +1,6 @@
 // Programmatic smoke test for chat-frontend integration
 // Tests: auth -> NATS WebSocket connect -> room create -> send message -> receive message
-import { connect, StringCodec } from 'nats.ws'
+import { connect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
 
 const sc = StringCodec()
@@ -25,12 +25,7 @@ async function authenticate(account) {
 async function connectNats(auth) {
   const nc = await connect({
     servers: NATS_URL,
-    authenticator: {
-      authenticate(nonce) {
-        const sig = auth.nkey.sign(new TextEncoder().encode(nonce))
-        return { nkey: auth.natsPublicKey, sig, jwt: auth.jwt }
-      },
-    },
+    authenticator: jwtAuthenticator(auth.jwt, auth.nkey.getSeed()),
   })
   return nc
 }
@@ -83,7 +78,7 @@ async function main() {
     },
     timestamp: Date.now(),
   }
-  aliceNc.publish(`chat.room.${roomId}.event`, sc.encode(JSON.stringify(testEvent)))
+  bobNc.publish(`chat.room.${roomId}.event`, sc.encode(JSON.stringify(testEvent)))
   console.log('   ✓ Published')
 
   // Step 7: Wait and verify alice received the message

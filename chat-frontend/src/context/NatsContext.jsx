@@ -1,5 +1,5 @@
 import { createContext, useContext, useRef, useState, useCallback } from 'react'
-import { connect as natsConnect, StringCodec } from 'nats.ws'
+import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
 
 const NatsContext = createContext(null)
 
@@ -11,7 +11,7 @@ export function NatsProvider({ children }) {
   const [user, setUser] = useState(null)
   const [error, setError] = useState(null)
 
-  const authUrl = import.meta.env.VITE_AUTH_URL || 'http://localhost:8080'
+  const authUrl = import.meta.env.VITE_AUTH_URL || ''
   const natsUrl = import.meta.env.VITE_NATS_URL || 'ws://localhost:4223'
 
   const connectToNats = useCallback(async (account, siteId) => {
@@ -38,12 +38,7 @@ export function NatsProvider({ children }) {
     // 2. Connect to NATS via WebSocket with JWT
     const nc = await natsConnect({
       servers: natsUrl,
-      authenticator: {
-        authenticate(nonce) {
-          const sig = nkey.sign(new TextEncoder().encode(nonce))
-          return { nkey: natsPublicKey, sig, jwt: natsJwt }
-        },
-      },
+      authenticator: jwtAuthenticator(natsJwt, nkey.getSeed()),
     })
 
     ncRef.current = nc

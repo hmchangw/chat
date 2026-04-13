@@ -64,7 +64,12 @@ export default function MessageArea({ room }) {
       .then((resp) => {
         // History comes in descending order — reverse for display
         const hist = (resp.messages || []).reverse()
-        setMessages(hist)
+        setMessages((prev) => {
+          // Merge: history first, then any real-time messages not in history
+          const histIds = new Set(hist.map((m) => messageId(m)))
+          const newRealtime = prev.filter((m) => !histIds.has(messageId(m)))
+          return [...hist, ...newRealtime]
+        })
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
