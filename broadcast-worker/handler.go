@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomcrypto"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -103,10 +104,37 @@ func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clien
 		evt.Mentions = mentions
 	}
 
+	msgJSON, err := json.Marshal(evt.Message)
+	if err != nil {
+		return fmt.Errorf("marshal client message: %w", err)
+	}
+
+	key, err := h.keyStore.Get(ctx, room.ID)
+	if err != nil {
+		return fmt.Errorf("get room key for room %s: %w", room.ID, err)
+	}
+	if key == nil {
+		return fmt.Errorf("get room key for room %s: no current key", room.ID)
+	}
+
+	encrypted, err := roomcrypto.Encode(string(msgJSON), key.KeyPair.PublicKey, key.Version)
+	if err != nil {
+		return fmt.Errorf("encrypt message for room %s: %w", room.ID, err)
+	}
+
+	encJSON, err := json.Marshal(encrypted)
+	if err != nil {
+		return fmt.Errorf("marshal encrypted message: %w", err)
+	}
+
+	evt.EncryptedMessage = json.RawMessage(encJSON)
+	evt.Message = nil
+
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal group room event: %w", err)
 	}
+
 	return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)
 }
 
