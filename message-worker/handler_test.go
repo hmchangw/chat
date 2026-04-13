@@ -138,3 +138,28 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestParseMentions(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{name: "no mentions", content: "hello world", want: nil},
+		{name: "single mention", content: "hello @bob", want: []string{"bob"}},
+		{name: "multiple mentions", content: "@alice check with @bob", want: []string{"alice", "bob"}},
+		{name: "mention at start", content: "@alice hello", want: []string{"alice"}},
+		{name: "at-all", content: "hey @all check this", want: []string{"all"}},
+		{name: "email-style mention", content: "ping @user@domain.com", want: []string{"user@domain.com"}},
+		{name: "quoted reply prefix", content: ">@alice this is quoted", want: []string{"alice"}},
+		{name: "duplicates deduplicated", content: "@bob and @bob again", want: []string{"bob"}},
+		{name: "dots and hyphens", content: "cc @first.last and @my-user", want: []string{"first.last", "my-user"}},
+		{name: "empty content", content: "", want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, parseMentions(tt.content))
+		})
+	}
+}

@@ -5,12 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
+
+var mentionRe = regexp.MustCompile(`(^|\s|>?)@([0-9a-zA-Z\-_.]+(@[0-9a-zA-Z\-_.]+)?)`)
+
+// parseMentions returns the unique mention targets found in content (without the @ prefix).
+// Returns nil when content has no mentions.
+func parseMentions(content string) []string {
+	matches := mentionRe.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	var out []string
+	for _, m := range matches {
+		account := m[2]
+		if _, exists := seen[account]; !exists {
+			seen[account] = struct{}{}
+			out = append(out, account)
+		}
+	}
+	return out
+}
 
 type Handler struct {
 	store     Store
