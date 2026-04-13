@@ -1,3 +1,20 @@
+import { NatsProvider, useNats } from './context/NatsContext'
+import LoginPage from './pages/LoginPage'
+
+function AppContent() {
+  const { connected } = useNats()
+
+  if (!connected) {
+    return <LoginPage />
+  }
+
+  return <div className="app">Connected! (Chat page coming next)</div>
+}
+
 export default function App() {
-  return <div className="app"><h1>Chat</h1></div>
+  return (
+    <NatsProvider>
+      <AppContent />
+    </NatsProvider>
+  )
 }
