@@ -1,5 +1,6 @@
 import { NatsProvider, useNats } from './context/NatsContext'
 import LoginPage from './pages/LoginPage'
+import ChatPage from './pages/ChatPage'
 
 function AppContent() {
   const { connected } = useNats()
@@ -8,7 +9,7 @@ function AppContent() {
     return <LoginPage />
   }
 
-  return <div className="app">Connected! (Chat page coming next)</div>
+  return <ChatPage />
 }
 
 export default function App() {

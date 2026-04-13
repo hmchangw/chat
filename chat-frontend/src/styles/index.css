@@ -385,3 +385,101 @@ body {
 .dialog-cancel:hover:not(:disabled) {
   background: #404249 !important;
 }
+
+/* Chat Layout */
+.chat-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: #1e1f22;
+  color: #f2f3f5;
+  gap: 1rem;
+  flex-shrink: 0;
+}
+
+.chat-header-title {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.chat-header-user {
+  font-size: 13px;
+  color: #949ba4;
+  margin-left: auto;
+}
+
+.chat-header-logout {
+  padding: 0.3rem 0.75rem;
+  background: transparent;
+  border: 1px solid #4e5058;
+  border-radius: 4px;
+  color: #b5bac1;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-header-logout:hover {
+  background: #404249;
+  color: #f2f3f5;
+}
+
+.chat-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.chat-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  flex-shrink: 0;
+}
+
+.chat-sidebar .room-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.create-room-btn {
+  padding: 0.6rem;
+  margin: 0.5rem;
+  background: transparent;
+  border: 1px dashed #4e5058;
+  border-radius: 4px;
+  color: #949ba4;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.create-room-btn:hover {
+  border-color: #b5bac1;
+  color: #b5bac1;
+}
+
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-main .message-area {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-main .message-list {
+  flex: 1;
+  overflow-y: auto;
+}
