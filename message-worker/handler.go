@@ -13,7 +13,11 @@ import (
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
-var mentionRe = regexp.MustCompile(`(^|\s|>?)@([0-9a-zA-Z\-_.]+(@[0-9a-zA-Z\-_.]+)?)`)
+// mentionRe matches @mention tokens in message content.
+// Note: a bare @ not preceded by whitespace (e.g. "hello@bob") also matches —
+// this is intentional per spec. Non-existent accounts are silently skipped by
+// resolveMentions during the MongoDB lookup.
+var mentionRe = regexp.MustCompile(`(^|\s|>?)@([0-9a-zA-Z_-]+(\.[0-9a-zA-Z_-]+)*(@[0-9a-zA-Z_-]+(\.[0-9a-zA-Z_-]+)*)?)`)
 
 // parseMentions returns the unique mention targets found in content (without the @ prefix).
 // Returns nil when content has no mentions.

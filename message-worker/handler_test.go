@@ -155,6 +155,7 @@ func TestParseMentions(t *testing.T) {
 		{name: "duplicates deduplicated", content: "@bob and @bob again", want: []string{"bob"}},
 		{name: "dots and hyphens", content: "cc @first.last and @my-user", want: []string{"first.last", "my-user"}},
 		{name: "empty content", content: "", want: nil},
+		{name: "trailing period not captured", content: "hey @bob. check this", want: []string{"bob"}},
 	}
 
 	for _, tt := range tests {
