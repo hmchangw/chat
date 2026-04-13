@@ -1,0 +1,230 @@
+# Full-stack local development environment for mchat.
+# Starts all infrastructure and backend services needed for end-to-end chat.
+#
+# Prerequisites:
+#   ./setup.sh           # generates .env with AUTH_SIGNING_KEY
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f keycloak   # wait for "Listening on"
+#   open http://localhost:8091        # mchat UI
+#
+# Test users: testuser/testuser, alice/alice
+
+services:
+  # ─── Infrastructure ───────────────────────────────────────────────
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    ports:
+      - "9090:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ../../../auth-service/deploy/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    command: ["start-dev", "--import-realm"]
+    healthcheck:
+      test: >
+        sh -c 'exec 3<>/dev/tcp/localhost/8080 &&
+        echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+        cat <&3 | grep -q "200"'
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  nats:
+    image: nats:2.11-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--http_port", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  cassandra:
+    image: cassandra:5
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: chat-dev
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "DESCRIBE KEYSPACES"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  cassandra-init:
+    image: cassandra:5
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        cqlsh cassandra <<'CQL'
+        CREATE KEYSPACE IF NOT EXISTS chat WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+        CREATE TYPE IF NOT EXISTS chat."Participant" (id TEXT, user_name TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN);
+        CREATE TYPE IF NOT EXISTS chat."File" (id TEXT, name TEXT, type TEXT);
+        CREATE TYPE IF NOT EXISTS chat."Card" (template TEXT, data BLOB);
+        CREATE TYPE IF NOT EXISTS chat."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB);
+        CREATE TABLE IF NOT EXISTS chat.messages_by_room (
+          room_id TEXT,
+          created_at TIMESTAMP,
+          message_id TEXT,
+          sender FROZEN<"Participant">,
+          target_user FROZEN<"Participant">,
+          msg TEXT,
+          mentions SET<FROZEN<"Participant">>,
+          attachments LIST<BLOB>,
+          file FROZEN<"File">,
+          card FROZEN<"Card">,
+          card_action FROZEN<"CardAction">,
+          tshow BOOLEAN,
+          thread_parent_created_at TIMESTAMP,
+          visible_to TEXT,
+          unread BOOLEAN,
+          reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+          deleted BOOLEAN,
+          sys_msg_type TEXT,
+          sys_msg_data BLOB,
+          federate_from TEXT,
+          edited_at TIMESTAMP,
+          updated_at TIMESTAMP,
+          PRIMARY KEY ((room_id), created_at, message_id)
+        ) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+        CQL
+        echo "Schema initialized successfully"
+
+  # ─── Backend Services ─────────────────────────────────────────────
+
+  auth-service:
+    build:
+      context: ../../..
+      dockerfile: auth-service/deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      PORT: "8080"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  message-gatekeeper:
+    build:
+      context: ../../..
+      dockerfile: message-gatekeeper/deploy/Dockerfile
+    environment:
+      NATS_URL: nats://nats:4222
+      SITE_ID: site-local
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB: chat
+    depends_on:
+      nats:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  broadcast-worker:
+    build:
+      context: ../../..
+      dockerfile: broadcast-worker/deploy/Dockerfile
+    environment:
+      NATS_URL: nats://nats:4222
+      SITE_ID: site-local
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB: chat
+    depends_on:
+      nats:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  message-worker:
+    build:
+      context: ../../..
+      dockerfile: message-worker/deploy/Dockerfile
+    environment:
+      NATS_URL: nats://nats:4222
+      SITE_ID: site-local
+      CASSANDRA_HOSTS: cassandra
+      CASSANDRA_KEYSPACE: chat
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB: chat
+    depends_on:
+      nats:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+
+  room-service:
+    build:
+      context: ../../..
+      dockerfile: room-service/deploy/Dockerfile
+    environment:
+      NATS_URL: nats://nats:4222
+      SITE_ID: site-local
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB: chat
+    depends_on:
+      nats:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  room-worker:
+    build:
+      context: ../../..
+      dockerfile: room-worker/deploy/Dockerfile
+    environment:
+      NATS_URL: nats://nats:4222
+      SITE_ID: site-local
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB: chat
+    depends_on:
+      nats:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  # ─── mchat Client ─────────────────────────────────────────────────
+
+  mchat:
+    build:
+      context: ../../..
+      dockerfile: tools/mchat/deploy/Dockerfile
+    ports:
+      - "8091:8091"
+    environment:
+      PORT: "8091"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: chatapp
+      KEYCLOAK_CLIENT_ID: nats-chat
+      AUTH_SERVICE_URL: http://auth-service:8080
+      NATS_URL: nats://nats:4222
+      SITE_ID: site-local
+    depends_on:
+      nats:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
