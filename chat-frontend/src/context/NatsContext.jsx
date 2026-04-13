@@ -20,7 +20,7 @@ export function NatsProvider({ children }) {
     // 1. Authenticate with auth-service (dev mode)
     const { createUser } = await import('nkeys.js')
     const nkey = createUser()
-    const natsPublicKey = new TextDecoder().decode(nkey.getPublicKey())
+    const natsPublicKey = nkey.getPublicKey()
 
     const authResp = await fetch(`${authUrl}/auth`, {
       method: 'POST',
