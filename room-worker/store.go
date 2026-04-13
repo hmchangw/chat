@@ -13,4 +13,6 @@ type SubscriptionStore interface {
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 	IncrementUserCount(ctx context.Context, roomID string) error
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
+	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
+	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
 }

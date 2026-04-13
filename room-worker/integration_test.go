@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
@@ -43,7 +44,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r1", Name: "general", UserCount: 1})
 
 	// Test CreateSubscription
-	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
 	if err := store.CreateSubscription(ctx, &sub); err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
@@ -67,5 +68,75 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 	if room.UserCount != 2 {
 		t.Errorf("UserCount = %d, want 2", room.UserCount)
+	}
+}
+
+func TestMongoStore_GetSubscription_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleOwner},
+	})
+	if err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	sub, err := store.GetSubscription(ctx, "alice", "r1")
+	if err != nil {
+		t.Fatalf("GetSubscription: %v", err)
+	}
+	if sub.User.Account != "alice" || sub.RoomID != "r1" {
+		t.Errorf("got %+v", sub)
+	}
+	if !slices.Contains(sub.Roles, model.RoleOwner) {
+		t.Errorf("roles = %v, want to contain owner", sub.Roles)
+	}
+
+	_, err = store.GetSubscription(ctx, "nonexistent", "r1")
+	if err == nil {
+		t.Error("expected error for nonexistent subscription")
+	}
+}
+
+func TestMongoStore_UpdateSubscriptionRoles_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", Roles: []model.Role{model.RoleMember},
+	})
+	if err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	err = store.UpdateSubscriptionRoles(ctx, "alice", "r1", []model.Role{model.RoleOwner})
+	if err != nil {
+		t.Fatalf("UpdateSubscriptionRoles: %v", err)
+	}
+
+	sub, err := store.GetSubscription(ctx, "alice", "r1")
+	if err != nil {
+		t.Fatalf("GetSubscription after update: %v", err)
+	}
+	if !slices.Contains(sub.Roles, model.RoleOwner) {
+		t.Errorf("roles after update = %v, want to contain owner", sub.Roles)
+	}
+
+	err = store.UpdateSubscriptionRoles(ctx, "alice", "r1", []model.Role{model.RoleMember})
+	if err != nil {
+		t.Fatalf("UpdateSubscriptionRoles demote: %v", err)
+	}
+
+	sub, err = store.GetSubscription(ctx, "alice", "r1")
+	if err != nil {
+		t.Fatalf("GetSubscription after demote: %v", err)
+	}
+	if !slices.Contains(sub.Roles, model.RoleMember) {
+		t.Errorf("roles after demote = %v, want to contain member", sub.Roles)
 	}
 }

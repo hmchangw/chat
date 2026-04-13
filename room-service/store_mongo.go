@@ -60,3 +60,11 @@ func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscrip
 	_, err := s.subscriptions.InsertOne(ctx, sub)
 	return err
 }
+
+func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {
+	count, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID, "roles": "owner"})
+	if err != nil {
+		return 0, fmt.Errorf("count owners for room %q: %w", roomID, err)
+	}
+	return int(count), nil
+}

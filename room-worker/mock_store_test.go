@@ -84,6 +84,21 @@ func (mr *MockSubscriptionStoreMockRecorder) IncrementUserCount(ctx, roomID any)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IncrementUserCount", reflect.TypeOf((*MockSubscriptionStore)(nil).IncrementUserCount), ctx, roomID)
 }
 
+// GetSubscription mocks base method.
+func (m *MockSubscriptionStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetSubscription", ctx, account, roomID)
+	ret0, _ := ret[0].(*model.Subscription)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetSubscription indicates an expected call of GetSubscription.
+func (mr *MockSubscriptionStoreMockRecorder) GetSubscription(ctx, account, roomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSubscription", reflect.TypeOf((*MockSubscriptionStore)(nil).GetSubscription), ctx, account, roomID)
+}
+
 // ListByRoom mocks base method.
 func (m *MockSubscriptionStore) ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error) {
 	m.ctrl.T.Helper()
@@ -97,4 +112,18 @@ func (m *MockSubscriptionStore) ListByRoom(ctx context.Context, roomID string) (
 func (mr *MockSubscriptionStoreMockRecorder) ListByRoom(ctx, roomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).ListByRoom), ctx, roomID)
+}
+
+// UpdateSubscriptionRoles mocks base method.
+func (m *MockSubscriptionStore) UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateSubscriptionRoles", ctx, account, roomID, roles)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateSubscriptionRoles indicates an expected call of UpdateSubscriptionRoles.
+func (mr *MockSubscriptionStoreMockRecorder) UpdateSubscriptionRoles(ctx, account, roomID, roles any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionRoles", reflect.TypeOf((*MockSubscriptionStore)(nil).UpdateSubscriptionRoles), ctx, account, roomID, roles)
 }

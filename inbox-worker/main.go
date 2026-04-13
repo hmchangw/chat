@@ -48,6 +48,13 @@ func (s *mongoInboxStore) UpsertRoom(ctx context.Context, room *model.Room) erro
 	return err
 }
 
+func (s *mongoInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error {
+	filter := bson.M{"u.account": account, "roomId": roomID}
+	update := bson.M{"$set": bson.M{"roles": roles}}
+	_, err := s.subCol.UpdateOne(ctx, filter, update)
+	return err
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 

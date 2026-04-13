@@ -51,3 +51,22 @@ func (s *MongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, e
 	}
 	return &room, nil
 }
+
+func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
+	var sub model.Subscription
+	filter := bson.M{"u.account": account, "roomId": roomID}
+	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
+		return nil, fmt.Errorf("subscription not found for %q in room %q: %w", account, roomID, err)
+	}
+	return &sub, nil
+}
+
+func (s *MongoStore) UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error {
+	filter := bson.M{"u.account": account, "roomId": roomID}
+	update := bson.M{"$set": bson.M{"roles": roles}}
+	_, err := s.subscriptions.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("update roles for %q in room %q: %w", account, roomID, err)
+	}
+	return nil
+}

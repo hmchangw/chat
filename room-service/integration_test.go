@@ -63,7 +63,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test CreateSubscription and GetSubscription
-	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
 	if err := store.CreateSubscription(ctx, &sub); err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
@@ -71,13 +71,53 @@ func TestMongoStore_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSubscription: %v", err)
 	}
-	if gotSub.Role != model.RoleOwner {
-		t.Errorf("Role = %q, want owner", gotSub.Role)
+	if len(gotSub.Roles) == 0 || gotSub.Roles[0] != model.RoleOwner {
+		t.Errorf("Roles = %v, want [owner]", gotSub.Roles)
 	}
 
 	// Test not found
 	_, err = store.GetSubscription(ctx, "u2", "r1")
 	if err == nil {
 		t.Error("expected error for missing subscription")
+	}
+}
+
+func TestMongoStore_CountOwners_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	_, err := db.Collection("subscriptions").InsertMany(ctx, []interface{}{
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}},
+		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "charlie"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+		model.Subscription{ID: "s4", User: model.SubscriptionUser{ID: "u4", Account: "dave"}, RoomID: "r2", Roles: []model.Role{model.RoleOwner}},
+	})
+	if err != nil {
+		t.Fatalf("seed subscriptions: %v", err)
+	}
+
+	count, err := store.CountOwners(ctx, "r1")
+	if err != nil {
+		t.Fatalf("CountOwners: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("CountOwners(r1) = %d, want 2", count)
+	}
+
+	count, err = store.CountOwners(ctx, "r2")
+	if err != nil {
+		t.Fatalf("CountOwners: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("CountOwners(r2) = %d, want 1", count)
+	}
+
+	count, err = store.CountOwners(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("CountOwners: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("CountOwners(nonexistent) = %d, want 0", count)
 	}
 }

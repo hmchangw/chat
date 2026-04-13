@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -75,8 +77,8 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscription not found: %v", err)
 	}
-	if sub.Role != model.RoleMember {
-		t.Errorf("Role = %q, want member", sub.Role)
+	if len(sub.Roles) == 0 || sub.Roles[0] != model.RoleMember {
+		t.Errorf("Roles = %v, want [member]", sub.Roles)
 	}
 
 	// Verify notification was published
@@ -113,5 +115,62 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 	}
 	if got.Name != "synced-room" {
 		t.Errorf("Name = %q, want synced-room", got.Name)
+	}
+}
+
+func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+	}
+	pub := &recordingPublisher{}
+	handler := NewHandler(store, pub)
+
+	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: "room-1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
+	})
+	if err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID: "u2",
+		Subscription: model.Subscription{
+			ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+			RoomID: "room-1", SiteID: "site-a", Roles: []model.Role{model.RoleOwner},
+		},
+		Action: "role_updated", Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	subEvtData, _ := json.Marshal(subEvt)
+
+	evt := model.OutboxEvent{
+		Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: subEvtData, Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	evtData, _ := json.Marshal(evt)
+
+	err = handler.HandleEvent(ctx, evtData)
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	var sub model.Subscription
+	err = db.Collection("subscriptions").FindOne(ctx, bson.M{"u.account": "bob", "roomId": "room-1"}).Decode(&sub)
+	if err != nil {
+		t.Fatalf("subscription not found: %v", err)
+	}
+	if !slices.Contains(sub.Roles, model.RoleOwner) {
+		t.Errorf("roles = %v, want to contain owner", sub.Roles)
+	}
+
+	if len(pub.subjects) != 1 {
+		t.Fatalf("expected 1 publish, got %d", len(pub.subjects))
+	}
+	if pub.subjects[0] != "chat.user.bob.event.subscription.update" {
+		t.Errorf("subject = %q, want bob subscription update", pub.subjects[0])
 	}
 }

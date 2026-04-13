@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -12,10 +13,17 @@ import (
 
 // --- In-memory InboxStore stub ---
 
+type roleUpdate struct {
+	account string
+	roomID  string
+	roles   []model.Role
+}
+
 type stubInboxStore struct {
 	mu            sync.Mutex
 	subscriptions []model.Subscription
 	rooms         []model.Room
+	roleUpdates   []roleUpdate
 }
 
 func (s *stubInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -51,6 +59,21 @@ func (s *stubInboxStore) getRooms() []model.Room {
 	defer s.mu.Unlock()
 	cp := make([]model.Room, len(s.rooms))
 	copy(cp, s.rooms)
+	return cp
+}
+
+func (s *stubInboxStore) UpdateSubscriptionRoles(_ context.Context, account, roomID string, roles []model.Role) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.roleUpdates = append(s.roleUpdates, roleUpdate{account: account, roomID: roomID, roles: roles})
+	return nil
+}
+
+func (s *stubInboxStore) getRoleUpdates() []roleUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]roleUpdate, len(s.roleUpdates))
+	copy(cp, s.roleUpdates)
 	return cp
 }
 
@@ -134,8 +157,8 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	if sub.SiteID != "site-b" {
 		t.Errorf("subscription SiteID = %q, want %q", sub.SiteID, "site-b")
 	}
-	if sub.Role != model.RoleMember {
-		t.Errorf("subscription Role = %q, want %q", sub.Role, model.RoleMember)
+	if !slices.Contains(sub.Roles, model.RoleMember) {
+		t.Errorf("subscription Roles = %v, want to contain %q", sub.Roles, model.RoleMember)
 	}
 	if sub.ID == "" {
 		t.Error("subscription ID should be non-empty (generated UUID)")
@@ -467,5 +490,69 @@ func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 	// No room should have been upserted
 	if len(store.getRooms()) != 0 {
 		t.Error("room should not be upserted with invalid payload")
+	}
+}
+
+func TestHandleEvent_RoleUpdated(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID: "u2",
+		Subscription: model.Subscription{
+			ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+			RoomID: "room-1", SiteID: "site-a", Roles: []model.Role{model.RoleOwner},
+		},
+		Action: "role_updated", Timestamp: 1735689600000,
+	}
+	subEvtData, _ := json.Marshal(subEvt)
+	evt := model.OutboxEvent{
+		Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: subEvtData, Timestamp: 1735689600000,
+	}
+	evtData, _ := json.Marshal(evt)
+	err := h.HandleEvent(context.Background(), evtData)
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	updates := store.getRoleUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("expected 1 role update, got %d", len(updates))
+	}
+	if updates[0].account != "bob" || updates[0].roomID != "room-1" {
+		t.Errorf("role update = %+v, want bob/room-1", updates[0])
+	}
+	if len(updates[0].roles) != 1 || updates[0].roles[0] != model.RoleOwner {
+		t.Errorf("role update roles = %v, want [owner]", updates[0].roles)
+	}
+	records := pub.getRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 publish, got %d", len(records))
+	}
+	if records[0].subject != "chat.user.bob.event.subscription.update" {
+		t.Errorf("subject = %q, want bob subscription update", records[0].subject)
+	}
+	var publishedEvt model.SubscriptionUpdateEvent
+	json.Unmarshal(records[0].data, &publishedEvt)
+	if publishedEvt.Action != "role_updated" {
+		t.Errorf("action = %q, want role_updated", publishedEvt.Action)
+	}
+}
+
+func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+	evt := model.OutboxEvent{
+		Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: []byte("not valid json"),
+	}
+	evtData, _ := json.Marshal(evt)
+	err := h.HandleEvent(context.Background(), evtData)
+	if err == nil {
+		t.Error("expected error for invalid role_updated payload")
+	}
+	if len(store.getRoleUpdates()) != 0 {
+		t.Error("no role update should have been applied")
 	}
 }
