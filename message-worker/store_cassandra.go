@@ -42,6 +42,47 @@ func (p *cassParticipant) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, 
 	}
 }
 
+// UnmarshalUDT implements gocql.UDTUnmarshaler for cassParticipant.
+// Required to scan SET<FROZEN<"Participant">> columns back from Cassandra.
+func (p *cassParticipant) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte) error {
+	switch name {
+	case "id":
+		return gocql.Unmarshal(info, data, &p.ID)
+	case "eng_name":
+		return gocql.Unmarshal(info, data, &p.EngName)
+	case "company_name":
+		return gocql.Unmarshal(info, data, &p.CompanyName)
+	case "account":
+		return gocql.Unmarshal(info, data, &p.Account)
+	case "app_id":
+		return gocql.Unmarshal(info, data, &p.AppID)
+	case "app_name":
+		return gocql.Unmarshal(info, data, &p.AppName)
+	case "is_bot":
+		return gocql.Unmarshal(info, data, &p.IsBot)
+	default:
+		return nil
+	}
+}
+
+// toMentionSet converts []model.Participant to []*cassParticipant for binding
+// to a Cassandra SET<FROZEN<"Participant">> column.
+func toMentionSet(mentions []model.Participant) []*cassParticipant {
+	if len(mentions) == 0 {
+		return nil
+	}
+	result := make([]*cassParticipant, len(mentions))
+	for i, m := range mentions {
+		result[i] = &cassParticipant{
+			ID:          m.UserID,
+			EngName:     m.EngName,
+			CompanyName: m.ChineseName,
+			Account:     m.Account,
+		}
+	}
+	return result
+}
+
 // CassandraStore implements Store using a Cassandra session.
 type CassandraStore struct {
 	cassSession *gocql.Session
@@ -56,17 +97,17 @@ func NewCassandraStore(session *gocql.Session) *CassandraStore {
 // If either insert fails the error is returned immediately; JetStream will redeliver the message.
 func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at, mentions)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_room %s: %w", msg.ID, err)
 	}
 
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at, mentions)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
 	}
@@ -79,17 +120,17 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 // If either insert fails the error is returned immediately; JetStream will redeliver the message.
 func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at, mentions)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
 	}
 
 	if err := s.cassSession.Query(
-		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, thread_message_id, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.ThreadParentMessageID, msg.CreatedAt, msg.ID, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, thread_message_id, sender, msg, site_id, updated_at, mentions)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, msg.ThreadParentMessageID, msg.CreatedAt, msg.ID, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
 	}

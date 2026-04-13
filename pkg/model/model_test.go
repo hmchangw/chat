@@ -46,7 +46,11 @@ func TestMessageJSON(t *testing.T) {
 			CreatedAt:             time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 			ThreadParentMessageID: "parent-msg-uuid",
 		}
-		roundTrip(t, &m, &model.Message{})
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var dst model.Message
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, m, dst)
 	})
 
 	t.Run("threadParentMessageId omitted when empty", func(t *testing.T) {
@@ -84,6 +88,39 @@ func TestMessageJSON(t *testing.T) {
 		assert.Equal(t, "parent-msg-uuid", m.ThreadParentMessageID)
 		require.NotNil(t, m.ThreadParentMessageCreatedAt)
 		assert.Equal(t, time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC), m.ThreadParentMessageCreatedAt.UTC())
+	})
+
+	t.Run("mentions round-trip", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:   "hello @bob",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			Mentions: []model.Participant{{
+				UserID:      "u-bob",
+				Account:     "bob",
+				ChineseName: "鮑勃",
+				EngName:     "Bob Chen",
+			}},
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var dst model.Message
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, m, dst)
+	})
+
+	t.Run("mentions omitted when nil", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:   "hello",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["mentions"]
+		assert.False(t, present, "mentions should be omitted when nil")
 	})
 }
 
@@ -147,7 +184,11 @@ func TestMessageEventJSON(t *testing.T) {
 		SiteID:    "site-a",
 		Timestamp: 1735689600000,
 	}
-	roundTrip(t, &e, &model.MessageEvent{})
+	data, err := json.Marshal(&e)
+	require.NoError(t, err)
+	var dst model.MessageEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, e, dst)
 }
 
 func TestSubscriptionJSON(t *testing.T) {
@@ -368,7 +409,11 @@ func TestNotificationEventJSON(t *testing.T) {
 		},
 		Timestamp: 1735689600000,
 	}
-	roundTrip(t, &src, &model.NotificationEvent{})
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.NotificationEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
 }
 
 func TestSubscriptionUpdateEventJSON(t *testing.T) {

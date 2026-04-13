@@ -46,6 +46,54 @@ func TestHandler_ProcessMessage(t *testing.T) {
 	threadEvt := model.MessageEvent{Message: threadMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
 	threadData, _ := json.Marshal(threadEvt)
 
+	bobUser := &model.User{
+		ID:          "u-bob",
+		Account:     "bob",
+		SiteID:      "site-a",
+		EngName:     "Bob Chen",
+		ChineseName: "鮑勃",
+	}
+
+	// Event with a real user mention — Mentions field is absent in the inbound event
+	// and will be populated by resolveMentions.
+	evtWithMention := model.MessageEvent{
+		Message: model.Message{
+			ID: "msg-3", RoomID: "r1", UserID: "u-1", UserAccount: "alice",
+			Content:   "hey @bob can you check this?",
+			CreatedAt: now,
+		},
+		SiteID: "site-a", Timestamp: now.UnixMilli(),
+	}
+	dataWithMention, _ := json.Marshal(evtWithMention)
+
+	// Expected stored message: Mentions resolved to full Participant.
+	msgWithMention := model.Message{
+		ID: "msg-3", RoomID: "r1", UserID: "u-1", UserAccount: "alice",
+		Content:   "hey @bob can you check this?",
+		CreatedAt: now,
+		Mentions: []model.Participant{{
+			UserID: "u-bob", Account: "bob", ChineseName: "鮑勃", EngName: "Bob Chen",
+		}},
+	}
+
+	// Event with @all — no user lookup should occur.
+	evtWithAll := model.MessageEvent{
+		Message: model.Message{
+			ID: "msg-4", RoomID: "r1", UserID: "u-1", UserAccount: "alice",
+			Content:   "hello @all please read",
+			CreatedAt: now,
+		},
+		SiteID: "site-a", Timestamp: now.UnixMilli(),
+	}
+	dataWithAll, _ := json.Marshal(evtWithAll)
+
+	msgWithAll := model.Message{
+		ID: "msg-4", RoomID: "r1", UserID: "u-1", UserAccount: "alice",
+		Content:   "hello @all please read",
+		CreatedAt: now,
+		Mentions:  []model.Participant{{Account: "all", EngName: "all"}},
+	}
+
 	expectedSender := cassParticipant{
 		ID:          user.ID,
 		EngName:     user.EngName,
@@ -119,6 +167,34 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "mention resolved to Participant and stored",
+			data: dataWithMention,
+			setupMocks: func(store *MockStore, us *MockUserStore) {
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+					Return([]model.User{*bobUser}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				store.EXPECT().SaveMessage(gomock.Any(), &msgWithMention, &expectedSender, "site-a").Return(nil)
+			},
+		},
+		{
+			name: "@all stored as special Participant without DB lookup",
+			data: dataWithAll,
+			setupMocks: func(store *MockStore, us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				store.EXPECT().SaveMessage(gomock.Any(), &msgWithAll, &expectedSender, "site-a").Return(nil)
+			},
+		},
+		{
+			name: "mention user lookup error — NAK before sender lookup",
+			data: dataWithMention,
+			setupMocks: func(store *MockStore, us *MockUserStore) {
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+					Return(nil, errors.New("mongo: connection refused"))
+				// FindUserByID and SaveMessage must NOT be called
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -135,6 +211,32 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestParseMentions(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{name: "no mentions", content: "hello world", want: nil},
+		{name: "single mention", content: "hello @bob", want: []string{"bob"}},
+		{name: "multiple mentions", content: "@alice check with @bob", want: []string{"alice", "bob"}},
+		{name: "mention at start", content: "@alice hello", want: []string{"alice"}},
+		{name: "at-all", content: "hey @all check this", want: []string{"all"}},
+		{name: "email-style mention", content: "ping @user@domain.com", want: []string{"user@domain.com"}},
+		{name: "quoted reply prefix", content: ">@alice this is quoted", want: []string{"alice"}},
+		{name: "duplicates deduplicated", content: "@bob and @bob again", want: []string{"bob"}},
+		{name: "dots and hyphens", content: "cc @first.last and @my-user", want: []string{"first.last", "my-user"}},
+		{name: "empty content", content: "", want: nil},
+		{name: "trailing period not captured", content: "hey @bob. check this", want: []string{"bob"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, parseMentions(tt.content))
 		})
 	}
 }
