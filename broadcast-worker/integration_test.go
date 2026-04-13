@@ -46,7 +46,7 @@ type recordingPublisher struct {
 	records []publishRecord
 }
 
-func (p *recordingPublisher) Publish(subj string, data []byte) error {
+func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.records = append(p.records, publishRecord{subject: subj, data: data})
