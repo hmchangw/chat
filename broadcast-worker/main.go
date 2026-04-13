@@ -18,6 +18,7 @@ import (
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 type config struct {
@@ -51,7 +52,8 @@ func main() {
 		os.Exit(1)
 	}
 	db := mongoClient.Database(cfg.MongoDB)
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
 
 	nc, err := otelnats.Connect(cfg.NatsURL)
 	if err != nil {
@@ -84,7 +86,7 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(store, publisher)
+	handler := NewHandler(store, us, publisher)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
