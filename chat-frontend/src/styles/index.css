@@ -96,3 +96,72 @@ body {
   border-radius: 4px;
   font-size: 13px;
 }
+
+/* Room List */
+.room-list {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #2b2d31;
+  color: #b5bac1;
+}
+
+.room-list-header {
+  padding: 1rem;
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #949ba4;
+}
+
+.room-list-items {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.room-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 0 0.5rem;
+}
+
+.room-item:hover {
+  background: #35373c;
+  color: #dbdee1;
+}
+
+.room-item-selected {
+  background: #404249;
+  color: #fff;
+}
+
+.room-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-meta {
+  font-size: 12px;
+  color: #949ba4;
+  flex-shrink: 0;
+  margin-left: 0.5rem;
+}
+
+.room-list-empty {
+  padding: 1rem;
+  font-size: 13px;
+  color: #949ba4;
+  text-align: center;
+}
+
+.room-list-error {
+  padding: 0.5rem 1rem;
+  font-size: 12px;
+  color: #f38ba8;
+}
