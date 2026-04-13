@@ -1,0 +1,11 @@
+.git
+.github
+.vscode
+*.md
+LICENSE
+Makefile
+**/deploy/docker-compose.yml
+**/deploy/azure-pipelines.yml
+**/testdata/
+**/*_test.go
+**/mock_*_test.go
