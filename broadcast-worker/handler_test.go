@@ -136,7 +136,8 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 				expectEmployeeLookup(store, []string{"sender", "alice"}, []model.Employee{{AccountName: "sender", Name: "寄件者", EngName: "Sender Lin"}, testEmployees[0]})
 			}
 
-			h := NewHandler(store, pub)
+			keyStore := NewMockRoomKeyProvider(ctrl)
+			h := NewHandler(store, pub, keyStore)
 			err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", tc.content, msgTime))
 			require.NoError(t, err)
 
@@ -239,7 +240,8 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 				expectEmployeeLookup(store, []string{"alice", "bob"}, testEmployees)
 			}
 
-			h := NewHandler(store, pub)
+			keyStore := NewMockRoomKeyProvider(ctrl)
+			h := NewHandler(store, pub, keyStore)
 			err := h.HandleMessage(context.Background(), data)
 			require.NoError(t, err)
 
@@ -277,7 +279,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		pub := &mockPublisher{}
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 
 		err := h.HandleMessage(context.Background(), []byte("not json"))
 		require.Error(t, err)
@@ -291,7 +294,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(nil, errors.New("not found"))
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.Error(t, err)
 		assert.Empty(t, pub.records)
@@ -305,7 +309,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(errors.New("db error"))
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.Error(t, err)
 		assert.Empty(t, pub.records)
@@ -320,7 +325,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.Any()).Return(errors.New("db error"))
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hey @alice", msgTime))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "set subscription mentions")
@@ -340,7 +346,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
 		store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(nil, nil)
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.NoError(t, err)
 		assert.Empty(t, pub.records)
@@ -356,7 +363,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(nil, nil)
 		store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(nil, errors.New("db error"))
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		evt := model.MessageEvent{
 			SiteID: "site-a",
 			Message: model.Message{
@@ -381,7 +389,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", []string{"sender"}).Return(nil)
 		expectEmployeeLookup(store, []string{"sender"}, []model.Employee{{AccountName: "sender", Name: "寄件者", EngName: "Sender Lin"}})
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hey @sender", msgTime))
 		require.NoError(t, err)
 
@@ -401,7 +410,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
 		store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(nil, errors.New("db error"))
 
-		h := NewHandler(store, pub)
+		keyStore := NewMockRoomKeyProvider(ctrl)
+		h := NewHandler(store, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.NoError(t, err)
 
@@ -442,7 +452,8 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
 	store.EXPECT().FindEmployeesByAccountNames(gomock.Any(), gomock.Any()).Return(testEmployees, nil)
 
-	h := NewHandler(store, pub)
+	keyStore := NewMockRoomKeyProvider(ctrl)
+	h := NewHandler(store, pub, keyStore)
 	evt := model.MessageEvent{
 		SiteID: "site-a",
 		Message: model.Message{

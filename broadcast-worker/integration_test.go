@@ -17,6 +17,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -61,6 +62,14 @@ func (p *recordingPublisher) getRecords() []publishRecord {
 	return cp
 }
 
+type fakeRoomKeyProvider struct {
+	pair *roomkeystore.VersionedKeyPair
+}
+
+func (f *fakeRoomKeyProvider) Get(_ context.Context, _ string) (*roomkeystore.VersionedKeyPair, error) {
+	return f.pair, nil
+}
+
 func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
@@ -82,7 +91,8 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	keyStore := &fakeRoomKeyProvider{pair: nil}
+	handler := NewHandler(store, pub, keyStore)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -128,7 +138,8 @@ func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
 
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	keyStore := &fakeRoomKeyProvider{pair: nil}
+	handler := NewHandler(store, pub, keyStore)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -167,7 +178,8 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	keyStore := &fakeRoomKeyProvider{pair: nil}
+	handler := NewHandler(store, pub, keyStore)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -219,7 +231,8 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	keyStore := &fakeRoomKeyProvider{pair: nil}
+	handler := NewHandler(store, pub, keyStore)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
