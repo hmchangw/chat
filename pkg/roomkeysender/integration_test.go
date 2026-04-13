@@ -281,7 +281,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// 8. Encrypt a message with the room public key.
-	encrypted, err := roomcrypto.Encode(plaintext, pubKeyBytes)
+	encrypted, err := roomcrypto.Encode(plaintext, pubKeyBytes, version)
 	require.NoError(t, err, "encrypt message")
 	encryptedJSON, err := json.Marshal(encrypted)
 	require.NoError(t, err, "marshal encrypted message")
