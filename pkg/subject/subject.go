@@ -61,6 +61,14 @@ func MemberInvite(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", account, roomID, siteID)
 }
 
+func MemberRoleUpdate(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.role-update", account, roomID, siteID)
+}
+
+func RoomCanonical(siteID, operation string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.%s", siteID, operation)
+}
+
 func SubscriptionUpdate(account string) string {
 	return fmt.Sprintf("chat.user.%s.event.subscription.update", account)
 }
@@ -122,7 +130,15 @@ func MsgSendWildcard(siteID string) string {
 }
 
 func MemberInviteWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.>", siteID)
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.invite", siteID)
+}
+
+func MemberRoleUpdateWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.role-update", siteID)
+}
+
+func RoomCanonicalWildcard(siteID string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.>", siteID)
 }
 
 func MsgHistoryWildcard(siteID string) string {

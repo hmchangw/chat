@@ -33,6 +33,12 @@ type SubscriptionUpdateEvent struct {
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
 }
 
+type UpdateRoleRequest struct {
+	RoomID  string `json:"roomId"  bson:"roomId"`
+	Account string `json:"account" bson:"account"`
+	NewRole Role   `json:"newRole" bson:"newRole"`
+}
+
 type InviteMemberRequest struct {
 	InviterID      string `json:"inviterId"`
 	InviteeID      string `json:"inviteeId"`

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -46,6 +47,19 @@ func (s *mongoInboxStore) UpsertRoom(ctx context.Context, room *model.Room) erro
 	opts := options.UpdateOne().SetUpsert(true)
 	_, err := s.roomCol.UpdateOne(ctx, filter, update, opts)
 	return err
+}
+
+func (s *mongoInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error {
+	filter := bson.M{"u.account": account, "roomId": roomID}
+	update := bson.M{"$set": bson.M{"roles": roles}}
+	res, err := s.subCol.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("update subscription roles for %q in room %q: %w", account, roomID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("subscription not found for %q in room %q", account, roomID)
+	}
+	return nil
 }
 
 func main() {

@@ -43,7 +43,7 @@ func TestSubscriptionRepo_GetSubscription(t *testing.T) {
 		ID:     "s1",
 		User:   model.SubscriptionUser{ID: "u1", Account: "u1"},
 		RoomID: "r1", SiteID: "site-local",
-		Role: model.RoleMember, HistorySharedSince: &joinTime, JoinedAt: joinTime,
+		Roles: []model.Role{model.RoleMember}, HistorySharedSince: &joinTime, JoinedAt: joinTime,
 	})
 	require.NoError(t, err)
 
@@ -76,7 +76,7 @@ func TestSubscriptionRepo_GetHistorySharedSince_NilHSS(t *testing.T) {
 		ID:     "s2",
 		User:   model.SubscriptionUser{ID: "owner", Account: "owner"},
 		RoomID: "r1", SiteID: "site-local",
-		Role: model.RoleOwner, JoinedAt: time.Now(),
+		Roles: []model.Role{model.RoleOwner}, JoinedAt: time.Now(),
 	})
 	require.NoError(t, err)
 
@@ -96,7 +96,7 @@ func TestSubscriptionRepo_GetHistorySharedSince_WithHSS(t *testing.T) {
 		ID:     "s3",
 		User:   model.SubscriptionUser{ID: "u2", Account: "u2"},
 		RoomID: "r2", SiteID: "site-local",
-		Role: model.RoleMember, HistorySharedSince: &joinTime, JoinedAt: joinTime,
+		Roles: []model.Role{model.RoleMember}, HistorySharedSince: &joinTime, JoinedAt: joinTime,
 	})
 	require.NoError(t, err)
 

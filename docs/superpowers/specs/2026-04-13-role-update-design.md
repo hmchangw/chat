@@ -17,7 +17,7 @@ Out of scope: add-member, remove-member, room creation/deletion, message history
 
 ### Event Flow
 
-```
+```text
 Client
   |
   v  NATS request/reply
@@ -31,10 +31,11 @@ ROOMS_{siteID} stream
   |
   v  consume (durable consumer: room-worker)
 room-worker
-  |  1. UpdateSubscriptionRoles
-  |  2. Publish SubscriptionUpdateEvent to user
-  |  3. If cross-site: publish outbox event
-  |  4. Ack (NAK on any failure)
+  |  1. Promote: AddRole("owner") / Demote: AddRole("member") then RemoveRole("owner")
+  |  2. Re-read subscription via GetSubscription
+  |  3. Publish SubscriptionUpdateEvent to user
+  |  4. If cross-site: publish outbox event
+  |  5. Ack (NAK on any failure)
   |
   +-- local user: done
   |
@@ -45,8 +46,7 @@ room-worker
         |
         v  (sourced into remote INBOX)
       inbox-worker (remote site)
-        1. UpdateSubscriptionRoles in local DB
-        2. Publish SubscriptionUpdateEvent to local user
+        1. UpdateSubscriptionRoles (set authoritative state) in local DB
 ```
 
 ## NATS Subjects
@@ -84,7 +84,7 @@ Room-service subscribes to `MemberRoleUpdateWildcard` with the `room-service` qu
 
 The `ROOMS_{siteID}` stream subject filter is updated to capture canonical room operations:
 
-```
+```text
 chat.room.canonical.{siteID}.>
 ```
 
@@ -206,8 +206,8 @@ All steps are synchronous before ack. NAK on any failure for JetStream retry.
 2. Promote (`newRole == RoleOwner`): `AddRole(ctx, req.Account, req.RoomID, RoleOwner)` — `$addToSet` adds `"owner"` to roles
 3. Demote (`newRole == RoleMember`): `RemoveRole(ctx, req.Account, req.RoomID, RoleOwner)` — `$pull` removes `"owner"` from roles
 4. Re-read the subscription via `GetSubscription(ctx, req.Account, req.RoomID)` to get the updated roles for the event
-5. Publish `SubscriptionUpdateEvent` with action `"role_updated"` to `chat.user.{account}.event.subscription.update`
-6. If `subscription.SiteID != h.siteID`: publish `OutboxEvent` with type `"role_updated"` and `SubscriptionUpdateEvent` as payload to `outbox.{room.SiteID}.to.{user.SiteID}.role_updated`
+5. Publish `SubscriptionUpdateEvent` with action `"role_updated"` to `chat.user.{account}.event.subscription.update` (NATS supercluster routes this to the user's site)
+6. Look up the user's siteID via `GetUser(ctx, req.Account)`. If `user.SiteID != h.siteID` (user's home site differs from room's site): publish `OutboxEvent` with type `"role_updated"` and `SubscriptionUpdateEvent` as payload to `outbox.{room.SiteID}.to.{user.SiteID}.role_updated`
 7. **Ack**
 
 ## Cross-Site Handling (inbox-worker)
@@ -218,7 +218,8 @@ Inbox-worker's `HandleEvent` switch gains a new case for `"role_updated"`.
 
 1. Unmarshal `SubscriptionUpdateEvent` from `OutboxEvent.Payload`
 2. `UpdateSubscriptionRoles(ctx, evt.Subscription.User.Account, evt.Subscription.RoomID, evt.Subscription.Roles)` in local MongoDB
-3. Publish `SubscriptionUpdateEvent` to `chat.user.{account}.event.subscription.update` so the local client is notified
+
+No `SubscriptionUpdateEvent` is published — room-worker already publishes to `chat.user.{account}.event.subscription.update`, and NATS supercluster routes it to the user's site.
 
 ## Store Interface Changes
 
@@ -236,6 +237,7 @@ CountOwners(ctx context.Context, roomID string) (int, error)
 New methods:
 ```go
 GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
+GetUser(ctx context.Context, account string) (*model.User, error)
 AddRole(ctx context.Context, account, roomID string, role model.Role) error
 RemoveRole(ctx context.Context, account, roomID string, role model.Role) error
 ```
@@ -251,7 +253,7 @@ UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []mod
 
 ### AddRole (promote)
 
-```
+```js
 db.subscriptions.updateOne(
     { "u.account": account, "roomId": roomID },
     { $addToSet: { "roles": "owner" } }
@@ -260,7 +262,7 @@ db.subscriptions.updateOne(
 
 ### RemoveRole (demote)
 
-```
+```js
 db.subscriptions.updateOne(
     { "u.account": account, "roomId": roomID },
     { $pull: { "roles": "owner" } }
@@ -269,7 +271,7 @@ db.subscriptions.updateOne(
 
 ### UpdateSubscriptionRoles (inbox-worker — set authoritative state from remote)
 
-```
+```js
 db.subscriptions.updateOne(
     { "u.account": account, "roomId": roomID },
     { $set: { "roles": roles } }
@@ -278,7 +280,7 @@ db.subscriptions.updateOne(
 
 ### CountOwners
 
-```
+```js
 db.subscriptions.countDocuments(
     { "roomId": roomID, "roles": "owner" }
 )

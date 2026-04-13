@@ -289,13 +289,18 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 	if err := h.publish(ctx, subject.SubscriptionUpdate(updatedSub.User.Account), subEvtData); err != nil {
 		return fmt.Errorf("publish subscription update: %w", err)
 	}
-	if updatedSub.SiteID != h.siteID {
+	// Look up user's siteID to determine if cross-site
+	user, err := h.store.GetUser(ctx, req.Account)
+	if err != nil {
+		return fmt.Errorf("get user: %w", err)
+	}
+	if user.SiteID != h.siteID {
 		outbox := model.OutboxEvent{
-			Type: "role_updated", SiteID: h.siteID, DestSiteID: updatedSub.SiteID,
+			Type: "role_updated", SiteID: h.siteID, DestSiteID: user.SiteID,
 			Payload: subEvtData, Timestamp: now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		outboxSubj := subject.Outbox(h.siteID, updatedSub.SiteID, "role_updated")
+		outboxSubj := subject.Outbox(h.siteID, user.SiteID, "role_updated")
 		if err := h.publish(ctx, outboxSubj, outboxData); err != nil {
 			return fmt.Errorf("publish outbox: %w", err)
 		}
@@ -352,14 +357,7 @@ func (h *Handler) handleRoleUpdated(ctx context.Context, evt *model.OutboxEvent)
 	if err := h.store.UpdateSubscriptionRoles(ctx, account, roomID, roles); err != nil {
 		return fmt.Errorf("update subscription roles: %w", err)
 	}
-	updateData, err := natsutil.MarshalResponse(subEvt)
-	if err != nil {
-		return fmt.Errorf("marshal subscription update event: %w", err)
-	}
-	subj := subject.SubscriptionUpdate(account)
-	if err := h.pub.Publish(ctx, subj, updateData); err != nil {
-		slog.Error("publish subscription update failed", "error", err, "account", account)
-	}
+	// No SubscriptionUpdateEvent publish — room-worker already handles that via NATS supercluster
 	return nil
 }
 ```

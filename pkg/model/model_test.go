@@ -260,7 +260,7 @@ func TestSubscriptionJSON(t *testing.T) {
 		User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID:             "r1",
 		SiteID:             "site-a",
-		Role:               model.RoleOwner,
+		Roles:              []model.Role{model.RoleOwner},
 		HistorySharedSince: &hss,
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
@@ -478,6 +478,11 @@ func TestNotificationEventJSON(t *testing.T) {
 	assert.Equal(t, src, dst)
 }
 
+func TestUpdateRoleRequestJSON(t *testing.T) {
+	src := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	roundTrip(t, &src, &model.UpdateRoleRequest{})
+}
+
 func TestSubscriptionUpdateEventJSON(t *testing.T) {
 	src := model.SubscriptionUpdateEvent{
 		UserID: "u1",
@@ -486,7 +491,7 @@ func TestSubscriptionUpdateEventJSON(t *testing.T) {
 			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
 			RoomID:   "r1",
 			SiteID:   "site-a",
-			Role:     model.RoleMember,
+			Roles:    []model.Role{model.RoleMember},
 			JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		},
 		Action:    "added",

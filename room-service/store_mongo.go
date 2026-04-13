@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -51,7 +52,10 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 	var sub model.Subscription
 	filter := bson.M{"u.account": account, "roomId": roomID}
 	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
-		return nil, fmt.Errorf("subscription not found: %w", err)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("%q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
+		}
+		return nil, fmt.Errorf("get subscription for %q in room %q: %w", account, roomID, err)
 	}
 	return &sub, nil
 }
@@ -59,4 +63,12 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
 	_, err := s.subscriptions.InsertOne(ctx, sub)
 	return err
+}
+
+func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {
+	count, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID, "roles": model.RoleOwner})
+	if err != nil {
+		return 0, fmt.Errorf("count owners for room %q: %w", roomID, err)
+	}
+	return int(count), nil
 }

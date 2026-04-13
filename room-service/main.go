@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -16,7 +17,6 @@ import (
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
-	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type config struct {
@@ -71,19 +71,15 @@ func main() {
 	}
 
 	store := NewMongoStore(db)
-	handler := NewHandler(store, cfg.SiteID, cfg.MaxRoomSize, func(ctx context.Context, data []byte) error {
-		_, err := js.Publish(ctx, subject.MemberInviteWildcard(cfg.SiteID), data)
-		return err
+	handler := NewHandler(store, cfg.SiteID, cfg.MaxRoomSize, func(ctx context.Context, subj string, data []byte) error {
+		if _, err := js.Publish(ctx, subj, data); err != nil {
+			return fmt.Errorf("publish to %q: %w", subj, err)
+		}
+		return nil
 	})
 
 	if err := handler.RegisterCRUD(nc); err != nil {
 		slog.Error("register CRUD handlers failed", "error", err)
-		os.Exit(1)
-	}
-
-	inviteSubj := subject.MemberInviteWildcard(cfg.SiteID)
-	if _, err := nc.QueueSubscribe(inviteSubj, "room-service", handler.NatsHandleInvite); err != nil {
-		slog.Error("subscribe invite failed", "error", err)
 		os.Exit(1)
 	}
 

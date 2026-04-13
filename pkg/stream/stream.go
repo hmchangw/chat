@@ -1,6 +1,10 @@
 package stream
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/hmchangw/chat/pkg/subject"
+)
 
 // Config holds the JetStream stream configuration parameters.
 type Config struct {
@@ -25,7 +29,7 @@ func MessagesCanonical(siteID string) Config {
 func Rooms(siteID string) Config {
 	return Config{
 		Name:     fmt.Sprintf("ROOMS_%s", siteID),
-		Subjects: []string{fmt.Sprintf("chat.user.*.request.room.*.%s.member.>", siteID)},
+		Subjects: []string{subject.RoomCanonicalWildcard(siteID)},
 	}
 }
 

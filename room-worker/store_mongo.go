@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -13,12 +14,14 @@ import (
 type MongoStore struct {
 	subscriptions *mongo.Collection
 	rooms         *mongo.Collection
+	users         *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{
 		subscriptions: db.Collection("subscriptions"),
 		rooms:         db.Collection("rooms"),
+		users:         db.Collection("users"),
 	}
 }
 
@@ -50,4 +53,53 @@ func (s *MongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, e
 		return nil, fmt.Errorf("room %q not found: %w", roomID, err)
 	}
 	return &room, nil
+}
+
+func (s *MongoStore) GetUser(ctx context.Context, account string) (*model.User, error) {
+	var user model.User
+	if err := s.users.FindOne(ctx, bson.M{"account": account}).Decode(&user); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("user %q not found: %w", account, err)
+		}
+		return nil, fmt.Errorf("get user %q: %w", account, err)
+	}
+	return &user, nil
+}
+
+func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
+	var sub model.Subscription
+	filter := bson.M{"u.account": account, "roomId": roomID}
+	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("%q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
+		}
+		return nil, fmt.Errorf("get subscription for %q in room %q: %w", account, roomID, err)
+	}
+	return &sub, nil
+}
+
+func (s *MongoStore) AddRole(ctx context.Context, account, roomID string, role model.Role) error {
+	filter := bson.M{"u.account": account, "roomId": roomID}
+	update := bson.M{"$addToSet": bson.M{"roles": role}}
+	res, err := s.subscriptions.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("add role %q for %q in room %q: %w", role, account, roomID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("subscription not found for %q in room %q", account, roomID)
+	}
+	return nil
+}
+
+func (s *MongoStore) RemoveRole(ctx context.Context, account, roomID string, role model.Role) error {
+	filter := bson.M{"u.account": account, "roomId": roomID}
+	update := bson.M{"$pull": bson.M{"roles": role}}
+	res, err := s.subscriptions.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("remove role %q for %q in room %q: %w", role, account, roomID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("subscription not found for %q in room %q", account, roomID)
+	}
+	return nil
 }
