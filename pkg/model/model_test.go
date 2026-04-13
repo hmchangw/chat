@@ -150,6 +150,68 @@ func TestMessageEventJSON(t *testing.T) {
 	roundTrip(t, &e, &model.MessageEvent{})
 }
 
+func TestEventTypeValues(t *testing.T) {
+	assert.Equal(t, model.EventType("created"), model.EventCreated)
+	assert.Equal(t, model.EventType("updated"), model.EventUpdated)
+	assert.Equal(t, model.EventType("deleted"), model.EventDeleted)
+}
+
+func TestMessageEventJSON_WithEvent(t *testing.T) {
+	t.Run("created event round-trip", func(t *testing.T) {
+		src := model.MessageEvent{
+			Event: model.EventCreated,
+			Message: model.Message{
+				ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+				Content:   "hello",
+				CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+		var dst model.MessageEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+	})
+
+	t.Run("event field omitted when empty (backward compat)", func(t *testing.T) {
+		src := model.MessageEvent{
+			Message: model.Message{
+				ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+				Content:   "hello",
+				CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["event"]
+		assert.False(t, present, "event should be omitted when empty")
+	})
+
+	t.Run("deleted event round-trip", func(t *testing.T) {
+		src := model.MessageEvent{
+			Event: model.EventDeleted,
+			Message: model.Message{
+				ID:        "m1",
+				RoomID:    "r1",
+				CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+		var dst model.MessageEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+	})
+}
+
 func TestSubscriptionJSON(t *testing.T) {
 	hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := model.Subscription{

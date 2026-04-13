@@ -81,6 +81,14 @@ func MsgCanonicalCreated(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.created", siteID)
 }
 
+func MsgCanonicalUpdated(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.updated", siteID)
+}
+
+func MsgCanonicalDeleted(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.deleted", siteID)
+}
+
 func RoomEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event", roomID)
 }
