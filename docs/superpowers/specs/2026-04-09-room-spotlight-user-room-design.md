@@ -125,6 +125,8 @@ _, _ = h.js.Publish(ctx, subj, data)
 
 **inbox-worker is NOT affected.** It continues to consume INBOX for `member_added` and `room_sync` events. The new subscription events go to a different consumer (search-sync-worker) via JetStream's independent-consumer semantics. inbox-worker simply ignores events whose subjects don't match its durable consumer's filter.
 
+> **Cross-cutting dependency on inbox-worker design:** for **local invites**, room-worker creates the subscription in the local Mongo directly — inbox-worker should NOT also process the same event (it would cause a duplicate Mongo write). To prevent this, the inbox-worker design must ensure its consumer filter excludes locally-published events. One option is to split the INBOX subject namespace into two prefixes: `chat.inbox.{siteID}.>` for direct local publishes and `chat.inbox.aggregate.{siteID}.>` for events sourced from remote OUTBOX (via SubjectTransforms). inbox-worker then filters on the `aggregate` namespace only, while spotlight-sync and user-room-sync use NATS 2.10+ `FilterSubjects` (plural) to subscribe to both. The exact namespace separation is part of the inbox-worker design — this spec only depends on it being in place.
+
 ### Consumers on INBOX
 
 The enhanced INBOX stream is shared by multiple consumers with independent durable names and subject filters:
