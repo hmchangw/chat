@@ -242,3 +242,51 @@ body {
 .message-error {
   color: #f38ba8;
 }
+
+/* Message Input */
+.message-input {
+  display: flex;
+  padding: 0.75rem 1rem;
+  background: #313338;
+  border-top: 1px solid #3f4147;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.message-input input {
+  flex: 1;
+  padding: 0.6rem 0.75rem;
+  background: #383a40;
+  border: none;
+  border-radius: 8px;
+  color: #dbdee1;
+  font-size: 14px;
+}
+
+.message-input input:focus {
+  outline: none;
+  background: #404249;
+}
+
+.message-input input::placeholder {
+  color: #6d6f78;
+}
+
+.message-input button {
+  padding: 0.6rem 1.2rem;
+  background: #5865f2;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.message-input button:hover:not(:disabled) {
+  background: #4752c4;
+}
+
+.message-input button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
