@@ -91,6 +91,10 @@ func (a *redisAdapter) hgetallMany(ctx context.Context, keys []string) ([]map[st
 	return out, nil
 }
 
+func (a *redisAdapter) closeClient() error {
+	return a.c.Close()
+}
+
 // NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
 func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
 	c := redis.NewClient(&redis.Options{

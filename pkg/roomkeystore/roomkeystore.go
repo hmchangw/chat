@@ -33,6 +33,7 @@ type RoomKeyStore interface {
 	GetByVersion(ctx context.Context, roomID string, version int) (*RoomKeyPair, error)
 	Rotate(ctx context.Context, roomID string, newPair RoomKeyPair) (int, error)
 	Delete(ctx context.Context, roomID string) error
+	Close() error
 }
 
 // Config holds Valkey connection and grace period configuration, parsed via caarlos0/env.
@@ -50,6 +51,7 @@ type hashCommander interface {
 	hgetallMany(ctx context.Context, keys []string) ([]map[string]string, error)
 	rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv string, gracePeriod time.Duration) (int, error)
 	deletePipeline(ctx context.Context, currentKey, prevKey string) error
+	closeClient() error
 }
 
 // valkeyStore is the Valkey-backed implementation of RoomKeyStore.
@@ -200,6 +202,7 @@ func (s *valkeyStore) Delete(ctx context.Context, roomID string) error {
 	}
 	return nil
 }
+
 
 // decodeKeyPair decodes base64-encoded pub and priv fields from a Valkey hash.
 func decodeKeyPair(fields map[string]string) (*RoomKeyPair, error) {

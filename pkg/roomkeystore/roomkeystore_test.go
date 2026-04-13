@@ -23,6 +23,8 @@ type fakeHashClient struct {
 	hgetallManyCallCount int
 	rotatePipelineErr    error
 	deletePipelineErr    error
+	closeErr             error
+	closed               bool
 }
 
 func (f *fakeHashClient) hset(_ context.Context, key string, pub, priv string) error {
@@ -92,6 +94,14 @@ func (f *fakeHashClient) deletePipeline(_ context.Context, currentKey, prevKey s
 		delete(f.store, currentKey)
 		delete(f.store, prevKey)
 	}
+	return nil
+}
+
+func (f *fakeHashClient) closeClient() error {
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	f.closed = true
 	return nil
 }
 
@@ -623,3 +633,4 @@ func TestValkeyStore_GetMany(t *testing.T) {
 		})
 	}
 }
+
