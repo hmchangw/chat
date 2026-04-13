@@ -7,6 +7,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -60,7 +61,7 @@ func TestEncode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := Encode(tt.content, tt.pubKey)
+			result, err := Encode(tt.content, tt.pubKey, 0)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errContains)
@@ -93,7 +94,7 @@ func TestEncode_RoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			pubKeyBytes := privKey.PublicKey().Bytes()
 
-			msg, err := Encode(tc.content, pubKeyBytes)
+			msg, err := Encode(tc.content, pubKeyBytes, 0)
 			require.NoError(t, err)
 
 			// Step 1: parse the ephemeral public key from the EncryptedMessage
@@ -133,9 +134,9 @@ func TestEncode_NonDeterminism(t *testing.T) {
 	require.NoError(t, err)
 	pubKeyBytes := privKey.PublicKey().Bytes()
 
-	r1, err := Encode("test message", pubKeyBytes)
+	r1, err := Encode("test message", pubKeyBytes, 0)
 	require.NoError(t, err)
-	r2, err := Encode("test message", pubKeyBytes)
+	r2, err := Encode("test message", pubKeyBytes, 0)
 	require.NoError(t, err)
 
 	assert.False(t, bytes.Equal(r1.EphemeralPublicKey, r2.EphemeralPublicKey),
@@ -156,7 +157,7 @@ func TestEncode_RandReaderErrors(t *testing.T) {
 	pubKeyBytes := privKey.PublicKey().Bytes()
 
 	t.Run("ephemeral key generation fails", func(t *testing.T) {
-		result, err := encode("hello", pubKeyBytes, &failReader{})
+		result, err := encode("hello", pubKeyBytes, 0, &failReader{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "generating ephemeral key")
 		assert.Nil(t, result)
@@ -171,7 +172,7 @@ func TestEncode_RandReaderErrors(t *testing.T) {
 		var encErr error
 		for limit := int64(32); limit <= 128; limit++ {
 			r := io.MultiReader(io.LimitReader(rand.Reader, limit), &failReader{})
-			_, encErr = encode("hello", pubKeyBytes, r)
+			_, encErr = encode("hello", pubKeyBytes, 0, r)
 			if encErr != nil && strings.Contains(encErr.Error(), "generating nonce") {
 				break
 			}
@@ -179,6 +180,34 @@ func TestEncode_RandReaderErrors(t *testing.T) {
 		require.Error(t, encErr)
 		require.Contains(t, encErr.Error(), "generating nonce", "loop exhausted without reaching nonce generation")
 	})
+}
+
+func TestEncode_Version(t *testing.T) {
+	privKey, err := ecdh.P256().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pubKeyBytes := privKey.PublicKey().Bytes()
+
+	msg, err := Encode("hello", pubKeyBytes, 42)
+	require.NoError(t, err)
+	require.NotNil(t, msg)
+	assert.Equal(t, 42, msg.Version)
+}
+
+func TestEncryptedMessage_JSONRoundTrip(t *testing.T) {
+	original := EncryptedMessage{
+		Version:            7,
+		EphemeralPublicKey: []byte{1, 2, 3},
+		Nonce:              []byte{4, 5, 6},
+		Ciphertext:         []byte{7, 8, 9},
+	}
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"version":7`)
+
+	var decoded EncryptedMessage
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, original, decoded)
 }
 
 // failReader is an io.Reader that always returns an error.
