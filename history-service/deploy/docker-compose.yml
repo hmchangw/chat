@@ -12,7 +12,7 @@ services:
       - "27017:27017"
 
   cassandra:
-    image: cassandra:4.1
+    image: cassandra:5
     ports:
       - "9042:9042"
     environment:
