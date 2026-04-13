@@ -18,12 +18,13 @@ import (
 
 type config struct {
 	Port           string        `env:"PORT"                  envDefault:"8080"`
+	DevMode        bool          `env:"DEV_MODE"              envDefault:"false"`
 	AuthSigningKey string        `env:"AUTH_SIGNING_KEY,required"`
 	NATSJWTExpiry  time.Duration `env:"NATS_JWT_EXPIRY"       envDefault:"2h"`
 
-	// OIDC settings for SSO token verification.
-	OIDCIssuerURL string `env:"OIDC_ISSUER_URL,required"`
-	OIDCAudience  string `env:"OIDC_AUDIENCE,required"`
+	// OIDC settings — required when DEV_MODE is false.
+	OIDCIssuerURL string `env:"OIDC_ISSUER_URL"`
+	OIDCAudience  string `env:"OIDC_AUDIENCE"`
 	OIDCVerifyAZP bool   `env:"OIDC_VERIFY_AZP"           envDefault:"false"`
 	TLSSkipVerify bool   `env:"TLS_SKIP_VERIFY"            envDefault:"false"`
 }
@@ -50,19 +51,30 @@ func run() error {
 
 	ctx := context.Background()
 
-	// Initialize OIDC validator — connects to issuer and fetches JWKS keys.
-	oidcValidator, err := pkgoidc.NewValidator(ctx, pkgoidc.Config{
-		IssuerURL:     cfg.OIDCIssuerURL,
-		Audience:      cfg.OIDCAudience,
-		VerifyAZP:     cfg.OIDCVerifyAZP,
-		TLSSkipVerify: cfg.TLSSkipVerify,
-	})
-	if err != nil {
-		return fmt.Errorf("create oidc validator: %w", err)
-	}
-	slog.Info("oidc validator initialized", "issuer", cfg.OIDCIssuerURL)
+	var handler *AuthHandler
 
-	handler := NewAuthHandler(oidcValidator, signingKP, cfg.NATSJWTExpiry)
+	if cfg.DevMode {
+		slog.Info("dev mode enabled — OIDC validation disabled")
+		handler = NewAuthHandler(nil, signingKP, cfg.NATSJWTExpiry)
+		handler.devMode = true
+	} else {
+		if cfg.OIDCIssuerURL == "" || cfg.OIDCAudience == "" {
+			return fmt.Errorf("OIDC_ISSUER_URL and OIDC_AUDIENCE are required when DEV_MODE is false")
+		}
+
+		// Initialize OIDC validator — connects to issuer and fetches JWKS keys.
+		oidcValidator, err := pkgoidc.NewValidator(ctx, pkgoidc.Config{
+			IssuerURL:     cfg.OIDCIssuerURL,
+			Audience:      cfg.OIDCAudience,
+			VerifyAZP:     cfg.OIDCVerifyAZP,
+			TLSSkipVerify: cfg.TLSSkipVerify,
+		})
+		if err != nil {
+			return fmt.Errorf("create oidc validator: %w", err)
+		}
+		slog.Info("oidc validator initialized", "issuer", cfg.OIDCIssuerURL)
+		handler = NewAuthHandler(oidcValidator, signingKP, cfg.NATSJWTExpiry)
+	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
