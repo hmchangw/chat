@@ -495,7 +495,7 @@ func TestHandler_HandleMessage_GroupRoom_Encryption(t *testing.T) {
 		h := NewHandler(store, us, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no current key")
+		assert.ErrorIs(t, err, errNoCurrentKey)
 		assert.Empty(t, pub.records)
 	})
 

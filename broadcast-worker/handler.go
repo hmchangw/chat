@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,6 +15,9 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
+
+// errNoCurrentKey is returned when a room has no encryption key in Valkey.
+var errNoCurrentKey = errors.New("no current key")
 
 // Publisher abstracts NATS publishing so the handler is testable.
 type Publisher interface {
@@ -98,7 +102,7 @@ func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clien
 		evt.Mentions = mentions
 	}
 
-	msgJSON, err := json.Marshal(evt.Message)
+	msgJSON, err := json.Marshal(clientMsg)
 	if err != nil {
 		return fmt.Errorf("marshal client message: %w", err)
 	}
@@ -108,7 +112,7 @@ func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clien
 		return fmt.Errorf("get room key for room %s: %w", room.ID, err)
 	}
 	if key == nil {
-		return fmt.Errorf("get room key for room %s: no current key", room.ID)
+		return fmt.Errorf("get room key for room %s: %w", room.ID, errNoCurrentKey)
 	}
 
 	encrypted, err := roomcrypto.Encode(string(msgJSON), key.KeyPair.PublicKey, key.Version)
