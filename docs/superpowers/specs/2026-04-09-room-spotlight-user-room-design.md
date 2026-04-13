@@ -26,8 +26,10 @@ Previously, both were powered by Monstache (MongoDB CDC → ES). The new archite
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Event source | New SUBSCRIPTIONS stream | Existing subscription events are pub/sub only (not durable). Need replayable stream for indexing. |
-| Event publisher | room-worker (local) + inbox-worker (federated) | Both already create subscriptions and have Room loaded |
+| Event source | New SUBSCRIPTIONS stream per site | Existing subscription events are pub/sub only (not durable). Need replayable stream for indexing. |
+| Cross-site propagation | JetStream stream sourcing (subject-filtered) | Decouples indexing federation from data federation (OUTBOX/INBOX). Same primitive INBOX already uses. |
+| Event publisher | room-worker only | Single source of truth. Subject encodes destination via subscription's siteID; stream sourcing routes automatically. inbox-worker stays focused on Mongo replication. |
+| Subject routing | `chat.subscription.{subscription.siteID}.{action}` | Invitee's siteID is the destination. Local events stay local; federated events flow via stream sourcing. |
 | Spotlight doc model | One doc per subscription | Filter by userAccount + search roomName. Simple create/delete lifecycle. |
 | User-room update strategy | ES scripted update | No read-before-write. Painless script adds/removes roomId from array. Low volume (member changes). Executes on data node only. |
 | Restricted rooms in ES | Not stored | Search service queries restricted rooms from DB + cache at query time |
@@ -40,14 +42,28 @@ Previously, both were powered by Monstache (MongoDB CDC → ES). The new archite
 
 ### Stream config
 
+Per-site SUBSCRIPTIONS stream that accepts any `chat.subscription.>` subject locally and sources events for its own siteID from other sites' SUBSCRIPTIONS streams. This uses JetStream stream sourcing — the same primitive used by `INBOX_{siteID}` to federate OUTBOX events.
+
 ```go
-func Subscriptions(siteID string) Config {
+func Subscriptions(siteID string, remoteSiteIDs []string) Config {
+    sources := make([]SourceConfig, 0, len(remoteSiteIDs))
+    for _, remote := range remoteSiteIDs {
+        sources = append(sources, SourceConfig{
+            Name:          fmt.Sprintf("SUBSCRIPTIONS_%s", remote),
+            FilterSubject: fmt.Sprintf("chat.subscription.%s.>", siteID),
+        })
+    }
     return Config{
         Name:     fmt.Sprintf("SUBSCRIPTIONS_%s", siteID),
-        Subjects: []string{fmt.Sprintf("chat.subscription.%s.>", siteID)},
+        Subjects: []string{"chat.subscription.>"},
+        Sources:  sources,
     }
 }
 ```
+
+Each site's stream:
+1. **Accepts local publishes** for any `chat.subscription.>` subject
+2. **Sources events destined for itself** from every other site's SUBSCRIPTIONS stream, filtered by its own siteID
 
 ### Subjects
 
@@ -55,6 +71,8 @@ func Subscriptions(siteID string) Config {
 chat.subscription.{siteID}.added     → member joined a room
 chat.subscription.{siteID}.removed   → member left/removed from a room
 ```
+
+**Critical:** `{siteID}` is the **subscription's siteID** (the invitee's site), NOT the publisher's site. The subject encodes the destination; stream sourcing routes the event to the right site automatically.
 
 ### Event struct
 
@@ -71,18 +89,34 @@ The Room is included so downstream consumers (spotlight, user-room) have the roo
 
 ### Publishers
 
-**room-worker** (local member add): Already has both Subscription and Room loaded in `processInvite`. Publishes `SubscriptionChangeEvent` to `chat.subscription.{siteID}.added` on the SUBSCRIPTIONS stream.
+**room-worker is the single publisher.** After creating the subscription (regardless of whether the invitee is local or remote), it publishes `SubscriptionChangeEvent` to `chat.subscription.{subscription.siteID}.added`.
 
-**inbox-worker** (federated member add): Receives enriched OutboxEvent payload containing the Room. After creating the local subscription, publishes `SubscriptionChangeEvent` to the local SUBSCRIPTIONS stream.
+- **Local invite** (invitee on same site): subject is `chat.subscription.{localSite}.added`, message stays in the local SUBSCRIPTIONS stream, local search-sync-worker consumes it.
+- **Federated invite** (invitee on remote site): subject is `chat.subscription.{remoteSite}.added`, message lands in the publisher's local SUBSCRIPTIONS stream, then the remote site's SUBSCRIPTIONS stream sources it via its filter.
 
-**Future**: Whoever handles member removal publishes with Action="removed" to `chat.subscription.{siteID}.removed`.
+**inbox-worker does NOT publish SubscriptionChangeEvent.** It remains focused on its existing responsibility — writing the subscription to the local Mongo for federated invites. Federation of subscription state (Mongo) happens via the existing OUTBOX/INBOX pattern; federation of subscription events (for search indexing) happens via SUBSCRIPTIONS stream sourcing. These are two independent propagation paths with two different concerns.
+
+**Future**: Whoever handles member removal publishes with Action="removed" to `chat.subscription.{subscription.siteID}.removed` — same rule.
 
 ### Consumers on SUBSCRIPTIONS
 
-| # | Consumer | Purpose |
-|---|----------|---------|
-| 1 | `spotlight-sync` | Sync subscription docs to spotlight index |
-| 2 | `user-room-sync` | Maintain per-user rooms array |
+Each site's search-sync-worker consumes from its own local SUBSCRIPTIONS stream. Because the stream has broad subjects (`chat.subscription.>`), it stores both **locally-published events destined for other sites** (before stream sourcing propagates them) and **events sourced from remote sites destined for this site**. The consumer must filter to the local siteID to avoid processing events that aren't for this site.
+
+```go
+cons, err := js.CreateOrUpdateConsumer(ctx, "SUBSCRIPTIONS_"+siteID, jetstream.ConsumerConfig{
+    Durable:       "spotlight-sync",              // or "user-room-sync"
+    AckPolicy:     jetstream.AckExplicitPolicy,
+    FilterSubject: fmt.Sprintf("chat.subscription.%s.>", siteID), // only local-site events
+    BackOff:       []time.Duration{1 * time.Second, 5 * time.Second, 30 * time.Second},
+})
+```
+
+| # | Consumer | FilterSubject | Purpose |
+|---|----------|---------------|---------|
+| 1 | `spotlight-sync` | `chat.subscription.{siteID}.>` | Sync subscription docs to spotlight index |
+| 2 | `user-room-sync` | `chat.subscription.{siteID}.>` | Maintain per-user rooms array |
+
+**Why the filter is required:** If Alice on site-A invites Bob on site-B, room-worker on site-A publishes to `chat.subscription.site-B.added`. This matches site-A's stream (broad subjects) and gets stored there. Site-B's stream sources it via its filter. But site-A's consumer would *also* see it — without `FilterSubject`, site-A would incorrectly try to index Bob's subscription into site-A's spotlight/user-room, which is wrong (Bob searches site-B's spotlight, not site-A's).
 
 ---
 
@@ -333,7 +367,7 @@ type Collection interface {
 
 ### room-worker/handler.go
 
-After creating the subscription and fetching the room (both already happen in `processInvite`), publish `SubscriptionChangeEvent` to the SUBSCRIPTIONS stream:
+After creating the subscription and fetching the room (both already happen in `processInvite`), publish `SubscriptionChangeEvent` to the SUBSCRIPTIONS stream. **The subject uses the subscription's siteID, not the worker's local siteID.** This ensures the event is routed to the correct destination site via stream sourcing.
 
 ```go
 changeEvt := model.SubscriptionChangeEvent{
@@ -342,19 +376,27 @@ changeEvt := model.SubscriptionChangeEvent{
     Action:       "added",
     Timestamp:    now.UnixMilli(),
 }
+data, _ := json.Marshal(changeEvt)
+// Subject uses the subscription's siteID (the invitee's site), not h.siteID
+subj := subject.SubscriptionAdded(sub.SiteID)
+_, _ = h.js.Publish(ctx, subj, data)
 ```
+
+This works for both local and federated invites:
+- Local invite: `sub.SiteID == h.siteID`, event stays in local stream
+- Federated invite: `sub.SiteID != h.siteID`, event lands in local stream then gets sourced by the remote site's SUBSCRIPTIONS stream
 
 ### room-worker/main.go
 
-Create the SUBSCRIPTIONS stream at startup (idempotent).
+Create the SUBSCRIPTIONS stream at startup with sources for all known remote site IDs (idempotent). Remote site IDs come from config (e.g., `REMOTE_SITE_IDS=site-b,site-c`).
 
-### inbox-worker/handler.go
+### inbox-worker
 
-For `member_added` outbox events: the OutboxEvent payload is enriched to include Room. After creating the local subscription, publish `SubscriptionChangeEvent` to the local SUBSCRIPTIONS stream.
+**No changes needed.** inbox-worker continues to handle federated Mongo writes via the OUTBOX/INBOX pattern. It does NOT publish to SUBSCRIPTIONS — that's room-worker's job, and stream sourcing handles propagation.
 
 ### pkg/stream/stream.go
 
-Add `Subscriptions(siteID)` config.
+Add `Subscriptions(siteID, remoteSiteIDs)` config with stream sourcing.
 
 ### pkg/subject/subject.go
 
@@ -368,7 +410,7 @@ Add `SubscriptionChangeEvent` struct.
 
 ### search-sync-worker/main.go
 
-Start three `runConsumer` goroutines — one per collection (messages, spotlight, user-room). Each has its own consumer and handler.
+Start three `runConsumer` goroutines — one per collection (messages, spotlight, user-room). Each has its own consumer and handler. The spotlight and user-room consumers bind to the local SUBSCRIPTIONS stream; stream sourcing ensures they only see events for subscriptions on their own site.
 
 ---
 
@@ -376,13 +418,12 @@ Start three `runConsumer` goroutines — one per collection (messages, spotlight
 
 1. `Collection.BuildAction` return type change (slice) + update messageCollection + handler + tests
 2. `ActionUpdate` support in `pkg/searchengine` adapter + tests
-3. `SubscriptionChangeEvent` model + subject builders + stream config
+3. `SubscriptionChangeEvent` model + subject builders + stream config (with sources)
 4. `spotlightCollection` implementation + tests
 5. `userRoomCollection` implementation + tests
-6. room-worker changes (publish to SUBSCRIPTIONS stream)
-7. inbox-worker changes (enriched outbox payload + publish to SUBSCRIPTIONS stream)
-8. search-sync-worker main.go (wire up all three collections)
-9. Integration tests
+6. room-worker changes (publish to SUBSCRIPTIONS stream using subscription's siteID)
+7. search-sync-worker main.go (wire up all three collections)
+8. Integration tests
 
 ---
 
