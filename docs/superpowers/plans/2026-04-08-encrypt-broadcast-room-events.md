@@ -166,11 +166,11 @@ Expected: PASS — all tests green including the new `TestEncode_Version` and `T
 
 - [ ] **Step 9: Verify the whole repo still compiles**
 
-Run: `go build ./...`
-Expected: exit code 0, no output.
+Run: `make build SERVICE=broadcast-worker`
+Expected: exit code 0. (Verifies the main consumer compiles with the new `Encode` signature.)
 
-Also run: `go vet -tags=integration ./pkg/roomkeysender/...`
-Expected: exit code 0. Confirms the integration test compiles with the updated call.
+Also run: `make test SERVICE=pkg/roomkeysender`
+Expected: PASS. Confirms the unit tests compile and pass with the updated call. (Integration test compilation is verified indirectly via `make test-integration` in Task 8.)
 
 - [ ] **Step 10: Commit**
 
@@ -738,12 +738,71 @@ In the `RoomEvent` struct, add the new field after `Message`:
 	EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"`
 ```
 
-- [ ] **Step 2: Verify the model change compiles**
+- [ ] **Step 2: Add `"encryptedMessage"` to the omitted-fields check in `pkg/model/model_test.go`**
 
-Run: `go build ./pkg/model/...`
-Expected: exit code 0.
+In `pkg/model/model_test.go`, locate the "nil message and empty mentions omitted" subtest's omitted-fields list at line 248:
 
-- [ ] **Step 3: Create `testhelpers_test.go` with shared crypto helpers**
+```go
+		for _, key := range []string{"mentions", "mentionAll", "hasMention", "message"} {
+```
+
+Replace with:
+
+```go
+		for _, key := range []string{"mentions", "mentionAll", "hasMention", "message", "encryptedMessage"} {
+```
+
+- [ ] **Step 3: Add a new subtest for `EncryptedMessage` round-trip in `pkg/model/model_test.go`**
+
+Append a new subtest inside `TestRoomEventJSON` (after the "nil message and empty mentions omitted" subtest, before the closing `}`):
+
+```go
+	t.Run("encrypted message populated with nil plaintext message", func(t *testing.T) {
+		src := model.RoomEvent{
+			Type:             model.RoomEventNewMessage,
+			RoomID:           "room-3",
+			Timestamp:        now.UnixMilli(),
+			RoomName:         "Encrypted",
+			RoomType:         model.RoomTypeGroup,
+			SiteID:           "site-c",
+			UserCount:        4,
+			LastMsgAt:        now,
+			LastMsgID:        "msg-3",
+			EncryptedMessage: json.RawMessage(`{"version":3,"ephemeralPublicKey":"AQID","nonce":"BAUG","ciphertext":"BwgJ"}`),
+		}
+
+		data, err := json.Marshal(src)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("unmarshal raw: %v", err)
+		}
+		if _, ok := raw["encryptedMessage"]; !ok {
+			t.Error("expected encryptedMessage to be present in JSON")
+		}
+		if _, ok := raw["message"]; ok {
+			t.Error("expected message to be omitted when nil")
+		}
+
+		var dst model.RoomEvent
+		if err := json.Unmarshal(data, &dst); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !reflect.DeepEqual(src, dst) {
+			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+		}
+	})
+```
+
+- [ ] **Step 4: Verify the model change compiles and tests pass**
+
+Run: `make test SERVICE=pkg/model`
+Expected: PASS — all model tests green including the new subtest.
+
+- [ ] **Step 5: Create `testhelpers_test.go` with shared crypto helpers**
 
 Create `broadcast-worker/testhelpers_test.go` with:
 
@@ -846,7 +905,7 @@ func decryptClientMessage(t *testing.T, data []byte, key *roomkeystore.Versioned
 }
 ```
 
-- [ ] **Step 4: Update `TestHandler_HandleMessage_GroupRoom` to expect Message-only encryption**
+- [ ] **Step 6: Update `TestHandler_HandleMessage_GroupRoom` to expect Message-only encryption**
 
 In `broadcast-worker/handler_test.go`, inside the `for _, tc := range tests { t.Run(tc.name, func(t *testing.T) { ... }) }` block of `TestHandler_HandleMessage_GroupRoom` (starts around line 114):
 
@@ -906,7 +965,7 @@ Update all assertions that previously referenced `evt.Message` to use `msg` inst
 				assert.Equal(t, "user-1", msg.Sender.UserID)
 ```
 
-- [ ] **Step 5: Update `TestHandler_HandleMessage_Errors` subtests that reach `publishGroupEvent`**
+- [ ] **Step 7: Update `TestHandler_HandleMessage_Errors` subtests that reach `publishGroupEvent`**
 
 Two subtests in `TestHandler_HandleMessage_Errors` successfully reach `publishGroupEvent` and must be updated to expect encryption:
 
@@ -956,7 +1015,7 @@ Update the message-content assertions:
 		assert.Equal(t, "sender", msg.Sender.EngName)
 ```
 
-- [ ] **Step 6: Add new encryption-specific test cases**
+- [ ] **Step 8: Add new encryption-specific test cases**
 
 Append to `broadcast-worker/handler_test.go` at the end of the file (after `TestExtractMentionedAccounts`):
 
@@ -1053,14 +1112,14 @@ Verify these imports are present in `handler_test.go`'s import block. If not, ad
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 ```
 
-- [ ] **Step 7: Run the updated tests to verify they FAIL (Red)**
+- [ ] **Step 9: Run the updated tests to verify they FAIL (Red)**
 
 Run: `make test SERVICE=broadcast-worker`
 Expected: multiple failures. The `decryptClientMessage` helper will fail because `evt.Message` is not nil (the current code still sets it) and `evt.EncryptedMessage` is empty. The `gomock` expectations on `keyStore.Get` will also fail because `publishGroupEvent` doesn't call `Get` yet.
 
 Write down the first two failure messages as evidence that the tests were actually red before the implementation.
 
-- [ ] **Step 8: Implement Message-only encryption in `publishGroupEvent` (Green)**
+- [ ] **Step 10: Implement Message-only encryption in `publishGroupEvent` (Green)**
 
 In `broadcast-worker/handler.go`, add `"github.com/hmchangw/chat/pkg/roomcrypto"` to the import block (verify `"encoding/json"` is already present).
 
@@ -1109,7 +1168,7 @@ func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clien
 }
 ```
 
-- [ ] **Step 9: Run the tests to verify they PASS (Green)**
+- [ ] **Step 11: Run the tests to verify they PASS (Green)**
 
 Run: `make test SERVICE=broadcast-worker`
 Expected: PASS — all tests green, including:
@@ -1118,20 +1177,20 @@ Expected: PASS — all tests green, including:
 - `TestHandler_HandleMessage_Errors` (all subtests)
 - `TestHandler_HandleMessage_GroupRoom_Encryption` (all 3 new subtests)
 
-- [ ] **Step 10: Verify no lint regressions**
+- [ ] **Step 12: Verify no lint regressions**
 
 Run: `make lint`
 Expected: exit code 0. If `golangci-lint` reports issues, fix them in-place.
 
-- [ ] **Step 11: Verify integration test still compiles (it will fail at runtime; that's fine)**
+- [ ] **Step 13: Verify integration test still compiles (it will fail at runtime; that's fine)**
 
 Run: `go vet -tags=integration ./broadcast-worker/...`
 Expected: exit code 0, no output. (Integration tests won't be run here — Task 6 updates them.)
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
-git add pkg/model/event.go broadcast-worker/handler.go broadcast-worker/handler_test.go broadcast-worker/testhelpers_test.go
+git add pkg/model/event.go pkg/model/model_test.go broadcast-worker/handler.go broadcast-worker/handler_test.go broadcast-worker/testhelpers_test.go
 git commit -m "$(cat <<'EOF'
 feat(broadcast-worker): encrypt Message field in group room broadcasts
 
