@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -16,18 +17,60 @@ type stubInboxStore struct {
 	mu            sync.Mutex
 	subscriptions []model.Subscription
 	rooms         []model.Room
+
+	createSubErr  error
+	deleteSubErr  error
+	updateRoleErr error
+	upsertRoomErr error
 }
 
 func (s *stubInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.createSubErr != nil {
+		return s.createSubErr
+	}
 	s.subscriptions = append(s.subscriptions, *sub)
+	return nil
+}
+
+func (s *stubInboxStore) DeleteSubscription(ctx context.Context, account string, roomID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleteSubErr != nil {
+		return s.deleteSubErr
+	}
+	filtered := s.subscriptions[:0]
+	for i := range s.subscriptions {
+		if s.subscriptions[i].User.Account != account || s.subscriptions[i].RoomID != roomID {
+			filtered = append(filtered, s.subscriptions[i])
+		}
+	}
+	s.subscriptions = filtered
+	return nil
+}
+
+func (s *stubInboxStore) UpdateSubscriptionRole(ctx context.Context, account string, roomID string, role model.Role) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.updateRoleErr != nil {
+		return s.updateRoleErr
+	}
+	for i := range s.subscriptions {
+		if s.subscriptions[i].User.Account == account && s.subscriptions[i].RoomID == roomID {
+			s.subscriptions[i].Roles = []model.Role{role}
+			return nil
+		}
+	}
 	return nil
 }
 
 func (s *stubInboxStore) UpsertRoom(ctx context.Context, room *model.Room) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.upsertRoomErr != nil {
+		return s.upsertRoomErr
+	}
 	for i := range s.rooms {
 		if s.rooms[i].ID == room.ID {
 			s.rooms[i] = *room
@@ -88,23 +131,25 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	invite := model.InviteMemberRequest{
-		InviterID:      "alice",
-		InviteeID:      "bob",
-		InviteeAccount: "bob",
-		RoomID:         "room-1",
-		SiteID:         "site-b",
+	change := model.MemberChangeEvent{
+		Type:               "member-added",
+		RoomID:             "room-1",
+		Accounts:           []string{"bob"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"u-bob"},
+		JoinedAt:           time.Now().UnixMilli(),
+		HistorySharedSince: time.Now().UnixMilli(),
 	}
-	inviteData, err := json.Marshal(invite)
+	changeData, err := json.Marshal(change)
 	if err != nil {
-		t.Fatalf("marshal invite: %v", err)
+		t.Fatalf("marshal change: %v", err)
 	}
 
 	evt := model.OutboxEvent{
 		Type:       "member_added",
 		SiteID:     "site-b",
 		DestSiteID: "site-a",
-		Payload:    inviteData,
+		Payload:    changeData,
 	}
 	evtData, err := json.Marshal(evt)
 	if err != nil {
@@ -122,8 +167,8 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 		t.Fatalf("expected 1 subscription, got %d", len(subs))
 	}
 	sub := subs[0]
-	if sub.User.ID != "bob" {
-		t.Errorf("subscription User.ID = %q, want %q", sub.User.ID, "bob")
+	if sub.User.ID != "u-bob" {
+		t.Errorf("subscription User.ID = %q, want %q", sub.User.ID, "u-bob")
 	}
 	if sub.User.Account != "bob" {
 		t.Errorf("subscription User.Account = %q, want %q", sub.User.Account, "bob")
@@ -134,8 +179,8 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	if sub.SiteID != "site-b" {
 		t.Errorf("subscription SiteID = %q, want %q", sub.SiteID, "site-b")
 	}
-	if sub.Role != model.RoleMember {
-		t.Errorf("subscription Role = %q, want %q", sub.Role, model.RoleMember)
+	if len(sub.Roles) == 0 || sub.Roles[0] != model.RoleMember {
+		t.Errorf("subscription Role = %v, want member", sub.Roles)
 	}
 	if sub.ID == "" {
 		t.Error("subscription ID should be non-empty (generated UUID)")
@@ -147,7 +192,7 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 		t.Fatalf("expected 1 publish, got %d", len(records))
 	}
 
-	wantSubject := "chat.user.bob.event.subscription.update" // routed by InviteeAccount "bob"
+	wantSubject := "chat.user.bob.event.subscription.update"
 	if records[0].subject != wantSubject {
 		t.Errorf("publish subject = %q, want %q", records[0].subject, wantSubject)
 	}
@@ -155,9 +200,6 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	var updateEvt model.SubscriptionUpdateEvent
 	if err := json.Unmarshal(records[0].data, &updateEvt); err != nil {
 		t.Fatalf("unmarshal update event: %v", err)
-	}
-	if updateEvt.UserID != "bob" {
-		t.Errorf("update event UserID = %q, want %q", updateEvt.UserID, "bob")
 	}
 	if updateEvt.Action != "added" {
 		t.Errorf("update event Action = %q, want %q", updateEvt.Action, "added")
@@ -175,14 +217,16 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	invite := model.InviteMemberRequest{
-		InviterID:      "alice",
-		InviteeID:      "carol",
-		InviteeAccount: "carol",
-		RoomID:         "room-2",
-		SiteID:         "site-b",
+	eventTime := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
+	change := model.MemberChangeEvent{
+		Type:               "member-added",
+		RoomID:             "room-2",
+		Accounts:           []string{"carol"},
+		SiteID:             "site-b",
+		JoinedAt:           eventTime.UnixMilli(),
+		HistorySharedSince: eventTime.UnixMilli(),
 	}
-	inviteData, _ := json.Marshal(invite)
+	inviteData, _ := json.Marshal(change)
 
 	evt := model.OutboxEvent{
 		Type:       "member_added",
@@ -192,12 +236,10 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	}
 	evtData, _ := json.Marshal(evt)
 
-	before := time.Now()
 	err := h.HandleEvent(context.Background(), evtData)
 	if err != nil {
 		t.Fatalf("HandleEvent: %v", err)
 	}
-	after := time.Now()
 
 	subs := store.getSubscriptions()
 	if len(subs) != 1 {
@@ -205,11 +247,11 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	}
 
 	sub := subs[0]
-	if sub.JoinedAt.Before(before) || sub.JoinedAt.After(after) {
-		t.Errorf("JoinedAt = %v, want between %v and %v", sub.JoinedAt, before, after)
+	if !sub.JoinedAt.Equal(eventTime) {
+		t.Errorf("JoinedAt = %v, want %v", sub.JoinedAt, eventTime)
 	}
-	if sub.HistorySharedSince == nil || sub.HistorySharedSince.Before(before) || sub.HistorySharedSince.After(after) {
-		t.Errorf("HistorySharedSince = %v, want between %v and %v", sub.HistorySharedSince, before, after)
+	if sub.HistorySharedSince == nil || !sub.HistorySharedSince.Equal(eventTime) {
+		t.Errorf("HistorySharedSince = %v, want %v", sub.HistorySharedSince, eventTime)
 	}
 }
 
@@ -389,28 +431,30 @@ func TestHandleEvent_MemberAdded_InvalidPayload(t *testing.T) {
 	}
 }
 
-func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
+func TestHandleEvent_MemberAdded_MultipleAccounts(t *testing.T) {
 	store := &stubInboxStore{}
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	invite := model.InviteMemberRequest{
-		InviterID:      "alice",
-		InviteeID:      "uid-bob",
-		InviteeAccount: "account-bob",
-		RoomID:         "room-1",
-		SiteID:         "site-b",
+	change := model.MemberChangeEvent{
+		Type:               "member-added",
+		RoomID:             "room-1",
+		Accounts:           []string{"alice", "bob"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"u-alice", "u-bob"},
+		JoinedAt:           time.Now().UnixMilli(),
+		HistorySharedSince: time.Now().UnixMilli(),
 	}
-	inviteData, err := json.Marshal(invite)
+	changeData, err := json.Marshal(change)
 	if err != nil {
-		t.Fatalf("marshal invite: %v", err)
+		t.Fatalf("marshal change: %v", err)
 	}
 
 	evt := model.OutboxEvent{
 		Type:       "member_added",
 		SiteID:     "site-b",
 		DestSiteID: "site-a",
-		Payload:    inviteData,
+		Payload:    changeData,
 	}
 	evtData, err := json.Marshal(evt)
 	if err != nil {
@@ -422,27 +466,25 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 		t.Fatalf("HandleEvent: %v", err)
 	}
 
-	// Verify subscription carries both user ID and user account
+	// Verify subscriptions created for both accounts
 	subs := store.getSubscriptions()
-	if len(subs) != 1 {
-		t.Fatalf("expected 1 subscription, got %d", len(subs))
-	}
-	sub := subs[0]
-	if sub.User.ID != "uid-bob" {
-		t.Errorf("subscription User.ID = %q, want %q", sub.User.ID, "uid-bob")
-	}
-	if sub.User.Account != "account-bob" {
-		t.Errorf("subscription User.Account = %q, want %q", sub.User.Account, "account-bob")
+	if len(subs) != 2 {
+		t.Fatalf("expected 2 subscriptions, got %d", len(subs))
 	}
 
-	// Verify subject is routed by user account, not user ID
+	// Verify subjects are routed by account
 	records := pub.getRecords()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 publish, got %d", len(records))
+	if len(records) != 2 {
+		t.Fatalf("expected 2 publishes, got %d", len(records))
 	}
-	wantSubject := "chat.user.account-bob.event.subscription.update"
-	if records[0].subject != wantSubject {
-		t.Errorf("publish subject = %q, want %q", records[0].subject, wantSubject)
+	wantSubjects := map[string]bool{
+		"chat.user.alice.event.subscription.update": true,
+		"chat.user.bob.event.subscription.update":   true,
+	}
+	for _, r := range records {
+		if !wantSubjects[r.subject] {
+			t.Errorf("unexpected publish subject = %q", r.subject)
+		}
 	}
 }
 
@@ -467,5 +509,278 @@ func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 	// No room should have been upserted
 	if len(store.getRooms()) != 0 {
 		t.Error("room should not be upserted with invalid payload")
+	}
+}
+
+// --- member_removed tests ---
+
+func TestHandleEvent_MemberRemoved(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	// Pre-populate subscriptions that will be removed
+	store.subscriptions = []model.Subscription{
+		{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "room-1", SiteID: "site-b"},
+		{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "room-1", SiteID: "site-b"},
+		{ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"}, RoomID: "room-2", SiteID: "site-b"},
+	}
+
+	change := model.MemberChangeEvent{
+		Type:     "member-removed",
+		RoomID:   "room-1",
+		Accounts: []string{"alice", "bob"},
+		SiteID:   "site-b",
+	}
+	changeData, err := json.Marshal(change)
+	if err != nil {
+		t.Fatalf("marshal change: %v", err)
+	}
+
+	evt := model.OutboxEvent{
+		Type:       "member_removed",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    changeData,
+	}
+	evtData, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	err = h.HandleEvent(context.Background(), evtData)
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	// Verify alice and bob subscriptions in room-1 were deleted, carol in room-2 remains
+	subs := store.getSubscriptions()
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 remaining subscription, got %d", len(subs))
+	}
+	if subs[0].User.Account != "carol" {
+		t.Errorf("remaining subscription account = %q, want %q", subs[0].User.Account, "carol")
+	}
+
+	// Verify SubscriptionUpdateEvent published for each removed account
+	records := pub.getRecords()
+	if len(records) != 2 {
+		t.Fatalf("expected 2 publishes, got %d", len(records))
+	}
+
+	for i, account := range []string{"alice", "bob"} {
+		wantSubject := "chat.user." + account + ".event.subscription.update"
+		if records[i].subject != wantSubject {
+			t.Errorf("publish[%d] subject = %q, want %q", i, records[i].subject, wantSubject)
+		}
+
+		var updateEvt model.SubscriptionUpdateEvent
+		if err := json.Unmarshal(records[i].data, &updateEvt); err != nil {
+			t.Fatalf("unmarshal update event[%d]: %v", i, err)
+		}
+		if updateEvt.Action != "removed" {
+			t.Errorf("update event[%d] Action = %q, want %q", i, updateEvt.Action, "removed")
+		}
+		if updateEvt.Subscription.RoomID != "room-1" {
+			t.Errorf("update event[%d] RoomID = %q, want %q", i, updateEvt.Subscription.RoomID, "room-1")
+		}
+		if updateEvt.Subscription.User.Account != account {
+			t.Errorf("update event[%d] Account = %q, want %q", i, updateEvt.Subscription.User.Account, account)
+		}
+		if updateEvt.Timestamp <= 0 {
+			t.Errorf("expected Timestamp > 0 on update event[%d]", i)
+		}
+	}
+}
+
+func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	evt := model.OutboxEvent{
+		Type:       "member_removed",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    []byte("not valid json"),
+	}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err == nil {
+		t.Error("expected error for invalid member_removed payload, got nil")
+	}
+}
+
+func TestHandleEvent_MemberRemoved_StoreError(t *testing.T) {
+	store := &stubInboxStore{deleteSubErr: errors.New("db failure")}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	change := model.MemberChangeEvent{
+		Type:     "member-removed",
+		RoomID:   "room-1",
+		Accounts: []string{"alice"},
+		SiteID:   "site-b",
+	}
+	changeData, _ := json.Marshal(change)
+
+	evt := model.OutboxEvent{
+		Type:       "member_removed",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    changeData,
+	}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err == nil {
+		t.Error("expected error when store.DeleteSubscription fails, got nil")
+	}
+
+	// No publishes should have been made
+	if len(pub.getRecords()) != 0 {
+		t.Error("expected no publishes when store fails")
+	}
+}
+
+func TestHandleEvent_MemberRemoved_EmptyAccounts(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	change := model.MemberChangeEvent{
+		Type:     "member-removed",
+		RoomID:   "room-1",
+		Accounts: []string{},
+		SiteID:   "site-b",
+	}
+	changeData, _ := json.Marshal(change)
+
+	evt := model.OutboxEvent{
+		Type:       "member_removed",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    changeData,
+	}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	// No publishes for empty accounts
+	if len(pub.getRecords()) != 0 {
+		t.Error("expected no publishes for empty accounts list")
+	}
+}
+
+// --- Store error tests for existing handlers ---
+
+func TestHandleEvent_MemberAdded_StoreError(t *testing.T) {
+	store := &stubInboxStore{createSubErr: errors.New("db failure")}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	change := model.MemberChangeEvent{
+		Type:     "member-added",
+		RoomID:   "room-1",
+		Accounts: []string{"bob"},
+		SiteID:   "site-b",
+	}
+	changeData, _ := json.Marshal(change)
+
+	evt := model.OutboxEvent{
+		Type:       "member_added",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    changeData,
+	}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err == nil {
+		t.Error("expected error when store.CreateSubscription fails, got nil")
+	}
+
+	// No publishes should have been made
+	if len(pub.getRecords()) != 0 {
+		t.Error("expected no publishes when store fails")
+	}
+}
+
+func TestHandleEvent_RoomSync_StoreError(t *testing.T) {
+	store := &stubInboxStore{upsertRoomErr: errors.New("db failure")}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	room := model.Room{
+		ID:     "room-1",
+		Name:   "general",
+		SiteID: "site-b",
+	}
+	roomData, _ := json.Marshal(room)
+
+	evt := model.OutboxEvent{
+		Type:       "room_sync",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    roomData,
+	}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err == nil {
+		t.Error("expected error when store.UpsertRoom fails, got nil")
+	}
+}
+
+func TestHandleEvent_RoleUpdated(t *testing.T) {
+	store := &stubInboxStore{}
+	store.subscriptions = []model.Subscription{
+		{ID: "s1", User: model.SubscriptionUser{Account: "bob"}, RoomID: "room-1", Roles: []model.Role{model.RoleMember}},
+	}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	subEvt := model.SubscriptionUpdateEvent{
+		Subscription: model.Subscription{
+			RoomID: "room-1",
+			User:   model.SubscriptionUser{Account: "bob"},
+			Roles:  []model.Role{model.RoleOwner},
+		},
+		Action:    "role_updated",
+		Timestamp: 1735689600000,
+	}
+	subEvtData, _ := json.Marshal(subEvt)
+
+	evt := model.OutboxEvent{
+		Type:       "role_updated",
+		SiteID:     "site-eu",
+		DestSiteID: "site-us",
+		Payload:    subEvtData,
+	}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	subs := store.getSubscriptions()
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subscription, got %d", len(subs))
+	}
+	if subs[0].Roles[0] != model.RoleOwner {
+		t.Errorf("role = %v, want owner", subs[0].Roles)
+	}
+
+	records := pub.getRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 publish, got %d", len(records))
+	}
+	if records[0].subject != "chat.user.bob.event.subscription.update" {
+		t.Errorf("subject = %q, want chat.user.bob.event.subscription.update", records[0].subject)
 	}
 }

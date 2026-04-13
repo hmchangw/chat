@@ -62,20 +62,43 @@ func main() {
 		os.Exit(1)
 	}
 
-	streamCfg := stream.Rooms(cfg.SiteID)
+	// Create ROOMS stream
+	roomsCfg := stream.Rooms(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: streamCfg.Name, Subjects: streamCfg.Subjects,
+		Name: roomsCfg.Name, Subjects: roomsCfg.Subjects,
 	}); err != nil {
-		slog.Error("create stream failed", "error", err)
+		slog.Error("create rooms stream failed", "error", err)
+		os.Exit(1)
+	}
+
+	// Create OUTBOX stream
+	outboxCfg := stream.Outbox(cfg.SiteID)
+	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: outboxCfg.Name, Subjects: outboxCfg.Subjects,
+	}); err != nil {
+		slog.Error("create outbox stream failed", "error", err)
 		os.Exit(1)
 	}
 
 	store := NewMongoStore(mongoClient.Database(cfg.MongoDB))
-	handler := NewHandler(store, cfg.SiteID, func(ctx context.Context, subj string, data []byte) error {
-		return nc.Publish(ctx, subj, data)
-	})
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, jetstream.ConsumerConfig{
+	// Ensure indexes at startup
+	if err := store.EnsureIndexes(ctx); err != nil {
+		slog.Error("ensure indexes failed", "error", err)
+		os.Exit(1)
+	}
+
+	handler := NewHandler(store, cfg.SiteID,
+		func(ctx context.Context, subj string, data []byte) error {
+			return nc.Publish(ctx, subj, data)
+		},
+		func(ctx context.Context, subj string, data []byte) error {
+			_, err := js.Publish(ctx, subj, data)
+			return err
+		},
+	)
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, roomsCfg.Name, jetstream.ConsumerConfig{
 		Durable: "room-worker", AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	if err != nil {

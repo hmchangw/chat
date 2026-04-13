@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,93 +16,328 @@ import (
 )
 
 type Handler struct {
-	store   SubscriptionStore
-	siteID  string
-	publish func(ctx context.Context, subj string, data []byte) error
+	store         SubscriptionStore
+	siteID        string
+	publishLocal  func(ctx context.Context, subj string, data []byte) error
+	publishOutbox func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store SubscriptionStore, siteID string, publish func(context.Context, string, []byte) error) *Handler {
-	return &Handler{store: store, siteID: siteID, publish: publish}
+func NewHandler(store SubscriptionStore, siteID string, publishLocal, publishOutbox func(context.Context, string, []byte) error) *Handler {
+	return &Handler{store: store, siteID: siteID, publishLocal: publishLocal, publishOutbox: publishOutbox}
 }
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
-	if err := h.processInvite(ctx, msg.Data()); err != nil {
-		slog.Error("process invite failed", "error", err)
+	var err error
+	subj := msg.Subject()
+	parts := strings.Split(subj, ".")
+	if len(parts) >= 2 {
+		op := parts[len(parts)-2] + "." + parts[len(parts)-1]
+		switch op {
+		case "member.add":
+			err = h.processAddMembers(ctx, msg.Data())
+		case "member.remove":
+			err = h.processRemoveMember(ctx, msg.Data())
+		case "member.role-update":
+			err = h.processRoleUpdate(ctx, msg.Data())
+		default:
+			slog.Warn("unknown member operation", "op", op, "subject", subj)
+			err = fmt.Errorf("unknown member operation: %s", op)
+		}
 	}
-	if err := msg.Ack(); err != nil {
-		slog.Error("failed to ack message", "err", err)
+	if err != nil {
+		slog.Error("process message failed", "error", err, "subject", subj)
+		if nakErr := msg.Nak(); nakErr != nil {
+			slog.Error("failed to nak message", "err", nakErr)
+		}
+		return
+	}
+	if ackErr := msg.Ack(); ackErr != nil {
+		slog.Error("failed to ack message", "err", ackErr)
 	}
 }
 
-func (h *Handler) processInvite(ctx context.Context, data []byte) error {
-	var req model.InviteMemberRequest
+func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
+	var req model.AddMembersRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return err
+		return fmt.Errorf("unmarshal add members request: %w", err)
 	}
-
 	now := time.Now().UTC()
 
-	// Create subscription for invitee
-	sub := model.Subscription{
-		ID:                 uuid.New().String(),
-		User:               model.SubscriptionUser{ID: req.InviteeID, Account: req.InviteeAccount},
-		RoomID:             req.RoomID,
-		SiteID:             req.SiteID,
-		Role:               model.RoleMember,
-		HistorySharedSince: &now,
-		JoinedAt:           now,
-	}
-	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
-		return err
-	}
-
-	// Increment room user count
-	if err := h.store.IncrementUserCount(ctx, req.RoomID); err != nil {
-		slog.Warn("increment user count failed", "error", err, "roomID", req.RoomID)
-	}
-
-	// If invitee is on different site, publish outbox event
-	if req.SiteID != h.siteID {
-		outbox := model.OutboxEvent{
-			Type:       "member_added",
-			SiteID:     h.siteID,
-			DestSiteID: req.SiteID,
-			Payload:    data,
-			Timestamp:  now.UnixMilli(),
-		}
-		outboxData, _ := json.Marshal(outbox)
-		outboxSubj := subject.Outbox(h.siteID, req.SiteID, "member_added")
-		if err := h.publish(ctx, outboxSubj, outboxData); err != nil {
-			slog.Error("outbox publish failed", "error", err)
-		}
-	}
-
-	// Notify invitee: subscription update
-	subEvt := model.SubscriptionUpdateEvent{UserID: req.InviteeID, Subscription: sub, Action: "added", Timestamp: now.UnixMilli()}
-	subEvtData, _ := json.Marshal(subEvt)
-	if err := h.publish(ctx, subject.SubscriptionUpdate(req.InviteeAccount), subEvtData); err != nil {
-		slog.Error("subscription update publish failed", "error", err)
-	}
-
-	// Notify all existing members: room metadata changed
 	room, err := h.store.GetRoom(ctx, req.RoomID)
-	if err == nil {
-		metaEvt := model.RoomMetadataUpdateEvent{
-			RoomID:    req.RoomID,
-			Name:      room.Name,
-			UserCount: room.UserCount,
-			UpdatedAt: now,
-			Timestamp: now.UnixMilli(),
-		}
-		metaData, _ := json.Marshal(metaEvt)
+	if err != nil {
+		return fmt.Errorf("get room %q: %w", req.RoomID, err)
+	}
 
-		members, _ := h.store.ListByRoom(ctx, req.RoomID)
-		for i := range members {
-			if err := h.publish(ctx, subject.RoomMetadataChanged(members[i].User.Account), metaData); err != nil {
-				slog.Error("room metadata publish failed", "error", err, "account", members[i].User.Account)
+	users, err := h.store.FindUsersByAccounts(ctx, req.Users)
+	if err != nil {
+		return fmt.Errorf("find users: %w", err)
+	}
+	userMap := make(map[string]*model.User, len(users))
+	for i := range users {
+		userMap[users[i].Account] = &users[i]
+	}
+
+	var subs []*model.Subscription
+	var accounts []string
+	var userIDs []string
+	userSiteIDs := make(map[string]string) // account -> siteID
+	for _, account := range req.Users {
+		user, ok := userMap[account]
+		if !ok {
+			slog.Warn("user not found, skipping", "account", account)
+			continue
+		}
+		sub := &model.Subscription{
+			ID: uuid.New().String(), User: model.SubscriptionUser{ID: user.ID, Account: user.Account},
+			RoomID: req.RoomID, SiteID: room.SiteID, Roles: []model.Role{model.RoleMember}, JoinedAt: now,
+		}
+		if req.History.Mode != model.HistoryModeAll {
+			sub.HistorySharedSince = &now
+		}
+		subs = append(subs, sub)
+		accounts = append(accounts, user.Account)
+		userIDs = append(userIDs, user.ID)
+		userSiteIDs[user.Account] = user.SiteID
+	}
+
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return fmt.Errorf("bulk create subscriptions: %w", err)
+	}
+
+	// Write room_members — orgs + individuals when orgs are present
+	hasOrgs := len(req.Orgs) > 0
+	if hasOrgs {
+		for _, account := range accounts {
+			m := &model.RoomMember{ID: uuid.New().String(), RoomID: req.RoomID, Ts: now,
+				Member: model.RoomMemberEntry{ID: account, Type: model.RoomMemberTypeIndividual, Account: account}}
+			if err := h.store.CreateRoomMember(ctx, m); err != nil {
+				slog.Error("create individual room member failed", "error", err, "account", account)
+			}
+		}
+		for _, orgID := range req.Orgs {
+			m := &model.RoomMember{ID: uuid.New().String(), RoomID: req.RoomID, Ts: now,
+				Member: model.RoomMemberEntry{ID: orgID, Type: model.RoomMemberTypeOrg}}
+			if err := h.store.CreateRoomMember(ctx, m); err != nil {
+				slog.Error("create org room member failed", "error", err, "orgID", orgID)
 			}
 		}
 	}
 
+	if len(accounts) > 0 {
+		if err := h.store.IncrementUserCount(ctx, req.RoomID, len(accounts)); err != nil {
+			return fmt.Errorf("increment user count: %w", err)
+		}
+	}
+
+	// Publish SubscriptionUpdateEvent per member
+	for _, sub := range subs {
+		evt := model.SubscriptionUpdateEvent{UserID: sub.User.ID, Subscription: *sub, Action: "added", Timestamp: now.UnixMilli()}
+		evtData, _ := json.Marshal(evt)
+		if err := h.publishLocal(ctx, subject.SubscriptionUpdate(sub.User.Account), evtData); err != nil {
+			slog.Error("subscription update publish failed", "error", err, "account", sub.User.Account)
+		}
+	}
+
+	// Publish MemberChangeEvent
+	memberEvt := model.MemberChangeEvent{
+		Type: "member-added", RoomID: req.RoomID, Accounts: accounts, SiteID: h.siteID,
+		UserIDs: userIDs, JoinedAt: now.UnixMilli(), HistorySharedSince: now.UnixMilli(),
+	}
+	memberEvtData, _ := json.Marshal(memberEvt)
+	if err := h.publishLocal(ctx, subject.RoomMemberEvent(req.RoomID), memberEvtData); err != nil {
+		slog.Error("room member event publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	// Publish system message to MESSAGES_CANONICAL
+	sysMsgData, _ := json.Marshal(model.MembersAdded{
+		Individuals:     req.Users,
+		Orgs:            req.Orgs,
+		Channels:        req.Channels,
+		AddedUsersCount: len(accounts),
+	})
+	sysMsg := model.Message{
+		ID:         uuid.New().String(),
+		RoomID:     req.RoomID,
+		Content:    "added members to the channel",
+		CreatedAt:  now,
+		Type:       "members_added",
+		SysMsgData: sysMsgData,
+	}
+	sysMsgEvt := model.MessageEvent{Message: sysMsg, SiteID: h.siteID, Timestamp: now.UnixMilli()}
+	sysMsgEvtData, _ := json.Marshal(sysMsgEvt)
+	if err := h.publishLocal(ctx, subject.MsgCanonicalCreated(h.siteID), sysMsgEvtData); err != nil {
+		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	// Outbox for cross-site members: outbox.{room.SiteID}.to.{user.SiteID}.member_added
+	for account, userSiteID := range userSiteIDs {
+		if userSiteID != room.SiteID {
+			outbox := model.OutboxEvent{Type: "member_added", SiteID: room.SiteID, DestSiteID: userSiteID, Payload: memberEvtData, Timestamp: now.UnixMilli()}
+			outboxData, _ := json.Marshal(outbox)
+			if err := h.publishOutbox(ctx, subject.Outbox(room.SiteID, userSiteID, "member_added"), outboxData); err != nil {
+				slog.Error("outbox publish failed", "error", err, "account", account)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
+	var req model.RemoveMemberRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("unmarshal remove member request: %w", err)
+	}
+	now := time.Now().UTC()
+
+	room, err := h.store.GetRoom(ctx, req.RoomID)
+	if err != nil {
+		return fmt.Errorf("get room %q: %w", req.RoomID, err)
+	}
+
+	var accounts []string
+	if req.OrgID != "" {
+		orgAccounts, err := h.store.GetOrgAccounts(ctx, req.OrgID)
+		if err != nil {
+			return fmt.Errorf("get org accounts %q: %w", req.OrgID, err)
+		}
+		for _, account := range orgAccounts {
+			if err := h.store.DeleteSubscription(ctx, account, req.RoomID); err != nil {
+				slog.Error("delete subscription failed", "error", err, "account", account)
+			}
+		}
+		accounts = orgAccounts
+	} else {
+		if err := h.store.DeleteSubscription(ctx, req.Account, req.RoomID); err != nil {
+			return fmt.Errorf("delete subscription: %w", err)
+		}
+		accounts = []string{req.Account}
+	}
+
+	// Batch lookup users for SiteID
+	userSiteIDs := make(map[string]string) // account -> siteID
+	users, err := h.store.FindUsersByAccounts(ctx, accounts)
+	if err != nil {
+		slog.Warn("batch user lookup failed for outbox", "error", err)
+	} else {
+		for _, u := range users {
+			userSiteIDs[u.Account] = u.SiteID
+		}
+	}
+
+	// Delete room_members
+	if req.OrgID != "" {
+		if err := h.store.DeleteOrgRoomMember(ctx, req.OrgID, req.RoomID); err != nil {
+			slog.Error("delete org room member failed", "error", err, "orgID", req.OrgID)
+		}
+		for _, account := range accounts {
+			if err := h.store.DeleteRoomMember(ctx, account, req.RoomID); err != nil {
+				slog.Error("delete room member failed", "error", err, "account", account)
+			}
+		}
+	} else {
+		if err := h.store.DeleteRoomMember(ctx, req.Account, req.RoomID); err != nil {
+			slog.Error("delete room member failed", "error", err, "account", req.Account)
+		}
+	}
+
+	if len(accounts) > 0 {
+		if err := h.store.DecrementUserCount(ctx, req.RoomID, len(accounts)); err != nil {
+			return fmt.Errorf("decrement user count: %w", err)
+		}
+	}
+
+	// Publish SubscriptionUpdateEvent per removed account
+	for _, account := range accounts {
+		evt := model.SubscriptionUpdateEvent{
+			Subscription: model.Subscription{RoomID: req.RoomID, User: model.SubscriptionUser{Account: account}},
+			Action:       "removed", Timestamp: now.UnixMilli(),
+		}
+		evtData, _ := json.Marshal(evt)
+		if err := h.publishLocal(ctx, subject.SubscriptionUpdate(account), evtData); err != nil {
+			slog.Error("subscription update publish failed", "error", err, "account", account)
+		}
+	}
+
+	// Publish MemberChangeEvent
+	memberEvt := model.MemberChangeEvent{Type: "member-removed", RoomID: req.RoomID, Accounts: accounts, SiteID: h.siteID}
+	memberEvtData, _ := json.Marshal(memberEvt)
+	if err := h.publishLocal(ctx, subject.RoomMemberEvent(req.RoomID), memberEvtData); err != nil {
+		slog.Error("room member event publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	// Publish system message to MESSAGES_CANONICAL
+	removedID := req.Account
+	if req.OrgID != "" {
+		removedID = req.OrgID
+	}
+	sysMsgData, _ := json.Marshal(model.MembersRemoved{
+		Account:           req.Account,
+		OrgID:             req.OrgID,
+		RemovedUsersCount: len(accounts),
+	})
+	sysMsg := model.Message{
+		ID:         uuid.New().String(),
+		RoomID:     req.RoomID,
+		Content:    fmt.Sprintf("removed %s from the room", removedID),
+		CreatedAt:  now,
+		Type:       "member_removed",
+		SysMsgData: sysMsgData,
+	}
+	sysMsgEvt := model.MessageEvent{Message: sysMsg, SiteID: h.siteID, Timestamp: now.UnixMilli()}
+	sysMsgEvtData, _ := json.Marshal(sysMsgEvt)
+	if err := h.publishLocal(ctx, subject.MsgCanonicalCreated(h.siteID), sysMsgEvtData); err != nil {
+		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	// Outbox for cross-site members: outbox.{room.SiteID}.to.{user.SiteID}.member_removed
+	for account, userSiteID := range userSiteIDs {
+		if userSiteID != room.SiteID {
+			outbox := model.OutboxEvent{Type: "member_removed", SiteID: room.SiteID, DestSiteID: userSiteID, Payload: memberEvtData, Timestamp: now.UnixMilli()}
+			outboxData, _ := json.Marshal(outbox)
+			if err := h.publishOutbox(ctx, subject.Outbox(room.SiteID, userSiteID, "member_removed"), outboxData); err != nil {
+				slog.Error("outbox publish failed", "error", err, "account", account)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
+	var req model.UpdateRoleRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("unmarshal role update request: %w", err)
+	}
+	if err := h.store.UpdateSubscriptionRole(ctx, req.Account, req.RoomID, req.NewRole); err != nil {
+		return fmt.Errorf("update subscription role: %w", err)
+	}
+	evt := model.SubscriptionUpdateEvent{
+		Subscription: model.Subscription{RoomID: req.RoomID, User: model.SubscriptionUser{Account: req.Account}, Roles: []model.Role{req.NewRole}},
+		Action:       "role_updated", Timestamp: time.Now().UnixMilli(),
+	}
+	evtData, _ := json.Marshal(evt)
+	if err := h.publishLocal(ctx, subject.SubscriptionUpdate(req.Account), evtData); err != nil {
+		slog.Error("subscription update publish failed", "error", err, "account", req.Account)
+	}
+
+	// Cross-site outbox for role update
+	room, err := h.store.GetRoom(ctx, req.RoomID)
+	if err != nil {
+		slog.Error("get room for role update outbox failed", "error", err, "roomID", req.RoomID)
+		return nil
+	}
+	user, err := h.store.GetUser(ctx, req.Account)
+	if err != nil {
+		slog.Error("get user for role update outbox failed", "error", err, "account", req.Account)
+		return nil
+	}
+	if user.SiteID != room.SiteID {
+		outbox := model.OutboxEvent{Type: "role_updated", SiteID: room.SiteID, DestSiteID: user.SiteID, Payload: evtData, Timestamp: time.Now().UnixMilli()}
+		outboxData, _ := json.Marshal(outbox)
+		if err := h.publishOutbox(ctx, subject.Outbox(room.SiteID, user.SiteID, "role_updated"), outboxData); err != nil {
+			slog.Error("outbox publish failed", "error", err, "account", req.Account)
+		}
+	}
 	return nil
 }

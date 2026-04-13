@@ -43,7 +43,7 @@ func TestSubscriptionRepo_GetSubscription(t *testing.T) {
 		ID:     "s1",
 		User:   model.SubscriptionUser{ID: "u1", Account: "u1"},
 		RoomID: "r1", SiteID: "site-local",
-		Role: model.RoleMember, HistorySharedSince: &joinTime, JoinedAt: joinTime,
+		Roles: []model.Role{model.RoleMember}, HistorySharedSince: &joinTime, JoinedAt: joinTime,
 	})
 	require.NoError(t, err)
 
@@ -53,6 +53,7 @@ func TestSubscriptionRepo_GetSubscription(t *testing.T) {
 	assert.Equal(t, "u1", sub.User.ID)
 	assert.Equal(t, "r1", sub.RoomID)
 	require.NotNil(t, sub.HistorySharedSince)
+	assert.False(t, sub.HistorySharedSince.IsZero())
 	assert.Equal(t, joinTime.UTC(), sub.HistorySharedSince.UTC())
 }
 
@@ -66,17 +67,17 @@ func TestSubscriptionRepo_GetSubscription_NotFound(t *testing.T) {
 	assert.Nil(t, sub)
 }
 
-func TestSubscriptionRepo_GetHistorySharedSince_NilHSS(t *testing.T) {
+func TestSubscriptionRepo_GetHistorySharedSince_ZeroHSS(t *testing.T) {
 	db := setupMongo(t)
 	repo := NewSubscriptionRepo(db)
 	ctx := context.Background()
 
-	// Insert subscription with no HistorySharedSince (owner — full history access)
+	// Insert subscription with zero HistorySharedSince (owner — full history access)
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID:     "s2",
 		User:   model.SubscriptionUser{ID: "owner", Account: "owner"},
 		RoomID: "r1", SiteID: "site-local",
-		Role: model.RoleOwner, JoinedAt: time.Now(),
+		Roles: []model.Role{model.RoleOwner}, JoinedAt: time.Now(),
 	})
 	require.NoError(t, err)
 
@@ -96,7 +97,7 @@ func TestSubscriptionRepo_GetHistorySharedSince_WithHSS(t *testing.T) {
 		ID:     "s3",
 		User:   model.SubscriptionUser{ID: "u2", Account: "u2"},
 		RoomID: "r2", SiteID: "site-local",
-		Role: model.RoleMember, HistorySharedSince: &joinTime, JoinedAt: joinTime,
+		Roles: []model.Role{model.RoleMember}, HistorySharedSince: &joinTime, JoinedAt: joinTime,
 	})
 	require.NoError(t, err)
 

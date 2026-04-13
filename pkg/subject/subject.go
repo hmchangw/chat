@@ -61,6 +61,15 @@ func MemberInvite(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", account, roomID, siteID)
 }
 
+// MemberAdd returns the specific subject for a member.add request.
+func MemberAdd(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.add", account, roomID, siteID)
+}
+
+func MsgHistory(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.history", account, roomID, siteID)
+}
+
 func SubscriptionUpdate(account string) string {
 	return fmt.Sprintf("chat.user.%s.event.subscription.update", account)
 }
@@ -83,6 +92,20 @@ func MsgCanonicalCreated(siteID string) string {
 
 func RoomEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event", roomID)
+}
+
+func RoomMemberEvent(roomID string) string {
+	return fmt.Sprintf("chat.room.%s.event.member", roomID)
+}
+
+// RoomCanonical returns a canonical subject for room operations published to the ROOMS stream.
+func RoomCanonical(siteID, operation string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.%s", siteID, operation)
+}
+
+// RoomCanonicalWildcard returns the wildcard pattern for consuming canonical room operations.
+func RoomCanonicalWildcard(siteID string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.>", siteID)
 }
 
 func UserRoomEvent(account string) string {
@@ -113,8 +136,34 @@ func MsgSendWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.room.*.%s.msg.send", siteID)
 }
 
+// MemberInviteWildcard returns the wildcard subscription pattern for member.invite requests.
 func MemberInviteWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.>", siteID)
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.invite", siteID)
+}
+
+// MemberAddWildcard returns the wildcard subscription pattern for member.add requests.
+func MemberAddWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.add", siteID)
+}
+
+// MemberRemove returns the specific subject for a member.remove request.
+func MemberRemove(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.remove", account, roomID, siteID)
+}
+
+// MemberRemoveWildcard returns the wildcard subscription pattern for member.remove requests.
+func MemberRemoveWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.remove", siteID)
+}
+
+// MemberRoleUpdate returns the specific subject for a member.role-update request.
+func MemberRoleUpdate(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.role-update", account, roomID, siteID)
+}
+
+// MemberRoleUpdateWildcard returns the wildcard subscription pattern for member.role-update requests.
+func MemberRoleUpdateWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.role-update", siteID)
 }
 
 func MsgHistoryWildcard(siteID string) string {

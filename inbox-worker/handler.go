@@ -17,6 +17,8 @@ import (
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+	DeleteSubscription(ctx context.Context, account string, roomID string) error
+	UpdateSubscriptionRole(ctx context.Context, account string, roomID string, role model.Role) error
 	UpsertRoom(ctx context.Context, room *model.Room) error
 }
 
@@ -46,6 +48,10 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 	switch evt.Type {
 	case "member_added":
 		return h.handleMemberAdded(ctx, &evt)
+	case "member_removed":
+		return h.handleMemberRemoved(ctx, &evt)
+	case "role_updated":
+		return h.handleRoleUpdated(ctx, &evt)
 	case "room_sync":
 		return h.handleRoomSync(ctx, &evt)
 	default:
@@ -55,43 +61,113 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 }
 
 func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent) error {
-	var invite model.InviteMemberRequest
-	if err := json.Unmarshal(evt.Payload, &invite); err != nil {
+	var change model.MemberChangeEvent
+	if err := json.Unmarshal(evt.Payload, &change); err != nil {
 		return fmt.Errorf("unmarshal member_added payload: %w", err)
 	}
 
 	now := time.Now().UTC()
-	sub := model.Subscription{
-		ID:                 uuid.New().String(),
-		User:               model.SubscriptionUser{ID: invite.InviteeID, Account: invite.InviteeAccount},
-		RoomID:             invite.RoomID,
-		SiteID:             invite.SiteID,
-		Role:               model.RoleMember,
-		HistorySharedSince: &now,
-		JoinedAt:           now,
+	joinedAt := now
+	if change.JoinedAt > 0 {
+		joinedAt = time.UnixMilli(change.JoinedAt).UTC()
+	}
+	var historySharedSince *time.Time
+	if change.HistorySharedSince > 0 {
+		t := time.UnixMilli(change.HistorySharedSince).UTC()
+		historySharedSince = &t
 	}
 
-	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
-		return fmt.Errorf("create subscription: %w", err)
+	for i, account := range change.Accounts {
+		userID := account // fallback
+		if i < len(change.UserIDs) {
+			userID = change.UserIDs[i]
+		}
+		sub := model.Subscription{
+			ID:                 uuid.New().String(),
+			User:               model.SubscriptionUser{ID: userID, Account: account},
+			RoomID:             change.RoomID,
+			SiteID:             change.SiteID,
+			Roles:              []model.Role{model.RoleMember},
+			HistorySharedSince: historySharedSince,
+			JoinedAt:           joinedAt,
+		}
+
+		if err := h.store.CreateSubscription(ctx, &sub); err != nil {
+			return fmt.Errorf("create subscription for %q: %w", account, err)
+		}
+
+		updateEvt := model.SubscriptionUpdateEvent{
+			Subscription: sub,
+			Action:       "added",
+			Timestamp:    now.UnixMilli(),
+		}
+
+		updateData, err := natsutil.MarshalResponse(updateEvt)
+		if err != nil {
+			return fmt.Errorf("marshal subscription update event: %w", err)
+		}
+
+		subj := subject.SubscriptionUpdate(account)
+		if err := h.pub.Publish(ctx, subj, updateData); err != nil {
+			slog.Error("publish subscription update failed", "error", err, "account", account)
+		}
 	}
 
-	updateEvt := model.SubscriptionUpdateEvent{
-		UserID:       invite.InviteeID,
-		Subscription: sub,
-		Action:       "added",
-		Timestamp:    now.UnixMilli(),
+	return nil
+}
+
+func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEvent) error {
+	var change model.MemberChangeEvent
+	if err := json.Unmarshal(evt.Payload, &change); err != nil {
+		return fmt.Errorf("unmarshal member_removed payload: %w", err)
 	}
 
-	updateData, err := natsutil.MarshalResponse(updateEvt)
+	for _, account := range change.Accounts {
+		if err := h.store.DeleteSubscription(ctx, account, change.RoomID); err != nil {
+			return fmt.Errorf("delete subscription for %q: %w", account, err)
+		}
+
+		updateEvt := model.SubscriptionUpdateEvent{
+			Subscription: model.Subscription{RoomID: change.RoomID, User: model.SubscriptionUser{Account: account}},
+			Action:       "removed",
+			Timestamp:    time.Now().UTC().UnixMilli(),
+		}
+
+		updateData, err := natsutil.MarshalResponse(updateEvt)
+		if err != nil {
+			return fmt.Errorf("marshal subscription update event: %w", err)
+		}
+
+		subj := subject.SubscriptionUpdate(account)
+		if err := h.pub.Publish(ctx, subj, updateData); err != nil {
+			slog.Error("publish subscription update failed", "error", err, "account", account)
+		}
+	}
+
+	return nil
+}
+
+func (h *Handler) handleRoleUpdated(ctx context.Context, evt *model.OutboxEvent) error {
+	var subEvt model.SubscriptionUpdateEvent
+	if err := json.Unmarshal(evt.Payload, &subEvt); err != nil {
+		return fmt.Errorf("unmarshal role_updated payload: %w", err)
+	}
+	account := subEvt.Subscription.User.Account
+	roomID := subEvt.Subscription.RoomID
+	if len(subEvt.Subscription.Roles) == 0 {
+		return fmt.Errorf("no role in subscription update event")
+	}
+	newRole := subEvt.Subscription.Roles[0]
+	if err := h.store.UpdateSubscriptionRole(ctx, account, roomID, newRole); err != nil {
+		return fmt.Errorf("update subscription role for %q: %w", account, err)
+	}
+	updateData, err := natsutil.MarshalResponse(subEvt)
 	if err != nil {
 		return fmt.Errorf("marshal subscription update event: %w", err)
 	}
-
-	subj := subject.SubscriptionUpdate(invite.InviteeAccount)
-	if err := h.pub.Publish(ctx, subj, updateData); err != nil {
-		slog.Error("publish subscription update failed", "error", err, "account", invite.InviteeAccount)
+	if err := h.pub.Publish(ctx, subject.SubscriptionUpdate(account), updateData); err != nil {
+		slog.Error("publish subscription update failed", "error", err, "account", account)
 	}
-
 	return nil
 }
 

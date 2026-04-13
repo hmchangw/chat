@@ -19,7 +19,7 @@ type Subscription struct {
 	User               SubscriptionUser `json:"u" bson:"u"`
 	RoomID             string           `json:"roomId" bson:"roomId"`
 	SiteID             string           `json:"siteId" bson:"siteId"`
-	Role               Role             `json:"role" bson:"role"`
+	Roles              []Role           `json:"roles" bson:"roles"`
 	HistorySharedSince *time.Time       `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
 	JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`
 	LastSeenAt         time.Time        `json:"lastSeenAt" bson:"lastSeenAt"`

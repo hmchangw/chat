@@ -45,17 +45,21 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			message_id    TEXT,
 			sender        FROZEN<"Participant">,
 			msg           TEXT,
+			type          TEXT,
+			sys_msg_data  BLOB,
 			site_id       TEXT,
 			updated_at    TIMESTAMP,
 			PRIMARY KEY ((room_id), created_at, message_id)
 		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`,
 		`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
-			message_id TEXT,
-			created_at TIMESTAMP,
-			sender     FROZEN<"Participant">,
-			msg        TEXT,
-			site_id    TEXT,
-			updated_at TIMESTAMP,
+			message_id   TEXT,
+			created_at   TIMESTAMP,
+			sender       FROZEN<"Participant">,
+			msg          TEXT,
+			type         TEXT,
+			sys_msg_data BLOB,
+			site_id      TEXT,
+			updated_at   TIMESTAMP,
 			PRIMARY KEY (message_id, created_at)
 		) WITH CLUSTERING ORDER BY (created_at DESC)`,
 	}
