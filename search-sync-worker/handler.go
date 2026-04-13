@@ -78,6 +78,11 @@ func (h *Handler) Flush(ctx context.Context) {
 	}
 
 	if len(results) != len(items) {
+		// Defensive guard for a protocol-level anomaly: ES bulk API normally
+		// returns one result per input action in input order. Nak-all is safe
+		// because of external versioning — on redelivery, any items already
+		// indexed return 409 (handled as ack below), and failed items get
+		// re-indexed. No duplicate processing, no lost events.
 		slog.Error("bulk result count mismatch", "expected", len(items), "actual", len(results))
 		for _, item := range items {
 			if nakErr := item.jsMsg.Nak(); nakErr != nil {
