@@ -88,8 +88,11 @@ type RoomKeyEvent struct {
 }
 
 type MemberChangeEvent struct {
-	Type     string   `json:"type"     bson:"type"` // "member-added" or "member-removed"
-	RoomID   string   `json:"roomId"   bson:"roomId"`
-	Accounts []string `json:"accounts" bson:"accounts"`
-	SiteID   string   `json:"siteId"   bson:"siteId"`
+	Type               string   `json:"type"                         bson:"type"` // "member-added" or "member-removed"
+	RoomID             string   `json:"roomId"                       bson:"roomId"`
+	Accounts           []string `json:"accounts"                     bson:"accounts"`
+	SiteID             string   `json:"siteId"                       bson:"siteId"`
+	UserIDs            []string `json:"userIds,omitempty"            bson:"userIds,omitempty"`
+	JoinedAt           int64    `json:"joinedAt"                     bson:"joinedAt"`
+	HistorySharedSince int64    `json:"historySharedSince"           bson:"historySharedSince"`
 }

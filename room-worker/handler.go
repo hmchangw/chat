@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -70,27 +68,35 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		return fmt.Errorf("get room %q: %w", req.RoomID, err)
 	}
 
+	users, err := h.store.FindUsersByAccounts(ctx, req.Users)
+	if err != nil {
+		return fmt.Errorf("find users: %w", err)
+	}
+	userMap := make(map[string]*model.User, len(users))
+	for i := range users {
+		userMap[users[i].Account] = &users[i]
+	}
+
 	var subs []*model.Subscription
 	var accounts []string
+	var userIDs []string
 	userSiteIDs := make(map[string]string) // account -> siteID
 	for _, account := range req.Users {
-		user, err := h.store.GetUser(ctx, account)
-		if err != nil {
-			if errors.Is(err, mongo.ErrNoDocuments) {
-				slog.Warn("user not found, skipping", "account", account)
-				continue
-			}
-			return fmt.Errorf("get user %q: %w", account, err)
+		user, ok := userMap[account]
+		if !ok {
+			slog.Warn("user not found, skipping", "account", account)
+			continue
 		}
 		sub := &model.Subscription{
 			ID: uuid.New().String(), User: model.SubscriptionUser{ID: user.ID, Account: user.Account},
-			RoomID: req.RoomID, SiteID: user.SiteID, Roles: []model.Role{model.RoleMember}, JoinedAt: now,
+			RoomID: req.RoomID, SiteID: room.SiteID, Roles: []model.Role{model.RoleMember}, JoinedAt: now,
 		}
 		if req.History.Mode != model.HistoryModeAll {
 			sub.HistorySharedSince = &now
 		}
 		subs = append(subs, sub)
 		accounts = append(accounts, user.Account)
+		userIDs = append(userIDs, user.ID)
 		userSiteIDs[user.Account] = user.SiteID
 	}
 
@@ -98,17 +104,27 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		return fmt.Errorf("bulk create subscriptions: %w", err)
 	}
 
-	// Write room_members for orgs
-	for _, orgID := range req.Orgs {
-		m := &model.RoomMember{ID: uuid.New().String(), RoomID: req.RoomID, Ts: now,
-			Member: model.RoomMemberEntry{ID: orgID, Type: model.RoomMemberTypeOrg}}
-		if err := h.store.CreateRoomMember(ctx, m); err != nil {
-			slog.Error("create org room member failed", "error", err, "orgID", orgID)
+	// Write room_members — orgs + individuals when orgs are present
+	hasOrgs := len(req.Orgs) > 0
+	if hasOrgs {
+		for _, account := range accounts {
+			m := &model.RoomMember{ID: uuid.New().String(), RoomID: req.RoomID, Ts: now,
+				Member: model.RoomMemberEntry{ID: account, Type: model.RoomMemberTypeIndividual, Account: account}}
+			if err := h.store.CreateRoomMember(ctx, m); err != nil {
+				slog.Error("create individual room member failed", "error", err, "account", account)
+			}
+		}
+		for _, orgID := range req.Orgs {
+			m := &model.RoomMember{ID: uuid.New().String(), RoomID: req.RoomID, Ts: now,
+				Member: model.RoomMemberEntry{ID: orgID, Type: model.RoomMemberTypeOrg}}
+			if err := h.store.CreateRoomMember(ctx, m); err != nil {
+				slog.Error("create org room member failed", "error", err, "orgID", orgID)
+			}
 		}
 	}
 
 	if len(accounts) > 0 {
-		if err := h.store.IncrementUserCount(ctx, req.RoomID); err != nil {
+		if err := h.store.IncrementUserCount(ctx, req.RoomID, len(accounts)); err != nil {
 			return fmt.Errorf("increment user count: %w", err)
 		}
 	}
@@ -123,7 +139,10 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 
 	// Publish MemberChangeEvent
-	memberEvt := model.MemberChangeEvent{Type: "member-added", RoomID: req.RoomID, Accounts: accounts, SiteID: h.siteID}
+	memberEvt := model.MemberChangeEvent{
+		Type: "member-added", RoomID: req.RoomID, Accounts: accounts, SiteID: h.siteID,
+		UserIDs: userIDs, JoinedAt: now.UnixMilli(), HistorySharedSince: now.UnixMilli(),
+	}
 	memberEvtData, _ := json.Marshal(memberEvt)
 	if err := h.publishLocal(ctx, subject.RoomMemberEvent(req.RoomID), memberEvtData); err != nil {
 		slog.Error("room member event publish failed", "error", err, "roomID", req.RoomID)
@@ -195,15 +214,15 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 		accounts = []string{req.Account}
 	}
 
-	// Look up each user for SiteID
+	// Batch lookup users for SiteID
 	userSiteIDs := make(map[string]string) // account -> siteID
-	for _, account := range accounts {
-		user, err := h.store.GetUser(ctx, account)
-		if err != nil {
-			slog.Warn("get user for outbox failed, skipping cross-site check", "account", account, "error", err)
-			continue
+	users, err := h.store.FindUsersByAccounts(ctx, accounts)
+	if err != nil {
+		slog.Warn("batch user lookup failed for outbox", "error", err)
+	} else {
+		for _, u := range users {
+			userSiteIDs[u.Account] = u.SiteID
 		}
-		userSiteIDs[account] = user.SiteID
 	}
 
 	// Delete room_members
@@ -223,7 +242,7 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 	}
 
 	if len(accounts) > 0 {
-		if err := h.store.DecrementUserCount(ctx, req.RoomID); err != nil {
+		if err := h.store.DecrementUserCount(ctx, req.RoomID, len(accounts)); err != nil {
 			return fmt.Errorf("decrement user count: %w", err)
 		}
 	}

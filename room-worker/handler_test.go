@@ -12,7 +12,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -42,11 +41,9 @@ func TestHandler_ProcessAddMembers_HappyPath(t *testing.T) {
 			},
 			setup: func(store *MockSubscriptionStore) {
 				store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-				store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{
-					ID: "u-bob", Account: "bob", SiteID: "site-a",
-				}, nil)
-				store.EXPECT().GetUser(gomock.Any(), "carol").Return(&model.User{
-					ID: "u-carol", Account: "carol", SiteID: "site-a",
+				store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "carol"}).Return([]model.User{
+					{ID: "u-bob", Account: "bob", SiteID: "site-a"},
+					{ID: "u-carol", Account: "carol", SiteID: "site-a"},
 				}, nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
@@ -58,7 +55,7 @@ func TestHandler_ProcessAddMembers_HappyPath(t *testing.T) {
 						assert.NotNil(t, subs[1].HistorySharedSince, "expected HistorySharedSince set for history=none")
 						return nil
 					})
-				store.EXPECT().IncrementUserCount(gomock.Any(), "r1").Return(nil)
+				store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 2).Return(nil)
 			},
 		},
 		{
@@ -70,8 +67,8 @@ func TestHandler_ProcessAddMembers_HappyPath(t *testing.T) {
 			},
 			setup: func(store *MockSubscriptionStore) {
 				store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-				store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{
-					ID: "u-bob", Account: "bob", SiteID: "site-a",
+				store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+					{ID: "u-bob", Account: "bob", SiteID: "site-a"},
 				}, nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
@@ -79,20 +76,19 @@ func TestHandler_ProcessAddMembers_HappyPath(t *testing.T) {
 						assert.Nil(t, subs[0].HistorySharedSince, "expected HistorySharedSince nil for history=all")
 						return nil
 					})
-				store.EXPECT().IncrementUserCount(gomock.Any(), "r1").Return(nil)
+				store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
 			},
 		},
 		{
-			name: "user not found (ErrNoDocuments): skipped gracefully",
+			name: "user not found: skipped gracefully",
 			payload: model.AddMembersRequest{
 				RoomID: "r1",
 				Users:  []string{"bad-user", "bob"},
 			},
 			setup: func(store *MockSubscriptionStore) {
 				store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-				store.EXPECT().GetUser(gomock.Any(), "bad-user").Return(nil, mongo.ErrNoDocuments)
-				store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{
-					ID: "u-bob", Account: "bob", SiteID: "site-a",
+				store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bad-user", "bob"}).Return([]model.User{
+					{ID: "u-bob", Account: "bob", SiteID: "site-a"},
 				}, nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
@@ -100,7 +96,7 @@ func TestHandler_ProcessAddMembers_HappyPath(t *testing.T) {
 						assert.Equal(t, "bob", subs[0].User.Account)
 						return nil
 					})
-				store.EXPECT().IncrementUserCount(gomock.Any(), "r1").Return(nil)
+				store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
 			},
 		},
 		{
@@ -111,8 +107,7 @@ func TestHandler_ProcessAddMembers_HappyPath(t *testing.T) {
 			},
 			setup: func(store *MockSubscriptionStore) {
 				store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-				store.EXPECT().GetUser(gomock.Any(), "bad1").Return(nil, mongo.ErrNoDocuments)
-				store.EXPECT().GetUser(gomock.Any(), "bad2").Return(nil, mongo.ErrNoDocuments)
+				store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bad1", "bad2"}).Return([]model.User{}, nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
 						assert.Empty(t, subs)
@@ -121,14 +116,14 @@ func TestHandler_ProcessAddMembers_HappyPath(t *testing.T) {
 			},
 		},
 		{
-			name: "GetUser returns unexpected error",
+			name: "FindUsersByAccounts returns error",
 			payload: model.AddMembersRequest{
 				RoomID: "r1",
 				Users:  []string{"bob"},
 			},
 			setup: func(store *MockSubscriptionStore) {
 				store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-				store.EXPECT().GetUser(gomock.Any(), "bob").Return(nil, fmt.Errorf("connection refused"))
+				store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return(nil, fmt.Errorf("connection refused"))
 			},
 			wantErr: true,
 		},
@@ -151,11 +146,11 @@ func TestHandler_ProcessAddMembers_HappyPath(t *testing.T) {
 			},
 			setup: func(store *MockSubscriptionStore) {
 				store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-				store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{
-					ID: "u-bob", Account: "bob", SiteID: "site-a",
+				store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+					{ID: "u-bob", Account: "bob", SiteID: "site-a"},
 				}, nil)
 				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-				store.EXPECT().IncrementUserCount(gomock.Any(), "r1").Return(fmt.Errorf("db error"))
+				store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(fmt.Errorf("db error"))
 			},
 			wantErr: true,
 		},
@@ -200,8 +195,8 @@ func TestHandler_ProcessAddMembers_BulkCreateSubscriptionsFails(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{
-		ID: "u-bob", Account: "bob", SiteID: "site-a",
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u-bob", Account: "bob", SiteID: "site-a"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(fmt.Errorf("write failed"))
 
@@ -222,10 +217,19 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{
-		ID: "u-bob", Account: "bob", SiteID: "site-a",
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u-bob", Account: "bob", SiteID: "site-a"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	// Individual room member for bob (when orgs are present)
+	store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, m *model.RoomMember) error {
+			assert.Equal(t, "r1", m.RoomID)
+			assert.Equal(t, "bob", m.Member.Account)
+			assert.Equal(t, model.RoomMemberTypeIndividual, m.Member.Type)
+			return nil
+		})
+	// Org room member for org-eng
 	store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, m *model.RoomMember) error {
 			assert.Equal(t, "r1", m.RoomID)
@@ -233,7 +237,7 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 			assert.Equal(t, model.RoomMemberTypeOrg, m.Member.Type)
 			return nil
 		})
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
 
 	h := NewHandler(store, "site-a",
 		func(_ context.Context, _ string, _ []byte) error { return nil },
@@ -255,11 +259,11 @@ func TestHandler_ProcessAddMembers_PublishesEvents(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{
-		ID: "u-bob", Account: "bob", SiteID: "site-a",
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u-bob", Account: "bob", SiteID: "site-a"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, "site-a",
@@ -304,11 +308,11 @@ func TestHandler_ProcessAddMembers_CrossSiteOutbox(t *testing.T) {
 
 	// Room is on site-a, user is on site-b — should publish outbox
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{
-		ID: "u-bob", Account: "bob", SiteID: "site-b",
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u-bob", Account: "bob", SiteID: "site-b"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
 
 	var outboxPublished []publishedMsg
 	h := NewHandler(store, "site-a",
@@ -334,11 +338,11 @@ func TestHandler_ProcessAddMembers_SameSiteNoOutbox(t *testing.T) {
 
 	// Room and user both on site-a — no outbox should be published
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{
-		ID: "u-bob", Account: "bob", SiteID: "site-a",
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u-bob", Account: "bob", SiteID: "site-a"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
 
 	var outboxPublished []publishedMsg
 	h := NewHandler(store, "site-a",
@@ -365,9 +369,11 @@ func TestHandler_ProcessRemoveMember_ByAccount(t *testing.T) {
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), "bob", "r1").Return(nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u-bob", Account: "bob", SiteID: "site-a"},
+	}, nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), "bob", "r1").Return(nil)
-	store.EXPECT().DecrementUserCount(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().DecrementUserCount(gomock.Any(), "r1", 1).Return(nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, "site-a",
@@ -414,12 +420,14 @@ func TestHandler_ProcessRemoveMember_ByOrgID(t *testing.T) {
 	store.EXPECT().GetOrgAccounts(gomock.Any(), "org-eng").Return([]string{"alice", "bob"}, nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), "bob", "r1").Return(nil)
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob"}).Return([]model.User{
+		{ID: "u-alice", Account: "alice", SiteID: "site-a"},
+		{ID: "u-bob", Account: "bob", SiteID: "site-a"},
+	}, nil)
 	store.EXPECT().DeleteOrgRoomMember(gomock.Any(), "org-eng", "r1").Return(nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), "bob", "r1").Return(nil)
-	store.EXPECT().DecrementUserCount(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().DecrementUserCount(gomock.Any(), "r1", 2).Return(nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, "site-a",
@@ -517,9 +525,11 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 	// Room on site-a, user on site-b — should publish outbox
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), "bob", "r1").Return(nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u-bob", Account: "bob", SiteID: "site-b"},
+	}, nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), "bob", "r1").Return(nil)
-	store.EXPECT().DecrementUserCount(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().DecrementUserCount(gomock.Any(), "r1", 1).Return(nil)
 
 	var outboxPublished []publishedMsg
 	h := NewHandler(store, "site-a",

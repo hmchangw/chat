@@ -98,6 +98,16 @@ func RoomMemberEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event.member", roomID)
 }
 
+// RoomCanonical returns a canonical subject for room operations published to the ROOMS stream.
+func RoomCanonical(siteID, operation string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.%s", siteID, operation)
+}
+
+// RoomCanonicalWildcard returns the wildcard pattern for consuming canonical room operations.
+func RoomCanonicalWildcard(siteID string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.>", siteID)
+}
+
 func UserRoomEvent(account string) string {
 	return fmt.Sprintf("chat.user.%s.event.room", account)
 }

@@ -231,7 +231,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	// Publish validated request to ROOMS stream for room-worker processing
-	if err := h.publishToStream(ctx, subj, data); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.remove"), data); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
@@ -286,7 +286,7 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	}
 
 	// Publish validated request to ROOMS stream for room-worker processing
-	if err := h.publishToStream(ctx, subj, data); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.role-update"), data); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
@@ -295,9 +295,15 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 
 func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte) ([]byte, error) {
 	// 1. Extract roomID from subject
-	_, roomID, ok := subject.ParseUserRoomSubject(subj)
+	requester, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
 		return nil, fmt.Errorf("invalid subject: %s", subj)
+	}
+
+	// Check requester is in the room
+	_, err := h.store.GetSubscription(ctx, requester, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("requester not in room: %w", err)
 	}
 
 	// 2. Unmarshal request
@@ -344,7 +350,7 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("marshal normalized request: %w", err)
 	}
-	if err := h.publishToStream(ctx, subj, normalizedData); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.add"), normalizedData); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 

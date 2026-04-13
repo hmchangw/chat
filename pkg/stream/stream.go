@@ -25,7 +25,7 @@ func MessagesCanonical(siteID string) Config {
 func Rooms(siteID string) Config {
 	return Config{
 		Name:     fmt.Sprintf("ROOMS_%s", siteID),
-		Subjects: []string{fmt.Sprintf("chat.user.*.request.room.*.%s.member.>", siteID)},
+		Subjects: []string{fmt.Sprintf("chat.room.canonical.%s.>", siteID)},
 	}
 }
 

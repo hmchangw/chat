@@ -132,10 +132,13 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	h := NewHandler(store, pub)
 
 	change := model.MemberChangeEvent{
-		Type:     "member-added",
-		RoomID:   "room-1",
-		Accounts: []string{"bob"},
-		SiteID:   "site-b",
+		Type:               "member-added",
+		RoomID:             "room-1",
+		Accounts:           []string{"bob"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"u-bob"},
+		JoinedAt:           time.Now().UnixMilli(),
+		HistorySharedSince: time.Now().UnixMilli(),
 	}
 	changeData, err := json.Marshal(change)
 	if err != nil {
@@ -164,6 +167,9 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 		t.Fatalf("expected 1 subscription, got %d", len(subs))
 	}
 	sub := subs[0]
+	if sub.User.ID != "u-bob" {
+		t.Errorf("subscription User.ID = %q, want %q", sub.User.ID, "u-bob")
+	}
 	if sub.User.Account != "bob" {
 		t.Errorf("subscription User.Account = %q, want %q", sub.User.Account, "bob")
 	}
@@ -211,11 +217,14 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
+	eventTime := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
 	change := model.MemberChangeEvent{
-		Type:     "member-added",
-		RoomID:   "room-2",
-		Accounts: []string{"carol"},
-		SiteID:   "site-b",
+		Type:               "member-added",
+		RoomID:             "room-2",
+		Accounts:           []string{"carol"},
+		SiteID:             "site-b",
+		JoinedAt:           eventTime.UnixMilli(),
+		HistorySharedSince: eventTime.UnixMilli(),
 	}
 	inviteData, _ := json.Marshal(change)
 
@@ -227,12 +236,10 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	}
 	evtData, _ := json.Marshal(evt)
 
-	before := time.Now()
 	err := h.HandleEvent(context.Background(), evtData)
 	if err != nil {
 		t.Fatalf("HandleEvent: %v", err)
 	}
-	after := time.Now()
 
 	subs := store.getSubscriptions()
 	if len(subs) != 1 {
@@ -240,11 +247,11 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	}
 
 	sub := subs[0]
-	if sub.JoinedAt.Before(before) || sub.JoinedAt.After(after) {
-		t.Errorf("JoinedAt = %v, want between %v and %v", sub.JoinedAt, before, after)
+	if !sub.JoinedAt.Equal(eventTime) {
+		t.Errorf("JoinedAt = %v, want %v", sub.JoinedAt, eventTime)
 	}
-	if sub.HistorySharedSince.IsZero() || sub.HistorySharedSince.Before(before) || sub.HistorySharedSince.After(after) {
-		t.Errorf("HistorySharedSince = %v, want between %v and %v", sub.HistorySharedSince, before, after)
+	if sub.HistorySharedSince == nil || !sub.HistorySharedSince.Equal(eventTime) {
+		t.Errorf("HistorySharedSince = %v, want %v", sub.HistorySharedSince, eventTime)
 	}
 }
 
@@ -430,10 +437,13 @@ func TestHandleEvent_MemberAdded_MultipleAccounts(t *testing.T) {
 	h := NewHandler(store, pub)
 
 	change := model.MemberChangeEvent{
-		Type:     "member-added",
-		RoomID:   "room-1",
-		Accounts: []string{"alice", "bob"},
-		SiteID:   "site-b",
+		Type:               "member-added",
+		RoomID:             "room-1",
+		Accounts:           []string{"alice", "bob"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"u-alice", "u-bob"},
+		JoinedAt:           time.Now().UnixMilli(),
+		HistorySharedSince: time.Now().UnixMilli(),
 	}
 	changeData, err := json.Marshal(change)
 	if err != nil {

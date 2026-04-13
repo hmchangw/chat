@@ -67,15 +67,29 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 	}
 
 	now := time.Now().UTC()
-	for _, account := range change.Accounts {
+	joinedAt := now
+	if change.JoinedAt > 0 {
+		joinedAt = time.UnixMilli(change.JoinedAt).UTC()
+	}
+	var historySharedSince *time.Time
+	if change.HistorySharedSince > 0 {
+		t := time.UnixMilli(change.HistorySharedSince).UTC()
+		historySharedSince = &t
+	}
+
+	for i, account := range change.Accounts {
+		userID := account // fallback
+		if i < len(change.UserIDs) {
+			userID = change.UserIDs[i]
+		}
 		sub := model.Subscription{
 			ID:                 uuid.New().String(),
-			User:               model.SubscriptionUser{Account: account},
+			User:               model.SubscriptionUser{ID: userID, Account: account},
 			RoomID:             change.RoomID,
 			SiteID:             change.SiteID,
 			Roles:              []model.Role{model.RoleMember},
-			HistorySharedSince: &now,
-			JoinedAt:           now,
+			HistorySharedSince: historySharedSince,
+			JoinedAt:           joinedAt,
 		}
 
 		if err := h.store.CreateSubscription(ctx, &sub); err != nil {

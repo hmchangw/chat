@@ -63,6 +63,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				History: model.HistoryConfig{Mode: model.HistoryModeNone},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 			},
 			checkPublish: func(t *testing.T, published []byte) {
@@ -81,6 +82,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				Users:  []string{"bot.bot", "p_system", "carol"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 			},
 			checkPublish: func(t *testing.T, published []byte) {
@@ -98,6 +100,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				Orgs:   []string{"org-eng"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().GetOrgAccounts(gomock.Any(), "org-eng").Return([]string{"eng-alice", "eng-bob"}, nil)
 				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 			},
@@ -118,6 +121,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				Orgs:   []string{"org-eng"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().GetOrgAccounts(gomock.Any(), "org-eng").Return([]string{"eng-alice", "eng-bob"}, nil)
 				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 			},
@@ -137,6 +141,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				Channels: []string{"r-source"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().GetRoomMembers(gomock.Any(), "r-source").Return([]model.RoomMember{
 					{ID: "m1", RoomID: "r-source", Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberTypeOrg}},
 					{ID: "m2", RoomID: "r-source", Member: model.RoomMemberEntry{Type: model.RoomMemberTypeIndividual, Account: "dave"}},
@@ -165,6 +170,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				Channels: []string{"r-source"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().GetRoomMembers(gomock.Any(), "r-source").Return([]model.RoomMember{}, nil)
 				store.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r-source").Return([]model.Subscription{
 					{User: model.SubscriptionUser{Account: "bob"}},
@@ -187,6 +193,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				Channels: []string{"r-source"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().GetRoomMembers(gomock.Any(), "r-source").Return([]model.RoomMember{}, nil)
 				store.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r-source").Return([]model.Subscription{
 					{User: model.SubscriptionUser{Account: "bob"}},
@@ -210,6 +217,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				Users:  []string{"bob"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(1000, nil)
 			},
 			wantErr: true,
@@ -218,7 +226,9 @@ func TestHandler_AddMembers(t *testing.T) {
 			name:    "malformed json",
 			subj:    makeSubj("alice", "r1"),
 			payload: nil,
-			setup:   func(store *MockRoomStore) {},
+			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
+			},
 			wantErr: true,
 		},
 		{
@@ -229,6 +239,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				Orgs:   []string{"org-bad"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().GetOrgAccounts(gomock.Any(), "org-bad").Return(nil, fmt.Errorf("orgs collection unavailable"))
 			},
 			wantErr: true,
@@ -241,6 +252,7 @@ func TestHandler_AddMembers(t *testing.T) {
 				Users:  []string{"bob"},
 			},
 			setup: func(store *MockRoomStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{}, nil)
 				store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 			},
 			wantErr: true,
