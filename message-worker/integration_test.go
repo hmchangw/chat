@@ -221,6 +221,7 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, gotMentions, 1)
 		assert.Equal(t, "bob", gotMentions[0].Account)
+		assert.Equal(t, "Bob Chen", gotMentions[0].EngName)
 		assert.Equal(t, "u-bob", gotMentions[0].ID)
 	})
 }
