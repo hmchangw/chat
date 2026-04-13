@@ -9,6 +9,12 @@ cd tools/jaeger
 docker compose up -d
 ```
 
+If you get `unknown shorthand flag 'd'`, you may be on Docker Compose V1. Use the hyphenated command instead:
+
+```bash
+docker-compose up -d
+```
+
 Jaeger UI: http://localhost:16686
 
 ## Usage
@@ -49,4 +55,6 @@ OTEL_EXPORTER_OTLP_ENDPOINT=my-collector:4317 go run ./broadcast-worker/
 
 ```bash
 docker compose down
+# or for Docker Compose V1:
+docker-compose down
 ```
