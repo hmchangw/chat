@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNats } from '../context/NatsContext'
+import { roomsCreate } from '../lib/subjects'
 
 export default function CreateRoomDialog({ onClose, onCreated }) {
   const { user, request } = useNats()
@@ -25,7 +26,7 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
       .filter(Boolean)
 
     try {
-      const room = await request(`chat.user.${account}.request.rooms.create`, {
+      const room = await request(roomsCreate(account), {
         name: name.trim(),
         type: roomType,
         createdBy: account,

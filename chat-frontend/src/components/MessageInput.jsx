@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '../context/NatsContext'
+import { msgSend } from '../lib/subjects'
 
 export default function MessageInput({ room }) {
   const { user, publish } = useNats()
@@ -12,9 +13,7 @@ export default function MessageInput({ room }) {
 
     const account = user.account
     const siteId = user.siteId
-    const subject = `chat.user.${account}.room.${room.id}.${siteId}.msg.send`
-
-    publish(subject, {
+    publish(msgSend(account, room.id, siteId), {
       id: uuidv4(),
       content: text.trim(),
       requestId: uuidv4(),

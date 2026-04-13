@@ -1,5 +1,6 @@
 import { createContext, useContext, useRef, useState, useCallback } from 'react'
 import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
+import { createUser } from 'nkeys.js'
 
 const NatsContext = createContext(null)
 
@@ -17,8 +18,6 @@ export function NatsProvider({ children }) {
   const connectToNats = useCallback(async (account, siteId) => {
     setError(null)
 
-    // 1. Authenticate with auth-service (dev mode)
-    const { createUser } = await import('nkeys.js')
     const nkey = createUser()
     const natsPublicKey = nkey.getPublicKey()
 
@@ -35,7 +34,6 @@ export function NatsProvider({ children }) {
 
     const { natsJwt, user: userInfo } = await authResp.json()
 
-    // 2. Connect to NATS via WebSocket with JWT
     const nc = await natsConnect({
       servers: natsUrl,
       authenticator: jwtAuthenticator(natsJwt, nkey.getSeed()),
@@ -45,7 +43,6 @@ export function NatsProvider({ children }) {
     setUser({ ...userInfo, siteId })
     setConnected(true)
 
-    // Handle unexpected disconnection
     nc.closed().then((err) => {
       if (err) {
         setError(`Disconnected: ${err.message}`)

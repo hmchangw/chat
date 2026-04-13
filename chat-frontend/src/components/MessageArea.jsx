@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNats } from '../context/NatsContext'
+import { roomEvent, msgHistory } from '../lib/subjects'
 
 function formatTime(dateStr) {
   const d = new Date(dateStr)
@@ -39,14 +40,7 @@ export default function MessageArea({ room }) {
     setError(null)
     setLoading(true)
 
-    // Unsubscribe from previous room
-    if (subRef.current) {
-      subRef.current.unsubscribe()
-      subRef.current = null
-    }
-
-    // Subscribe to room events for real-time messages
-    const sub = subscribe(`chat.room.${room.id}.event`, (evt) => {
+    const sub = subscribe(roomEvent(room.id), (evt) => {
       if (evt.type === 'new_message' && evt.message) {
         setMessages((prev) => {
           const id = messageId(evt.message)
@@ -58,7 +52,7 @@ export default function MessageArea({ room }) {
     subRef.current = sub
 
     // Load message history
-    request(`chat.user.${account}.request.room.${room.id}.${siteId}.msg.history`, {
+    request(msgHistory(account, room.id, siteId), {
       limit: 50,
     })
       .then((resp) => {

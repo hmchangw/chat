@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNats } from '../context/NatsContext'
+import { roomsList, roomsGet, subscriptionUpdate, roomMetadataUpdate } from '../lib/subjects'
 
 export default function RoomList({ selectedRoomId, onSelectRoom }) {
   const { user, request, subscribe } = useNats()
@@ -13,7 +14,7 @@ export default function RoomList({ selectedRoomId, onSelectRoom }) {
     const account = user.account
 
     // Fetch initial room list
-    request(`chat.user.${account}.request.rooms.list`, {})
+    request(roomsList(account), {})
       .then((resp) => {
         const sorted = (resp.rooms || []).sort(
           (a, b) => new Date(b.lastMsgAt) - new Date(a.lastMsgAt)
@@ -24,11 +25,11 @@ export default function RoomList({ selectedRoomId, onSelectRoom }) {
 
     // Subscribe to subscription updates (room added/removed)
     const subUpdate = subscribe(
-      `chat.user.${account}.event.subscription.update`,
+      subscriptionUpdate(account),
       (evt) => {
         if (evt.action === 'added') {
           // Fetch the full room details and add to list
-          request(`chat.user.${account}.request.rooms.get.${evt.subscription.roomId}`, {})
+          request(roomsGet(account, evt.subscription.roomId), {})
             .then((room) => {
               setRooms((prev) => {
                 if (prev.some((r) => r.id === room.id)) return prev
@@ -44,7 +45,7 @@ export default function RoomList({ selectedRoomId, onSelectRoom }) {
 
     // Subscribe to room metadata updates (name, userCount, lastMsgAt)
     const metaUpdate = subscribe(
-      `chat.user.${account}.event.room.metadata.update`,
+      roomMetadataUpdate(account),
       (evt) => {
         setRooms((prev) => {
           const updated = prev.map((r) =>

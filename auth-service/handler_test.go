@@ -89,7 +89,7 @@ func TestHandleAuth_ValidToken(t *testing.T) {
 		deptName:    "Engineering",
 		deptId:      "ABC123",
 	}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	body := `{"ssoToken":"valid-token","natsPublicKey":"` + userPub + `"}`
@@ -135,7 +135,7 @@ func TestHandleAuth_ValidToken(t *testing.T) {
 func TestHandleAuth_ExpiredToken(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	validator := &fakeValidator{expired: true}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	userPub := mustUserNKey(t)
@@ -152,7 +152,7 @@ func TestHandleAuth_ExpiredToken(t *testing.T) {
 func TestHandleAuth_InvalidToken(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	validator := &fakeValidator{invalid: true}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	userPub := mustUserNKey(t)
@@ -169,7 +169,7 @@ func TestHandleAuth_InvalidToken(t *testing.T) {
 func TestHandleAuth_InvalidNKey(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	validator := &fakeValidator{account: "alice", subject: "uuid-alice"}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	body := `{"ssoToken":"valid-token","natsPublicKey":"NOT-A-VALID-NKEY"}`
@@ -185,7 +185,7 @@ func TestHandleAuth_InvalidNKey(t *testing.T) {
 func TestHandleAuth_MissingFields(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	validator := &fakeValidator{account: "alice"}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	tests := []struct {
@@ -215,7 +215,7 @@ func TestHandleAuth_PermissionsPerUser(t *testing.T) {
 	for _, account := range accounts {
 		t.Run(account, func(t *testing.T) {
 			validator := &fakeValidator{account: account, subject: "uuid-" + account}
-			handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+			handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 			router := setupRouter(t, handler)
 
 			userPub := mustUserNKey(t)
@@ -246,8 +246,7 @@ func TestHandleAuth_DevMode_ValidRequest(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	userPub := mustUserNKey(t)
 
-	handler := NewAuthHandler(nil, signingKP, 2*time.Hour)
-	handler.devMode = true
+	handler := NewAuthHandler(nil, signingKP, 2*time.Hour, true)
 	router := setupRouter(t, handler)
 
 	body := `{"account":"alice","natsPublicKey":"` + userPub + `"}`
@@ -277,8 +276,7 @@ func TestHandleAuth_DevMode_MissingAccount(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	userPub := mustUserNKey(t)
 
-	handler := NewAuthHandler(nil, signingKP, 2*time.Hour)
-	handler.devMode = true
+	handler := NewAuthHandler(nil, signingKP, 2*time.Hour, true)
 	router := setupRouter(t, handler)
 
 	body := `{"natsPublicKey":"` + userPub + `"}`
@@ -294,8 +292,7 @@ func TestHandleAuth_DevMode_MissingAccount(t *testing.T) {
 func TestHandleAuth_DevMode_InvalidNKey(t *testing.T) {
 	signingKP := mustAccountKP(t)
 
-	handler := NewAuthHandler(nil, signingKP, 2*time.Hour)
-	handler.devMode = true
+	handler := NewAuthHandler(nil, signingKP, 2*time.Hour, true)
 	router := setupRouter(t, handler)
 
 	body := `{"account":"alice","natsPublicKey":"NOT-VALID"}`
@@ -310,7 +307,7 @@ func TestHandleAuth_DevMode_InvalidNKey(t *testing.T) {
 
 func TestHandleHealth(t *testing.T) {
 	signingKP := mustAccountKP(t)
-	handler := NewAuthHandler(&fakeValidator{}, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(&fakeValidator{}, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	w := httptest.NewRecorder()

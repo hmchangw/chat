@@ -57,11 +57,12 @@ type AuthHandler struct {
 
 // NewAuthHandler creates an AuthHandler with the given token validator,
 // NATS account signing key, and JWT expiry duration.
-func NewAuthHandler(validator TokenValidator, signingKey nkeys.KeyPair, jwtExpiry time.Duration) *AuthHandler {
+func NewAuthHandler(validator TokenValidator, signingKey nkeys.KeyPair, jwtExpiry time.Duration, devMode bool) *AuthHandler {
 	return &AuthHandler{
 		validator:  validator,
 		signingKey: signingKey,
 		jwtExpiry:  jwtExpiry,
+		devMode:    devMode,
 	}
 }
 

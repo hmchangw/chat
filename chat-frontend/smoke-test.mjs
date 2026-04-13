@@ -1,5 +1,5 @@
 // Programmatic smoke test for chat-frontend integration
-// Tests: auth -> NATS WebSocket connect -> room create -> send message -> receive message
+// Tests: auth -> NATS WebSocket connect -> send message -> receive message -> request/reply
 import { connect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
 
@@ -33,27 +33,22 @@ async function connectNats(auth) {
 async function main() {
   console.log('=== Chat Frontend Smoke Test ===\n')
 
-  // Step 1: Authenticate alice
   console.log('1. Authenticating alice...')
   const aliceAuth = await authenticate('alice')
   console.log(`   ✓ Got JWT for ${aliceAuth.user.account} (${aliceAuth.user.email})`)
 
-  // Step 2: Connect alice to NATS
   console.log('2. Connecting alice to NATS WebSocket...')
   const aliceNc = await connectNats(aliceAuth)
   console.log('   ✓ Connected')
 
-  // Step 3: Authenticate bob
   console.log('3. Authenticating bob...')
   const bobAuth = await authenticate('bob')
   console.log(`   ✓ Got JWT for ${bobAuth.user.account} (${bobAuth.user.email})`)
 
-  // Step 4: Connect bob to NATS
   console.log('4. Connecting bob to NATS WebSocket...')
   const bobNc = await connectNats(bobAuth)
   console.log('   ✓ Connected')
 
-  // Step 5: Alice subscribes to a test room event subject
   console.log('5. Alice subscribes to room events...')
   const roomId = 'test-room-' + Date.now()
   const received = []
@@ -65,7 +60,6 @@ async function main() {
   })()
   console.log(`   ✓ Subscribed to chat.room.${roomId}.event`)
 
-  // Step 6: Bob publishes a message event to that room
   console.log('6. Bob publishes a message to the room...')
   const testEvent = {
     type: 'new_message',
@@ -81,7 +75,6 @@ async function main() {
   bobNc.publish(`chat.room.${roomId}.event`, sc.encode(JSON.stringify(testEvent)))
   console.log('   ✓ Published')
 
-  // Step 7: Wait and verify alice received the message
   console.log('7. Waiting for alice to receive the message...')
   await new Promise(r => setTimeout(r, 500))
 
@@ -93,9 +86,7 @@ async function main() {
     process.exitCode = 1
   }
 
-  // Step 8: Test request/reply pattern (simulated)
   console.log('8. Testing request/reply pattern...')
-  // Set up a mock responder for rooms.list
   const respSub = aliceNc.subscribe('chat.user.alice.request.rooms.list')
   ;(async () => {
     for await (const msg of respSub) {
@@ -105,7 +96,6 @@ async function main() {
     }
   })()
 
-  // Now request from alice's own connection (simulating what the frontend does)
   const resp = await aliceNc.request(
     'chat.user.alice.request.rooms.list',
     sc.encode(JSON.stringify({})),
@@ -119,7 +109,6 @@ async function main() {
     process.exitCode = 1
   }
 
-  // Cleanup
   console.log('\n9. Cleaning up...')
   sub.unsubscribe()
   await aliceNc.drain()
