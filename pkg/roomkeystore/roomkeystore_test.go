@@ -22,6 +22,8 @@ type fakeHashClient struct {
 	hgetallErrOnCall  int // if >0, hgetallErr fires only on this call number (1-based)
 	rotatePipelineErr error
 	deletePipelineErr error
+	closeErr          error
+	closed            bool
 }
 
 func (f *fakeHashClient) hset(_ context.Context, key string, pub, priv string) error {
@@ -78,6 +80,14 @@ func (f *fakeHashClient) deletePipeline(_ context.Context, currentKey, prevKey s
 		delete(f.store, currentKey)
 		delete(f.store, prevKey)
 	}
+	return nil
+}
+
+func (f *fakeHashClient) closeClient() error {
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	f.closed = true
 	return nil
 }
 
@@ -502,4 +512,22 @@ func TestValkeyStore_Delete(t *testing.T) {
 			assert.False(t, exists, "previous key should be removed after Delete")
 		})
 	}
+}
+
+func TestValkeyStore_Close(t *testing.T) {
+	t.Run("happy path — delegates to client", func(t *testing.T) {
+		fake := &fakeHashClient{}
+		store := newTestStore(fake)
+		err := store.Close()
+		require.NoError(t, err)
+		assert.True(t, fake.closed, "Close should have been called on the commander")
+	})
+
+	t.Run("propagates client error", func(t *testing.T) {
+		fake := &fakeHashClient{closeErr: errors.New("connection already gone")}
+		store := newTestStore(fake)
+		err := store.Close()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "close valkey client")
+	})
 }
