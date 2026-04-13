@@ -8,12 +8,10 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
-    command: ["start-dev", "--import-realm"]
+    command: [ "start-dev", "--import-realm" ]
     healthcheck:
       test: >
-        sh -c 'exec 3<>/dev/tcp/localhost/8080 &&
-        echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
-        cat <&3 | grep -q "200"'
+        sh -c 'exec 3<>/dev/tcp/localhost/8080 && echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && cat <&3 | grep -q "200"'
       interval: 10s
       timeout: 10s
       retries: 15
@@ -28,7 +26,7 @@ services:
     volumes:
       - ./nats.conf:/etc/nats/nats.conf:ro
       - nats-data:/data/jetstream
-    command: ["-c", "/etc/nats/nats.conf"]
+    command: [ "-c", "/etc/nats/nats.conf" ]
 
   auth-service:
     build:

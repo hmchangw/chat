@@ -25,12 +25,10 @@ services:
     mem_limit: 768m
     volumes:
       - ../../../auth-service/deploy/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
-    command: ["start-dev", "--import-realm"]
+    command: [ "start-dev", "--import-realm" ]
     healthcheck:
       test: >
-        sh -c 'exec 3<>/dev/tcp/localhost/8080 &&
-        echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
-        cat <&3 | grep -q "200"'
+        sh -c 'exec 3<>/dev/tcp/localhost/8080 && echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && cat <&3 | grep -q "200"'
       interval: 10s
       timeout: 10s
       retries: 15
@@ -41,9 +39,9 @@ services:
     ports:
       - "4222:4222"
       - "8222:8222"
-    command: ["--jetstream", "--http_port", "8222"]
+    command: [ "--jetstream", "--http_port", "8222" ]
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -53,9 +51,9 @@ services:
     ports:
       - "27017:27017"
     mem_limit: 512m
-    command: ["mongod", "--wiredTigerCacheSizeGB", "0.25"]
+    command: [ "mongod", "--wiredTigerCacheSizeGB", "0.25" ]
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -70,7 +68,7 @@ services:
       HEAP_NEWSIZE: 128M
     mem_limit: 1g
     healthcheck:
-      test: ["CMD", "cqlsh", "-e", "DESCRIBE KEYSPACES"]
+      test: [ "CMD", "cqlsh", "-e", "DESCRIBE KEYSPACES" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -83,7 +81,7 @@ services:
         condition: service_healthy
     restart: "no"
     mem_limit: 512m
-    entrypoint: ["/bin/bash", "-c"]
+    entrypoint: [ "/bin/bash", "-c" ]
     command:
       - |
         set -e
