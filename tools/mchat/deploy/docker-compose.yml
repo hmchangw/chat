@@ -15,7 +15,8 @@ services:
   # ─── Infrastructure ───────────────────────────────────────────────
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0-alpine
+    image: quay.io/keycloak/keycloak:26.0
+    platform: linux/amd64
     ports:
       - "9090:8080"
     environment:
