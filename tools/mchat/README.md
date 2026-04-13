@@ -16,27 +16,36 @@ A browser-based chat client and full-stack local development environment. Provid
 
 - Docker and Docker Compose
 
-### 1. Generate signing key
+### 1. Navigate to the deploy directory
+
+All Docker Compose commands must be run from the `deploy/` directory because the
+build context is set to `../../..` (the repo root).
+
+```bash
+cd tools/mchat/deploy
+```
+
+### 2. Generate signing key
 
 Run the setup script once to create the `.env` file with a NATS account signing key:
 
 ```bash
-./tools/mchat/deploy/setup.sh
+./setup.sh
 ```
 
-### 2. Start the stack
+### 3. Start the stack
 
 ```bash
-docker compose -f tools/mchat/deploy/docker-compose.yml up -d
+docker compose up -d
 ```
 
 Wait for Keycloak to be ready (~30-60s):
 
 ```bash
-docker compose -f tools/mchat/deploy/docker-compose.yml logs -f keycloak
+docker compose logs -f keycloak
 ```
 
-### 3. Open the UI
+### 4. Open the UI
 
 | Service | URL |
 |---------|-----|
@@ -164,6 +173,8 @@ Real-time events (new messages, room updates, notifications) are delivered via S
 
 ## Stop
 
+From the `tools/mchat/deploy` directory:
+
 ```bash
-docker compose -f tools/mchat/deploy/docker-compose.yml down
+docker compose down
 ```
