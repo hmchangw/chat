@@ -203,7 +203,6 @@ func (s *valkeyStore) Delete(ctx context.Context, roomID string) error {
 	return nil
 }
 
-
 // decodeKeyPair decodes base64-encoded pub and priv fields from a Valkey hash.
 func decodeKeyPair(fields map[string]string) (*RoomKeyPair, error) {
 	pub, err := base64.StdEncoding.DecodeString(fields["pub"])

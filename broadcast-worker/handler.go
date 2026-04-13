@@ -9,6 +9,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -18,15 +19,23 @@ type Publisher interface {
 	Publish(ctx context.Context, subject string, data []byte) error
 }
 
+// RoomKeyProvider fetches the current encryption key for a room.
+// Defined here (not imported from pkg/roomkeystore directly) to keep the
+// handler's dependency contract narrow — only Get is used.
+type RoomKeyProvider interface {
+	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
+}
+
 // Handler processes MESSAGES_CANONICAL messages and broadcasts room events.
 type Handler struct {
 	store     Store
 	userStore userstore.UserStore
 	pub       Publisher
+	keyStore  RoomKeyProvider
 }
 
-func NewHandler(store Store, userStore userstore.UserStore, pub Publisher) *Handler {
-	return &Handler{store: store, userStore: userStore, pub: pub}
+func NewHandler(store Store, userStore userstore.UserStore, pub Publisher, keyStore RoomKeyProvider) *Handler {
+	return &Handler{store: store, userStore: userStore, pub: pub, keyStore: keyStore}
 }
 
 // HandleMessage processes a single MESSAGES_CANONICAL message payload.

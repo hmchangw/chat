@@ -9,6 +9,7 @@ import (
 
 //go:generate mockgen -destination=mock_store_test.go -package=main . Store
 //go:generate mockgen -destination=mock_userstore_test.go -package=main github.com/hmchangw/chat/pkg/userstore UserStore
+//go:generate mockgen -destination=mock_keystore_test.go -package=main . RoomKeyProvider
 
 // Store defines data access operations for the broadcast worker.
 type Store interface {
