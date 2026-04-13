@@ -43,7 +43,7 @@ func (p *cassParticipant) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, 
 }
 
 // UnmarshalUDT implements gocql.UDTUnmarshaler for cassParticipant.
-// Required to scan SET<FROZEN<"Participant">> columns back from Cassandra in tests.
+// Required to scan SET<FROZEN<"Participant">> columns back from Cassandra.
 func (p *cassParticipant) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte) error {
 	switch name {
 	case "id":
