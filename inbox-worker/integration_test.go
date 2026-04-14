@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -173,4 +175,39 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 	if pub.subjects[0] != "chat.user.bob.event.subscription.update" {
 		t.Errorf("subject = %q, want bob subscription update", pub.subjects[0])
 	}
+}
+
+func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+	}
+	pub := &recordingPublisher{}
+	h := NewHandler(store, pub)
+
+	ctx := context.Background()
+
+	_, err := store.subCol.InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "bob"},
+		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	memberEvt := model.MemberChangeEvent{
+		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
+	}
+	payload, _ := json.Marshal(memberEvt)
+	evt := model.OutboxEvent{
+		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(ctx, data))
+
+	count, err := store.subCol.CountDocuments(ctx, bson.M{"u._id": "u1", "roomId": "r1"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), count)
 }
