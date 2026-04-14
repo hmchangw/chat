@@ -18,6 +18,8 @@ func TestUserJSON(t *testing.T) {
 		ID:          "u1",
 		Account:     "alice",
 		SiteID:      "site-a",
+		SectID:      "sect-1",
+		SectName:    "Engineering",
 		EngName:     "Alice Wang",
 		ChineseName: "愛麗絲",
 		EmployeeID:  "EMP001",
@@ -151,6 +153,37 @@ func TestMessageJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &raw))
 		_, present := raw["mentions"]
 		assert.False(t, present, "mentions should be omitted when nil")
+	})
+
+	t.Run("type and sysMsgData round-trip", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:    "system",
+			CreatedAt:  time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			Type:       "system",
+			SysMsgData: []byte(`{"key":"value"}`),
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var dst model.Message
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, m, dst)
+	})
+
+	t.Run("type and sysMsgData omitted when empty", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:   "hello",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasType := raw["type"]
+		assert.False(t, hasType, "type should be omitted when empty")
+		_, hasSysMsgData := raw["sysMsgData"]
+		assert.False(t, hasSysMsgData, "sysMsgData should be omitted when nil")
 	})
 }
 
@@ -575,6 +608,134 @@ func TestRoomMetadataUpdateEventJSON(t *testing.T) {
 		Timestamp:     1735689600000,
 	}
 	roundTrip(t, &src, &model.RoomMetadataUpdateEvent{})
+}
+
+func TestRemoveMemberRequestJSON(t *testing.T) {
+	t.Run("with account", func(t *testing.T) {
+		r := model.RemoveMemberRequest{
+			RoomID:  "r1",
+			Account: "alice",
+		}
+		roundTrip(t, &r, &model.RemoveMemberRequest{})
+	})
+
+	t.Run("with orgId", func(t *testing.T) {
+		r := model.RemoveMemberRequest{
+			RoomID: "r1",
+			OrgID:  "org-1",
+		}
+		roundTrip(t, &r, &model.RemoveMemberRequest{})
+	})
+
+	t.Run("account and orgId omitted when empty", func(t *testing.T) {
+		r := model.RemoveMemberRequest{RoomID: "r1"}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasAccount := raw["account"]
+		assert.False(t, hasAccount, "account should be omitted when empty")
+		_, hasOrgID := raw["orgId"]
+		assert.False(t, hasOrgID, "orgId should be omitted when empty")
+	})
+}
+
+func TestMemberChangeEventJSON(t *testing.T) {
+	src := model.MemberChangeEvent{
+		Type:     "member_removed",
+		RoomID:   "r1",
+		Accounts: []string{"alice", "bob"},
+		SiteID:   "site-a",
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.MemberChangeEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+}
+
+func TestRoomMemberJSON(t *testing.T) {
+	rm := model.RoomMember{
+		ID:     "rm1",
+		RoomID: "r1",
+		Ts:     time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		Member: model.RoomMemberEntry{
+			ID:      "u1",
+			Type:    model.RoomMemberIndividual,
+			Account: "alice",
+		},
+	}
+	data, err := json.Marshal(&rm)
+	require.NoError(t, err)
+	var dst model.RoomMember
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, rm, dst)
+}
+
+func TestSysMsgUserJSON(t *testing.T) {
+	u := model.SysMsgUser{
+		Account:     "alice",
+		EngName:     "Alice Wang",
+		ChineseName: "愛麗絲",
+	}
+	roundTrip(t, &u, &model.SysMsgUser{})
+}
+
+func TestMemberLeftJSON(t *testing.T) {
+	ml := model.MemberLeft{
+		User: model.SysMsgUser{
+			Account:     "alice",
+			EngName:     "Alice Wang",
+			ChineseName: "愛麗絲",
+		},
+	}
+	roundTrip(t, &ml, &model.MemberLeft{})
+}
+
+func TestMemberRemovedJSON(t *testing.T) {
+	t.Run("with user", func(t *testing.T) {
+		mr := model.MemberRemoved{
+			User:              &model.SysMsgUser{Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲"},
+			RemovedUsersCount: 1,
+		}
+		data, err := json.Marshal(&mr)
+		require.NoError(t, err)
+		var dst model.MemberRemoved
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, mr, dst)
+	})
+
+	t.Run("with org", func(t *testing.T) {
+		mr := model.MemberRemoved{
+			OrgID:             "org-1",
+			SectName:          "Engineering",
+			RemovedUsersCount: 5,
+		}
+		data, err := json.Marshal(&mr)
+		require.NoError(t, err)
+		var dst model.MemberRemoved
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, mr, dst)
+	})
+
+	t.Run("user, orgId, sectName omitted when empty", func(t *testing.T) {
+		mr := model.MemberRemoved{RemovedUsersCount: 3}
+		data, err := json.Marshal(&mr)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasUser := raw["user"]
+		assert.False(t, hasUser, "user should be omitted when nil")
+		_, hasOrgID := raw["orgId"]
+		assert.False(t, hasOrgID, "orgId should be omitted when empty")
+		_, hasSectName := raw["sectName"]
+		assert.False(t, hasSectName, "sectName should be omitted when empty")
+	})
+}
+
+func TestRoomMemberTypeValues(t *testing.T) {
+	assert.Equal(t, model.RoomMemberType("individual"), model.RoomMemberIndividual)
+	assert.Equal(t, model.RoomMemberType("org"), model.RoomMemberOrg)
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
