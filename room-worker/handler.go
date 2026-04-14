@@ -26,13 +26,17 @@ func NewHandler(store SubscriptionStore, siteID string, publish func(context.Con
 }
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
-	var err error
 	subj := msg.Subject()
+	var err error
 	switch {
-	case strings.HasSuffix(subj, "member.role-update"):
-		err = h.processRoleUpdate(ctx, msg.Data())
-	default:
+	case strings.HasSuffix(subj, ".member.invite"):
 		err = h.processInvite(ctx, msg.Data())
+	case strings.HasSuffix(subj, ".member.role-update"):
+		err = h.processRoleUpdate(ctx, msg.Data())
+	case strings.HasSuffix(subj, ".member.remove"):
+		err = h.processRemoveMember(ctx, subj, msg.Data())
+	default:
+		slog.Warn("unknown member operation", "subject", subj)
 	}
 	if err != nil {
 		slog.Error("process message failed", "error", err, "subject", subj)
@@ -189,4 +193,248 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 		}
 	}
 	return nil
+}
+
+func (h *Handler) processRemoveMember(ctx context.Context, subj string, data []byte) error {
+	var req model.RemoveMemberRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("unmarshal RemoveMemberRequest: %w", err)
+	}
+
+	if req.OrgID != "" {
+		return h.processRemoveOrg(ctx, subj, &req)
+	}
+	return h.processRemoveIndividual(ctx, subj, &req)
+}
+
+func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req *model.RemoveMemberRequest) error {
+	requester, _, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return fmt.Errorf("invalid subject for remove member: %s", subj)
+	}
+	isSelfLeave := requester == req.Account
+
+	user, err := h.store.GetUserWithOrgMembership(ctx, req.RoomID, req.Account)
+	if err != nil {
+		return fmt.Errorf("get user with org membership: %w", err)
+	}
+
+	// Dual-membership case: only remove the individual room-member entry, no events
+	if user.HasOrgMembership {
+		if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, req.Account); err != nil {
+			return fmt.Errorf("delete room member (individual): %w", err)
+		}
+		return nil
+	}
+
+	// Individual-only: full removal
+	if err := h.store.DeleteSubscription(ctx, req.RoomID, req.Account); err != nil {
+		return fmt.Errorf("delete subscription: %w", err)
+	}
+
+	if isSelfLeave {
+		if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, req.Account); err != nil {
+			return fmt.Errorf("delete room member (individual): %w", err)
+		}
+	} else {
+		if err := h.store.DeleteRoomMembersByAccount(ctx, req.RoomID, req.Account); err != nil {
+			return fmt.Errorf("delete room members by account: %w", err)
+		}
+	}
+
+	if err := h.store.DecrementUserCount(ctx, req.RoomID, 1); err != nil {
+		return fmt.Errorf("decrement user count: %w", err)
+	}
+
+	now := time.Now().UTC()
+
+	// Subscription update event
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID:    user.ID,
+		Action:    "removed",
+		Timestamp: now.UnixMilli(),
+	}
+	subEvtData, _ := json.Marshal(subEvt)
+	if err := h.publish(ctx, subject.SubscriptionUpdate(req.Account), subEvtData); err != nil {
+		slog.Error("subscription update publish failed", "error", err, "account", req.Account)
+	}
+
+	// Member change event
+	evtType := "member_left"
+	if !isSelfLeave {
+		evtType = "member_removed"
+	}
+	memberEvt := model.MemberChangeEvent{
+		Type:     evtType,
+		RoomID:   req.RoomID,
+		Accounts: []string{req.Account},
+		SiteID:   h.siteID,
+	}
+	memberEvtData, _ := json.Marshal(memberEvt)
+	if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData); err != nil {
+		slog.Error("member event publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	// System message
+	sysMsgUser := model.SysMsgUser{
+		Account:     user.Account,
+		EngName:     user.EngName,
+		ChineseName: user.ChineseName,
+	}
+	var sysMsgData []byte
+	if isSelfLeave {
+		sysMsgData, _ = json.Marshal(model.MemberLeft{User: sysMsgUser})
+	} else {
+		sysMsgData, _ = json.Marshal(model.MemberRemoved{User: &sysMsgUser, RemovedUsersCount: 1})
+	}
+	sysMsg := model.Message{
+		ID:         uuid.New().String(),
+		RoomID:     req.RoomID,
+		Type:       evtType,
+		SysMsgData: sysMsgData,
+		CreatedAt:  now,
+	}
+	msgEvt := model.MessageEvent{
+		Message:   sysMsg,
+		SiteID:    h.siteID,
+		Timestamp: now.UnixMilli(),
+	}
+	msgEvtData, _ := json.Marshal(msgEvt)
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData); err != nil {
+		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	// Cross-site outbox for federated users
+	if user.SiteID != h.siteID {
+		outbox := model.OutboxEvent{
+			Type:       "member_removed",
+			SiteID:     h.siteID,
+			DestSiteID: user.SiteID,
+			Payload:    mustMarshal(req),
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, _ := json.Marshal(outbox)
+		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, "member_removed"), outboxData); err != nil {
+			slog.Error("outbox publish failed", "error", err, "destSiteID", user.SiteID)
+		}
+	}
+
+	return nil
+}
+
+func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.RemoveMemberRequest) error {
+	members, err := h.store.GetOrgMembersWithIndividualStatus(ctx, req.RoomID, req.OrgID)
+	if err != nil {
+		return fmt.Errorf("get org members with individual status: %w", err)
+	}
+
+	var toRemove []OrgMemberStatus
+	for _, m := range members {
+		if !m.HasIndividualMembership {
+			toRemove = append(toRemove, m)
+		}
+	}
+
+	if len(toRemove) > 0 {
+		accounts := make([]string, len(toRemove))
+		for i, m := range toRemove {
+			accounts[i] = m.Account
+		}
+		if err := h.store.DeleteSubscriptionsByAccounts(ctx, req.RoomID, accounts); err != nil {
+			return fmt.Errorf("delete subscriptions by accounts: %w", err)
+		}
+	}
+
+	if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberOrg, req.OrgID); err != nil {
+		return fmt.Errorf("delete room member (org): %w", err)
+	}
+
+	if len(toRemove) > 0 {
+		if err := h.store.DecrementUserCount(ctx, req.RoomID, len(toRemove)); err != nil {
+			return fmt.Errorf("decrement user count: %w", err)
+		}
+	}
+
+	now := time.Now().UTC()
+
+	// Publish per-account subscription update and collect cross-site accounts
+	sectName := ""
+	for _, m := range toRemove {
+		if m.SectName != "" {
+			sectName = m.SectName
+		}
+		subEvt := model.SubscriptionUpdateEvent{
+			Action:    "removed",
+			Timestamp: now.UnixMilli(),
+		}
+		subEvtData, _ := json.Marshal(subEvt)
+		if err := h.publish(ctx, subject.SubscriptionUpdate(m.Account), subEvtData); err != nil {
+			slog.Error("subscription update publish failed", "error", err, "account", m.Account)
+		}
+	}
+
+	// Member change event with all removed accounts
+	if len(toRemove) > 0 {
+		accounts := make([]string, len(toRemove))
+		for i, m := range toRemove {
+			accounts[i] = m.Account
+		}
+		memberEvt := model.MemberChangeEvent{
+			Type:     "member_removed",
+			RoomID:   req.RoomID,
+			Accounts: accounts,
+			SiteID:   h.siteID,
+		}
+		memberEvtData, _ := json.Marshal(memberEvt)
+		if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData); err != nil {
+			slog.Error("member event publish failed", "error", err, "roomID", req.RoomID)
+		}
+	}
+
+	// System message
+	sysMsgPayload, _ := json.Marshal(model.MemberRemoved{
+		OrgID:             req.OrgID,
+		SectName:          sectName,
+		RemovedUsersCount: len(toRemove),
+	})
+	sysMsg := model.Message{
+		ID:         uuid.New().String(),
+		RoomID:     req.RoomID,
+		Type:       "member_removed",
+		SysMsgData: sysMsgPayload,
+		CreatedAt:  now,
+	}
+	msgEvt := model.MessageEvent{
+		Message:   sysMsg,
+		SiteID:    h.siteID,
+		Timestamp: now.UnixMilli(),
+	}
+	msgEvtData, _ := json.Marshal(msgEvt)
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData); err != nil {
+		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	// Cross-site outbox per remote toRemove member
+	for _, m := range toRemove {
+		if m.SiteID != h.siteID {
+			outbox := model.OutboxEvent{
+				Type:       "member_removed",
+				SiteID:     h.siteID,
+				DestSiteID: m.SiteID,
+				Payload:    mustMarshal(req),
+				Timestamp:  now.UnixMilli(),
+			}
+			outboxData, _ := json.Marshal(outbox)
+			if err := h.publish(ctx, subject.Outbox(h.siteID, m.SiteID, "member_removed"), outboxData); err != nil {
+				slog.Error("outbox publish failed", "error", err, "destSiteID", m.SiteID)
+			}
+		}
+	}
+
+	return nil
+}
+
+func mustMarshal(v any) []byte {
+	data, _ := json.Marshal(v)
+	return data
 }

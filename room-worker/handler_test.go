@@ -7,9 +7,12 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 func TestHandler_ProcessInvite(t *testing.T) {
@@ -356,4 +359,299 @@ func TestHandler_ProcessRoleUpdate_UnsupportedRole(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported role")
 	}
+}
+
+// --- processRemoveMember tests ---
+
+func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID  = "room-1"
+		account = "alice"
+		siteID  = "site-a"
+	)
+
+	userResult := &UserWithOrgMembership{
+		User: model.User{
+			ID:          "u1",
+			Account:     account,
+			SiteID:      siteID,
+			EngName:     "Alice",
+			ChineseName: "愛麗絲",
+		},
+		HasOrgMembership: false,
+	}
+
+	store.EXPECT().
+		GetUserWithOrgMembership(gomock.Any(), roomID, account).
+		Return(userResult, nil)
+	store.EXPECT().
+		DeleteSubscription(gomock.Any(), roomID, account).
+		Return(nil)
+	store.EXPECT().
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		Return(nil)
+	store.EXPECT().
+		DecrementUserCount(gomock.Any(), roomID, 1).
+		Return(nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	})
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Account: account}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRemove(account, roomID, siteID)
+
+	err := h.processRemoveMember(context.Background(), subj, data)
+	require.NoError(t, err)
+
+	// Expect: subscription update + member change event + system message = 3 publishes
+	assert.Len(t, published, 3, "expected 3 publishes: sub update, member event, sys msg")
+
+	subjSet := make(map[string]bool)
+	for _, p := range published {
+		subjSet[p.subj] = true
+	}
+
+	assert.True(t, subjSet[subject.SubscriptionUpdate(account)], "expected subscription update published")
+	assert.True(t, subjSet[subject.MemberEvent(roomID)], "expected member event published")
+
+	// Verify timestamps on all events
+	for _, p := range published {
+		var raw map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(p.data, &raw))
+		tsRaw, ok := raw["timestamp"]
+		if !ok {
+			continue // sys msg may not have timestamp at top level
+		}
+		var ts int64
+		require.NoError(t, json.Unmarshal(tsRaw, &ts))
+		assert.NotZero(t, ts, "timestamp should be non-zero for subject %s", p.subj)
+	}
+}
+
+func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID  = "room-1"
+		account = "alice"
+		siteID  = "site-a"
+	)
+
+	userResult := &UserWithOrgMembership{
+		User: model.User{
+			ID:      "u1",
+			Account: account,
+			SiteID:  siteID,
+		},
+		HasOrgMembership: true,
+	}
+
+	// Only DeleteRoomMember(individual) called — no subscription delete, no events
+	store.EXPECT().
+		GetUserWithOrgMembership(gomock.Any(), roomID, account).
+		Return(userResult, nil)
+	store.EXPECT().
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		Return(nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	})
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Account: account}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRemove(account, roomID, siteID)
+
+	err := h.processRemoveMember(context.Background(), subj, data)
+	require.NoError(t, err)
+
+	assert.Empty(t, published, "expected no publishes for dual-membership self-leave")
+}
+
+func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID    = "room-1"
+		account   = "bob"
+		requester = "alice"
+		siteID    = "site-a"
+	)
+
+	userResult := &UserWithOrgMembership{
+		User: model.User{
+			ID:          "u2",
+			Account:     account,
+			SiteID:      siteID,
+			EngName:     "Bob",
+			ChineseName: "鮑伯",
+		},
+		HasOrgMembership: false,
+	}
+
+	store.EXPECT().
+		GetUserWithOrgMembership(gomock.Any(), roomID, account).
+		Return(userResult, nil)
+	store.EXPECT().
+		DeleteSubscription(gomock.Any(), roomID, account).
+		Return(nil)
+	// Owner removes: DeleteRoomMembersByAccount (all entries)
+	store.EXPECT().
+		DeleteRoomMembersByAccount(gomock.Any(), roomID, account).
+		Return(nil)
+	store.EXPECT().
+		DecrementUserCount(gomock.Any(), roomID, 1).
+		Return(nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	})
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Account: account}
+	data, _ := json.Marshal(req)
+	// requester != account: different account in subject
+	subj := subject.MemberRemove(requester, roomID, siteID)
+
+	err := h.processRemoveMember(context.Background(), subj, data)
+	require.NoError(t, err)
+
+	assert.Len(t, published, 3, "expected 3 publishes: sub update, member event, sys msg")
+
+	// Verify the sys msg has type "member_removed"
+	for _, p := range published {
+		if p.subj == subject.MemberEvent(roomID) {
+			var evt model.MemberChangeEvent
+			require.NoError(t, json.Unmarshal(p.data, &evt))
+			assert.Equal(t, "member_removed", evt.Type)
+			assert.Contains(t, evt.Accounts, account)
+		}
+	}
+}
+
+func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID    = "room-1"
+		orgID     = "org-1"
+		requester = "alice"
+		siteID    = "site-a"
+	)
+
+	// 3 org members: carol and dave have no individual membership, eve does
+	orgMembers := []OrgMemberStatus{
+		{Account: "carol", SiteID: siteID, SectName: "Engineering", HasIndividualMembership: false},
+		{Account: "dave", SiteID: siteID, SectName: "Engineering", HasIndividualMembership: false},
+		{Account: "eve", SiteID: siteID, SectName: "Engineering", HasIndividualMembership: true},
+	}
+
+	store.EXPECT().
+		GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, orgID).
+		Return(orgMembers, nil)
+	store.EXPECT().
+		DeleteSubscriptionsByAccounts(gomock.Any(), roomID, gomock.InAnyOrder([]string{"carol", "dave"})).
+		Return(nil)
+	store.EXPECT().
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).
+		Return(nil)
+	store.EXPECT().
+		DecrementUserCount(gomock.Any(), roomID, 2). // carol + dave only
+		Return(nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	})
+
+	req := model.RemoveMemberRequest{RoomID: roomID, OrgID: orgID}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRemove(requester, roomID, siteID)
+
+	err := h.processRemoveMember(context.Background(), subj, data)
+	require.NoError(t, err)
+
+	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 sys msg = 4 publishes
+	assert.Len(t, published, 4, "expected 4 publishes: 2 sub updates, member event, sys msg")
+
+	subjSet := make(map[string]bool)
+	for _, p := range published {
+		subjSet[p.subj] = true
+	}
+
+	assert.True(t, subjSet[subject.SubscriptionUpdate("carol")], "expected subscription update for carol")
+	assert.True(t, subjSet[subject.SubscriptionUpdate("dave")], "expected subscription update for dave")
+	assert.False(t, subjSet[subject.SubscriptionUpdate("eve")], "eve has individual membership, should not be removed")
+	assert.True(t, subjSet[subject.MemberEvent(roomID)], "expected member event published")
+}
+
+func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID    = "room-1"
+		account   = "alice"
+		localSite = "site-a"
+		userSite  = "site-b" // user is on a different site
+	)
+
+	userResult := &UserWithOrgMembership{
+		User: model.User{
+			ID:      "u1",
+			Account: account,
+			SiteID:  userSite, // different from local site
+		},
+		HasOrgMembership: false,
+	}
+
+	store.EXPECT().
+		GetUserWithOrgMembership(gomock.Any(), roomID, account).
+		Return(userResult, nil)
+	store.EXPECT().
+		DeleteSubscription(gomock.Any(), roomID, account).
+		Return(nil)
+	store.EXPECT().
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		Return(nil)
+	store.EXPECT().
+		DecrementUserCount(gomock.Any(), roomID, 1).
+		Return(nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	})
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Account: account}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRemove(account, roomID, localSite)
+
+	err := h.processRemoveMember(context.Background(), subj, data)
+	require.NoError(t, err)
+
+	// Expect: sub update + member event + sys msg + outbox = 4 publishes
+	assert.Len(t, published, 4, "expected 4 publishes including outbox for federated user")
+
+	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
+	subjSet := make(map[string]bool)
+	for _, p := range published {
+		subjSet[p.subj] = true
+	}
+	assert.True(t, subjSet[outboxSubj], "expected outbox event published for remote user")
 }

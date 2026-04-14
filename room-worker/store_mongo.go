@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -13,10 +14,7 @@ import (
 type MongoStore struct {
 	subscriptions *mongo.Collection
 	rooms         *mongo.Collection
-<<<<<<< HEAD
-=======
 	roomMembers   *mongo.Collection
->>>>>>> de5584c (feat(room-worker): implement MongoDB aggregation pipelines and write operations)
 	users         *mongo.Collection
 }
 
@@ -24,10 +22,7 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{
 		subscriptions: db.Collection("subscriptions"),
 		rooms:         db.Collection("rooms"),
-<<<<<<< HEAD
-=======
 		roomMembers:   db.Collection("room_members"),
->>>>>>> de5584c (feat(room-worker): implement MongoDB aggregation pipelines and write operations)
 		users:         db.Collection("users"),
 	}
 }
