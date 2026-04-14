@@ -38,6 +38,36 @@ func TestRoomJSON(t *testing.T) {
 	roundTrip(t, &r, &model.Room{})
 }
 
+func TestThreadRoomJSON(t *testing.T) {
+	tr := model.ThreadRoom{
+		ID:              "tr-1",
+		ParentMessageID: "msg-parent",
+		RoomID:          "r1",
+		SiteID:          "site-a",
+		LastMsgAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		LastMsgID:       "msg-2",
+		CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+	roundTrip(t, &tr, &model.ThreadRoom{})
+}
+
+func TestThreadSubscriptionJSON(t *testing.T) {
+	ts := model.ThreadSubscription{
+		ID:              "ts-1",
+		ParentMessageID: "msg-parent",
+		RoomID:          "r1",
+		ThreadRoomID:    "tr-1",
+		UserID:          "u-1",
+		UserAccount:     "alice",
+		SiteID:          "site-a",
+		LastSeenAt:      time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+	roundTrip(t, &ts, &model.ThreadSubscription{})
+}
+
 func TestMessageJSON(t *testing.T) {
 	t.Run("with threadParentMessageId", func(t *testing.T) {
 		m := model.Message{
