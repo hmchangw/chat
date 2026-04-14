@@ -137,3 +137,16 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 
 	return nil
 }
+
+// GetMessageSender reads the sender UDT from messages_by_id for the given message ID.
+// Returns an error if the message does not exist.
+func (s *CassandraStore) GetMessageSender(ctx context.Context, messageID string) (*cassParticipant, error) {
+	var sender cassParticipant
+	if err := s.cassSession.Query(
+		`SELECT sender FROM messages_by_id WHERE message_id = ? LIMIT 1`,
+		messageID,
+	).WithContext(ctx).Scan(&sender); err != nil {
+		return nil, fmt.Errorf("get sender for message %s: %w", messageID, err)
+	}
+	return &sender, nil
+}

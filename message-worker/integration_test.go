@@ -226,6 +226,43 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 	})
 }
 
+func TestCassandraStore_GetMessageSender(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sender := &cassParticipant{
+		ID:          "u-1",
+		EngName:     "Alice Wang",
+		CompanyName: "愛麗絲",
+		Account:     "alice",
+	}
+	msg := &model.Message{
+		ID:          "m-sender-test",
+		RoomID:      "r-1",
+		UserID:      "u-1",
+		UserAccount: "alice",
+		Content:     "hello",
+		CreatedAt:   now,
+	}
+	require.NoError(t, store.SaveMessage(ctx, msg, sender, "site-a"))
+
+	t.Run("existing message returns sender", func(t *testing.T) {
+		got, err := store.GetMessageSender(ctx, "m-sender-test")
+		require.NoError(t, err)
+		assert.Equal(t, "u-1", got.ID)
+		assert.Equal(t, "alice", got.Account)
+		assert.Equal(t, "Alice Wang", got.EngName)
+		assert.Equal(t, "愛麗絲", got.CompanyName)
+	})
+
+	t.Run("non-existent message returns error", func(t *testing.T) {
+		_, err := store.GetMessageSender(ctx, "does-not-exist")
+		require.Error(t, err)
+	})
+}
+
 func TestHandler_Integration(t *testing.T) {
 	ctx := context.Background()
 
