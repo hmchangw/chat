@@ -1,0 +1,43 @@
+services:
+  nats:
+    image: nats:2.11-alpine
+    container_name: chat-demo-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--http_port", "8222", "--name", "chat-demo"]
+
+  mongodb:
+    image: mongo:8
+    container_name: chat-demo-mongodb
+    ports:
+      - "27017:27017"
+
+  room-service:
+    build:
+      context: ..
+      dockerfile: room-service/deploy/Dockerfile
+    container_name: chat-demo-room-service
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat_demo
+      - MAX_ROOM_SIZE=1000
+    depends_on:
+      - nats
+      - mongodb
+
+  room-worker:
+    build:
+      context: ..
+      dockerfile: room-worker/deploy/Dockerfile
+    container_name: chat-demo-room-worker
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat_demo
+    depends_on:
+      - nats
+      - mongodb

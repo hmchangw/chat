@@ -3,7 +3,6 @@
 #
 # Binaries for programs and plugins
 bin/
-demo
 *.exe
 *.exe~
 *.dll
