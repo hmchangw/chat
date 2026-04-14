@@ -42,9 +42,8 @@ func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
 // can intercept and forward cross-site requests transparently.
 // Panics if any subscription fails (startup-only, fatal if broken).
 func (s *HistoryService) RegisterHandlers(r *natsrouter.Router) {
-	const siteParam = "{siteID}"
-	natsrouter.Register(r, subject.MsgHistoryPattern(siteParam), s.LoadHistory)
-	natsrouter.Register(r, subject.MsgNextPattern(siteParam), s.LoadNextMessages)
-	natsrouter.Register(r, subject.MsgSurroundingPattern(siteParam), s.LoadSurroundingMessages)
-	natsrouter.Register(r, subject.MsgGetPattern(siteParam), s.GetMessageByID)
+	natsrouter.Register(r, subject.MsgHistoryPattern(), s.LoadHistory)
+	natsrouter.Register(r, subject.MsgNextPattern(), s.LoadNextMessages)
+	natsrouter.Register(r, subject.MsgSurroundingPattern(), s.LoadSurroundingMessages)
+	natsrouter.Register(r, subject.MsgGetPattern(), s.GetMessageByID)
 }
