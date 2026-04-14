@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -14,6 +13,10 @@ import (
 type MongoStore struct {
 	subscriptions *mongo.Collection
 	rooms         *mongo.Collection
+<<<<<<< HEAD
+=======
+	roomMembers   *mongo.Collection
+>>>>>>> de5584c (feat(room-worker): implement MongoDB aggregation pipelines and write operations)
 	users         *mongo.Collection
 }
 
@@ -21,6 +24,10 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{
 		subscriptions: db.Collection("subscriptions"),
 		rooms:         db.Collection("rooms"),
+<<<<<<< HEAD
+=======
+		roomMembers:   db.Collection("room_members"),
+>>>>>>> de5584c (feat(room-worker): implement MongoDB aggregation pipelines and write operations)
 		users:         db.Collection("users"),
 	}
 }
@@ -105,29 +112,112 @@ func (s *MongoStore) RemoveRole(ctx context.Context, account, roomID string, rol
 }
 
 func (s *MongoStore) GetUserWithOrgMembership(ctx context.Context, roomID, account string) (*UserWithOrgMembership, error) {
-	return nil, errors.New("not implemented")
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"account": account}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from": "room_members",
+			"let":  bson.M{"sectId": "$sectId"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$rid", roomID}},
+					bson.M{"$eq": bson.A{"$member.type", "org"}},
+					bson.M{"$eq": bson.A{"$member.id", "$$sectId"}},
+				}}}},
+				bson.M{"$limit": 1},
+			},
+			"as": "orgMembership",
+		}}},
+		{{Key: "$addFields", Value: bson.M{
+			"hasOrgMembership": bson.M{"$gt": bson.A{bson.M{"$size": "$orgMembership"}, 0}},
+		}}},
+		{{Key: "$project", Value: bson.M{"orgMembership": 0}}},
+	}
+	cursor, err := s.users.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate user with org membership: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var result UserWithOrgMembership
+	if !cursor.Next(ctx) {
+		return nil, fmt.Errorf("user %q not found", account)
+	}
+	if err := cursor.Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode user with org membership: %w", err)
+	}
+	return &result, nil
 }
 
 func (s *MongoStore) GetOrgMembersWithIndividualStatus(ctx context.Context, roomID, orgID string) ([]OrgMemberStatus, error) {
-	return nil, errors.New("not implemented")
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"sectId": orgID}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from": "room_members",
+			"let":  bson.M{"acct": "$account"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$rid", roomID}},
+					bson.M{"$eq": bson.A{"$member.type", "individual"}},
+					bson.M{"$eq": bson.A{"$member.account", "$$acct"}},
+				}}}},
+				bson.M{"$limit": 1},
+			},
+			"as": "individualMembership",
+		}}},
+		{{Key: "$project", Value: bson.M{
+			"account":                 1,
+			"siteId":                  1,
+			"sectName":                1,
+			"hasIndividualMembership": bson.M{"$gt": bson.A{bson.M{"$size": "$individualMembership"}, 0}},
+		}}},
+	}
+	cursor, err := s.users.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate org members: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var results []OrgMemberStatus
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("decode org members: %w", err)
+	}
+	return results, nil
 }
 
 func (s *MongoStore) DeleteSubscription(ctx context.Context, roomID, account string) error {
-	return errors.New("not implemented")
+	_, err := s.subscriptions.DeleteOne(ctx, bson.M{"roomId": roomID, "u.account": account})
+	if err != nil {
+		return fmt.Errorf("delete subscription for %q in room %q: %w", account, roomID, err)
+	}
+	return nil
 }
 
 func (s *MongoStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error {
-	return errors.New("not implemented")
+	_, err := s.subscriptions.DeleteMany(ctx, bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}})
+	if err != nil {
+		return fmt.Errorf("delete subscriptions for room %q: %w", roomID, err)
+	}
+	return nil
 }
 
 func (s *MongoStore) DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error {
-	return errors.New("not implemented")
+	_, err := s.roomMembers.DeleteOne(ctx, bson.M{"rid": roomID, "member.type": memberType, "member.id": memberID})
+	if err != nil {
+		return fmt.Errorf("delete room member: %w", err)
+	}
+	return nil
 }
 
 func (s *MongoStore) DeleteRoomMembersByAccount(ctx context.Context, roomID, account string) error {
-	return errors.New("not implemented")
+	_, err := s.roomMembers.DeleteMany(ctx, bson.M{"rid": roomID, "member.account": account})
+	if err != nil {
+		return fmt.Errorf("delete room members for %q: %w", account, err)
+	}
+	return nil
 }
 
 func (s *MongoStore) DecrementUserCount(ctx context.Context, roomID string, count int) error {
-	return errors.New("not implemented")
+	_, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$inc": bson.M{"userCount": -count}})
+	if err != nil {
+		return fmt.Errorf("decrement user count for room %q: %w", roomID, err)
+	}
+	return nil
 }
