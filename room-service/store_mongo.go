@@ -14,12 +14,14 @@ import (
 type MongoStore struct {
 	rooms         *mongo.Collection
 	subscriptions *mongo.Collection
+	roomMembers   *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{
 		rooms:         db.Collection("rooms"),
 		subscriptions: db.Collection("subscriptions"),
+		roomMembers:   db.Collection("room_members"),
 	}
 }
 
@@ -63,6 +65,47 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
 	_, err := s.subscriptions.InsertOne(ctx, sub)
 	return err
+}
+
+func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*model.Subscription, bool, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"roomId": roomID, "u.account": account}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from": "room_members",
+			"let":  bson.M{"acct": "$u.account"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$rid", roomID}},
+					bson.M{"$eq": bson.A{"$member.type", "individual"}},
+					bson.M{"$eq": bson.A{"$member.account", "$$acct"}},
+				}}}},
+				bson.M{"$limit": 1},
+			},
+			"as": "individualMembership",
+		}}},
+		{{Key: "$addFields", Value: bson.M{
+			"hasIndividualMembership": bson.M{"$gt": bson.A{bson.M{"$size": "$individualMembership"}, 0}},
+		}}},
+		{{Key: "$project", Value: bson.M{"individualMembership": 0}}},
+	}
+
+	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, false, fmt.Errorf("aggregate subscription with membership: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var result struct {
+		model.Subscription      `bson:",inline"`
+		HasIndividualMembership bool `bson:"hasIndividualMembership"`
+	}
+	if !cursor.Next(ctx) {
+		return nil, false, fmt.Errorf("subscription not found for account %q in room %q", account, roomID)
+	}
+	if err := cursor.Decode(&result); err != nil {
+		return nil, false, fmt.Errorf("decode subscription with membership: %w", err)
+	}
+	return &result.Subscription, result.HasIndividualMembership, nil
 }
 
 func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {
