@@ -15,12 +15,13 @@ Previously, both were powered by Monstache (MongoDB CDC → ES). The new archite
 
 ### What this work adds
 
-1. `SubscriptionChangeEvent` payload type carrying both Subscription and Room
-2. Enhanced `INBOX_{siteID}` config with local subject acceptance and source-side SubjectTransforms to unify subjects into `chat.inbox.{siteID}.>`
+1. `member_added` OutboxEvent payload is **enriched with Room** (so spotlight-sync and user-room-sync can index without a DB lookup)
+2. Enhanced `INBOX_{siteID}` config with local subject acceptance and source-side SubjectTransforms that rewrite `outbox.{src}.to.{siteID}.>` → `chat.inbox.{siteID}.aggregate.>`
 3. `spotlightCollection` — syncs per-subscription docs to `spotlight-*` index
 4. `userRoomCollection` — maintains per-user `rooms` array in `user-room-{site}` index via scripted updates
 5. `ActionUpdate` support in `pkg/searchengine` bulk API
 6. `Collection.BuildAction` returns `[]BulkAction` (slice instead of single)
+7. room-worker routes publishes using the **user's siteID** (not `sub.SiteID`)
 
 ---
 
@@ -29,10 +30,13 @@ Previously, both were powered by Monstache (MongoDB CDC → ES). The new archite
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Event source | Reuse existing `INBOX_{siteID}` stream | No new stream needed. OUTBOX/INBOX already handles durable cross-site propagation with stream sourcing. |
+| Event type | Reuse existing `member_added` OutboxEvent (enriched with Room) | Single event, single publish path. Avoids double-processing by inbox-worker. No new `SubscriptionChangeEvent` type. |
 | Cross-site propagation | Existing OUTBOX/INBOX stream sourcing | Already tested/operational pattern. One cross-site path for both data (Mongo) and events (ES indexing). |
-| Subject unification | JetStream SubjectTransforms on INBOX sources | Source messages rewritten from `outbox.{src}.to.{dst}.>` → `chat.inbox.{dst}.>` when stored in destination INBOX. Consumers see a single unified namespace regardless of origin. |
-| Local event publishing | room-worker publishes directly to `chat.inbox.{localSite}.>` | INBOX accepts local publishes via its own Subjects. Same destination format as federated events after transform. |
-| Federated event publishing | room-worker publishes to `outbox.{src}.to.{dst}.>` (existing pattern) | Reuses the existing OUTBOX publish path. The OutboxEvent payload is enriched to carry Room metadata. |
+| Subject namespace split | `chat.inbox.{siteID}.>` (local) + `chat.inbox.{siteID}.aggregate.>` (federated via transform) | Two-prefix design lets inbox-worker filter to `aggregate.>` only, preventing duplicate Mongo writes for locally-originated events (which room-worker already wrote directly). |
+| Subject transform | `outbox.{src}.to.{dst}.>` → `chat.inbox.{dst}.aggregate.>` via JetStream SubjectTransforms | Source messages rewritten on ingest. Note: aggregate prefix is **after** siteID, not before. |
+| Local event publishing | room-worker publishes directly to `chat.inbox.{localSite}.{eventType}` | INBOX accepts local publishes via its own Subjects. Stored without the `aggregate` segment so inbox-worker's filter excludes them. |
+| Federated event publishing | room-worker publishes to `outbox.{src}.to.{destSite}.{eventType}` (existing pattern) | Reuses the existing OUTBOX publish path. OutboxEvent payload enriched with Room. |
+| Publisher routing key | **User's siteID** (not `sub.SiteID`) | `sub.SiteID` represents the room's origin site (per VJ's PR). Events must be routed to the user's home site so it appears in their spotlight/user-room index. |
 | Consumer coexistence | inbox-worker and search-sync-worker consume the same INBOX stream with different durable consumer names | JetStream delivers each event to each durable consumer independently. No conflict. |
 | Spotlight doc model | One doc per subscription | Filter by userAccount + search roomName. Simple create/delete lifecycle. |
 | User-room update strategy | ES scripted update | No read-before-write. Painless script adds/removes roomId from array. Low volume (member changes). Executes on data node only. |
@@ -48,16 +52,18 @@ Previously, both were powered by Monstache (MongoDB CDC → ES). The new archite
 
 The existing `INBOX_{siteID}` stream is enhanced with:
 1. **Local subjects** (`chat.inbox.{siteID}.>`) — accept local publishes from room-worker for same-site events
-2. **Source SubjectTransforms** — rewrite `outbox.{src}.to.{siteID}.>` → `chat.inbox.{siteID}.>` when sourcing from remote OUTBOX streams
+2. **Source SubjectTransforms** — rewrite `outbox.{src}.to.{siteID}.>` → `chat.inbox.{siteID}.aggregate.>` when sourcing from remote OUTBOX streams
 
-The net effect: regardless of whether an event originated from a local publish or was sourced from a remote OUTBOX, it lands in this site's INBOX under the unified `chat.inbox.{siteID}.>` namespace.
+This creates two distinct prefixes on each INBOX stream:
+- `chat.inbox.{siteID}.*` — events published locally (same-site invites)
+- `chat.inbox.{siteID}.aggregate.*` — events sourced from remote OUTBOX streams (federated invites)
 
 ```go
 func Inbox(siteID string, remoteSiteIDs []string) Config {
     sources := make([]StreamSource, 0, len(remoteSiteIDs))
     for _, remote := range remoteSiteIDs {
         sourcePattern := fmt.Sprintf("outbox.%s.to.%s.>", remote, siteID)
-        destPattern := fmt.Sprintf("chat.inbox.%s.>", siteID)
+        destPattern := fmt.Sprintf("chat.inbox.%s.aggregate.>", siteID)
         sources = append(sources, StreamSource{
             Name:          fmt.Sprintf("OUTBOX_%s", remote),
             FilterSubject: sourcePattern,
@@ -67,9 +73,11 @@ func Inbox(siteID string, remoteSiteIDs []string) Config {
         })
     }
     return Config{
-        Name:     fmt.Sprintf("INBOX_%s", siteID),
-        Subjects: []string{fmt.Sprintf("chat.inbox.%s.>", siteID)},
-        Sources:  sources,
+        Name: fmt.Sprintf("INBOX_%s", siteID),
+        Subjects: []string{
+            fmt.Sprintf("chat.inbox.%s.>", siteID),            // includes both local and (after transform) aggregate
+        },
+        Sources: sources,
     }
 }
 ```
@@ -78,68 +86,110 @@ func Inbox(siteID string, remoteSiteIDs []string) Config {
 
 ### Subject namespace
 
-**Unified on INBOX (what consumers see):**
+**Local events (published directly by room-worker for same-site invites):**
 ```text
-chat.inbox.{siteID}.subscription.added     → member joined a room
-chat.inbox.{siteID}.subscription.removed   → member left/removed from a room
-chat.inbox.{siteID}.member.added            → existing member_added event (enriched with Room)
-chat.inbox.{siteID}.room.sync               → existing room_sync event
+chat.inbox.{siteID}.member_added    → member joined a room on this site
+chat.inbox.{siteID}.member_removed  → member left a room on this site
 ```
 
-**Raw subjects published by room-worker / room-service:**
-- **Local events** (same-site): directly published to `chat.inbox.{localSite}.subscription.added`
-- **Federated events** (cross-site): published to `outbox.{localSite}.to.{destSite}.subscription.added`, which gets transformed to `chat.inbox.{destSite}.subscription.added` on the destination site via SubjectTransforms
+**Federated events (sourced from remote OUTBOX, transformed to aggregate prefix):**
+```text
+chat.inbox.{siteID}.aggregate.member_added    → federated member_added from another site
+chat.inbox.{siteID}.aggregate.member_removed  → federated member_removed from another site
+```
 
-### Event struct
+**Raw OUTBOX subjects (used by federation, not seen by consumers directly):**
+- `outbox.{srcSite}.to.{destSite}.member_added` → transformed to `chat.inbox.{destSite}.aggregate.member_added` on destination
+
+### Event struct (reuse existing)
+
+**No new event struct.** We reuse the existing `OutboxEvent` with `Type: "member_added"` — there's no separate `SubscriptionChangeEvent`. To give spotlight-sync and user-room-sync enough data to index without a Mongo lookup, the `member_added` payload is **changed** to carry the full `Subscription` alongside the `Room`:
 
 ```go
-type SubscriptionChangeEvent struct {
-    Subscription Subscription `json:"subscription"`
-    Room         Room         `json:"room"`
-    Action       string       `json:"action"` // "added" | "removed"
-    Timestamp    int64        `json:"timestamp" bson:"timestamp"`
+type MemberAddedPayload struct {
+    Subscription Subscription `json:"subscription"` // full sub: ID, User, RoomID, SiteID, Role, HistorySharedSince, JoinedAt
+    Room         Room         `json:"room"`         // full room: name, type, createdBy, etc.
 }
 ```
 
-The Room is included so downstream consumers (spotlight, user-room) have the room name and type without needing a DB lookup.
+This is a **breaking change** to the existing `member_added` payload shape (which was `InviteMemberRequest`). inbox-worker must be updated to unmarshal `MemberAddedPayload` and use `payload.Subscription` for Mongo writes (instead of constructing a subscription from `InviteMemberRequest`). See the inbox-worker migration notes below.
+
+**Why `Subscription` instead of `InviteMemberRequest` + `Room`:**
+- spotlight-sync needs `sub.ID`, `sub.User.Account`, `sub.JoinedAt` for the doc
+- user-room-sync needs `sub.User.Account` and `sub.HistorySharedSince` (for restricted detection)
+- inbox-worker needs the full subscription for its local Mongo write
+- Passing `Subscription` once covers all three consumers without redundant fields
+
+Avoiding a second event type means:
+- room-worker publishes **one** event per invite, not two
+- inbox-worker and search-sync-worker read the **same** event stream via independent consumers
+- No risk of double-processing
 
 ### Publishers
 
-**room-worker is the single publisher** for subscription change events. After creating the subscription in local Mongo, it publishes once based on the subscription's siteID:
+**Critical:** Routing uses the **user's siteID**, NOT `sub.SiteID`. The subscription's `SiteID` field represents the room's origin site (per VJ's parallel PR), not where the user lives. To route the indexing event to the user's home site, room-worker must resolve the invitee's home site (this may be available directly on the invite request or looked up from the user account record — depends on VJ's PR).
 
 ```go
-// Determine the target subject based on subscription's siteID
-var subj string
-if sub.SiteID == h.siteID {
-    // Local invite — publish directly to local INBOX
-    subj = subject.InboxSubscriptionAdded(h.siteID)
-} else {
-    // Federated invite — publish to OUTBOX for cross-site propagation
-    subj = subject.Outbox(h.siteID, sub.SiteID, "subscription.added")
+// room-worker has already built `sub` (Subscription) and fetched `room` (Room)
+payload := model.MemberAddedPayload{
+    Subscription: sub,
+    Room:         *room,
 }
-_, _ = h.js.Publish(ctx, subj, data)
+payloadData, _ := json.Marshal(payload)
+
+userSite := invitee.SiteID  // user's home site (resolved from invite request or account lookup)
+
+outboxEvt := model.OutboxEvent{
+    Type:       "member_added",
+    SiteID:     h.siteID,
+    DestSiteID: userSite,   // user's home site — not sub.SiteID (which is room's origin)
+    Payload:    payloadData,
+    Timestamp:  now.UnixMilli(),
+}
+outboxData, _ := json.Marshal(outboxEvt)
+
+var subj string
+if userSite == h.siteID {
+    // Local invite — publish directly to local INBOX (bypasses OUTBOX)
+    subj = subject.InboxMemberAdded(h.siteID)   // "chat.inbox.{siteID}.member_added"
+} else {
+    // Federated invite — publish to OUTBOX; remote INBOX sources + transforms
+    subj = subject.Outbox(h.siteID, userSite, "member_added")
+    // → "outbox.{srcSite}.to.{destSite}.member_added"
+}
+_, _ = h.js.Publish(ctx, subj, outboxData)
 ```
 
-- **Local invite** (`sub.SiteID == h.siteID`): publishes to `chat.inbox.{localSite}.subscription.added`, which matches INBOX's local Subjects filter and is stored directly.
-- **Federated invite** (`sub.SiteID != h.siteID`): publishes to `outbox.{localSite}.to.{remoteSite}.subscription.added`, which matches the local OUTBOX stream. The remote INBOX sources it via its SubjectTransform, storing it as `chat.inbox.{remoteSite}.subscription.added`.
-
-**inbox-worker is NOT affected.** It continues to consume INBOX for `member_added` and `room_sync` events. The new subscription events go to a different consumer (search-sync-worker) via JetStream's independent-consumer semantics. inbox-worker simply ignores events whose subjects don't match its durable consumer's filter.
-
-> **Cross-cutting dependency on inbox-worker design:** for **local invites**, room-worker creates the subscription in the local Mongo directly — inbox-worker should NOT also process the same event (it would cause a duplicate Mongo write). To prevent this, the inbox-worker design must ensure its consumer filter excludes locally-published events. One option is to split the INBOX subject namespace into two prefixes: `chat.inbox.{siteID}.>` for direct local publishes and `chat.inbox.aggregate.{siteID}.>` for events sourced from remote OUTBOX (via SubjectTransforms). inbox-worker then filters on the `aggregate` namespace only, while spotlight-sync and user-room-sync use NATS 2.10+ `FilterSubjects` (plural) to subscribe to both. The exact namespace separation is part of the inbox-worker design — this spec only depends on it being in place.
+- **Local invite** (`userSite == h.siteID`): publishes directly to `chat.inbox.{localSite}.member_added`. Lands in local INBOX via its Subjects filter. inbox-worker's filter (`aggregate.>`) does NOT match → inbox-worker skips it (correct — room-worker already wrote Mongo).
+- **Federated invite** (`userSite != h.siteID`): publishes to `outbox.{localSite}.to.{userSite}.member_added`. Lands in local OUTBOX. Remote INBOX sources it → SubjectTransform rewrites to `chat.inbox.{userSite}.aggregate.member_added`. Remote inbox-worker processes it (writes Mongo), remote search-sync-worker indexes it.
 
 ### Consumers on INBOX
 
-The enhanced INBOX stream is shared by multiple consumers with independent durable names and subject filters:
+The enhanced INBOX stream is shared by three consumers with independent durable names and subject filters:
 
-| Durable consumer | FilterSubject | Purpose |
-|---|---|---|
-| `inbox-worker` (existing) | `chat.inbox.{siteID}.member.>` + `chat.inbox.{siteID}.room.>` | Federated Mongo writes for members/rooms (existing) |
-| `spotlight-sync` (new) | `chat.inbox.{siteID}.subscription.>` | Sync subscription docs to spotlight index |
-| `user-room-sync` (new) | `chat.inbox.{siteID}.subscription.>` | Maintain per-user rooms array |
+| Durable consumer | FilterSubject(s) | What it sees | Purpose |
+|---|---|---|---|
+| **inbox-worker** | `chat.inbox.{siteID}.aggregate.>` | **Only federated events** — never local | Federated Mongo writes: upsert Room and create Subscription from `MemberAddedPayload` |
+| **spotlight-sync** (new) | `chat.inbox.{siteID}.member_added` **+** `chat.inbox.{siteID}.aggregate.member_added` (+ `_removed` variants) | Both local and federated member events | Sync subscription docs to spotlight index |
+| **user-room-sync** (new) | Same as spotlight-sync | Both local and federated member events | Maintain per-user rooms array |
 
-**Note on inbox-worker migration:** The existing inbox-worker currently reads `member_added` / `room_sync` `OutboxEvent`s directly from OUTBOX-pattern subjects (`outbox.*.to.{siteID}.>`). After enabling SubjectTransforms, the subjects on INBOX change to `chat.inbox.{siteID}.*`. inbox-worker's consumer `FilterSubject` must be updated accordingly. This is a minor config change.
+For spotlight-sync and user-room-sync, use NATS 2.10+ `FilterSubjects` (plural) so a single consumer subscribes to both the local and aggregate prefixes:
 
-**Why this works without conflict:** JetStream delivers each message to each durable consumer independently. inbox-worker's consumer sees only `chat.inbox.{siteID}.member.>` and `chat.inbox.{siteID}.room.>` events. search-sync-worker's consumers see only `chat.inbox.{siteID}.subscription.>` events. There's no overlap, no duplicate processing.
+```go
+cons, err := js.CreateOrUpdateConsumer(ctx, "INBOX_"+siteID, jetstream.ConsumerConfig{
+    Durable:   "spotlight-sync",
+    AckPolicy: jetstream.AckExplicitPolicy,
+    FilterSubjects: []string{
+        fmt.Sprintf("chat.inbox.%s.member_added", siteID),              // local
+        fmt.Sprintf("chat.inbox.%s.member_removed", siteID),
+        fmt.Sprintf("chat.inbox.%s.aggregate.member_added", siteID),    // federated
+        fmt.Sprintf("chat.inbox.%s.aggregate.member_removed", siteID),
+    },
+    BackOff: []time.Duration{1 * time.Second, 5 * time.Second, 30 * time.Second},
+})
+```
+
+**Why this prevents double-processing:** inbox-worker's filter only matches `chat.inbox.{siteID}.aggregate.>`, so locally-published events (which don't contain `aggregate`) are invisible to it. Since room-worker already writes to the local Mongo for local invites, inbox-worker has nothing to do for those. For federated events, the SubjectTransform routes them to the `aggregate` prefix where inbox-worker (and search-sync-worker) both see them via independent JetStream consumer delivery.
 
 ---
 
@@ -224,8 +274,8 @@ type spotlightCollection struct {
 
 - `StreamConfig` → `stream.Inbox(siteID, remoteSiteIDs)` (the enhanced INBOX)
 - `ConsumerName` → `"spotlight-sync"`
-- `FilterSubject` → `chat.inbox.{siteID}.subscription.>`
-- `BuildAction` → unmarshal `SubscriptionChangeEvent`, return `[]BulkAction` with one index or delete action
+- `FilterSubjects` (plural) → `["chat.inbox.{siteID}.member_added", "chat.inbox.{siteID}.member_removed", "chat.inbox.{siteID}.aggregate.member_added", "chat.inbox.{siteID}.aggregate.member_removed"]` — both local and federated member events
+- `BuildAction` → unmarshal `OutboxEvent` → `MemberAddedPayload`; for `member_added` emit an `ActionIndex` with the SpotlightSearchIndex doc keyed by `sub.ID`; for `member_removed` emit an `ActionDelete` keyed by `sub.ID`. Returns `[]BulkAction` with one action.
 
 ### Search query pattern (future search service)
 
@@ -307,8 +357,8 @@ type userRoomCollection struct {
 
 - `StreamConfig` → `stream.Inbox(siteID, remoteSiteIDs)` (the enhanced INBOX)
 - `ConsumerName` → `"user-room-sync"`
-- `FilterSubject` → `chat.inbox.{siteID}.subscription.>`
-- `BuildAction` → unmarshal `SubscriptionChangeEvent`, skip if restricted, return `[]BulkAction` with one update action
+- `FilterSubjects` (plural) → `["chat.inbox.{siteID}.member_added", "chat.inbox.{siteID}.member_removed", "chat.inbox.{siteID}.aggregate.member_added", "chat.inbox.{siteID}.aggregate.member_removed"]` — both local and federated member events
+- `BuildAction` → unmarshal `OutboxEvent` → `MemberAddedPayload`; skip if `payload.Subscription.HistorySharedSince != nil` (restricted — search service handles via DB+cache at query time); otherwise emit an `ActionUpdate` adding/removing `sub.RoomID` from the user's `rooms` array, keyed by `sub.User.Account`. Returns a slice of one action (or empty if restricted).
 
 ### Message search access control (future search service)
 
@@ -392,73 +442,99 @@ type Collection interface {
 
 ### room-worker/handler.go
 
-After creating the subscription and fetching the room (both already happen in `processInvite`), publish `SubscriptionChangeEvent`. **The target subject depends on whether the subscription is local or federated**:
+After creating the subscription and fetching the room (both already happen in `processInvite`), build a single `OutboxEvent{Type: "member_added"}` with the **new `MemberAddedPayload`** (full `Subscription` + `Room`), and publish it based on the **user's siteID**:
 
 ```go
-changeEvt := model.SubscriptionChangeEvent{
+// sub and room are already available in processInvite
+payload := model.MemberAddedPayload{
     Subscription: sub,
     Room:         *room,
-    Action:       "added",
-    Timestamp:    now.UnixMilli(),
 }
-data, _ := json.Marshal(changeEvt)
+payloadData, _ := json.Marshal(payload)
+
+userSite := invitee.SiteID  // user's home site (resolved from invite request or account lookup)
+
+outboxEvt := model.OutboxEvent{
+    Type:       "member_added",
+    SiteID:     h.siteID,
+    DestSiteID: userSite,   // user's home site (not sub.SiteID — that's the room's origin)
+    Payload:    payloadData,
+    Timestamp:  now.UnixMilli(),
+}
+data, _ := json.Marshal(outboxEvt)
 
 var subj string
-if sub.SiteID == h.siteID {
+if userSite == h.siteID {
     // Local invite — publish directly to local INBOX
-    subj = subject.InboxSubscriptionAdded(h.siteID)
+    subj = subject.InboxMemberAdded(h.siteID)
+    // → "chat.inbox.{siteID}.member_added"
 } else {
-    // Federated invite — publish to OUTBOX; remote INBOX sources and transforms the subject
-    subj = subject.OutboxSubscriptionAdded(h.siteID, sub.SiteID)
+    // Federated invite — publish to OUTBOX; remote INBOX sources and transforms to aggregate.>
+    subj = subject.Outbox(h.siteID, userSite, "member_added")
+    // → "outbox.{srcSite}.to.{destSite}.member_added"
 }
 _, _ = h.js.Publish(ctx, subj, data)
 ```
 
-The federated case uses the existing OUTBOX pattern. The remote site's INBOX sources the event via stream sourcing and the SubjectTransform rewrites it into the unified `chat.inbox.{destSite}.subscription.added` namespace.
+**Note on user siteID lookup:** `userSite` must be the user's home site, NOT the room's origin site (`sub.SiteID`). Depending on VJ's parallel PR, this may be available directly on `InviteMemberRequest`, or may need to be looked up from the user's account record. Not resolved in this spec.
+
+**Single publish, single event:** room-worker does NOT publish a separate `SubscriptionChangeEvent`. The one `OutboxEvent{Type: "member_added"}` with `MemberAddedPayload` serves both inbox-worker (for federated Mongo writes on the destination site) and search-sync-worker (for spotlight/user-room indexing). No duplication, no double-processing.
 
 ### inbox-worker/main.go
 
 Update the INBOX stream config to use `stream.Inbox(siteID, remoteSiteIDs)` which now includes:
-- Local subjects `chat.inbox.{siteID}.>` (accepts local publishes)
-- Sources with `SubjectTransforms` that rewrite `outbox.*.to.{siteID}.>` → `chat.inbox.{siteID}.>`
+- Subjects `chat.inbox.{siteID}.>` (accepts both local direct publishes and aggregate-prefixed transformed events)
+- Sources with `SubjectTransforms` that rewrite `outbox.*.to.{siteID}.>` → `chat.inbox.{siteID}.aggregate.>`
 
 Remote site IDs come from config (e.g., `REMOTE_SITE_IDS=site-b,site-c`).
 
 ### inbox-worker/handler.go
 
-**Subject filter update required.** The durable consumer's `FilterSubject` must be updated from the old OUTBOX-pattern (`outbox.*.to.{siteID}.>`) to the new unified namespace:
+**Subject filter update required.** The durable consumer's `FilterSubject` must be updated to only see **federated** events (aggregate prefix):
 
 ```go
-FilterSubject: "chat.inbox." + cfg.SiteID + ".member.>,chat.inbox." + cfg.SiteID + ".room.>"
+FilterSubject: fmt.Sprintf("chat.inbox.%s.aggregate.>", cfg.SiteID)
 ```
 
-(Or use two separate consumers — one per event type.)
+This ensures inbox-worker only processes events sourced from remote OUTBOX streams. Local events (published directly to `chat.inbox.{siteID}.{eventType}` without the `aggregate` segment) are invisible to inbox-worker, preventing duplicate Mongo writes — room-worker has already written those locally.
 
-The handler logic that decodes `OutboxEvent` and routes to `handleMemberAdded` / `handleRoomSync` remains unchanged. Only the subject filter changes.
+**Changes to `handleMemberAdded`:**
+- Unmarshal the payload as `MemberAddedPayload` (full `Subscription` + `Room`) instead of `InviteMemberRequest`
+- **Upsert the Room** into local Mongo first (so the federated user sees room metadata)
+- **Write the Subscription** into local Mongo using `payload.Subscription` (no longer constructs a subscription from fields; uses the one from the payload as-is so the ID, HistorySharedSince, JoinedAt, etc. match the source site's values)
+- Continue to publish `SubscriptionUpdateEvent` on the pub/sub subject for client notification (existing behavior)
 
 ### pkg/stream/stream.go
 
 Update `Inbox(siteID string)` to `Inbox(siteID string, remoteSiteIDs []string)` with:
 - `Subjects: []string{fmt.Sprintf("chat.inbox.%s.>", siteID)}`
-- `Sources: [...]` with `FilterSubject` and `SubjectTransforms` for each remote site
+- `Sources: [...]` for each remote site, with `FilterSubject: outbox.{remote}.to.{siteID}.>` and `SubjectTransforms` rewriting to `chat.inbox.{siteID}.aggregate.>`
 
 ### pkg/subject/subject.go
 
 Add builders:
-- `InboxSubscriptionAdded(siteID string)` → `chat.inbox.{siteID}.subscription.added`
-- `InboxSubscriptionRemoved(siteID string)` → `chat.inbox.{siteID}.subscription.removed`
-- `OutboxSubscriptionAdded(srcSiteID, destSiteID string)` → `outbox.{srcSiteID}.to.{destSiteID}.subscription.added`
-- `OutboxSubscriptionRemoved(srcSiteID, destSiteID string)` → `outbox.{srcSiteID}.to.{destSiteID}.subscription.removed`
+- `InboxMemberAdded(siteID string)` → `chat.inbox.{siteID}.member_added` (local publish target)
+- `InboxMemberRemoved(siteID string)` → `chat.inbox.{siteID}.member_removed`
+- `InboxAggregatePattern(siteID string)` → `chat.inbox.{siteID}.aggregate.>` (inbox-worker filter)
 
-Also update existing member/room builders to use new `chat.inbox.{siteID}.member.added` / `chat.inbox.{siteID}.room.sync` on the INBOX side, and keep `outbox.{src}.to.{dst}.member_added` / `outbox.{src}.to.{dst}.room_sync` on the OUTBOX side (with corresponding `SubjectTransforms`).
+The existing `Outbox(srcSite, destSite, eventType)` builder is reused unchanged. Federated events use the same `outbox.{src}.to.{dst}.member_added` subject as today; the SubjectTransform handles the rewrite on the destination INBOX.
 
 ### pkg/model/event.go
 
-Add `SubscriptionChangeEvent` struct.
+Add a new `MemberAddedPayload` struct:
+
+```go
+type MemberAddedPayload struct {
+    Subscription Subscription `json:"subscription"` // full subscription
+    Room         Room         `json:"room"`         // full room metadata
+}
+```
+
+This **replaces** `InviteMemberRequest` as the payload type for `OutboxEvent{Type: "member_added"}`. `InviteMemberRequest` remains as the NATS request type for the original invite API call; the `MemberAddedPayload` is what goes into the OutboxEvent payload after room-worker has created the subscription and fetched the room.
 
 ### search-sync-worker/main.go
 
-Start three `runConsumer` goroutines — one per collection (messages, spotlight, user-room). The spotlight and user-room consumers bind to the local INBOX stream with `FilterSubject: "chat.inbox.{siteID}.subscription.>"`. inbox-worker continues to run independently with its own consumer on the same INBOX stream.
+Start three `runConsumer` goroutines — one per collection (messages, spotlight, user-room). The spotlight and user-room consumers bind to the local INBOX stream with `FilterSubjects` (plural) listing both the local and aggregate member subject patterns. inbox-worker continues to run independently with its own consumer on the same INBOX stream, filtered to `chat.inbox.{siteID}.aggregate.>` — it never sees local events.
 
 ---
 
@@ -466,13 +542,15 @@ Start three `runConsumer` goroutines — one per collection (messages, spotlight
 
 1. `Collection.BuildAction` return type change (slice) + update messageCollection + handler + tests
 2. `ActionUpdate` support in `pkg/searchengine` adapter + tests
-3. `SubscriptionChangeEvent` model + new subject builders + `pkg/stream.Inbox()` enhanced config with SubjectTransforms
-4. `spotlightCollection` implementation + tests (consumer on INBOX with `chat.inbox.{siteID}.subscription.>` filter)
-5. `userRoomCollection` implementation + tests (consumer on INBOX with `chat.inbox.{siteID}.subscription.>` filter)
-6. inbox-worker migration: update consumer FilterSubject to new `chat.inbox.{siteID}.{member,room}.>` namespace; update existing room-worker OUTBOX publishes to new subject format
-7. room-worker changes (publish `SubscriptionChangeEvent` to local INBOX for local invites, OUTBOX for federated)
+3. Introduce `MemberAddedPayload{Subscription, Room}` in `pkg/model/event.go` (replaces `InviteMemberRequest` as the `member_added` OutboxEvent payload type) + new subject builders + `pkg/stream.Inbox()` enhanced config with SubjectTransforms
+4. `spotlightCollection` implementation + tests (consumer on INBOX with `chat.inbox.{siteID}.member_added` + `chat.inbox.{siteID}.aggregate.member_added` filters)
+5. `userRoomCollection` implementation + tests (same filter patterns)
+6. inbox-worker migration:
+   - Update consumer `FilterSubject` to `chat.inbox.{siteID}.aggregate.>`
+   - Update `handleMemberAdded` to unmarshal `MemberAddedPayload` and upsert the Room in addition to writing the Subscription
+7. room-worker changes: route publishes using the user's siteID; publish single enriched `member_added` OutboxEvent to either local INBOX (same-site) or OUTBOX (cross-site)
 8. search-sync-worker main.go (wire up all three collections with distinct consumer filters)
-9. Integration tests covering local and federated subscription events
+9. Integration tests covering local and federated member_added events
 
 ---
 
