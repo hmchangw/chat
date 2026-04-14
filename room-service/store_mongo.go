@@ -100,6 +100,9 @@ func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, 
 		HasIndividualMembership bool `bson:"hasIndividualMembership"`
 	}
 	if !cursor.Next(ctx) {
+		if err := cursor.Err(); err != nil {
+			return nil, false, fmt.Errorf("iterate subscription with membership: %w", err)
+		}
 		return nil, false, fmt.Errorf("subscription not found for account %q in room %q", account, roomID)
 	}
 	if err := cursor.Decode(&result); err != nil {

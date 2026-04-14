@@ -98,11 +98,12 @@ func (mr *MockSubscriptionStoreMockRecorder) DeleteRoomMembersByAccount(ctx, roo
 }
 
 // DeleteSubscription mocks base method.
-func (m *MockSubscriptionStore) DeleteSubscription(ctx context.Context, roomID, account string) error {
+func (m *MockSubscriptionStore) DeleteSubscription(ctx context.Context, roomID, account string) (int64, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DeleteSubscription", ctx, roomID, account)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // DeleteSubscription indicates an expected call of DeleteSubscription.
@@ -112,11 +113,12 @@ func (mr *MockSubscriptionStoreMockRecorder) DeleteSubscription(ctx, roomID, acc
 }
 
 // DeleteSubscriptionsByAccounts mocks base method.
-func (m *MockSubscriptionStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error {
+func (m *MockSubscriptionStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) (int64, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DeleteSubscriptionsByAccounts", ctx, roomID, accounts)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // DeleteSubscriptionsByAccounts indicates an expected call of DeleteSubscriptionsByAccounts.

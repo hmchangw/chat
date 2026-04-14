@@ -235,7 +235,9 @@ func TestMongoStore_DeleteSubscription_Integration(t *testing.T) {
 		RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
 	}))
 
-	require.NoError(t, store.DeleteSubscription(ctx, "r1", "alice"))
+	deleted, err := store.DeleteSubscription(ctx, "r1", "alice")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted)
 
 	subs, err := store.ListByRoom(ctx, "r1")
 	require.NoError(t, err)
@@ -260,7 +262,9 @@ func TestMongoStore_DeleteSubscriptionsByAccounts_Integration(t *testing.T) {
 		RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
 	}))
 
-	require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, "r1", []string{"alice", "bob"}))
+	deleted, err := store.DeleteSubscriptionsByAccounts(ctx, "r1", []string{"alice", "bob"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), deleted)
 
 	subs, err := store.ListByRoom(ctx, "r1")
 	require.NoError(t, err)

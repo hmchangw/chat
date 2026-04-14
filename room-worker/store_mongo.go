@@ -134,6 +134,9 @@ func (s *MongoStore) GetUserWithOrgMembership(ctx context.Context, roomID, accou
 	defer cursor.Close(ctx)
 	var result UserWithOrgMembership
 	if !cursor.Next(ctx) {
+		if err := cursor.Err(); err != nil {
+			return nil, fmt.Errorf("iterate user with org membership: %w", err)
+		}
 		return nil, fmt.Errorf("user %q not found", account)
 	}
 	if err := cursor.Decode(&result); err != nil {
@@ -177,20 +180,20 @@ func (s *MongoStore) GetOrgMembersWithIndividualStatus(ctx context.Context, room
 	return results, nil
 }
 
-func (s *MongoStore) DeleteSubscription(ctx context.Context, roomID, account string) error {
-	_, err := s.subscriptions.DeleteOne(ctx, bson.M{"roomId": roomID, "u.account": account})
+func (s *MongoStore) DeleteSubscription(ctx context.Context, roomID, account string) (int64, error) {
+	res, err := s.subscriptions.DeleteOne(ctx, bson.M{"roomId": roomID, "u.account": account})
 	if err != nil {
-		return fmt.Errorf("delete subscription for %q in room %q: %w", account, roomID, err)
+		return 0, fmt.Errorf("delete subscription for %q in room %q: %w", account, roomID, err)
 	}
-	return nil
+	return res.DeletedCount, nil
 }
 
-func (s *MongoStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error {
-	_, err := s.subscriptions.DeleteMany(ctx, bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}})
+func (s *MongoStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) (int64, error) {
+	res, err := s.subscriptions.DeleteMany(ctx, bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}})
 	if err != nil {
-		return fmt.Errorf("delete subscriptions for room %q: %w", roomID, err)
+		return 0, fmt.Errorf("delete subscriptions for room %q: %w", roomID, err)
 	}
-	return nil
+	return res.DeletedCount, nil
 }
 
 func (s *MongoStore) DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error {
