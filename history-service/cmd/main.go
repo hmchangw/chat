@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/config"
+	"github.com/hmchangw/chat/history-service/internal/middleware"
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/cassutil"
@@ -61,7 +62,7 @@ func main() {
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
-	router.Use(natsrouter.SiteProxy(cfg.SiteID, nc.NatsConn()))
+	router.Use(middleware.SiteProxy(cfg.SiteID, nc.NatsConn()))
 
 	svc.RegisterHandlers(router)
 

@@ -151,18 +151,18 @@ func RoomsGetWildcard() string {
 
 // --- natsrouter patterns (use {param} placeholders for named extraction) ---
 
-func MsgHistoryPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.history", siteID)
+func MsgHistoryPattern() string {
+	return "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history"
 }
 
-func MsgNextPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.next", siteID)
+func MsgNextPattern() string {
+	return "chat.user.{account}.request.room.{roomID}.{siteID}.msg.next"
 }
 
-func MsgSurroundingPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.surrounding", siteID)
+func MsgSurroundingPattern() string {
+	return "chat.user.{account}.request.room.{roomID}.{siteID}.msg.surrounding"
 }
 
-func MsgGetPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
+func MsgGetPattern() string {
+	return "chat.user.{account}.request.room.{roomID}.{siteID}.msg.get"
 }
