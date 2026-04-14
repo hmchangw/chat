@@ -99,7 +99,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, err
 	}
 
-	centralMsg, err := s.findMessage(c, roomID, req.MessageID, req.CreatedAt)
+	centralMsg, err := s.findMessage(c, roomID, req.MessageID)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +175,7 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 		return nil, err
 	}
 
-	msg, err := s.findMessage(c, roomID, req.MessageID, req.CreatedAt)
+	msg, err := s.findMessage(c, roomID, req.MessageID)
 	if err != nil {
 		return nil, err
 	}
