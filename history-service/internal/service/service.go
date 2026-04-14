@@ -38,10 +38,13 @@ func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
 }
 
 // RegisterHandlers wires all NATS endpoints for the history service.
+// Subject patterns use {siteID} as a parameter so the SiteProxy middleware
+// can intercept and forward cross-site requests transparently.
 // Panics if any subscription fails (startup-only, fatal if broken).
-func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
-	natsrouter.Register(r, subject.MsgHistoryPattern(siteID), s.LoadHistory)
-	natsrouter.Register(r, subject.MsgNextPattern(siteID), s.LoadNextMessages)
-	natsrouter.Register(r, subject.MsgSurroundingPattern(siteID), s.LoadSurroundingMessages)
-	natsrouter.Register(r, subject.MsgGetPattern(siteID), s.GetMessageByID)
+func (s *HistoryService) RegisterHandlers(r *natsrouter.Router) {
+	const siteParam = "{siteID}"
+	natsrouter.Register(r, subject.MsgHistoryPattern(siteParam), s.LoadHistory)
+	natsrouter.Register(r, subject.MsgNextPattern(siteParam), s.LoadNextMessages)
+	natsrouter.Register(r, subject.MsgSurroundingPattern(siteParam), s.LoadSurroundingMessages)
+	natsrouter.Register(r, subject.MsgGetPattern(siteParam), s.GetMessageByID)
 }

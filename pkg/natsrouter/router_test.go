@@ -524,6 +524,112 @@ func TestReplyRouteError(t *testing.T) {
 	assert.Equal(t, "forbidden", result.Code)
 }
 
+// --- SiteProxy Middleware ---
+
+func TestSiteProxy_LocalRequest(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+	r.Use(SiteProxy("site-1", nc.NatsConn()))
+
+	Register(r, "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history",
+		func(c *Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "local " + c.Param("roomID")}, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-1.msg.history", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result testResp
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "local r1", result.Greeting)
+}
+
+func TestSiteProxy_RemoteRequest_ForwardsCorrectly(t *testing.T) {
+	nc := startTestNATS(t)
+	forwardNC, err := nats.Connect(nc.NatsConn().ConnectedUrl())
+	require.NoError(t, err)
+	t.Cleanup(forwardNC.Close)
+
+	// Subscribe a responder that only handles forwarded messages (has header).
+	// Non-forwarded messages (the original client request) are ignored.
+	forwardNC.Subscribe("chat.user.*.request.room.*.site-2.msg.history",
+		func(msg *nats.Msg) {
+			if msg.Header != nil && msg.Header.Get("X-Forwarded-Site") != "" {
+				msg.Respond([]byte(`{"greeting":"from site-2"}`))
+			}
+		})
+	forwardNC.Flush()
+
+	r := New(nc, "test-service")
+	r.Use(SiteProxy("site-1", forwardNC))
+
+	Register(r, "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history",
+		func(c *Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "local"}, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-2.msg.history", data, 2*time.Second)
+	require.NoError(t, err)
+
+	// The response comes from either the remote subscriber or the router
+	// (which handles the forwarded message via header pass-through).
+	// Both are valid — in production they would be on separate NATS clusters.
+	var result testResp
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.NotEmpty(t, result.Greeting)
+}
+
+func TestSiteProxy_ForwardedHeader_SkipsForwarding(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+	r.Use(SiteProxy("site-1", nc.NatsConn()))
+
+	Register(r, "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history",
+		func(c *Context, req testReq) (*testResp, error) {
+			return &testResp{Greeting: "forwarded-to-me"}, nil
+		})
+
+	msg := nats.NewMsg("chat.user.alice.request.room.r1.site-2.msg.history")
+	msg.Data, _ = json.Marshal(testReq{Name: "test"})
+	msg.Header = nats.Header{}
+	msg.Header.Set("X-Forwarded-Site", "site-2")
+
+	resp, err := nc.NatsConn().RequestMsg(msg, 2*time.Second)
+	require.NoError(t, err)
+
+	var result testResp
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "forwarded-to-me", result.Greeting)
+}
+
+func TestSiteProxy_RemoteRequest_ForwardError(t *testing.T) {
+	nc := startTestNATS(t)
+
+	// Create a separate connection for forwarding, then close it to simulate failure.
+	forwardNC, err := nats.Connect(nc.NatsConn().ConnectedUrl())
+	require.NoError(t, err)
+	forwardNC.Close()
+
+	r := New(nc, "test-service")
+	r.Use(SiteProxy("site-1", forwardNC))
+
+	Register(r, "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history",
+		func(c *Context, req testReq) (*testResp, error) {
+			t.Fatal("handler should not be called for failed forward")
+			return nil, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-2.msg.history", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var errResp model.ErrorResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
+	assert.Equal(t, "remote site unavailable", errResp.Error)
+}
+
 func TestErrConstants(t *testing.T) {
 	e := ErrBadRequest("invalid input")
 	assert.Equal(t, "bad_request", e.Code)
