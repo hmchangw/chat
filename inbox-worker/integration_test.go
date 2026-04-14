@@ -23,7 +23,7 @@ import (
 func setupMongo(t *testing.T) *mongo.Database {
 	t.Helper()
 	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:8")
+	container, err := mongodb.Run(ctx, "mongo:4.4.15")
 	if err != nil {
 		t.Fatalf("start mongo: %v", err)
 	}
