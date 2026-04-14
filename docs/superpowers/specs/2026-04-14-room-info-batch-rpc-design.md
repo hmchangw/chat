@@ -69,7 +69,7 @@ type RoomInfo struct {
     Found      bool    `json:"found"`
     SiteID     string  `json:"siteId,omitempty"`
     Name       string  `json:"name,omitempty"`
-    LastMsgAt  int64   `json:"lastMsgAt,omitempty"`   // UTC millis
+    LastMsgAt  int64   `json:"lastMsgAt"`             // UTC millis; 0 = never messaged or not found
     PrivateKey *string `json:"privateKey,omitempty"`  // base64; nil = no current key
     KeyVersion *int    `json:"keyVersion,omitempty"`  // nil iff PrivateKey is nil
     Error      string  `json:"error,omitempty"`       // per-room failure (reserved)
@@ -84,7 +84,8 @@ type RoomsInfoBatchResponse struct {
 Semantics:
 
 - `len(Response.Rooms) == len(Request.RoomIDs)`, order preserved.
-- `Found=false` → room not in Mongo for this site; other fields zero-valued.
+- `Found=false` → room not in Mongo for this site; other fields zero-valued
+  (`lastMsgAt: 0`, `name: ""`, etc.). Callers should branch on `Found` first.
 - `Found=true, PrivateKey=nil` → room exists in Mongo but Valkey has no current
   key (legitimate state, not an error).
 - `Error != ""` → per-room failure, reserved for future use; initial
@@ -100,7 +101,9 @@ We deliberately fail loud on backend outages so callers can distinguish
 
 `model.Room.LastMsgAt` is `time.Time` in Mongo. On the wire it is converted to
 `UnixMilli()` per the codebase's "NATS wire structs use int64 millis"
-convention (commit `deffcfa`). Zero time → `0`, omitted via `omitempty`.
+convention (commit `deffcfa`). Zero time → `0`, always emitted (no
+`omitempty`) so callers can distinguish "found, never messaged" (`lastMsgAt:
+0`) from "not found" (`found: false`) without ambiguity from a missing field.
 
 ## 3. Architecture
 
@@ -316,9 +319,9 @@ Add the three new types to the generic `roundTrip` helper in `model_test.go`.
 Dedicated tests for:
 
 - `PrivateKey=nil` → field omitted.
-- `LastMsgAt=0` → field omitted.
-- `Found=false` → `siteId`, `name`, `lastMsgAt`, `privateKey`, `keyVersion`,
-  `error` all omitted.
+- `LastMsgAt=0` → field present with value `0` (no `omitempty`).
+- `Found=false` → `siteId`, `name`, `privateKey`, `keyVersion`, `error` all
+  omitted; `lastMsgAt` present as `0`.
 - Base64 roundtrip on a 32-byte private key.
 
 ### 7.3 `pkg/roomkeystore.GetMany` unit tests
@@ -364,7 +367,7 @@ In `handler_test.go`, table-driven `TestHandler_handleRoomsInfoBatch`:
 - Mongo error → batch-level error.
 - Valkey error → batch-level error.
 - Duplicate IDs → duplicate entries.
-- `LastMsgAt` zero → field omitted in marshaled JSON.
+- `LastMsgAt` zero → field present with value `0` in marshaled JSON.
 - `LastMsgAt` set → equals `.UTC().UnixMilli()`.
 
 Tests target `handleRoomsInfoBatch` (the bytes-returning helper), not the
