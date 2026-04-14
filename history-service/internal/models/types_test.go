@@ -22,18 +22,18 @@ func roundTrip[T any](t *testing.T, src T) T {
 func TestParticipant_JSON(t *testing.T) {
 	p := Participant{
 		ID:          "u1",
-		UserName:    "alice",
 		EngName:     "Alice Smith",
 		CompanyName: "Acme Corp",
 		AppID:       "app-1",
 		AppName:     "MyApp",
 		IsBot:       true,
+		Account:     "alice",
 	}
 	roundTrip(t, p)
 }
 
 func TestParticipant_JSON_Minimal(t *testing.T) {
-	p := Participant{ID: "u1", UserName: "alice"}
+	p := Participant{ID: "u1", Account: "alice"}
 	got := roundTrip(t, p)
 	assert.Empty(t, got.EngName)
 	assert.False(t, got.IsBot)

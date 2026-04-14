@@ -12,12 +12,12 @@ func init() {
 // Participant maps to the Cassandra "Participant" UDT.
 type Participant struct {
 	ID          string `json:"id"                    cql:"id"`
-	UserName    string `json:"userName"              cql:"user_name"`
 	EngName     string `json:"engName,omitempty"     cql:"eng_name"`
 	CompanyName string `json:"companyName,omitempty" cql:"company_name"`
 	AppID       string `json:"appId,omitempty"       cql:"app_id"`
 	AppName     string `json:"appName,omitempty"     cql:"app_name"`
 	IsBot       bool   `json:"isBot,omitempty"       cql:"is_bot"`
+	Account     string `json:"account,omitempty"     cql:"account"`
 }
 
 func (p *Participant) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte) error {
