@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	historyPageSize     = 20
-	surroundingPageSize = 25
+	defaultPageSize     = 20
+	surroundingPageSize = 50
 	maxPageSize         = 100
 )
 
@@ -31,7 +31,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 
 	limit := req.Limit
 	if limit <= 0 {
-		limit = historyPageSize
+		limit = defaultPageSize
 	}
 	if limit > maxPageSize {
 		limit = maxPageSize
@@ -68,7 +68,14 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 	// Lower bound = max(after, accessSince). Zero means no lower bound.
 	lowerBound := timeMax(after, derefTime(accessSince))
 
-	pageReq, err := parsePageRequest(req.Cursor, req.Limit)
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultPageSize
+	}
+	if limit > maxPageSize {
+		limit = maxPageSize
+	}
+	pageReq, err := parsePageRequest(req.Cursor, limit)
 	if err != nil {
 		return nil, err
 	}
