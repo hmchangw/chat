@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMessage_JSON(t *testing.T) {
@@ -26,16 +27,22 @@ func TestMessage_JSON(t *testing.T) {
 		Card:                  &Card{Template: "approval", Data: []byte(`{"k":"v"}`)},
 		CardAction:            &CardAction{Verb: "approve", CardID: "c1"},
 		TShow:                 true,
+		ThreadParentID:        "m-parent",
 		ThreadParentCreatedAt: &threadParent,
-		VisibleTo:             "u1",
-		Unread:                true,
-		Reactions:             map[string][]Participant{"thumbsup": {{ID: "u2", Account: "bob"}}},
-		Deleted:               false,
-		Type:                  "user_joined",
-		SysMsgData:            []byte(`{"userId":"u3"}`),
-		SiteID:                "site-remote",
-		EditedAt:              &edited,
-		UpdatedAt:             &updated,
+		QuotedParentMessage: &QuotedParentMessage{
+			MessageID: "m-quoted", RoomID: "r1",
+			Sender:    Participant{ID: "u5", Account: "eve"},
+			CreatedAt: now.Add(-30 * time.Minute), Msg: "original",
+		},
+		VisibleTo:  "u1",
+		Unread:     true,
+		Reactions:  map[string][]Participant{"thumbsup": {{ID: "u2", Account: "bob"}}},
+		Deleted:    false,
+		Type:       "user_joined",
+		SysMsgData: []byte(`{"userId":"u3"}`),
+		SiteID:     "site-remote",
+		EditedAt:   &edited,
+		UpdatedAt:  &updated,
 	}
 
 	got := roundTrip(t, msg)
@@ -49,7 +56,10 @@ func TestMessage_JSON(t *testing.T) {
 	assert.Equal(t, "approval", got.Card.Template)
 	assert.Equal(t, "approve", got.CardAction.Verb)
 	assert.True(t, got.TShow)
+	assert.Equal(t, "m-parent", got.ThreadParentID)
 	assert.Equal(t, threadParent, *got.ThreadParentCreatedAt)
+	require.NotNil(t, got.QuotedParentMessage)
+	assert.Equal(t, "m-quoted", got.QuotedParentMessage.MessageID)
 	assert.Equal(t, "u1", got.VisibleTo)
 	assert.True(t, got.Unread)
 	assert.Len(t, got.Reactions["thumbsup"], 1)
@@ -78,6 +88,8 @@ func TestMessage_JSON_Minimal(t *testing.T) {
 	assert.Nil(t, got.EditedAt)
 	assert.Nil(t, got.UpdatedAt)
 	assert.Nil(t, got.ThreadParentCreatedAt)
+	assert.Nil(t, got.QuotedParentMessage)
+	assert.Empty(t, got.ThreadParentID)
 	assert.False(t, got.TShow)
 	assert.False(t, got.Unread)
 	assert.False(t, got.Deleted)

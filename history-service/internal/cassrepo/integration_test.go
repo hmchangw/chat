@@ -39,6 +39,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		`CREATE TYPE IF NOT EXISTS chat_test."File" (id TEXT, name TEXT, type TEXT)`,
 		`CREATE TYPE IF NOT EXISTS chat_test."Card" (template TEXT, data BLOB)`,
 		`CREATE TYPE IF NOT EXISTS chat_test."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB)`,
+		`CREATE TYPE IF NOT EXISTS chat_test."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT)`,
 	} {
 		require.NoError(t, session.Query(cql).Exec())
 	}
@@ -56,7 +57,9 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		card FROZEN<"Card">,
 		card_action FROZEN<"CardAction">,
 		tshow BOOLEAN,
+		thread_parent_id TEXT,
 		thread_parent_created_at TIMESTAMP,
+		quoted_parent_message FROZEN<"QuotedParentMessage">,
 		visible_to TEXT,
 		unread BOOLEAN,
 		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
@@ -195,15 +198,20 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	file := models.File{ID: "f1", Name: "doc.pdf", Type: "application/pdf"}
 	card := models.Card{Template: "approval", Data: []byte("card-data")}
 	cardAction := models.CardAction{Verb: "approve", Text: "Approve", CardID: "c1", DisplayText: "Click", HideExecLog: true, CardTmID: "tm1", Data: []byte("action-data")}
+	quotedSender := models.Participant{ID: "u5", Account: "eve"}
+	quotedMsg := models.QuotedParentMessage{
+		MessageID: "m-quoted", RoomID: "r-full", Sender: quotedSender,
+		CreatedAt: ts.Add(-30 * time.Minute), Msg: "original message", MessageLink: "https://chat.example.com/r-full/m-quoted",
+	}
 
 	err := session.Query(
-		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_created_at, visible_to, unread, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, unread, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"r-full", ts, "m-full",
 		sender, target, "hello world",
 		[]models.Participant{mentionUser},
 		[][]byte{[]byte("attach1"), []byte("attach2")},
 		file, card, cardAction,
-		true, threadParent, "u1", true,
+		true, "m-parent", threadParent, quotedMsg, "u1", true,
 		map[string][]models.Participant{"thumbsup": {reactUser}},
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
@@ -269,8 +277,19 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 
 	// Boolean/string fields
 	assert.True(t, msg.TShow)
+	assert.Equal(t, "m-parent", msg.ThreadParentID)
 	require.NotNil(t, msg.ThreadParentCreatedAt)
 	assert.Equal(t, threadParent.UTC(), msg.ThreadParentCreatedAt.UTC())
+
+	// QuotedParentMessage UDT
+	require.NotNil(t, msg.QuotedParentMessage)
+	assert.Equal(t, "m-quoted", msg.QuotedParentMessage.MessageID)
+	assert.Equal(t, "r-full", msg.QuotedParentMessage.RoomID)
+	assert.Equal(t, "u5", msg.QuotedParentMessage.Sender.ID)
+	assert.Equal(t, "eve", msg.QuotedParentMessage.Sender.Account)
+	assert.Equal(t, "original message", msg.QuotedParentMessage.Msg)
+	assert.Equal(t, "https://chat.example.com/r-full/m-quoted", msg.QuotedParentMessage.MessageLink)
+
 	assert.Equal(t, "u1", msg.VisibleTo)
 	assert.True(t, msg.Unread)
 	assert.True(t, msg.Deleted)

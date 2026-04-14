@@ -13,7 +13,8 @@ import (
 
 const messageQuery = "SELECT room_id, created_at, message_id, sender, target_user, " +
 	"msg, mentions, attachments, file, card, card_action, tshow, " +
-	"thread_parent_created_at, visible_to, unread, reactions, deleted, " +
+	"thread_parent_id, thread_parent_created_at, quoted_parent_message, " +
+	"visible_to, unread, reactions, deleted, " +
 	"type, sys_msg_data, site_id, edited_at, updated_at " +
 	"FROM messages_by_room"
 
@@ -24,10 +25,10 @@ func messageScanDest(m *models.Message) []any {
 		&m.Sender, &m.TargetUser, &m.Msg,
 		&m.Mentions, &m.Attachments, &m.File,
 		&m.Card, &m.CardAction, &m.TShow,
-		&m.ThreadParentCreatedAt, &m.VisibleTo, &m.Unread,
-		&m.Reactions, &m.Deleted, &m.Type,
-		&m.SysMsgData, &m.SiteID, &m.EditedAt,
-		&m.UpdatedAt,
+		&m.ThreadParentID, &m.ThreadParentCreatedAt, &m.QuotedParentMessage,
+		&m.VisibleTo, &m.Unread, &m.Reactions,
+		&m.Deleted, &m.Type, &m.SysMsgData,
+		&m.SiteID, &m.EditedAt, &m.UpdatedAt,
 	}
 }
 
