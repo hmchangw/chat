@@ -20,24 +20,42 @@ type pendingMsg struct {
 	actionCount int // number of actions contributed by this message
 }
 
-// Handler buffers JetStream messages and flushes them as ES bulk requests.
+// Handler buffers JetStream messages and the ES bulk actions they produce,
+// then flushes the actions as a single ES bulk request.
+//
+// Two counts are tracked separately because they can diverge for fan-out
+// collections (one JetStream message producing N ES actions):
+//
+//   - MessageCount() reports buffered source messages. Used for per-source
+//     ack/nak accounting at flush time.
+//   - ActionCount() reports buffered ES bulk actions. This is what bounds
+//     the size of the next ES bulk request and should drive the flush
+//     decision in the consumer loop.
+//
+// For 1:1 collections (messages, and the single-subscription path of
+// spotlight/user-room) MessageCount() == ActionCount(). For fan-out
+// collections (bulk-invite spotlight/user-room) ActionCount() >=
+// MessageCount().
 type Handler struct {
 	store      Store
 	collection Collection
-	batchSize  int
+	bulkSize   int // soft cap on buffered actions; callers drive flush via ActionCount()
 	mu         sync.Mutex
 	pending    []pendingMsg
 	actions    []searchengine.BulkAction
 }
 
-// NewHandler creates a Handler with the given store, collection, and batch size.
-func NewHandler(store Store, collection Collection, batchSize int) *Handler {
+// NewHandler creates a Handler with the given store, collection, and bulk
+// batch size. `bulkSize` is the soft cap on buffered actions before a flush
+// is triggered — the consumer loop compares it against `ActionCount()` to
+// decide when to call `Flush`.
+func NewHandler(store Store, collection Collection, bulkSize int) *Handler {
 	return &Handler{
 		store:      store,
 		collection: collection,
-		batchSize:  batchSize,
-		pending:    make([]pendingMsg, 0, batchSize),
-		actions:    make([]searchengine.BulkAction, 0, batchSize),
+		bulkSize:   bulkSize,
+		pending:    make([]pendingMsg, 0, bulkSize),
+		actions:    make([]searchengine.BulkAction, 0, bulkSize),
 	}
 }
 
@@ -80,8 +98,8 @@ func (h *Handler) Flush(ctx context.Context) {
 	}
 	pending := h.pending
 	actions := h.actions
-	h.pending = make([]pendingMsg, 0, h.batchSize)
-	h.actions = make([]searchengine.BulkAction, 0, h.batchSize)
+	h.pending = make([]pendingMsg, 0, h.bulkSize)
+	h.actions = make([]searchengine.BulkAction, 0, h.bulkSize)
 	h.mu.Unlock()
 
 	results, err := h.store.Bulk(ctx, actions)
@@ -167,14 +185,24 @@ func nakAll(pending []pendingMsg) {
 	}
 }
 
-// BufferLen returns the current number of buffered messages (not actions).
-func (h *Handler) BufferLen() int {
+// MessageCount returns the number of buffered source JetStream messages.
+// This is used for diagnostics and for the per-source ack/nak accounting at
+// flush time; it is NOT the quantity that should drive the flush decision
+// for fan-out collections — use ActionCount() for that.
+func (h *Handler) MessageCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.pending)
 }
 
-// BufferFull returns true if the buffer has reached batch size.
-func (h *Handler) BufferFull() bool {
-	return h.BufferLen() >= h.batchSize
+// ActionCount returns the number of buffered ES bulk actions. For 1:1
+// collections this equals MessageCount(); for fan-out collections (bulk
+// invites producing N actions per event) it is ≥ MessageCount(). The
+// consumer loop compares this against the configured bulk batch size to
+// decide when to flush so ES bulk requests stay bounded regardless of
+// fan-out.
+func (h *Handler) ActionCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.actions)
 }

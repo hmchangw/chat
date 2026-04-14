@@ -39,12 +39,24 @@ type UpdateRoleRequest struct {
 	NewRole Role   `json:"newRole" bson:"newRole"`
 }
 
-// MemberAddedPayload is the payload of an OutboxEvent{Type: "member_added"}.
-// It carries the full Subscription and Room so downstream consumers
-// (inbox-worker, search-sync-worker) can index/persist without DB lookups.
+// MemberAddedPayload is the payload of an OutboxEvent{Type: "member_added" |
+// "member_removed"}. It carries one or more Subscriptions against the same
+// Room so downstream consumers (inbox-worker, search-sync-worker) can
+// index/persist without DB lookups.
+//
+// The Subscriptions slice supports bulk invites: one admin action adding N
+// users to a single room produces a single event with N Subscriptions, all
+// sharing the same Room. For single-user operations the slice has length 1.
+// All subscriptions in one event target the same Room — if you need to touch
+// multiple rooms, publish one event per room.
+//
+// Downstream consumers that care about the full set (spotlight-sync,
+// user-room-sync) fan the event out into one ES bulk action per
+// subscription. Consumers that only care about the Room (e.g. future
+// room-sync) can ignore the Subscriptions slice and act on the Room field.
 type MemberAddedPayload struct {
-	Subscription Subscription `json:"subscription"`
-	Room         Room         `json:"room"`
+	Subscriptions []Subscription `json:"subscriptions"`
+	Room          Room           `json:"room"`
 }
 
 type InviteMemberRequest struct {

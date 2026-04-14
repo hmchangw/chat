@@ -70,54 +70,78 @@ const (
 		`} else { ctx.op = 'none'; }`
 )
 
+// BuildAction fans a member_added / member_removed event out into one ES
+// update per Subscription in the payload. Bulk invites produce N distinct
+// user-room doc updates from a single event (each subscription touches a
+// different user's doc, keyed by user account).
+//
+// Restricted rooms (HistorySharedSince != nil) are filtered per-subscription
+// — if the admin bulk-invites a mix of regular and restricted users to the
+// same room, only the regular users' docs get updated. The search service
+// handles restricted rooms via DB+cache at query time.
+//
+// Returns an empty slice (not an error) if every subscription in the event
+// is restricted; the handler then acks the source message without touching
+// ES.
 func (c *userRoomCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	evt, payload, err := parseMemberEvent(data)
 	if err != nil {
 		return nil, err
 	}
-	if payload.Subscription.User.Account == "" {
-		return nil, fmt.Errorf("build user-room action: missing user account")
-	}
-	if payload.Subscription.RoomID == "" {
-		return nil, fmt.Errorf("build user-room action: missing room id")
+	if len(payload.Subscriptions) == 0 {
+		return nil, fmt.Errorf("build user-room action: empty subscriptions")
 	}
 
-	// Restricted rooms (HistorySharedSince set) are handled by the search
-	// service via DB+cache at query time — skip indexing.
-	if payload.Subscription.HistorySharedSince != nil {
-		return nil, nil
-	}
-
-	account := payload.Subscription.User.Account
-	roomID := payload.Subscription.RoomID
 	ts := evt.Timestamp
+	actions := make([]searchengine.BulkAction, 0, len(payload.Subscriptions))
+	for i := range payload.Subscriptions {
+		sub := &payload.Subscriptions[i]
 
-	switch evt.Type {
-	case model.OutboxMemberAdded:
-		body, err := buildAddRoomUpdateBody(account, roomID, ts)
-		if err != nil {
-			return nil, err
+		if sub.User.Account == "" {
+			return nil, fmt.Errorf("build user-room action: missing user account at index %d", i)
 		}
-		return []searchengine.BulkAction{{
-			Action: searchengine.ActionUpdate,
-			Index:  c.indexName,
-			DocID:  account,
-			Doc:    body,
-		}}, nil
-	case model.OutboxMemberRemoved:
-		body, err := buildRemoveRoomUpdateBody(roomID, ts)
-		if err != nil {
-			return nil, err
+		if sub.RoomID == "" {
+			return nil, fmt.Errorf("build user-room action: missing room id at index %d", i)
 		}
-		return []searchengine.BulkAction{{
-			Action: searchengine.ActionUpdate,
-			Index:  c.indexName,
-			DocID:  account,
-			Doc:    body,
-		}}, nil
-	default:
-		return nil, fmt.Errorf("build user-room action: unsupported event type %q", evt.Type)
+
+		// Restricted rooms are handled by the search service via DB+cache at
+		// query time — skip indexing this specific subscription and move on
+		// to the next one in the payload.
+		if sub.HistorySharedSince != nil {
+			continue
+		}
+
+		account := sub.User.Account
+		roomID := sub.RoomID
+
+		switch evt.Type {
+		case model.OutboxMemberAdded:
+			body, err := buildAddRoomUpdateBody(account, roomID, ts)
+			if err != nil {
+				return nil, err
+			}
+			actions = append(actions, searchengine.BulkAction{
+				Action: searchengine.ActionUpdate,
+				Index:  c.indexName,
+				DocID:  account,
+				Doc:    body,
+			})
+		case model.OutboxMemberRemoved:
+			body, err := buildRemoveRoomUpdateBody(roomID, ts)
+			if err != nil {
+				return nil, err
+			}
+			actions = append(actions, searchengine.BulkAction{
+				Action: searchengine.ActionUpdate,
+				Index:  c.indexName,
+				DocID:  account,
+				Doc:    body,
+			})
+		default:
+			return nil, fmt.Errorf("build user-room action: unsupported event type %q", evt.Type)
+		}
 	}
+	return actions, nil
 }
 
 // userRoomUpsertDoc is the full document inserted when the user has no prior

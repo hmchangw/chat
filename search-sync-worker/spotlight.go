@@ -33,39 +33,56 @@ func (c *spotlightCollection) TemplateBody() json.RawMessage {
 	return spotlightTemplateBody(c.indexName)
 }
 
+// BuildAction fans a member_added / member_removed event out into one ES
+// action per Subscription in the payload. Bulk invites produce N spotlight
+// docs from a single event; single-user invites produce one.
+//
+// All actions in the returned slice carry the same external Version
+// (evt.Timestamp) because they all represent the same logical event — if the
+// event is redelivered, every action 409s uniformly and is treated as a
+// successful idempotent replay.
 func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	evt, payload, err := parseMemberEvent(data)
 	if err != nil {
 		return nil, err
 	}
-	if payload.Subscription.ID == "" {
-		return nil, fmt.Errorf("build spotlight action: missing subscription id")
+	if len(payload.Subscriptions) == 0 {
+		return nil, fmt.Errorf("build spotlight action: empty subscriptions")
 	}
 
-	switch evt.Type {
-	case model.OutboxMemberAdded:
-		doc := newSpotlightSearchIndex(payload)
-		body, err := json.Marshal(doc)
-		if err != nil {
-			return nil, fmt.Errorf("marshal spotlight doc: %w", err)
+	actions := make([]searchengine.BulkAction, 0, len(payload.Subscriptions))
+	for i := range payload.Subscriptions {
+		sub := &payload.Subscriptions[i]
+		if sub.ID == "" {
+			return nil, fmt.Errorf("build spotlight action: missing subscription id at index %d", i)
 		}
-		return []searchengine.BulkAction{{
-			Action:  searchengine.ActionIndex,
-			Index:   c.indexName,
-			DocID:   payload.Subscription.ID,
-			Version: evt.Timestamp,
-			Doc:     body,
-		}}, nil
-	case model.OutboxMemberRemoved:
-		return []searchengine.BulkAction{{
-			Action:  searchengine.ActionDelete,
-			Index:   c.indexName,
-			DocID:   payload.Subscription.ID,
-			Version: evt.Timestamp,
-		}}, nil
-	default:
-		return nil, fmt.Errorf("build spotlight action: unsupported event type %q", evt.Type)
+
+		switch evt.Type {
+		case model.OutboxMemberAdded:
+			doc := newSpotlightSearchIndex(sub, &payload.Room)
+			body, err := json.Marshal(doc)
+			if err != nil {
+				return nil, fmt.Errorf("marshal spotlight doc: %w", err)
+			}
+			actions = append(actions, searchengine.BulkAction{
+				Action:  searchengine.ActionIndex,
+				Index:   c.indexName,
+				DocID:   sub.ID,
+				Version: evt.Timestamp,
+				Doc:     body,
+			})
+		case model.OutboxMemberRemoved:
+			actions = append(actions, searchengine.BulkAction{
+				Action:  searchengine.ActionDelete,
+				Index:   c.indexName,
+				DocID:   sub.ID,
+				Version: evt.Timestamp,
+			})
+		default:
+			return nil, fmt.Errorf("build spotlight action: unsupported event type %q", evt.Type)
+		}
 	}
+	return actions, nil
 }
 
 // SpotlightSearchIndex defines the Elasticsearch document structure for the
@@ -81,16 +98,16 @@ type SpotlightSearchIndex struct {
 	JoinedAt       time.Time `json:"joinedAt"       es:"date"`
 }
 
-func newSpotlightSearchIndex(p *model.MemberAddedPayload) SpotlightSearchIndex {
+func newSpotlightSearchIndex(sub *model.Subscription, room *model.Room) SpotlightSearchIndex {
 	return SpotlightSearchIndex{
-		SubscriptionID: p.Subscription.ID,
-		UserID:         p.Subscription.User.ID,
-		UserAccount:    p.Subscription.User.Account,
-		RoomID:         p.Subscription.RoomID,
-		RoomName:       p.Room.Name,
-		RoomType:       string(p.Room.Type),
-		SiteID:         p.Subscription.SiteID,
-		JoinedAt:       p.Subscription.JoinedAt,
+		SubscriptionID: sub.ID,
+		UserID:         sub.User.ID,
+		UserAccount:    sub.User.Account,
+		RoomID:         sub.RoomID,
+		RoomName:       room.Name,
+		RoomType:       string(room.Type),
+		SiteID:         sub.SiteID,
+		JoinedAt:       sub.JoinedAt,
 	}
 }
 

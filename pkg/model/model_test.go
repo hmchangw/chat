@@ -601,16 +601,30 @@ func TestOutboxEventJSON(t *testing.T) {
 func TestMemberAddedPayloadJSON(t *testing.T) {
 	joinedAt := time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)
 	historyFrom := time.Date(2026, 4, 9, 11, 0, 0, 0, time.UTC)
+	// Two subscriptions to the same room — exercises the bulk-invite shape
+	// (one restricted, one unrestricted) and verifies the Subscriptions
+	// slice round-trips.
 	src := model.MemberAddedPayload{
-		Subscription: model.Subscription{
-			ID:                 "sub-1",
-			User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID:             "r1",
-			SiteID:             "site-a",
-			Roles:              []model.Role{model.RoleMember},
-			HistorySharedSince: &historyFrom,
-			JoinedAt:           joinedAt,
-			LastSeenAt:         joinedAt,
+		Subscriptions: []model.Subscription{
+			{
+				ID:         "sub-1",
+				User:       model.SubscriptionUser{ID: "u1", Account: "alice"},
+				RoomID:     "r1",
+				SiteID:     "site-a",
+				Roles:      []model.Role{model.RoleMember},
+				JoinedAt:   joinedAt,
+				LastSeenAt: joinedAt,
+			},
+			{
+				ID:                 "sub-2",
+				User:               model.SubscriptionUser{ID: "u2", Account: "bob"},
+				RoomID:             "r1",
+				SiteID:             "site-a",
+				Roles:              []model.Role{model.RoleMember},
+				HistorySharedSince: &historyFrom,
+				JoinedAt:           joinedAt,
+				LastSeenAt:         joinedAt,
+			},
 		},
 		Room: model.Room{
 			ID: "r1", Name: "engineering", Type: model.RoomTypeGroup,

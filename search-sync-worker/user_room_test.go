@@ -170,13 +170,100 @@ func TestUserRoomCollection_BuildAction_RestrictedRoomSkipped(t *testing.T) {
 	coll := newUserRoomCollection("user-room-site-a")
 	payload := baseMemberAddedPayload()
 	historyFrom := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	payload.Subscription.HistorySharedSince = &historyFrom
+	payload.Subscriptions[0].HistorySharedSince = &historyFrom
 
 	data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 100)
 
 	actions, err := coll.BuildAction(data)
 	require.NoError(t, err)
 	assert.Empty(t, actions, "restricted rooms should be skipped")
+}
+
+// TestUserRoomCollection_BuildAction_BulkInvite verifies fan-out: one event
+// with N subscriptions produces N distinct user-room update actions (each
+// keyed by a different user account).
+func TestUserRoomCollection_BuildAction_BulkInvite(t *testing.T) {
+	coll := newUserRoomCollection("user-room-site-a")
+	payload := baseBulkMemberAddedPayload([]struct {
+		Account    string
+		SubID      string
+		Restricted bool
+	}{
+		{Account: "alice", SubID: "sub-1"},
+		{Account: "bob", SubID: "sub-2"},
+		{Account: "carol", SubID: "sub-3"},
+	})
+	data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 12345)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	require.Len(t, actions, 3, "3 unrestricted subscriptions → 3 update actions")
+
+	seenDocIDs := make(map[string]bool)
+	for _, action := range actions {
+		assert.Equal(t, searchengine.ActionUpdate, action.Action)
+		assert.Equal(t, "user-room-site-a", action.Index)
+		// ActionUpdate intentionally carries no external version — ES _update
+		// is read-modify-write and rejects version_type=external.
+		assert.Zero(t, action.Version)
+		seenDocIDs[action.DocID] = true
+	}
+	assert.True(t, seenDocIDs["alice"])
+	assert.True(t, seenDocIDs["bob"])
+	assert.True(t, seenDocIDs["carol"])
+}
+
+// TestUserRoomCollection_BuildAction_BulkInviteMixedRestricted verifies
+// per-subscription restricted-room filtering: in a bulk invite where some
+// users are restricted and others aren't, only the non-restricted
+// subscriptions produce actions.
+func TestUserRoomCollection_BuildAction_BulkInviteMixedRestricted(t *testing.T) {
+	coll := newUserRoomCollection("user-room-site-a")
+	payload := baseBulkMemberAddedPayload([]struct {
+		Account    string
+		SubID      string
+		Restricted bool
+	}{
+		{Account: "alice", SubID: "sub-1", Restricted: false}, // should index
+		{Account: "bob", SubID: "sub-2", Restricted: true},    // should skip
+		{Account: "carol", SubID: "sub-3", Restricted: false}, // should index
+		{Account: "dave", SubID: "sub-4", Restricted: true},   // should skip
+	})
+	data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 12345)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	require.Len(t, actions, 2, "only 2 unrestricted subscriptions should fan out")
+
+	seenDocIDs := make(map[string]bool)
+	for _, action := range actions {
+		seenDocIDs[action.DocID] = true
+	}
+	assert.True(t, seenDocIDs["alice"])
+	assert.True(t, seenDocIDs["carol"])
+	assert.False(t, seenDocIDs["bob"], "restricted bob must be filtered out")
+	assert.False(t, seenDocIDs["dave"], "restricted dave must be filtered out")
+}
+
+// TestUserRoomCollection_BuildAction_AllRestrictedIsNoOp verifies the
+// filtered-empty shape: if every subscription in the event is restricted,
+// BuildAction returns an empty slice (no error), which the handler acks
+// without touching ES.
+func TestUserRoomCollection_BuildAction_AllRestrictedIsNoOp(t *testing.T) {
+	coll := newUserRoomCollection("user-room-site-a")
+	payload := baseBulkMemberAddedPayload([]struct {
+		Account    string
+		SubID      string
+		Restricted bool
+	}{
+		{Account: "alice", SubID: "sub-1", Restricted: true},
+		{Account: "bob", SubID: "sub-2", Restricted: true},
+	})
+	data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 100)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	assert.Empty(t, actions)
 }
 
 func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
@@ -195,7 +282,7 @@ func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
 
 	t.Run("missing user account", func(t *testing.T) {
 		payload := baseMemberAddedPayload()
-		payload.Subscription.User.Account = ""
+		payload.Subscriptions[0].User.Account = ""
 		data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 100)
 		_, err := coll.BuildAction(data)
 		assert.Error(t, err)
@@ -203,7 +290,15 @@ func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
 
 	t.Run("missing room id", func(t *testing.T) {
 		payload := baseMemberAddedPayload()
-		payload.Subscription.RoomID = ""
+		payload.Subscriptions[0].RoomID = ""
+		data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 100)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("empty subscriptions", func(t *testing.T) {
+		payload := baseMemberAddedPayload()
+		payload.Subscriptions = nil
 		data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 100)
 		_, err := coll.BuildAction(data)
 		assert.Error(t, err)

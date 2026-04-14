@@ -42,17 +42,37 @@ type bootstrapConfig struct {
 }
 
 type config struct {
-	NatsURL        string          `env:"NATS_URL,required"`
-	NatsCredsFile  string          `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID         string          `env:"SITE_ID,required"`
-	SearchURL      string          `env:"SEARCH_URL,required"`
-	SearchBackend  string          `env:"SEARCH_BACKEND"  envDefault:"elasticsearch"`
-	MsgIndexPrefix string          `env:"MSG_INDEX_PREFIX,required"`
-	SpotlightIndex string          `env:"SPOTLIGHT_INDEX" envDefault:""`
-	UserRoomIndex  string          `env:"USER_ROOM_INDEX" envDefault:""`
-	BatchSize      int             `env:"BATCH_SIZE"      envDefault:"500"`
-	FlushInterval  int             `env:"FLUSH_INTERVAL"  envDefault:"5"`
-	Bootstrap      bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	NatsURL        string `env:"NATS_URL,required"`
+	NatsCredsFile  string `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID         string `env:"SITE_ID,required"`
+	SearchURL      string `env:"SEARCH_URL,required"`
+	SearchBackend  string `env:"SEARCH_BACKEND"  envDefault:"elasticsearch"`
+	MsgIndexPrefix string `env:"MSG_INDEX_PREFIX,required"`
+	SpotlightIndex string `env:"SPOTLIGHT_INDEX" envDefault:""`
+	UserRoomIndex  string `env:"USER_ROOM_INDEX" envDefault:""`
+
+	// FetchBatchSize is the maximum number of JetStream messages to pull
+	// per Fetch() round-trip. Smaller values give lower latency per message
+	// but more round-trips; larger values amortize the per-Fetch overhead.
+	// This is a JetStream-client concern — it does NOT bound ES bulk
+	// request size.
+	FetchBatchSize int `env:"FETCH_BATCH_SIZE" envDefault:"100"`
+
+	// BulkBatchSize is the soft cap on buffered ES bulk actions before the
+	// worker flushes to Elasticsearch. This is counted in actions, not
+	// messages: fan-out collections (bulk invites producing N actions per
+	// JetStream message) can reach this threshold with far fewer messages
+	// than the count suggests. The consumer loop checks handler.ActionCount()
+	// against this value and triggers a flush mid-Fetch if a single fat
+	// message pushes the buffer over the cap.
+	BulkBatchSize int `env:"BULK_BATCH_SIZE" envDefault:"500"`
+
+	// FlushInterval is the maximum seconds between ES bulk flushes, even if
+	// the action buffer hasn't hit BulkBatchSize. Keeps write latency bounded
+	// during idle / low-traffic periods.
+	FlushInterval int `env:"FLUSH_INTERVAL" envDefault:"5"`
+
+	Bootstrap bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 }
 
 func main() {
@@ -168,7 +188,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		handler := NewHandler(&engineAdapter{engine: engine}, coll, cfg.BatchSize)
+		handler := NewHandler(&engineAdapter{engine: engine}, coll, cfg.BulkBatchSize)
 		doneCh := make(chan struct{})
 		doneChs = append(doneChs, doneCh)
 
@@ -178,7 +198,7 @@ func main() {
 			"filters", consumerCfg.FilterSubjects,
 		)
 
-		go runConsumer(ctx, cons, handler, cfg.BatchSize, flushInterval, stopCh, doneCh)
+		go runConsumer(ctx, cons, handler, cfg.FetchBatchSize, cfg.BulkBatchSize, flushInterval, stopCh, doneCh)
 	}
 
 	slog.Info("search-sync-worker running",
@@ -210,9 +230,40 @@ func main() {
 }
 
 // runConsumer is the batch-flush consumer loop for a single collection.
-// It fetches messages from the JetStream consumer, adds them to the handler buffer,
-// and flushes when the buffer is full or the flush interval elapses.
-func runConsumer(ctx context.Context, cons oteljetstream.Consumer, handler *Handler, batchSize int, flushInterval time.Duration, stopCh <-chan struct{}, doneCh chan<- struct{}) {
+//
+// Two batch sizes apply at different layers:
+//
+//   - fetchBatchSize bounds how many JetStream messages are pulled per
+//     `cons.Fetch(...)` round-trip. This is purely a JetStream-client tuning
+//     knob — larger = fewer round-trips, smaller = lower per-message latency.
+//
+//   - bulkBatchSize is the soft cap on buffered ES bulk actions before a
+//     flush is triggered. This is the real ES-side bound: a fan-out
+//     collection (bulk invite producing N actions per message) can hit it
+//     with far fewer messages than the count suggests, so the loop checks
+//     handler.ActionCount() — not message count — against it.
+//
+// The two caps interact: the loop clamps the per-Fetch count to
+// `min(fetchBatchSize, bulkBatchSize - ActionCount())` so we never pull
+// more messages than the remaining bulk capacity can absorb under a 1:1
+// assumption. Fan-out messages can still push the buffer past bulkBatchSize
+// mid-loop (a single N-subscription event produces N actions on its own),
+// which is handled by a mid-batch flush inside the message loop.
+//
+// Flushes happen on three triggers:
+//  1. `stopCh` signalled (graceful shutdown): drain whatever is buffered.
+//  2. `handler.ActionCount() >= bulkBatchSize`: buffer-full flush.
+//  3. `time.Since(lastFlush) >= flushInterval` with a non-empty buffer:
+//     time-based flush to bound write latency during idle periods.
+func runConsumer(
+	ctx context.Context,
+	cons oteljetstream.Consumer,
+	handler *Handler,
+	fetchBatchSize, bulkBatchSize int,
+	flushInterval time.Duration,
+	stopCh <-chan struct{},
+	doneCh chan<- struct{},
+) {
 	defer close(doneCh)
 	lastFlush := time.Now()
 
@@ -224,12 +275,21 @@ func runConsumer(ctx context.Context, cons oteljetstream.Consumer, handler *Hand
 		default:
 		}
 
-		fetchSize := batchSize - handler.BufferLen()
-		if fetchSize <= 0 {
-			fetchSize = 1
+		// Bound the next Fetch by remaining bulk capacity so a steady stream
+		// of 1:1 messages can't overshoot bulkBatchSize. Fan-out messages
+		// may still push us over — that's handled mid-loop below.
+		remaining := bulkBatchSize - handler.ActionCount()
+		if remaining <= 0 {
+			handler.Flush(ctx)
+			lastFlush = time.Now()
+			continue
+		}
+		fetchCount := fetchBatchSize
+		if fetchCount > remaining {
+			fetchCount = remaining
 		}
 
-		batch, err := cons.Fetch(fetchSize, jetstream.FetchMaxWait(time.Second))
+		batch, err := cons.Fetch(fetchCount, jetstream.FetchMaxWait(time.Second))
 		if err != nil {
 			select {
 			case <-stopCh:
@@ -237,7 +297,7 @@ func runConsumer(ctx context.Context, cons oteljetstream.Consumer, handler *Hand
 				return
 			default:
 			}
-			if handler.BufferLen() > 0 && time.Since(lastFlush) >= flushInterval {
+			if handler.ActionCount() > 0 && time.Since(lastFlush) >= flushInterval {
 				handler.Flush(ctx)
 				lastFlush = time.Now()
 			}
@@ -246,12 +306,20 @@ func runConsumer(ctx context.Context, cons oteljetstream.Consumer, handler *Hand
 
 		for msg := range batch.Messages() {
 			handler.Add(msg.Msg)
+			// Mid-batch flush: if a single fan-out message just pushed the
+			// buffer over the bulk cap, flush immediately instead of waiting
+			// for the outer loop — otherwise the next message's actions
+			// would add to an already-oversized bulk request.
+			if handler.ActionCount() >= bulkBatchSize {
+				handler.Flush(ctx)
+				lastFlush = time.Now()
+			}
 		}
 
-		if handler.BufferFull() {
+		if handler.ActionCount() >= bulkBatchSize {
 			handler.Flush(ctx)
 			lastFlush = time.Now()
-		} else if handler.BufferLen() > 0 && time.Since(lastFlush) >= flushInterval {
+		} else if handler.ActionCount() > 0 && time.Since(lastFlush) >= flushInterval {
 			handler.Flush(ctx)
 			lastFlush = time.Now()
 		}

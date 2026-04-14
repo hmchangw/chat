@@ -35,25 +35,59 @@ func createInboxStream(t *testing.T, ctx context.Context, js jetstream.JetStream
 	require.NoError(t, err, "create INBOX stream for %s", siteID)
 }
 
-// buildMemberEventPayload constructs a MemberAddedPayload for integration
-// tests. historyShared != nil marks the room as restricted (user-room-sync
-// skips indexing restricted rooms; spotlight-sync indexes them normally).
+// memberFixture is one subscription entry in a test member event. Used by
+// both the single-sub convenience helper and the bulk-invite helper.
+type memberFixture struct {
+	SubID      string
+	Account    string
+	Restricted bool // if true, HistorySharedSince is set — user-room-sync filters, spotlight-sync indexes
+}
+
+// buildMemberEventPayload constructs a single-subscription MemberAddedPayload
+// — the common integration-test case where one user joins/leaves one room.
+// For bulk invites use buildBulkMemberEventPayload.
 func buildMemberEventPayload(
 	subID, account, roomID, roomName, siteID string,
 	joinedAt time.Time,
 	historyShared *time.Time,
 ) model.MemberAddedPayload {
+	return buildBulkMemberEventPayload(roomID, roomName, siteID, joinedAt, []memberFixture{{
+		SubID:      subID,
+		Account:    account,
+		Restricted: historyShared != nil,
+	}})
+}
+
+// buildBulkMemberEventPayload constructs a MemberAddedPayload with N
+// subscriptions all targeting the same room — the shape room-worker
+// publishes when an admin bulk-invites multiple users in one action. If any
+// member fixture has Restricted=true, its Subscription gets
+// HistorySharedSince set (user-room-sync filters those out per-subscription;
+// spotlight-sync indexes them normally).
+func buildBulkMemberEventPayload(
+	roomID, roomName, siteID string,
+	joinedAt time.Time,
+	members []memberFixture,
+) model.MemberAddedPayload {
+	historyFrom := joinedAt.Add(-1 * time.Hour)
+	subscriptions := make([]model.Subscription, 0, len(members))
+	for _, m := range members {
+		sub := model.Subscription{
+			ID:         m.SubID,
+			User:       model.SubscriptionUser{ID: "u-" + m.Account, Account: m.Account},
+			RoomID:     roomID,
+			SiteID:     siteID,
+			Roles:      []model.Role{model.RoleMember},
+			JoinedAt:   joinedAt,
+			LastSeenAt: joinedAt,
+		}
+		if m.Restricted {
+			sub.HistorySharedSince = &historyFrom
+		}
+		subscriptions = append(subscriptions, sub)
+	}
 	return model.MemberAddedPayload{
-		Subscription: model.Subscription{
-			ID:                 subID,
-			User:               model.SubscriptionUser{ID: "u-" + account, Account: account},
-			RoomID:             roomID,
-			SiteID:             siteID,
-			Roles:              []model.Role{model.RoleMember},
-			HistorySharedSince: historyShared,
-			JoinedAt:           joinedAt,
-			LastSeenAt:         joinedAt,
-		},
+		Subscriptions: subscriptions,
 		Room: model.Room{
 			ID:        roomID,
 			Name:      roomName,
@@ -82,10 +116,12 @@ func publishMemberOutboxEvent(
 	payloadData, err := json.Marshal(payload)
 	require.NoError(t, err)
 
+	// SiteID/DestSiteID on the envelope come from the Room (all subscriptions
+	// in one event target the same room, so they share the same siteID).
 	evt := model.OutboxEvent{
 		Type:       eventType,
-		SiteID:     payload.Subscription.SiteID,
-		DestSiteID: payload.Subscription.SiteID,
+		SiteID:     payload.Room.SiteID,
+		DestSiteID: payload.Room.SiteID,
 		Payload:    payloadData,
 		Timestamp:  timestamp,
 	}
@@ -245,6 +281,96 @@ func TestSpotlightSyncIntegration(t *testing.T) {
 	})
 }
 
+// TestSpotlightSync_BulkInvite verifies the fan-out path end-to-end: a single
+// JetStream message carrying N subscriptions must produce N spotlight docs
+// in one ES bulk request.
+func TestSpotlightSync_BulkInvite(t *testing.T) {
+	esURL := setupElasticsearch(t)
+	js, _ := setupNATSJetStream(t)
+	ctx := context.Background()
+
+	siteID := "site-spot-bulk"
+	indexName := "spotlight-site-spot-bulk-v1-chat"
+
+	engine, err := searchengine.New(ctx, "elasticsearch", esURL)
+	require.NoError(t, err)
+	waitForClusterGreen(t, esURL, 120*time.Second)
+
+	coll := newSpotlightCollection(indexName)
+	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(spotlightTemplateBody(indexName))))
+	preCreateIndex(t, esURL, indexName)
+	waitForClusterGreen(t, esURL, 120*time.Second)
+
+	createInboxStream(t, ctx, js, siteID)
+	cons, err := js.CreateOrUpdateConsumer(ctx, stream.Inbox(siteID).Name, jetstream.ConsumerConfig{
+		Durable:        "spotlight-sync-bulk-inttest",
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		FilterSubjects: coll.FilterSubjects(siteID),
+	})
+	require.NoError(t, err, "create spotlight consumer")
+
+	handler := NewHandler(&engineAdapter{engine: engine}, coll, 100)
+
+	joinedAt := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+
+	// One bulk-invite event adds 3 users to r-platform at once.
+	payload := buildBulkMemberEventPayload("r-platform", "platform", siteID, joinedAt, []memberFixture{
+		{SubID: "sub-dave-platform", Account: "dave"},
+		{SubID: "sub-erin-platform", Account: "erin"},
+		{SubID: "sub-frank-platform", Account: "frank"},
+	})
+	publishMemberOutboxEvent(t, ctx, js,
+		subject.InboxMemberAdded(siteID),
+		model.OutboxMemberAdded,
+		payload,
+		5000,
+	)
+
+	// Only ONE JetStream message is drained, but it produces THREE ES index
+	// actions — handler.ActionCount() > MessageCount() is the whole point
+	// of the fan-out path.
+	drainConsumer(t, ctx, cons, handler, 1)
+	refreshIndex(t, esURL, indexName)
+
+	t.Run("all three subscriptions landed in the index", func(t *testing.T) {
+		assert.Equal(t, 3, countDocs(t, esURL, indexName),
+			"1 message × 3 subscriptions = 3 spotlight docs")
+	})
+
+	t.Run("each subscription has the correct doc shape", func(t *testing.T) {
+		for _, sub := range []struct {
+			docID   string
+			account string
+		}{
+			{"sub-dave-platform", "dave"},
+			{"sub-erin-platform", "erin"},
+			{"sub-frank-platform", "frank"},
+		} {
+			doc := getDoc(t, esURL, indexName, sub.docID)
+			require.NotNil(t, doc, "%s should be indexed", sub.docID)
+			assert.Equal(t, sub.docID, doc["subscriptionId"])
+			assert.Equal(t, sub.account, doc["userAccount"])
+			assert.Equal(t, "r-platform", doc["roomId"])
+			assert.Equal(t, "platform", doc["roomName"])
+		}
+	})
+
+	t.Run("bulk remove evicts all three docs", func(t *testing.T) {
+		// Same 3 subscriptions, now removed in one event.
+		publishMemberOutboxEvent(t, ctx, js,
+			subject.InboxMemberRemoved(siteID),
+			model.OutboxMemberRemoved,
+			payload,
+			6000,
+		)
+		drainConsumer(t, ctx, cons, handler, 1)
+		refreshIndex(t, esURL, indexName)
+
+		assert.Equal(t, 0, countDocs(t, esURL, indexName),
+			"1 message × 3 subscription deletes = 0 docs remaining")
+	})
+}
+
 // --- User-room integration test ---
 
 func TestUserRoomSyncIntegration(t *testing.T) {
@@ -370,6 +496,107 @@ func TestUserRoomSyncIntegration(t *testing.T) {
 		require.NotNil(t, doc)
 		assert.NotEmpty(t, doc["createdAt"], "upsert should seed createdAt")
 		assert.NotEmpty(t, doc["updatedAt"], "add path should stamp updatedAt")
+	})
+}
+
+// TestUserRoomSync_BulkInvite verifies the fan-out path for user-room: a
+// single JetStream message with N subscriptions produces N distinct user-room
+// updates (different DocIDs since each sub targets a different user),
+// with per-subscription restricted-room filtering.
+func TestUserRoomSync_BulkInvite(t *testing.T) {
+	esURL := setupElasticsearch(t)
+	js, _ := setupNATSJetStream(t)
+	ctx := context.Background()
+
+	siteID := "site-ur-bulk"
+	indexName := "user-room-site-ur-bulk"
+
+	engine, err := searchengine.New(ctx, "elasticsearch", esURL)
+	require.NoError(t, err)
+	waitForClusterGreen(t, esURL, 120*time.Second)
+
+	coll := newUserRoomCollection(indexName)
+	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName))))
+	preCreateIndex(t, esURL, indexName)
+	waitForClusterGreen(t, esURL, 120*time.Second)
+
+	createInboxStream(t, ctx, js, siteID)
+	cons, err := js.CreateOrUpdateConsumer(ctx, stream.Inbox(siteID).Name, jetstream.ConsumerConfig{
+		Durable:        "user-room-sync-bulk-inttest",
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		FilterSubjects: coll.FilterSubjects(siteID),
+	})
+	require.NoError(t, err, "create user-room consumer")
+
+	handler := NewHandler(&engineAdapter{engine: engine}, coll, 100)
+
+	joinedAt := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+
+	// One bulk-invite event: 4 users to r-platform, of which 2 are
+	// restricted (should be filtered out per-subscription). Only 2 user-room
+	// docs should be created.
+	payload := buildBulkMemberEventPayload("r-platform", "platform", siteID, joinedAt, []memberFixture{
+		{SubID: "sub-dave", Account: "dave", Restricted: false},
+		{SubID: "sub-erin", Account: "erin", Restricted: true}, // skip
+		{SubID: "sub-frank", Account: "frank", Restricted: false},
+		{SubID: "sub-gina", Account: "gina", Restricted: true}, // skip
+	})
+	publishMemberOutboxEvent(t, ctx, js,
+		subject.InboxMemberAdded(siteID),
+		model.OutboxMemberAdded,
+		payload,
+		5000,
+	)
+
+	// One JetStream message, 2 fan-out actions (4 subscriptions × 2
+	// unrestricted = 2 upserts).
+	drainConsumer(t, ctx, cons, handler, 1)
+	refreshIndex(t, esURL, indexName)
+
+	t.Run("only unrestricted users were upserted", func(t *testing.T) {
+		// dave and frank present
+		daveDoc := getDoc(t, esURL, indexName, "dave")
+		require.NotNil(t, daveDoc, "dave should be upserted")
+		daveRooms := toStringSlice(t, daveDoc["rooms"])
+		assert.ElementsMatch(t, []string{"r-platform"}, daveRooms)
+
+		frankDoc := getDoc(t, esURL, indexName, "frank")
+		require.NotNil(t, frankDoc, "frank should be upserted")
+		frankRooms := toStringSlice(t, frankDoc["rooms"])
+		assert.ElementsMatch(t, []string{"r-platform"}, frankRooms)
+
+		// erin and gina absent — restricted rooms are filtered per-sub
+		assert.Nil(t, getDoc(t, esURL, indexName, "erin"),
+			"restricted erin must not be upserted")
+		assert.Nil(t, getDoc(t, esURL, indexName, "gina"),
+			"restricted gina must not be upserted")
+	})
+
+	t.Run("bulk remove on mixed set only evicts from unrestricted users", func(t *testing.T) {
+		// Same 4-user event, now a remove. Only dave and frank have docs
+		// to update; erin and gina are still skipped.
+		publishMemberOutboxEvent(t, ctx, js,
+			subject.InboxMemberRemoved(siteID),
+			model.OutboxMemberRemoved,
+			payload,
+			6000,
+		)
+		drainConsumer(t, ctx, cons, handler, 1)
+		refreshIndex(t, esURL, indexName)
+
+		daveDoc := getDoc(t, esURL, indexName, "dave")
+		require.NotNil(t, daveDoc, "dave's user doc should still exist (ghost)")
+		assert.Empty(t, toStringSlice(t, daveDoc["rooms"]),
+			"dave's rooms array should be empty after bulk remove")
+
+		frankDoc := getDoc(t, esURL, indexName, "frank")
+		require.NotNil(t, frankDoc)
+		assert.Empty(t, toStringSlice(t, frankDoc["rooms"]))
+
+		// erin and gina still absent — the remove is a no-op for restricted
+		// subs so no doc gets created.
+		assert.Nil(t, getDoc(t, esURL, indexName, "erin"))
+		assert.Nil(t, getDoc(t, esURL, indexName, "gina"))
 	})
 }
 
