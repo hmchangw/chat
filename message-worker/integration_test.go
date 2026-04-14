@@ -344,6 +344,141 @@ func TestHandler_Integration(t *testing.T) {
 	assert.Equal(t, "integration test message", gotMsg)
 }
 
+func TestHandler_Integration_ThreadReply(t *testing.T) {
+	ctx := context.Background()
+
+	cassSession := setupCassandra(t)
+	db := setupMongo(t)
+
+	userCol := db.Collection("users")
+	_, err := userCol.InsertMany(ctx, []interface{}{
+		bson.M{
+			"_id":         "u-parent",
+			"account":     "parent-user",
+			"siteId":      "site-a",
+			"engName":     "Parent User",
+			"chineseName": "家長",
+			"employeeId":  "EMP001",
+		},
+		bson.M{
+			"_id":         "u-replier",
+			"account":     "replier",
+			"siteId":      "site-a",
+			"engName":     "Replier User",
+			"chineseName": "回覆者",
+			"employeeId":  "EMP002",
+		},
+	})
+	require.NoError(t, err)
+
+	store := NewCassandraStore(cassSession)
+	us := userstore.NewMongoStore(userCol)
+	ts := newThreadStoreMongo(db)
+	require.NoError(t, ts.EnsureIndexes(ctx))
+	h := NewHandler(store, us, ts)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// First: save the parent message to Cassandra so GetMessageSender can find it
+	parentMsg := &model.Message{
+		ID:          "msg-parent",
+		RoomID:      "r-1",
+		UserID:      "u-parent",
+		UserAccount: "parent-user",
+		Content:     "parent message",
+		CreatedAt:   now.Add(-1 * time.Minute),
+	}
+	parentSender := &cassParticipant{
+		ID:      "u-parent",
+		EngName: "Parent User",
+		Account: "parent-user",
+	}
+	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
+
+	// Second: process a thread reply (first reply path)
+	replyEvt := model.MessageEvent{
+		Message: model.Message{
+			ID:                    "msg-reply-1",
+			RoomID:                "r-1",
+			UserID:                "u-replier",
+			UserAccount:           "replier",
+			Content:               "first thread reply",
+			CreatedAt:             now,
+			ThreadParentMessageID: "msg-parent",
+		},
+		SiteID:    "site-a",
+		Timestamp: now.UnixMilli(),
+	}
+	data, err := json.Marshal(replyEvt)
+	require.NoError(t, err)
+	require.NoError(t, h.processMessage(ctx, data))
+
+	t.Run("thread room created", func(t *testing.T) {
+		var room model.ThreadRoom
+		err := db.Collection("threadRooms").FindOne(ctx, bson.M{
+			"parentMessageId": "msg-parent",
+		}).Decode(&room)
+		require.NoError(t, err)
+		assert.Equal(t, "msg-parent", room.ParentMessageID)
+		assert.Equal(t, "r-1", room.RoomID)
+		assert.Equal(t, "site-a", room.SiteID)
+		assert.Equal(t, "msg-reply-1", room.LastMsgID)
+	})
+
+	t.Run("parent author subscribed", func(t *testing.T) {
+		count, err := db.Collection("threadSubscriptions").CountDocuments(ctx, bson.M{
+			"userId":          "u-parent",
+			"parentMessageId": "msg-parent",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), count)
+	})
+
+	t.Run("replier subscribed", func(t *testing.T) {
+		count, err := db.Collection("threadSubscriptions").CountDocuments(ctx, bson.M{
+			"userId":          "u-replier",
+			"parentMessageId": "msg-parent",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), count)
+	})
+
+	// Third: process a second thread reply (subsequent path)
+	reply2Evt := model.MessageEvent{
+		Message: model.Message{
+			ID:                    "msg-reply-2",
+			RoomID:                "r-1",
+			UserID:                "u-replier",
+			UserAccount:           "replier",
+			Content:               "second thread reply",
+			CreatedAt:             now.Add(5 * time.Minute),
+			ThreadParentMessageID: "msg-parent",
+		},
+		SiteID:    "site-a",
+		Timestamp: now.Add(5 * time.Minute).UnixMilli(),
+	}
+	data2, err := json.Marshal(reply2Evt)
+	require.NoError(t, err)
+	require.NoError(t, h.processMessage(ctx, data2))
+
+	t.Run("thread room lastMsgId updated", func(t *testing.T) {
+		var room model.ThreadRoom
+		err := db.Collection("threadRooms").FindOne(ctx, bson.M{
+			"parentMessageId": "msg-parent",
+		}).Decode(&room)
+		require.NoError(t, err)
+		assert.Equal(t, "msg-reply-2", room.LastMsgID)
+	})
+
+	t.Run("still only two subscriptions after second reply", func(t *testing.T) {
+		count, err := db.Collection("threadSubscriptions").CountDocuments(ctx, bson.M{
+			"parentMessageId": "msg-parent",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), count)
+	})
+}
+
 func TestThreadStoreMongo_CreateThreadRoom(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
