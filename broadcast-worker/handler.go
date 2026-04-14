@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
@@ -43,8 +43,9 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("get room %s: %w", msg.RoomID, err)
 	}
 
-	mentionAll := detectMentionAll(msg.Content)
-	mentionedAccounts := extractMentionedAccounts(msg.Content)
+	parsed := mention.Parse(msg.Content)
+	mentionAll := parsed.MentionAll
+	mentionedAccounts := parsed.Accounts
 
 	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, mentionAll); err != nil {
 		return fmt.Errorf("update room on new message: %w", err)
@@ -180,34 +181,4 @@ func buildMentionParticipants(mentionedAccounts []string, userMap map[string]mod
 		participants[i] = p
 	}
 	return participants
-}
-
-func detectMentionAll(content string) bool {
-	for _, token := range strings.Fields(content) {
-		lower := strings.ToLower(token)
-		if lower == "@all" || lower == "@here" {
-			return true
-		}
-	}
-	return false
-}
-
-func extractMentionedAccounts(content string) []string {
-	seen := make(map[string]struct{})
-	var accounts []string
-	for _, token := range strings.Fields(content) {
-		if !strings.HasPrefix(token, "@") || len(token) == 1 {
-			continue
-		}
-		name := strings.ToLower(token[1:])
-		if name == "all" || name == "here" {
-			continue
-		}
-		if _, exists := seen[name]; exists {
-			continue
-		}
-		seen[name] = struct{}{}
-		accounts = append(accounts, name)
-	}
-	return accounts
 }

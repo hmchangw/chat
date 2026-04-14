@@ -6,40 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
-
-// mentionRe matches @mention tokens in message content.
-// Note: a bare @ not preceded by whitespace (e.g. "hello@bob") also matches —
-// this is intentional per spec. Non-existent accounts are silently skipped by
-// resolveMentions during the MongoDB lookup.
-var mentionRe = regexp.MustCompile(`(^|\s|>?)@([0-9a-zA-Z_-]+(\.[0-9a-zA-Z_-]+)*(@[0-9a-zA-Z_-]+(\.[0-9a-zA-Z_-]+)*)?)`)
-
-// parseMentions returns the unique mention targets found in content (without the @ prefix).
-// Returns nil when content has no mentions.
-func parseMentions(content string) []string {
-	matches := mentionRe.FindAllStringSubmatch(content, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(matches))
-	var out []string
-	for _, m := range matches {
-		account := m[2]
-		if _, exists := seen[account]; !exists {
-			seen[account] = struct{}{}
-			out = append(out, account)
-		}
-	}
-	return out
-}
 
 type Handler struct {
 	store       Store
@@ -71,25 +46,15 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 // special entry without a DB lookup. Accounts not found in MongoDB are skipped.
 // Returns nil when content has no mentions.
 func (h *Handler) resolveMentions(ctx context.Context, content string) ([]model.Participant, error) {
-	parsed := parseMentions(content)
-	if len(parsed) == 0 {
+	parsed := mention.Parse(content)
+	if len(parsed.Accounts) == 0 && !parsed.MentionAll {
 		return nil, nil
-	}
-
-	var mentionAll bool
-	var userAccounts []string
-	for _, account := range parsed {
-		if account == "all" {
-			mentionAll = true
-		} else {
-			userAccounts = append(userAccounts, account)
-		}
 	}
 
 	var participants []model.Participant
 
-	if len(userAccounts) > 0 {
-		users, err := h.userStore.FindUsersByAccounts(ctx, userAccounts)
+	if len(parsed.Accounts) > 0 {
+		users, err := h.userStore.FindUsersByAccounts(ctx, parsed.Accounts)
 		if err != nil {
 			return nil, fmt.Errorf("find mentioned users: %w", err)
 		}
@@ -103,7 +68,7 @@ func (h *Handler) resolveMentions(ctx context.Context, content string) ([]model.
 		}
 	}
 
-	if mentionAll {
+	if parsed.MentionAll {
 		participants = append(participants, model.Participant{
 			Account: "all",
 			EngName: "all",
