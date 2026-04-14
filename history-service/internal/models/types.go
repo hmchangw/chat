@@ -1,12 +1,17 @@
 package models
 
-import "github.com/gocql/gocql"
+import (
+	"time"
+
+	"github.com/gocql/gocql"
+)
 
 func init() {
 	verifyUDTTags(&Participant{})
 	verifyUDTTags(&File{})
 	verifyUDTTags(&Card{})
 	verifyUDTTags(&CardAction{})
+	verifyUDTTags(&QuotedParentMessage{})
 }
 
 // Participant maps to the Cassandra "Participant" UDT.
@@ -70,4 +75,23 @@ func (ca *CardAction) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte
 }
 func (ca *CardAction) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
 	return marshalUDTField(ca, name, info)
+}
+
+// QuotedParentMessage maps to the Cassandra "QuotedParentMessage" UDT.
+type QuotedParentMessage struct {
+	MessageID   string        `json:"messageId"              cql:"message_id"`
+	RoomID      string        `json:"roomId"                 cql:"room_id"`
+	Sender      Participant   `json:"sender"                 cql:"sender"`
+	CreatedAt   time.Time     `json:"createdAt"              cql:"created_at"`
+	Msg         string        `json:"msg,omitempty"          cql:"msg"`
+	Mentions    []Participant `json:"mentions,omitempty"     cql:"mentions"`
+	Attachments [][]byte      `json:"attachments,omitempty"  cql:"attachments"`
+	MessageLink string        `json:"messageLink,omitempty"  cql:"message_link"`
+}
+
+func (q *QuotedParentMessage) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte) error {
+	return unmarshalUDTField(q, name, info, data)
+}
+func (q *QuotedParentMessage) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+	return marshalUDTField(q, name, info)
 }
