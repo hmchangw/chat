@@ -78,6 +78,7 @@ services:
     build:
       context: ../..
       dockerfile: message-worker/deploy/Dockerfile
+    pull_policy: build
     environment:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
