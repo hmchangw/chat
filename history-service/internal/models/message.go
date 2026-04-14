@@ -16,7 +16,9 @@ type Message struct {
 	Card                  *Card                    `json:"card,omitempty"`
 	CardAction            *CardAction              `json:"cardAction,omitempty"`
 	TShow                 bool                     `json:"tshow,omitempty"`
+	ThreadParentID        string                   `json:"threadParentId,omitempty"`
 	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty"`
+	QuotedParentMessage   *QuotedParentMessage     `json:"quotedParentMessage,omitempty"`
 	VisibleTo             string                   `json:"visibleTo,omitempty"`
 	Unread                bool                     `json:"unread,omitempty"`
 	Reactions             map[string][]Participant `json:"reactions,omitempty"`
