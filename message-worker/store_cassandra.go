@@ -2,12 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/gocql/gocql"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
+
+// errMessageNotFound is returned by GetMessageSender when the message row is
+// missing from Cassandra. Handler code checks for this sentinel to ack-and-skip
+// instead of NAK'ing (which would cause infinite JetStream redelivery).
+var errMessageNotFound = errors.New("message not found")
 
 // cassParticipant maps to the Cassandra "Participant" UDT.
 type cassParticipant struct {
@@ -146,6 +152,9 @@ func (s *CassandraStore) GetMessageSender(ctx context.Context, messageID string)
 		`SELECT sender FROM messages_by_id WHERE message_id = ? LIMIT 1`,
 		messageID,
 	).WithContext(ctx).Scan(&sender); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil, fmt.Errorf("get sender for message %s: %w", messageID, errMessageNotFound)
+		}
 		return nil, fmt.Errorf("get sender for message %s: %w", messageID, err)
 	}
 	return &sender, nil
