@@ -21,9 +21,9 @@ type Message struct {
 	Unread                bool                     `json:"unread,omitempty"`
 	Reactions             map[string][]Participant `json:"reactions,omitempty"`
 	Deleted               bool                     `json:"deleted,omitempty"`
-	SysMsgType            string                   `json:"sysMsgType,omitempty"`
+	Type                  string                   `json:"type,omitempty"`
 	SysMsgData            []byte                   `json:"sysMsgData,omitempty"`
-	FederateFrom          string                   `json:"federateFrom,omitempty"`
+	SiteID                string                   `json:"siteId,omitempty"`
 	EditedAt              *time.Time               `json:"editedAt,omitempty"`
 	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"`
 }
