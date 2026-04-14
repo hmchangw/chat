@@ -311,6 +311,21 @@ func TestHistoryService_GetMessageByID_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestHistoryService_GetMessageByID_WrongRoom(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := testContext()
+
+	createdAt := joinTime.Add(1 * time.Minute)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	// Message exists but belongs to a different room.
+	msg := &models.Message{MessageID: "m1", RoomID: "r-other", CreatedAt: createdAt}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m1").Return(msg, nil)
+
+	_, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
 func TestHistoryService_GetMessageByID_StoreError(t *testing.T) {
 	svc, msgs, subs := newService(t)
 	c := testContext()
@@ -466,6 +481,23 @@ func TestHistoryService_LoadSurroundingMessages_SubscriptionError(t *testing.T) 
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking subscription")
+}
+
+func TestHistoryService_LoadSurroundingMessages_WrongRoom(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	// Central message exists but belongs to a different room.
+	wrongRoomMsg := &models.Message{MessageID: "m5", RoomID: "r-other", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m5").Return(wrongRoomMsg, nil)
+
+	_, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{
+		MessageID: "m5", Limit: 6,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
 }
 
 func TestHistoryService_LoadSurroundingMessages_CentralMessageOutsideWindow(t *testing.T) {
