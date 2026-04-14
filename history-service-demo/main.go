@@ -349,9 +349,14 @@ func run() error {
 	}
 	info("Subscription: user=%s room=%s joined=%s", account, roomID, joinTime.Format("15:04:05"))
 
-	// Clean old demo messages
+	// Clean old demo messages from both tables
 	if err := cassSession.Query(`DELETE FROM messages_by_room WHERE room_id = ?`, roomID).Exec(); err != nil {
-		return fmt.Errorf("cleaning old messages: %w", err)
+		return fmt.Errorf("cleaning old messages_by_room: %w", err)
+	}
+	// messages_by_id is partitioned by message_id; clean each known demo message.
+	for i := range chatMessages {
+		msgID := fmt.Sprintf("msg-%03d", i)
+		_ = cassSession.Query(`DELETE FROM messages_by_id WHERE message_id = ?`, msgID).Exec()
 	}
 
 	baseTime := joinTime.Add(5 * time.Minute)
@@ -361,7 +366,7 @@ func run() error {
 	}
 	var msgs []seeded
 
-	const insertCQL = `INSERT INTO messages_by_room (
+	const insertColumns = `(
 		room_id, created_at, message_id, sender, target_user, msg,
 		mentions, attachments, file, card, card_action,
 		tshow, thread_parent_id, thread_parent_created_at,
@@ -369,6 +374,9 @@ func run() error {
 		reactions, deleted, type, sys_msg_data,
 		site_id, edited_at, updated_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	const insertByRoomCQL = `INSERT INTO messages_by_room ` + insertColumns
+	const insertByIDCQL = `INSERT INTO messages_by_id ` + insertColumns
 
 	for i := range chatMessages {
 		cm := &chatMessages[i]
@@ -414,7 +422,7 @@ func run() error {
 			updatedAt = &ua
 		}
 
-		if err := cassSession.Query(insertCQL,
+		vals := []any{
 			roomID, ts, msgID,
 			&sender, target, cm.msg,
 			mentions, cm.attachments, cm.file, cm.card, cm.cardAction,
@@ -422,8 +430,12 @@ func run() error {
 			cm.quotedParentMessage, cm.visibleTo, cm.unread,
 			reactions, cm.deleted, cm.msgType, cm.sysMsgData,
 			cm.siteID, editedAt, updatedAt,
-		).Exec(); err != nil {
-			return fmt.Errorf("seed message %d: %w", i, err)
+		}
+		if err := cassSession.Query(insertByRoomCQL, vals...).Exec(); err != nil {
+			return fmt.Errorf("seed messages_by_room %d: %w", i, err)
+		}
+		if err := cassSession.Query(insertByIDCQL, vals...).Exec(); err != nil {
+			return fmt.Errorf("seed messages_by_id %d: %w", i, err)
 		}
 		msgs = append(msgs, seeded{msgID, ts})
 	}
