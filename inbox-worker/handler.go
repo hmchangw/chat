@@ -19,6 +19,7 @@ type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	UpsertRoom(ctx context.Context, room *model.Room) error
 	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
+	DeleteSubscription(ctx context.Context, roomID, account string) error
 }
 
 // Publisher abstracts NATS publishing so the handler is testable.
@@ -47,6 +48,8 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 	switch evt.Type {
 	case "member_added":
 		return h.handleMemberAdded(ctx, &evt)
+	case "member_removed":
+		return h.handleMemberRemoved(ctx, &evt)
 	case "room_sync":
 		return h.handleRoomSync(ctx, &evt)
 	case "role_updated":
@@ -95,6 +98,32 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		slog.Error("publish subscription update failed", "error", err, "account", invite.InviteeAccount)
 	}
 
+	return nil
+}
+
+func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEvent) error {
+	var memberEvt model.MemberChangeEvent
+	if err := json.Unmarshal(evt.Payload, &memberEvt); err != nil {
+		return fmt.Errorf("unmarshal member removed payload: %w", err)
+	}
+	now := time.Now().UTC()
+	for _, account := range memberEvt.Accounts {
+		if err := h.store.DeleteSubscription(ctx, memberEvt.RoomID, account); err != nil {
+			return fmt.Errorf("delete subscription for %s: %w", account, err)
+		}
+		subEvt := model.SubscriptionUpdateEvent{
+			Subscription: model.Subscription{
+				RoomID: memberEvt.RoomID,
+				User:   model.SubscriptionUser{Account: account},
+			},
+			Action:    "removed",
+			Timestamp: now.UnixMilli(),
+		}
+		subEvtData, _ := json.Marshal(subEvt)
+		if err := h.pub.Publish(ctx, subject.SubscriptionUpdate(account), subEvtData); err != nil {
+			slog.Error("subscription update publish failed", "error", err, "account", account)
+		}
+	}
 	return nil
 }
 

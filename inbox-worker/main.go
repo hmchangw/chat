@@ -62,6 +62,14 @@ func (s *mongoInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, 
 	return nil
 }
 
+func (s *mongoInboxStore) DeleteSubscription(ctx context.Context, roomID, account string) error {
+	_, err := s.subCol.DeleteOne(ctx, bson.M{"roomId": roomID, "u.account": account})
+	if err != nil {
+		return fmt.Errorf("delete subscription for %q in room %q: %w", account, roomID, err)
+	}
+	return nil
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 

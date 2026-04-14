@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -43,6 +46,19 @@ func (s *stubInboxStore) UpsertRoom(ctx context.Context, room *model.Room) error
 		}
 	}
 	s.rooms = append(s.rooms, *room)
+	return nil
+}
+
+func (s *stubInboxStore) DeleteSubscription(_ context.Context, roomID, account string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	filtered := s.subscriptions[:0]
+	for i := range s.subscriptions {
+		if s.subscriptions[i].RoomID != roomID || s.subscriptions[i].User.Account != account {
+			filtered = append(filtered, s.subscriptions[i])
+		}
+	}
+	s.subscriptions = filtered
 	return nil
 }
 
@@ -467,6 +483,58 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 	if records[0].subject != wantSubject {
 		t.Errorf("publish subject = %q, want %q", records[0].subject, wantSubject)
 	}
+}
+
+func TestHandleEvent_MemberRemoved(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	store.mu.Lock()
+	store.subscriptions = append(store.subscriptions, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: "r1", SiteID: "site-a", Role: model.RoleMember,
+	})
+	store.mu.Unlock()
+
+	memberEvt := model.MemberChangeEvent{
+		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
+	}
+	payload, _ := json.Marshal(memberEvt)
+	evt := model.OutboxEvent{
+		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), data)
+	require.NoError(t, err)
+
+	subs := store.getSubscriptions()
+	assert.Empty(t, subs)
+
+	records := pub.getRecords()
+	require.Len(t, records, 1)
+	assert.Equal(t, "chat.user.bob.event.subscription.update", records[0].subject)
+
+	var subEvt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(records[0].data, &subEvt))
+	assert.Equal(t, "removed", subEvt.Action)
+}
+
+func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	evt := model.OutboxEvent{
+		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: []byte(`{invalid`), Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
 }
 
 func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
