@@ -61,7 +61,7 @@ services:
         set -e
         cqlsh cassandra <<'CQL'
         CREATE KEYSPACE IF NOT EXISTS chat WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
-        CREATE TYPE IF NOT EXISTS chat."Participant" (id TEXT, user_name TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN);
+        CREATE TYPE IF NOT EXISTS chat."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT);
         CREATE TYPE IF NOT EXISTS chat."File" (id TEXT, name TEXT, type TEXT);
         CREATE TYPE IF NOT EXISTS chat."Card" (template TEXT, data BLOB);
         CREATE TYPE IF NOT EXISTS chat."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB);
@@ -83,9 +83,9 @@ services:
           unread BOOLEAN,
           reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
           deleted BOOLEAN,
-          sys_msg_type TEXT,
+          type TEXT,
           sys_msg_data BLOB,
-          federate_from TEXT,
+          site_id TEXT,
           edited_at TIMESTAMP,
           updated_at TIMESTAMP,
           PRIMARY KEY ((room_id), created_at, message_id)

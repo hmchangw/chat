@@ -14,7 +14,7 @@ import (
 const messageQuery = "SELECT room_id, created_at, message_id, sender, target_user, " +
 	"msg, mentions, attachments, file, card, card_action, tshow, " +
 	"thread_parent_created_at, visible_to, unread, reactions, deleted, " +
-	"sys_msg_type, sys_msg_data, federate_from, edited_at, updated_at " +
+	"type, sys_msg_data, site_id, edited_at, updated_at " +
 	"FROM messages_by_room"
 
 // messageScanDest returns the Scan destination pointers for a Message in column order.
@@ -25,8 +25,8 @@ func messageScanDest(m *models.Message) []any {
 		&m.Mentions, &m.Attachments, &m.File,
 		&m.Card, &m.CardAction, &m.TShow,
 		&m.ThreadParentCreatedAt, &m.VisibleTo, &m.Unread,
-		&m.Reactions, &m.Deleted, &m.SysMsgType,
-		&m.SysMsgData, &m.FederateFrom, &m.EditedAt,
+		&m.Reactions, &m.Deleted, &m.Type,
+		&m.SysMsgData, &m.SiteID, &m.EditedAt,
 		&m.UpdatedAt,
 	}
 }
