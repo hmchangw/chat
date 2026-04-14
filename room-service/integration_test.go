@@ -5,7 +5,10 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -80,6 +83,39 @@ func TestMongoStore_Integration(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for missing subscription")
 	}
+}
+
+func TestMongoStore_GetSubscriptionWithMembership_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	sub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleOwner},
+		JoinedAt: time.Now().UTC(),
+	}
+	require.NoError(t, store.CreateSubscription(ctx, sub))
+
+	t.Run("no individual membership", func(t *testing.T) {
+		result, hasIndividual, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
+		require.NoError(t, err)
+		assert.Equal(t, "alice", result.User.Account)
+		assert.False(t, hasIndividual)
+	})
+
+	t.Run("with individual membership", func(t *testing.T) {
+		_, err := db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+			ID: "rm1", RoomID: "r1", Ts: time.Now().UTC(),
+			Member: model.RoomMemberEntry{ID: "alice", Type: model.RoomMemberIndividual, Account: "alice"},
+		})
+		require.NoError(t, err)
+
+		result, hasIndividual, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
+		require.NoError(t, err)
+		assert.Equal(t, "alice", result.User.Account)
+		assert.True(t, hasIndividual)
+	})
 }
 
 func TestMongoStore_CountOwners_Integration(t *testing.T) {
