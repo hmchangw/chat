@@ -23,7 +23,6 @@ type threadStoreMongo struct {
 // Compile-time assertion that *threadStoreMongo satisfies ThreadStore.
 var _ ThreadStore = (*threadStoreMongo)(nil)
 
-//nolint:unused // wired up by main.go in a subsequent change; integration tests exercise it under the `integration` build tag.
 func newThreadStoreMongo(db *mongo.Database) *threadStoreMongo {
 	return &threadStoreMongo{
 		threadRooms:         db.Collection("threadRooms"),
@@ -32,8 +31,6 @@ func newThreadStoreMongo(db *mongo.Database) *threadStoreMongo {
 }
 
 // EnsureIndexes creates the unique indexes required by the thread store.
-//
-//nolint:unused // wired up by main.go in a subsequent change; integration tests exercise it under the `integration` build tag.
 func (s *threadStoreMongo) EnsureIndexes(ctx context.Context) error {
 	if _, err := s.threadRooms.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "parentMessageId", Value: 1}},
@@ -56,7 +53,7 @@ func (s *threadStoreMongo) CreateThreadRoom(ctx context.Context, room *model.Thr
 	_, err := s.threadRooms.InsertOne(ctx, room)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			return errThreadRoomExists
+			return fmt.Errorf("insert thread room: %w", errThreadRoomExists)
 		}
 		return fmt.Errorf("insert thread room: %w", err)
 	}
@@ -79,12 +76,12 @@ func (s *threadStoreMongo) UpsertThreadSubscription(ctx context.Context, sub *mo
 			"roomId":          sub.RoomID,
 			"userAccount":     sub.UserAccount,
 			"siteId":          sub.SiteID,
-			"lastSeenAt":      sub.LastSeenAt,
 			"updatedAt":       sub.UpdatedAt,
 		},
 		"$setOnInsert": bson.M{
-			"_id":       sub.ID,
-			"createdAt": sub.CreatedAt,
+			"_id":        sub.ID,
+			"createdAt":  sub.CreatedAt,
+			"lastSeenAt": sub.LastSeenAt,
 		},
 	}
 	_, err := s.threadSubscriptions.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true))

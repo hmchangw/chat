@@ -598,7 +598,7 @@ func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "ts-1", got.ID, "ID should not change on upsert")
 		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond), "createdAt should not change on upsert")
-		assert.Equal(t, later, got.LastSeenAt.UTC().Truncate(time.Millisecond))
+		assert.Equal(t, now, got.LastSeenAt.UTC().Truncate(time.Millisecond), "lastSeenAt should not change on upsert")
 		assert.Equal(t, later, got.UpdatedAt.UTC().Truncate(time.Millisecond))
 	})
 }
