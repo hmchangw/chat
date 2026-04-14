@@ -103,3 +103,31 @@ func (s *MongoStore) RemoveRole(ctx context.Context, account, roomID string, rol
 	}
 	return nil
 }
+
+func (s *MongoStore) GetUserWithOrgMembership(ctx context.Context, roomID, account string) (*UserWithOrgMembership, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *MongoStore) GetOrgMembersWithIndividualStatus(ctx context.Context, roomID, orgID string) ([]OrgMemberStatus, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *MongoStore) DeleteSubscription(ctx context.Context, roomID, account string) error {
+	return errors.New("not implemented")
+}
+
+func (s *MongoStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error {
+	return errors.New("not implemented")
+}
+
+func (s *MongoStore) DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error {
+	return errors.New("not implemented")
+}
+
+func (s *MongoStore) DeleteRoomMembersByAccount(ctx context.Context, roomID, account string) error {
+	return errors.New("not implemented")
+}
+
+func (s *MongoStore) DecrementUserCount(ctx context.Context, roomID string, count int) error {
+	return errors.New("not implemented")
+}

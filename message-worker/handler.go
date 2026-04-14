@@ -93,12 +93,12 @@ func (h *Handler) resolveMentions(ctx context.Context, content string) ([]model.
 		if err != nil {
 			return nil, fmt.Errorf("find mentioned users: %w", err)
 		}
-		for _, u := range users {
+		for i := range users {
 			participants = append(participants, model.Participant{
-				UserID:      u.ID,
-				Account:     u.Account,
-				ChineseName: u.ChineseName,
-				EngName:     u.EngName,
+				UserID:      users[i].ID,
+				Account:     users[i].Account,
+				ChineseName: users[i].ChineseName,
+				EngName:     users[i].EngName,
 			})
 		}
 	}

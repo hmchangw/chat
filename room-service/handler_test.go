@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -474,4 +477,154 @@ func TestHandler_UpdateRole_PublishError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for publish failure")
 	}
+}
+
+func TestHandler_RemoveMember_SelfLeave_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	sub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
+		HistorySharedSince: &hss, JoinedAt: hss,
+	}
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
+		Return(sub, true, nil)
+
+	var publishedSubj string
+	var publishedData []byte
+	handler := NewHandler(store, "site-a", 1000, func(ctx context.Context, subj string, data []byte) error {
+		publishedSubj = subj
+		publishedData = data
+		return nil
+	})
+
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
+	resp, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, reqSubj, publishedSubj)
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(resp, &status))
+	assert.Equal(t, "accepted", status["status"])
+	require.NotNil(t, publishedData)
+}
+
+func TestHandler_RemoveMember_SelfLeave_OrgOnly_Rejected(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	sub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", Roles: []model.Role{model.RoleMember},
+	}
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
+		Return(sub, false, nil)
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "org members cannot leave individually")
+}
+
+func TestHandler_RemoveMember_SelfLeave_LastOwner_Rejected(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	sub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
+	}
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
+		Return(sub, true, nil)
+	store.EXPECT().CountOwners(gomock.Any(), "r1").Return(1, nil)
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "last owner")
+}
+
+func TestHandler_RemoveMember_OwnerRemovesOther_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	ownerSub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
+	}
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
+	var publishedData []byte
+	handler := NewHandler(store, "site-a", 1000, func(ctx context.Context, subj string, data []byte) error {
+		publishedData = data
+		return nil
+	})
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob"})
+	resp, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotNil(t, publishedData)
+}
+
+func TestHandler_RemoveMember_NonOwnerRemovesOther_Rejected(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	memberSub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", Roles: []model.Role{model.RoleMember},
+	}
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(memberSub, nil)
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only owners can remove members")
+}
+
+func TestHandler_RemoveMember_OwnerRemovesOrg_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	ownerSub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
+	}
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
+	var publishedData []byte
+	handler := NewHandler(store, "site-a", 1000, func(ctx context.Context, subj string, data []byte) error {
+		publishedData = data
+		return nil
+	})
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", OrgID: "eng-org"})
+	resp, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	var published model.RemoveMemberRequest
+	require.NoError(t, json.Unmarshal(publishedData, &published))
+	assert.Equal(t, "eng-org", published.OrgID)
+}
+
+func TestHandler_RemoveMember_BothAccountAndOrgID_Rejected(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob", OrgID: "eng-org"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one")
+}
+
+func TestHandler_RemoveMember_NeitherAccountNorOrgID_Rejected(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one")
 }

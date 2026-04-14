@@ -145,6 +145,10 @@ func MemberRoleUpdateWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.role-update", siteID)
 }
 
+func MemberRemoveWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.remove", siteID)
+}
+
 func RoomCanonicalWildcard(siteID string) string {
 	return fmt.Sprintf("chat.room.canonical.%s.>", siteID)
 }

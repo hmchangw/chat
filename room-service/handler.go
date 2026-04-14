@@ -46,6 +46,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MemberRoleUpdateWildcard(h.siteID), queue, h.natsUpdateRole); err != nil {
 		return fmt.Errorf("subscribe member role update: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.MemberRemoveWildcard(h.siteID), queue, h.NatsHandleRemoveMember); err != nil {
+		return fmt.Errorf("subscribe member remove: %w", err)
+	}
 	return nil
 }
 
@@ -130,6 +133,73 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 	}
 
 	return json.Marshal(room)
+}
+
+// NatsHandleRemoveMember handles remove-member authorization requests.
+func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
+	resp, err := h.handleRemoveMember(m.Context(), m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		natsutil.ReplyError(m.Msg, err.Error())
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
+}
+
+func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	requesterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid remove-member subject: %s", subj)
+	}
+
+	var req model.RemoveMemberRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Exactly one of Account or OrgID must be set.
+	if (req.Account == "") == (req.OrgID == "") {
+		return nil, fmt.Errorf("exactly one of account or orgId must be set")
+	}
+
+	isSelfLeave := req.Account == requesterAccount
+
+	if isSelfLeave {
+		// Self-leave path: use GetSubscriptionWithMembership to detect org-only membership.
+		sub, hasIndividual, err := h.store.GetSubscriptionWithMembership(ctx, roomID, requesterAccount)
+		if err != nil {
+			return nil, fmt.Errorf("get subscription: %w", err)
+		}
+		if !hasIndividual {
+			return nil, fmt.Errorf("org members cannot leave individually")
+		}
+		if hasRole(sub.Roles, model.RoleOwner) {
+			count, err := h.store.CountOwners(ctx, roomID)
+			if err != nil {
+				return nil, fmt.Errorf("count owners: %w", err)
+			}
+			if count <= 1 {
+				return nil, fmt.Errorf("last owner cannot leave the room")
+			}
+		}
+	} else {
+		// Owner-removes-other or owner-removes-org path.
+		sub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("get requester subscription: %w", err)
+		}
+		if !hasRole(sub.Roles, model.RoleOwner) {
+			return nil, fmt.Errorf("only owners can remove members")
+		}
+	}
+
+	// Publish to ROOMS stream for room-worker processing.
+	if err := h.publishToStream(ctx, subj, data); err != nil {
+		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+
+	return json.Marshal(map[string]string{"status": "accepted"})
 }
 
 func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([]byte, error) {
