@@ -36,14 +36,14 @@ func (s *threadStoreMongo) EnsureIndexes(ctx context.Context) error {
 		Keys:    bson.D{{Key: "parentMessageId", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return fmt.Errorf("ensure thread store indexes: %w", err)
+		return fmt.Errorf("ensure threadRooms parentMessageId index: %w", err)
 	}
 
 	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userId", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return fmt.Errorf("ensure thread store indexes: %w", err)
+		return fmt.Errorf("ensure threadSubscriptions (threadRoomId,userId) index: %w", err)
 	}
 
 	return nil

@@ -192,7 +192,7 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
 	if err != nil {
 		if errors.Is(err, errMessageNotFound) {
-			slog.Warn("thread reply parent not found — skipping room creation",
+			slog.Warn("thread reply parent not found — skipping subscription creation",
 				"parentMessageID", msg.ThreadParentMessageID,
 				"replyID", msg.ID)
 			return nil
@@ -230,7 +230,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
 	if err != nil {
 		if errors.Is(err, errMessageNotFound) {
-			slog.Warn("thread reply parent not found — skipping room creation",
+			slog.Warn("thread reply parent not found — skipping subscription upsert",
 				"parentMessageID", msg.ThreadParentMessageID,
 				"replyID", msg.ID)
 			return nil
