@@ -61,8 +61,9 @@ func main() {
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
+	router.Use(natsrouter.SiteProxy(cfg.SiteID, nc.NatsConn()))
 
-	svc.RegisterHandlers(router, cfg.SiteID)
+	svc.RegisterHandlers(router)
 
 	slog.Info("history-service running", "site", cfg.SiteID)
 
