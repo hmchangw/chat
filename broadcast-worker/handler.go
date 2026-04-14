@@ -69,8 +69,8 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	if err != nil {
 		slog.Warn("user lookup failed, falling back to accounts", "error", err)
 	} else {
-		for _, u := range users {
-			userMap[u.Account] = u
+		for i := range users {
+			userMap[users[i].Account] = users[i]
 		}
 	}
 
