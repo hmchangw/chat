@@ -76,7 +76,12 @@ func main() {
 	us := userstore.NewMongoStore(db.Collection("users"))
 
 	store := NewCassandraStore(cassSession)
-	handler := NewHandler(store, us)
+	threadStore := newThreadStoreMongo(db)
+	if err := threadStore.EnsureIndexes(ctx); err != nil {
+		slog.Error("ensure thread store indexes failed", "error", err)
+		os.Exit(1)
+	}
+	handler := NewHandler(store, us, threadStore)
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{

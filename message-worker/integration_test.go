@@ -312,7 +312,8 @@ func TestHandler_Integration(t *testing.T) {
 
 	store := NewCassandraStore(cassSession)
 	us := userstore.NewMongoStore(userCol)
-	h := NewHandler(store, us)
+	threadStore := newThreadStoreMongo(mongoClient.Database("chat_test"))
+	h := NewHandler(store, us, threadStore)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{

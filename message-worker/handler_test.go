@@ -104,13 +104,13 @@ func TestHandler_ProcessMessage(t *testing.T) {
 	tests := []struct {
 		name       string
 		data       []byte
-		setupMocks func(store *MockStore, userStore *MockUserStore)
+		setupMocks func(store *MockStore, userStore *MockUserStore, threadStore *MockThreadStore)
 		wantErr    bool
 	}{
 		{
 			name: "happy path — user found and message saved",
 			data: validData,
-			setupMocks: func(store *MockStore, us *MockUserStore) {
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
 				store.EXPECT().SaveMessage(gomock.Any(), &msg, &expectedSender, "site-a").Return(nil)
 			},
@@ -118,7 +118,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		{
 			name: "user not found — NAK without saving",
 			data: validData,
-			setupMocks: func(store *MockStore, us *MockUserStore) {
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").
 					Return(nil, errors.New("user not found"))
 			},
@@ -127,7 +127,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		{
 			name: "user store DB error — NAK without saving",
 			data: validData,
-			setupMocks: func(store *MockStore, us *MockUserStore) {
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").
 					Return(nil, errors.New("mongo: connection refused"))
 			},
@@ -136,7 +136,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		{
 			name: "save error — NAK after user lookup",
 			data: validData,
-			setupMocks: func(store *MockStore, us *MockUserStore) {
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
 				store.EXPECT().SaveMessage(gomock.Any(), &msg, &expectedSender, "site-a").
 					Return(errors.New("cassandra: write timeout"))
@@ -146,21 +146,26 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		{
 			name:       "malformed JSON — NAK immediately",
 			data:       []byte("{invalid"),
-			setupMocks: func(store *MockStore, us *MockUserStore) {},
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {},
 			wantErr:    true,
 		},
 		{
 			name: "thread message — calls SaveThreadMessage not SaveMessage",
 			data: threadData,
-			setupMocks: func(store *MockStore, us *MockUserStore) {
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
 				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a").Return(nil)
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-1").
+					Return(&model.ThreadRoom{ID: "tr-1"}, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", now).Return(nil)
 			},
 		},
 		{
 			name: "thread message save error — NAK after user lookup",
 			data: threadData,
-			setupMocks: func(store *MockStore, us *MockUserStore) {
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
 				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a").
 					Return(errors.New("cassandra: write timeout"))
@@ -170,7 +175,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		{
 			name: "mention resolved to Participant and stored",
 			data: dataWithMention,
-			setupMocks: func(store *MockStore, us *MockUserStore) {
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
 					Return([]model.User{*bobUser}, nil)
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
@@ -180,7 +185,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		{
 			name: "@all stored as special Participant without DB lookup",
 			data: dataWithAll,
-			setupMocks: func(store *MockStore, us *MockUserStore) {
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
 				store.EXPECT().SaveMessage(gomock.Any(), &msgWithAll, &expectedSender, "site-a").Return(nil)
 			},
@@ -188,7 +193,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		{
 			name: "mention user lookup error — NAK before sender lookup",
 			data: dataWithMention,
-			setupMocks: func(store *MockStore, us *MockUserStore) {
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
 					Return(nil, errors.New("mongo: connection refused"))
 				// FindUserByID and SaveMessage must NOT be called
@@ -202,10 +207,203 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			mockStore := NewMockStore(ctrl)
 			mockUserStore := NewMockUserStore(ctrl)
-			tt.setupMocks(mockStore, mockUserStore)
+			mockThreadStore := NewMockThreadStore(ctrl)
+			tt.setupMocks(mockStore, mockUserStore, mockThreadStore)
 
-			h := NewHandler(mockStore, mockUserStore)
+			h := NewHandler(mockStore, mockUserStore, mockThreadStore)
 			err := h.processMessage(context.Background(), tt.data)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	parentSender := &cassParticipant{
+		ID:      "u-parent",
+		Account: "parent-user",
+	}
+
+	msg := &model.Message{
+		ID:                    "msg-reply",
+		RoomID:                "r1",
+		UserID:                "u-replier",
+		UserAccount:           "replier",
+		Content:               "thread reply",
+		CreatedAt:             now,
+		ThreadParentMessageID: "msg-parent",
+	}
+
+	tests := []struct {
+		name       string
+		msg        *model.Message
+		siteID     string
+		setupMocks func(store *MockStore, ts *MockThreadStore)
+		wantErr    bool
+	}{
+		{
+			name:   "first reply — different users — creates room and two subscriptions",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, room *model.ThreadRoom) error {
+						assert.Equal(t, "msg-parent", room.ParentMessageID)
+						assert.Equal(t, "r1", room.RoomID)
+						assert.Equal(t, "site-a", room.SiteID)
+						assert.Equal(t, "msg-reply", room.LastMsgID)
+						return nil
+					})
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(parentSender, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "u-parent", sub.UserID)
+						assert.Equal(t, "parent-user", sub.UserAccount)
+						return nil
+					})
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "u-replier", sub.UserID)
+						assert.Equal(t, "replier", sub.UserAccount)
+						return nil
+					})
+			},
+		},
+		{
+			name: "first reply — same user — creates room and one subscription",
+			msg: &model.Message{
+				ID:                    "msg-reply",
+				RoomID:                "r1",
+				UserID:                "u-parent",
+				UserAccount:           "parent-user",
+				Content:               "self reply",
+				CreatedAt:             now,
+				ThreadParentMessageID: "msg-parent",
+			},
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(parentSender, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "u-parent", sub.UserID)
+						return nil
+					})
+			},
+		},
+		{
+			name:   "first reply — GetMessageSender fails — returns error",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(nil, errors.New("cassandra: read timeout"))
+			},
+			wantErr: true,
+		},
+		{
+			name:   "first reply — UpsertThreadSubscription fails — returns error",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(parentSender, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					Return(errors.New("mongo: write error"))
+			},
+			wantErr: true,
+		},
+		{
+			name:   "subsequent reply — upserts subscription and updates last message",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).
+					Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+					Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "tr-existing", sub.ThreadRoomID)
+						assert.Equal(t, "u-replier", sub.UserID)
+						return nil
+					})
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).
+					Return(nil)
+			},
+		},
+		{
+			name:   "subsequent reply — GetThreadRoomByParentMessageID fails — returns error",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).
+					Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+					Return(nil, errors.New("mongo: connection refused"))
+			},
+			wantErr: true,
+		},
+		{
+			name:   "subsequent reply — UpsertThreadSubscription fails — returns error",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).
+					Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+					Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					Return(errors.New("mongo: write error"))
+			},
+			wantErr: true,
+		},
+		{
+			name:   "subsequent reply — UpdateThreadRoomLastMessage fails — returns error",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).
+					Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+					Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).
+					Return(errors.New("mongo: write error"))
+			},
+			wantErr: true,
+		},
+		{
+			name:   "CreateThreadRoom unexpected error — returns error",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).
+					Return(errors.New("mongo: connection refused"))
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockStore := NewMockStore(ctrl)
+			mockThreadStore := NewMockThreadStore(ctrl)
+			mockUserStore := NewMockUserStore(ctrl)
+			tt.setupMocks(mockStore, mockThreadStore)
+
+			h := NewHandler(mockStore, mockUserStore, mockThreadStore)
+			err := h.handleThreadRoomAndSubscriptions(context.Background(), tt.msg, tt.siteID)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {

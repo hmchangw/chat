@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -39,12 +41,13 @@ func parseMentions(content string) []string {
 }
 
 type Handler struct {
-	store     Store
-	userStore userstore.UserStore
+	store       Store
+	userStore   userstore.UserStore
+	threadStore ThreadStore
 }
 
-func NewHandler(store Store, userStore userstore.UserStore) *Handler {
-	return &Handler{store: store, userStore: userStore}
+func NewHandler(store Store, userStore userstore.UserStore, threadStore ThreadStore) *Handler {
+	return &Handler{store: store, userStore: userStore, threadStore: threadStore}
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES_CANONICAL stream.
@@ -140,6 +143,9 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		if err := h.store.SaveThreadMessage(ctx, &evt.Message, &sender, evt.SiteID); err != nil {
 			return fmt.Errorf("save thread message: %w", err)
 		}
+		if err := h.handleThreadRoomAndSubscriptions(ctx, &evt.Message, evt.SiteID); err != nil {
+			return fmt.Errorf("handle thread room and subscriptions: %w", err)
+		}
 	} else {
 		if err := h.store.SaveMessage(ctx, &evt.Message, &sender, evt.SiteID); err != nil {
 			return fmt.Errorf("save message: %w", err)
@@ -147,4 +153,96 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	}
 
 	return nil
+}
+
+// handleThreadRoomAndSubscriptions creates the ThreadRoom on first reply, and
+// upserts ThreadSubscriptions for the parent author and the replier. On subsequent
+// replies it updates the existing ThreadRoom's last message and ensures the replier
+// has a subscription. All operations are idempotent.
+func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *model.Message, siteID string) error {
+	now := msg.CreatedAt
+
+	threadRoom := model.ThreadRoom{
+		ID:              uuid.NewString(),
+		ParentMessageID: msg.ThreadParentMessageID,
+		RoomID:          msg.RoomID,
+		SiteID:          siteID,
+		LastMsgAt:       msg.CreatedAt,
+		LastMsgID:       msg.ID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	err := h.threadStore.CreateThreadRoom(ctx, &threadRoom)
+
+	if err == nil {
+		parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
+		if err != nil {
+			return fmt.Errorf("get parent message sender: %w", err)
+		}
+
+		if err := h.threadStore.UpsertThreadSubscription(ctx, &model.ThreadSubscription{
+			ID:              uuid.NewString(),
+			ParentMessageID: msg.ThreadParentMessageID,
+			RoomID:          msg.RoomID,
+			ThreadRoomID:    threadRoom.ID,
+			UserID:          parentSender.ID,
+			UserAccount:     parentSender.Account,
+			SiteID:          siteID,
+			LastSeenAt:      now,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}); err != nil {
+			return fmt.Errorf("upsert parent author thread subscription: %w", err)
+		}
+
+		if msg.UserID != parentSender.ID {
+			if err := h.threadStore.UpsertThreadSubscription(ctx, &model.ThreadSubscription{
+				ID:              uuid.NewString(),
+				ParentMessageID: msg.ThreadParentMessageID,
+				RoomID:          msg.RoomID,
+				ThreadRoomID:    threadRoom.ID,
+				UserID:          msg.UserID,
+				UserAccount:     msg.UserAccount,
+				SiteID:          siteID,
+				LastSeenAt:      now,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}); err != nil {
+				return fmt.Errorf("upsert replier thread subscription: %w", err)
+			}
+		}
+
+		return nil
+	}
+
+	if errors.Is(err, errThreadRoomExists) {
+		existingRoom, err := h.threadStore.GetThreadRoomByParentMessageID(ctx, msg.ThreadParentMessageID)
+		if err != nil {
+			return fmt.Errorf("get existing thread room: %w", err)
+		}
+
+		if err := h.threadStore.UpsertThreadSubscription(ctx, &model.ThreadSubscription{
+			ID:              uuid.NewString(),
+			ParentMessageID: msg.ThreadParentMessageID,
+			RoomID:          msg.RoomID,
+			ThreadRoomID:    existingRoom.ID,
+			UserID:          msg.UserID,
+			UserAccount:     msg.UserAccount,
+			SiteID:          siteID,
+			LastSeenAt:      now,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}); err != nil {
+			return fmt.Errorf("upsert replier thread subscription: %w", err)
+		}
+
+		if err := h.threadStore.UpdateThreadRoomLastMessage(ctx, existingRoom.ID, msg.ID, msg.CreatedAt); err != nil {
+			return fmt.Errorf("update thread room last message: %w", err)
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("create thread room: %w", err)
 }
