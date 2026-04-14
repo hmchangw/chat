@@ -228,7 +228,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req 
 	}
 
 	// Individual-only: full removal
-	if err := h.store.DeleteSubscription(ctx, req.RoomID, req.Account); err != nil {
+	deleted, err := h.store.DeleteSubscription(ctx, req.RoomID, req.Account)
+	if err != nil {
 		return fmt.Errorf("delete subscription: %w", err)
 	}
 
@@ -242,8 +243,10 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req 
 		}
 	}
 
-	if err := h.store.DecrementUserCount(ctx, req.RoomID, 1); err != nil {
-		return fmt.Errorf("decrement user count: %w", err)
+	if deleted > 0 {
+		if err := h.store.DecrementUserCount(ctx, req.RoomID, int(deleted)); err != nil {
+			return fmt.Errorf("decrement user count: %w", err)
+		}
 	}
 
 	now := time.Now().UTC()
@@ -265,10 +268,11 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req 
 		evtType = "member_removed"
 	}
 	memberEvt := model.MemberChangeEvent{
-		Type:     evtType,
-		RoomID:   req.RoomID,
-		Accounts: []string{req.Account},
-		SiteID:   h.siteID,
+		Type:      evtType,
+		RoomID:    req.RoomID,
+		Accounts:  []string{req.Account},
+		SiteID:    h.siteID,
+		Timestamp: now.UnixMilli(),
 	}
 	memberEvtData, _ := json.Marshal(memberEvt)
 	if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData); err != nil {
@@ -310,7 +314,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req 
 			Type:       "member_removed",
 			SiteID:     h.siteID,
 			DestSiteID: user.SiteID,
-			Payload:    mustMarshal(req),
+			Payload:    memberEvtData,
 			Timestamp:  now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
@@ -335,12 +339,15 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 		}
 	}
 
+	var deletedCount int64
 	if len(toRemove) > 0 {
 		accounts := make([]string, len(toRemove))
 		for i, m := range toRemove {
 			accounts[i] = m.Account
 		}
-		if err := h.store.DeleteSubscriptionsByAccounts(ctx, req.RoomID, accounts); err != nil {
+		var err error
+		deletedCount, err = h.store.DeleteSubscriptionsByAccounts(ctx, req.RoomID, accounts)
+		if err != nil {
 			return fmt.Errorf("delete subscriptions by accounts: %w", err)
 		}
 	}
@@ -349,8 +356,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 		return fmt.Errorf("delete room member (org): %w", err)
 	}
 
-	if len(toRemove) > 0 {
-		if err := h.store.DecrementUserCount(ctx, req.RoomID, len(toRemove)); err != nil {
+	if deletedCount > 0 {
+		if err := h.store.DecrementUserCount(ctx, req.RoomID, int(deletedCount)); err != nil {
 			return fmt.Errorf("decrement user count: %w", err)
 		}
 	}
@@ -380,10 +387,11 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 			accounts[i] = m.Account
 		}
 		memberEvt := model.MemberChangeEvent{
-			Type:     "member_removed",
-			RoomID:   req.RoomID,
-			Accounts: accounts,
-			SiteID:   h.siteID,
+			Type:      "member_removed",
+			RoomID:    req.RoomID,
+			Accounts:  accounts,
+			SiteID:    h.siteID,
+			Timestamp: now.UnixMilli(),
 		}
 		memberEvtData, _ := json.Marshal(memberEvt)
 		if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData); err != nil {
@@ -414,20 +422,31 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
 	}
 
-	// Cross-site outbox per remote toRemove member
+	// Cross-site outbox grouped by destination site
+	siteAccounts := make(map[string][]string)
 	for _, m := range toRemove {
 		if m.SiteID != h.siteID {
-			outbox := model.OutboxEvent{
-				Type:       "member_removed",
-				SiteID:     h.siteID,
-				DestSiteID: m.SiteID,
-				Payload:    mustMarshal(req),
-				Timestamp:  now.UnixMilli(),
-			}
-			outboxData, _ := json.Marshal(outbox)
-			if err := h.publish(ctx, subject.Outbox(h.siteID, m.SiteID, "member_removed"), outboxData); err != nil {
-				slog.Error("outbox publish failed", "error", err, "destSiteID", m.SiteID)
-			}
+			siteAccounts[m.SiteID] = append(siteAccounts[m.SiteID], m.Account)
+		}
+	}
+	for destSiteID, accounts := range siteAccounts {
+		evt := model.MemberChangeEvent{
+			Type:      "member_removed",
+			RoomID:    req.RoomID,
+			Accounts:  accounts,
+			SiteID:    h.siteID,
+			Timestamp: now.UnixMilli(),
+		}
+		outbox := model.OutboxEvent{
+			Type:       "member_removed",
+			SiteID:     h.siteID,
+			DestSiteID: destSiteID,
+			Payload:    mustMarshal(evt),
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, _ := json.Marshal(outbox)
+		if err := h.publish(ctx, subject.Outbox(h.siteID, destSiteID, "member_removed"), outboxData); err != nil {
+			slog.Error("outbox publish failed", "error", err, "destSiteID", destSiteID)
 		}
 	}
 

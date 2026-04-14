@@ -112,8 +112,9 @@ type RoomKeyEvent struct {
 }
 
 type MemberChangeEvent struct {
-	Type     string   `json:"type"     bson:"type"`
-	RoomID   string   `json:"roomId"   bson:"roomId"`
-	Accounts []string `json:"accounts" bson:"accounts"`
-	SiteID   string   `json:"siteId"   bson:"siteId"`
+	Type      string   `json:"type"      bson:"type"`
+	RoomID    string   `json:"roomId"    bson:"roomId"`
+	Accounts  []string `json:"accounts"  bson:"accounts"`
+	SiteID    string   `json:"siteId"    bson:"siteId"`
+	Timestamp int64    `json:"timestamp" bson:"timestamp"`
 }

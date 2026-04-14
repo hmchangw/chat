@@ -389,7 +389,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		Return(userResult, nil)
 	store.EXPECT().
 		DeleteSubscription(gomock.Any(), roomID, account).
-		Return(nil)
+		Return(int64(1), nil)
 	store.EXPECT().
 		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
 		Return(nil)
@@ -505,7 +505,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 		Return(userResult, nil)
 	store.EXPECT().
 		DeleteSubscription(gomock.Any(), roomID, account).
-		Return(nil)
+		Return(int64(1), nil)
 	// Owner removes: DeleteRoomMembersByAccount (all entries)
 	store.EXPECT().
 		DeleteRoomMembersByAccount(gomock.Any(), roomID, account).
@@ -564,7 +564,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		Return(orgMembers, nil)
 	store.EXPECT().
 		DeleteSubscriptionsByAccounts(gomock.Any(), roomID, gomock.InAnyOrder([]string{"carol", "dave"})).
-		Return(nil)
+		Return(int64(2), nil)
 	store.EXPECT().
 		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).
 		Return(nil)
@@ -624,7 +624,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		Return(userResult, nil)
 	store.EXPECT().
 		DeleteSubscription(gomock.Any(), roomID, account).
-		Return(nil)
+		Return(int64(1), nil)
 	store.EXPECT().
 		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
 		Return(nil)
