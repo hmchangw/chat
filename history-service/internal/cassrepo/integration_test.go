@@ -72,6 +72,34 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		PRIMARY KEY ((room_id), created_at, message_id)
 	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`).Exec())
 
+	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
+		room_id TEXT,
+		created_at TIMESTAMP,
+		message_id TEXT,
+		sender FROZEN<"Participant">,
+		target_user FROZEN<"Participant">,
+		msg TEXT,
+		mentions SET<FROZEN<"Participant">>,
+		attachments LIST<BLOB>,
+		file FROZEN<"File">,
+		card FROZEN<"Card">,
+		card_action FROZEN<"CardAction">,
+		tshow BOOLEAN,
+		thread_parent_id TEXT,
+		thread_parent_created_at TIMESTAMP,
+		quoted_parent_message FROZEN<"QuotedParentMessage">,
+		visible_to TEXT,
+		unread BOOLEAN,
+		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+		deleted BOOLEAN,
+		type TEXT,
+		sys_msg_data BLOB,
+		site_id TEXT,
+		edited_at TIMESTAMP,
+		updated_at TIMESTAMP,
+		PRIMARY KEY (message_id)
+	)`).Exec())
+
 	cluster.Keyspace = "chat_test"
 	ksSession, err := cluster.CreateSession()
 	require.NoError(t, err)
@@ -157,26 +185,32 @@ func TestRepository_GetAllMessagesAsc(t *testing.T) {
 	assert.True(t, page.HasNext)
 }
 
-func TestRepository_GetMessage(t *testing.T) {
+func TestRepository_GetMessageByID(t *testing.T) {
 	session := setupCassandra(t)
 	repo := NewRepository(session)
 	ctx := context.Background()
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	seedMessages(t, session, "r1", base, 3)
 
-	msg, err := repo.GetMessage(ctx, "r1", base.Add(1*time.Minute), "m1")
+	sender := models.Participant{ID: "u1", Account: "user1"}
+	ts := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg) VALUES (?, ?, ?, ?, ?)`,
+		"m1", "r1", ts, sender, "hello",
+	).Exec())
+
+	msg, err := repo.GetMessageByID(ctx, "m1")
 	require.NoError(t, err)
 	require.NotNil(t, msg)
 	assert.Equal(t, "m1", msg.MessageID)
 	assert.Equal(t, "r1", msg.RoomID)
+	assert.Equal(t, "hello", msg.Msg)
 }
 
-func TestRepository_GetMessage_NotFound(t *testing.T) {
+func TestRepository_GetMessageByID_NotFound(t *testing.T) {
 	session := setupCassandra(t)
 	repo := NewRepository(session)
 	ctx := context.Background()
 
-	msg, err := repo.GetMessage(ctx, "r1", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), "nonexistent")
+	msg, err := repo.GetMessageByID(ctx, "nonexistent")
 	require.NoError(t, err)
 	assert.Nil(t, msg)
 }
@@ -204,8 +238,8 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 		CreatedAt: ts.Add(-30 * time.Minute), Msg: "original message", MessageLink: "https://chat.example.com/r-full/m-quoted",
 	}
 
-	err := session.Query(
-		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, unread, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, unread, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	insertArgs := []any{
 		"r-full", ts, "m-full",
 		sender, target, "hello world",
 		[]models.Participant{mentionUser},
@@ -215,10 +249,10 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 		map[string][]models.Participant{"thumbsup": {reactUser}},
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
-	).Exec()
-	require.NoError(t, err)
+	}
+	require.NoError(t, session.Query(insertCQL, insertArgs...).Exec())
 
-	msg, err := repo.GetMessage(ctx, "r-full", ts, "m-full")
+	msg, err := repo.GetMessageByID(ctx, "m-full")
 	require.NoError(t, err)
 	require.NotNil(t, msg)
 
