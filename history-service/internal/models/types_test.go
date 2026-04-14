@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,11 +76,40 @@ func TestCardAction_JSON_Minimal(t *testing.T) {
 	assert.False(t, got.HideExecLog)
 }
 
+func TestQuotedParentMessage_JSON(t *testing.T) {
+	q := QuotedParentMessage{
+		MessageID:   "m1",
+		RoomID:      "r1",
+		Sender:      Participant{ID: "u1", Account: "alice"},
+		CreatedAt:   time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC),
+		Msg:         "original message",
+		Mentions:    []Participant{{ID: "u2", Account: "bob"}},
+		Attachments: [][]byte{[]byte("file1")},
+		MessageLink: "https://chat.example.com/r1/m1",
+	}
+	roundTrip(t, q)
+}
+
+func TestQuotedParentMessage_JSON_Minimal(t *testing.T) {
+	q := QuotedParentMessage{
+		MessageID: "m1",
+		RoomID:    "r1",
+		Sender:    Participant{ID: "u1"},
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	got := roundTrip(t, q)
+	assert.Empty(t, got.Msg)
+	assert.Nil(t, got.Mentions)
+	assert.Nil(t, got.Attachments)
+	assert.Empty(t, got.MessageLink)
+}
+
 func TestUnmarshalUDT_UnknownField(t *testing.T) {
 	assert.NoError(t, (&Participant{}).UnmarshalUDT("nonexistent", nil, nil))
 	assert.NoError(t, (&File{}).UnmarshalUDT("nonexistent", nil, nil))
 	assert.NoError(t, (&Card{}).UnmarshalUDT("nonexistent", nil, nil))
 	assert.NoError(t, (&CardAction{}).UnmarshalUDT("nonexistent", nil, nil))
+	assert.NoError(t, (&QuotedParentMessage{}).UnmarshalUDT("nonexistent", nil, nil))
 }
 
 func TestMarshalUDT_UnknownField(t *testing.T) {
@@ -96,6 +126,10 @@ func TestMarshalUDT_UnknownField(t *testing.T) {
 	assert.Nil(t, data)
 
 	data, err = (&CardAction{}).MarshalUDT("nonexistent", nil)
+	assert.NoError(t, err)
+	assert.Nil(t, data)
+
+	data, err = (&QuotedParentMessage{}).MarshalUDT("nonexistent", nil)
 	assert.NoError(t, err)
 	assert.Nil(t, data)
 }
