@@ -58,7 +58,6 @@ type LoadNextMessagesResponse struct {
 // LoadSurroundingMessagesRequest is the payload for loading messages around a central message.
 type LoadSurroundingMessagesRequest struct {
 	MessageID string `json:"messageId"` // central message ID
-	CreatedAt *int64 `json:"createdAt"` // UTC millis — message timestamp for primary key lookup
 	Limit     int    `json:"limit"`     // total messages including central
 }
 
@@ -72,5 +71,4 @@ type LoadSurroundingMessagesResponse struct {
 // GetMessageByIDRequest is the payload for fetching a single message.
 type GetMessageByIDRequest struct {
 	MessageID string `json:"messageId"`
-	CreatedAt *int64 `json:"createdAt"` // UTC millis — message timestamp for primary key lookup
 }
