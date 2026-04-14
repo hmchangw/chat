@@ -24,27 +24,32 @@ type threadStoreMongo struct {
 var _ ThreadStore = (*threadStoreMongo)(nil)
 
 //nolint:unused // wired up by main.go in a subsequent change; integration tests exercise it under the `integration` build tag.
-func newThreadStoreMongo(ctx context.Context, db *mongo.Database) (*threadStoreMongo, error) {
-	threadRooms := db.Collection("threadRooms")
-	if _, err := threadRooms.Indexes().CreateOne(ctx, mongo.IndexModel{
+func newThreadStoreMongo(db *mongo.Database) *threadStoreMongo {
+	return &threadStoreMongo{
+		threadRooms:         db.Collection("threadRooms"),
+		threadSubscriptions: db.Collection("threadSubscriptions"),
+	}
+}
+
+// EnsureIndexes creates the unique indexes required by the thread store.
+//
+//nolint:unused // wired up by main.go in a subsequent change; integration tests exercise it under the `integration` build tag.
+func (s *threadStoreMongo) EnsureIndexes(ctx context.Context) error {
+	if _, err := s.threadRooms.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "parentMessageId", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return nil, fmt.Errorf("create threadRooms index: %w", err)
+		return fmt.Errorf("ensure thread store indexes: %w", err)
 	}
 
-	threadSubs := db.Collection("threadSubscriptions")
-	if _, err := threadSubs.Indexes().CreateOne(ctx, mongo.IndexModel{
+	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userId", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return nil, fmt.Errorf("create threadSubscriptions index: %w", err)
+		return fmt.Errorf("ensure thread store indexes: %w", err)
 	}
 
-	return &threadStoreMongo{
-		threadRooms:         threadRooms,
-		threadSubscriptions: threadSubs,
-	}, nil
+	return nil
 }
 
 func (s *threadStoreMongo) CreateThreadRoom(ctx context.Context, room *model.ThreadRoom) error {

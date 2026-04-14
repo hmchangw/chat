@@ -346,8 +346,8 @@ func TestHandler_Integration(t *testing.T) {
 func TestThreadStoreMongo_CreateThreadRoom(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
-	store, err := newThreadStoreMongo(ctx, db)
-	require.NoError(t, err)
+	store := newThreadStoreMongo(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	room := &model.ThreadRoom{
@@ -393,8 +393,8 @@ func TestThreadStoreMongo_CreateThreadRoom(t *testing.T) {
 func TestThreadStoreMongo_GetThreadRoomByParentMessageID(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
-	store, err := newThreadStoreMongo(ctx, db)
-	require.NoError(t, err)
+	store := newThreadStoreMongo(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
 
 	t.Run("not found returns error", func(t *testing.T) {
 		_, err := store.GetThreadRoomByParentMessageID(ctx, "does-not-exist")
@@ -405,8 +405,8 @@ func TestThreadStoreMongo_GetThreadRoomByParentMessageID(t *testing.T) {
 func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
-	store, err := newThreadStoreMongo(ctx, db)
-	require.NoError(t, err)
+	store := newThreadStoreMongo(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	sub := &model.ThreadSubscription{
@@ -470,8 +470,8 @@ func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
 func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
-	store, err := newThreadStoreMongo(ctx, db)
-	require.NoError(t, err)
+	store := newThreadStoreMongo(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	room := &model.ThreadRoom{
@@ -487,7 +487,7 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 	require.NoError(t, store.CreateThreadRoom(ctx, room))
 
 	later := now.Add(10 * time.Minute)
-	err = store.UpdateThreadRoomLastMessage(ctx, "tr-update", "msg-5", later)
+	err := store.UpdateThreadRoomLastMessage(ctx, "tr-update", "msg-5", later)
 	require.NoError(t, err)
 
 	got, err := store.GetThreadRoomByParentMessageID(ctx, "msg-parent-update")
