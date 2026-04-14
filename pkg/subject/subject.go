@@ -65,6 +65,14 @@ func MemberRoleUpdate(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.role-update", account, roomID, siteID)
 }
 
+func MemberRemove(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.remove", account, roomID, siteID)
+}
+
+func MemberEvent(roomID string) string {
+	return fmt.Sprintf("chat.room.%s.event.member", roomID)
+}
+
 func RoomCanonical(siteID, operation string) string {
 	return fmt.Sprintf("chat.room.canonical.%s.%s", siteID, operation)
 }
