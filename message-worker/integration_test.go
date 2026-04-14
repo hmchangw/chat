@@ -532,9 +532,9 @@ func TestThreadStoreMongo_GetThreadRoomByParentMessageID(t *testing.T) {
 	store := newThreadStoreMongo(db)
 	require.NoError(t, store.EnsureIndexes(ctx))
 
-	t.Run("not found returns error", func(t *testing.T) {
+	t.Run("not found returns errThreadRoomNotFound", func(t *testing.T) {
 		_, err := store.GetThreadRoomByParentMessageID(ctx, "does-not-exist")
-		require.Error(t, err)
+		require.ErrorIs(t, err, errThreadRoomNotFound)
 	})
 }
 

@@ -356,6 +356,22 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:   "first reply — replier UpsertThreadSubscription fails — returns error",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(parentSender, nil)
+				// Parent upsert succeeds
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				// Replier upsert fails
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					Return(errors.New("mongo: write error"))
+			},
+			wantErr: true,
+		},
+		{
 			name:   "subsequent reply — upserts subscription and updates last message",
 			msg:    msg,
 			siteID: "site-a",

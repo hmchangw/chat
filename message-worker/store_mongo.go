@@ -13,7 +13,10 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-var errThreadRoomExists = errors.New("thread room already exists")
+var (
+	errThreadRoomExists   = errors.New("thread room already exists")
+	errThreadRoomNotFound = errors.New("thread room not found")
+)
 
 type threadStoreMongo struct {
 	threadRooms         *mongo.Collection
@@ -63,6 +66,9 @@ func (s *threadStoreMongo) CreateThreadRoom(ctx context.Context, room *model.Thr
 func (s *threadStoreMongo) GetThreadRoomByParentMessageID(ctx context.Context, parentMessageID string) (*model.ThreadRoom, error) {
 	var room model.ThreadRoom
 	if err := s.threadRooms.FindOne(ctx, bson.M{"parentMessageId": parentMessageID}).Decode(&room); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("find thread room by parent %s: %w", parentMessageID, errThreadRoomNotFound)
+		}
 		return nil, fmt.Errorf("find thread room by parent %s: %w", parentMessageID, err)
 	}
 	return &room, nil
