@@ -67,10 +67,12 @@ type config struct {
 	// message pushes the buffer over the cap.
 	BulkBatchSize int `env:"BULK_BATCH_SIZE" envDefault:"500"`
 
-	// FlushInterval is the maximum seconds between ES bulk flushes, even if
-	// the action buffer hasn't hit BulkBatchSize. Keeps write latency bounded
-	// during idle / low-traffic periods.
-	FlushInterval int `env:"FLUSH_INTERVAL" envDefault:"5"`
+	// BulkFlushInterval is the maximum seconds between ES bulk flushes, even
+	// if the action buffer hasn't hit BulkBatchSize. It's the time-based
+	// counterpart to the size-based BulkBatchSize trigger — either
+	// condition can fire a flush. Keeps write latency bounded during
+	// idle / low-traffic periods.
+	BulkFlushInterval int `env:"BULK_FLUSH_INTERVAL" envDefault:"5"`
 
 	Bootstrap bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 }
@@ -89,6 +91,25 @@ func main() {
 	}
 	if cfg.UserRoomIndex == "" {
 		cfg.UserRoomIndex = fmt.Sprintf("user-room-%s", cfg.SiteID)
+	}
+
+	// Fail fast on non-positive batch/interval settings. Zero or negative
+	// values degenerate runConsumer into busy loops (`Fetch(0)`, constant
+	// flush checks) or stall it forever (`remaining <= 0` on every
+	// iteration). Reject at startup so an operator gets a clear signal
+	// instead of silent misbehavior. Matches the repo-wide "fail fast on
+	// bad config" rule in CLAUDE.md.
+	if cfg.FetchBatchSize <= 0 {
+		slog.Error("invalid config", "name", "FETCH_BATCH_SIZE", "value", cfg.FetchBatchSize, "reason", "must be > 0")
+		os.Exit(1)
+	}
+	if cfg.BulkBatchSize <= 0 {
+		slog.Error("invalid config", "name", "BULK_BATCH_SIZE", "value", cfg.BulkBatchSize, "reason", "must be > 0")
+		os.Exit(1)
+	}
+	if cfg.BulkFlushInterval <= 0 {
+		slog.Error("invalid config", "name", "BULK_FLUSH_INTERVAL", "value", cfg.BulkFlushInterval, "reason", "must be > 0")
+		os.Exit(1)
 	}
 
 	ctx := context.Background()
@@ -135,7 +156,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	flushInterval := time.Duration(cfg.FlushInterval) * time.Second
+	bulkFlushInterval := time.Duration(cfg.BulkFlushInterval) * time.Second
 	stopCh := make(chan struct{})
 	doneChs := make([]chan struct{}, 0, len(collections))
 
@@ -198,7 +219,7 @@ func main() {
 			"filters", consumerCfg.FilterSubjects,
 		)
 
-		go runConsumer(ctx, cons, handler, cfg.FetchBatchSize, cfg.BulkBatchSize, flushInterval, stopCh, doneCh)
+		go runConsumer(ctx, cons, handler, cfg.FetchBatchSize, cfg.BulkBatchSize, bulkFlushInterval, stopCh, doneCh)
 	}
 
 	slog.Info("search-sync-worker running",
@@ -252,15 +273,15 @@ func main() {
 //
 // Flushes happen on three triggers:
 //  1. `stopCh` signalled (graceful shutdown): drain whatever is buffered.
-//  2. `handler.ActionCount() >= bulkBatchSize`: buffer-full flush.
-//  3. `time.Since(lastFlush) >= flushInterval` with a non-empty buffer:
+//  2. `handler.ActionCount() >= bulkBatchSize`: size-based flush.
+//  3. `time.Since(lastFlush) >= bulkFlushInterval` with a non-empty buffer:
 //     time-based flush to bound write latency during idle periods.
 func runConsumer(
 	ctx context.Context,
 	cons oteljetstream.Consumer,
 	handler *Handler,
 	fetchBatchSize, bulkBatchSize int,
-	flushInterval time.Duration,
+	bulkFlushInterval time.Duration,
 	stopCh <-chan struct{},
 	doneCh chan<- struct{},
 ) {
@@ -297,7 +318,7 @@ func runConsumer(
 				return
 			default:
 			}
-			if handler.ActionCount() > 0 && time.Since(lastFlush) >= flushInterval {
+			if handler.ActionCount() > 0 && time.Since(lastFlush) >= bulkFlushInterval {
 				handler.Flush(ctx)
 				lastFlush = time.Now()
 			}
@@ -319,7 +340,7 @@ func runConsumer(
 		if handler.ActionCount() >= bulkBatchSize {
 			handler.Flush(ctx)
 			lastFlush = time.Now()
-		} else if handler.ActionCount() > 0 && time.Since(lastFlush) >= flushInterval {
+		} else if handler.ActionCount() > 0 && time.Since(lastFlush) >= bulkFlushInterval {
 			handler.Flush(ctx)
 			lastFlush = time.Now()
 		}

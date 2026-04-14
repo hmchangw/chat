@@ -37,10 +37,23 @@ func createInboxStream(t *testing.T, ctx context.Context, js jetstream.JetStream
 
 // memberFixture is one subscription entry in a test member event. Used by
 // both the single-sub convenience helper and the bulk-invite helper.
+//
+// Exactly one of (Restricted, HistorySharedSince) should be used:
+//   - Restricted=true is a shortcut: the fixture builder picks a synthetic
+//     historyFrom timestamp and sets Subscription.HistorySharedSince to it.
+//     Use this when the test only cares about "is this subscription
+//     restricted?" and not the exact value of HistorySharedSince.
+//   - HistorySharedSince=&t is used verbatim: the test supplies the exact
+//     timestamp it wants on the resulting Subscription. Use this when the
+//     test asserts on or logs the specific historyFrom value.
+//
+// If both are set, HistorySharedSince wins. If neither is set, the resulting
+// Subscription is unrestricted (HistorySharedSince stays nil).
 type memberFixture struct {
-	SubID      string
-	Account    string
-	Restricted bool // if true, HistorySharedSince is set — user-room-sync filters, spotlight-sync indexes
+	SubID              string
+	Account            string
+	Restricted         bool
+	HistorySharedSince *time.Time
 }
 
 // buildMemberEventPayload constructs a single-subscription MemberAddedPayload
@@ -52,24 +65,25 @@ func buildMemberEventPayload(
 	historyShared *time.Time,
 ) model.MemberAddedPayload {
 	return buildBulkMemberEventPayload(roomID, roomName, siteID, joinedAt, []memberFixture{{
-		SubID:      subID,
-		Account:    account,
-		Restricted: historyShared != nil,
+		SubID:              subID,
+		Account:            account,
+		HistorySharedSince: historyShared, // propagate the exact timestamp the caller passed
 	}})
 }
 
 // buildBulkMemberEventPayload constructs a MemberAddedPayload with N
 // subscriptions all targeting the same room — the shape room-worker
-// publishes when an admin bulk-invites multiple users in one action. If any
-// member fixture has Restricted=true, its Subscription gets
-// HistorySharedSince set (user-room-sync filters those out per-subscription;
-// spotlight-sync indexes them normally).
+// publishes when an admin bulk-invites multiple users in one action.
 func buildBulkMemberEventPayload(
 	roomID, roomName, siteID string,
 	joinedAt time.Time,
 	members []memberFixture,
 ) model.MemberAddedPayload {
-	historyFrom := joinedAt.Add(-1 * time.Hour)
+	// Synthetic history timestamp used when a fixture sets Restricted=true
+	// without supplying an explicit HistorySharedSince. Choosing joinedAt-1h
+	// keeps it realistic (history shared from "earlier today") while being
+	// deterministic.
+	defaultHistoryFrom := joinedAt.Add(-1 * time.Hour)
 	subscriptions := make([]model.Subscription, 0, len(members))
 	for _, m := range members {
 		sub := model.Subscription{
@@ -81,8 +95,11 @@ func buildBulkMemberEventPayload(
 			JoinedAt:   joinedAt,
 			LastSeenAt: joinedAt,
 		}
-		if m.Restricted {
-			sub.HistorySharedSince = &historyFrom
+		switch {
+		case m.HistorySharedSince != nil:
+			sub.HistorySharedSince = m.HistorySharedSince
+		case m.Restricted:
+			sub.HistorySharedSince = &defaultHistoryFrom
 		}
 		subscriptions = append(subscriptions, sub)
 	}

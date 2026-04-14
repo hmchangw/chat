@@ -113,8 +113,9 @@ func (a *httpAdapter) Bulk(ctx context.Context, actions []BulkAction) ([]BulkRes
 	for i, item := range bulkResp.Items {
 		for _, detail := range item {
 			results[i] = BulkResult{
-				Status: detail.Status,
-				Error:  detail.Error.Reason,
+				Status:    detail.Status,
+				ErrorType: detail.Error.Type,
+				Error:     detail.Error.Reason,
 			}
 		}
 	}

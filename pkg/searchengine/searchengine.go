@@ -36,9 +36,20 @@ type BulkAction struct {
 }
 
 // BulkResult represents the result of a single bulk action item.
+//
+// ErrorType is the ES error type string (e.g., `document_missing_exception`,
+// `index_not_found_exception`, `version_conflict_engine_exception`) when the
+// item failed with an error block. Empty on 2xx success and on delete-404
+// responses (delete of a missing doc sets `result:"not_found"` without an
+// error block).
+//
+// Callers that need to classify 4xx outcomes (e.g., deciding whether a 404
+// is a benign "doc already absent" or a fatal "index missing") should match
+// on ErrorType rather than parsing the human-readable Error string.
 type BulkResult struct {
-	Status int
-	Error  string
+	Status    int
+	ErrorType string
+	Error     string
 }
 
 // SearchEngine defines domain operations for search indexing.

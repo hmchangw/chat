@@ -153,17 +153,34 @@ func (h *Handler) Flush(ctx context.Context) {
 	}
 }
 
+// ES error type strings we match against on 404 responses to distinguish
+// benign idempotent outcomes from fatal config errors. These come straight
+// from the Elasticsearch `_bulk` response `error.type` field.
+const (
+	esErrDocumentMissing = "document_missing_exception" // update on missing doc
+	esErrIndexNotFound   = "index_not_found_exception"  // index doesn't exist — config error
+)
+
 // isBulkItemSuccess maps an ES bulk item result to a logical success/failure
 // per action type.
 //
 //   - 2xx is always success.
 //   - 409 is success on every action: it means external versioning rejected
-//     a stale write, and the desired state is already reached or newer.
-//   - 404 is success on ActionDelete (already deleted) and on ActionUpdate
-//     (the user-room remove path emits a scriptless update on a doc that
-//     may not exist yet — desired state already reached). It remains a
-//     failure on ActionIndex because indexing is supposed to create the
-//     doc.
+//     a stale write and the desired state is already reached or newer.
+//   - 404 is success ONLY for specific idempotent outcomes:
+//   - ActionDelete with no error type set: delete of a missing doc
+//     sets `result:"not_found"` and no error block — desired state
+//     already reached.
+//   - ActionUpdate with ErrorType == "document_missing_exception": the
+//     user-room remove path emits a scriptless update which 404s if the
+//     user doc doesn't exist yet — desired state already reached.
+//     404 with any other error type (notably `index_not_found_exception`,
+//     which means the target ES index is missing / misconfigured) is
+//     treated as a real failure so we don't silently drop messages when the
+//     backing index/template is wrong.
+//   - ActionIndex 404 is always a failure because indexing is supposed to
+//     create the doc; a 404 there only happens when the index itself is
+//     missing.
 func isBulkItemSuccess(action searchengine.ActionType, result searchengine.BulkResult) bool {
 	if result.Status >= 200 && result.Status < 300 {
 		return true
@@ -171,8 +188,23 @@ func isBulkItemSuccess(action searchengine.ActionType, result searchengine.BulkR
 	if result.Status == 409 {
 		return true
 	}
-	if result.Status == 404 && (action == searchengine.ActionDelete || action == searchengine.ActionUpdate) {
-		return true
+	if result.Status == 404 {
+		switch action {
+		case searchengine.ActionDelete:
+			// Delete on a missing doc returns status=404 with result=not_found
+			// and NO error block (ErrorType is empty). Any other error type
+			// at 404 (e.g., index_not_found_exception) is a real failure.
+			return result.ErrorType == ""
+		case searchengine.ActionUpdate:
+			// Update on a missing doc reports `document_missing_exception`.
+			// Update on a missing INDEX reports `index_not_found_exception`
+			// — we want that to fail loudly, not get silently acked.
+			return result.ErrorType == esErrDocumentMissing
+		case searchengine.ActionIndex:
+			// Index is supposed to CREATE the doc; a 404 here only happens
+			// when the index itself is missing (config error). Always fail.
+			return false
+		}
 	}
 	return false
 }

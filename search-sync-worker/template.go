@@ -10,8 +10,12 @@ import (
 // keyed by the `json` tag name.
 //
 // The `es` tag grammar is "type[,analyzer]" — e.g. `es:"keyword"` or
-// `es:"text,custom_analyzer"`. Untagged fields and fields tagged `es:"-"`
-// are skipped.
+// `es:"text,custom_analyzer"`. Fields are skipped when:
+//   - the `es` tag is missing or `-`
+//   - the `json` tag is missing, empty, or `-` (fail closed: we never emit
+//     a mapping entry under the empty string, which would silently corrupt
+//     the template for any future struct that adds an `es`-tagged field
+//     without a matching `json` tag)
 func esPropertiesFromStruct[T any]() map[string]any {
 	var zero T
 	t := reflect.TypeOf(zero)
@@ -24,6 +28,9 @@ func esPropertiesFromStruct[T any]() map[string]any {
 		}
 		jsonTag := field.Tag.Get("json")
 		name, _, _ := strings.Cut(jsonTag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
 
 		esType, analyzer, _ := strings.Cut(esTag, ",")
 		prop := map[string]any{"type": esType}

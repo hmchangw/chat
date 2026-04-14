@@ -193,35 +193,51 @@ func TestHandler_Flush(t *testing.T) {
 
 func TestIsBulkItemSuccess(t *testing.T) {
 	tests := []struct {
-		name   string
-		action searchengine.ActionType
-		status int
-		want   bool
+		name      string
+		action    searchengine.ActionType
+		status    int
+		errorType string
+		want      bool
 	}{
 		// 2xx is always success.
-		{"index 200", searchengine.ActionIndex, 200, true},
-		{"index 201", searchengine.ActionIndex, 201, true},
-		{"delete 200", searchengine.ActionDelete, 200, true},
-		{"update 200", searchengine.ActionUpdate, 200, true},
+		{"index 200", searchengine.ActionIndex, 200, "", true},
+		{"index 201", searchengine.ActionIndex, 201, "", true},
+		{"delete 200", searchengine.ActionDelete, 200, "", true},
+		{"update 200", searchengine.ActionUpdate, 200, "", true},
+
 		// 409 is success on every action — external versioning rejected a stale write.
-		{"index 409", searchengine.ActionIndex, 409, true},
-		{"delete 409", searchengine.ActionDelete, 409, true},
-		{"update 409", searchengine.ActionUpdate, 409, true},
-		// 404 is success on delete (already deleted) and update (script update on
-		// missing user-room doc — desired state already reached).
-		{"delete 404 already-deleted", searchengine.ActionDelete, 404, true},
-		{"update 404 missing-doc", searchengine.ActionUpdate, 404, true},
-		// 404 on index is a real failure: indexing should create the doc.
-		{"index 404 unexpected", searchengine.ActionIndex, 404, false},
+		{"index 409", searchengine.ActionIndex, 409, "version_conflict_engine_exception", true},
+		{"delete 409", searchengine.ActionDelete, 409, "version_conflict_engine_exception", true},
+		{"update 409", searchengine.ActionUpdate, 409, "version_conflict_engine_exception", true},
+
+		// Delete 404 benign path: doc already absent, no error block.
+		{"delete 404 not_found (empty errorType)", searchengine.ActionDelete, 404, "", true},
+		// Delete 404 fatal path: the target INDEX is missing — config error.
+		{"delete 404 index_not_found", searchengine.ActionDelete, 404, "index_not_found_exception", false},
+
+		// Update 404 benign path: doc missing (user-room remove on empty doc).
+		{"update 404 document_missing", searchengine.ActionUpdate, 404, "document_missing_exception", true},
+		// Update 404 fatal path: the target INDEX is missing — config error.
+		{"update 404 index_not_found", searchengine.ActionUpdate, 404, "index_not_found_exception", false},
+		// Update 404 with an unfamiliar error type → fail closed.
+		{"update 404 unknown error type", searchengine.ActionUpdate, 404, "some_other_exception", false},
+
+		// Index 404 is always a failure (indexing should create the doc).
+		{"index 404 index_not_found", searchengine.ActionIndex, 404, "index_not_found_exception", false},
+		{"index 404 empty error", searchengine.ActionIndex, 404, "", false},
+
 		// Server errors are failures on every action.
-		{"index 500", searchengine.ActionIndex, 500, false},
-		{"delete 500", searchengine.ActionDelete, 500, false},
-		{"update 500", searchengine.ActionUpdate, 500, false},
-		{"index 503", searchengine.ActionIndex, 503, false},
+		{"index 500", searchengine.ActionIndex, 500, "", false},
+		{"delete 500", searchengine.ActionDelete, 500, "", false},
+		{"update 500", searchengine.ActionUpdate, 500, "", false},
+		{"index 503", searchengine.ActionIndex, 503, "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isBulkItemSuccess(tt.action, searchengine.BulkResult{Status: tt.status})
+			got := isBulkItemSuccess(tt.action, searchengine.BulkResult{
+				Status:    tt.status,
+				ErrorType: tt.errorType,
+			})
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -286,12 +302,14 @@ func (c fanOutCollection) BuildAction([]byte) ([]searchengine.BulkAction, error)
 }
 
 func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
-	t.Run("404 on delete is acked", func(t *testing.T) {
+	t.Run("404 on delete with no error block (doc missing) is acked", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
+		// ES delete-on-missing-doc sets status=404 + result=not_found with
+		// NO error block — ErrorType stays empty in our adapter mapping.
 		store.EXPECT().
 			Bulk(gomock.Any(), gomock.Len(1)).
-			Return([]searchengine.BulkResult{{Status: 404, Error: "not_found"}}, nil)
+			Return([]searchengine.BulkResult{{Status: 404, ErrorType: "", Error: ""}}, nil)
 
 		coll := newStubDeleteCollection()
 		h := NewHandler(store, coll, 500)
@@ -299,16 +317,41 @@ func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
 		h.Add(msg)
 		h.Flush(context.Background())
 
-		assert.True(t, msg.acked, "404 on delete should be acked (already deleted)")
+		assert.True(t, msg.acked, "404 on delete with no error block should be acked (already deleted)")
 		assert.False(t, msg.nacked)
 	})
 
-	t.Run("404 on update is acked", func(t *testing.T) {
+	t.Run("404 on delete with index_not_found is NACKED", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		store.EXPECT().
 			Bulk(gomock.Any(), gomock.Len(1)).
-			Return([]searchengine.BulkResult{{Status: 404, Error: "document_missing_exception"}}, nil)
+			Return([]searchengine.BulkResult{{
+				Status:    404,
+				ErrorType: "index_not_found_exception",
+				Error:     "no such index [spotlight-site-a-v1-chat]",
+			}}, nil)
+
+		coll := newStubDeleteCollection()
+		h := NewHandler(store, coll, 500)
+		msg := &stubMsg{data: []byte(`{}`)}
+		h.Add(msg)
+		h.Flush(context.Background())
+
+		assert.False(t, msg.acked, "404 on delete with index_not_found is a fatal config error")
+		assert.True(t, msg.nacked)
+	})
+
+	t.Run("404 on update with document_missing_exception is acked", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		store.EXPECT().
+			Bulk(gomock.Any(), gomock.Len(1)).
+			Return([]searchengine.BulkResult{{
+				Status:    404,
+				ErrorType: "document_missing_exception",
+				Error:     "[charlie]: document missing",
+			}}, nil)
 
 		coll := newStubUpdateCollection()
 		h := NewHandler(store, coll, 500)
@@ -316,8 +359,29 @@ func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
 		h.Add(msg)
 		h.Flush(context.Background())
 
-		assert.True(t, msg.acked, "404 on update should be acked (desired state reached)")
+		assert.True(t, msg.acked, "404 on update with document_missing_exception should be acked")
 		assert.False(t, msg.nacked)
+	})
+
+	t.Run("404 on update with index_not_found is NACKED", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		store.EXPECT().
+			Bulk(gomock.Any(), gomock.Len(1)).
+			Return([]searchengine.BulkResult{{
+				Status:    404,
+				ErrorType: "index_not_found_exception",
+				Error:     "no such index [user-room-site-a]",
+			}}, nil)
+
+		coll := newStubUpdateCollection()
+		h := NewHandler(store, coll, 500)
+		msg := &stubMsg{data: []byte(`{}`)}
+		h.Add(msg)
+		h.Flush(context.Background())
+
+		assert.False(t, msg.acked, "404 on update with index_not_found is a fatal config error")
+		assert.True(t, msg.nacked)
 	})
 
 	t.Run("404 on index is nacked", func(t *testing.T) {
@@ -325,7 +389,11 @@ func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
 		store := NewMockStore(ctrl)
 		store.EXPECT().
 			Bulk(gomock.Any(), gomock.Len(1)).
-			Return([]searchengine.BulkResult{{Status: 404, Error: "index_not_found_exception"}}, nil)
+			Return([]searchengine.BulkResult{{
+				Status:    404,
+				ErrorType: "index_not_found_exception",
+				Error:     "no such index",
+			}}, nil)
 
 		coll := newStubIndexCollection()
 		h := NewHandler(store, coll, 500)
