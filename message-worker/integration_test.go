@@ -14,6 +14,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/cassandra"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -83,6 +84,23 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	require.NoError(t, err)
 	t.Cleanup(func() { ksSession.Close() })
 	return ksSession
+}
+
+func setupMongo(t *testing.T) *mongo.Database {
+	t.Helper()
+	ctx := context.Background()
+	container, err := mongodb.Run(ctx, "mongo:7")
+	require.NoError(t, err)
+	t.Cleanup(func() { container.Terminate(ctx) })
+
+	uri, err := container.ConnectionString(ctx)
+	require.NoError(t, err)
+
+	client, err := mongoutil.Connect(ctx, uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { mongoutil.Disconnect(ctx, client) })
+
+	return client.Database("chat_test")
 }
 
 func TestCassandraStore_SaveMessage(t *testing.T) {
@@ -323,4 +341,157 @@ func TestHandler_Integration(t *testing.T) {
 	).Scan(&gotMsg)
 	require.NoError(t, err)
 	assert.Equal(t, "integration test message", gotMsg)
+}
+
+func TestThreadStoreMongo_CreateThreadRoom(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store, err := newThreadStoreMongo(ctx, db)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	room := &model.ThreadRoom{
+		ID:              "tr-1",
+		ParentMessageID: "msg-parent",
+		RoomID:          "r-1",
+		SiteID:          "site-a",
+		LastMsgAt:       now,
+		LastMsgID:       "msg-reply-1",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	t.Run("first insert succeeds", func(t *testing.T) {
+		err := store.CreateThreadRoom(ctx, room)
+		require.NoError(t, err)
+
+		got, err := store.GetThreadRoomByParentMessageID(ctx, "msg-parent")
+		require.NoError(t, err)
+		assert.Equal(t, "tr-1", got.ID)
+		assert.Equal(t, "msg-parent", got.ParentMessageID)
+		assert.Equal(t, "r-1", got.RoomID)
+		assert.Equal(t, "site-a", got.SiteID)
+		assert.Equal(t, "msg-reply-1", got.LastMsgID)
+	})
+
+	t.Run("duplicate insert returns errThreadRoomExists", func(t *testing.T) {
+		dup := &model.ThreadRoom{
+			ID:              "tr-2",
+			ParentMessageID: "msg-parent",
+			RoomID:          "r-1",
+			SiteID:          "site-a",
+			LastMsgAt:       now,
+			LastMsgID:       "msg-reply-2",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		err := store.CreateThreadRoom(ctx, dup)
+		require.ErrorIs(t, err, errThreadRoomExists)
+	})
+}
+
+func TestThreadStoreMongo_GetThreadRoomByParentMessageID(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store, err := newThreadStoreMongo(ctx, db)
+	require.NoError(t, err)
+
+	t.Run("not found returns error", func(t *testing.T) {
+		_, err := store.GetThreadRoomByParentMessageID(ctx, "does-not-exist")
+		require.Error(t, err)
+	})
+}
+
+func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store, err := newThreadStoreMongo(ctx, db)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sub := &model.ThreadSubscription{
+		ID:              "ts-1",
+		ParentMessageID: "msg-parent",
+		RoomID:          "r-1",
+		ThreadRoomID:    "tr-1",
+		UserID:          "u-1",
+		UserAccount:     "alice",
+		SiteID:          "site-a",
+		LastSeenAt:      now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	t.Run("first upsert creates document", func(t *testing.T) {
+		err := store.UpsertThreadSubscription(ctx, sub)
+		require.NoError(t, err)
+
+		var got model.ThreadSubscription
+		err = db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"threadRoomId": "tr-1",
+			"userId":       "u-1",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "ts-1", got.ID)
+		assert.Equal(t, "alice", got.UserAccount)
+		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond))
+	})
+
+	t.Run("second upsert updates fields but preserves createdAt and ID", func(t *testing.T) {
+		later := now.Add(5 * time.Minute)
+		sub2 := &model.ThreadSubscription{
+			ID:              "ts-should-be-ignored",
+			ParentMessageID: "msg-parent",
+			RoomID:          "r-1",
+			ThreadRoomID:    "tr-1",
+			UserID:          "u-1",
+			UserAccount:     "alice",
+			SiteID:          "site-a",
+			LastSeenAt:      later,
+			CreatedAt:       later,
+			UpdatedAt:       later,
+		}
+		err := store.UpsertThreadSubscription(ctx, sub2)
+		require.NoError(t, err)
+
+		var got model.ThreadSubscription
+		err = db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"threadRoomId": "tr-1",
+			"userId":       "u-1",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "ts-1", got.ID, "ID should not change on upsert")
+		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond), "createdAt should not change on upsert")
+		assert.Equal(t, later, got.LastSeenAt.UTC().Truncate(time.Millisecond))
+		assert.Equal(t, later, got.UpdatedAt.UTC().Truncate(time.Millisecond))
+	})
+}
+
+func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store, err := newThreadStoreMongo(ctx, db)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	room := &model.ThreadRoom{
+		ID:              "tr-update",
+		ParentMessageID: "msg-parent-update",
+		RoomID:          "r-1",
+		SiteID:          "site-a",
+		LastMsgAt:       now,
+		LastMsgID:       "msg-1",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	require.NoError(t, store.CreateThreadRoom(ctx, room))
+
+	later := now.Add(10 * time.Minute)
+	err = store.UpdateThreadRoomLastMessage(ctx, "tr-update", "msg-5", later)
+	require.NoError(t, err)
+
+	got, err := store.GetThreadRoomByParentMessageID(ctx, "msg-parent-update")
+	require.NoError(t, err)
+	assert.Equal(t, "msg-5", got.LastMsgID)
+	assert.Equal(t, later, got.LastMsgAt.UTC().Truncate(time.Millisecond))
 }
