@@ -47,6 +47,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			msg           TEXT,
 			site_id       TEXT,
 			updated_at    TIMESTAMP,
+			mentions      SET<FROZEN<"Participant">>,
 			PRIMARY KEY ((room_id), created_at, message_id)
 		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`,
 		`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
@@ -56,8 +57,22 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			msg        TEXT,
 			site_id    TEXT,
 			updated_at TIMESTAMP,
+			mentions   SET<FROZEN<"Participant">>,
 			PRIMARY KEY (message_id, created_at)
 		) WITH CLUSTERING ORDER BY (created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS chat_test.thread_messages_by_room (
+			room_id            TEXT,
+			thread_room_id     TEXT,
+			created_at         TIMESTAMP,
+			message_id         TEXT,
+			thread_message_id  TEXT,
+			sender             FROZEN<"Participant">,
+			msg                TEXT,
+			site_id            TEXT,
+			updated_at         TIMESTAMP,
+			mentions           SET<FROZEN<"Participant">>,
+			PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
+		) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`,
 	}
 	for _, stmt := range stmts {
 		require.NoError(t, session.Query(stmt).Exec())
@@ -87,14 +102,20 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 		RoomID:      "r-1",
 		UserID:      "u-1",
 		UserAccount: "alice",
-		Content:     "hello world",
+		Content:     "hello @bob",
 		CreatedAt:   now,
+		Mentions: []model.Participant{{
+			UserID:      "u-bob",
+			Account:     "bob",
+			ChineseName: "鮑勃",
+			EngName:     "Bob Chen",
+		}},
 	}
 
 	err := store.SaveMessage(ctx, msg, sender, "site-a")
 	require.NoError(t, err)
 
-	t.Run("messages_by_room row exists with correct fields", func(t *testing.T) {
+	t.Run("messages_by_room row correct", func(t *testing.T) {
 		var gotMsg, gotSiteID string
 		var gotUpdatedAt time.Time
 		err := cassSession.Query(
@@ -102,12 +123,25 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 			"r-1", now, "m-1",
 		).Scan(&gotMsg, &gotSiteID, &gotUpdatedAt)
 		require.NoError(t, err)
-		assert.Equal(t, "hello world", gotMsg)
+		assert.Equal(t, "hello @bob", gotMsg)
 		assert.Equal(t, "site-a", gotSiteID)
 		assert.Equal(t, now, gotUpdatedAt.UTC().Truncate(time.Millisecond))
 	})
 
-	t.Run("messages_by_id row exists with correct fields", func(t *testing.T) {
+	t.Run("messages_by_room mentions persisted", func(t *testing.T) {
+		var gotMentions []*cassParticipant
+		err := cassSession.Query(
+			`SELECT mentions FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			"r-1", now, "m-1",
+		).Scan(&gotMentions)
+		require.NoError(t, err)
+		require.Len(t, gotMentions, 1)
+		assert.Equal(t, "bob", gotMentions[0].Account)
+		assert.Equal(t, "Bob Chen", gotMentions[0].EngName)
+		assert.Equal(t, "u-bob", gotMentions[0].ID)
+	})
+
+	t.Run("messages_by_id row correct", func(t *testing.T) {
 		var gotMsg, gotSiteID string
 		var gotUpdatedAt time.Time
 		err := cassSession.Query(
@@ -115,9 +149,80 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 			"m-1", now,
 		).Scan(&gotMsg, &gotSiteID, &gotUpdatedAt)
 		require.NoError(t, err)
-		assert.Equal(t, "hello world", gotMsg)
+		assert.Equal(t, "hello @bob", gotMsg)
 		assert.Equal(t, "site-a", gotSiteID)
 		assert.Equal(t, now, gotUpdatedAt.UTC().Truncate(time.Millisecond))
+	})
+
+	t.Run("messages_by_id mentions persisted", func(t *testing.T) {
+		var gotMentions []*cassParticipant
+		err := cassSession.Query(
+			`SELECT mentions FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-1", now,
+		).Scan(&gotMentions)
+		require.NoError(t, err)
+		require.Len(t, gotMentions, 1)
+		assert.Equal(t, "bob", gotMentions[0].Account)
+		assert.Equal(t, "Bob Chen", gotMentions[0].EngName)
+		assert.Equal(t, "u-bob", gotMentions[0].ID)
+	})
+}
+
+func TestCassandraStore_SaveThreadMessage(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sender := &cassParticipant{
+		ID:          "u-1",
+		EngName:     "Alice Wang",
+		CompanyName: "愛麗絲",
+		Account:     "alice",
+	}
+	msg := &model.Message{
+		ID:                    "m-2",
+		RoomID:                "r-1",
+		UserID:                "u-1",
+		UserAccount:           "alice",
+		Content:               "reply @bob",
+		CreatedAt:             now,
+		ThreadParentMessageID: "m-1",
+		Mentions: []model.Participant{{
+			UserID:      "u-bob",
+			Account:     "bob",
+			ChineseName: "鮑勃",
+			EngName:     "Bob Chen",
+		}},
+	}
+
+	err := store.SaveThreadMessage(ctx, msg, sender, "site-a")
+	require.NoError(t, err)
+
+	t.Run("thread_messages_by_room mentions persisted", func(t *testing.T) {
+		var gotMentions []*cassParticipant
+		err := cassSession.Query(
+			`SELECT mentions FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			"r-1", "m-1", now, "m-2",
+		).Scan(&gotMentions)
+		require.NoError(t, err)
+		require.Len(t, gotMentions, 1)
+		assert.Equal(t, "bob", gotMentions[0].Account)
+		assert.Equal(t, "Bob Chen", gotMentions[0].EngName)
+		assert.Equal(t, "u-bob", gotMentions[0].ID)
+	})
+
+	t.Run("messages_by_id mentions persisted for thread", func(t *testing.T) {
+		var gotMentions []*cassParticipant
+		err := cassSession.Query(
+			`SELECT mentions FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-2", now,
+		).Scan(&gotMentions)
+		require.NoError(t, err)
+		require.Len(t, gotMentions, 1)
+		assert.Equal(t, "bob", gotMentions[0].Account)
+		assert.Equal(t, "Bob Chen", gotMentions[0].EngName)
+		assert.Equal(t, "u-bob", gotMentions[0].ID)
 	})
 }
 
