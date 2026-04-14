@@ -57,7 +57,7 @@ func TestMessageCollection_StreamConfig(t *testing.T) {
 
 func TestMessageCollection_ConsumerName(t *testing.T) {
 	coll := newMessageCollection("msgs-v1")
-	assert.Equal(t, "search-sync-worker", coll.ConsumerName())
+	assert.Equal(t, "message-sync", coll.ConsumerName())
 }
 
 func TestIndexName(t *testing.T) {
@@ -219,11 +219,12 @@ func TestMessageCollection_BuildAction(t *testing.T) {
 	}
 	data, _ := json.Marshal(evt)
 
-	action, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(data)
 	require.NoError(t, err)
-	assert.Equal(t, searchengine.ActionIndex, action.Action)
-	assert.Equal(t, "msgs-v1-2026-01", action.Index)
-	assert.Equal(t, "m1", action.DocID)
+	require.Len(t, actions, 1)
+	assert.Equal(t, searchengine.ActionIndex, actions[0].Action)
+	assert.Equal(t, "msgs-v1-2026-01", actions[0].Index)
+	assert.Equal(t, "m1", actions[0].DocID)
 
 	t.Run("malformed JSON returns error", func(t *testing.T) {
 		_, err := coll.BuildAction([]byte("{invalid"))

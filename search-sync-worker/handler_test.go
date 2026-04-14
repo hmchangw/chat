@@ -190,3 +190,124 @@ func TestHandler_Flush(t *testing.T) {
 		assert.True(t, msgs[2].nacked, "500 should be nacked")
 	})
 }
+
+func TestIsBulkItemSuccess(t *testing.T) {
+	tests := []struct {
+		name   string
+		action searchengine.ActionType
+		status int
+		want   bool
+	}{
+		// 2xx is always success.
+		{"index 200", searchengine.ActionIndex, 200, true},
+		{"index 201", searchengine.ActionIndex, 201, true},
+		{"delete 200", searchengine.ActionDelete, 200, true},
+		{"update 200", searchengine.ActionUpdate, 200, true},
+		// 409 is success on every action — external versioning rejected a stale write.
+		{"index 409", searchengine.ActionIndex, 409, true},
+		{"delete 409", searchengine.ActionDelete, 409, true},
+		{"update 409", searchengine.ActionUpdate, 409, true},
+		// 404 is success on delete (already deleted) and update (script update on
+		// missing user-room doc — desired state already reached).
+		{"delete 404 already-deleted", searchengine.ActionDelete, 404, true},
+		{"update 404 missing-doc", searchengine.ActionUpdate, 404, true},
+		// 404 on index is a real failure: indexing should create the doc.
+		{"index 404 unexpected", searchengine.ActionIndex, 404, false},
+		// Server errors are failures on every action.
+		{"index 500", searchengine.ActionIndex, 500, false},
+		{"delete 500", searchengine.ActionDelete, 500, false},
+		{"update 500", searchengine.ActionUpdate, 500, false},
+		{"index 503", searchengine.ActionIndex, 503, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isBulkItemSuccess(tt.action, searchengine.BulkResult{Status: tt.status})
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// stubCollection is a minimal Collection that emits a single action of the
+// configured type. Only BuildAction is exercised by the handler tests; the
+// rest of the interface methods return zero values.
+type stubCollection struct {
+	action searchengine.ActionType
+}
+
+func (c stubCollection) StreamConfig(string) jetstream.StreamConfig { return jetstream.StreamConfig{} }
+func (c stubCollection) ConsumerName() string                       { return "stub" }
+func (c stubCollection) FilterSubjects(string) []string             { return nil }
+func (c stubCollection) TemplateName() string                       { return "" }
+func (c stubCollection) TemplateBody() json.RawMessage              { return nil }
+func (c stubCollection) BuildAction([]byte) ([]searchengine.BulkAction, error) {
+	return []searchengine.BulkAction{{Action: c.action, Index: "stub", DocID: "id-1"}}, nil
+}
+
+type (
+	stubDeleteCollection struct{ stubCollection }
+	stubUpdateCollection struct{ stubCollection }
+	stubIndexCollection  struct{ stubCollection }
+)
+
+func newStubDeleteCollection() stubDeleteCollection {
+	return stubDeleteCollection{stubCollection{action: searchengine.ActionDelete}}
+}
+func newStubUpdateCollection() stubUpdateCollection {
+	return stubUpdateCollection{stubCollection{action: searchengine.ActionUpdate}}
+}
+func newStubIndexCollection() stubIndexCollection {
+	return stubIndexCollection{stubCollection{action: searchengine.ActionIndex}}
+}
+
+func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
+	t.Run("404 on delete is acked", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		store.EXPECT().
+			Bulk(gomock.Any(), gomock.Len(1)).
+			Return([]searchengine.BulkResult{{Status: 404, Error: "not_found"}}, nil)
+
+		coll := newStubDeleteCollection()
+		h := NewHandler(store, coll, 500)
+		msg := &stubMsg{data: []byte(`{}`)}
+		h.Add(msg)
+		h.Flush(context.Background())
+
+		assert.True(t, msg.acked, "404 on delete should be acked (already deleted)")
+		assert.False(t, msg.nacked)
+	})
+
+	t.Run("404 on update is acked", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		store.EXPECT().
+			Bulk(gomock.Any(), gomock.Len(1)).
+			Return([]searchengine.BulkResult{{Status: 404, Error: "document_missing_exception"}}, nil)
+
+		coll := newStubUpdateCollection()
+		h := NewHandler(store, coll, 500)
+		msg := &stubMsg{data: []byte(`{}`)}
+		h.Add(msg)
+		h.Flush(context.Background())
+
+		assert.True(t, msg.acked, "404 on update should be acked (desired state reached)")
+		assert.False(t, msg.nacked)
+	})
+
+	t.Run("404 on index is nacked", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		store.EXPECT().
+			Bulk(gomock.Any(), gomock.Len(1)).
+			Return([]searchengine.BulkResult{{Status: 404, Error: "index_not_found_exception"}}, nil)
+
+		coll := newStubIndexCollection()
+		h := NewHandler(store, coll, 500)
+		msg := &stubMsg{data: []byte(`{}`)}
+		h.Add(msg)
+		h.Flush(context.Background())
+
+		assert.False(t, msg.acked, "404 on index should be nacked")
+		assert.True(t, msg.nacked)
+	})
+}

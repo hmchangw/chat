@@ -95,6 +95,37 @@ func TestAdapter_Bulk(t *testing.T) {
 		assert.Equal(t, "m2", del["_id"])
 	})
 
+	t.Run("update action uses update meta without version", func(t *testing.T) {
+		var capturedBody string
+		ft := &fakeTransport{handler: func(req *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(req.Body)
+			capturedBody = string(body)
+			return jsonResponse(200, `{"items":[{"update":{"status":200}}]}`), nil
+		}}
+		a := newAdapter(ft)
+		updateBody := json.RawMessage(`{"script":{"source":"ctx._source.rooms.add(params.rid)","params":{"rid":"r1"}},"upsert":{"userAccount":"alice","rooms":["r1"]}}`)
+		results, err := a.Bulk(context.Background(), []BulkAction{
+			{Action: ActionUpdate, Index: "user-room-site1", DocID: "alice", Doc: updateBody},
+		})
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Equal(t, 200, results[0].Status)
+
+		lines := strings.Split(strings.TrimSpace(capturedBody), "\n")
+		require.Len(t, lines, 2)
+
+		var updateMeta map[string]any
+		require.NoError(t, json.Unmarshal([]byte(lines[0]), &updateMeta))
+		upd := updateMeta["update"].(map[string]any)
+		assert.Equal(t, "user-room-site1", upd["_index"])
+		assert.Equal(t, "alice", upd["_id"])
+		// external versioning must NOT be set on update actions
+		assert.NotContains(t, upd, "version")
+		assert.NotContains(t, upd, "version_type")
+
+		assert.JSONEq(t, string(updateBody), lines[1])
+	})
+
 	t.Run("version conflict treated as result not error", func(t *testing.T) {
 		ft := &fakeTransport{handler: func(req *http.Request) (*http.Response, error) {
 			return jsonResponse(200, `{

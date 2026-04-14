@@ -10,9 +10,14 @@ import (
 	"github.com/hmchangw/chat/pkg/searchengine"
 )
 
-type bufferedMsg struct {
-	action searchengine.BulkAction
-	jsMsg  jetstream.Msg
+// pendingMsg tracks a JetStream message and the range of bulk actions it
+// produced. A single JetStream message may fan out into zero, one, or multiple
+// actions. The message is acked once ALL of its actions succeed; if any action
+// fails the whole message is nakked for redelivery.
+type pendingMsg struct {
+	jsMsg       jetstream.Msg
+	actionStart int // starting index into Handler.actions
+	actionCount int // number of actions contributed by this message
 }
 
 // Handler buffers JetStream messages and flushes them as ES bulk requests.
@@ -21,7 +26,8 @@ type Handler struct {
 	collection Collection
 	batchSize  int
 	mu         sync.Mutex
-	buffer     []bufferedMsg
+	pending    []pendingMsg
+	actions    []searchengine.BulkAction
 }
 
 // NewHandler creates a Handler with the given store, collection, and batch size.
@@ -30,13 +36,16 @@ func NewHandler(store Store, collection Collection, batchSize int) *Handler {
 		store:      store,
 		collection: collection,
 		batchSize:  batchSize,
-		buffer:     make([]bufferedMsg, 0, batchSize),
+		pending:    make([]pendingMsg, 0, batchSize),
+		actions:    make([]searchengine.BulkAction, 0, batchSize),
 	}
 }
 
-// Add parses a JetStream message via the collection and adds it to the buffer.
+// Add parses a JetStream message via the collection and adds its actions to
+// the buffer. If the collection produces zero actions (e.g., a filtered
+// event), the message is immediately acked without touching the buffer.
 func (h *Handler) Add(msg jetstream.Msg) {
-	action, err := h.collection.BuildAction(msg.Data())
+	actions, err := h.collection.BuildAction(msg.Data())
 	if err != nil {
 		slog.Error("build action", "error", err)
 		if ackErr := msg.Ack(); ackErr != nil {
@@ -45,72 +54,124 @@ func (h *Handler) Add(msg jetstream.Msg) {
 		return
 	}
 
+	if len(actions) == 0 {
+		if ackErr := msg.Ack(); ackErr != nil {
+			slog.Error("ack filtered message", "error", ackErr)
+		}
+		return
+	}
+
 	h.mu.Lock()
-	h.buffer = append(h.buffer, bufferedMsg{action: action, jsMsg: msg})
+	h.pending = append(h.pending, pendingMsg{
+		jsMsg:       msg,
+		actionStart: len(h.actions),
+		actionCount: len(actions),
+	})
+	h.actions = append(h.actions, actions...)
 	h.mu.Unlock()
 }
 
-// Flush sends all buffered actions to ES and acks/naks per item.
+// Flush sends all buffered actions to ES and acks/naks per source message.
 func (h *Handler) Flush(ctx context.Context) {
 	h.mu.Lock()
-	if len(h.buffer) == 0 {
+	if len(h.pending) == 0 {
 		h.mu.Unlock()
 		return
 	}
-	items := h.buffer
-	h.buffer = make([]bufferedMsg, 0, h.batchSize)
+	pending := h.pending
+	actions := h.actions
+	h.pending = make([]pendingMsg, 0, h.batchSize)
+	h.actions = make([]searchengine.BulkAction, 0, h.batchSize)
 	h.mu.Unlock()
-
-	actions := make([]searchengine.BulkAction, len(items))
-	for i, item := range items {
-		actions[i] = item.action
-	}
 
 	results, err := h.store.Bulk(ctx, actions)
 	if err != nil {
-		slog.Error("bulk request failed", "error", err, "count", len(items))
-		for _, item := range items {
-			if nakErr := item.jsMsg.Nak(); nakErr != nil {
-				slog.Error("nak failed", "error", nakErr)
-			}
-		}
+		slog.Error("bulk request failed", "error", err, "actions", len(actions))
+		nakAll(pending)
 		return
 	}
 
-	if len(results) != len(items) {
+	if len(results) != len(actions) {
 		// Defensive guard for a protocol-level anomaly: ES bulk API normally
 		// returns one result per input action in input order. Nak-all is safe
-		// because of external versioning — on redelivery, any items already
-		// indexed return 409 (handled as ack below), and failed items get
-		// re-indexed. No duplicate processing, no lost events.
-		slog.Error("bulk result count mismatch", "expected", len(items), "actual", len(results))
-		for _, item := range items {
-			if nakErr := item.jsMsg.Nak(); nakErr != nil {
-				slog.Error("nak failed", "error", nakErr)
-			}
-		}
+		// because every action type we emit is idempotent on redelivery:
+		//   - ActionIndex / ActionDelete: external versioning makes a stale
+		//     redelivery return 409 (handled as ack below); a successful
+		//     redelivery is identical to the original write.
+		//   - ActionUpdate: the painless scripts in user_room.go check a
+		//     per-room timestamp guard (params.ts > stored) and short-circuit
+		//     via ctx.op = 'none' on a redelivery, so a redelivered update
+		//     is at worst a no-op.
+		// No duplicate processing, no lost events.
+		slog.Error("bulk result count mismatch", "expected", len(actions), "actual", len(results))
+		nakAll(pending)
 		return
 	}
 
-	for i, result := range results {
-		if result.Status == 409 || (result.Status >= 200 && result.Status < 300) {
-			if ackErr := items[i].jsMsg.Ack(); ackErr != nil {
+	for _, p := range pending {
+		allOK := true
+		for i := p.actionStart; i < p.actionStart+p.actionCount; i++ {
+			if isBulkItemSuccess(actions[i].Action, results[i]) {
+				continue
+			}
+			allOK = false
+			slog.Error("bulk item failed",
+				"status", results[i].Status,
+				"error", results[i].Error,
+				"docID", actions[i].DocID,
+				"index", actions[i].Index,
+			)
+			break
+		}
+		if allOK {
+			if ackErr := p.jsMsg.Ack(); ackErr != nil {
 				slog.Error("ack failed", "error", ackErr)
 			}
 		} else {
-			slog.Error("bulk item failed", "status", result.Status, "error", result.Error, "docID", items[i].action.DocID)
-			if nakErr := items[i].jsMsg.Nak(); nakErr != nil {
+			if nakErr := p.jsMsg.Nak(); nakErr != nil {
 				slog.Error("nak failed", "error", nakErr)
 			}
 		}
 	}
 }
 
-// BufferLen returns the current buffer size.
+// isBulkItemSuccess maps an ES bulk item result to a logical success/failure
+// per action type.
+//
+//   - 2xx is always success.
+//   - 409 is success on every action: it means external versioning rejected
+//     a stale write, and the desired state is already reached or newer.
+//   - 404 is success on ActionDelete (already deleted) and on ActionUpdate
+//     (the user-room remove path emits a scriptless update on a doc that
+//     may not exist yet — desired state already reached). It remains a
+//     failure on ActionIndex because indexing is supposed to create the
+//     doc.
+func isBulkItemSuccess(action searchengine.ActionType, result searchengine.BulkResult) bool {
+	if result.Status >= 200 && result.Status < 300 {
+		return true
+	}
+	if result.Status == 409 {
+		return true
+	}
+	if result.Status == 404 && (action == searchengine.ActionDelete || action == searchengine.ActionUpdate) {
+		return true
+	}
+	return false
+}
+
+func nakAll(pending []pendingMsg) {
+	for _, p := range pending {
+		if nakErr := p.jsMsg.Nak(); nakErr != nil {
+			slog.Error("nak failed", "error", nakErr)
+		}
+	}
+}
+
+// BufferLen returns the current number of buffered messages (not actions).
 func (h *Handler) BufferLen() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.buffer)
+	return len(h.pending)
 }
 
 // BufferFull returns true if the buffer has reached batch size.

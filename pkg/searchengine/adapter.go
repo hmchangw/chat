@@ -72,6 +72,18 @@ func (a *httpAdapter) Bulk(ctx context.Context, actions []BulkAction) ([]BulkRes
 			line, _ := json.Marshal(map[string]bulkActionMeta{"delete": meta})
 			buf.Write(line)
 			buf.WriteByte('\n')
+		case ActionUpdate:
+			// ES _update is a read-modify-write operation (server reads the
+			// doc, applies the partial update or script, writes it back), so
+			// it does not accept `version`/`version_type=external` — that's
+			// only for full-document replacement via `index`. Omit them here
+			// regardless of whether the caller set Version.
+			updateMeta := bulkActionMeta{Index: action.Index, ID: action.DocID}
+			line, _ := json.Marshal(map[string]bulkActionMeta{"update": updateMeta})
+			buf.Write(line)
+			buf.WriteByte('\n')
+			buf.Write(action.Doc)
+			buf.WriteByte('\n')
 		}
 	}
 

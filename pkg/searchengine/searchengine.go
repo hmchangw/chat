@@ -18,15 +18,21 @@ type ActionType string
 const (
 	ActionIndex  ActionType = "index"
 	ActionDelete ActionType = "delete"
+	ActionUpdate ActionType = "update"
 )
 
 // BulkAction represents a single action in a bulk request.
+//
+// For ActionUpdate, Doc contains the full ES update body (doc / script /
+// upsert) and Version is ignored. The _update operation is read-modify-write
+// on the ES side and does not accept `version`/`version_type=external`; that
+// parameter pair is only valid for `index` (full-document replacement).
 type BulkAction struct {
 	Action  ActionType
 	Index   string
 	DocID   string
-	Version int64           // used as ES external version
-	Doc     json.RawMessage // nil for delete actions
+	Version int64           // used as ES external version (ignored for ActionUpdate)
+	Doc     json.RawMessage // index: full doc; update: update body; delete: nil
 }
 
 // BulkResult represents the result of a single bulk action item.

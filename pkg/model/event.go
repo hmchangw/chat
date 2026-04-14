@@ -39,6 +39,14 @@ type UpdateRoleRequest struct {
 	NewRole Role   `json:"newRole" bson:"newRole"`
 }
 
+// MemberAddedPayload is the payload of an OutboxEvent{Type: "member_added"}.
+// It carries the full Subscription and Room so downstream consumers
+// (inbox-worker, search-sync-worker) can index/persist without DB lookups.
+type MemberAddedPayload struct {
+	Subscription Subscription `json:"subscription"`
+	Room         Room         `json:"room"`
+}
+
 type InviteMemberRequest struct {
 	InviterID      string `json:"inviterId"`
 	InviteeID      string `json:"inviteeId"`
@@ -55,12 +63,21 @@ type NotificationEvent struct {
 	Timestamp int64   `json:"timestamp" bson:"timestamp"`
 }
 
+// OutboxEventType is the type tag on an OutboxEvent used to route it to the
+// correct handler on the destination site.
+type OutboxEventType = string
+
+const (
+	OutboxMemberAdded   OutboxEventType = "member_added"
+	OutboxMemberRemoved OutboxEventType = "member_removed"
+)
+
 type OutboxEvent struct {
-	Type       string `json:"type"` // "member_added", "room_sync"
-	SiteID     string `json:"siteId"`
-	DestSiteID string `json:"destSiteId"`
-	Payload    []byte `json:"payload"` // JSON-encoded inner event
-	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
+	Type       OutboxEventType `json:"type"`
+	SiteID     string          `json:"siteId"`
+	DestSiteID string          `json:"destSiteId"`
+	Payload    []byte          `json:"payload"` // JSON-encoded inner event
+	Timestamp  int64           `json:"timestamp" bson:"timestamp"`
 }
 
 type MemberAddEvent struct {

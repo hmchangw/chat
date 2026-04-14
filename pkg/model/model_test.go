@@ -598,6 +598,39 @@ func TestOutboxEventJSON(t *testing.T) {
 	}
 }
 
+func TestMemberAddedPayloadJSON(t *testing.T) {
+	joinedAt := time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)
+	historyFrom := time.Date(2026, 4, 9, 11, 0, 0, 0, time.UTC)
+	src := model.MemberAddedPayload{
+		Subscription: model.Subscription{
+			ID:                 "sub-1",
+			User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:             "r1",
+			SiteID:             "site-a",
+			Roles:              []model.Role{model.RoleMember},
+			HistorySharedSince: &historyFrom,
+			JoinedAt:           joinedAt,
+			LastSeenAt:         joinedAt,
+		},
+		Room: model.Room{
+			ID: "r1", Name: "engineering", Type: model.RoomTypeGroup,
+			CreatedBy: "u0", SiteID: "site-a", UserCount: 2,
+			LastMsgAt:        joinedAt,
+			LastMsgID:        "m1",
+			LastMentionAllAt: joinedAt,
+			CreatedAt:        joinedAt,
+			UpdatedAt:        joinedAt,
+		},
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.MemberAddedPayload
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
+
 func TestRoomMetadataUpdateEventJSON(t *testing.T) {
 	src := model.RoomMetadataUpdateEvent{
 		RoomID:        "r1",

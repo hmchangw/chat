@@ -38,6 +38,14 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.notification"},
 		{"Outbox", subject.Outbox("site-a", "site-b", "member_added"),
 			"outbox.site-a.to.site-b.member_added"},
+		{"InboxMemberAdded", subject.InboxMemberAdded("site-a"),
+			"chat.inbox.site-a.member_added"},
+		{"InboxMemberRemoved", subject.InboxMemberRemoved("site-a"),
+			"chat.inbox.site-a.member_removed"},
+		{"InboxMemberAddedAggregate", subject.InboxMemberAddedAggregate("site-a"),
+			"chat.inbox.site-a.aggregate.member_added"},
+		{"InboxMemberRemovedAggregate", subject.InboxMemberRemovedAggregate("site-a"),
+			"chat.inbox.site-a.aggregate.member_removed"},
 		{"MsgCanonicalCreated", subject.MsgCanonicalCreated("site-a"),
 			"chat.msg.canonical.site-a.created"},
 		{"MsgCanonicalUpdated", subject.MsgCanonicalUpdated("site-a"),
@@ -68,6 +76,24 @@ func TestSubjectBuilders(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("InboxMemberEventSubjects", func(t *testing.T) {
+		got := subject.InboxMemberEventSubjects("site-a")
+		want := []string{
+			"chat.inbox.site-a.member_added",
+			"chat.inbox.site-a.member_removed",
+			"chat.inbox.site-a.aggregate.member_added",
+			"chat.inbox.site-a.aggregate.member_removed",
+		}
+		if len(got) != len(want) {
+			t.Fatalf("got %d subjects, want %d", len(got), len(want))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("[%d] = %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
 }
 
 func TestParseUserRoomSubject(t *testing.T) {
