@@ -103,7 +103,7 @@ func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, 
 		if err := cursor.Err(); err != nil {
 			return nil, false, fmt.Errorf("iterate subscription with membership: %w", err)
 		}
-		return nil, false, fmt.Errorf("subscription not found for account %q in room %q", account, roomID)
+		return nil, false, fmt.Errorf("subscription not found for account %q in room %q: %w", account, roomID, mongo.ErrNoDocuments)
 	}
 	if err := cursor.Decode(&result); err != nil {
 		return nil, false, fmt.Errorf("decode subscription with membership: %w", err)
