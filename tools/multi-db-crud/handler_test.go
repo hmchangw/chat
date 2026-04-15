@@ -26,7 +26,7 @@ func init() {
 }
 
 func TestHandler_Healthz(t *testing.T) {
-	h := newHandler(nil)
+	h := newHandler(nil, nil)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -43,7 +43,7 @@ func TestHandler_Healthz(t *testing.T) {
 }
 
 func TestRequestIDMiddleware_GeneratesID(t *testing.T) {
-	h := newHandler(nil)
+	h := newHandler(nil, nil)
 
 	r := gin.New()
 	r.Use(requestIDMiddleware())
@@ -58,7 +58,7 @@ func TestRequestIDMiddleware_GeneratesID(t *testing.T) {
 }
 
 func TestRequestIDMiddleware_EchoesExistingID(t *testing.T) {
-	h := newHandler(nil)
+	h := newHandler(nil, nil)
 
 	r := gin.New()
 	r.Use(requestIDMiddleware())
@@ -75,7 +75,7 @@ func TestRequestIDMiddleware_EchoesExistingID(t *testing.T) {
 }
 
 func TestStubRoutes_Return501(t *testing.T) {
-	h := newHandler(nil)
+	h := newHandler(nil, nil)
 	r := gin.New()
 	registerRoutes(r, h)
 
@@ -83,11 +83,6 @@ func TestStubRoutes_Return501(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodGet, "/api/mongo/abc/collections"},
-		{http.MethodGet, "/api/mongo/abc/collections/rooms/docs"},
-		{http.MethodPost, "/api/mongo/abc/collections/rooms/docs"},
-		{http.MethodPut, "/api/mongo/abc/collections/rooms/docs/123"},
-		{http.MethodDelete, "/api/mongo/abc/collections/rooms/docs/123"},
 		{http.MethodGet, "/api/mongo/abc/collections/rooms/export"},
 		{http.MethodPost, "/api/mongo/abc/collections/rooms/import"},
 		{http.MethodGet, "/api/cassandra/abc/tables"},
@@ -113,7 +108,7 @@ func TestStubRoutes_Return501(t *testing.T) {
 
 func TestServeUI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := newHandler(nil)
+	h := newHandler(nil, nil)
 	r := gin.New()
 	registerRoutes(r, h)
 
@@ -126,7 +121,7 @@ func TestServeUI(t *testing.T) {
 
 func TestServeUI_MissingFile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := newHandler(nil)
+	h := newHandler(nil, nil)
 	// Use an empty FS so ReadFile("static/index.html") returns an error.
 	h.staticFS = fstest.MapFS{}
 	r := gin.New()
@@ -158,7 +153,7 @@ func TestParseLogLevel(t *testing.T) {
 }
 
 func TestNewHTTPServer(t *testing.T) {
-	h := newHandler(nil)
+	h := newHandler(nil, nil)
 	r := gin.New()
 	registerRoutes(r, h)
 
@@ -171,7 +166,7 @@ func TestNewHTTPServer(t *testing.T) {
 }
 
 func TestNewRouter(t *testing.T) {
-	h := newHandler(nil)
+	h := newHandler(nil, nil)
 	r := newRouter(h, false)
 	require.NotNil(t, r)
 
@@ -213,7 +208,7 @@ var _ fs.FS = fstest.MapFS{}
 // read-only middleware (those have dedicated tests below).
 func newTestRouter(t *testing.T, reg registryAPI) *gin.Engine {
 	t.Helper()
-	h := newHandler(reg)
+	h := newHandler(reg, nil)
 	r := gin.New()
 	registerRoutes(r, h)
 	return r

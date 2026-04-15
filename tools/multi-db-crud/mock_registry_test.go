@@ -117,6 +117,45 @@ func (c *MockregistryAPIConnectCall) DoAndReturn(f func(context.Context, connect
 	return c
 }
 
+// Get mocks base method.
+func (m *MockregistryAPI) Get(id string) (*connection, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Get", id)
+	ret0, _ := ret[0].(*connection)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Get indicates an expected call of Get.
+func (mr *MockregistryAPIMockRecorder) Get(id any) *MockregistryAPIGetCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockregistryAPI)(nil).Get), id)
+	return &MockregistryAPIGetCall{Call: call}
+}
+
+// MockregistryAPIGetCall wrap *gomock.Call
+type MockregistryAPIGetCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockregistryAPIGetCall) Return(arg0 *connection, arg1 error) *MockregistryAPIGetCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockregistryAPIGetCall) Do(f func(string) (*connection, error)) *MockregistryAPIGetCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockregistryAPIGetCall) DoAndReturn(f func(string) (*connection, error)) *MockregistryAPIGetCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // List mocks base method.
 func (m *MockregistryAPI) List() []connInfo {
 	m.ctrl.T.Helper()

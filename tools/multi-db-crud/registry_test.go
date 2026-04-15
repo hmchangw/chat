@@ -119,7 +119,7 @@ func TestRegistry_Connect_Mongo_Success(t *testing.T) {
 	r, _, tc := newTestRegistry(t, time.Hour)
 
 	info, err := r.Connect(context.Background(), connectSpec{
-		Kind: "mongo", URI: "mongodb://example/", Label: "primary",
+		Kind: "mongo", URI: "mongodb://example/mydb", Label: "primary",
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, info.ID)
@@ -165,7 +165,7 @@ func TestRegistry_Connect_DriverError_NotStored(t *testing.T) {
 	r.mongoConnect = func(_ context.Context, _ string) (*mongo.Client, error) {
 		return nil, errors.New("unreachable")
 	}
-	_, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x", Label: "x"})
+	_, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x/testdb", Label: "x"})
 	require.Error(t, err)
 	assert.Empty(t, r.List())
 
@@ -198,7 +198,7 @@ func TestRegistry_Get_Miss(t *testing.T) {
 
 func TestRegistry_Get_TouchesLastUsed(t *testing.T) {
 	r, clk, _ := newTestRegistry(t, time.Hour)
-	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x", Label: "l"})
+	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x/testdb", Label: "l"})
 	require.NoError(t, err)
 
 	r.mu.RLock()
@@ -217,7 +217,7 @@ func TestRegistry_Get_TouchesLastUsed(t *testing.T) {
 
 func TestRegistry_Close_Success(t *testing.T) {
 	r, _, tc := newTestRegistry(t, time.Hour)
-	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x", Label: "l"})
+	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x/testdb", Label: "l"})
 	require.NoError(t, err)
 
 	require.NoError(t, r.Close(info.ID))
@@ -244,9 +244,9 @@ func TestRegistry_Close_Miss(t *testing.T) {
 func TestRegistry_CloseAll(t *testing.T) {
 	r, clk, tc := newTestRegistry(t, time.Hour)
 
-	_, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x", Label: "a"})
+	_, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x/testdb", Label: "a"})
 	require.NoError(t, err)
-	_, err = r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://y", Label: "b"})
+	_, err = r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://y/testdb", Label: "b"})
 	require.NoError(t, err)
 	addCassConnection(t, r, clk, "c", "k")
 
@@ -258,7 +258,7 @@ func TestRegistry_CloseAll(t *testing.T) {
 
 func TestRegistry_Reap_EvictsIdle(t *testing.T) {
 	r, clk, tc := newTestRegistry(t, 10*time.Minute)
-	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x", Label: "l"})
+	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x/testdb", Label: "l"})
 	require.NoError(t, err)
 
 	clk.Advance(11 * time.Minute)
@@ -273,7 +273,7 @@ func TestRegistry_Reap_EvictsIdle(t *testing.T) {
 
 func TestRegistry_Reap_KeepsFresh(t *testing.T) {
 	r, clk, tc := newTestRegistry(t, 10*time.Minute)
-	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x", Label: "l"})
+	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x/testdb", Label: "l"})
 	require.NoError(t, err)
 
 	clk.Advance(5 * time.Minute)
@@ -290,13 +290,13 @@ func TestRegistry_Reap_EvictsMultiple(t *testing.T) {
 	r, clk, tc := newTestRegistry(t, 10*time.Minute)
 
 	// One old mongo and one old cassandra connection at t=0.
-	idleA, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://a", Label: "a"})
+	idleA, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://a/testdb", Label: "a"})
 	require.NoError(t, err)
 	idleB := addCassConnection(t, r, clk, "b", "k")
 
 	// Advance and create a fresh connection.
 	clk.Advance(11 * time.Minute)
-	fresh, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://c", Label: "c"})
+	fresh, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://c/testdb", Label: "c"})
 	require.NoError(t, err)
 
 	r.Reap()
@@ -323,7 +323,7 @@ func TestRegistry_Concurrent_ConnectGetClose_UnderRace(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			info, err := r.Connect(context.Background(), connectSpec{
-				Kind: "mongo", URI: "mongodb://x", Label: "l",
+				Kind: "mongo", URI: "mongodb://x/testdb", Label: "l",
 			})
 			if err != nil {
 				return
@@ -342,13 +342,13 @@ func TestRegistry_Concurrent_ConnectGetClose_UnderRace(t *testing.T) {
 func TestRegistry_List_SortedByCreatedAt(t *testing.T) {
 	r, clk, _ := newTestRegistry(t, time.Hour)
 
-	a, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://a", Label: "a"})
+	a, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://a/testdb", Label: "a"})
 	require.NoError(t, err)
 	clk.Advance(time.Minute)
-	b, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://b", Label: "b"})
+	b, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://b/testdb", Label: "b"})
 	require.NoError(t, err)
 	clk.Advance(time.Minute)
-	c, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://c", Label: "c"})
+	c, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://c/testdb", Label: "c"})
 	require.NoError(t, err)
 
 	list := r.List()
@@ -383,7 +383,7 @@ func TestRunReaper_TickInvokesReap(t *testing.T) {
 	r, clk, tc := newTestRegistry(t, 10*time.Minute)
 
 	// Make a connection that is already stale.
-	_, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x", Label: "l"})
+	_, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x/testdb", Label: "l"})
 	require.NoError(t, err)
 	clk.Advance(11 * time.Minute)
 
@@ -491,7 +491,7 @@ func TestCloseMongo_ReturnsError(t *testing.T) {
 	r.closeMongo = func(_ context.Context, _ *mongo.Client) error {
 		return errors.New("disconnect-failed")
 	}
-	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://127.0.0.1:1", Label: "l"})
+	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://127.0.0.1:1/testdb", Label: "l"})
 	require.NoError(t, err)
 	// Close should succeed even though closeMongo returned an error.
 	require.NoError(t, r.Close(info.ID))
@@ -507,6 +507,57 @@ func TestNewRegistry_Defaults(t *testing.T) {
 	assert.NotNil(t, r.cassConnect)
 	assert.NotNil(t, r.closeMongo)
 	assert.NotNil(t, r.closeCass)
+}
+
+func TestConnect_Mongo_MissingDB_Error(t *testing.T) {
+	r, _, tc := newTestRegistry(t, time.Hour)
+
+	cases := []struct {
+		name string
+		uri  string
+	}{
+		{"no-path", "mongodb://host:27017"},
+		{"trailing-slash", "mongodb://host:27017/"},
+	}
+	for _, tc2 := range cases {
+		t.Run(tc2.name, func(t *testing.T) {
+			_, err := r.Connect(context.Background(), connectSpec{
+				Kind: "mongo", URI: tc2.uri, Label: "l",
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "default database")
+			assert.Empty(t, r.List())
+		})
+	}
+	// The driver connect hook must NOT be called when the URI is rejected
+	// upfront — that avoids noisy dials and socket setup for guaranteed fails.
+	assert.Equal(t, 0, tc.mongoConnects)
+}
+
+func TestParseMongoDatabase(t *testing.T) {
+	cases := []struct {
+		name    string
+		uri     string
+		want    string
+		wantErr bool
+	}{
+		{"with db", "mongodb://host/mydb", "mydb", false},
+		{"with db and query", "mongodb://host/mydb?replicaSet=rs0", "mydb", false},
+		{"no db", "mongodb://host:27017", "", true},
+		{"trailing slash", "mongodb://host:27017/", "", true},
+		{"invalid uri", "not a uri", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseMongoDatabase(c.uri)
+			if c.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, c.want, got)
+		})
+	}
 }
 
 func TestDefaultMongoConnect_Unreachable(t *testing.T) {

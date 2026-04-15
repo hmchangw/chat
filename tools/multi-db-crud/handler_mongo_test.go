@@ -1,0 +1,617 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.uber.org/mock/gomock"
+)
+
+// newMongoTestRouter constructs a Gin engine with a handler wired to the
+// supplied mock registry and mock mongoOps. Routes are registered exactly as
+// production code does.
+func newMongoTestRouter(t *testing.T, reg registryAPI, ops mongoOps) *gin.Engine {
+	t.Helper()
+	h := newHandler(reg, ops)
+	r := gin.New()
+	registerRoutes(r, h)
+	return r
+}
+
+// mongoConn returns a minimal *connection suitable for handler tests. The
+// mongo.Client pointer is nil; handlers only forward it to the ops seam which
+// is mocked, so nil is fine.
+func mongoConn() *connection {
+	return &connection{kind: "mongo", mongoDB: "testdb", label: "primary"}
+}
+
+// --- Shared connection-resolution tests for every mongo endpoint ---------------------
+
+// mongoEndpoint is a single (method, path, body) tuple used to exercise the
+// shared connection-resolution path once per endpoint.
+type mongoEndpoint struct {
+	name   string
+	method string
+	path   string
+	body   string
+}
+
+func allMongoEndpoints() []mongoEndpoint {
+	return []mongoEndpoint{
+		{"ListCollections", http.MethodGet, "/api/mongo/abc/collections", ""},
+		{"ListDocs", http.MethodGet, "/api/mongo/abc/collections/rooms/docs", ""},
+		{"InsertDoc", http.MethodPost, "/api/mongo/abc/collections/rooms/docs", `{"a":1}`},
+		{"ReplaceDoc", http.MethodPut, "/api/mongo/abc/collections/rooms/docs/123", `{"a":1}`},
+		{"DeleteDoc", http.MethodDelete, "/api/mongo/abc/collections/rooms/docs/123", ""},
+	}
+}
+
+func doReq(r http.Handler, ep mongoEndpoint) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	var body io.Reader
+	if ep.body != "" {
+		body = strings.NewReader(ep.body)
+	}
+	req := httptest.NewRequest(ep.method, ep.path, body)
+	if ep.body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestMongoEndpoint_ConnectionNotFound_404(t *testing.T) {
+	for _, ep := range allMongoEndpoints() {
+		t.Run(ep.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			reg := NewMockregistryAPI(ctrl)
+			ops := NewMockmongoOps(ctrl)
+			reg.EXPECT().Get("abc").Return(nil, ErrNotFound)
+
+			r := newMongoTestRouter(t, reg, ops)
+			w := doReq(r, ep)
+			assert.Equal(t, http.StatusNotFound, w.Code)
+			assert.Equal(t, "not_found", decodeErrResp(t, w.Body).Code)
+		})
+	}
+}
+
+func TestMongoEndpoint_WrongKind_400(t *testing.T) {
+	for _, ep := range allMongoEndpoints() {
+		t.Run(ep.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			reg := NewMockregistryAPI(ctrl)
+			ops := NewMockmongoOps(ctrl)
+			reg.EXPECT().Get("abc").Return(&connection{kind: "cassandra"}, nil)
+
+			r := newMongoTestRouter(t, reg, ops)
+			w := doReq(r, ep)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Equal(t, "wrong_kind", decodeErrResp(t, w.Body).Code)
+		})
+	}
+}
+
+func TestMongoEndpoint_RegistryGetInternalError_500(t *testing.T) {
+	// Ensures the non-ErrNotFound branch maps to 500 with sanitized message.
+	for _, ep := range allMongoEndpoints() {
+		t.Run(ep.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			reg := NewMockregistryAPI(ctrl)
+			ops := NewMockmongoOps(ctrl)
+			reg.EXPECT().Get("abc").Return(nil, errors.New("some: internal failure"))
+
+			r := newMongoTestRouter(t, reg, ops)
+			w := doReq(r, ep)
+			assert.Equal(t, http.StatusInternalServerError, w.Code)
+			assert.Equal(t, "internal_error", decodeErrResp(t, w.Body).Code)
+		})
+	}
+}
+
+// --- ListCollections ----------------------------------------------------------------
+
+func TestListCollections_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().ListCollections(gomock.Any(), gomock.Any(), "testdb").Return([]collectionInfo{
+		{Name: "rooms", Count: 42},
+		{Name: "messages", Count: 7},
+	}, nil)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections", nil)
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got []collectionInfo
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
+	assert.Equal(t, []collectionInfo{{Name: "rooms", Count: 42}, {Name: "messages", Count: 7}}, got)
+}
+
+func TestListCollections_EmptyReturnsJSONArray(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().ListCollections(gomock.Any(), gomock.Any(), "testdb").Return(nil, nil)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections", nil)
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "[]", strings.TrimSpace(w.Body.String()))
+}
+
+func TestListCollections_OpsError_500(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().ListCollections(gomock.Any(), gomock.Any(), "testdb").Return(nil, errors.New("boom"))
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, "internal_error", decodeErrResp(t, w.Body).Code)
+}
+
+// --- ListDocs -----------------------------------------------------------------------
+
+func TestListDocs_DefaultQuery_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		ListDocs(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{}, int64(0), int64(50)).
+		Return(listDocsResult{Total: 3, Docs: []bson.M{
+			{"_id": "1", "name": "a"},
+			{"_id": "2", "name": "b"},
+			{"_id": "3", "name": "c"},
+		}}, nil)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections/rooms/docs", nil)
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var env struct {
+		Total int64             `json:"total"`
+		Docs  []json.RawMessage `json:"docs"`
+	}
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
+	assert.Equal(t, int64(3), env.Total)
+	require.Len(t, env.Docs, 3)
+}
+
+func TestListDocs_WithFilter_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		ListDocs(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"status": "ok"}, int64(0), int64(50)).
+		Return(listDocsResult{Total: 1, Docs: []bson.M{{"_id": "x", "status": "ok"}}}, nil)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, `/api/mongo/abc/collections/rooms/docs?filter={"status":"ok"}`, nil)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestListDocs_InvalidFilterJSON_400(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	// ops.ListDocs must NOT be called.
+	ops.EXPECT().ListDocs(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections/rooms/docs?filter=not-json", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "bad_request", decodeErrResp(t, w.Body).Code)
+}
+
+func TestListDocs_LimitClamp(t *testing.T) {
+	cases := []struct {
+		name  string
+		q     string
+		limit int64
+		skip  int64
+	}{
+		{"limit too large", "limit=10000", 50, 0},
+		{"limit zero", "limit=0", 50, 0},
+		{"limit negative", "limit=-10", 50, 0},
+		{"limit at max", "limit=500", 500, 0},
+		{"limit just over max", "limit=501", 50, 0},
+		{"skip negative", "skip=-5", 50, 0},
+		{"skip positive", "skip=25", 50, 25},
+		{"non-numeric limit", "limit=abc", 50, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			reg := NewMockregistryAPI(ctrl)
+			ops := NewMockmongoOps(ctrl)
+
+			reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+			ops.EXPECT().
+				ListDocs(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{}, tc.skip, tc.limit).
+				Return(listDocsResult{Total: 0, Docs: []bson.M{}}, nil)
+
+			r := newMongoTestRouter(t, reg, ops)
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections/rooms/docs?"+tc.q, nil)
+			r.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusOK, w.Code)
+		})
+	}
+}
+
+func TestListDocs_OpsError_500(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		ListDocs(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{}, int64(0), int64(50)).
+		Return(listDocsResult{}, errors.New("boom"))
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections/rooms/docs", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, "internal_error", decodeErrResp(t, w.Body).Code)
+}
+
+// --- InsertDoc ----------------------------------------------------------------------
+
+func TestInsertDoc_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"name": "alice"}).
+		DoAndReturn(func(_ context.Context, _ *mongo.Client, _, _ string, doc bson.M) (bson.M, error) {
+			doc["_id"] = "generated-id"
+			return doc, nil
+		})
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/docs", strings.NewReader(`{"name":"alice"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got bson.M
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
+	assert.Equal(t, "alice", got["name"])
+	assert.Equal(t, "generated-id", got["_id"])
+}
+
+func TestInsertDoc_InvalidJSON_400(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().InsertDoc(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/docs", strings.NewReader(`{not-json`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "bad_request", decodeErrResp(t, w.Body).Code)
+}
+
+func TestInsertDoc_DuplicateKey_409(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.Any()).
+		Return(nil, ErrMongoDuplicateKey)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/docs", strings.NewReader(`{"_id":"dup"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Equal(t, "duplicate_key", decodeErrResp(t, w.Body).Code)
+}
+
+func TestInsertDoc_OpsError_500(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.Any()).
+		Return(nil, errors.New("boom"))
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/docs", strings.NewReader(`{"name":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, "internal_error", decodeErrResp(t, w.Body).Code)
+}
+
+func TestInsertDoc_BodyReadError_400(t *testing.T) {
+	// Simulate a read error by using a body that errors on Read.
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().InsertDoc(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/docs", errReader{})
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "bad_request", decodeErrResp(t, w.Body).Code)
+}
+
+// errReader implements io.Reader by always returning an error — used to
+// exercise io.ReadAll failure paths in handlers that read request bodies.
+type errReader struct{}
+
+func (errReader) Read(_ []byte) (int, error) { return 0, errors.New("read fail") }
+
+// --- ReplaceDoc ---------------------------------------------------------------------
+
+func TestReplaceDoc_ObjectIDHex_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	const hex = "507f1f77bcf86cd799439011"
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		ReplaceDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.AssignableToTypeOf(bson.ObjectID{}), bson.M{"name": "updated"}).
+		DoAndReturn(func(_ context.Context, _ *mongo.Client, _, _ string, id any, _ bson.M) error {
+			oid, ok := id.(bson.ObjectID)
+			assert.True(t, ok, "id must be bson.ObjectID, got %T", id)
+			assert.Equal(t, hex, oid.Hex())
+			return nil
+		})
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/mongo/abc/collections/rooms/docs/"+hex, strings.NewReader(`{"name":"updated"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNoContent, w.Code)
+}
+
+func TestReplaceDoc_StringID_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		ReplaceDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", "abc123", bson.M{"name": "updated"}).
+		Return(nil)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/mongo/abc/collections/rooms/docs/abc123", strings.NewReader(`{"name":"updated"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNoContent, w.Code)
+}
+
+func TestReplaceDoc_NotFound_404(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		ReplaceDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", "missing", gomock.Any()).
+		Return(ErrMongoNotFound)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/mongo/abc/collections/rooms/docs/missing", strings.NewReader(`{"x":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, "not_found", decodeErrResp(t, w.Body).Code)
+}
+
+func TestReplaceDoc_InvalidJSON_400(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().ReplaceDoc(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/mongo/abc/collections/rooms/docs/abc", strings.NewReader(`{not-json`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "bad_request", decodeErrResp(t, w.Body).Code)
+}
+
+func TestReplaceDoc_OpsError_500(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		ReplaceDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", "abc", gomock.Any()).
+		Return(errors.New("boom"))
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/mongo/abc/collections/rooms/docs/abc", strings.NewReader(`{"x":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, "internal_error", decodeErrResp(t, w.Body).Code)
+}
+
+func TestReplaceDoc_BodyReadError_400(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().ReplaceDoc(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/mongo/abc/collections/rooms/docs/abc", errReader{})
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "bad_request", decodeErrResp(t, w.Body).Code)
+}
+
+// --- DeleteDoc ----------------------------------------------------------------------
+
+func TestDeleteDoc_Success_204(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().DeleteDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", "abc123").Return(nil)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/mongo/abc/collections/rooms/docs/abc123", nil)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Empty(t, w.Body.String())
+}
+
+func TestDeleteDoc_ObjectIDHex_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	const hex = "507f1f77bcf86cd799439011"
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		DeleteDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.AssignableToTypeOf(bson.ObjectID{})).
+		DoAndReturn(func(_ context.Context, _ *mongo.Client, _, _ string, id any) error {
+			oid, ok := id.(bson.ObjectID)
+			assert.True(t, ok)
+			assert.Equal(t, hex, oid.Hex())
+			return nil
+		})
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/mongo/abc/collections/rooms/docs/"+hex, nil)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNoContent, w.Code)
+}
+
+func TestDeleteDoc_NotFound_404(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().DeleteDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", "missing").Return(ErrMongoNotFound)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/mongo/abc/collections/rooms/docs/missing", nil)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, "not_found", decodeErrResp(t, w.Body).Code)
+}
+
+func TestDeleteDoc_OpsError_500(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().DeleteDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", "x").Return(errors.New("boom"))
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/mongo/abc/collections/rooms/docs/x", nil)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, "internal_error", decodeErrResp(t, w.Body).Code)
+}
+
+// --- marshalDocsExtJSON -------------------------------------------------------------
+
+func TestMarshalDocsExtJSON_EmptyAndSimple(t *testing.T) {
+	// Empty docs → empty slice.
+	got, err := marshalDocsExtJSON(nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+
+	// Simple doc round-trips.
+	got, err = marshalDocsExtJSON([]bson.M{{"name": "alice"}})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(got[0], &parsed))
+	assert.Equal(t, "alice", parsed["name"])
+}

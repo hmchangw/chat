@@ -14,10 +14,10 @@ func registerRoutes(r *gin.Engine, h *handler) {
 
 	// MongoDB routes
 	mongo := api.Group("/mongo/:id")
-	mongo.GET("/collections", h.mongoCollections)
-	mongo.GET("/collections/:name/docs", h.mongoDocs)
-	mongo.POST("/collections/:name/docs", h.mongoCreateDoc)
-	mongo.PUT("/collections/:name/docs/:docID", h.mongoUpdateDoc)
+	mongo.GET("/collections", h.mongoListCollections)
+	mongo.GET("/collections/:name/docs", h.mongoListDocs)
+	mongo.POST("/collections/:name/docs", h.mongoInsertDoc)
+	mongo.PUT("/collections/:name/docs/:docID", h.mongoReplaceDoc)
 	mongo.DELETE("/collections/:name/docs/:docID", h.mongoDeleteDoc)
 	mongo.GET("/collections/:name/export", h.mongoExport)
 	mongo.POST("/collections/:name/import", h.mongoImport)

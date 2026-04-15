@@ -17,6 +17,7 @@ import (
 // in the consumer (handler) per CLAUDE.md so handler tests can mock it.
 type registryAPI interface {
 	Connect(ctx context.Context, spec connectSpec) (connInfo, error)
+	Get(id string) (*connection, error)
 	Close(id string) error
 	List() []connInfo
 }
@@ -29,10 +30,13 @@ type handler struct {
 	staticFS fs.FS
 	// reg is the connection registry. May be nil in some tests.
 	reg registryAPI
+	// mongo is the seam for Mongo CRUD ops. May be nil in tests that don't
+	// exercise mongo handlers.
+	mongo mongoOps
 }
 
-func newHandler(reg registryAPI) *handler {
-	return &handler{reg: reg}
+func newHandler(reg registryAPI, mongo mongoOps) *handler {
+	return &handler{reg: reg, mongo: mongo}
 }
 
 // errResp is the uniform error shape for API responses (spec §7).
@@ -149,26 +153,7 @@ func (h *handler) deleteConnection(c *gin.Context) {
 }
 
 // Stub handlers — all return 501 Not Implemented until fully implemented.
-
-func (h *handler) mongoCollections(c *gin.Context) {
-	c.Status(http.StatusNotImplemented)
-}
-
-func (h *handler) mongoDocs(c *gin.Context) {
-	c.Status(http.StatusNotImplemented)
-}
-
-func (h *handler) mongoCreateDoc(c *gin.Context) {
-	c.Status(http.StatusNotImplemented)
-}
-
-func (h *handler) mongoUpdateDoc(c *gin.Context) {
-	c.Status(http.StatusNotImplemented)
-}
-
-func (h *handler) mongoDeleteDoc(c *gin.Context) {
-	c.Status(http.StatusNotImplemented)
-}
+// Mongo CRUD handlers live in handler_mongo.go.
 
 func (h *handler) cassandraTables(c *gin.Context) {
 	c.Status(http.StatusNotImplemented)

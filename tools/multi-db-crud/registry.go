@@ -16,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/x/mongo/driver/connstring"
 )
 
 // connection holds either a Mongo client or a Cassandra session, keyed by
@@ -24,6 +25,7 @@ type connection struct {
 	kind         string         // "mongo" | "cassandra"
 	mongo        *mongo.Client  // nil for cassandra
 	cass         *gocql.Session // nil for mongo
+	mongoDB      string         // mongo only — default database from URI path
 	cassKeyspace string         // cassandra only
 	label        string         // user-provided nickname
 	createdAt    time.Time
@@ -77,6 +79,20 @@ func defaultCloseMongo(ctx context.Context, c *mongo.Client) error { return c.Di
 
 // defaultCloseCass closes a *gocql.Session. Default close hook used by newRegistry.
 func defaultCloseCass(s *gocql.Session) { s.Close() }
+
+// parseMongoDatabase returns the default database name embedded in a Mongo URI
+// (e.g. mongodb://host:27017/mydb -> "mydb"). It returns an error if the URI
+// has no default database, because every Mongo CRUD endpoint needs one.
+func parseMongoDatabase(uri string) (string, error) {
+	parsed, err := connstring.ParseAndValidate(uri)
+	if err != nil {
+		return "", fmt.Errorf("parse mongo URI: %w", err)
+	}
+	if parsed.Database == "" {
+		return "", errors.New("mongo URI must include a default database name (e.g., mongodb://host:27017/mydb)")
+	}
+	return parsed.Database, nil
+}
 
 // defaultMongoConnect dials Mongo using the v2 driver and pings it.
 // We deliberately do not use pkg/mongoutil because it logs the URI.
@@ -134,6 +150,13 @@ func (r *registry) Connect(ctx context.Context, spec connectSpec) (connInfo, err
 }
 
 func (r *registry) connectMongo(ctx context.Context, spec connectSpec) (connInfo, error) {
+	// Parse the default database from the URI path — it's required so later
+	// Mongo CRUD endpoints know which db to operate on.
+	dbName, err := parseMongoDatabase(spec.URI)
+	if err != nil {
+		return connInfo{}, err
+	}
+
 	client, err := r.mongoConnect(ctx, spec.URI)
 	if err != nil {
 		return connInfo{}, fmt.Errorf("could not connect to %s: %w", spec.Kind, err)
@@ -148,6 +171,7 @@ func (r *registry) connectMongo(ctx context.Context, spec connectSpec) (connInfo
 	c := &connection{
 		kind:          "mongo",
 		mongo:         client,
+		mongoDB:       dbName,
 		label:         spec.Label,
 		createdAt:     now,
 		serverVersion: version,
