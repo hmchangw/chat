@@ -65,6 +65,9 @@ type seedRow struct {
 	siteID                 string
 	editedOffsetMins       int // 0 = nil, positive = edited at ts+offset
 	updatedOffsetMins      int // 0 = nil
+	// messages_by_id extra columns
+	threadRoomID string
+	pinnedBy     *cassmodel.Participant
 }
 
 var chatMessages = []seedRow{
@@ -132,6 +135,7 @@ var chatMessages = []seedRow{
 		tshow:                  true,
 		threadParentID:         "msg-005",
 		threadParentOffsetMins: -9, // points back to msg-005 (3 min intervals, msg-005 is at offset 15)
+		threadRoomID:           "thread-room-canary",
 		quotedParentMessage: &cassmodel.QuotedParentMessage{
 			MessageID:   "msg-005",
 			RoomID:      roomID,
@@ -153,6 +157,7 @@ var chatMessages = []seedRow{
 		msgType:    "meeting_scheduled",
 		sysMsgData: []byte(`{"time":"2026-04-03T14:00:00Z","title":"Canary Kickoff"}`),
 		siteID:     "site-remote",
+		pinnedBy:   &cassmodel.Participant{ID: "alice", Account: "alice", EngName: "Alice Chen"},
 	},
 	{
 		senderIdx: 2, targetIdx: -1,
@@ -212,7 +217,7 @@ func run() error {
 		User:               model.SubscriptionUser{ID: account, Account: account},
 		RoomID:             roomID,
 		SiteID:             siteID,
-		Role:               model.RoleMember,
+		Roles:              []model.Role{model.RoleMember},
 		HistorySharedSince: &joinTime,
 		JoinedAt:           joinTime,
 	}
@@ -239,7 +244,7 @@ func run() error {
 	}
 	var msgs []seeded
 
-	const insertColumns = `(
+	const insertByRoomCQL = `INSERT INTO messages_by_room (
 		room_id, created_at, message_id, sender, target_user, msg,
 		mentions, attachments, file, card, card_action,
 		tshow, thread_parent_id, thread_parent_created_at,
@@ -248,8 +253,16 @@ func run() error {
 		site_id, edited_at, updated_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	const insertByRoomCQL = `INSERT INTO messages_by_room ` + insertColumns
-	const insertByIDCQL = `INSERT INTO messages_by_id ` + insertColumns
+	// messages_by_id has 3 extra columns: thread_room_id, pinned_at, pinned_by.
+	const insertByIDCQL = `INSERT INTO messages_by_id (
+		room_id, created_at, message_id, sender, target_user, msg,
+		mentions, attachments, file, card, card_action,
+		tshow, thread_parent_id, thread_parent_created_at,
+		quoted_parent_message, visible_to, unread,
+		reactions, deleted, type, sys_msg_data,
+		site_id, edited_at, updated_at,
+		thread_room_id, pinned_at, pinned_by
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	for i := range chatMessages {
 		cm := &chatMessages[i]
@@ -295,7 +308,7 @@ func run() error {
 			updatedAt = &ua
 		}
 
-		vals := []any{
+		baseVals := []any{
 			roomID, ts, msgID,
 			&sender, target, cm.msg,
 			mentions, cm.attachments, cm.file, cm.card, cm.cardAction,
@@ -304,10 +317,18 @@ func run() error {
 			reactions, cm.deleted, cm.msgType, cm.sysMsgData,
 			cm.siteID, editedAt, updatedAt,
 		}
-		if err := cassSession.Query(insertByRoomCQL, vals...).Exec(); err != nil {
+		if err := cassSession.Query(insertByRoomCQL, baseVals...).Exec(); err != nil {
 			return fmt.Errorf("seed messages_by_room %d: %w", i, err)
 		}
-		if err := cassSession.Query(insertByIDCQL, vals...).Exec(); err != nil {
+
+		// messages_by_id has 3 extra columns: thread_room_id, pinned_at, pinned_by.
+		var pinnedAt *time.Time
+		if cm.pinnedBy != nil {
+			pa := ts.Add(1 * time.Minute)
+			pinnedAt = &pa
+		}
+		idVals := append(baseVals, cm.threadRoomID, pinnedAt, cm.pinnedBy) //nolint:gocritic
+		if err := cassSession.Query(insertByIDCQL, idVals...).Exec(); err != nil {
 			return fmt.Errorf("seed messages_by_id %d: %w", i, err)
 		}
 		msgs = append(msgs, seeded{msgID, ts})
@@ -340,6 +361,12 @@ func run() error {
 		}
 		if cm.siteID != "" {
 			tags += " [site:" + cm.siteID + "]"
+		}
+		if cm.pinnedBy != nil {
+			tags += " [pinned]"
+		}
+		if cm.threadRoomID != "" {
+			tags += " [threadRoom]"
 		}
 		if len(cm.reactions) > 0 {
 			for emoji := range cm.reactions {
