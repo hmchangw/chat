@@ -24,136 +24,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	cassmodel "github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/subject"
 )
-
-// --- Cassandra UDT types for seeding (mirrors history-service/internal/models) ---
-
-type participantUDT struct {
-	ID          string
-	Account     string
-	EngName     string
-	CompanyName string
-	AppID       string
-	AppName     string
-	IsBot       bool
-}
-
-func (p *participantUDT) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
-	switch name {
-	case "id":
-		return gocql.Marshal(info, p.ID)
-	case "account":
-		return gocql.Marshal(info, p.Account)
-	case "eng_name":
-		return gocql.Marshal(info, p.EngName)
-	case "company_name":
-		return gocql.Marshal(info, p.CompanyName)
-	case "app_id":
-		return gocql.Marshal(info, p.AppID)
-	case "app_name":
-		return gocql.Marshal(info, p.AppName)
-	case "is_bot":
-		return gocql.Marshal(info, p.IsBot)
-	}
-	return nil, nil
-}
-
-type fileUDT struct {
-	ID   string
-	Name string
-	Type string
-}
-
-func (f *fileUDT) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
-	switch name {
-	case "id":
-		return gocql.Marshal(info, f.ID)
-	case "name":
-		return gocql.Marshal(info, f.Name)
-	case "type":
-		return gocql.Marshal(info, f.Type)
-	}
-	return nil, nil
-}
-
-type cardUDT struct {
-	Template string
-	Data     []byte
-}
-
-func (c *cardUDT) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
-	switch name {
-	case "template":
-		return gocql.Marshal(info, c.Template)
-	case "data":
-		return gocql.Marshal(info, c.Data)
-	}
-	return nil, nil
-}
-
-type cardActionUDT struct {
-	Verb        string
-	Text        string
-	CardID      string
-	DisplayText string
-	HideExecLog bool
-	CardTmID    string
-	Data        []byte
-}
-
-func (ca *cardActionUDT) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
-	switch name {
-	case "verb":
-		return gocql.Marshal(info, ca.Verb)
-	case "text":
-		return gocql.Marshal(info, ca.Text)
-	case "card_id":
-		return gocql.Marshal(info, ca.CardID)
-	case "display_text":
-		return gocql.Marshal(info, ca.DisplayText)
-	case "hide_exec_log":
-		return gocql.Marshal(info, ca.HideExecLog)
-	case "card_tmid":
-		return gocql.Marshal(info, ca.CardTmID)
-	case "data":
-		return gocql.Marshal(info, ca.Data)
-	}
-	return nil, nil
-}
-
-type quotedParentMessageUDT struct {
-	MessageID   string
-	RoomID      string
-	Sender      participantUDT
-	CreatedAt   time.Time
-	Msg         string
-	Mentions    []participantUDT
-	Attachments [][]byte
-	MessageLink string
-}
-
-func (q *quotedParentMessageUDT) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
-	switch name {
-	case "message_id":
-		return gocql.Marshal(info, q.MessageID)
-	case "room_id":
-		return gocql.Marshal(info, q.RoomID)
-	case "sender":
-		return gocql.Marshal(info, &q.Sender)
-	case "created_at":
-		return gocql.Marshal(info, q.CreatedAt)
-	case "msg":
-		return gocql.Marshal(info, q.Msg)
-	case "mentions":
-		return gocql.Marshal(info, q.Mentions)
-	case "attachments":
-		return gocql.Marshal(info, q.Attachments)
-	case "message_link":
-		return gocql.Marshal(info, q.MessageLink)
-	}
-	return nil, nil
-}
 
 // --- Demo data ---
 
@@ -163,7 +36,7 @@ const (
 	roomID  = "demo-room"
 )
 
-var users = []participantUDT{
+var users = []cassmodel.Participant{
 	{ID: "alice", Account: "alice", EngName: "Alice Chen", CompanyName: "Acme Corp", AppID: "web", AppName: "Chat Web"},
 	{ID: "bob", Account: "bob", EngName: "Bob Wang", CompanyName: "Acme Corp", AppID: "mobile", AppName: "Chat Mobile"},
 	{ID: "charlie", Account: "charlie", EngName: "Charlie Liu", CompanyName: "Acme Corp", AppID: "bot-1", AppName: "CI Bot", IsBot: true},
@@ -176,13 +49,13 @@ type seedRow struct {
 	msg                    string
 	mentions               []int // indices into users
 	attachments            [][]byte
-	file                   *fileUDT
-	card                   *cardUDT
-	cardAction             *cardActionUDT
+	file                   *cassmodel.File
+	card                   *cassmodel.Card
+	cardAction             *cassmodel.CardAction
 	tshow                  bool
 	threadParentID         string // message_id of thread parent
 	threadParentOffsetMins int    // 0 = nil
-	quotedParentMessage    *quotedParentMessageUDT
+	quotedParentMessage    *cassmodel.QuotedParentMessage
 	visibleTo              string
 	unread                 bool
 	reactions              map[string]int // emoji → reactBy user index
@@ -209,7 +82,7 @@ var chatMessages = []seedRow{
 	{
 		senderIdx: 0, targetIdx: -1,
 		msg:  "Here's the architecture doc for reference",
-		file: &fileUDT{ID: "f1", Name: "pipeline-arch.pdf", Type: "application/pdf"},
+		file: &cassmodel.File{ID: "f1", Name: "pipeline-arch.pdf", Type: "application/pdf"},
 		attachments: [][]byte{
 			[]byte("blob-attachment-preview-1"),
 		},
@@ -217,7 +90,7 @@ var chatMessages = []seedRow{
 	{
 		senderIdx: 2, targetIdx: -1,
 		msg: "I've run the automated checks - all 47 tests passing",
-		card: &cardUDT{
+		card: &cassmodel.Card{
 			Template: "ci-report",
 			Data:     []byte(`{"passed":47,"failed":0,"skipped":0}`),
 		},
@@ -241,7 +114,7 @@ var chatMessages = []seedRow{
 	{
 		senderIdx: 2, targetIdx: -1,
 		msg: "Monitoring dashboard is configured. I'll alert on error rate > 0.1%",
-		cardAction: &cardActionUDT{
+		cardAction: &cassmodel.CardAction{
 			Verb:        "open_dashboard",
 			Text:        "Open Dashboard",
 			CardID:      "card-monitor-1",
@@ -259,7 +132,7 @@ var chatMessages = []seedRow{
 		tshow:                  true,
 		threadParentID:         "msg-005",
 		threadParentOffsetMins: -9, // points back to msg-005 (3 min intervals, msg-005 is at offset 15)
-		quotedParentMessage: &quotedParentMessageUDT{
+		quotedParentMessage: &cassmodel.QuotedParentMessage{
 			MessageID:   "msg-005",
 			RoomID:      roomID,
 			Sender:      users[0],
@@ -385,22 +258,22 @@ func run() error {
 
 		sender := users[cm.senderIdx]
 
-		var target *participantUDT
+		var target *cassmodel.Participant
 		if cm.targetIdx >= 0 {
 			t := users[cm.targetIdx]
 			target = &t
 		}
 
-		var mentions []participantUDT
+		var mentions []cassmodel.Participant
 		for _, mi := range cm.mentions {
 			mentions = append(mentions, users[mi])
 		}
 
-		var reactions map[string][]participantUDT
+		var reactions map[string][]cassmodel.Participant
 		if len(cm.reactions) > 0 {
-			reactions = make(map[string][]participantUDT)
+			reactions = make(map[string][]cassmodel.Participant)
 			for emoji, userIdx := range cm.reactions {
-				reactions[emoji] = []participantUDT{users[userIdx]}
+				reactions[emoji] = []cassmodel.Participant{users[userIdx]}
 			}
 		}
 
