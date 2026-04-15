@@ -73,9 +73,9 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`).Exec())
 
 	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
-		room_id TEXT,
-		created_at TIMESTAMP,
 		message_id TEXT,
+		room_id TEXT,
+		thread_room_id TEXT,
 		sender FROZEN<"Participant">,
 		target_user FROZEN<"Participant">,
 		msg TEXT,
@@ -96,12 +96,12 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		sys_msg_data BLOB,
 		site_id TEXT,
 		edited_at TIMESTAMP,
+		created_at TIMESTAMP,
 		updated_at TIMESTAMP,
-		thread_room_id TEXT,
 		pinned_at TIMESTAMP,
 		pinned_by FROZEN<"Participant">,
-		PRIMARY KEY (message_id)
-	)`).Exec())
+		PRIMARY KEY (message_id, created_at)
+	) WITH CLUSTERING ORDER BY (created_at DESC)`).Exec())
 
 	cluster.Keyspace = "chat_test"
 	ksSession, err := cluster.CreateSession()

@@ -94,9 +94,9 @@ services:
           PRIMARY KEY ((room_id), created_at, message_id)
         ) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
         CREATE TABLE IF NOT EXISTS chat.messages_by_id (
-          room_id TEXT,
-          created_at TIMESTAMP,
           message_id TEXT,
+          room_id TEXT,
+          thread_room_id TEXT,
           sender FROZEN<"Participant">,
           target_user FROZEN<"Participant">,
           msg TEXT,
@@ -117,9 +117,12 @@ services:
           sys_msg_data BLOB,
           site_id TEXT,
           edited_at TIMESTAMP,
+          created_at TIMESTAMP,
           updated_at TIMESTAMP,
-          PRIMARY KEY (message_id)
-        );
+          pinned_at TIMESTAMP,
+          pinned_by FROZEN<"Participant">,
+          PRIMARY KEY (message_id, created_at)
+        ) WITH CLUSTERING ORDER BY (created_at DESC);
         CQL
         echo "Schema initialized successfully"
 
