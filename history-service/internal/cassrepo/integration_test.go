@@ -97,6 +97,9 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		site_id TEXT,
 		edited_at TIMESTAMP,
 		updated_at TIMESTAMP,
+		thread_room_id TEXT,
+		pinned_at TIMESTAMP,
+		pinned_by FROZEN<"Participant">,
 		PRIMARY KEY (message_id)
 	)`).Exec())
 
@@ -237,8 +240,10 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 		MessageID: "m-quoted", RoomID: "r-full", Sender: quotedSender,
 		CreatedAt: ts.Add(-30 * time.Minute), Msg: "original message", MessageLink: "https://chat.example.com/r-full/m-quoted",
 	}
+	pinnedAt := ts.Add(2 * time.Hour)
+	pinnedBy := models.Participant{ID: "u9", Account: "pinner"}
 
-	insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, unread, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, unread, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at, thread_room_id, pinned_at, pinned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
 		"r-full", ts, "m-full",
 		sender, target, "hello world",
@@ -249,6 +254,7 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 		map[string][]models.Participant{"thumbsup": {reactUser}},
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
+		"N/A", pinnedAt, pinnedBy,
 	}
 	require.NoError(t, session.Query(insertCQL, insertArgs...).Exec())
 
@@ -342,4 +348,12 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	require.Len(t, msg.Reactions["thumbsup"], 1)
 	assert.Equal(t, "u4", msg.Reactions["thumbsup"][0].ID)
 	assert.Equal(t, "dave", msg.Reactions["thumbsup"][0].Account)
+
+	// messages_by_id extra columns
+	assert.Equal(t, "N/A", msg.ThreadRoomID)
+	require.NotNil(t, msg.PinnedAt)
+	assert.Equal(t, pinnedAt.UTC(), msg.PinnedAt.UTC())
+	require.NotNil(t, msg.PinnedBy)
+	assert.Equal(t, "u9", msg.PinnedBy.ID)
+	assert.Equal(t, "pinner", msg.PinnedBy.Account)
 }
