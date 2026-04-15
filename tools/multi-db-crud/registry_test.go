@@ -37,7 +37,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 // newDummyMongo returns a *mongo.Client that does not require a server.
 // mongo.Connect with a non-pinged URI succeeds and returns a usable handle
-// that we never actually exercise in tests (closeMongo is swapped out).
+// that we never actually exercise in tests (the registry's closeMongo is swapped out).
 func newDummyMongo(t *testing.T) *mongo.Client {
 	t.Helper()
 	c, err := mongo.Connect(options.Client().ApplyURI("mongodb://127.0.0.1:1"))
@@ -67,25 +67,33 @@ func (tc *testCounters) recordCassConnect(h []string) {
 func (tc *testCounters) recordMongoClose() { tc.mu.Lock(); tc.mongoCloses++; tc.mu.Unlock() }
 func (tc *testCounters) recordCassClose()  { tc.mu.Lock(); tc.cassCloses++; tc.mu.Unlock() }
 
+// addCassConnection directly inserts a cassandra connection into r.conns,
+// bypassing r.Connect (which would invoke cassServerVersion on the fake
+// session and panic on its uninitialized internals). The sentinel session
+// pointer is only used to satisfy the c.cass != nil check in closeConnection;
+// tests swap r.closeCass so the pointer is never dereferenced.
+func addCassConnection(t *testing.T, r *registry, clk *fakeClock, label, keyspace string) string {
+	t.Helper()
+	id := "cass-" + label
+	now := clk.Now()
+	c := &connection{
+		kind:         "cassandra",
+		cass:         &gocql.Session{}, // sentinel; r.closeCass is swapped in tests
+		cassKeyspace: keyspace,
+		label:        label,
+		createdAt:    now,
+	}
+	c.lastUsed.Store(now.UnixMilli())
+	r.mu.Lock()
+	r.conns[id] = c
+	r.mu.Unlock()
+	return id
+}
+
 func newTestRegistry(t *testing.T, idleTimeout time.Duration) (*registry, *fakeClock, *testCounters) {
 	t.Helper()
 	clk := newFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	tc := &testCounters{}
-
-	// Swap package-level close hooks so the registry never calls into real drivers.
-	prevCloseMongo := closeMongo
-	prevCloseCass := closeCass
-	closeMongo = func(_ context.Context, _ *mongo.Client) error {
-		tc.recordMongoClose()
-		return nil
-	}
-	closeCass = func(_ *gocql.Session) {
-		tc.recordCassClose()
-	}
-	t.Cleanup(func() {
-		closeMongo = prevCloseMongo
-		closeCass = prevCloseCass
-	})
 
 	r := newRegistry(idleTimeout)
 	r.now = clk.Now
@@ -96,6 +104,13 @@ func newTestRegistry(t *testing.T, idleTimeout time.Duration) (*registry, *fakeC
 	r.cassConnect = func(hosts []string, _ string) (*gocql.Session, error) {
 		tc.recordCassConnect(hosts)
 		return nil, nil
+	}
+	r.closeMongo = func(_ context.Context, _ *mongo.Client) error {
+		tc.recordMongoClose()
+		return nil
+	}
+	r.closeCass = func(_ *gocql.Session) {
+		tc.recordCassClose()
 	}
 	return r, clk, tc
 }
@@ -211,11 +226,10 @@ func TestRegistry_Close_Success(t *testing.T) {
 }
 
 func TestRegistry_Close_Cassandra_Success(t *testing.T) {
-	r, _, tc := newTestRegistry(t, time.Hour)
-	info, err := r.Connect(context.Background(), connectSpec{Kind: "cassandra", URI: "h", Keyspace: "k", Label: "l"})
-	require.NoError(t, err)
+	r, clk, tc := newTestRegistry(t, time.Hour)
+	id := addCassConnection(t, r, clk, "l", "k")
 
-	require.NoError(t, r.Close(info.ID))
+	require.NoError(t, r.Close(id))
 	assert.Empty(t, r.List())
 	assert.Equal(t, 1, tc.cassCloses)
 }
@@ -228,14 +242,13 @@ func TestRegistry_Close_Miss(t *testing.T) {
 }
 
 func TestRegistry_CloseAll(t *testing.T) {
-	r, _, tc := newTestRegistry(t, time.Hour)
+	r, clk, tc := newTestRegistry(t, time.Hour)
 
 	_, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://x", Label: "a"})
 	require.NoError(t, err)
 	_, err = r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://y", Label: "b"})
 	require.NoError(t, err)
-	_, err = r.Connect(context.Background(), connectSpec{Kind: "cassandra", URI: "h1", Keyspace: "k", Label: "c"})
-	require.NoError(t, err)
+	addCassConnection(t, r, clk, "c", "k")
 
 	r.CloseAll()
 	assert.Empty(t, r.List())
@@ -276,11 +289,10 @@ func TestRegistry_Reap_KeepsFresh(t *testing.T) {
 func TestRegistry_Reap_EvictsMultiple(t *testing.T) {
 	r, clk, tc := newTestRegistry(t, 10*time.Minute)
 
-	// Two old mongo connections at t=0.
+	// One old mongo and one old cassandra connection at t=0.
 	idleA, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://a", Label: "a"})
 	require.NoError(t, err)
-	idleB, err := r.Connect(context.Background(), connectSpec{Kind: "cassandra", URI: "h", Keyspace: "k", Label: "b"})
-	require.NoError(t, err)
+	idleB := addCassConnection(t, r, clk, "b", "k")
 
 	// Advance and create a fresh connection.
 	clk.Advance(11 * time.Minute)
@@ -297,7 +309,7 @@ func TestRegistry_Reap_EvictsMultiple(t *testing.T) {
 
 	_, err = r.Get(idleA.ID)
 	assert.ErrorIs(t, err, ErrNotFound)
-	_, err = r.Get(idleB.ID)
+	_, err = r.Get(idleB)
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -435,40 +447,49 @@ func TestMongoServerVersion_UnreachableReturnsEmpty(t *testing.T) {
 
 func TestCloseConnection_NilMongo_NoPanic(t *testing.T) {
 	// Swap closeMongo to verify we never invoke it when mongo is nil.
+	r := newRegistry(time.Hour)
 	called := false
-	prev := closeMongo
-	closeMongo = func(_ context.Context, _ *mongo.Client) error {
+	r.closeMongo = func(_ context.Context, _ *mongo.Client) error {
 		called = true
 		return nil
 	}
-	t.Cleanup(func() { closeMongo = prev })
 
 	c := &connection{kind: "mongo", mongo: nil, label: "nil-client"}
-	assert.NotPanics(t, func() { closeConnection(c) })
+	assert.NotPanics(t, func() { r.closeConnection(c) })
 	assert.False(t, called, "closeMongo must not be invoked when client is nil")
+}
+
+func TestCloseConnection_NilCass_NoPanic(t *testing.T) {
+	// Mirror the mongo nil-check: closeCass must not be invoked when session is nil.
+	r := newRegistry(time.Hour)
+	called := false
+	r.closeCass = func(_ *gocql.Session) {
+		called = true
+	}
+
+	c := &connection{kind: "cassandra", cass: nil, label: "nil-session"}
+	assert.NotPanics(t, func() { r.closeConnection(c) })
+	assert.False(t, called, "closeCass must not be invoked when session is nil")
 }
 
 func TestCloseConnection_UnknownKind_NoPanic(t *testing.T) {
 	// Registry callers should never construct an unknown-kind connection,
 	// but defensive coverage for the switch default matters.
+	r := newRegistry(time.Hour)
 	assert.NotPanics(t, func() {
-		closeConnection(&connection{kind: "redis", label: "x"})
+		r.closeConnection(&connection{kind: "redis", label: "x"})
 	})
 }
 
 func TestCloseMongo_ReturnsError(t *testing.T) {
 	// Exercise the branch in closeConnection where the injected closeMongo
 	// returns an error (it's logged, not returned).
-	prev := closeMongo
-	closeMongo = func(_ context.Context, _ *mongo.Client) error {
-		return errors.New("disconnect-failed")
-	}
-	t.Cleanup(func() { closeMongo = prev })
-
 	r := newRegistry(time.Hour)
-	// Swap cass close too to avoid panic on future use.
 	r.mongoConnect = func(_ context.Context, _ string) (*mongo.Client, error) {
 		return newDummyMongo(t), nil
+	}
+	r.closeMongo = func(_ context.Context, _ *mongo.Client) error {
+		return errors.New("disconnect-failed")
 	}
 	info, err := r.Connect(context.Background(), connectSpec{Kind: "mongo", URI: "mongodb://127.0.0.1:1", Label: "l"})
 	require.NoError(t, err)
@@ -484,4 +505,14 @@ func TestNewRegistry_Defaults(t *testing.T) {
 	assert.NotNil(t, r.now)
 	assert.NotNil(t, r.mongoConnect)
 	assert.NotNil(t, r.cassConnect)
+	assert.NotNil(t, r.closeMongo)
+	assert.NotNil(t, r.closeCass)
+}
+
+func TestDefaultMongoConnect_Unreachable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// 127.0.0.1:1 is the standard "definitely nothing listening" target.
+	_, err := defaultMongoConnect(ctx, "mongodb://127.0.0.1:1/?connectTimeoutMS=500&serverSelectionTimeoutMS=500")
+	require.Error(t, err)
 }

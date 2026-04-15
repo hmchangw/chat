@@ -41,9 +41,11 @@ type registry struct {
 	idleTimeout time.Duration
 	now         func() time.Time
 
-	// Dependency-injected connect functions — enables testing without real DBs.
+	// Dependency-injected connect/close functions — enables testing without real DBs.
 	mongoConnect func(ctx context.Context, uri string) (*mongo.Client, error)
 	cassConnect  func(hosts []string, keyspace string) (*gocql.Session, error)
+	closeMongo   func(ctx context.Context, c *mongo.Client) error
+	closeCass    func(s *gocql.Session)
 }
 
 // connectSpec is the input shape for Connect.
@@ -70,12 +72,11 @@ var (
 	ErrUnknownKind = errors.New("unknown connection kind")
 )
 
-// Package-level seams so tests can swap out the real driver close calls
-// without needing real Mongo or Cassandra servers.
-var (
-	closeMongo = func(ctx context.Context, c *mongo.Client) error { return c.Disconnect(ctx) }
-	closeCass  = func(s *gocql.Session) { s.Close() }
-)
+// defaultCloseMongo disconnects a *mongo.Client. Default close hook used by newRegistry.
+func defaultCloseMongo(ctx context.Context, c *mongo.Client) error { return c.Disconnect(ctx) }
+
+// defaultCloseCass closes a *gocql.Session. Default close hook used by newRegistry.
+func defaultCloseCass(s *gocql.Session) { s.Close() }
 
 // defaultMongoConnect dials Mongo using the v2 driver and pings it.
 // We deliberately do not use pkg/mongoutil because it logs the URI.
@@ -113,6 +114,8 @@ func newRegistry(idleTimeout time.Duration) *registry {
 		now:          time.Now,
 		mongoConnect: defaultMongoConnect,
 		cassConnect:  defaultCassConnect,
+		closeMongo:   defaultCloseMongo,
+		closeCass:    defaultCloseCass,
 	}
 }
 
@@ -284,25 +287,27 @@ func (r *registry) Close(id string) error {
 		return ErrNotFound
 	}
 	delete(r.conns, id)
-	closeConnection(c)
+	r.closeConnection(c)
 	return nil
 }
 
 // closeConnection invokes the appropriate driver close hook for c. Errors
 // are logged but not returned because callers cannot meaningfully act on
 // driver-close failures.
-func closeConnection(c *connection) {
+func (r *registry) closeConnection(c *connection) {
 	switch c.kind {
 	case "mongo":
 		if c.mongo != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := closeMongo(ctx, c.mongo); err != nil {
+			if err := r.closeMongo(ctx, c.mongo); err != nil {
 				slog.Warn("mongo close failed", "error", err, "label", c.label)
 			}
 		}
 	case "cassandra":
-		closeCass(c.cass)
+		if c.cass != nil {
+			r.closeCass(c.cass)
+		}
 	}
 }
 
@@ -332,7 +337,7 @@ func (r *registry) CloseAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, c := range r.conns {
-		closeConnection(c)
+		r.closeConnection(c)
 		delete(r.conns, id)
 	}
 }
@@ -351,7 +356,7 @@ func (r *registry) Reap() {
 				"label", c.label,
 				"kind", c.kind,
 			)
-			closeConnection(c)
+			r.closeConnection(c)
 			delete(r.conns, id)
 		}
 	}
