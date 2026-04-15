@@ -78,42 +78,6 @@ func (c *MockregistryAPICloseCall) DoAndReturn(f func(string) error) *Mockregist
 	return c
 }
 
-// CloseAll mocks base method.
-func (m *MockregistryAPI) CloseAll() {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "CloseAll")
-}
-
-// CloseAll indicates an expected call of CloseAll.
-func (mr *MockregistryAPIMockRecorder) CloseAll() *MockregistryAPICloseAllCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CloseAll", reflect.TypeOf((*MockregistryAPI)(nil).CloseAll))
-	return &MockregistryAPICloseAllCall{Call: call}
-}
-
-// MockregistryAPICloseAllCall wrap *gomock.Call
-type MockregistryAPICloseAllCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockregistryAPICloseAllCall) Return() *MockregistryAPICloseAllCall {
-	c.Call = c.Call.Return()
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockregistryAPICloseAllCall) Do(f func()) *MockregistryAPICloseAllCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockregistryAPICloseAllCall) DoAndReturn(f func()) *MockregistryAPICloseAllCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
 // Connect mocks base method.
 func (m *MockregistryAPI) Connect(ctx context.Context, spec connectSpec) (connInfo, error) {
 	m.ctrl.T.Helper()
@@ -149,45 +113,6 @@ func (c *MockregistryAPIConnectCall) Do(f func(context.Context, connectSpec) (co
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockregistryAPIConnectCall) DoAndReturn(f func(context.Context, connectSpec) (connInfo, error)) *MockregistryAPIConnectCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
-// Get mocks base method.
-func (m *MockregistryAPI) Get(id string) (*connection, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Get", id)
-	ret0, _ := ret[0].(*connection)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// Get indicates an expected call of Get.
-func (mr *MockregistryAPIMockRecorder) Get(id any) *MockregistryAPIGetCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockregistryAPI)(nil).Get), id)
-	return &MockregistryAPIGetCall{Call: call}
-}
-
-// MockregistryAPIGetCall wrap *gomock.Call
-type MockregistryAPIGetCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockregistryAPIGetCall) Return(arg0 *connection, arg1 error) *MockregistryAPIGetCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockregistryAPIGetCall) Do(f func(string) (*connection, error)) *MockregistryAPIGetCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockregistryAPIGetCall) DoAndReturn(f func(string) (*connection, error)) *MockregistryAPIGetCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

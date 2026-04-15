@@ -493,6 +493,10 @@ func TestSanitizeConnectError(t *testing.T) {
 		{"with colon", errors.New("could not connect to mongo: detail: more"), "could not connect to mongo"},
 		{"no colon", errors.New("opaque failure"), "opaque failure"},
 		{"leading whitespace", errors.New("  prefix  : rest"), "prefix"},
+		{"leading colon", errors.New(": oops"), "connection failed"},
+		{"embedded newline before colon", errors.New("line1\nline2: detail"), "line1 line2"},
+		{"empty after trim", errors.New("   : detail"), "connection failed"},
+		{"no colon long", errors.New(strings.Repeat("a", 300)), strings.Repeat("a", 200)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

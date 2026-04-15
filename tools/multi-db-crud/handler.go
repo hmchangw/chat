@@ -17,10 +17,8 @@ import (
 // in the consumer (handler) per CLAUDE.md so handler tests can mock it.
 type registryAPI interface {
 	Connect(ctx context.Context, spec connectSpec) (connInfo, error)
-	Get(id string) (*connection, error)
 	Close(id string) error
 	List() []connInfo
-	CloseAll()
 }
 
 // Compile-time assertion that *registry satisfies registryAPI.
@@ -54,7 +52,16 @@ func replyError(c *gin.Context, status int, code, msg string) {
 func sanitizeConnectError(err error) string {
 	msg := err.Error()
 	if i := strings.Index(msg, ":"); i != -1 {
-		return strings.TrimSpace(msg[:i])
+		msg = msg[:i]
+	}
+	msg = strings.TrimSpace(msg)
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	if msg == "" {
+		return "connection failed"
+	}
+	const maxLen = 200
+	if len(msg) > maxLen {
+		msg = msg[:maxLen]
 	}
 	return msg
 }
@@ -94,7 +101,16 @@ func (h *handler) connect(c *gin.Context) {
 		return
 	}
 
-	info, err := h.reg.Connect(c.Request.Context(), connectSpec(req))
+	// Explicit field init (not connectSpec(req) conversion) so that reordering
+	// fields in either struct triggers a compile error instead of silently
+	// shuffling values.
+	spec := connectSpec{ //nolint:staticcheck // S1016: explicit init is intentional, see comment above
+		Kind:     req.Kind,
+		URI:      req.URI,
+		Keyspace: req.Keyspace,
+		Label:    req.Label,
+	}
+	info, err := h.reg.Connect(c.Request.Context(), spec)
 	if err != nil {
 		if errors.Is(err, ErrUnknownKind) {
 			replyError(c, http.StatusBadRequest, "unknown_kind", err.Error())
