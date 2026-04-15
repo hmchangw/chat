@@ -96,7 +96,7 @@ func (q *QuotedParentMessage) MarshalUDT(name string, info gocql.TypeInfo) ([]by
 	return marshalUDTField(q, name, info)
 }
 
-// Message represents a full message row from the messages_by_room Cassandra table.
+// Message represents a message row in the Cassandra message tables (messages_by_room, messages_by_id).
 type Message struct {
 	RoomID                string                   `json:"roomId"`
 	CreatedAt             time.Time                `json:"createdAt"`

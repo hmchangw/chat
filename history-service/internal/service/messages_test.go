@@ -278,6 +278,36 @@ func TestHistoryService_LoadNextMessages_HasNext(t *testing.T) {
 	assert.NotEmpty(t, resp.NextCursor)
 }
 
+func TestHistoryService_LoadNextMessages_DefaultLimit(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetAllMessagesAsc(gomock.Any(), "r1", gomock.Cond(func(x any) bool {
+		pr, ok := x.(cassrepo.PageRequest)
+		return ok && pr.PageSize == 20
+	})).Return(makePage(nil, false), nil)
+
+	resp, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Messages)
+}
+
+func TestHistoryService_LoadNextMessages_LimitClampsToMax(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetAllMessagesAsc(gomock.Any(), "r1", gomock.Cond(func(x any) bool {
+		pr, ok := x.(cassrepo.PageRequest)
+		return ok && pr.PageSize == 100
+	})).Return(makePage(nil, false), nil)
+
+	resp, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{Limit: 999})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Messages)
+}
+
 // --- GetMessageByID ---
 
 func TestHistoryService_GetMessageByID_Success(t *testing.T) {
