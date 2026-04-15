@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"io/fs"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -11,7 +12,11 @@ import (
 var staticFiles embed.FS
 
 func (h *handler) serveUI(c *gin.Context) {
-	data, err := staticFiles.ReadFile("static/index.html")
+	fsys := h.staticFS
+	if fsys == nil {
+		fsys = staticFiles
+	}
+	data, err := fs.ReadFile(fsys, "static/index.html")
 	if err != nil {
 		c.Status(http.StatusInternalServerError)
 		return

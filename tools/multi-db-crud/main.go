@@ -45,33 +45,61 @@ func requestIDMiddleware() gin.HandlerFunc {
 	}
 }
 
-func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+// parseLogLevel converts a string (e.g. "debug", "warn") to a slog.Level,
+// falling back to Info if the value is unrecognised.
+func parseLogLevel(s string) slog.Level {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(s)); err != nil {
+		return slog.LevelInfo
+	}
+	return level
+}
 
+// newHTTPServer creates an http.Server with sensible timeouts bound to the given port.
+func newHTTPServer(port int, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:         fmt.Sprintf(":%d", port),
+		Handler:      handler,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+}
+
+// newRouter wires up a new Gin engine with standard middleware and all routes registered.
+func newRouter(h *handler) *gin.Engine {
+	r := gin.New()
+	r.Use(requestIDMiddleware())
+	registerRoutes(r, h)
+	return r
+}
+
+// reaperShutdownFunc returns a shutdown hook that cancels the idle-reaper context when set.
+func reaperShutdownFunc(cancel *context.CancelFunc) func(context.Context) error {
+	return func(_ context.Context) error {
+		if *cancel != nil {
+			(*cancel)()
+		}
+		return nil
+	}
+}
+
+func main() {
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
 
-	// TODO: initialize connection registry when implemented
-	// cancelReaper will cancel the reaper goroutine context when shutting down.
-	_, cancelReaper := context.WithCancel(context.Background())
-	defer cancelReaper()
+	level := parseLogLevel(cfg.LogLevel)
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+
+	// reaperCancel will be set when the registry and idle reaper are initialised (Task 2).
+	var reaperCancel context.CancelFunc
 
 	h := newHandler()
-
-	r := gin.New()
-	r.Use(requestIDMiddleware())
-	registerRoutes(r, h)
-
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
-	}
+	r := newRouter(h)
+	srv := newHTTPServer(cfg.Port, r)
 
 	slog.Info("multi-db-crud starting", "port", cfg.Port)
 
@@ -83,10 +111,7 @@ func main() {
 	}()
 
 	shutdown.Wait(context.Background(), 25*time.Second,
-		func(_ context.Context) error {
-			cancelReaper()
-			return nil
-		},
+		reaperShutdownFunc(&reaperCancel),
 		func(_ context.Context) error {
 			// TODO: registry.CloseAll() when connection registry is implemented
 			return nil

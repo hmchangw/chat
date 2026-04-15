@@ -1,12 +1,16 @@
 package main
 
 import (
+	"io/fs"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
-type handler struct{}
+type handler struct {
+	// staticFS overrides the embedded staticFiles in tests.
+	staticFS fs.FS
+}
 
 func newHandler() *handler {
 	return &handler{}
