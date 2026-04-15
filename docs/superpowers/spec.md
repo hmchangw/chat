@@ -130,47 +130,6 @@ room-service
                      | if cross-site: publish OutboxEvent
 ```
 
-### 3.5 Message History (Including Cross-Site Federation)
-
-```
-Client (Site A)
-    |
-    | req: chat.user.{account}.request.room.{roomID}.{siteID}.msg.history
-    |
-    v
-history-service (Site A)
-    |
-    | 1. Verify user subscription in MongoDB
-    | 2. Check room's siteID
-    |
-    +--- Room is LOCAL (siteID == local site) ---+
-    |                                             |
-    | 3a. Query local Cassandra                   |
-    |     WHERE room_id = ? AND created_at > ?    |
-    |     (bounded by historySharedSince)         |
-    | 4a. Return HistoryResponse to client        |
-    |                                             |
-    +--- Room is REMOTE (siteID != local site) --+
-    |                                             |
-    | 3b. Forward request to remote site's        |
-    |     history-service via NATS request/reply  |
-    |                                             |
-    v                                             |
-history-service (Site B - room's home site)       |
-    |                                             |
-    | 4b. Query local Cassandra for room messages |
-    | 5b. Return HistoryResponse                  |
-    |                                             |
-    v                                             |
-history-service (Site A)                          |
-    |                                             |
-    | 6b. Relay response back to client           |
-    +---------------------------------------------+
-    |
-    v
-Client receives paginated message history
-```
-
 ---
 
 ## 4. Domain Models
