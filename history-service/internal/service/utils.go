@@ -32,10 +32,10 @@ func millisToTime(millis *int64) time.Time {
 	return time.UnixMilli(*millis).UTC()
 }
 
-func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {
+func parsePageRequest(c *natsrouter.Context, cursor string, limit int) (cassrepo.PageRequest, error) {
 	q, err := cassrepo.ParsePageRequest(cursor, limit)
 	if err != nil {
-		slog.Error("invalid pagination cursor", "error", err, "cursor", cursor)
+		slog.Error("invalid pagination cursor", "error", err, "cursor", cursor, "requestID", c.RequestID())
 		return cassrepo.PageRequest{}, natsrouter.ErrBadRequest("invalid pagination cursor")
 	}
 	return q, nil

@@ -36,7 +36,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 	if limit > maxPageSize {
 		limit = maxPageSize
 	}
-	pageReq, err := parsePageRequest("", limit)
+	pageReq, err := parsePageRequest(c, "", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 	if limit > maxPageSize {
 		limit = maxPageSize
 	}
-	pageReq, err := parsePageRequest(req.Cursor, limit)
+	pageReq, err := parsePageRequest(c, req.Cursor, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -134,11 +134,11 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	beforeCount := (remaining + 1) / 2
 	afterCount := remaining / 2
 
-	beforePageReq, err := parsePageRequest("", beforeCount)
+	beforePageReq, err := parsePageRequest(c, "", beforeCount)
 	if err != nil {
 		return nil, err
 	}
-	afterPageReq, err := parsePageRequest("", afterCount)
+	afterPageReq, err := parsePageRequest(c, "", afterCount)
 	if err != nil {
 		return nil, err
 	}
