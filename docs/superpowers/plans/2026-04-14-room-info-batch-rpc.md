@@ -1689,4 +1689,76 @@ git commit -m "feat(room-service): wire Valkey and MaxBatchSize config"
 
 ---
 
-<!-- TASKS 11-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
+## Task 11: Add Valkey to room-service docker-compose
+
+**Files:**
+- Modify: `room-service/deploy/docker-compose.yml`
+
+- [ ] **Step 1: Replace the docker-compose file contents**
+
+Write `room-service/deploy/docker-compose.yml` with:
+
+```yaml
+services:
+  nats:
+    image: nats:2.11-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--http_port", "8222"]
+
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  room-service:
+    build:
+      context: ../..
+      dockerfile: room-service/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - MAX_ROOM_SIZE=1000
+      - MAX_BATCH_SIZE=500
+      - VALKEY_ADDR=valkey:6379
+      - VALKEY_KEY_GRACE_PERIOD=24h
+    depends_on:
+      nats:
+        condition: service_started
+      mongodb:
+        condition: service_started
+      valkey:
+        condition: service_healthy
+```
+
+- [ ] **Step 2: Validate the compose file parses**
+
+```bash
+docker-compose -f room-service/deploy/docker-compose.yml config
+```
+
+Expected: the fully-resolved compose config prints to stdout with no parse errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add room-service/deploy/docker-compose.yml
+git commit -m "chore(room-service): add Valkey to docker-compose"
+```
+
+---
+
+<!-- TASK 12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
