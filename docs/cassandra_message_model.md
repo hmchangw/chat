@@ -143,11 +143,8 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
 )WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
 #### messages_by_id
-Same columns as `messages_by_room`, partitioned by `message_id` for direct lookups.
 ```cql
 CREATE TABLE IF NOT EXISTS messages_by_id(
-  room_id TEXT,
-  created_at TIMESTAMP,
   message_id TEXT,
   sender FROZEN<"Participant">,
   target_user FROZEN<"Participant">,
@@ -157,9 +154,6 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   file FROZEN<"File">,
   card FROZEN<"Card">,
   card_action FROZEN<"CardAction">,
-  tshow BOOLEAN,
-  thread_parent_id TEXT,
-  thread_parent_created_at TIMESTAMP,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
   unread BOOLEAN,
@@ -169,7 +163,8 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   sys_msg_data BLOB,
   site_id TEXT,
   edited_at TIMESTAMP,
+  created_at TIMESTAMP,
   updated_at TIMESTAMP,
-  PRIMARY KEY(message_id)
-);
+  PRIMARY KEY(message_id,created_at)
+)WITH CLUSTERING ORDER BY (created_at DESC);
 ```
