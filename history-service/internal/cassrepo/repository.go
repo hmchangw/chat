@@ -11,17 +11,21 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/models"
 )
 
-const messageColumns = "room_id, created_at, message_id, sender, target_user, " +
+// baseColumns are shared across messages_by_room and messages_by_id.
+const baseColumns = "room_id, created_at, message_id, sender, target_user, " +
 	"msg, mentions, attachments, file, card, card_action, tshow, " +
 	"thread_parent_id, thread_parent_created_at, quoted_parent_message, " +
 	"visible_to, unread, reactions, deleted, " +
 	"type, sys_msg_data, site_id, edited_at, updated_at"
 
-const messageByRoomQuery = "SELECT " + messageColumns + " FROM messages_by_room"
-const messageByIDQuery = "SELECT " + messageColumns + " FROM messages_by_id"
+// messageByIDExtraColumns are the columns only present in messages_by_id.
+const messageByIDExtraColumns = ", thread_room_id, pinned_at, pinned_by"
 
-// messageScanDest returns the Scan destination pointers for a Message in column order.
-func messageScanDest(m *models.Message) []any {
+const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
+const messageByIDQuery = "SELECT " + baseColumns + messageByIDExtraColumns + " FROM messages_by_id"
+
+// baseScanDest returns Scan destination pointers for the baseColumns in order.
+func baseScanDest(m *models.Message) []any {
 	return []any{
 		&m.RoomID, &m.CreatedAt, &m.MessageID,
 		&m.Sender, &m.TargetUser, &m.Msg,
@@ -32,6 +36,11 @@ func messageScanDest(m *models.Message) []any {
 		&m.Deleted, &m.Type, &m.SysMsgData,
 		&m.SiteID, &m.EditedAt, &m.UpdatedAt,
 	}
+}
+
+// messageByIDScanDest returns Scan destination pointers for all messages_by_id columns.
+func messageByIDScanDest(m *models.Message) []any {
+	return append(baseScanDest(m), &m.ThreadRoomID, &m.PinnedAt, &m.PinnedBy)
 }
 
 // Repository implements service.MessageRepository using Cassandra.
@@ -48,7 +57,7 @@ func scanMessages(iter *gocql.Iter) []models.Message {
 	messages := make([]models.Message, 0)
 	for {
 		var m models.Message
-		if !iter.Scan(messageScanDest(&m)...) {
+		if !iter.Scan(baseScanDest(&m)...) {
 			break
 		}
 		messages = append(messages, m)
@@ -169,7 +178,7 @@ func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*mod
 	err := r.session.Query(
 		messageByIDQuery+` WHERE message_id = ?`,
 		messageID,
-	).WithContext(ctx).Scan(messageScanDest(&m)...)
+	).WithContext(ctx).Scan(messageByIDScanDest(&m)...)
 	if errors.Is(err, gocql.ErrNotFound) {
 		return nil, nil
 	}
