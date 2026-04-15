@@ -1,7 +1,7 @@
 package service
 
 import (
-	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
@@ -48,7 +48,8 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 		page, err = s.messages.GetMessagesBetweenDesc(c, roomID, *accessSince, before, pageReq)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("loading history: %w", err)
+		slog.Error("loading history", "error", err, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("failed to load message history")
 	}
 
 	return &models.LoadHistoryResponse{Messages: page.Data}, nil
@@ -87,7 +88,8 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 		page, err = s.messages.GetMessagesAfter(c, roomID, lowerBound, pageReq)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("loading next messages: %w", err)
+		slog.Error("loading next messages", "error", err, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("failed to load messages")
 	}
 
 	return &models.LoadNextMessagesResponse{
@@ -149,13 +151,15 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		beforePage, err = s.messages.GetMessagesBetweenDesc(c, roomID, *accessSince, centralMsg.CreatedAt, beforePageReq)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("loading surrounding before: %w", err)
+		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "before")
+		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
 	}
 
 	// After-page: messages newer than central, oldest-first.
 	afterPage, err := s.messages.GetMessagesAfter(c, roomID, centralMsg.CreatedAt, afterPageReq)
 	if err != nil {
-		return nil, fmt.Errorf("loading surrounding after: %w", err)
+		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "after")
+		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
 	}
 
 	// Assemble: reverse before-page (DESC→ASC) + central + after-page (already ASC).
