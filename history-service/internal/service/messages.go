@@ -48,7 +48,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 		page, err = s.messages.GetMessagesBetweenDesc(c, roomID, *accessSince, before, pageReq)
 	}
 	if err != nil {
-		slog.Error("loading history", "error", err, "roomID", roomID)
+		slog.Error("loading history", "error", err, "roomID", roomID, "requestID", c.RequestID())
 		return nil, natsrouter.ErrInternal("failed to load message history")
 	}
 
@@ -88,7 +88,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 		page, err = s.messages.GetMessagesAfter(c, roomID, lowerBound, pageReq)
 	}
 	if err != nil {
-		slog.Error("loading next messages", "error", err, "roomID", roomID)
+		slog.Error("loading next messages", "error", err, "roomID", roomID, "requestID", c.RequestID())
 		return nil, natsrouter.ErrInternal("failed to load messages")
 	}
 
@@ -151,14 +151,14 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		beforePage, err = s.messages.GetMessagesBetweenDesc(c, roomID, *accessSince, centralMsg.CreatedAt, beforePageReq)
 	}
 	if err != nil {
-		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "before")
+		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "before", "requestID", c.RequestID())
 		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
 	}
 
 	// After-page: messages newer than central, oldest-first.
 	afterPage, err := s.messages.GetMessagesAfter(c, roomID, centralMsg.CreatedAt, afterPageReq)
 	if err != nil {
-		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "after")
+		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "after", "requestID", c.RequestID())
 		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
 	}
 

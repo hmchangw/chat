@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"log/slog"
 	"time"
 
@@ -12,10 +11,10 @@ import (
 
 // getAccessSince verifies the user is subscribed to the room and returns the
 // historySharedSince lower bound (nil = full access).
-func (s *HistoryService) getAccessSince(ctx context.Context, account, roomID string) (*time.Time, error) {
-	accessSince, subscribed, err := s.subscriptions.GetHistorySharedSince(ctx, account, roomID)
+func (s *HistoryService) getAccessSince(c *natsrouter.Context, account, roomID string) (*time.Time, error) {
+	accessSince, subscribed, err := s.subscriptions.GetHistorySharedSince(c, account, roomID)
 	if err != nil {
-		slog.Error("checking subscription", "error", err, "account", account, "roomID", roomID)
+		slog.Error("checking subscription", "error", err, "account", account, "roomID", roomID, "requestID", c.RequestID())
 		return nil, natsrouter.ErrInternal("unable to verify room access")
 	}
 	if !subscribed {
@@ -44,13 +43,13 @@ func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {
 
 // findMessage looks up a message by ID from the messages_by_id lookup table.
 // Verifies the message belongs to the expected room.
-func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID string) (*models.Message, error) {
+func (s *HistoryService) findMessage(c *natsrouter.Context, roomID, messageID string) (*models.Message, error) {
 	if messageID == "" {
 		return nil, natsrouter.ErrBadRequest("messageId is required")
 	}
-	msg, err := s.messages.GetMessageByID(ctx, messageID)
+	msg, err := s.messages.GetMessageByID(c, messageID)
 	if err != nil {
-		slog.Error("finding message", "error", err, "messageID", messageID)
+		slog.Error("finding message", "error", err, "messageID", messageID, "requestID", c.RequestID())
 		return nil, natsrouter.ErrInternal("failed to retrieve message")
 	}
 	if msg == nil {
