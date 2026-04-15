@@ -234,3 +234,41 @@ func (c *MockmongoOpsReplaceDocCall) DoAndReturn(f func(context.Context, *mongo.
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
+
+// StreamDocs mocks base method.
+func (m *MockmongoOps) StreamDocs(ctx context.Context, client *mongo.Client, db, coll string, yield func(bson.M) error) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "StreamDocs", ctx, client, db, coll, yield)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// StreamDocs indicates an expected call of StreamDocs.
+func (mr *MockmongoOpsMockRecorder) StreamDocs(ctx, client, db, coll, yield any) *MockmongoOpsStreamDocsCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StreamDocs", reflect.TypeOf((*MockmongoOps)(nil).StreamDocs), ctx, client, db, coll, yield)
+	return &MockmongoOpsStreamDocsCall{Call: call}
+}
+
+// MockmongoOpsStreamDocsCall wrap *gomock.Call
+type MockmongoOpsStreamDocsCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockmongoOpsStreamDocsCall) Return(arg0 error) *MockmongoOpsStreamDocsCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockmongoOpsStreamDocsCall) Do(f func(context.Context, *mongo.Client, string, string, func(bson.M) error) error) *MockmongoOpsStreamDocsCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockmongoOpsStreamDocsCall) DoAndReturn(f func(context.Context, *mongo.Client, string, string, func(bson.M) error) error) *MockmongoOpsStreamDocsCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}

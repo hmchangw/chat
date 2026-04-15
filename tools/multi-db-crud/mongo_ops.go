@@ -45,6 +45,13 @@ type mongoOps interface {
 	InsertDoc(ctx context.Context, client *mongo.Client, db, coll string, doc bson.M) (bson.M, error)
 	ReplaceDoc(ctx context.Context, client *mongo.Client, db, coll string, id any, doc bson.M) error
 	DeleteDoc(ctx context.Context, client *mongo.Client, db, coll string, id any) error
+	// StreamDocs iterates every document in the collection and invokes yield
+	// for each one in cursor order. The function returns when the cursor is
+	// exhausted or when yield returns a non-nil error (bubbled up unchanged).
+	//
+	// Implementations must not load the entire collection into memory — use
+	// a cursor and pull docs one at a time. Used by the export endpoint.
+	StreamDocs(ctx context.Context, client *mongo.Client, db, coll string, yield func(bson.M) error) error
 }
 
 // mongoOpsImpl is the real implementation of mongoOps backed by the v2 driver.
@@ -146,6 +153,36 @@ func (mongoOpsImpl) DeleteDoc(ctx context.Context, client *mongo.Client, db, col
 	}
 	if res.DeletedCount == 0 {
 		return ErrMongoNotFound
+	}
+	return nil
+}
+
+// StreamDocs iterates every document in the collection, invoking yield for
+// each decoded document. The cursor is advanced one document at a time so
+// the full collection is never held in memory; exporters can therefore stream
+// arbitrarily large collections. A non-nil error from yield aborts iteration
+// and is returned unchanged so the caller can distinguish writer/network
+// failures from driver errors.
+func (mongoOpsImpl) StreamDocs(ctx context.Context, client *mongo.Client, db, coll string, yield func(bson.M) error) error {
+	c := client.Database(db).Collection(coll)
+	cur, err := c.Find(ctx, bson.M{})
+	if err != nil {
+		return fmt.Errorf("mongo find: %w", err)
+	}
+	defer func() { _ = cur.Close(ctx) }()
+	for cur.Next(ctx) {
+		var doc bson.M
+		if err := cur.Decode(&doc); err != nil {
+			return fmt.Errorf("mongo decode: %w", err)
+		}
+		if err := yield(doc); err != nil {
+			// Propagate writer/network errors verbatim so the caller can log
+			// them and shut down the stream cleanly.
+			return err
+		}
+	}
+	if err := cur.Err(); err != nil {
+		return fmt.Errorf("mongo cursor: %w", err)
 	}
 	return nil
 }

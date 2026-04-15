@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -200,6 +201,126 @@ func (h *handler) mongoReplaceDoc(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// importFailure records a single document-level import failure. The handler
+// aggregates these in importResult so clients can report per-document errors
+// without a follow-up API call.
+type importFailure struct {
+	Index int    `json:"index"`
+	ID    any    `json:"_id,omitempty"`
+	Error string `json:"error"`
+}
+
+// importResult is the JSON body returned by the import endpoint.
+type importResult struct {
+	Inserted int             `json:"inserted"`
+	Failed   []importFailure `json:"failed"`
+}
+
+// mongoExportDocs handles GET /api/mongo/:id/collections/:name/export.
+//
+// The handler streams a JSON array of documents encoded as relaxed ExtJSON.
+// Because output is streamed, the 200 status and opening '[' are written
+// BEFORE the cursor is even opened — if StreamDocs fails partway through,
+// the client receives a truncated JSON array and the error is logged server
+// side. This is the accepted tradeoff for never buffering the full
+// collection in memory; Task 5 spec explicitly calls it out.
+func (h *handler) mongoExportDocs(c *gin.Context) {
+	id := c.Param("id")
+	conn, ok := h.resolveMongoConn(c, id)
+	if !ok {
+		return
+	}
+	coll := c.Param("name")
+
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.Header().Set("Content-Disposition",
+		fmt.Sprintf(`attachment; filename=%q`, coll+".json"))
+	c.Writer.WriteHeader(http.StatusOK)
+
+	if _, err := c.Writer.WriteString("["); err != nil {
+		slog.Warn("export open bracket write failed", "error", err, "id", id, "collection", coll)
+		return
+	}
+	first := true
+	err := h.mongo.StreamDocs(c.Request.Context(), conn.mongo, conn.mongoDB, coll, func(doc bson.M) error {
+		raw, err := bson.MarshalExtJSON(doc, false, false) // relaxed ExtJSON
+		if err != nil {
+			return fmt.Errorf("marshal doc: %w", err)
+		}
+		if !first {
+			if _, err := c.Writer.WriteString(","); err != nil {
+				return err
+			}
+		}
+		first = false
+		if _, err := c.Writer.Write(raw); err != nil {
+			return err
+		}
+		// Flush so progressive output works through proxies / fetch streams.
+		c.Writer.Flush()
+		return nil
+	})
+	if err != nil {
+		// Headers + partial body already sent — we cannot change status. Log
+		// and abort. The client sees a truncated JSON array.
+		slog.Warn("mongo export failed", "error", err, "id", id, "collection", coll)
+		return
+	}
+	if _, err := c.Writer.WriteString("]"); err != nil {
+		slog.Warn("export close bracket write failed", "error", err, "id", id, "collection", coll)
+	}
+}
+
+// mongoImportDocs handles POST /api/mongo/:id/collections/:name/import.
+//
+// The request body must be a JSON array of documents (ExtJSON). Each doc is
+// inserted via InsertDoc; per-doc failures are collected and returned in the
+// response so the caller can surface them without a follow-up API call.
+// No upsert semantics — duplicate _ids count as failures.
+func (h *handler) mongoImportDocs(c *gin.Context) {
+	id := c.Param("id")
+	conn, ok := h.resolveMongoConn(c, id)
+	if !ok {
+		return
+	}
+	coll := c.Param("name")
+
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		replyError(c, http.StatusBadRequest, "bad_request", "failed to read request body")
+		return
+	}
+	var docs []bson.M
+	if err := bson.UnmarshalExtJSON(body, true, &docs); err != nil {
+		replyError(c, http.StatusBadRequest, "bad_request", "invalid JSON array")
+		return
+	}
+	if len(docs) > h.maxImportDocs {
+		replyError(c, http.StatusBadRequest, "too_large",
+			fmt.Sprintf("import exceeds MAX_IMPORT_DOCS=%d", h.maxImportDocs))
+		return
+	}
+
+	result := importResult{Failed: []importFailure{}}
+	for i, doc := range docs {
+		_, err := h.mongo.InsertDoc(c.Request.Context(), conn.mongo, conn.mongoDB, coll, doc)
+		if err != nil {
+			var docID any
+			if doc != nil {
+				docID = doc["_id"]
+			}
+			result.Failed = append(result.Failed, importFailure{
+				Index: i,
+				ID:    docID,
+				Error: sanitizeConnectError(err),
+			})
+			continue
+		}
+		result.Inserted++
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 // mongoDeleteDoc handles DELETE /api/mongo/:id/collections/:name/docs/:docID.

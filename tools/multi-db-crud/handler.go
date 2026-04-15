@@ -33,10 +33,13 @@ type handler struct {
 	// mongo is the seam for Mongo CRUD ops. May be nil in tests that don't
 	// exercise mongo handlers.
 	mongo mongoOps
+	// maxImportDocs caps the number of documents accepted by the import
+	// endpoint. Parsed from MAX_IMPORT_DOCS (default 10000) in main.
+	maxImportDocs int
 }
 
-func newHandler(reg registryAPI, mongo mongoOps) *handler {
-	return &handler{reg: reg, mongo: mongo}
+func newHandler(reg registryAPI, mongo mongoOps, maxImportDocs int) *handler {
+	return &handler{reg: reg, mongo: mongo, maxImportDocs: maxImportDocs}
 }
 
 // errResp is the uniform error shape for API responses (spec §7).
@@ -172,14 +175,6 @@ func (h *handler) cassandraUpdateRow(c *gin.Context) {
 }
 
 func (h *handler) cassandraDeleteRow(c *gin.Context) {
-	c.Status(http.StatusNotImplemented)
-}
-
-func (h *handler) mongoExport(c *gin.Context) {
-	c.Status(http.StatusNotImplemented)
-}
-
-func (h *handler) mongoImport(c *gin.Context) {
 	c.Status(http.StatusNotImplemented)
 }
 

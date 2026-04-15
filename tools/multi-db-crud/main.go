@@ -99,7 +99,7 @@ func main() {
 	reaperCtx, reaperCancel := context.WithCancel(context.Background())
 	go runReaper(reaperCtx, reg, time.Minute)
 
-	h := newHandler(reg, newMongoOps())
+	h := newHandler(reg, newMongoOps(), cfg.MaxImportDocs)
 	r := newRouter(h, cfg.ReadOnly)
 	srv := newHTTPServer(cfg.Port, r)
 

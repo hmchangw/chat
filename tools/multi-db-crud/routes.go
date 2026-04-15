@@ -19,8 +19,8 @@ func registerRoutes(r *gin.Engine, h *handler) {
 	mongo.POST("/collections/:name/docs", h.mongoInsertDoc)
 	mongo.PUT("/collections/:name/docs/:docID", h.mongoReplaceDoc)
 	mongo.DELETE("/collections/:name/docs/:docID", h.mongoDeleteDoc)
-	mongo.GET("/collections/:name/export", h.mongoExport)
-	mongo.POST("/collections/:name/import", h.mongoImport)
+	mongo.GET("/collections/:name/export", h.mongoExportDocs)
+	mongo.POST("/collections/:name/import", h.mongoImportDocs)
 
 	// Cassandra routes
 	cass := api.Group("/cassandra/:id")

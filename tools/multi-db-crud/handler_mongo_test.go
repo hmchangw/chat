@@ -23,7 +23,18 @@ import (
 // production code does.
 func newMongoTestRouter(t *testing.T, reg registryAPI, ops mongoOps) *gin.Engine {
 	t.Helper()
-	h := newHandler(reg, ops)
+	h := newHandler(reg, ops, 10000)
+	r := gin.New()
+	registerRoutes(r, h)
+	return r
+}
+
+// newMongoTestRouterWithMax is like newMongoTestRouter but allows overriding
+// maxImportDocs so the import size-cap branch can be exercised without having
+// to construct a 10001-document payload.
+func newMongoTestRouterWithMax(t *testing.T, reg registryAPI, ops mongoOps, maxImportDocs int) *gin.Engine {
+	t.Helper()
+	h := newHandler(reg, ops, maxImportDocs)
 	r := gin.New()
 	registerRoutes(r, h)
 	return r
@@ -54,6 +65,8 @@ func allMongoEndpoints() []mongoEndpoint {
 		{"InsertDoc", http.MethodPost, "/api/mongo/abc/collections/rooms/docs", `{"a":1}`},
 		{"ReplaceDoc", http.MethodPut, "/api/mongo/abc/collections/rooms/docs/123", `{"a":1}`},
 		{"DeleteDoc", http.MethodDelete, "/api/mongo/abc/collections/rooms/docs/123", ""},
+		{"ExportDocs", http.MethodGet, "/api/mongo/abc/collections/rooms/export", ""},
+		{"ImportDocs", http.MethodPost, "/api/mongo/abc/collections/rooms/import", `[]`},
 	}
 }
 
@@ -614,4 +627,346 @@ func TestMarshalDocsExtJSON_EmptyAndSimple(t *testing.T) {
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal(got[0], &parsed))
 	assert.Equal(t, "alice", parsed["name"])
+}
+
+// --- Export -------------------------------------------------------------------------
+
+func TestExport_Success_EmptyCollection(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		StreamDocs(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *mongo.Client, _, _ string, _ func(bson.M) error) error {
+			// No documents to yield.
+			return nil
+		})
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections/rooms/export", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+	assert.Equal(t, `attachment; filename="rooms.json"`, w.Header().Get("Content-Disposition"))
+	assert.Equal(t, "[]", w.Body.String())
+}
+
+func TestExport_Success_ManyDocs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	docs := []bson.M{
+		{"_id": "a", "name": "foo"},
+		{"_id": "b", "name": "bar"},
+		{"_id": "c", "name": "baz"},
+	}
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		StreamDocs(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *mongo.Client, _, _ string, yield func(bson.M) error) error {
+			for _, d := range docs {
+				if err := yield(d); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections/rooms/export", nil)
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got []map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got, 3)
+	assert.Equal(t, "a", got[0]["_id"])
+	assert.Equal(t, "foo", got[0]["name"])
+	assert.Equal(t, "b", got[1]["_id"])
+	assert.Equal(t, "c", got[2]["_id"])
+}
+
+// TestExport_StreamDocsError_BeforeYield covers the Find-failure case. The
+// handler writes the 200 header and '[' BEFORE invoking StreamDocs, so the
+// client sees a truncated '[' body. This is the documented tradeoff.
+func TestExport_StreamDocsError_BeforeYield(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		StreamDocs(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.Any()).
+		Return(errors.New("mongo find: unreachable"))
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections/rooms/export", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	// Status + header were committed before StreamDocs ran; body is a
+	// truncated array prefix. Client-side JSON parsing fails — that's
+	// acceptable for this dev-local streaming tool.
+	assert.Equal(t, "[", w.Body.String())
+}
+
+// TestExport_StreamDocsError_AfterPartialYield covers a cursor failure that
+// occurs mid-stream. Yield already wrote some docs, so the body is a
+// truncated prefix like "[{...},{...}".
+func TestExport_StreamDocsError_AfterPartialYield(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		StreamDocs(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *mongo.Client, _, _ string, yield func(bson.M) error) error {
+			if err := yield(bson.M{"_id": "a"}); err != nil {
+				return err
+			}
+			if err := yield(bson.M{"_id": "b"}); err != nil {
+				return err
+			}
+			return errors.New("mongo cursor: broken")
+		})
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mongo/abc/collections/rooms/export", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	body := w.Body.String()
+	// Open bracket present, two docs, but no closing bracket.
+	assert.True(t, strings.HasPrefix(body, "["), "body should start with [")
+	assert.False(t, strings.HasSuffix(body, "]"), "truncated body must not end with ]")
+	assert.Contains(t, body, `"a"`)
+	assert.Contains(t, body, `"b"`)
+}
+
+// --- Import -------------------------------------------------------------------------
+
+func TestImport_Success_AllInserted(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"name": "a"}).
+		Return(bson.M{"_id": "x1", "name": "a"}, nil)
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"name": "b"}).
+		Return(bson.M{"_id": "x2", "name": "b"}, nil)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/import",
+		strings.NewReader(`[{"name":"a"},{"name":"b"}]`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got importResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, 2, got.Inserted)
+	assert.Empty(t, got.Failed)
+}
+
+func TestImport_EmptyArray_200_NoInserts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	// InsertDoc must NOT be called for an empty array.
+	ops.EXPECT().InsertDoc(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/import",
+		strings.NewReader(`[]`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got importResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, 0, got.Inserted)
+	assert.Empty(t, got.Failed)
+}
+
+func TestImport_Success_MixedFailures(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+
+	// Index 0: succeed
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"_id": "0", "name": "zero"}).
+		Return(bson.M{"_id": "0", "name": "zero"}, nil)
+	// Index 1: fail with wrapped duplicate-key (sanitized to "insert document")
+	dupErr := errors.New("insert document: duplicate key: E11000")
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"_id": "1", "name": "one"}).
+		Return(nil, dupErr)
+	// Index 2: succeed
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"_id": "2", "name": "two"}).
+		Return(bson.M{"_id": "2", "name": "two"}, nil)
+	// Index 3: fail
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"_id": "3", "name": "three"}).
+		Return(nil, errors.New("insert document: some driver error"))
+
+	r := newMongoTestRouter(t, reg, ops)
+	body := `[
+		{"_id":"0","name":"zero"},
+		{"_id":"1","name":"one"},
+		{"_id":"2","name":"two"},
+		{"_id":"3","name":"three"}
+	]`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/import",
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got importResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, 2, got.Inserted)
+	require.Len(t, got.Failed, 2)
+
+	assert.Equal(t, 1, got.Failed[0].Index)
+	assert.Equal(t, "1", got.Failed[0].ID)
+	// Sanitized: prefix before first colon only.
+	assert.Equal(t, "insert document", got.Failed[0].Error)
+
+	assert.Equal(t, 3, got.Failed[1].Index)
+	assert.Equal(t, "3", got.Failed[1].ID)
+	assert.Equal(t, "insert document", got.Failed[1].Error)
+}
+
+func TestImport_AllFailures(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, errors.New("insert document: boom")).Times(3)
+
+	r := newMongoTestRouter(t, reg, ops)
+	body := `[{"name":"a"},{"name":"b"},{"name":"c"}]`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/import",
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got importResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, 0, got.Inserted)
+	require.Len(t, got.Failed, 3)
+	for i, f := range got.Failed {
+		assert.Equal(t, i, f.Index)
+	}
+}
+
+func TestImport_Failure_CapturesID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.Any()).
+		Return(nil, errors.New("insert document: boom"))
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/import",
+		strings.NewReader(`[{"_id":"foo","name":"x"}]`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got importResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got.Failed, 1)
+	assert.Equal(t, "foo", got.Failed[0].ID)
+}
+
+func TestImport_InvalidJSON_400(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().InsertDoc(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/import",
+		strings.NewReader(`not-json`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "bad_request", decodeErrResp(t, w.Body).Code)
+}
+
+func TestImport_ExceedsMaxDocs_400(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	// InsertDoc must NOT be called once the size check fails.
+	ops.EXPECT().InsertDoc(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	// Cap at 2 docs; send 3.
+	r := newMongoTestRouterWithMax(t, reg, ops, 2)
+	body := `[{"a":1},{"a":2},{"a":3}]`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/import",
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	e := decodeErrResp(t, w.Body)
+	assert.Equal(t, "too_large", e.Code)
+	assert.Contains(t, e.Error, "MAX_IMPORT_DOCS=2")
+}
+
+func TestImport_BodyReadError_400(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	reg := NewMockregistryAPI(ctrl)
+	ops := NewMockmongoOps(ctrl)
+
+	reg.EXPECT().Get("abc").Return(mongoConn(), nil)
+	ops.EXPECT().InsertDoc(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	r := newMongoTestRouter(t, reg, ops)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mongo/abc/collections/rooms/import", errReader{})
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "bad_request", decodeErrResp(t, w.Body).Code)
 }

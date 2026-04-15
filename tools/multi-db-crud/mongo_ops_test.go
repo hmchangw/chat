@@ -103,6 +103,15 @@ func TestMongoOpsImpl_ErrorPaths(t *testing.T) {
 		err := ops.DeleteDoc(ctx, c, "testdb", "rooms", "id")
 		assert.Error(t, err)
 	})
+	t.Run("StreamDocs", func(t *testing.T) {
+		called := false
+		err := ops.StreamDocs(ctx, c, "testdb", "rooms", func(_ bson.M) error {
+			called = true
+			return nil
+		})
+		assert.Error(t, err)
+		assert.False(t, called, "yield must not be called when cursor setup fails")
+	})
 }
 
 // probeErr is a concrete error type used to verify that errors.As can reach
