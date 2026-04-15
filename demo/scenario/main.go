@@ -1,9 +1,16 @@
-// Command scenario runs an end-to-end demo of the room member management v2 feature.
+// Command scenario runs a one-shot smoke test of the room member management v2
+// feature against the two-site (f12 / f18) demo stack.
 //
-// It seeds users into MongoDB, creates a room with an owner subscription, then issues
-// add / promote / remove NATS requests against a running room-service. All NATS events
-// emitted by room-worker (subscription updates, room member events, system messages,
-// outbox replication) are captured and printed so the viewer can follow the flow.
+// It targets site f12: seeds users on both sites (including Bob on f18 to show
+// cross-site outbox replication), creates a room on f12 with Alice as owner,
+// then issues add / promote / remove NATS requests against f12's room-service.
+// All NATS events emitted by f12's room-worker (subscription updates, room
+// member events, system messages, outbox replication to f18) are captured and
+// printed so the viewer can follow the flow.
+//
+// For interactive multi-step testing across sites, use demo/cli instead; this
+// binary is intentionally scripted so you can run it and see everything happen
+// in a single terminal.
 //
 // Usage (after `docker compose up -d` from the demo directory):
 //
@@ -11,10 +18,10 @@
 //
 // Environment overrides:
 //
-//	NATS_URL   default: nats://localhost:4222
+//	NATS_URL   default: nats://localhost:4222  (f12's NATS)
 //	MONGO_URI  default: mongodb://localhost:27017
-//	MONGO_DB   default: chat_demo
-//	SITE_ID    default: site-local
+//	MONGO_DB   default: chat_f12
+//	SITE_ID    default: f12
 package main
 
 import (
@@ -40,14 +47,18 @@ import (
 type config struct {
 	NatsURL  string `env:"NATS_URL"  envDefault:"nats://localhost:4222"`
 	MongoURI string `env:"MONGO_URI" envDefault:"mongodb://localhost:27017"`
-	MongoDB  string `env:"MONGO_DB"  envDefault:"chat_demo"`
-	SiteID   string `env:"SITE_ID"   envDefault:"site-local"`
+	MongoDB  string `env:"MONGO_DB"  envDefault:"chat_f12"`
+	SiteID   string `env:"SITE_ID"   envDefault:"f12"`
 }
 
-// remoteSiteID is the fictitious home site of the cross-site user. Its only purpose is
-// to demonstrate that room-worker publishes an outbox event when a member lives on a
-// different site from the room.
-const remoteSiteID = "site-remote"
+// remoteSiteID is the home site of the cross-site user in the demo. Bob lives
+// on f18 so that adding him to an f12 room fires an outbox.f12.to.f18 event.
+const remoteSiteID = "f18"
+
+// remoteMongoDB is the companion site's database (same MongoDB instance, different
+// database). Users get seeded into both databases because in production every site
+// receives the full user directory from the HR feed.
+const remoteMongoDB = "chat_f18"
 
 const orgEngineering = "eng"
 
@@ -82,12 +93,16 @@ func run() error {
 	}
 	defer mongoutil.Disconnect(ctx, mongoClient)
 	db := mongoClient.Database(cfg.MongoDB)
+	remoteDB := mongoClient.Database(remoteMongoDB)
 
 	// --- Reset state and seed data ---------------------------------------------
 
 	section("2. Reset DB and seed users / room")
 	if err := resetDB(ctx, db); err != nil {
 		return fmt.Errorf("reset db: %w", err)
+	}
+	if err := resetDB(ctx, remoteDB); err != nil {
+		return fmt.Errorf("reset remote db: %w", err)
 	}
 
 	// Owner of the room — local site.
@@ -100,8 +115,14 @@ func run() error {
 	// Bot account — should be filtered out even if present in the org.
 	eveBot := model.User{ID: uuid.New().String(), Account: "eve.bot", SiteID: cfg.SiteID, SectID: orgEngineering, EngName: "Eve Bot"}
 
-	if err := seedUsers(ctx, db, []model.User{alice, bob, carol, dave, eveBot}); err != nil {
-		return fmt.Errorf("seed users: %w", err)
+	directory := []model.User{alice, bob, carol, dave, eveBot}
+	// Every site receives the full user directory from the HR feed, so replicate
+	// into both databases.
+	if err := seedUsers(ctx, db, directory); err != nil {
+		return fmt.Errorf("seed users (%s): %w", cfg.MongoDB, err)
+	}
+	if err := seedUsers(ctx, remoteDB, directory); err != nil {
+		return fmt.Errorf("seed users (%s): %w", remoteMongoDB, err)
 	}
 	log.Printf("seeded users: alice(@%s), bob(@%s, cross-site), carol(@%s), dave(@%s), eve.bot(filtered)",
 		cfg.SiteID, remoteSiteID, cfg.SiteID, cfg.SiteID)

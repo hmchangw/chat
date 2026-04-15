@@ -1,11 +1,31 @@
+# Cross-site demo stack.
+#
+# Layout:
+#   - Two sites: f12 and f18
+#   - Each site runs its own NATS (mimics per-site clusters — no gateway, so
+#     outbox events are observable on the origin site but do not propagate)
+#   - Shared MongoDB with per-site databases: chat_f12 and chat_f18
+#
+# Host ports:
+#   f12  nats client 4222 | monitoring 8222
+#   f18  nats client 4223 | monitoring 8223
+#   mongodb                         27017
 services:
-  nats:
+  nats-f12:
     image: nats:2.11-alpine
-    container_name: chat-demo-nats
+    container_name: chat-demo-nats-f12
     ports:
       - "4222:4222"
       - "8222:8222"
-    command: ["--jetstream", "--http_port", "8222", "--name", "chat-demo"]
+    command: ["--jetstream", "--http_port", "8222", "--name", "f12"]
+
+  nats-f18:
+    image: nats:2.11-alpine
+    container_name: chat-demo-nats-f18
+    ports:
+      - "4223:4222"
+      - "8223:8222"
+    command: ["--jetstream", "--http_port", "8222", "--name", "f18"]
 
   mongodb:
     image: mongo:8
@@ -13,31 +33,60 @@ services:
     ports:
       - "27017:27017"
 
-  room-service:
+  room-service-f12:
     build:
       context: ..
       dockerfile: room-service/deploy/Dockerfile
-    container_name: chat-demo-room-service
+    container_name: chat-demo-room-service-f12
     environment:
-      - NATS_URL=nats://nats:4222
-      - SITE_ID=site-local
+      - NATS_URL=nats://nats-f12:4222
+      - SITE_ID=f12
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat_demo
+      - MONGO_DB=chat_f12
       - MAX_ROOM_SIZE=1000
     depends_on:
-      - nats
+      - nats-f12
       - mongodb
 
-  room-worker:
+  room-worker-f12:
     build:
       context: ..
       dockerfile: room-worker/deploy/Dockerfile
-    container_name: chat-demo-room-worker
+    container_name: chat-demo-room-worker-f12
     environment:
-      - NATS_URL=nats://nats:4222
-      - SITE_ID=site-local
+      - NATS_URL=nats://nats-f12:4222
+      - SITE_ID=f12
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat_demo
+      - MONGO_DB=chat_f12
     depends_on:
-      - nats
+      - nats-f12
+      - mongodb
+
+  room-service-f18:
+    build:
+      context: ..
+      dockerfile: room-service/deploy/Dockerfile
+    container_name: chat-demo-room-service-f18
+    environment:
+      - NATS_URL=nats://nats-f18:4222
+      - SITE_ID=f18
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat_f18
+      - MAX_ROOM_SIZE=1000
+    depends_on:
+      - nats-f18
+      - mongodb
+
+  room-worker-f18:
+    build:
+      context: ..
+      dockerfile: room-worker/deploy/Dockerfile
+    container_name: chat-demo-room-worker-f18
+    environment:
+      - NATS_URL=nats://nats-f18:4222
+      - SITE_ID=f18
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat_f18
+    depends_on:
+      - nats-f18
       - mongodb
