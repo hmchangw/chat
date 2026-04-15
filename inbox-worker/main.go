@@ -32,8 +32,9 @@ type config struct {
 
 // mongoInboxStore implements InboxStore using MongoDB.
 type mongoInboxStore struct {
-	subCol  *mongo.Collection
-	roomCol *mongo.Collection
+	subCol         *mongo.Collection
+	roomCol        *mongo.Collection
+	roomMembersCol *mongo.Collection
 }
 
 func (s *mongoInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -70,6 +71,51 @@ func (s *mongoInboxStore) DeleteSubscription(ctx context.Context, roomID, accoun
 	return nil
 }
 
+func (s *mongoInboxStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error {
+	_, err := s.subCol.DeleteMany(ctx, bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}})
+	if err != nil {
+		return fmt.Errorf("delete subscriptions for room %q: %w", roomID, err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error {
+	_, err := s.roomMembersCol.DeleteOne(ctx, bson.M{"rid": roomID, "member.type": memberType, "member.id": memberID})
+	if err != nil {
+		return fmt.Errorf("delete room member: %w", err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) DeleteRoomMembersByAccount(ctx context.Context, roomID, account string) error {
+	_, err := s.roomMembersCol.DeleteMany(ctx, bson.M{"rid": roomID, "member.account": account})
+	if err != nil {
+		return fmt.Errorf("delete room members for %q: %w", account, err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) GetIndividualMemberAccounts(ctx context.Context, roomID string, accounts []string) ([]string, error) {
+	cursor, err := s.roomMembersCol.Find(ctx, bson.M{
+		"rid":            roomID,
+		"member.type":    model.RoomMemberIndividual,
+		"member.account": bson.M{"$in": accounts},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("find individual members: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var members []model.RoomMember
+	if err := cursor.All(ctx, &members); err != nil {
+		return nil, fmt.Errorf("decode individual members: %w", err)
+	}
+	result := make([]string, 0, len(members))
+	for _, m := range members {
+		result = append(result, m.Member.Account)
+	}
+	return result, nil
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
@@ -94,8 +140,9 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
+		subCol:         db.Collection("subscriptions"),
+		roomCol:        db.Collection("rooms"),
+		roomMembersCol: db.Collection("room_members"),
 	}
 
 	nc, err := otelnats.Connect(cfg.NatsURL)
