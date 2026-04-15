@@ -34,6 +34,14 @@ func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageReposi
 	return service.New(msgs, subs), msgs, subs
 }
 
+func assertInternalErr(t *testing.T, err error, wantMsg string) {
+	t.Helper()
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeInternal, routeErr.Code)
+	assert.Equal(t, wantMsg, routeErr.Message)
+}
+
 func makePage(msgs []models.Message, hasNext bool) cassrepo.Page[models.Message] {
 	nextCursor := ""
 	if hasNext {
@@ -73,7 +81,7 @@ func TestHistoryService_LoadHistory_StoreError(t *testing.T) {
 
 	_, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading history")
+	assertInternalErr(t, err, "failed to load message history")
 }
 
 func TestHistoryService_LoadHistory_SubscriptionError(t *testing.T) {
@@ -84,7 +92,7 @@ func TestHistoryService_LoadHistory_SubscriptionError(t *testing.T) {
 
 	_, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking subscription")
+	assertInternalErr(t, err, "unable to verify room access")
 }
 
 func TestHistoryService_LoadHistory_EmptyResult(t *testing.T) {
@@ -223,7 +231,7 @@ func TestHistoryService_LoadNextMessages_SubscriptionStoreError(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking subscription")
+	assertInternalErr(t, err, "unable to verify room access")
 }
 
 func TestHistoryService_LoadNextMessages_StoreErrorAfter(t *testing.T) {
@@ -236,7 +244,7 @@ func TestHistoryService_LoadNextMessages_StoreErrorAfter(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading next messages")
+	assertInternalErr(t, err, "failed to load messages")
 }
 
 func TestHistoryService_LoadNextMessages_StoreErrorLatest(t *testing.T) {
@@ -249,7 +257,7 @@ func TestHistoryService_LoadNextMessages_StoreErrorLatest(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading next messages")
+	assertInternalErr(t, err, "failed to load messages")
 }
 
 func TestHistoryService_LoadNextMessages_HasNext(t *testing.T) {
@@ -335,7 +343,7 @@ func TestHistoryService_GetMessageByID_StoreError(t *testing.T) {
 
 	_, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "finding message")
+	assertInternalErr(t, err, "failed to retrieve message")
 }
 
 func TestHistoryService_GetMessageByID_NoHSS(t *testing.T) {
@@ -480,7 +488,7 @@ func TestHistoryService_LoadSurroundingMessages_SubscriptionError(t *testing.T) 
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking subscription")
+	assertInternalErr(t, err, "unable to verify room access")
 }
 
 func TestHistoryService_LoadSurroundingMessages_WrongRoom(t *testing.T) {
@@ -541,7 +549,7 @@ func TestHistoryService_LoadSurroundingMessages_StoreError(t *testing.T) {
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "finding message")
+	assertInternalErr(t, err, "failed to retrieve message")
 }
 
 func TestHistoryService_LoadSurroundingMessages_BeforePageError(t *testing.T) {
@@ -557,7 +565,7 @@ func TestHistoryService_LoadSurroundingMessages_BeforePageError(t *testing.T) {
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading surrounding before")
+	assertInternalErr(t, err, "failed to load surrounding messages")
 }
 
 func TestHistoryService_LoadSurroundingMessages_BeforePageError_NoHSS(t *testing.T) {
@@ -573,7 +581,7 @@ func TestHistoryService_LoadSurroundingMessages_BeforePageError_NoHSS(t *testing
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading surrounding before")
+	assertInternalErr(t, err, "failed to load surrounding messages")
 }
 
 func TestHistoryService_LoadSurroundingMessages_AfterPageError(t *testing.T) {
@@ -591,7 +599,7 @@ func TestHistoryService_LoadSurroundingMessages_AfterPageError(t *testing.T) {
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading surrounding after")
+	assertInternalErr(t, err, "failed to load surrounding messages")
 }
 
 func TestHistoryService_LoadSurroundingMessages_Limit1_OnlyCentral(t *testing.T) {
