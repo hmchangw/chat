@@ -76,8 +76,5 @@ func ErrForbidden(message string) *RouteError { return ErrWithCode(CodeForbidden
 // ErrConflict creates a user-facing conflict error.
 func ErrConflict(message string) *RouteError { return ErrWithCode(CodeConflict, message) }
 
-// ErrInternal creates a sanitized internal error with a user-safe message.
-// Use this instead of fmt.Errorf when wrapping infrastructure errors (database, network, etc.)
-// so the client receives a meaningful but safe message instead of the generic "internal error".
-// Always log the raw error with slog.Error before returning ErrInternal.
+// ErrInternal creates a user-facing internal error.
 func ErrInternal(message string) *RouteError { return ErrWithCode(CodeInternal, message) }
