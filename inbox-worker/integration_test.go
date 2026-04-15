@@ -57,8 +57,9 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
+		subCol:         db.Collection("subscriptions"),
+		roomCol:        db.Collection("rooms"),
+		roomMembersCol: db.Collection("room_members"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
@@ -94,8 +95,9 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
+		subCol:         db.Collection("subscriptions"),
+		roomCol:        db.Collection("rooms"),
+		roomMembersCol: db.Collection("room_members"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
@@ -180,8 +182,9 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
+		subCol:         db.Collection("subscriptions"),
+		roomCol:        db.Collection("rooms"),
+		roomMembersCol: db.Collection("room_members"),
 	}
 	pub := &recordingPublisher{}
 	h := NewHandler(store, pub)
