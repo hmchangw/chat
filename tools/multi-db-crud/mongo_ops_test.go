@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -101,4 +103,32 @@ func TestMongoOpsImpl_ErrorPaths(t *testing.T) {
 		err := ops.DeleteDoc(ctx, c, "testdb", "rooms", "id")
 		assert.Error(t, err)
 	})
+}
+
+// probeErr is a concrete error type used to verify that errors.As can reach
+// the driver error through the multi-%w wrapping used by InsertDoc.
+type probeErr struct{ msg string }
+
+func (p *probeErr) Error() string { return p.msg }
+
+// TestInsertDoc_DuplicateKeyWrapping_PreservesBothChains verifies the multi-%w
+// wrapping form used by InsertDoc keeps the sentinel and the driver error
+// reachable so handlers can errors.Is the sentinel and diagnostics can
+// errors.As into driver types. See Fix 1 in the code review.
+func TestInsertDoc_DuplicateKeyWrapping_PreservesBothChains(t *testing.T) {
+	// Construct a fake error manually wrapped the same way, verify errors.Is and
+	// errors.As against the sentinel and against a probe type.
+	inner := &probeErr{msg: "E11000 duplicate key error: index ix_foo"}
+	wrapped := fmt.Errorf("insert document: %w (%w)", ErrMongoDuplicateKey, inner)
+
+	// The sentinel is reachable via errors.Is for HTTP 409 translation.
+	require.True(t, errors.Is(wrapped, ErrMongoDuplicateKey))
+	// The driver error value is also reachable via errors.Is.
+	require.True(t, errors.Is(wrapped, inner))
+	// errors.As can extract the concrete driver error type from the chain.
+	var probe *probeErr
+	require.True(t, errors.As(wrapped, &probe))
+	require.Equal(t, inner, probe)
+	// The driver's message is preserved in the wrapped error's text.
+	require.Contains(t, wrapped.Error(), "E11000 duplicate key")
 }

@@ -47,9 +47,17 @@ func parseListDocsPaging(c *gin.Context) (limit, skip int64) {
 	return limit, skip
 }
 
-// marshalDocsExtJSON encodes each doc with bson's relaxed ExtJSON so ObjectIDs,
-// dates, and other BSON types round-trip cleanly. Returns json.RawMessage so the
-// caller can build a wrapper envelope.
+// marshalDocsExtJSON converts a slice of bson.M into a slice of json.RawMessage
+// using relaxed ExtJSON encoding. It is used by /api/mongo/.../docs and the
+// POST insert response where the result set is small and paginated.
+//
+// Output uses relaxed ExtJSON (canonical=false) for readability in the UI;
+// unmarshal auto-detects relaxed and canonical forms, so round-tripping
+// docs through the editor or external tools (e.g. mongoexport) works.
+//
+// DO NOT REUSE FOR EXPORT: this helper holds every doc in memory. Export
+// endpoints (Task 5) must stream doc-by-doc with chunked writes; see the
+// dedicated export implementation there.
 func marshalDocsExtJSON(docs []bson.M) ([]json.RawMessage, error) {
 	items := make([]json.RawMessage, len(docs))
 	for i, d := range docs {

@@ -97,15 +97,22 @@ func (mongoOpsImpl) ListDocs(ctx context.Context, client *mongo.Client, db, coll
 	return listDocsResult{Total: total, Docs: docs}, nil
 }
 
-// InsertDoc inserts doc and returns it with its resolved _id populated. A
-// duplicate-key violation is wrapped with ErrMongoDuplicateKey so handlers
-// can reply 409 without leaking driver internals.
+// InsertDoc inserts a single document into the named collection.
+//
+// If the caller did not set "_id", InsertDoc populates doc["_id"] with the
+// ID assigned by the driver and returns the same map. The caller's map is
+// mutated — do not reuse it across requests.
+//
+// Returns ErrMongoDuplicateKey wrapped with the driver error on _id conflict.
+// The returned error wraps both ErrMongoDuplicateKey (so handlers can
+// errors.Is it for HTTP 409 translation) and the underlying driver error
+// (so callers can still errors.As into driver-specific types for diagnostics).
 func (mongoOpsImpl) InsertDoc(ctx context.Context, client *mongo.Client, db, coll string, doc bson.M) (bson.M, error) {
 	c := client.Database(db).Collection(coll)
 	res, err := c.InsertOne(ctx, doc)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			return nil, fmt.Errorf("%w: %v", ErrMongoDuplicateKey, err)
+			return nil, fmt.Errorf("insert document: %w (%w)", ErrMongoDuplicateKey, err)
 		}
 		return nil, fmt.Errorf("insert document: %w", err)
 	}
