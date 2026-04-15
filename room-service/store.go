@@ -14,4 +14,5 @@ type RoomStore interface {
 	ListRooms(ctx context.Context) ([]model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+	CountOwners(ctx context.Context, roomID string) (int, error)
 }

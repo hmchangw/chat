@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,11 +26,23 @@ func NewHandler(store SubscriptionStore, siteID string, publish func(context.Con
 }
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
-	if err := h.processInvite(ctx, msg.Data()); err != nil {
-		slog.Error("process invite failed", "error", err)
+	var err error
+	subj := msg.Subject()
+	switch {
+	case strings.HasSuffix(subj, "member.role-update"):
+		err = h.processRoleUpdate(ctx, msg.Data())
+	default:
+		err = h.processInvite(ctx, msg.Data())
+	}
+	if err != nil {
+		slog.Error("process message failed", "error", err, "subject", subj)
+		if nakErr := msg.Nak(); nakErr != nil {
+			slog.Error("failed to nak message", "error", nakErr)
+		}
+		return
 	}
 	if err := msg.Ack(); err != nil {
-		slog.Error("failed to ack message", "err", err)
+		slog.Error("failed to ack message", "error", err)
 	}
 }
 
@@ -46,7 +60,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 		User:               model.SubscriptionUser{ID: req.InviteeID, Account: req.InviteeAccount},
 		RoomID:             req.RoomID,
 		SiteID:             req.SiteID,
-		Role:               model.RoleMember,
+		Roles:              []model.Role{model.RoleMember},
 		HistorySharedSince: &now,
 		JoinedAt:           now,
 	}
@@ -102,5 +116,77 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 		}
 	}
 
+	return nil
+}
+
+func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
+	var req model.UpdateRoleRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("unmarshal role update request: %w", err)
+	}
+
+	// Promote: add "owner" to roles. Demote: remove "owner" from roles.
+	switch req.NewRole {
+	case model.RoleOwner:
+		if err := h.store.AddRole(ctx, req.Account, req.RoomID, model.RoleOwner); err != nil {
+			return fmt.Errorf("add owner role: %w", err)
+		}
+	case model.RoleMember:
+		// Ensure member role exists before removing owner (prevents empty roles array)
+		if err := h.store.AddRole(ctx, req.Account, req.RoomID, model.RoleMember); err != nil {
+			return fmt.Errorf("ensure member role: %w", err)
+		}
+		if err := h.store.RemoveRole(ctx, req.Account, req.RoomID, model.RoleOwner); err != nil {
+			return fmt.Errorf("remove owner role: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported role: %s", req.NewRole)
+	}
+
+	// Re-read subscription to get the updated roles for the event
+	updatedSub, err := h.store.GetSubscription(ctx, req.Account, req.RoomID)
+	if err != nil {
+		return fmt.Errorf("get updated subscription: %w", err)
+	}
+
+	now := time.Now().UTC()
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID:       updatedSub.User.ID,
+		Subscription: *updatedSub,
+		Action:       "role_updated",
+		Timestamp:    now.UnixMilli(),
+	}
+	subEvtData, err := json.Marshal(subEvt)
+	if err != nil {
+		return fmt.Errorf("marshal subscription update event: %w", err)
+	}
+	if err := h.publish(ctx, subject.SubscriptionUpdate(updatedSub.User.Account), subEvtData); err != nil {
+		return fmt.Errorf("publish subscription update: %w", err)
+	}
+
+	// Look up user's siteID to determine if cross-site
+	user, err := h.store.GetUser(ctx, req.Account)
+	if err != nil {
+		return fmt.Errorf("get user: %w", err)
+	}
+
+	// If user's site differs from room's site (h.siteID), publish outbox to user's home site
+	if user.SiteID != h.siteID {
+		outbox := model.OutboxEvent{
+			Type:       "role_updated",
+			SiteID:     h.siteID,
+			DestSiteID: user.SiteID,
+			Payload:    subEvtData,
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, err := json.Marshal(outbox)
+		if err != nil {
+			return fmt.Errorf("marshal outbox event: %w", err)
+		}
+		outboxSubj := subject.Outbox(h.siteID, user.SiteID, "role_updated")
+		if err := h.publish(ctx, outboxSubj, outboxData); err != nil {
+			return fmt.Errorf("publish outbox: %w", err)
+		}
+	}
 	return nil
 }

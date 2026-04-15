@@ -18,6 +18,7 @@ import (
 type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	UpsertRoom(ctx context.Context, room *model.Room) error
+	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
 }
 
 // Publisher abstracts NATS publishing so the handler is testable.
@@ -48,6 +49,8 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleMemberAdded(ctx, &evt)
 	case "room_sync":
 		return h.handleRoomSync(ctx, &evt)
+	case "role_updated":
+		return h.handleRoleUpdated(ctx, &evt)
 	default:
 		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
@@ -66,7 +69,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		User:               model.SubscriptionUser{ID: invite.InviteeID, Account: invite.InviteeAccount},
 		RoomID:             invite.RoomID,
 		SiteID:             invite.SiteID,
-		Role:               model.RoleMember,
+		Roles:              []model.Role{model.RoleMember},
 		HistorySharedSince: &now,
 		JoinedAt:           now,
 	}
@@ -105,5 +108,25 @@ func (h *Handler) handleRoomSync(ctx context.Context, evt *model.OutboxEvent) er
 		return fmt.Errorf("upsert room: %w", err)
 	}
 
+	return nil
+}
+
+// handleRoleUpdated updates the local subscription roles.
+// No SubscriptionUpdateEvent is published here — room-worker already publishes to
+// the user's subject, and NATS supercluster routes it to the user's site.
+func (h *Handler) handleRoleUpdated(ctx context.Context, evt *model.OutboxEvent) error {
+	var subEvt model.SubscriptionUpdateEvent
+	if err := json.Unmarshal(evt.Payload, &subEvt); err != nil {
+		return fmt.Errorf("unmarshal role_updated payload: %w", err)
+	}
+	account := subEvt.Subscription.User.Account
+	roomID := subEvt.Subscription.RoomID
+	roles := subEvt.Subscription.Roles
+	if len(roles) == 0 {
+		return fmt.Errorf("role_updated event has empty roles")
+	}
+	if err := h.store.UpdateSubscriptionRoles(ctx, account, roomID, roles); err != nil {
+		return fmt.Errorf("update subscription roles: %w", err)
+	}
 	return nil
 }
