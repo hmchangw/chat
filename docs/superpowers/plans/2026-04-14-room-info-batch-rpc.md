@@ -1378,7 +1378,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 				maxBatchSize: tc.maxBatchSize,
 			}
 
-			resp, err := h.handleRoomsInfoBatch(context.Background(), tc.payload)
+			resp, err := h.handleRoomsInfoBatch(context.Background(), "tester", tc.payload)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
@@ -1415,13 +1415,14 @@ Expected: FAIL — `h.handleRoomsInfoBatch undefined (type *Handler has no field
 
 - [ ] **Step 3: Implement `natsRoomsInfoBatch`, `handleRoomsInfoBatch`, `aggregateRoomInfo`**
 
-Add `"encoding/base64"` and `"golang.org/x/sync/errgroup"` to the `handler.go` import block.
+Add `"encoding/base64"`, `"golang.org/x/sync/errgroup"`, `"go.opentelemetry.io/otel/attribute"`, and `"go.opentelemetry.io/otel/trace"` to the `handler.go` import block.
 
 Replace the placeholder `natsRoomsInfoBatch` at the bottom of `handler.go` with:
 
 ```go
 func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
-	resp, err := h.handleRoomsInfoBatch(m.Context(), m.Msg.Data)
+	account, _, _ := subject.ParseUserRoomSiteSubject(m.Msg.Subject) // best-effort; empty if parse fails
+	resp, err := h.handleRoomsInfoBatch(m.Context(), account, m.Msg.Data)
 	if err != nil {
 		natsutil.ReplyError(m.Msg, err.Error())
 		return
@@ -1431,7 +1432,8 @@ func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
 	}
 }
 
-func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte, error) {
+func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data []byte) ([]byte, error) {
+	start := time.Now()
 	var req model.RoomsInfoBatchRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
@@ -1441,6 +1443,15 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte
 	}
 	if len(req.RoomIDs) > h.maxBatchSize {
 		return nil, fmt.Errorf("batch size %d exceeds limit %d", len(req.RoomIDs), h.maxBatchSize)
+	}
+
+	// Add span attributes for observability (spec §3.4). The span itself is
+	// auto-created by otelnats.QueueSubscribe.
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.Int("batch_size", len(req.RoomIDs)),
+			attribute.String("site_id", h.siteID),
+		)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -1471,9 +1482,28 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte
 		return nil, err
 	}
 
-	return json.Marshal(model.RoomsInfoBatchResponse{
-		Rooms: h.aggregateRoomInfo(req.RoomIDs, rooms, keys),
-	})
+	infos := h.aggregateRoomInfo(req.RoomIDs, rooms, keys)
+
+	// Per-request structured log (spec §3.4). No key material is logged.
+	foundCount, keyedCount := 0, 0
+	for _, ri := range infos {
+		if ri.Found {
+			foundCount++
+		}
+		if ri.PrivateKey != nil {
+			keyedCount++
+		}
+	}
+	slog.Info("rooms info batch handled",
+		"account", account,
+		"site_id", h.siteID,
+		"batch_size", len(req.RoomIDs),
+		"found_count", foundCount,
+		"keyed_count", keyedCount,
+		"latency_ms", time.Since(start).Milliseconds(),
+	)
+
+	return json.Marshal(model.RoomsInfoBatchResponse{Rooms: infos})
 }
 
 func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[string]*roomkeystore.VersionedKeyPair) []model.RoomInfo {
