@@ -137,7 +137,7 @@ func (s *MongoStore) GetUserWithOrgMembership(ctx context.Context, roomID, accou
 		if err := cursor.Err(); err != nil {
 			return nil, fmt.Errorf("iterate user with org membership: %w", err)
 		}
-		return nil, fmt.Errorf("user %q not found", account)
+		return nil, fmt.Errorf("user %q not found: %w", account, mongo.ErrNoDocuments)
 	}
 	if err := cursor.Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode user with org membership: %w", err)
