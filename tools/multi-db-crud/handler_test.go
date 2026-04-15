@@ -20,7 +20,7 @@ func init() {
 }
 
 func TestHandler_Healthz(t *testing.T) {
-	h := newHandler()
+	h := newHandler(nil)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -37,7 +37,7 @@ func TestHandler_Healthz(t *testing.T) {
 }
 
 func TestRequestIDMiddleware_GeneratesID(t *testing.T) {
-	h := newHandler()
+	h := newHandler(nil)
 
 	r := gin.New()
 	r.Use(requestIDMiddleware())
@@ -52,7 +52,7 @@ func TestRequestIDMiddleware_GeneratesID(t *testing.T) {
 }
 
 func TestRequestIDMiddleware_EchoesExistingID(t *testing.T) {
-	h := newHandler()
+	h := newHandler(nil)
 
 	r := gin.New()
 	r.Use(requestIDMiddleware())
@@ -69,7 +69,7 @@ func TestRequestIDMiddleware_EchoesExistingID(t *testing.T) {
 }
 
 func TestStubRoutes_Return501(t *testing.T) {
-	h := newHandler()
+	h := newHandler(nil)
 	r := gin.New()
 	registerRoutes(r, h)
 
@@ -110,7 +110,7 @@ func TestStubRoutes_Return501(t *testing.T) {
 
 func TestServeUI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := newHandler()
+	h := newHandler(nil)
 	r := gin.New()
 	registerRoutes(r, h)
 
@@ -123,7 +123,7 @@ func TestServeUI(t *testing.T) {
 
 func TestServeUI_MissingFile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := newHandler()
+	h := newHandler(nil)
 	// Use an empty FS so ReadFile("static/index.html") returns an error.
 	h.staticFS = fstest.MapFS{}
 	r := gin.New()
@@ -155,7 +155,7 @@ func TestParseLogLevel(t *testing.T) {
 }
 
 func TestNewHTTPServer(t *testing.T) {
-	h := newHandler()
+	h := newHandler(nil)
 	r := gin.New()
 	registerRoutes(r, h)
 
@@ -168,7 +168,7 @@ func TestNewHTTPServer(t *testing.T) {
 }
 
 func TestNewRouter(t *testing.T) {
-	h := newHandler()
+	h := newHandler(nil)
 	r := newRouter(h)
 	require.NotNil(t, r)
 

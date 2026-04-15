@@ -10,10 +10,12 @@ import (
 type handler struct {
 	// staticFS overrides the embedded staticFiles in tests.
 	staticFS fs.FS
+	// reg is the connection registry. May be nil in some tests.
+	reg *registry
 }
 
-func newHandler() *handler {
-	return &handler{}
+func newHandler(reg *registry) *handler {
+	return &handler{reg: reg}
 }
 
 func (h *handler) healthz(c *gin.Context) {

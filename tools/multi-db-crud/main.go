@@ -94,10 +94,11 @@ func main() {
 	level := parseLogLevel(cfg.LogLevel)
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
 
-	// reaperCancel will be set when the registry and idle reaper are initialised (Task 2).
-	var reaperCancel context.CancelFunc
+	reg := newRegistry(time.Duration(cfg.IdleTimeoutMinutes) * time.Minute)
+	reaperCtx, reaperCancel := context.WithCancel(context.Background())
+	go runReaper(reaperCtx, reg, time.Minute)
 
-	h := newHandler()
+	h := newHandler(reg)
 	r := newRouter(h)
 	srv := newHTTPServer(cfg.Port, r)
 
@@ -113,7 +114,7 @@ func main() {
 	shutdown.Wait(context.Background(), 25*time.Second,
 		reaperShutdownFunc(&reaperCancel),
 		func(_ context.Context) error {
-			// TODO: registry.CloseAll() when connection registry is implemented
+			reg.CloseAll()
 			return nil
 		},
 		func(ctx context.Context) error {
