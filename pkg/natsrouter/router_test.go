@@ -564,7 +564,7 @@ func TestRegister_ErrInternal(t *testing.T) {
 
 func TestContext_RequestID_Set(t *testing.T) {
 	c := NewContext(map[string]string{})
-	c.Set("requestID", "test-req-123")
+	c.Set(requestIDKey, "test-req-123")
 	assert.Equal(t, "test-req-123", c.RequestID())
 }
 
