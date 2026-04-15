@@ -537,4 +537,27 @@ func TestErrConstants(t *testing.T) {
 
 	e = ErrConflict("already exists")
 	assert.Equal(t, "conflict", e.Code)
+
+	e = ErrInternal("service unavailable")
+	assert.Equal(t, "internal", e.Code)
+	assert.Equal(t, "service unavailable", e.Message)
+}
+
+func TestRegister_ErrInternal(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "test-service")
+
+	Register(r, "test.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			return nil, ErrInternal("failed to load data")
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var result RouteError
+	require.NoError(t, json.Unmarshal(resp.Data, &result))
+	assert.Equal(t, "failed to load data", result.Message)
+	assert.Equal(t, "internal", result.Code)
 }
