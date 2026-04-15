@@ -57,14 +57,15 @@ func main() {
 	}
 
 	cassRepo := cassrepo.NewRepository(cassSession)
+	roomRepo := mongorepo.NewRoomRepo(mongoClient.Database(cfg.Mongo.DB))
 	mongoRepo := mongorepo.NewSubscriptionRepo(mongoClient.Database(cfg.Mongo.DB))
 	svc := service.New(cassRepo, mongoRepo)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
-	router.Use(middleware.SiteProxy(cfg.SiteID, nc.NatsConn()))
+	g := router.Group(middleware.SiteProxy(cfg.SiteID, nc.NatsConn(), roomRepo))
 
-	svc.RegisterHandlers(router)
+	svc.RegisterHandlers(router, g, cfg.SiteID)
 
 	slog.Info("history-service running", "site", cfg.SiteID)
 
