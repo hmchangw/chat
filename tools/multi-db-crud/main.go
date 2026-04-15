@@ -67,9 +67,10 @@ func newHTTPServer(port int, handler http.Handler) *http.Server {
 }
 
 // newRouter wires up a new Gin engine with standard middleware and all routes registered.
-func newRouter(h *handler) *gin.Engine {
+func newRouter(h *handler, readOnly bool) *gin.Engine {
 	r := gin.New()
 	r.Use(requestIDMiddleware())
+	r.Use(readOnlyMiddleware(readOnly))
 	registerRoutes(r, h)
 	return r
 }
@@ -99,7 +100,7 @@ func main() {
 	go runReaper(reaperCtx, reg, time.Minute)
 
 	h := newHandler(reg)
-	r := newRouter(h)
+	r := newRouter(h, cfg.ReadOnly)
 	srv := newHTTPServer(cfg.Port, r)
 
 	slog.Info("multi-db-crud starting", "port", cfg.Port)
