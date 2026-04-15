@@ -89,10 +89,10 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
 ```cql
 CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   room_id TEXT,
-  thread_room_id TEXT,
+  thread_room_id TEXT, // todo in future, value will come from threadRooms collection
   created_at TIMESTAMP,
   message_id TEXT,
-  thread_message_id TEXT,
+  thread_parent_id TEXT,
   sender FROZEN<"Participant">,
   target_user FROZEN<"Participant">,
   msg TEXT,
@@ -146,6 +146,8 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
 ```cql
 CREATE TABLE IF NOT EXISTS messages_by_id(
   message_id TEXT,
+  room_id TEXT,
+  thread_room_id TEXT, // todo in future, value will come from threadRooms collection
   sender FROZEN<"Participant">,
   target_user FROZEN<"Participant">,
   msg TEXT,
@@ -154,6 +156,9 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   file FROZEN<"File">,
   card FROZEN<"Card">,
   card_action FROZEN<"CardAction">,
+  tshow BOOLEAN,
+  thread_parent_id TEXT,
+  thread_parent_created_at TIMESTAMP,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
   unread BOOLEAN,
@@ -165,6 +170,8 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   edited_at TIMESTAMP,
   created_at TIMESTAMP,
   updated_at TIMESTAMP,
+  pinned_at TIMESTAMP,
+  pinned_by FROZEN<"Participant">,
   PRIMARY KEY(message_id,created_at)
 )WITH CLUSTERING ORDER BY (created_at DESC);
 ```
