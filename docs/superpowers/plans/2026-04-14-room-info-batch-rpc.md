@@ -132,4 +132,188 @@ git commit -m "feat(subject): add RoomsInfoBatch subject builders"
 
 ---
 
-<!-- TASKS 2-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
+## Task 2: `pkg/model` types
+
+**Files:**
+- Modify: `pkg/model/room.go`
+- Test: `pkg/model/model_test.go`
+
+- [ ] **Step 1: Write failing tests**
+
+Append to `pkg/model/model_test.go`:
+
+```go
+func TestRoomsInfoBatchRequestJSON(t *testing.T) {
+	src := model.RoomsInfoBatchRequest{
+		RoomIDs: []string{"r1", "r2", "r3"},
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.RoomsInfoBatchRequest
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
+
+func TestRoomInfoJSON(t *testing.T) {
+	t.Run("happy path with all fields", func(t *testing.T) {
+		pk := "dGVzdC1wcml2YXRlLWtleS1iYXNlNjQ="
+		kv := 7
+		src := model.RoomInfo{
+			RoomID:     "r1",
+			Found:      true,
+			SiteID:     "site-a",
+			Name:       "general",
+			LastMsgAt:  1735689600000,
+			PrivateKey: &pk,
+			KeyVersion: &kv,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var dst model.RoomInfo
+		require.NoError(t, json.Unmarshal(data, &dst))
+		if !reflect.DeepEqual(src, dst) {
+			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+		}
+	})
+
+	t.Run("found=false omits optional fields but keeps lastMsgAt", func(t *testing.T) {
+		src := model.RoomInfo{
+			RoomID: "r1",
+			Found:  false,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+
+		assert.Contains(t, raw, "roomId")
+		assert.Equal(t, "r1", raw["roomId"])
+
+		foundVal, foundPresent := raw["found"]
+		assert.True(t, foundPresent, "found must be present")
+		assert.Equal(t, false, foundVal)
+
+		lastMsgAtVal, lastMsgAtPresent := raw["lastMsgAt"]
+		assert.True(t, lastMsgAtPresent, "lastMsgAt must be present even when zero")
+		assert.Equal(t, float64(0), lastMsgAtVal)
+
+		for _, key := range []string{"siteId", "name", "privateKey", "keyVersion", "error"} {
+			_, present := raw[key]
+			assert.False(t, present, "%q should be omitted", key)
+		}
+	})
+
+	t.Run("found=true with nil PrivateKey omits privateKey but keeps lastMsgAt", func(t *testing.T) {
+		src := model.RoomInfo{
+			RoomID:    "r1",
+			Found:     true,
+			SiteID:    "site-a",
+			Name:      "general",
+			LastMsgAt: 0,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+
+		lastMsgAtVal, lastMsgAtPresent := raw["lastMsgAt"]
+		assert.True(t, lastMsgAtPresent, "lastMsgAt must be present even when zero")
+		assert.Equal(t, float64(0), lastMsgAtVal)
+
+		_, pkPresent := raw["privateKey"]
+		assert.False(t, pkPresent, "privateKey should be omitted when nil")
+		_, kvPresent := raw["keyVersion"]
+		assert.False(t, kvPresent, "keyVersion should be omitted when nil")
+	})
+}
+
+func TestRoomsInfoBatchResponseJSON(t *testing.T) {
+	pk := "dGVzdC1rZXk="
+	kv := 3
+	src := model.RoomsInfoBatchResponse{
+		Rooms: []model.RoomInfo{
+			{
+				RoomID:     "r1",
+				Found:      true,
+				SiteID:     "site-a",
+				Name:       "general",
+				LastMsgAt:  1735689600000,
+				PrivateKey: &pk,
+				KeyVersion: &kv,
+			},
+			{
+				RoomID:    "r2",
+				Found:     false,
+				LastMsgAt: 0,
+			},
+		},
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.RoomsInfoBatchResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `make test SERVICE=pkg/model`
+Expected: FAIL — `undefined: model.RoomsInfoBatchRequest`, `undefined: model.RoomInfo`, `undefined: model.RoomsInfoBatchResponse`.
+
+- [ ] **Step 3: Implement the types**
+
+Append to `pkg/model/room.go`:
+
+```go
+// RoomsInfoBatchRequest is the NATS request body for the batch room info RPC.
+type RoomsInfoBatchRequest struct {
+	RoomIDs []string `json:"roomIds"`
+}
+
+// RoomInfo is a single aggregated room record: Mongo metadata + Valkey key.
+// LastMsgAt has no omitempty — it is always emitted so callers can distinguish
+// "found, never messaged" (lastMsgAt: 0) from "not found" (found: false).
+type RoomInfo struct {
+	RoomID     string  `json:"roomId"`
+	Found      bool    `json:"found"`
+	SiteID     string  `json:"siteId,omitempty"`
+	Name       string  `json:"name,omitempty"`
+	LastMsgAt  int64   `json:"lastMsgAt"`
+	PrivateKey *string `json:"privateKey,omitempty"`
+	KeyVersion *int    `json:"keyVersion,omitempty"`
+	Error      string  `json:"error,omitempty"`
+}
+
+// RoomsInfoBatchResponse contains one entry per requested roomID, in input order.
+type RoomsInfoBatchResponse struct {
+	Rooms []RoomInfo `json:"rooms"`
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `make test SERVICE=pkg/model`
+Expected: PASS.
+
+- [ ] **Step 5: Run lint**
+
+Run: `make lint`
+Expected: no warnings.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add pkg/model/room.go pkg/model/model_test.go
+git commit -m "feat(model): add RoomsInfoBatchRequest/RoomInfo/RoomsInfoBatchResponse types"
+```
+
+---
+
+<!-- TASKS 3-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
