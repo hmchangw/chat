@@ -1761,4 +1761,250 @@ git commit -m "chore(room-service): add Valkey to docker-compose"
 
 ---
 
-<!-- TASK 12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
+## Task 12: End-to-end integration test for RoomsInfoBatch RPC
+
+**Files:**
+- Modify: `room-service/integration_test.go`
+
+> **Note on otelnats wrapping:** The production handler uses `*otelnats.Conn` from `github.com/Marz32onE/instrumentation-go/otel-nats/otelnats`. In `main.go` this is produced via `otelnats.Connect(url)`. This test uses the same `otelnats.Connect(url)` against the testcontainers NATS URL to obtain a `*otelnats.Conn`, and uses a separate raw `nats.Connect` client to issue the client-side `Request`. If `otelnats.Connect` cannot be pointed at an arbitrary URL (e.g., it reads env only), fall back to calling `handler.RegisterCRUD` with whatever adapter the package exposes (`otelnats.Wrap(nc)` if available) — check the `otelnats` package and adjust imports accordingly before running the test.
+
+- [ ] **Step 1: Rewrite `room-service/integration_test.go` with the new helpers and test**
+
+Write `room-service/integration_test.go` with:
+
+```go
+//go:build integration
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/mongodb"
+	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
+	"github.com/testcontainers/testcontainers-go/wait"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/subject"
+)
+
+func setupMongo(t *testing.T) *mongo.Database {
+	t.Helper()
+	ctx := context.Background()
+	container, err := mongodb.Run(ctx, "mongo:8")
+	if err != nil {
+		t.Fatalf("start mongo: %v", err)
+	}
+	t.Cleanup(func() { container.Terminate(ctx) })
+
+	uri, err := container.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("get mongo uri: %v", err)
+	}
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("connect mongo: %v", err)
+	}
+	t.Cleanup(func() { client.Disconnect(ctx) })
+	return client.Database("chat_test")
+}
+
+func setupValkey(t *testing.T) *roomkeystore.Config {
+	t.Helper()
+	ctx := context.Background()
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "valkey/valkey:8",
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor:   wait.ForLog("Ready to accept connections"),
+		},
+		Started: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+
+	host, err := container.Host(ctx)
+	require.NoError(t, err)
+	port, err := container.MappedPort(ctx, "6379")
+	require.NoError(t, err)
+
+	return &roomkeystore.Config{
+		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
+		GracePeriod: time.Hour,
+	}
+}
+
+func setupNATS(t *testing.T) string {
+	t.Helper()
+	ctx := context.Background()
+	container, err := natsmod.Run(ctx, "nats:2.11-alpine")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	url, err := container.ConnectionString(ctx)
+	require.NoError(t, err)
+	return url
+}
+
+func TestMongoStore_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup, SiteID: "site-a", CreatedBy: "u1", UserCount: 1}
+	if err := store.CreateRoom(ctx, &room); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	got, err := store.GetRoom(ctx, "r1")
+	if err != nil {
+		t.Fatalf("GetRoom: %v", err)
+	}
+	if got.Name != "general" {
+		t.Errorf("Name = %q, want general", got.Name)
+	}
+
+	store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeGroup})
+	rooms, err := store.ListRooms(ctx)
+	if err != nil {
+		t.Fatalf("ListRooms: %v", err)
+	}
+	if len(rooms) != 2 {
+		t.Errorf("got %d rooms, want 2", len(rooms))
+	}
+
+	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Role: model.RoleOwner}
+	if err := store.CreateSubscription(ctx, &sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	gotSub, err := store.GetSubscription(ctx, "u1", "r1")
+	if err != nil {
+		t.Fatalf("GetSubscription: %v", err)
+	}
+	if gotSub.Role != model.RoleOwner {
+		t.Errorf("Role = %q, want owner", gotSub.Role)
+	}
+
+	_, err = store.GetSubscription(ctx, "u2", "r1")
+	if err == nil {
+		t.Error("expected error for missing subscription")
+	}
+}
+
+func TestRoomsInfoBatchRPC(t *testing.T) {
+	db := setupMongo(t)
+	valCfg := setupValkey(t)
+	natsURL := setupNATS(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	lastMsg := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	rooms := []model.Room{
+		{ID: "r1", Name: "room-1", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: lastMsg},
+		{ID: "r2", Name: "room-2", Type: model.RoomTypeGroup, SiteID: "site-a"},
+		{ID: "r3", Name: "room-3", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: lastMsg.Add(-time.Hour)},
+	}
+	for _, r := range rooms {
+		require.NoError(t, store.CreateRoom(ctx, &r))
+	}
+
+	pubKey := bytes.Repeat([]byte{0xAB}, 65)
+	privKey1 := bytes.Repeat([]byte{0x01}, 32)
+	privKey2 := bytes.Repeat([]byte{0x02}, 32)
+	_, err = keyStore.Set(ctx, "r1", roomkeystore.RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey1})
+	require.NoError(t, err)
+	_, err = keyStore.Set(ctx, "r2", roomkeystore.RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey2})
+	require.NoError(t, err)
+
+	otelNC, err := otelnats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNC.Drain() })
+
+	handler := NewHandler(store, keyStore, "site-a", 1000, 500, func(context.Context, []byte) error { return nil })
+	require.NoError(t, handler.RegisterCRUD(otelNC))
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Drain() })
+
+	req := model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r2", "r3", "missing"}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	msg, err := nc.Request(subject.RoomsInfoBatch("tester", "site-a"), data, 3*time.Second)
+	require.NoError(t, err)
+
+	var resp model.RoomsInfoBatchResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.Len(t, resp.Rooms, 4)
+
+	assert.Equal(t, "r1", resp.Rooms[0].RoomID)
+	assert.True(t, resp.Rooms[0].Found)
+	assert.Equal(t, lastMsg.UnixMilli(), resp.Rooms[0].LastMsgAt)
+	require.NotNil(t, resp.Rooms[0].PrivateKey)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(privKey1), *resp.Rooms[0].PrivateKey)
+	require.NotNil(t, resp.Rooms[0].KeyVersion)
+	assert.Equal(t, 0, *resp.Rooms[0].KeyVersion)
+
+	assert.Equal(t, "r2", resp.Rooms[1].RoomID)
+	assert.True(t, resp.Rooms[1].Found)
+	assert.Equal(t, int64(0), resp.Rooms[1].LastMsgAt)
+	require.NotNil(t, resp.Rooms[1].PrivateKey)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(privKey2), *resp.Rooms[1].PrivateKey)
+
+	assert.Equal(t, "r3", resp.Rooms[2].RoomID)
+	assert.True(t, resp.Rooms[2].Found)
+	assert.Nil(t, resp.Rooms[2].PrivateKey)
+	assert.Nil(t, resp.Rooms[2].KeyVersion)
+
+	assert.Equal(t, "missing", resp.Rooms[3].RoomID)
+	assert.False(t, resp.Rooms[3].Found)
+	assert.Equal(t, int64(0), resp.Rooms[3].LastMsgAt)
+	assert.Nil(t, resp.Rooms[3].PrivateKey)
+	assert.Nil(t, resp.Rooms[3].KeyVersion)
+}
+```
+
+- [ ] **Step 2: Run the integration test**
+
+```bash
+make test-integration SERVICE=room-service
+```
+
+Expected: `PASS` — test spins up Mongo, Valkey, and NATS containers, seeds 3 rooms and 2 keys, issues a real NATS request, and validates all four response entries.
+
+- [ ] **Step 3: Run lint**
+
+```bash
+make lint
+```
+
+Expected: clean.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add room-service/integration_test.go
+git commit -m "test(room-service): add end-to-end rooms info batch RPC integration test"
+```
+
+---
+
+<!-- FINAL VERIFICATION SECTION WILL BE APPENDED NEXT -->
