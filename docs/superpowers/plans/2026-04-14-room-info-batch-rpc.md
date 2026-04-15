@@ -853,4 +853,64 @@ git commit -m "feat(room-service): add ListRoomsByIDs Mongo store method"
 
 ---
 
-<!-- TASKS 7-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
+## Task 7: Regenerate room-service mocks and add `RoomKeyStore` mockgen
+
+**Files:**
+- Modify: `room-service/store.go`
+- Regenerate: `room-service/mock_store_test.go`
+- Create: `room-service/mock_keystore_test.go`
+
+- [ ] **Step 1: Add a second `//go:generate` directive for `RoomKeyStore`**
+
+Edit `room-service/store.go`. The top of the file now reads:
+
+```go
+package main
+
+import (
+	"context"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+//go:generate mockgen -destination=mock_store_test.go -package=main . RoomStore
+//go:generate mockgen -destination=mock_keystore_test.go -package=main github.com/hmchangw/chat/pkg/roomkeystore RoomKeyStore
+
+type RoomStore interface {
+	CreateRoom(ctx context.Context, room *model.Room) error
+	GetRoom(ctx context.Context, id string) (*model.Room, error)
+	ListRooms(ctx context.Context) ([]model.Room, error)
+	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
+	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
+	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+}
+```
+
+- [ ] **Step 2: Regenerate mocks**
+
+Run: `make generate SERVICE=room-service`
+Expected:
+- `room-service/mock_store_test.go` rewritten — now includes `ListRoomsByIDs` method on `MockRoomStore` plus its recorder.
+- `room-service/mock_keystore_test.go` created — contains `MockRoomKeyStore` with methods `Set`, `Get`, `GetMany`, `GetByVersion`, `Rotate`, `Delete` and a `NewMockRoomKeyStore(ctrl)` constructor.
+
+Verify both files exist and reference the right interfaces:
+
+```bash
+ls room-service/mock_store_test.go room-service/mock_keystore_test.go
+```
+
+- [ ] **Step 3: Run existing unit tests to confirm nothing broke**
+
+Run: `make test SERVICE=room-service`
+Expected: PASS — existing `TestHandler_CreateRoom`, `TestHandler_InviteOwner_Success`, `TestHandler_InviteMember_Rejected`, `TestHandler_InviteExceedsMaxSize` still green. The regenerated `MockRoomStore` satisfies the expanded interface.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add room-service/store.go room-service/mock_store_test.go room-service/mock_keystore_test.go
+git commit -m "chore(room-service): add ListRoomsByIDs and regenerate mocks"
+```
+
+---
+
+<!-- TASKS 8-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
