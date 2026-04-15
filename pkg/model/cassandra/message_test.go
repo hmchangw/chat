@@ -130,15 +130,18 @@ func TestMessage_JSON(t *testing.T) {
 			Sender:    Participant{ID: "u5", Account: "eve"},
 			CreatedAt: now.Add(-30 * time.Minute), Msg: "original",
 		},
-		VisibleTo:  "u1",
-		Unread:     true,
-		Reactions:  map[string][]Participant{"thumbsup": {{ID: "u2", Account: "bob"}}},
-		Deleted:    false,
-		Type:       "user_joined",
-		SysMsgData: []byte(`{"userId":"u3"}`),
-		SiteID:     "site-remote",
-		EditedAt:   &edited,
-		UpdatedAt:  &updated,
+		VisibleTo:    "u1",
+		Unread:       true,
+		Reactions:    map[string][]Participant{"thumbsup": {{ID: "u2", Account: "bob"}}},
+		Deleted:      false,
+		Type:         "user_joined",
+		SysMsgData:   []byte(`{"userId":"u3"}`),
+		SiteID:       "site-remote",
+		EditedAt:     &edited,
+		UpdatedAt:    &updated,
+		ThreadRoomID: "tr-1",
+		PinnedAt:     &edited,
+		PinnedBy:     &Participant{ID: "u9", Account: "pinner"},
 	}
 
 	got := roundTrip(t, msg)
@@ -163,6 +166,12 @@ func TestMessage_JSON(t *testing.T) {
 	assert.Equal(t, "site-remote", got.SiteID)
 	assert.Equal(t, edited, *got.EditedAt)
 	assert.Equal(t, updated, *got.UpdatedAt)
+	assert.Equal(t, "tr-1", got.ThreadRoomID)
+	require.NotNil(t, got.PinnedAt)
+	assert.Equal(t, edited, *got.PinnedAt)
+	require.NotNil(t, got.PinnedBy)
+	assert.Equal(t, "u9", got.PinnedBy.ID)
+	assert.Equal(t, "pinner", got.PinnedBy.Account)
 }
 
 func TestMessage_JSON_Minimal(t *testing.T) {
@@ -189,6 +198,9 @@ func TestMessage_JSON_Minimal(t *testing.T) {
 	assert.False(t, got.TShow)
 	assert.False(t, got.Unread)
 	assert.False(t, got.Deleted)
+	assert.Empty(t, got.ThreadRoomID)
+	assert.Nil(t, got.PinnedAt)
+	assert.Nil(t, got.PinnedBy)
 }
 
 func TestUnmarshalUDT_UnknownField(t *testing.T) {

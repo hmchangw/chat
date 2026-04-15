@@ -122,4 +122,7 @@ type Message struct {
 	SiteID                string                   `json:"siteId,omitempty"`
 	EditedAt              *time.Time               `json:"editedAt,omitempty"`
 	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"`
+	ThreadRoomID          string                   `json:"threadRoomId,omitempty"`
+	PinnedAt              *time.Time               `json:"pinnedAt,omitempty"`
+	PinnedBy              *Participant             `json:"pinnedBy,omitempty"`
 }
