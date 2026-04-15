@@ -305,6 +305,13 @@ func (h *handler) mongoImportDocs(c *gin.Context) {
 
 	result := importResult{Failed: []importFailure{}}
 	for i, doc := range docs {
+		if err := c.Request.Context().Err(); err != nil {
+			// Client gone — stop wasting work. Whatever we've already aggregated
+			// is fine; we won't be able to send the response anyway.
+			slog.Info("import aborted: context cancelled",
+				"inserted", result.Inserted, "failed", len(result.Failed))
+			return
+		}
 		_, err := h.mongo.InsertDoc(c.Request.Context(), conn.mongo, conn.mongoDB, coll, doc)
 		if err != nil {
 			var docID any
@@ -314,13 +321,28 @@ func (h *handler) mongoImportDocs(c *gin.Context) {
 			result.Failed = append(result.Failed, importFailure{
 				Index: i,
 				ID:    docID,
-				Error: sanitizeConnectError(err),
+				Error: sanitizeImportError(err),
 			})
 			continue
 		}
 		result.Inserted++
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// sanitizeImportError returns a short, user-safe message for per-doc import
+// failures. It distinguishes duplicate-key collisions (the most common failure
+// in insert-only mode) from generic insert errors so the UI can show actionable
+// feedback. Driver detail is never echoed back.
+func sanitizeImportError(err error) string {
+	switch {
+	case errors.Is(err, ErrMongoDuplicateKey):
+		return "duplicate key"
+	case errors.Is(err, ErrMongoNotFound):
+		return "not found"
+	default:
+		return "insert failed"
+	}
 }
 
 // mongoDeleteDoc handles DELETE /api/mongo/:id/collections/:name/docs/:docID.

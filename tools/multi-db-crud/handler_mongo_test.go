@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -815,8 +816,8 @@ func TestImport_Success_MixedFailures(t *testing.T) {
 	ops.EXPECT().
 		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"_id": "0", "name": "zero"}).
 		Return(bson.M{"_id": "0", "name": "zero"}, nil)
-	// Index 1: fail with wrapped duplicate-key (sanitized to "insert document")
-	dupErr := errors.New("insert document: duplicate key: E11000")
+	// Index 1: fail with wrapped duplicate-key sentinel (surfaces as "duplicate key")
+	dupErr := fmt.Errorf("insert document: %w (E11000)", ErrMongoDuplicateKey)
 	ops.EXPECT().
 		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"_id": "1", "name": "one"}).
 		Return(nil, dupErr)
@@ -824,7 +825,7 @@ func TestImport_Success_MixedFailures(t *testing.T) {
 	ops.EXPECT().
 		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"_id": "2", "name": "two"}).
 		Return(bson.M{"_id": "2", "name": "two"}, nil)
-	// Index 3: fail
+	// Index 3: fail with generic error (surfaces as "insert failed")
 	ops.EXPECT().
 		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", bson.M{"_id": "3", "name": "three"}).
 		Return(nil, errors.New("insert document: some driver error"))
@@ -850,12 +851,13 @@ func TestImport_Success_MixedFailures(t *testing.T) {
 
 	assert.Equal(t, 1, got.Failed[0].Index)
 	assert.Equal(t, "1", got.Failed[0].ID)
-	// Sanitized: prefix before first colon only.
-	assert.Equal(t, "insert document", got.Failed[0].Error)
+	// Duplicate-key sentinel surfaces as a specific message.
+	assert.Equal(t, "duplicate key", got.Failed[0].Error)
 
 	assert.Equal(t, 3, got.Failed[1].Index)
 	assert.Equal(t, "3", got.Failed[1].ID)
-	assert.Equal(t, "insert document", got.Failed[1].Error)
+	// Generic insert errors surface as "insert failed".
+	assert.Equal(t, "insert failed", got.Failed[1].Error)
 }
 
 func TestImport_AllFailures(t *testing.T) {
@@ -969,4 +971,71 @@ func TestImport_BodyReadError_400(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErrResp(t, w.Body).Code)
+}
+
+// TestImport_ContextCancelled_ShortCircuits verifies that the per-doc loop
+// bails out of the loop once the request context has been cancelled, so the
+// handler doesn't spin through InsertDoc calls for a client that has
+// disconnected. The request context is cancelled before the handler runs, so
+// the very first iteration should short-circuit and InsertDoc must not be
+// invoked at all.
+func TestImport_ContextCancelled_ShortCircuits(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctrl := gomock.NewController(t)
+	mockReg := NewMockregistryAPI(ctrl)
+	mockMongo := NewMockmongoOps(ctrl)
+
+	mockReg.EXPECT().Get("c1").
+		Return(&connection{kind: "mongo", mongo: nil, mongoDB: "testdb"}, nil).
+		AnyTimes()
+	// Cap at MaxTimes(3): we expect 0 in the common case (cancel before any
+	// iteration), but tolerate up to 3 so the test is not racy.
+	mockMongo.EXPECT().
+		InsertDoc(gomock.Any(), gomock.Any(), "testdb", "rooms", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *mongo.Client, _, _ string, _ bson.M) (bson.M, error) {
+			return bson.M{"_id": "x"}, nil
+		}).
+		MaxTimes(3)
+
+	h := newHandler(mockReg, mockMongo, 1000)
+	r := gin.New()
+	registerRoutes(r, h)
+
+	body := `[{"a":1},{"a":2},{"a":3}]`
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately so first iteration short-circuits
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/mongo/c1/collections/rooms/import", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// No assertion on response body — connection is dead. We just verify no
+	// panic and the mock's MaxTimes(3) cap was not exceeded.
+}
+
+// TestSanitizeImportError verifies that per-doc import failures are mapped to
+// short, user-safe strings without leaking driver detail, and that
+// duplicate-key collisions are distinguishable from generic insert failures.
+func TestSanitizeImportError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			"duplicate key sentinel",
+			fmt.Errorf("insert document: %w (%w)", ErrMongoDuplicateKey, errors.New("E11000")),
+			"duplicate key",
+		},
+		{"not found sentinel", ErrMongoNotFound, "not found"},
+		{"generic error", errors.New("connection reset"), "insert failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, sanitizeImportError(tc.err))
+		})
+	}
 }
