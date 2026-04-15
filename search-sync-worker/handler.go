@@ -7,6 +7,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
 )
 
@@ -66,16 +67,12 @@ func (h *Handler) Add(msg jetstream.Msg) {
 	actions, err := h.collection.BuildAction(msg.Data())
 	if err != nil {
 		slog.Error("build action", "error", err)
-		if ackErr := msg.Ack(); ackErr != nil {
-			slog.Error("ack malformed message", "error", ackErr)
-		}
+		natsutil.Ack(msg, "build action failed")
 		return
 	}
 
 	if len(actions) == 0 {
-		if ackErr := msg.Ack(); ackErr != nil {
-			slog.Error("ack filtered message", "error", ackErr)
-		}
+		natsutil.Ack(msg, "filtered, no actions")
 		return
 	}
 
@@ -105,7 +102,7 @@ func (h *Handler) Flush(ctx context.Context) {
 	results, err := h.store.Bulk(ctx, actions)
 	if err != nil {
 		slog.Error("bulk request failed", "error", err, "actions", len(actions))
-		nakAll(pending)
+		nakAll(pending, "bulk request failed")
 		return
 	}
 
@@ -122,7 +119,7 @@ func (h *Handler) Flush(ctx context.Context) {
 		//     is at worst a no-op.
 		// No duplicate processing, no lost events.
 		slog.Error("bulk result count mismatch", "expected", len(actions), "actual", len(results))
-		nakAll(pending)
+		nakAll(pending, "bulk result count mismatch")
 		return
 	}
 
@@ -142,13 +139,9 @@ func (h *Handler) Flush(ctx context.Context) {
 			break
 		}
 		if allOK {
-			if ackErr := p.jsMsg.Ack(); ackErr != nil {
-				slog.Error("ack failed", "error", ackErr)
-			}
+			natsutil.Ack(p.jsMsg, "bulk actions succeeded")
 		} else {
-			if nakErr := p.jsMsg.Nak(); nakErr != nil {
-				slog.Error("nak failed", "error", nakErr)
-			}
+			natsutil.Nak(p.jsMsg, "bulk action failed")
 		}
 	}
 }
@@ -209,11 +202,14 @@ func isBulkItemSuccess(action searchengine.ActionType, result searchengine.BulkR
 	return false
 }
 
-func nakAll(pending []pendingMsg) {
+// nakAll naks every buffered source message for redelivery. Used on the
+// two defensive paths in Flush where the whole batch can't be processed
+// (bulk request failed, or the ES response item count didn't match the
+// request). The shared `reason` is logged against every message so an
+// operator grepping by cause sees all of them together.
+func nakAll(pending []pendingMsg, reason string) {
 	for _, p := range pending {
-		if nakErr := p.jsMsg.Nak(); nakErr != nil {
-			slog.Error("nak failed", "error", nakErr)
-		}
+		natsutil.Nak(p.jsMsg, reason)
 	}
 }
 
