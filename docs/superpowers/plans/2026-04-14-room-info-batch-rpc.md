@@ -1154,4 +1154,381 @@ git commit -m "feat(room-service): wire RoomKeyStore + maxBatchSize into Handler
 
 ---
 
-<!-- TASKS 9-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
+## Task 9: Handler implementation — `handleRoomsInfoBatch` + `aggregateRoomInfo` + unit tests
+
+**Files:**
+- Modify: `room-service/handler.go`
+- Test: `room-service/handler_test.go`
+- Modify: `go.mod`, `go.sum` (run `go mod tidy` to pull `golang.org/x/sync` in as a direct dependency)
+
+- [ ] **Step 1: Write the failing table-driven test `TestHandler_handleRoomsInfoBatch`**
+
+Append to `room-service/handler_test.go`. Add the imports `"errors"`, `"strings"`, `"time"`, `"github.com/hmchangw/chat/pkg/roomkeystore"` at the top of the file if not already present:
+
+```go
+func TestHandler_handleRoomsInfoBatch(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	nowMs := now.UnixMilli()
+
+	type setup struct {
+		store    *MockRoomStore
+		keyStore *MockRoomKeyStore
+	}
+
+	tests := []struct {
+		name         string
+		maxBatchSize int
+		payload      []byte
+		setup        func(s setup)
+		wantErr      string
+		assertResp   func(t *testing.T, resp []byte)
+	}{
+		{
+			name:         "happy path preserves order and mixes keyed/unkeyed entries",
+			maxBatchSize: 500,
+			payload:      mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r2", "r3"}}),
+			setup: func(s setup) {
+				s.store.EXPECT().
+					ListRoomsByIDs(gomock.Any(), []string{"r1", "r2", "r3"}).
+					Return([]model.Room{
+						{ID: "r1", SiteID: "site-a", Name: "one", LastMsgAt: now},
+						{ID: "r2", SiteID: "site-a", Name: "two"},
+						{ID: "r3", SiteID: "site-a", Name: "three", LastMsgAt: now.Add(1 * time.Second)},
+					}, nil)
+				s.keyStore.EXPECT().
+					GetMany(gomock.Any(), []string{"r1", "r2", "r3"}).
+					Return(map[string]*roomkeystore.VersionedKeyPair{
+						"r1": {Version: 7, KeyPair: roomkeystore.RoomKeyPair{PrivateKey: []byte("priv-r1")}},
+						"r3": {Version: 2, KeyPair: roomkeystore.RoomKeyPair{PrivateKey: []byte("priv-r3")}},
+					}, nil)
+			},
+			assertResp: func(t *testing.T, resp []byte) {
+				var got model.RoomsInfoBatchResponse
+				if err := json.Unmarshal(resp, &got); err != nil {
+					t.Fatalf("unmarshal response: %v", err)
+				}
+				if len(got.Rooms) != 3 {
+					t.Fatalf("len(Rooms) = %d, want 3", len(got.Rooms))
+				}
+				if got.Rooms[0].RoomID != "r1" || !got.Rooms[0].Found || got.Rooms[0].Name != "one" || got.Rooms[0].LastMsgAt != nowMs {
+					t.Errorf("entry 0 = %+v", got.Rooms[0])
+				}
+				if got.Rooms[0].PrivateKey == nil || got.Rooms[0].KeyVersion == nil || *got.Rooms[0].KeyVersion != 7 {
+					t.Errorf("entry 0 key fields = priv=%v ver=%v", got.Rooms[0].PrivateKey, got.Rooms[0].KeyVersion)
+				}
+				if got.Rooms[1].RoomID != "r2" || !got.Rooms[1].Found || got.Rooms[1].PrivateKey != nil || got.Rooms[1].KeyVersion != nil {
+					t.Errorf("entry 1 = %+v", got.Rooms[1])
+				}
+				if got.Rooms[1].LastMsgAt != 0 {
+					t.Errorf("entry 1 LastMsgAt = %d, want 0", got.Rooms[1].LastMsgAt)
+				}
+				if got.Rooms[2].RoomID != "r3" || got.Rooms[2].KeyVersion == nil || *got.Rooms[2].KeyVersion != 2 {
+					t.Errorf("entry 2 = %+v", got.Rooms[2])
+				}
+			},
+		},
+		{
+			name:         "missing room yields Found=false and LastMsgAt=0",
+			maxBatchSize: 500,
+			payload:      mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "missing", "r3"}}),
+			setup: func(s setup) {
+				s.store.EXPECT().
+					ListRoomsByIDs(gomock.Any(), []string{"r1", "missing", "r3"}).
+					Return([]model.Room{
+						{ID: "r1", SiteID: "site-a", Name: "one", LastMsgAt: now},
+						{ID: "r3", SiteID: "site-a", Name: "three"},
+					}, nil)
+				s.keyStore.EXPECT().
+					GetMany(gomock.Any(), []string{"r1", "missing", "r3"}).
+					Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+			},
+			assertResp: func(t *testing.T, resp []byte) {
+				var got model.RoomsInfoBatchResponse
+				if err := json.Unmarshal(resp, &got); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				if len(got.Rooms) != 3 {
+					t.Fatalf("len(Rooms) = %d, want 3", len(got.Rooms))
+				}
+				if got.Rooms[1].RoomID != "missing" || got.Rooms[1].Found || got.Rooms[1].LastMsgAt != 0 {
+					t.Errorf("entry 1 = %+v, want RoomID=missing Found=false LastMsgAt=0", got.Rooms[1])
+				}
+				if !strings.Contains(string(resp), `"lastMsgAt":0`) {
+					t.Errorf("expected lastMsgAt:0 present in payload, got %s", string(resp))
+				}
+			},
+		},
+		{
+			name:         "empty RoomIDs returns validation error",
+			maxBatchSize: 500,
+			payload:      mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{}}),
+			setup:        func(_ setup) {},
+			wantErr:      "must not be empty",
+		},
+		{
+			name:         "oversized batch returns validation error",
+			maxBatchSize: 2,
+			payload:      mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r2", "r3"}}),
+			setup:        func(_ setup) {},
+			wantErr:      "exceeds limit",
+		},
+		{
+			name:         "invalid JSON returns parse error",
+			maxBatchSize: 500,
+			payload:      []byte("{not-json"),
+			setup:        func(_ setup) {},
+			wantErr:      "invalid request",
+		},
+		{
+			name:         "Mongo error is wrapped",
+			maxBatchSize: 500,
+			payload:      mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}}),
+			setup: func(s setup) {
+				s.store.EXPECT().
+					ListRoomsByIDs(gomock.Any(), []string{"r1"}).
+					Return(nil, errors.New("boom"))
+				s.keyStore.EXPECT().
+					GetMany(gomock.Any(), []string{"r1"}).
+					Return(map[string]*roomkeystore.VersionedKeyPair{}, nil).
+					AnyTimes()
+			},
+			wantErr: "list rooms by ids",
+		},
+		{
+			name:         "Valkey error is wrapped",
+			maxBatchSize: 500,
+			payload:      mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}}),
+			setup: func(s setup) {
+				s.store.EXPECT().
+					ListRoomsByIDs(gomock.Any(), []string{"r1"}).
+					Return([]model.Room{{ID: "r1"}}, nil).
+					AnyTimes()
+				s.keyStore.EXPECT().
+					GetMany(gomock.Any(), []string{"r1"}).
+					Return(nil, errors.New("valkey down"))
+			},
+			wantErr: "get room keys",
+		},
+		{
+			name:         "duplicate IDs yield duplicate entries",
+			maxBatchSize: 500,
+			payload:      mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r1"}}),
+			setup: func(s setup) {
+				s.store.EXPECT().
+					ListRoomsByIDs(gomock.Any(), []string{"r1", "r1"}).
+					Return([]model.Room{{ID: "r1", Name: "one", SiteID: "site-a", LastMsgAt: now}}, nil)
+				s.keyStore.EXPECT().
+					GetMany(gomock.Any(), []string{"r1", "r1"}).
+					Return(map[string]*roomkeystore.VersionedKeyPair{
+						"r1": {Version: 1, KeyPair: roomkeystore.RoomKeyPair{PrivateKey: []byte("priv")}},
+					}, nil)
+			},
+			assertResp: func(t *testing.T, resp []byte) {
+				var got model.RoomsInfoBatchResponse
+				if err := json.Unmarshal(resp, &got); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				if len(got.Rooms) != 2 {
+					t.Fatalf("len(Rooms) = %d, want 2", len(got.Rooms))
+				}
+				if got.Rooms[0].RoomID != "r1" || got.Rooms[1].RoomID != "r1" {
+					t.Errorf("expected both entries RoomID=r1, got %+v", got.Rooms)
+				}
+				if got.Rooms[0].KeyVersion == nil || got.Rooms[1].KeyVersion == nil {
+					t.Errorf("expected both entries keyed, got %+v", got.Rooms)
+				}
+			},
+		},
+		{
+			name:         "LastMsgAt set marshals to UTC millis",
+			maxBatchSize: 500,
+			payload:      mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}}),
+			setup: func(s setup) {
+				s.store.EXPECT().
+					ListRoomsByIDs(gomock.Any(), []string{"r1"}).
+					Return([]model.Room{{ID: "r1", Name: "one", SiteID: "site-a", LastMsgAt: now}}, nil)
+				s.keyStore.EXPECT().
+					GetMany(gomock.Any(), []string{"r1"}).
+					Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+			},
+			assertResp: func(t *testing.T, resp []byte) {
+				var got model.RoomsInfoBatchResponse
+				if err := json.Unmarshal(resp, &got); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				if got.Rooms[0].LastMsgAt != nowMs {
+					t.Errorf("LastMsgAt = %d, want %d", got.Rooms[0].LastMsgAt, nowMs)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			keyStore := NewMockRoomKeyStore(ctrl)
+			tc.setup(setup{store: store, keyStore: keyStore})
+
+			h := &Handler{
+				store:        store,
+				keyStore:     keyStore,
+				siteID:       "site-a",
+				maxRoomSize:  1000,
+				maxBatchSize: tc.maxBatchSize,
+			}
+
+			resp, err := h.handleRoomsInfoBatch(context.Background(), tc.payload)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.assertResp != nil {
+				tc.assertResp(t, resp)
+			}
+		})
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
+}
+```
+
+- [ ] **Step 2: Run tests to confirm RED**
+
+Run: `make test SERVICE=room-service`
+Expected: FAIL — `h.handleRoomsInfoBatch undefined (type *Handler has no field or method handleRoomsInfoBatch)`.
+
+- [ ] **Step 3: Implement `natsRoomsInfoBatch`, `handleRoomsInfoBatch`, `aggregateRoomInfo`**
+
+Add `"encoding/base64"` and `"golang.org/x/sync/errgroup"` to the `handler.go` import block.
+
+Replace the placeholder `natsRoomsInfoBatch` at the bottom of `handler.go` with:
+
+```go
+func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
+	resp, err := h.handleRoomsInfoBatch(m.Context(), m.Msg.Data)
+	if err != nil {
+		natsutil.ReplyError(m.Msg, err.Error())
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
+}
+
+func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte, error) {
+	var req model.RoomsInfoBatchRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if len(req.RoomIDs) == 0 {
+		return nil, fmt.Errorf("roomIds must not be empty")
+	}
+	if len(req.RoomIDs) > h.maxBatchSize {
+		return nil, fmt.Errorf("batch size %d exceeds limit %d", len(req.RoomIDs), h.maxBatchSize)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var (
+		rooms []model.Room
+		keys  map[string]*roomkeystore.VersionedKeyPair
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		r, err := h.store.ListRoomsByIDs(gctx, req.RoomIDs)
+		if err != nil {
+			return fmt.Errorf("list rooms by ids: %w", err)
+		}
+		rooms = r
+		return nil
+	})
+	g.Go(func() error {
+		k, err := h.keyStore.GetMany(gctx, req.RoomIDs)
+		if err != nil {
+			return fmt.Errorf("get room keys: %w", err)
+		}
+		keys = k
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(model.RoomsInfoBatchResponse{
+		Rooms: h.aggregateRoomInfo(req.RoomIDs, rooms, keys),
+	})
+}
+
+func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[string]*roomkeystore.VersionedKeyPair) []model.RoomInfo {
+	byID := make(map[string]*model.Room, len(rooms))
+	for i := range rooms {
+		byID[rooms[i].ID] = &rooms[i]
+	}
+	out := make([]model.RoomInfo, len(ids))
+	for i, id := range ids {
+		entry := model.RoomInfo{RoomID: id}
+		r, ok := byID[id]
+		if !ok {
+			out[i] = entry
+			continue
+		}
+		entry.Found = true
+		entry.SiteID = r.SiteID
+		entry.Name = r.Name
+		if !r.LastMsgAt.IsZero() {
+			entry.LastMsgAt = r.LastMsgAt.UTC().UnixMilli()
+		}
+		if kp, ok := keys[id]; ok && kp != nil {
+			enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
+			ver := kp.Version
+			entry.PrivateKey = &enc
+			entry.KeyVersion = &ver
+		}
+		out[i] = entry
+	}
+	return out
+}
+```
+
+- [ ] **Step 4: Pull `golang.org/x/sync` in as a direct dependency**
+
+Run: `go mod tidy`
+Expected: `go.mod` now has `golang.org/x/sync` under direct `require` (or its `// indirect` marker removed); `go.sum` updated.
+
+- [ ] **Step 5: Run tests to confirm GREEN**
+
+Run: `make test SERVICE=room-service`
+Expected: PASS — all nine subtests under `TestHandler_handleRoomsInfoBatch` green, plus all pre-existing `TestHandler_*` tests still green.
+
+- [ ] **Step 6: Run lint**
+
+Run: `make lint`
+Expected: clean.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add room-service/handler.go room-service/handler_test.go go.mod go.sum
+git commit -m "feat(room-service): implement rooms info batch RPC handler"
+```
+
+---
+
+<!-- TASKS 10-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
