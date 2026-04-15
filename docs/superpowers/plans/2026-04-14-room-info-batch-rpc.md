@@ -714,4 +714,143 @@ git commit -m "test(roomkeystore): add GetMany integration test with testcontain
 
 ---
 
-<!-- TASKS 6-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
+## Task 6: `room-service/store` — `ListRoomsByIDs`
+
+**Files:**
+- Modify: `room-service/store.go`
+- Modify: `room-service/store_mongo.go`
+- Test: `room-service/integration_test.go`
+
+- [ ] **Step 1: Write failing integration test for `ListRoomsByIDs`**
+
+Append to `room-service/integration_test.go`:
+
+```go
+func TestMongoStore_ListRoomsByIDs(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	seed := []model.Room{
+		{ID: "r1", Name: "one", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now},
+		{ID: "r2", Name: "two", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(1 * time.Second)},
+		{ID: "r3", Name: "three", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(2 * time.Second)},
+		{ID: "r4", Name: "four", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(3 * time.Second)},
+		{ID: "r5", Name: "five", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(4 * time.Second)},
+	}
+	for i := range seed {
+		if err := store.CreateRoom(ctx, &seed[i]); err != nil {
+			t.Fatalf("seed CreateRoom %q: %v", seed[i].ID, err)
+		}
+	}
+
+	t.Run("returns matches and skips missing", func(t *testing.T) {
+		rooms, err := store.ListRoomsByIDs(ctx, []string{"r1", "r3", "r5", "missing"})
+		if err != nil {
+			t.Fatalf("ListRoomsByIDs: %v", err)
+		}
+		if len(rooms) != 3 {
+			t.Fatalf("got %d rooms, want 3", len(rooms))
+		}
+		byID := map[string]model.Room{}
+		for _, r := range rooms {
+			byID[r.ID] = r
+		}
+		for _, id := range []string{"r1", "r3", "r5"} {
+			r, ok := byID[id]
+			if !ok {
+				t.Errorf("expected roomID %q in result", id)
+				continue
+			}
+			if r.LastMsgAt.IsZero() {
+				t.Errorf("room %q: LastMsgAt is zero", id)
+			}
+		}
+	})
+
+	t.Run("empty slice returns nil without error", func(t *testing.T) {
+		rooms, err := store.ListRoomsByIDs(ctx, nil)
+		if err != nil {
+			t.Fatalf("ListRoomsByIDs(nil): %v", err)
+		}
+		if rooms != nil {
+			t.Errorf("got %v, want nil", rooms)
+		}
+	})
+}
+```
+
+Add the `"time"` import at the top of `room-service/integration_test.go` if it is not already present.
+
+- [ ] **Step 2: Run the integration test to confirm RED**
+
+Run: `make test-integration SERVICE=room-service`
+Expected: FAIL — `store.ListRoomsByIDs undefined (type *MongoStore has no field or method ListRoomsByIDs)`.
+
+- [ ] **Step 3: Extend the `RoomStore` interface**
+
+Edit `room-service/store.go`:
+
+```go
+package main
+
+import (
+	"context"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+//go:generate mockgen -destination=mock_store_test.go -package=main . RoomStore
+
+type RoomStore interface {
+	CreateRoom(ctx context.Context, room *model.Room) error
+	GetRoom(ctx context.Context, id string) (*model.Room, error)
+	ListRooms(ctx context.Context) ([]model.Room, error)
+	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
+	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
+	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+}
+```
+
+- [ ] **Step 4: Implement `ListRoomsByIDs` on `MongoStore`**
+
+Append to `room-service/store_mongo.go`:
+
+```go
+func (s *MongoStore) ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	cursor, err := s.rooms.Find(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return nil, fmt.Errorf("list rooms by ids: %w", err)
+	}
+	var rooms []model.Room
+	if err := cursor.All(ctx, &rooms); err != nil {
+		return nil, fmt.Errorf("list rooms by ids: decode: %w", err)
+	}
+	return rooms, nil
+}
+```
+
+- [ ] **Step 5: Run the integration test to confirm GREEN**
+
+Run: `make test-integration SERVICE=room-service`
+Expected: PASS — both subtests green.
+
+- [ ] **Step 6: Run lint**
+
+Run: `make lint`
+Expected: clean.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add room-service/store.go room-service/store_mongo.go room-service/integration_test.go
+git commit -m "feat(room-service): add ListRoomsByIDs Mongo store method"
+```
+
+---
+
+<!-- TASKS 7-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
