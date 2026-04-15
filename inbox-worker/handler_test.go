@@ -62,6 +62,36 @@ func (s *stubInboxStore) DeleteSubscription(_ context.Context, roomID, account s
 	return nil
 }
 
+func (s *stubInboxStore) DeleteSubscriptionsByAccounts(_ context.Context, roomID string, accounts []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removeSet := make(map[string]bool)
+	for _, a := range accounts {
+		removeSet[a] = true
+	}
+	filtered := s.subscriptions[:0]
+	for i := range s.subscriptions {
+		if s.subscriptions[i].RoomID == roomID && removeSet[s.subscriptions[i].User.Account] {
+			continue
+		}
+		filtered = append(filtered, s.subscriptions[i])
+	}
+	s.subscriptions = filtered
+	return nil
+}
+
+func (s *stubInboxStore) DeleteRoomMember(_ context.Context, roomID string, memberType model.RoomMemberType, memberID string) error {
+	return nil // stub - room_members not tracked in stub
+}
+
+func (s *stubInboxStore) DeleteRoomMembersByAccount(_ context.Context, roomID, account string) error {
+	return nil // stub - room_members not tracked in stub
+}
+
+func (s *stubInboxStore) GetIndividualMemberAccounts(_ context.Context, roomID string, accounts []string) ([]string, error) {
+	return nil, nil // returns empty = no individual members (default for tests)
+}
+
 func (s *stubInboxStore) getSubscriptions() []model.Subscription {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -493,7 +523,7 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 	store.mu.Lock()
 	store.subscriptions = append(store.subscriptions, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
-		RoomID: "r1", SiteID: "site-a", Role: model.RoleMember,
+		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
 	})
 	store.mu.Unlock()
 
@@ -616,4 +646,130 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	if len(store.getRoleUpdates()) != 0 {
 		t.Error("no role update should have been applied")
 	}
+}
+
+// dualMemberStubStore wraps stubInboxStore and overrides GetIndividualMemberAccounts
+// to simulate users that have individual membership alongside org membership.
+type dualMemberStubStore struct {
+	*stubInboxStore
+	individualAccounts []string
+}
+
+func (s *dualMemberStubStore) GetIndividualMemberAccounts(_ context.Context, roomID string, accounts []string) ([]string, error) {
+	return s.individualAccounts, nil
+}
+
+func TestHandleEvent_MemberRemoved_OrgWithDualMembership(t *testing.T) {
+	store := &stubInboxStore{}
+	// Override GetIndividualMemberAccounts to return "carol" as having individual membership
+	dualStore := &dualMemberStubStore{stubInboxStore: store, individualAccounts: []string{"carol"}}
+	pub := &mockPublisher{}
+	h := NewHandler(dualStore, pub)
+
+	// Pre-populate subscriptions for bob and carol
+	store.mu.Lock()
+	store.subscriptions = append(store.subscriptions,
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "carol"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+	)
+	store.mu.Unlock()
+
+	memberEvt := model.MemberChangeEvent{
+		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob", "carol"},
+		SiteID: "site-a", OrgID: "eng-org", Timestamp: time.Now().UnixMilli(),
+	}
+	payload, _ := json.Marshal(memberEvt)
+	evt := model.OutboxEvent{
+		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), data)
+	require.NoError(t, err)
+
+	// bob's subscription should be deleted, carol's should remain (dual membership)
+	subs := store.getSubscriptions()
+	require.Len(t, subs, 1)
+	assert.Equal(t, "carol", subs[0].User.Account)
+
+	// Only bob should get SubscriptionUpdateEvent
+	records := pub.getRecords()
+	require.Len(t, records, 1)
+	assert.Equal(t, "chat.user.bob.event.subscription.update", records[0].subject)
+}
+
+func TestHandleEvent_MemberRemoved_OrgNoIndividualMembers(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	// Pre-populate subscriptions for both accounts
+	store.mu.Lock()
+	store.subscriptions = append(store.subscriptions,
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r2", Roles: []model.Role{model.RoleMember}},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "dave"}, RoomID: "r2", Roles: []model.Role{model.RoleMember}},
+	)
+	store.mu.Unlock()
+
+	memberEvt := model.MemberChangeEvent{
+		Type: "member-removed", RoomID: "r2", Accounts: []string{"alice", "dave"},
+		SiteID: "site-a", OrgID: "finance-org", Timestamp: time.Now().UnixMilli(),
+	}
+	payload, _ := json.Marshal(memberEvt)
+	evt := model.OutboxEvent{
+		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), data)
+	require.NoError(t, err)
+
+	// Both subscriptions should be deleted (no individual membership)
+	subs := store.getSubscriptions()
+	assert.Empty(t, subs)
+
+	// Both should get SubscriptionUpdateEvent
+	records := pub.getRecords()
+	require.Len(t, records, 2)
+	subjects := []string{records[0].subject, records[1].subject}
+	assert.Contains(t, subjects, "chat.user.alice.event.subscription.update")
+	assert.Contains(t, subjects, "chat.user.dave.event.subscription.update")
+}
+
+func TestHandleEvent_MemberRemoved_IndividualDeletesRoomMembers(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	store.mu.Lock()
+	store.subscriptions = append(store.subscriptions,
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "bob"}, RoomID: "r3", Roles: []model.Role{model.RoleMember}},
+	)
+	store.mu.Unlock()
+
+	// Individual removal (no OrgID)
+	memberEvt := model.MemberChangeEvent{
+		Type: "member-removed", RoomID: "r3", Accounts: []string{"bob"},
+		SiteID: "site-a", Timestamp: time.Now().UnixMilli(),
+	}
+	payload, _ := json.Marshal(memberEvt)
+	evt := model.OutboxEvent{
+		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), data)
+	require.NoError(t, err)
+
+	// Subscription deleted
+	subs := store.getSubscriptions()
+	assert.Empty(t, subs)
+
+	// One publish for bob
+	records := pub.getRecords()
+	require.Len(t, records, 1)
+	assert.Equal(t, "chat.user.bob.event.subscription.update", records[0].subject)
 }
