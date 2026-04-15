@@ -145,3 +145,27 @@ func TestWildcardPatterns(t *testing.T) {
 		})
 	}
 }
+
+func TestNatsrouterPatterns(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"MsgHistoryPattern", subject.MsgHistoryPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.history"},
+		{"MsgNextPattern", subject.MsgNextPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.next"},
+		{"MsgSurroundingPattern", subject.MsgSurroundingPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.surrounding"},
+		{"MsgGetPattern", subject.MsgGetPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.get"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("got %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
