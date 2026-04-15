@@ -2007,4 +2007,38 @@ git commit -m "test(room-service): add end-to-end rooms info batch RPC integrati
 
 ---
 
-<!-- FINAL VERIFICATION SECTION WILL BE APPENDED NEXT -->
+## Final Verification
+
+After all 12 tasks are complete, run these end-to-end checks against the full repo:
+
+- [ ] **Step 1: Run lint over the full repo**
+
+```bash
+make lint
+```
+
+Expected: clean — no issues reported by `golangci-lint`.
+
+- [ ] **Step 2: Run all unit tests with race detector**
+
+```bash
+make test
+```
+
+Expected: all packages report `ok` / `PASS`, no race warnings.
+
+- [ ] **Step 3: Run all integration tests**
+
+```bash
+make test-integration
+```
+
+Expected: every `//go:build integration` suite PASSES, including `TestValkeyStore_GetMany` in `pkg/roomkeystore/`, `TestMongoStore_ListRoomsByIDs` in `room-service/`, and `TestRoomsInfoBatchRPC` in `room-service/`.
+
+- [ ] **Step 4: Push the final branch state**
+
+```bash
+git push -u origin claude/add-room-info-rpc-DjdXq
+```
+
+Expected: branch published to origin; push succeeds with tracking set.
