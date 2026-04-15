@@ -130,3 +130,14 @@ func (c *Context) ReplyError(msg string) {
 func (c *Context) ReplyRouteError(e *RouteError) {
 	natsutil.ReplyJSON(c.Msg, e)
 }
+
+// RequestID returns the correlation ID stored by the RequestID middleware.
+// Returns an empty string if no ID has been set.
+func (c *Context) RequestID() string {
+	id, ok := c.Get(requestIDKey)
+	if !ok {
+		return ""
+	}
+	s, _ := id.(string)
+	return s
+}

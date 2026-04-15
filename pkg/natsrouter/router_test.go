@@ -561,3 +561,14 @@ func TestRegister_ErrInternal(t *testing.T) {
 	assert.Equal(t, "failed to load data", result.Message)
 	assert.Equal(t, "internal", result.Code)
 }
+
+func TestContext_RequestID_Set(t *testing.T) {
+	c := NewContext(map[string]string{})
+	c.Set("requestID", "test-req-123")
+	assert.Equal(t, "test-req-123", c.RequestID())
+}
+
+func TestContext_RequestID_NotSet(t *testing.T) {
+	c := NewContext(map[string]string{})
+	assert.Equal(t, "", c.RequestID())
+}
