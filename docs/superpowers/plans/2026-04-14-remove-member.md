@@ -239,10 +239,12 @@ Append to `pkg/model/event.go`:
 
 ```go
 type MemberChangeEvent struct {
-	Type     string   `json:"type"     bson:"type"`
-	RoomID   string   `json:"roomId"   bson:"roomId"`
-	Accounts []string `json:"accounts" bson:"accounts"`
-	SiteID   string   `json:"siteId"   bson:"siteId"`
+	Type      string   `json:"type"               bson:"type"`
+	RoomID    string   `json:"roomId"             bson:"roomId"`
+	Accounts  []string `json:"accounts"           bson:"accounts"`
+	SiteID    string   `json:"siteId"             bson:"siteId"`
+	OrgID     string   `json:"orgId,omitempty"    bson:"orgId,omitempty"`
+	Timestamp int64    `json:"timestamp"          bson:"timestamp"`
 }
 ```
 
@@ -1662,8 +1664,9 @@ git commit -m "feat(room-worker): implement processRemoveMember with 3 flows"
 **Files:**
 - Modify: `inbox-worker/handler.go`
 - Modify: `inbox-worker/handler_test.go`
+- Modify: `inbox-worker/main.go`
 
-- [ ] **Step 1: Add DeleteSubscription to InboxStore interface**
+- [ ] **Step 1: Expand InboxStore interface with subscription + room_members methods**
 
 In `inbox-worker/handler.go`, expand the `InboxStore` interface:
 
@@ -1672,6 +1675,9 @@ type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	UpsertRoom(ctx context.Context, room *model.Room) error
 	DeleteSubscription(ctx context.Context, roomID, account string) error
+	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
+	DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error
+	DeleteRoomMembersByAccount(ctx context.Context, roomID, account string) error
 }
 ```
 
@@ -1769,12 +1775,29 @@ case "member_removed":
 		return fmt.Errorf("unmarshal member removed payload: %w", err)
 	}
 
+	// Delete subscriptions
+	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
+		return fmt.Errorf("delete subscriptions: %w", err)
+	}
+
+	// Delete room_members entries
+	if memberEvt.OrgID != "" {
+		// Org removal: delete the org room_members doc
+		if err := h.store.DeleteRoomMember(ctx, memberEvt.RoomID, model.RoomMemberOrg, memberEvt.OrgID); err != nil {
+			return fmt.Errorf("delete org room member: %w", err)
+		}
+	} else {
+		// Individual removal: delete individual room_members by account
+		for _, account := range memberEvt.Accounts {
+			if err := h.store.DeleteRoomMembersByAccount(ctx, memberEvt.RoomID, account); err != nil {
+				return fmt.Errorf("delete room members for %s: %w", account, err)
+			}
+		}
+	}
+
+	// Publish SubscriptionUpdateEvent per removed account
 	now := time.Now().UTC()
 	for _, account := range memberEvt.Accounts {
-		if err := h.store.DeleteSubscription(ctx, memberEvt.RoomID, account); err != nil {
-			return fmt.Errorf("delete subscription for %s: %w", account, err)
-		}
-
 		subEvt := model.SubscriptionUpdateEvent{
 			Subscription: model.Subscription{
 				RoomID: memberEvt.RoomID,
@@ -1791,17 +1814,51 @@ case "member_removed":
 	return nil
 ```
 
-Add `subject` import: `"github.com/hmchangw/chat/pkg/subject"`.
+Add imports: `"github.com/hmchangw/chat/pkg/subject"`, `"github.com/hmchangw/chat/pkg/model"`.
 
-- [ ] **Step 5: Implement DeleteSubscription in mongoInboxStore**
+- [ ] **Step 5: Implement store methods in mongoInboxStore**
 
-In `inbox-worker/main.go`, add to `mongoInboxStore`:
+In `inbox-worker/main.go`, add a `roomMembersCol` field to `mongoInboxStore` and implement all new methods:
+
+```go
+type mongoInboxStore struct {
+	subCol         *mongo.Collection
+	roomCol        *mongo.Collection
+	roomMembersCol *mongo.Collection
+}
+```
+
+Wire `roomMembersCol` to `db.Collection("room_members")` in main.go where `mongoInboxStore` is constructed.
 
 ```go
 func (s *mongoInboxStore) DeleteSubscription(ctx context.Context, roomID, account string) error {
 	_, err := s.subCol.DeleteOne(ctx, bson.M{"roomId": roomID, "u.account": account})
 	if err != nil {
 		return fmt.Errorf("delete subscription for %q in room %q: %w", account, roomID, err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error {
+	_, err := s.subCol.DeleteMany(ctx, bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}})
+	if err != nil {
+		return fmt.Errorf("delete subscriptions for room %q: %w", roomID, err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error {
+	_, err := s.roomMembersCol.DeleteOne(ctx, bson.M{"rid": roomID, "member.type": memberType, "member.id": memberID})
+	if err != nil {
+		return fmt.Errorf("delete room member: %w", err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) DeleteRoomMembersByAccount(ctx context.Context, roomID, account string) error {
+	_, err := s.roomMembersCol.DeleteMany(ctx, bson.M{"rid": roomID, "member.account": account})
+	if err != nil {
+		return fmt.Errorf("delete room members for %q: %w", account, err)
 	}
 	return nil
 }

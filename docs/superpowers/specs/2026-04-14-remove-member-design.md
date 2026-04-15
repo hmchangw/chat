@@ -39,7 +39,7 @@ Stream `ROOMS_{siteID}` captures validated member mutations. The published subje
 | `chat.user.{account}.event.subscription.update` | `SubscriptionUpdateEvent` | Notify individual user their room list changed |
 | `chat.room.{roomID}.event.member` | `MemberChangeEvent` | Notify all room subscribers of membership change |
 | `chat.msg.canonical.{siteID}.created` | `MessageEvent` | System message (`member_left` or `member_removed`) persisted via message-worker pipeline |
-| `outbox.{room.SiteID}.to.{user.SiteID}.member_removed` | `MemberChangeEvent` | Remote site deletes subscription for the removed user |
+| `outbox.{room.SiteID}.to.{user.SiteID}.member_removed` | `MemberChangeEvent` | Remote site deletes subscription and `room_members` entries for the removed user(s) |
 
 ## Data Models
 
@@ -131,12 +131,18 @@ Exactly one of `Account` or `OrgID` is set, never both. Both fields are `omitemp
 
 ```go
 type MemberChangeEvent struct {
-    Type     string   `json:"type"     bson:"type"`     // "member-removed"
-    RoomID   string   `json:"roomId"   bson:"roomId"`
-    Accounts []string `json:"accounts" bson:"accounts"`
-    SiteID   string   `json:"siteId"   bson:"siteId"`
+    Type      string   `json:"type"               bson:"type"`      // "member-removed"
+    RoomID    string   `json:"roomId"             bson:"roomId"`
+    Accounts  []string `json:"accounts"           bson:"accounts"`
+    SiteID    string   `json:"siteId"             bson:"siteId"`
+    OrgID     string   `json:"orgId,omitempty"    bson:"orgId,omitempty"`
+    Timestamp int64    `json:"timestamp"          bson:"timestamp"`
 }
+```
 
+`OrgID` is set when the removal was an org removal. This allows the inbox-worker to handle both subscription and `room_members` cleanup from a single outbox event — no need for separate events per collection.
+
+```go
 type SubscriptionUpdateEvent struct {
     UserID       string       `json:"userId"`
     Subscription Subscription `json:"subscription"`
@@ -256,18 +262,20 @@ All writes are **synchronous before ack**. Any failure NAKs the message for JetS
 4. **Delete the org `room_members` doc** (`type="org"`, `ID=orgId`).
 5. **Decrement `userCount`** by `len(toRemove)`.
 6. **Publish `SubscriptionUpdateEvent`** (action: `"removed"`) per `toRemove` account.
-7. **Publish `MemberChangeEvent`** (type: `"member-removed"`, accounts: `toRemove` only) to `chat.room.{roomID}.event.member`.
+7. **Publish `MemberChangeEvent`** (type: `"member-removed"`, accounts: `toRemove` only, `OrgID`: orgId) to `chat.room.{roomID}.event.member`.
 8. **Publish system message** (type: `"member_removed"`, data: `MemberRemoved{OrgID, SectName, RemovedUsersCount: len(toRemove)}`) to `chat.msg.canonical.{siteID}.created`.
-9. **For each `toRemove` member where `user.SiteID != room.SiteID`:** publish outbox event to `outbox.{room.SiteID}.to.{user.SiteID}.member_removed`.
+9. **Outbox grouped by destination site:** for each remote site, publish one `MemberChangeEvent` (with `OrgID` set) to `outbox.{room.SiteID}.to.{destSiteID}.member_removed`. Inbox-worker uses `OrgID` to delete the org `room_members` entry and `Accounts` to delete subscriptions.
 10. **Ack**.
 
 ## Inbox-Worker (Remote Site Processing)
 
-When a member is removed from a room on a remote site, the room's site publishes a `member_removed` outbox event to the member's home site. Inbox-worker processes this:
+When a member is removed from a room on a remote site, the room's site publishes a `member_removed` outbox event to the member's home site. Inbox-worker processes both subscription and `room_members` cleanup from a single event:
 
 | Event Type | Action |
 |------------|--------|
-| `member_removed` | Delete subscription from local MongoDB, publish `SubscriptionUpdateEvent` to the local user's subject |
+| `member_removed` | 1. Delete subscriptions for all `Accounts` in the event from local MongoDB. 2. Delete `room_members` entries: if `OrgID` is set, delete the org entry (`type="org"`, `ID=orgID`); otherwise delete individual entries by account (`type="individual"`, `account=account`). 3. Publish `SubscriptionUpdateEvent` per removed account to the local user's subject. |
+
+This ensures the remote site's `room_members` collection stays in sync with the room's home site — the UI can display org vs individual membership without cross-site queries.
 
 ## Store Interface (remove-member methods)
 
@@ -295,9 +303,9 @@ Prefer bulk MongoDB operations (`deleteMany` with `$in`, `BulkWrite`) over loopi
 | Method | Service | Implementation |
 |--------|---------|----------------|
 | `DeleteSubscription(roomID, account)` | room-worker, inbox-worker | `deleteOne({roomId, "u.account": account})` on `subscriptions` |
-| `DeleteSubscriptionsByAccounts(roomID, accounts)` | room-worker | `deleteMany({roomId, "u.account": {$in: accounts}})` on `subscriptions` — single round trip for all org members |
-| `DeleteRoomMember(roomID, memberType, memberID)` | room-worker | `deleteOne({rid, "member.type": type, "member.id": id})` on `room_members` |
-| `DeleteRoomMembersByAccount(roomID, account)` | room-worker | `deleteMany({rid, "member.account": account})` on `room_members` — removes all entries (individual + org) for this account in one call |
+| `DeleteSubscriptionsByAccounts(roomID, accounts)` | room-worker, inbox-worker | `deleteMany({roomId, "u.account": {$in: accounts}})` on `subscriptions` — single round trip for all org members |
+| `DeleteRoomMember(roomID, memberType, memberID)` | room-worker, inbox-worker | `deleteOne({rid, "member.type": type, "member.id": id})` on `room_members` |
+| `DeleteRoomMembersByAccount(roomID, account)` | room-worker, inbox-worker | `deleteMany({rid, "member.account": account})` on `room_members` — removes all entries (individual + org) for this account in one call |
 | `DecrementUserCount(roomID, count)` | room-worker | `updateOne({_id: roomID}, {$inc: {userCount: -count}})` on `rooms` |
 
 ## Callers
@@ -305,7 +313,7 @@ Prefer bulk MongoDB operations (`deleteMany` with `$in`, `BulkWrite`) over loopi
 - **Clients** — send NATS request/reply to room-service (routed via gateways to room's site)
 - **room-service** — validates the remove request (authorization, org-only guard, last-owner guard), publishes to `ROOMS_{siteID}` stream
 - **room-worker** — consumes from `ROOMS_{siteID}`, performs all DB deletes and event fan-out synchronously before ack
-- **inbox-worker** — processes inbound `member_removed` events from the INBOX stream to delete subscriptions on the remote user's site
+- **inbox-worker** — processes inbound `member_removed` events from the INBOX stream to delete subscriptions and `room_members` entries on the remote user's site
 - **message-worker** — persists the system message (type + sys_msg_data) to Cassandra
 
 ## Design Decisions
@@ -324,3 +332,5 @@ Prefer bulk MongoDB operations (`deleteMany` with `$in`, `BulkWrite`) over loopi
 | System messages via MESSAGES_CANONICAL | Reuses existing message-worker + broadcast-worker pipeline; no new delivery mechanism needed |
 | `Account` instead of `Username` | `Account` is the stable identifier used in NATS subjects and indexes; `Username` is a display name that may include domain suffixes for federated users |
 | `room_members` tracks all membership sources | Both individual and org entries are recorded so removal logic can determine whether a user should retain their subscription |
+| Single outbox event syncs both subscription and `room_members` | `MemberChangeEvent` carries `OrgID` when relevant, so inbox-worker can delete both subscriptions and the correct `room_members` entries in one pass — no separate events per collection |
+| `room_members` replicated to remote sites | The UI on any site needs to display org vs individual membership without cross-site DB queries; inbox-worker maintains `room_members` parity with the room's home site |
