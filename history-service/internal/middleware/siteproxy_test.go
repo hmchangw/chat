@@ -3,6 +3,7 @@ package middleware_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -26,6 +27,19 @@ type testResp struct {
 	Greeting string `json:"greeting"`
 }
 
+// fakeRoomFinder is a test double for middleware.RoomFinder.
+type fakeRoomFinder struct {
+	rooms map[string]*model.Room
+	err   error
+}
+
+func (f *fakeRoomFinder) GetRoom(_ context.Context, roomID string) (*model.Room, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.rooms[roomID], nil
+}
+
 func startTestNATS(t *testing.T) *otelnats.Conn {
 	t.Helper()
 	opts := &natsserver.Options{Port: -1}
@@ -41,12 +55,17 @@ func startTestNATS(t *testing.T) *otelnats.Conn {
 	return nc
 }
 
-func TestSiteProxy_LocalRequest(t *testing.T) {
+func TestSiteProxy_LocalRoom(t *testing.T) {
 	nc := startTestNATS(t)
 	r := natsrouter.New(nc, "test-service")
-	r.Use(middleware.SiteProxy("site-1", nc.NatsConn()))
 
-	natsrouter.Register(r, "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history",
+	rooms := &fakeRoomFinder{rooms: map[string]*model.Room{
+		"r1": {ID: "r1", SiteID: "site-1"},
+	}}
+
+	g := r.Group(middleware.SiteProxy("site-1", nc.NatsConn(), rooms))
+
+	natsrouter.Register(g, "chat.user.{account}.request.room.{roomID}.site-1.msg.history",
 		func(c *natsrouter.Context, req testReq) (*testResp, error) {
 			return &testResp{Greeting: "local " + c.Param("roomID")}, nil
 		})
@@ -60,14 +79,13 @@ func TestSiteProxy_LocalRequest(t *testing.T) {
 	assert.Equal(t, "local r1", result.Greeting)
 }
 
-func TestSiteProxy_RemoteRequest_ForwardsCorrectly(t *testing.T) {
+func TestSiteProxy_RemoteRoom_ForwardsCorrectly(t *testing.T) {
 	nc := startTestNATS(t)
 	forwardNC, err := nats.Connect(nc.NatsConn().ConnectedUrl())
 	require.NoError(t, err)
 	t.Cleanup(forwardNC.Close)
 
-	// Subscribe a responder that only handles forwarded messages (has header).
-	// Non-forwarded messages (the original client request) are ignored.
+	// Remote site-2 subscriber handles forwarded requests.
 	forwardNC.Subscribe("chat.user.*.request.room.*.site-2.msg.history",
 		func(msg *nats.Msg) {
 			if msg.Header != nil && msg.Header.Get("X-Forwarded-Site") != "" {
@@ -76,37 +94,44 @@ func TestSiteProxy_RemoteRequest_ForwardsCorrectly(t *testing.T) {
 		})
 	forwardNC.Flush()
 
-	r := natsrouter.New(nc, "test-service")
-	r.Use(middleware.SiteProxy("site-1", forwardNC))
+	rooms := &fakeRoomFinder{rooms: map[string]*model.Room{
+		"r1": {ID: "r1", SiteID: "site-2"},
+	}}
 
-	natsrouter.Register(r, "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history",
+	r := natsrouter.New(nc, "test-service")
+	g := r.Group(middleware.SiteProxy("site-1", forwardNC, rooms))
+
+	natsrouter.Register(g, "chat.user.{account}.request.room.{roomID}.site-1.msg.history",
 		func(c *natsrouter.Context, req testReq) (*testResp, error) {
 			return &testResp{Greeting: "local"}, nil
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-2.msg.history", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-1.msg.history", data, 2*time.Second)
 	require.NoError(t, err)
 
-	// The response comes from either the remote subscriber or the router
-	// (which handles the forwarded message via header pass-through).
-	// Both are valid — in production they would be on separate NATS clusters.
 	var result testResp
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
-	assert.NotEmpty(t, result.Greeting)
+	assert.Equal(t, "from site-2", result.Greeting)
 }
 
-func TestSiteProxy_ForwardedHeader_SkipsForwarding(t *testing.T) {
+func TestSiteProxy_ForwardedHeader_SkipsLookup(t *testing.T) {
 	nc := startTestNATS(t)
 	r := natsrouter.New(nc, "test-service")
-	r.Use(middleware.SiteProxy("site-1", nc.NatsConn()))
 
-	natsrouter.Register(r, "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history",
+	// Room belongs to site-2, but the forwarded header should skip the lookup entirely.
+	rooms := &fakeRoomFinder{rooms: map[string]*model.Room{
+		"r1": {ID: "r1", SiteID: "site-2"},
+	}}
+
+	g := r.Group(middleware.SiteProxy("site-1", nc.NatsConn(), rooms))
+
+	natsrouter.Register(g, "chat.user.{account}.request.room.{roomID}.site-1.msg.history",
 		func(c *natsrouter.Context, req testReq) (*testResp, error) {
 			return &testResp{Greeting: "forwarded-to-me"}, nil
 		})
 
-	msg := nats.NewMsg("chat.user.alice.request.room.r1.site-2.msg.history")
+	msg := nats.NewMsg("chat.user.alice.request.room.r1.site-1.msg.history")
 	msg.Data, _ = json.Marshal(testReq{Name: "test"})
 	msg.Header = nats.Header{}
 	msg.Header.Set("X-Forwarded-Site", "site-2")
@@ -119,25 +144,74 @@ func TestSiteProxy_ForwardedHeader_SkipsForwarding(t *testing.T) {
 	assert.Equal(t, "forwarded-to-me", result.Greeting)
 }
 
-func TestSiteProxy_RemoteRequest_ForwardError(t *testing.T) {
+func TestSiteProxy_RoomNotFound(t *testing.T) {
+	nc := startTestNATS(t)
+	r := natsrouter.New(nc, "test-service")
+
+	rooms := &fakeRoomFinder{rooms: map[string]*model.Room{}}
+
+	g := r.Group(middleware.SiteProxy("site-1", nc.NatsConn(), rooms))
+
+	natsrouter.Register(g, "chat.user.{account}.request.room.{roomID}.site-1.msg.history",
+		func(c *natsrouter.Context, req testReq) (*testResp, error) {
+			t.Fatal("handler should not be called when room not found")
+			return nil, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-1.msg.history", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var errResp model.ErrorResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
+	assert.Equal(t, "room not found", errResp.Error)
+}
+
+func TestSiteProxy_RoomLookupError(t *testing.T) {
+	nc := startTestNATS(t)
+	r := natsrouter.New(nc, "test-service")
+
+	rooms := &fakeRoomFinder{err: fmt.Errorf("db connection refused")}
+
+	g := r.Group(middleware.SiteProxy("site-1", nc.NatsConn(), rooms))
+
+	natsrouter.Register(g, "chat.user.{account}.request.room.{roomID}.site-1.msg.history",
+		func(c *natsrouter.Context, req testReq) (*testResp, error) {
+			t.Fatal("handler should not be called on room lookup error")
+			return nil, nil
+		})
+
+	data, _ := json.Marshal(testReq{Name: "test"})
+	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-1.msg.history", data, 2*time.Second)
+	require.NoError(t, err)
+
+	var errResp model.ErrorResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
+	assert.Equal(t, "internal error", errResp.Error)
+}
+
+func TestSiteProxy_RemoteRoom_ForwardError(t *testing.T) {
 	nc := startTestNATS(t)
 
-	// Create a separate connection for forwarding, then close it to simulate failure.
 	forwardNC, err := nats.Connect(nc.NatsConn().ConnectedUrl())
 	require.NoError(t, err)
-	forwardNC.Close()
+	forwardNC.Close() // Close immediately to simulate failure.
+
+	rooms := &fakeRoomFinder{rooms: map[string]*model.Room{
+		"r1": {ID: "r1", SiteID: "site-2"},
+	}}
 
 	r := natsrouter.New(nc, "test-service")
-	r.Use(middleware.SiteProxy("site-1", forwardNC))
+	g := r.Group(middleware.SiteProxy("site-1", forwardNC, rooms))
 
-	natsrouter.Register(r, "chat.user.{account}.request.room.{roomID}.{siteID}.msg.history",
+	natsrouter.Register(g, "chat.user.{account}.request.room.{roomID}.site-1.msg.history",
 		func(c *natsrouter.Context, req testReq) (*testResp, error) {
 			t.Fatal("handler should not be called for failed forward")
 			return nil, nil
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-2.msg.history", data, 2*time.Second)
+	resp, err := nc.Request(context.Background(), "chat.user.alice.request.room.r1.site-1.msg.history", data, 2*time.Second)
 	require.NoError(t, err)
 
 	var errResp model.ErrorResponse
