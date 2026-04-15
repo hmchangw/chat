@@ -109,6 +109,8 @@ func main() {
 	switch cmd {
 	case "seed":
 		err = runSeed(args)
+	case "seed-room":
+		err = runSeedRoom(args)
 	case "room":
 		err = runRoom(args)
 	case "member":
@@ -135,8 +137,9 @@ func usageAndExit() {
 	fmt.Fprint(os.Stderr, `demo cli — cross-site room-service request driver
 
 Commands:
-  seed                              Seed the users collection in both sites
-  room create                       Create a room (subject: chat.user.{owner}.request.rooms.create)
+  seed                              Seed users AND a fixture room into each site (writes Mongo directly)
+  seed-room                         Insert an additional dummy room + owner subscription into Mongo
+  room create                       Create a room via room-service (subject: chat.user.{owner}.request.rooms.create)
   room list                         List rooms (subject: chat.user.{requester}.request.rooms.list)
   room get                          Get a room (subject: chat.user.{requester}.request.rooms.get.{id})
   member add                        Add members / orgs / channels to a room
@@ -144,6 +147,10 @@ Commands:
   role                              Promote or demote a member (to owner | member)
   snapshot [--site f12|f18|--all]   Dump current rooms / subscriptions / room_members
   reset    [--site f12|f18|--all]   Drop demo collections (users, rooms, subscriptions, room_members)
+
+Tip: after 'seed' you can immediately drive member.add / remove / role on the
+fixture rooms 'room-f12-general' (owner alice) and 'room-f18-general' (owner bob)
+without needing 'room create' to succeed.
 
 Run any command with -h for subcommand flags.
 `)
@@ -171,6 +178,21 @@ var seedFixture = []userSeed{
 	// Site f18 (the "cross-site" users) --------------------------------------
 	{Account: "bob", Site: "f18", Org: "eng", Eng: "Bob"},
 	{Account: "frank", Site: "f18", Org: "sales", Eng: "Frank"},
+}
+
+// fixtureRoom defines a room that `seed` drops directly into a site's Mongo so
+// that member.add / remove / role can be exercised immediately without
+// depending on `room create` going through room-service.
+type fixtureRoom struct {
+	ID    string
+	Name  string
+	Site  string
+	Owner string // account
+}
+
+var seedFixtureRooms = []fixtureRoom{
+	{ID: "room-f12-general", Name: "general", Site: "f12", Owner: "alice"},
+	{ID: "room-f18-general", Name: "general", Site: "f18", Owner: "bob"},
 }
 
 func runSeed(args []string) error {
@@ -227,6 +249,133 @@ func runSeed(args []string) error {
 			tag += " [BOT]"
 		}
 		fmt.Printf("  %-10s site=%-4s org=%-5s  %s\n", u.Account, tag, u.Org, u.Eng)
+	}
+
+	// Drop a fixture room + owner subscription into each site so the user can
+	// run member.add / remove / role immediately. We wipe `rooms`,
+	// `subscriptions`, `room_members` first so the seed is idempotent.
+	for _, site := range sites {
+		db := mc.Database(site.MongoDB)
+		for _, coll := range []string{"rooms", "subscriptions", "room_members"} {
+			if _, err := db.Collection(coll).DeleteMany(ctx, bson.M{}); err != nil {
+				return fmt.Errorf("clear %s/%s: %w", site.MongoDB, coll, err)
+			}
+		}
+	}
+	fmt.Println()
+	fmt.Println("Fixture rooms seeded:")
+	for i := range seedFixtureRooms {
+		fr := seedFixtureRooms[i]
+		if err := insertFixtureRoom(ctx, mc, fr); err != nil {
+			return fmt.Errorf("insert fixture room %s: %w", fr.ID, err)
+		}
+		fmt.Printf("  %-20s site=%-4s owner=%s\n", fr.ID, fr.Site, fr.Owner)
+	}
+	fmt.Println()
+	fmt.Println("Try it:")
+	fmt.Println("  go run ./demo/cli member add    --site f12 --requester alice --room room-f12-general --users carol,dave")
+	fmt.Println("  go run ./demo/cli member add    --site f12 --requester alice --room room-f12-general --users bob")
+	fmt.Println("  go run ./demo/cli role          --site f12 --requester alice --room room-f12-general --account carol --to owner")
+	fmt.Println("  go run ./demo/cli member remove --site f12 --requester alice --room room-f12-general --account dave")
+	return nil
+}
+
+// insertFixtureRoom writes a Room and its owner Subscription directly into the
+// site's MongoDB. It bypasses room-service entirely, so it works even if the
+// NATS request/reply path is misbehaving.
+func insertFixtureRoom(ctx context.Context, mc *mongo.Client, fr fixtureRoom) error {
+	site, ok := sites[fr.Site]
+	if !ok {
+		return fmt.Errorf("unknown site %q", fr.Site)
+	}
+	db := mc.Database(site.MongoDB)
+	now := time.Now().UTC()
+
+	ownerID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fr.Owner)).String()
+
+	room := model.Room{
+		ID: fr.ID, Name: fr.Name, Type: model.RoomTypeGroup,
+		CreatedBy: ownerID, SiteID: fr.Site, UserCount: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := db.Collection("rooms").InsertOne(ctx, room); err != nil {
+		return fmt.Errorf("insert room: %w", err)
+	}
+
+	sub := model.Subscription{
+		ID:                 uuid.New().String(),
+		User:               model.SubscriptionUser{ID: ownerID, Account: fr.Owner},
+		RoomID:             fr.ID,
+		SiteID:             fr.Site,
+		Roles:              []model.Role{model.RoleOwner},
+		HistorySharedSince: &now,
+		JoinedAt:           now,
+	}
+	if _, err := db.Collection("subscriptions").InsertOne(ctx, sub); err != nil {
+		return fmt.Errorf("insert owner subscription: %w", err)
+	}
+	return nil
+}
+
+// runSeedRoom inserts an additional ad-hoc room directly into Mongo. Useful
+// when you want a clean room for a specific scenario without re-running the
+// full seed.
+func runSeedRoom(args []string) error {
+	fs := flag.NewFlagSet("seed-room", flag.ExitOnError)
+	var g globalFlags
+	g.bind(fs)
+	site := fs.String("site", "", "site id (f12 or f18)")
+	id := fs.String("id", "", "room id (default: room-<site>-<name>)")
+	name := fs.String("name", "", "room name (required)")
+	owner := fs.String("owner", "", "owner account (required, must already exist in users)")
+	members := fs.String("members", "", "comma-separated additional member accounts")
+	_ = fs.Parse(args)
+
+	if *site == "" || *name == "" || *owner == "" {
+		return errors.New("seed-room: --site, --name, --owner are required")
+	}
+	if _, ok := sites[*site]; !ok {
+		return fmt.Errorf("unknown site %q", *site)
+	}
+	if *id == "" {
+		*id = fmt.Sprintf("room-%s-%s", *site, *name)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	mc, err := mongoutil.Connect(ctx, g.mongoURI)
+	if err != nil {
+		return err
+	}
+	defer mongoutil.Disconnect(ctx, mc)
+
+	if err := insertFixtureRoom(ctx, mc, fixtureRoom{
+		ID: *id, Name: *name, Site: *site, Owner: *owner,
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("inserted room %s (site=%s, owner=%s)\n", *id, *site, *owner)
+
+	// Optional extra members go straight in as `member` subscriptions.
+	for _, account := range splitCSV(*members) {
+		now := time.Now().UTC()
+		userID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(account)).String()
+		sub := model.Subscription{
+			ID:       uuid.New().String(),
+			User:     model.SubscriptionUser{ID: userID, Account: account},
+			RoomID:   *id,
+			SiteID:   *site,
+			Roles:    []model.Role{model.RoleMember},
+			JoinedAt: now,
+		}
+		db := mc.Database(sites[*site].MongoDB)
+		if _, err := db.Collection("subscriptions").InsertOne(ctx, sub); err != nil {
+			return fmt.Errorf("insert member %s: %w", account, err)
+		}
+		if _, err := db.Collection("rooms").UpdateByID(ctx, *id, bson.M{"$inc": bson.M{"userCount": 1}}); err != nil {
+			return fmt.Errorf("increment userCount: %w", err)
+		}
+		fmt.Printf("  added member %s\n", account)
 	}
 	return nil
 }

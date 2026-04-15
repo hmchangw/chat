@@ -66,8 +66,31 @@ already bound before `docker compose up`.
 # from the repo root
 docker compose -f demo/docker-compose.yml up --build -d
 
-# populate users in both sites (alice/carol/dave/eve.bot on f12, bob/frank on f18)
+# populate users AND a fixture room in each site
 go run ./demo/cli seed
+```
+
+After `seed` you have:
+
+| Site | Database | Fixture room | Owner |
+|---|---|---|---|
+| f12 | `chat_f12` | `room-f12-general` | `alice` |
+| f18 | `chat_f18` | `room-f18-general` | `bob` |
+
+Both rooms (and the owner subscriptions) are written **directly to MongoDB**,
+bypassing `room-service` entirely — so you can test add / remove / role
+right away even if you're debugging `room create`. The user directory
+(alice, carol, dave, mallory, eve.bot, p_system @f12 ; bob, frank @f18)
+is replicated into both sites' `users` collections.
+
+Need another room? Use:
+
+```bash
+# direct-to-Mongo, won't go through room-service
+go run ./demo/cli seed-room --site f12 --name fed-test --owner alice --members carol
+
+# or the real path through room-service (publishes to ROOMS stream)
+go run ./demo/cli room create --site f12 --owner alice --name fed-test
 ```
 
 Leave this terminal free — you'll use it for `go run ./demo/cli …` commands.
@@ -97,24 +120,26 @@ snapshot whenever anything changes. Keep it running.
 
 All scenarios run from **Terminal 1**. Watch Terminals 2 and 3 react.
 
-### A. Base room operations (create / list / get / add / remove)
+### A. Base room operations (list / get / add / remove)
+
+The fixture room from `seed` already exists; we drive add / remove / role
+against it. `room create` is also exercised so you can see what the request
+looks like — but the rest of the scenarios use the seeded room so they
+work regardless of whether the request/reply path is healthy.
 
 ```bash
-# 1. alice (f12) creates a group room
-go run ./demo/cli room create --site f12 --owner alice --name general
-
-# copy the roomId from the reply into $R
-R=<paste-room-id>
-
-# 2. list & get
+# 1. list & get against the seeded room
 go run ./demo/cli room list --site f12 --requester alice
-go run ./demo/cli room get  --site f12 --requester alice --room $R
+go run ./demo/cli room get  --site f12 --requester alice --room room-f12-general
 
-# 3. alice adds carol + dave (both on f12)
-go run ./demo/cli member add --site f12 --requester alice --room $R --users carol,dave
+# 2. alice adds carol + dave (both on f12)
+go run ./demo/cli member add --site f12 --requester alice --room room-f12-general --users carol,dave
 
-# 4. alice removes dave
-go run ./demo/cli member remove --site f12 --requester alice --room $R --account dave
+# 3. alice removes dave
+go run ./demo/cli member remove --site f12 --requester alice --room room-f12-general --account dave
+
+# 4. (optional) try the real create path through room-service
+go run ./demo/cli room create --site f12 --owner alice --name another
 ```
 
 **What you should see**
@@ -129,16 +154,16 @@ go run ./demo/cli member remove --site f12 --requester alice --room $R --account
 
 ### B. Cross-site federation (flipped outbox)
 
-Bob lives on `f18`. Alice owns a room on `f12`. Watch the outbox event fire
-from f12.
+Bob lives on `f18`. Alice owns the seeded `room-f12-general` on `f12`.
+Watch the outbox event fire from f12.
 
 ```bash
-# create a new room for this scenario
-go run ./demo/cli room create --site f12 --owner alice --name fed-test
-R=<paste-room-id>
+# get a clean room for this scenario (direct-to-Mongo bypass)
+go run ./demo/cli seed-room --site f12 --name fed-test --owner alice
+ROOM=room-f12-fed-test
 
 # alice adds bob (home site f18) → cross-site
-go run ./demo/cli member add --site f12 --requester alice --room $R --users bob
+go run ./demo/cli member add --site f12 --requester alice --room $ROOM --users bob
 ```
 
 **Expected:**
@@ -153,7 +178,7 @@ go run ./demo/cli member add --site f12 --requester alice --room $R --users bob
 Now promote Bob cross-site (this is the "federation guard removed" change):
 
 ```bash
-go run ./demo/cli role --site f12 --requester alice --room $R --account bob --to owner
+go run ./demo/cli role --site f12 --requester alice --room $ROOM --account bob --to owner
 ```
 
 Expected: `subscription.update` with `action: role_updated` and
@@ -162,7 +187,7 @@ Expected: `subscription.update` with `action: role_updated` and
 Remove Bob to see the flipped outbox in the other direction:
 
 ```bash
-go run ./demo/cli member remove --site f12 --requester alice --room $R --account bob
+go run ./demo/cli member remove --site f12 --requester alice --room $ROOM --account bob
 ```
 
 Expected: `outbox.f12.to.f18.member_removed` plus the matching system
@@ -171,20 +196,19 @@ message.
 ### C. Role management — promote / demote / last-owner guard
 
 ```bash
-# start from a room with two members (alice owner, carol member)
-go run ./demo/cli room create  --site f12 --owner alice --name roles-test
-R=<paste-room-id>
-go run ./demo/cli member add  --site f12 --requester alice --room $R --users carol
+# fresh room with alice as owner and carol pre-seeded as a member
+go run ./demo/cli seed-room --site f12 --name roles-test --owner alice --members carol
+ROOM=room-f12-roles-test
 
 # promote carol to owner
-go run ./demo/cli role --site f12 --requester alice --room $R --account carol --to owner
+go run ./demo/cli role --site f12 --requester alice --room $ROOM --account carol --to owner
 
 # demote carol back to member
-go run ./demo/cli role --site f12 --requester alice --room $R --account carol --to member
+go run ./demo/cli role --site f12 --requester alice --room $ROOM --account carol --to member
 
 # last-owner guard: alice tries to demote herself while she is the last owner
-go run ./demo/cli member remove --site f12 --requester alice --room $R --account carol
-go run ./demo/cli role          --site f12 --requester alice --room $R --account alice --to member
+go run ./demo/cli member remove --site f12 --requester alice --room $ROOM --account carol
+go run ./demo/cli role          --site f12 --requester alice --room $ROOM --account alice --to member
 # → room-service rejects with "cannot demote the last owner"
 ```
 
@@ -200,11 +224,11 @@ and `mallory` in `sales`. When alice adds the `eng` org, room-service uses
 accounts via the bot filter.
 
 ```bash
-go run ./demo/cli room create --site f12 --owner alice --name org-test
-R=<paste-room-id>
+go run ./demo/cli seed-room --site f12 --name org-test --owner alice
+ROOM=room-f12-org-test
 
 # add the engineering org
-go run ./demo/cli member add --site f12 --requester alice --room $R --orgs eng
+go run ./demo/cli member add --site f12 --requester alice --room $ROOM --orgs eng
 ```
 
 **Expected in Terminal 2:**
@@ -226,7 +250,7 @@ present). `subscriptions` gains rows for `carol` and `dave` only.
 Now remove the whole org:
 
 ```bash
-go run ./demo/cli member remove --site f12 --requester alice --room $R --org eng
+go run ./demo/cli member remove --site f12 --requester alice --room $ROOM --org eng
 ```
 
 `subscriptions` for carol/dave go away, `room_members` for the `eng` org
@@ -236,9 +260,9 @@ Mixing orgs and cross-site users in one call demonstrates another branch
 change — org resolution and outbox both fire:
 
 ```bash
-go run ./demo/cli room create --site f12 --owner alice --name mix
-R=<paste-room-id>
-go run ./demo/cli member add --site f12 --requester alice --room $R --orgs eng --users bob
+go run ./demo/cli seed-room --site f12 --name mix --owner alice
+ROOM=room-f12-mix
+go run ./demo/cli member add --site f12 --requester alice --room $ROOM --orgs eng --users bob
 # → outbox.f12.to.f18.member_added (bob)
 # → carol, dave, alice already processed; bot filtered
 ```
@@ -311,3 +335,8 @@ docker compose -f demo/docker-compose.yml down -v
   Since each NATS cluster only has one `room-service` instance in this
   demo, it will always be that site's. If you override `--nats-f12` to
   point at `f18`'s NATS, the room will end up in `chat_f18`.
+- **`room create` keeps timing out / failing** — `seed` already drops
+  fixture rooms (`room-f12-general`, `room-f18-general`) directly into
+  Mongo, so you can carry on with member.add / remove / role testing
+  while you debug the create path. Use `cli seed-room` for additional
+  ad-hoc rooms with optional pre-seeded members.
