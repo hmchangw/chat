@@ -1,10 +1,10 @@
-# Extract Mention Parsing Implementation Plan
+# Extract Mention Parsing & Resolution Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extract `@mention` parsing from `message-worker` into a shared `pkg/mention` package. Replace `broadcast-worker`'s separate `detectMentionAll` and `extractMentionedAccounts` functions with the same shared `mention.Parse`. Both services converge on a single regex-based parser with consistent behavior.
+**Goal:** Extract `@mention` parsing and user resolution from `message-worker` and `broadcast-worker` into a shared `pkg/mention` package. The package provides `Parse` (regex-only) and `Resolve` (parse + DB lookup + Participant building). Both services converge on `mention.Resolve`, eliminating `message-worker/resolveMentions` and `broadcast-worker/buildMentionParticipants`.
 
-**Architecture:** `mention.Parse(content)` returns a `ParseResult` with `Accounts []string` (lowercased, deduplicated, excluding `@all`/`@here`) and `MentionAll bool`. `message-worker` calls it in `resolveMentions` before user lookup. `broadcast-worker` calls it in `HandleMessage` to get `mentionAll` and `mentionedAccounts`.
+**Architecture:** `mention.Parse(content)` returns `ParseResult{Accounts, MentionAll}`. `mention.Resolve(ctx, content, lookupFn)` calls `Parse` internally, looks up users via the injected `LookupFunc`, builds `[]model.Participant` (with UserID, @all entry), and returns `ResolveResult{Participants, MentionAll, Accounts}`. On error, partial results (MentionAll + Accounts) are always returned — callers decide whether to fail or fall back.
 
 **Tech Stack:** Go 1.25, `regexp` (stdlib), `go.uber.org/mock` + `testify`.
 
@@ -14,66 +14,136 @@
 
 | File | Change |
 |------|--------|
-| `pkg/mention/mention.go` | New — shared `Parse` function with regex and `ParseResult` type |
-| `pkg/mention/mention_test.go` | New — table-driven tests covering all parsing scenarios |
-| `message-worker/handler.go` | Remove `mentionRe`, `parseMentions`; update `resolveMentions` to use `mention.Parse` |
-| `message-worker/handler_test.go` | Remove `TestParseMentions` |
-| `broadcast-worker/handler.go` | Remove `detectMentionAll`, `extractMentionedAccounts`; use `mention.Parse` in `HandleMessage` |
-| `broadcast-worker/handler_test.go` | Remove `TestDetectMentionAll`, `TestExtractMentionedAccounts` |
+| `pkg/mention/mention.go` | Add `Resolve`, `LookupFunc`, `ResolveResult` (existing `Parse` and `ParseResult` unchanged) |
+| `pkg/mention/mention_test.go` | Add `TestResolve` table-driven tests |
+| `message-worker/handler.go` | Remove `resolveMentions`; call `mention.Resolve` directly in `processMessage` |
+| `message-worker/handler_test.go` | Unchanged — same mock expectations and assertions |
+| `broadcast-worker/handler.go` | Remove `buildMentionParticipants`; use `mention.Resolve` + separate sender lookup |
+| `broadcast-worker/handler_test.go` | Split user lookup mocks; remove `TestBuildMentionParticipants`; update mention assertions (UserID now populated, unresolved accounts skipped) |
 
 ---
 
-## Task 1 — Create `pkg/mention` package with TDD
+## Completed Tasks
+
+### Task 1 — Create `pkg/mention` package with `Parse` ✅
+
+Shared `Parse` function with regex and `ParseResult` type. 18 test cases.
+
+### Task 2 — Update `message-worker` to use `mention.Parse` ✅
+
+Removed local `mentionRe`, `parseMentions`. `resolveMentions` now calls `mention.Parse`.
+
+### Task 3 — Update `broadcast-worker` to use `mention.Parse` ✅
+
+Removed `detectMentionAll`, `extractMentionedAccounts`. `HandleMessage` uses `mention.Parse`.
+
+---
+
+## Task 4 — Add `mention.Resolve` and update `message-worker`
 
 **Files:**
-- New: `pkg/mention/mention.go`
-- New: `pkg/mention/mention_test.go`
+- Modify: `pkg/mention/mention.go`
+- Modify: `pkg/mention/mention_test.go`
+- Modify: `message-worker/handler.go`
+- Modify: `message-worker/handler_test.go`
 
-- [ ] **Step 1: Write failing tests for `Parse`**
+- [ ] **Step 1: Write failing tests for `Resolve`**
 
-Create `pkg/mention/mention_test.go`:
+Add `TestResolve` to `pkg/mention/mention_test.go`:
 
 ```go
-package mention
+func TestResolve(t *testing.T) {
+	bobUser := model.User{ID: "u-bob", Account: "bob", EngName: "Bob Chen", ChineseName: "鮑勃"}
+	aliceUser := model.User{ID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲"}
 
-import (
-	"testing"
-
-	"github.com/stretchr/testify/assert"
-)
-
-func TestParse(t *testing.T) {
 	tests := []struct {
-		name       string
-		content    string
-		accounts   []string
-		mentionAll bool
+		name           string
+		content        string
+		lookupUsers    []model.User
+		lookupErr      error
+		wantAccounts   []string
+		wantMentionAll bool
+		wantParts      []model.Participant
+		wantErr        bool
 	}{
-		{name: "no mentions", content: "hello world", accounts: nil, mentionAll: false},
-		{name: "single mention", content: "hello @bob", accounts: []string{"bob"}, mentionAll: false},
-		{name: "multiple mentions", content: "@alice check with @bob", accounts: []string{"alice", "bob"}, mentionAll: false},
-		{name: "mention at start", content: "@alice hello", accounts: []string{"alice"}, mentionAll: false},
-		{name: "email-style mention", content: "ping @user@domain.com", accounts: []string{"user@domain.com"}, mentionAll: false},
-		{name: "quoted reply prefix", content: ">@alice this is quoted", accounts: []string{"alice"}, mentionAll: false},
-		{name: "duplicates deduplicated", content: "@bob and @bob again", accounts: []string{"bob"}, mentionAll: false},
-		{name: "dots and hyphens", content: "cc @first.last and @my-user", accounts: []string{"first.last", "my-user"}, mentionAll: false},
-		{name: "empty content", content: "", accounts: nil, mentionAll: false},
-		{name: "trailing period not captured", content: "hey @bob. check this", accounts: []string{"bob"}, mentionAll: false},
-		{name: "@all lowercase", content: "hey @all check this", accounts: nil, mentionAll: true},
-		{name: "@All uppercase", content: "attention @All everyone", accounts: nil, mentionAll: true},
-		{name: "@here lowercase", content: "look @here please", accounts: nil, mentionAll: true},
-		{name: "@HERE uppercase", content: "look @HERE please", accounts: nil, mentionAll: true},
-		{name: "@all and individual", content: "@All and @alice", accounts: []string{"alice"}, mentionAll: true},
-		{name: "case-insensitive dedup", content: "@alice @Alice", accounts: []string{"alice"}, mentionAll: false},
-		{name: "mixed case lowered", content: "hey @BOB", accounts: []string{"bob"}, mentionAll: false},
-		{name: "partial email@all not detected", content: "email@all.com", accounts: []string{"all.com"}, mentionAll: false},
+		{
+			name:    "no mentions",
+			content: "hello world",
+		},
+		{
+			name:         "single mention resolved",
+			content:      "hey @bob",
+			lookupUsers:  []model.User{bobUser},
+			wantAccounts: []string{"bob"},
+			wantParts: []model.Participant{
+				{UserID: "u-bob", Account: "bob", EngName: "Bob Chen", ChineseName: "鮑勃"},
+			},
+		},
+		{
+			name:         "multiple mentions resolved",
+			content:      "@alice and @bob",
+			lookupUsers:  []model.User{aliceUser, bobUser},
+			wantAccounts: []string{"alice", "bob"},
+			wantParts: []model.Participant{
+				{UserID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲"},
+				{UserID: "u-bob", Account: "bob", EngName: "Bob Chen", ChineseName: "鮑勃"},
+			},
+		},
+		{
+			name:           "@all only — no lookup",
+			content:        "hello @all",
+			wantMentionAll: true,
+			wantParts: []model.Participant{
+				{Account: "all", EngName: "all"},
+			},
+		},
+		{
+			name:           "@all and individual",
+			content:        "@all and @bob",
+			lookupUsers:    []model.User{bobUser},
+			wantAccounts:   []string{"bob"},
+			wantMentionAll: true,
+			wantParts: []model.Participant{
+				{UserID: "u-bob", Account: "bob", EngName: "Bob Chen", ChineseName: "鮑勃"},
+				{Account: "all", EngName: "all"},
+			},
+		},
+		{
+			name:         "unresolved account skipped",
+			content:      "@alice and @unknown",
+			lookupUsers:  []model.User{aliceUser},
+			wantAccounts: []string{"alice", "unknown"},
+			wantParts: []model.Participant{
+				{UserID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲"},
+			},
+		},
+		{
+			name:         "lookup error — partial result",
+			content:      "hey @bob",
+			lookupErr:    errors.New("db error"),
+			wantAccounts: []string{"bob"},
+			wantErr:      true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := Parse(tt.content)
-			assert.Equal(t, tt.accounts, result.Accounts)
-			assert.Equal(t, tt.mentionAll, result.MentionAll)
+			lookupFn := func(_ context.Context, accounts []string) ([]model.User, error) {
+				if tt.lookupErr != nil {
+					return nil, tt.lookupErr
+				}
+				return tt.lookupUsers, nil
+			}
+			result, err := Resolve(context.Background(), tt.content, lookupFn)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.NotNil(t, result)
+			assert.Equal(t, tt.wantAccounts, result.Accounts)
+			assert.Equal(t, tt.wantMentionAll, result.MentionAll)
+			assert.Equal(t, tt.wantParts, result.Participants)
 		})
 	}
 }
@@ -85,207 +155,217 @@ func TestParse(t *testing.T) {
 make test SERVICE=pkg/mention
 ```
 
-Expected: compilation error — `Parse` undefined.
+Expected: compilation error — `Resolve` undefined.
 
-- [ ] **Step 3: Implement `Parse` in `mention.go`**
+- [ ] **Step 3: Implement `Resolve` in `mention.go`**
 
-Create `pkg/mention/mention.go`:
+Add to `pkg/mention/mention.go`:
 
 ```go
-package mention
-
 import (
-	"regexp"
-	"strings"
+	"context"
+	"fmt"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
-// mentionRe matches @mention tokens in message content.
-// A bare @ not preceded by whitespace (e.g. "hello@bob") also matches —
-// this is intentional per spec. Non-existent accounts are silently skipped
-// during the user lookup.
-var mentionRe = regexp.MustCompile(`(^|\s|>?)@([0-9a-zA-Z_-]+(\.[0-9a-zA-Z_-]+)*(@[0-9a-zA-Z_-]+(\.[0-9a-zA-Z_-]+)*)?)`)
+// LookupFunc abstracts user-by-account lookup so Resolve is testable without a real DB.
+type LookupFunc func(ctx context.Context, accounts []string) ([]model.User, error)
 
-// ParseResult holds parsed mention data extracted from message content.
-type ParseResult struct {
-	Accounts   []string // unique mentioned accounts, lowercased, excluding @all/@here
-	MentionAll bool     // true if @all or @here was mentioned (case-insensitive)
+// ResolveResult holds mention resolution output.
+type ResolveResult struct {
+	Participants []model.Participant
+	MentionAll   bool
+	Accounts     []string
 }
 
-// Parse extracts @mention tokens from content and returns the unique
-// mentioned accounts along with whether @all or @here was present.
-func Parse(content string) ParseResult {
-	matches := mentionRe.FindAllStringSubmatch(content, -1)
-	if len(matches) == 0 {
-		return ParseResult{}
+// Resolve parses @mentions from content, looks up users via lookupFn,
+// and builds Participants. On lookup error, returns partial result
+// (MentionAll and Accounts populated, Participants empty) with the error.
+func Resolve(ctx context.Context, content string, lookupFn LookupFunc) (*ResolveResult, error) {
+	parsed := Parse(content)
+	result := &ResolveResult{
+		MentionAll: parsed.MentionAll,
+		Accounts:   parsed.Accounts,
+	}
+	if len(parsed.Accounts) == 0 && !parsed.MentionAll {
+		return result, nil
 	}
 
-	var result ParseResult
-	seen := make(map[string]struct{}, len(matches))
-
-	for _, m := range matches {
-		account := strings.ToLower(m[2])
-		if account == "all" || account == "here" {
-			result.MentionAll = true
-			continue
+	if len(parsed.Accounts) > 0 {
+		users, err := lookupFn(ctx, parsed.Accounts)
+		if err != nil {
+			return result, fmt.Errorf("find mentioned users: %w", err)
 		}
-		if _, exists := seen[account]; !exists {
-			seen[account] = struct{}{}
-			result.Accounts = append(result.Accounts, account)
+		for _, u := range users {
+			result.Participants = append(result.Participants, model.Participant{
+				UserID:      u.ID,
+				Account:     u.Account,
+				ChineseName: u.ChineseName,
+				EngName:     u.EngName,
+			})
 		}
 	}
 
-	return result
+	if parsed.MentionAll {
+		result.Participants = append(result.Participants, model.Participant{
+			Account: "all",
+			EngName: "all",
+		})
+	}
+
+	return result, nil
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: Run `pkg/mention` tests**
 
 ```bash
 make test SERVICE=pkg/mention
 ```
 
-Expected: all 18 `TestParse` subtests pass.
+Expected: all `TestParse` and `TestResolve` subtests pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Remove `resolveMentions` from `message-worker/handler.go`**
 
-```bash
-git add pkg/mention/mention.go pkg/mention/mention_test.go
-git commit -m "feat(mention): add shared pkg/mention package for @mention parsing"
-```
+Replace the `resolveMentions` method and its call in `processMessage` with a direct `mention.Resolve` call:
 
----
-
-## Task 2 — Update `message-worker` to use `pkg/mention`
-
-**Files:**
-- Modify: `message-worker/handler.go`
-- Modify: `message-worker/handler_test.go`
-
-- [ ] **Step 1: Remove local `mentionRe` and `parseMentions` from `handler.go`**
-
-Remove the `regexp` import, the `mentionRe` var, and the entire `parseMentions` function. Add `"github.com/hmchangw/chat/pkg/mention"` to imports.
-
-- [ ] **Step 2: Update `resolveMentions` to use `mention.Parse`**
-
-Replace:
 ```go
-func (h *Handler) resolveMentions(ctx context.Context, content string) ([]model.Participant, error) {
-	parsed := parseMentions(content)
-	if len(parsed) == 0 {
-		return nil, nil
+func (h *Handler) processMessage(ctx context.Context, data []byte) error {
+	var evt model.MessageEvent
+	if err := json.Unmarshal(data, &evt); err != nil {
+		return fmt.Errorf("unmarshal message event: %w", err)
 	}
 
-	var mentionAll bool
-	var userAccounts []string
-	for _, account := range parsed {
-		if account == "all" {
-			mentionAll = true
-		} else {
-			userAccounts = append(userAccounts, account)
-		}
+	resolved, err := mention.Resolve(ctx, evt.Message.Content, h.userStore.FindUsersByAccounts)
+	if err != nil {
+		return fmt.Errorf("resolve mentions: %w", err)
 	}
-	// ...
+	evt.Message.Mentions = resolved.Participants
+
+	// ... sender lookup, save (unchanged) ...
 }
 ```
 
-With:
-```go
-func (h *Handler) resolveMentions(ctx context.Context, content string) ([]model.Participant, error) {
-	parsed := mention.Parse(content)
-	if len(parsed.Accounts) == 0 && !parsed.MentionAll {
-		return nil, nil
-	}
-
-	var participants []model.Participant
-
-	if len(parsed.Accounts) > 0 {
-		users, err := h.userStore.FindUsersByAccounts(ctx, parsed.Accounts)
-		// ...
-	}
-
-	if parsed.MentionAll {
-		participants = append(participants, model.Participant{
-			Account: "all",
-			EngName: "all",
-		})
-	}
-	// ...
-}
-```
-
-- [ ] **Step 3: Remove `TestParseMentions` from `handler_test.go`**
-
-Delete the entire `TestParseMentions` function — these tests now live in `pkg/mention/mention_test.go`.
-
-- [ ] **Step 4: Run tests**
+- [ ] **Step 6: Run message-worker tests**
 
 ```bash
 make test SERVICE=message-worker
 ```
 
-Expected: all 9 `TestHandler_ProcessMessage` subtests pass. `TestParseMentions` is no longer present.
+Expected: all 9 `TestHandler_ProcessMessage` subtests pass unchanged.
 
-- [ ] **Step 5: Run linter**
+- [ ] **Step 7: Run linter**
 
 ```bash
 make lint
 ```
 
-Expected: no issues (unused imports removed, formatting clean).
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add message-worker/handler.go message-worker/handler_test.go
-git commit -m "refactor(message-worker): use shared pkg/mention for mention parsing"
+git add pkg/mention/mention.go pkg/mention/mention_test.go message-worker/handler.go
+git commit -m "feat(mention): add Resolve function; remove message-worker resolveMentions"
 ```
 
 ---
 
-## Task 3 — Update `broadcast-worker` to use `pkg/mention`
+## Task 5 — Update `broadcast-worker` to use `mention.Resolve`
 
 **Files:**
 - Modify: `broadcast-worker/handler.go`
 - Modify: `broadcast-worker/handler_test.go`
 
-- [ ] **Step 1: Replace mention parsing in `HandleMessage`**
+- [ ] **Step 1: Replace mention pipeline in `HandleMessage`**
 
-In `broadcast-worker/handler.go`, remove the `"strings"` import, add `"github.com/hmchangw/chat/pkg/mention"`.
+Replace the manual parse + combined lookup + buildMentionParticipants flow with `mention.Resolve` + separate sender lookup:
 
-Replace:
 ```go
-mentionAll := detectMentionAll(msg.Content)
-mentionedAccounts := extractMentionedAccounts(msg.Content)
+func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
+	// ... unmarshal, get room ...
+
+	resolved, err := mention.Resolve(ctx, msg.Content, h.userStore.FindUsersByAccounts)
+	if err != nil {
+		slog.Warn("mention resolve failed", "error", err)
+	}
+
+	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, resolved.MentionAll); err != nil {
+		return fmt.Errorf("update room on new message: %w", err)
+	}
+
+	if len(resolved.Accounts) > 0 {
+		if err := h.store.SetSubscriptionMentions(ctx, room.ID, resolved.Accounts); err != nil {
+			return fmt.Errorf("set subscription mentions: %w", err)
+		}
+	}
+
+	// Sender lookup (separate from mention lookup)
+	senderMap := make(map[string]model.User)
+	senderUsers, err := h.userStore.FindUsersByAccounts(ctx, []string{msg.UserAccount})
+	if err != nil {
+		slog.Warn("sender lookup failed, falling back to account", "error", err)
+	} else {
+		for _, u := range senderUsers {
+			senderMap[u.Account] = u
+		}
+	}
+
+	clientMsg := buildClientMessage(&msg, senderMap)
+
+	switch room.Type {
+	case model.RoomTypeGroup:
+		return h.publishGroupEvent(ctx, room, clientMsg, resolved.MentionAll, resolved.Participants)
+	case model.RoomTypeDM:
+		return h.publishDMEvents(ctx, room, clientMsg, resolved.Accounts)
+	default:
+		slog.Warn("unknown room type, skipping fan-out", "type", room.Type, "roomID", room.ID)
+		return nil
+	}
+}
 ```
 
-With:
+- [ ] **Step 2: Remove `buildMentionParticipants`**
+
+Delete the function from `handler.go`.
+
+- [ ] **Step 3: Update `handler_test.go`**
+
+Key changes:
+- Split `expectUserLookup` calls: one for mention accounts (called inside `Resolve`), one for sender
+- Remove `assert.Empty(t, m.UserID)` assertion — UserID now populated for resolved mentions
+- Remove `TestBuildMentionParticipants` — function deleted
+- Update tests for unresolved mentions: they are now skipped instead of showing fallback names
+
+Example for "individual mentions" test case — before:
 ```go
-parsed := mention.Parse(msg.Content)
-mentionAll := parsed.MentionAll
-mentionedAccounts := parsed.Accounts
+expectUserLookup(us, []string{"sender", "alice", "bob"}, append([]model.User{senderUser}, testUsers...))
 ```
 
-- [ ] **Step 2: Remove `detectMentionAll` and `extractMentionedAccounts`**
+After:
+```go
+// Mention lookup (inside Resolve)
+us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob"}).Return(testUsers, nil)
+// Sender lookup
+us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil)
+```
 
-Delete both functions entirely from `handler.go`.
+Mention participant assertions — before:
+```go
+assert.Empty(t, m.UserID, "mention participants should not have userID")
+```
 
-- [ ] **Step 3: Remove unit tests for deleted functions from `handler_test.go`**
+After:
+```go
+assert.NotEmpty(t, m.UserID, "mention participants should have userID")
+```
 
-Delete `TestDetectMentionAll` and `TestExtractMentionedAccounts` — these behaviors are now covered by `TestParse` in `pkg/mention/mention_test.go`.
-
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: Run broadcast-worker tests**
 
 ```bash
 make test SERVICE=broadcast-worker
 ```
 
-Expected: all existing handler tests pass:
-- `TestHandler_HandleMessage_GroupRoom` (4 subtests)
-- `TestHandler_HandleMessage_DMRoom` (2 subtests)
-- `TestHandler_HandleMessage_Errors` (8 subtests)
-- `TestHandler_HandleMessage_DMRoom_PublishError`
-- `TestBuildMentionParticipants` (4 subtests)
-- `TestBuildClientMessage` (2 subtests)
+Expected: all handler tests pass with updated assertions.
 
 - [ ] **Step 5: Run linter**
 
@@ -293,13 +373,11 @@ Expected: all existing handler tests pass:
 make lint
 ```
 
-Expected: no issues.
-
 - [ ] **Step 6: Commit**
 
 ```bash
 git add broadcast-worker/handler.go broadcast-worker/handler_test.go
-git commit -m "refactor(broadcast-worker): use shared pkg/mention for mention parsing"
+git commit -m "refactor(broadcast-worker): use mention.Resolve, remove buildMentionParticipants"
 ```
 
 ---
@@ -310,18 +388,19 @@ git commit -m "refactor(broadcast-worker): use shared pkg/mention for mention pa
 
 | Requirement | Task |
 |-------------|------|
-| Shared `pkg/mention` package with regex-based parser | Task 1 |
-| `Parse` returns `Accounts` + `MentionAll` in a `ParseResult` struct | Task 1 |
-| Case-insensitive `@all` / `@here` detection | Task 1 (tests: `@All`, `@HERE`) |
-| Lowercased, deduplicated accounts | Task 1 (tests: `case-insensitive dedup`, `mixed case lowered`) |
-| `message-worker` uses shared parser in `resolveMentions` | Task 2 |
-| `broadcast-worker` uses shared parser in `HandleMessage` | Task 3 |
-| Local `parseMentions`, `detectMentionAll`, `extractMentionedAccounts` removed | Tasks 2, 3 |
-| Tests for deleted functions moved to `pkg/mention` | Task 1 |
-| All existing handler tests unchanged and passing | Tasks 2, 3 |
+| Shared `pkg/mention` package with regex-based parser | Task 1 ✅ |
+| `Parse` returns `Accounts` + `MentionAll` in a `ParseResult` struct | Task 1 ✅ |
+| `Resolve` encapsulates parse + lookup + Participant building | Task 4 |
+| `LookupFunc` parameter for testability | Task 4 |
+| Partial result on lookup error | Task 4 (test: `lookup error — partial result`) |
+| `message-worker` uses `mention.Resolve`, `resolveMentions` removed | Task 4 |
+| `broadcast-worker` uses `mention.Resolve`, `buildMentionParticipants` removed | Task 5 |
+| UserID now populated in broadcast-worker mention Participants | Task 5 |
+| Unresolved accounts skipped (not fallback names) | Task 4 (test: `unresolved account skipped`) |
+| Sender lookup separated from mention lookup in broadcast-worker | Task 5 |
 
-### Lines changed
+### Lines changed (estimated, Tasks 4-5)
 
-- **Added:** `pkg/mention/mention.go` (~44 lines), `pkg/mention/mention_test.go` (~53 lines)
-- **Removed:** `message-worker` local parsing (~26 lines code + ~22 lines tests), `broadcast-worker` local parsing (~30 lines code + ~44 lines tests)
-- **Net:** ~97 lines added, ~122 lines removed — shared package reduces total code by ~25 lines while unifying behavior
+- **Added:** `mention.Resolve` + `ResolveResult` + `LookupFunc` (~40 lines), `TestResolve` (~80 lines)
+- **Removed:** `message-worker/resolveMentions` (~35 lines), `broadcast-worker/buildMentionParticipants` (~17 lines), combined lookup wiring (~10 lines), `TestBuildMentionParticipants` (~30 lines)
+- **Net:** ~120 lines added, ~92 lines removed — adds `Resolve` tests while removing duplicated handler-level logic

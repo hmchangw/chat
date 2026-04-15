@@ -43,46 +43,38 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("get room %s: %w", msg.RoomID, err)
 	}
 
-	parsed := mention.Parse(msg.Content)
-	mentionAll := parsed.MentionAll
-	mentionedAccounts := parsed.Accounts
+	resolved, err := mention.Resolve(ctx, msg.Content, h.userStore.FindUsersByAccounts)
+	if err != nil {
+		slog.Warn("mention resolve failed", "error", err)
+	}
 
-	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, mentionAll); err != nil {
+	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, resolved.MentionAll); err != nil {
 		return fmt.Errorf("update room on new message: %w", err)
 	}
 
-	if len(mentionedAccounts) > 0 {
-		if err := h.store.SetSubscriptionMentions(ctx, room.ID, mentionedAccounts); err != nil {
+	if len(resolved.Accounts) > 0 {
+		if err := h.store.SetSubscriptionMentions(ctx, room.ID, resolved.Accounts); err != nil {
 			return fmt.Errorf("set subscription mentions: %w", err)
 		}
 	}
 
-	lookupAccounts := make([]string, 0, 1+len(mentionedAccounts))
-	lookupAccounts = append(lookupAccounts, msg.UserAccount)
-	for _, u := range mentionedAccounts {
-		if u != msg.UserAccount {
-			lookupAccounts = append(lookupAccounts, u)
-		}
-	}
-
-	userMap := make(map[string]model.User)
-	users, err := h.userStore.FindUsersByAccounts(ctx, lookupAccounts)
+	senderMap := make(map[string]model.User)
+	senderUsers, err := h.userStore.FindUsersByAccounts(ctx, []string{msg.UserAccount})
 	if err != nil {
-		slog.Warn("user lookup failed, falling back to accounts", "error", err)
+		slog.Warn("sender lookup failed, falling back to account", "error", err)
 	} else {
-		for i := range users {
-			userMap[users[i].Account] = users[i]
+		for i := range senderUsers {
+			senderMap[senderUsers[i].Account] = senderUsers[i]
 		}
 	}
 
-	clientMsg := buildClientMessage(&msg, userMap)
-	mentionParticipants := buildMentionParticipants(mentionedAccounts, userMap)
+	clientMsg := buildClientMessage(&msg, senderMap)
 
 	switch room.Type {
 	case model.RoomTypeGroup:
-		return h.publishGroupEvent(ctx, room, clientMsg, mentionAll, mentionParticipants)
+		return h.publishGroupEvent(ctx, room, clientMsg, resolved.MentionAll, resolved.Participants)
 	case model.RoomTypeDM:
-		return h.publishDMEvents(ctx, room, clientMsg, mentionedAccounts)
+		return h.publishDMEvents(ctx, room, clientMsg, resolved.Accounts)
 	default:
 		slog.Warn("unknown room type, skipping fan-out", "type", room.Type, "roomID", room.ID)
 		return nil
@@ -162,23 +154,4 @@ func buildClientMessage(msg *model.Message, userMap map[string]model.User) *mode
 		Message: *msg,
 		Sender:  &sender,
 	}
-}
-
-func buildMentionParticipants(mentionedAccounts []string, userMap map[string]model.User) []model.Participant {
-	if len(mentionedAccounts) == 0 {
-		return nil
-	}
-	participants := make([]model.Participant, len(mentionedAccounts))
-	for i, account := range mentionedAccounts {
-		p := model.Participant{Account: account}
-		if u, ok := userMap[account]; ok {
-			p.ChineseName = u.ChineseName
-			p.EngName = u.EngName
-		} else {
-			p.ChineseName = account
-			p.EngName = account
-		}
-		participants[i] = p
-	}
-	return participants
 }

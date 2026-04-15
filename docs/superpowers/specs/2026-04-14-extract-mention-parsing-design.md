@@ -1,112 +1,155 @@
-# Extract Mention Parsing into Shared `pkg/mention` Package
+# Extract Mention Parsing & Resolution into Shared `pkg/mention` Package
 
 **Date:** 2026-04-14
 **Status:** Approved
 
 ## Summary
 
-Extract the `@mention` parsing logic from `message-worker` into a shared `pkg/mention` package and replace the broadcast-worker's separate mention parsing functions (`detectMentionAll`, `extractMentionedAccounts`) with the same shared parser. Both services will use `mention.Parse(content)` as their single entry point for mention extraction.
+Extract `@mention` parsing **and** user resolution from `message-worker` and `broadcast-worker` into a shared `pkg/mention` package. The package provides two levels of API:
+
+1. **`mention.Parse(content)`** — regex-based parsing, returns accounts + mentionAll flag (stdlib-only, no DB)
+2. **`mention.Resolve(ctx, content, lookupFn)`** — parse + DB lookup + Participant building in a single call
+
+Both services use `mention.Resolve` as their primary entry point. This eliminates `message-worker/resolveMentions`, `broadcast-worker/buildMentionParticipants`, and the duplicated parse-lookup-build pipeline.
 
 ## Motivation
 
-- `message-worker` and `broadcast-worker` each implement their own mention parsing with different approaches:
-  - `message-worker` uses a regex (`mentionRe`) that handles email-style mentions (`@user@domain.com`), dots, hyphens, and quoted reply prefixes (`>@user`)
-  - `broadcast-worker` uses `strings.Fields` whitespace splitting, which misses mentions not preceded by whitespace and cannot handle email-style accounts
-- The divergence means mentions are parsed inconsistently across the system — e.g. `@first.last` is recognized by `message-worker` but not by `broadcast-worker`
-- Both services duplicate the logic for detecting `@all` / `@here` as special tokens
-- Future services consuming MESSAGES_CANONICAL will also need mention parsing — a shared package prevents further duplication
+- `message-worker/resolveMentions` and `broadcast-worker/buildMentionParticipants` implement the same pipeline: parse content → look up users by account → build `[]model.Participant` → handle `@all`
+- Both services had separate parsing functions with divergent behavior (regex vs whitespace splitting) — now unified via `mention.Parse`
+- The resolve/build step is still duplicated: `message-worker` has `resolveMentions` (a handler method), `broadcast-worker` has `buildMentionParticipants` (a standalone function that takes a pre-built userMap)
+- The remaining differences between the two are not hard requirements:
+  - **UserID in Participant:** broadcast-worker omitted it, but `Participant.UserID` has `json:"userId,omitempty"` — including it is additive and harmless to clients
+  - **Fallback names for unresolved accounts:** broadcast-worker fell back to raw account names; skipping unresolved is cleaner (showing `@nonexistent` as a mention with display name `nonexistent` is misleading)
+  - **Error handling:** each caller already handles errors differently, and `Resolve` returns partial results on error to support both strategies
+- Future services consuming MESSAGES_CANONICAL (e.g. notification-worker, search-sync-worker) will need the same pipeline — a shared `Resolve` prevents further duplication
 
 ## Design
 
-### 1. New `pkg/mention` Package
+### 1. `pkg/mention` Package
 
-**File:** `pkg/mention/mention.go`
+**File:** `pkg/mention/mention.go` (existing — add `Resolve`)
 
 ```go
-package mention
+// LookupFunc abstracts user-by-account lookup so Resolve is testable without a real DB.
+type LookupFunc func(ctx context.Context, accounts []string) ([]model.User, error)
 
-var mentionRe = regexp.MustCompile(`(^|\s|>?)@([0-9a-zA-Z_-]+(\.[0-9a-zA-Z_-]+)*(@[0-9a-zA-Z_-]+(\.[0-9a-zA-Z_-]+)*)?)`)
-
-type ParseResult struct {
-    Accounts   []string // unique mentioned accounts, lowercased, excluding @all/@here
-    MentionAll bool     // true if @all or @here was mentioned (case-insensitive)
+// ResolveResult holds mention resolution output.
+type ResolveResult struct {
+    Participants []model.Participant // enriched mentioned users + @all entry if present
+    MentionAll   bool                // true if @all or @here was mentioned
+    Accounts     []string            // raw parsed accounts (for caller use outside resolution)
 }
 
-func Parse(content string) ParseResult
+// Resolve parses @mentions from content, looks up users via lookupFn, and builds
+// Participants. On lookup error, returns partial result (MentionAll and Accounts
+// populated, Participants empty) along with the error — callers decide whether to
+// fail or fall back.
+func Resolve(ctx context.Context, content string, lookupFn LookupFunc) (*ResolveResult, error)
 ```
 
 Key behaviors:
-- Uses the existing regex from `message-worker` (more robust than whitespace splitting)
-- Lowercases all account names for consistent dedup (matches `broadcast-worker`'s existing behavior)
-- Detects `@all` and `@here` case-insensitively as special tokens (`MentionAll: true`)
-- Deduplicates accounts after lowercasing
-- Returns `Accounts: nil` (not empty slice) when no individual mentions exist
+- Calls `Parse(content)` internally — no double-parsing needed
+- Looks up only non-`@all`/`@here` accounts via `lookupFn`
+- Builds `Participant` with `UserID`, `Account`, `ChineseName`, `EngName` from matched `model.User`
+- Appends `{Account: "all", EngName: "all"}` when `MentionAll` is true
+- Accounts not found by `lookupFn` are silently skipped (not included in `Participants`)
+- On error, `result.MentionAll` and `result.Accounts` are always populated — `Participants` may be empty
+
+`Parse` remains available for callers that only need parsing without DB lookup.
 
 ### 2. `message-worker` Changes
 
 **File:** `message-worker/handler.go`
 
-- Remove local `mentionRe` regex and `parseMentions` function
-- `resolveMentions` calls `mention.Parse(content)` instead of `parseMentions`
-- Uses `parsed.Accounts` for user lookup and `parsed.MentionAll` for the special `{Account:"all"}` participant
+- Remove `resolveMentions` method entirely
+- `processMessage` calls `mention.Resolve` directly:
 
 ```go
-func (h *Handler) resolveMentions(ctx context.Context, content string) ([]model.Participant, error) {
-    parsed := mention.Parse(content)
-    if len(parsed.Accounts) == 0 && !parsed.MentionAll {
-        return nil, nil
+func (h *Handler) processMessage(ctx context.Context, data []byte) error {
+    // ... unmarshal ...
+    resolved, err := mention.Resolve(ctx, evt.Message.Content, h.userStore.FindUsersByAccounts)
+    if err != nil {
+        return fmt.Errorf("resolve mentions: %w", err)
     }
-    // ... user lookup with parsed.Accounts, append @all participant if parsed.MentionAll
+    evt.Message.Mentions = resolved.Participants
+    // ... sender lookup, save ...
 }
 ```
 
 **File:** `message-worker/handler_test.go`
 
-- Remove `TestParseMentions` (moved to `pkg/mention/mention_test.go`)
-- All existing `TestHandler_ProcessMessage` cases remain unchanged
+- Existing `TestHandler_ProcessMessage` cases unchanged (same mock expectations, same assertions)
 
 ### 3. `broadcast-worker` Changes
 
 **File:** `broadcast-worker/handler.go`
 
-- Remove `detectMentionAll` and `extractMentionedAccounts` functions
-- `HandleMessage` calls `mention.Parse(msg.Content)` and uses `parsed.MentionAll` and `parsed.Accounts` directly
+- Remove `buildMentionParticipants` function
+- Replace the manual parse + lookup + build pipeline with `mention.Resolve`:
 
 ```go
-parsed := mention.Parse(msg.Content)
-mentionAll := parsed.MentionAll
-mentionedAccounts := parsed.Accounts
-```
+func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
+    // ... unmarshal, get room ...
+    resolved, err := mention.Resolve(ctx, msg.Content, h.userStore.FindUsersByAccounts)
+    if err != nil {
+        slog.Warn("mention resolve failed", "error", err)
+    }
 
-The rest of the handler logic (`UpdateRoomOnNewMessage`, `SetSubscriptionMentions`, user lookup, event publishing) remains unchanged — only the source of `mentionAll` and `mentionedAccounts` changes.
+    // Side effects use parsed data from ResolveResult
+    if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, resolved.MentionAll); err != nil { ... }
+    if len(resolved.Accounts) > 0 {
+        if err := h.store.SetSubscriptionMentions(ctx, room.ID, resolved.Accounts); err != nil { ... }
+    }
+
+    // Sender lookup (separate call — previously batched with mentions)
+    senderMap := make(map[string]model.User)
+    senderUsers, err := h.userStore.FindUsersByAccounts(ctx, []string{msg.UserAccount})
+    if err != nil {
+        slog.Warn("sender lookup failed, falling back to account", "error", err)
+    } else {
+        for _, u := range senderUsers { senderMap[u.Account] = u }
+    }
+
+    clientMsg := buildClientMessage(&msg, senderMap)
+
+    // Use resolved.Participants directly for mentions in events
+    switch room.Type {
+    case model.RoomTypeGroup:
+        return h.publishGroupEvent(ctx, room, clientMsg, resolved.MentionAll, resolved.Participants)
+    case model.RoomTypeDM:
+        return h.publishDMEvents(ctx, room, clientMsg, resolved.Accounts)
+    }
+}
+```
 
 **File:** `broadcast-worker/handler_test.go`
 
-- Remove `TestDetectMentionAll` and `TestExtractMentionedAccounts` (covered by `pkg/mention` tests)
-- All existing handler-level tests (`TestHandler_HandleMessage_GroupRoom`, `TestHandler_HandleMessage_DMRoom`, etc.) remain unchanged
+- User lookup mocks split: one for mention accounts (inside `Resolve`), one for sender
+- Remove `assert.Empty(t, m.UserID)` — UserID is now populated for resolved mentions
+- Remove `TestBuildMentionParticipants` — function deleted
+- For unresolved mentions: they are now silently skipped instead of showing fallback names
 
-### 4. Behavioral Differences Resolved
+### 4. Behavioral Changes in `broadcast-worker`
 
-| Behavior | Before (`broadcast-worker`) | Before (`message-worker`) | After (shared) |
-|----------|---------------------------|--------------------------|----------------|
-| `@first.last` | Not recognized (whitespace split) | Recognized (regex) | Recognized |
-| `@user@domain.com` | Not recognized | Recognized | Recognized |
-| `>@user` quoted reply | Not recognized | Recognized | Recognized |
-| `@All` / `@HERE` | Case-insensitive detection | Case-sensitive (`"all"` only) | Case-insensitive |
-| `@here` | Treated as mention-all | Not handled (passed to DB lookup) | Treated as mention-all |
-| Account case | Lowercased | Preserved | Lowercased |
-| Dedup | Case-insensitive | Case-sensitive | Case-insensitive |
+| Aspect | Before | After | Rationale |
+|--------|--------|-------|-----------|
+| UserID in mention Participants | Empty | Populated from User | `omitempty` makes it additive; client can use it for profile links |
+| Unresolved mentions | Fallback to account name | Skipped | Showing `@nonexistent` with display name `nonexistent` is misleading |
+| DB calls | 1 (batched sender+mentions) | 2 (mentions in Resolve + sender) | Trivial overhead for a simple `$in` query; cleaner separation of concerns |
+| Mention resolve error | N/A (warn on combined lookup) | Warn + use empty Participants | Consistent with existing error tolerance |
 
 ### 5. Unchanged
 
-- `message-worker/resolveMentions` — remains a handler method (needs `userStore` for DB lookup)
-- `broadcast-worker/buildMentionParticipants`, `buildClientMessage` — unchanged
+- `broadcast-worker/buildClientMessage` — still builds sender Participant from userMap
+- `broadcast-worker/publishDMEvents` — still uses `resolved.Accounts` for per-user mention detection
 - Store interfaces — unchanged
 - All other services — no changes
 
 ## Approach Rationale
 
-- **Shared package (not inline helper):** Follows the `pkg/userstore` and `pkg/subject` precedent. Multiple services need this, and the regex + special-token handling is non-trivial enough to warrant a single source of truth.
-- **`Parse` returns a struct:** Cleaner than returning `([]string, bool)` — named fields make call sites self-documenting and allow future extension (e.g. adding `MentionHere bool` separately).
-- **Lowercasing in `Parse`:** Accounts are case-insensitive identifiers. Lowercasing at parse time ensures consistent dedup and matches how `broadcast-worker` already behaves. The `message-worker`'s MongoDB `$in` lookup works with lowercase since accounts are stored lowercase.
-- **`@here` handled as `MentionAll`:** The `broadcast-worker` already treats `@here` the same as `@all`. Unifying this in the shared parser means `message-worker` also gains `@here` support.
+- **`Resolve` in shared package:** The parse → lookup → build pipeline is the same in both services. Extracting it eliminates the handler method (`resolveMentions`) and standalone function (`buildMentionParticipants`) that duplicated this logic.
+- **`LookupFunc` parameter:** Avoids coupling `pkg/mention` to a specific store interface. Both services pass `h.userStore.FindUsersByAccounts` as a method value. Tests inject a simple function.
+- **Partial result on error:** `ResolveResult` always returns `MentionAll` and `Accounts` even when lookup fails. This lets `message-worker` fail fast while `broadcast-worker` warns and continues.
+- **Accept extra DB call in broadcast-worker:** Previously broadcast-worker batched sender + mention lookups into one `FindUsersByAccounts` call. With `Resolve`, mentions are looked up inside `Resolve` and the sender is a separate call. This is one extra MongoDB `$in` query — trivial for a single account. The simplification in handler code outweighs the minor overhead.
+- **Drop fallback names:** The previous `buildMentionParticipants` showed unresolved accounts with `ChineseName: account, EngName: account`. This was a display hack — if a user doesn't exist, including them as a mention with their raw account as display name is misleading. Skipping them (as `message-worker` already does) is cleaner.
+- **Include UserID:** `Participant.UserID` uses `json:"userId,omitempty"`. Including it is a strictly additive change — existing clients that don't use it are unaffected, while new clients can leverage it for profile links or mention highlighting.

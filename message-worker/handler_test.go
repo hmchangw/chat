@@ -476,4 +476,3 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 		})
 	}
 }
-

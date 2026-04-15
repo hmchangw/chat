@@ -41,57 +41,17 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	}
 }
 
-// resolveMentions parses @mention tokens from content, looks up real users in
-// MongoDB, and returns them as Participants. @all is always included as a
-// special entry without a DB lookup. Accounts not found in MongoDB are skipped.
-// Returns nil when content has no mentions.
-func (h *Handler) resolveMentions(ctx context.Context, content string) ([]model.Participant, error) {
-	parsed := mention.Parse(content)
-	if len(parsed.Accounts) == 0 && !parsed.MentionAll {
-		return nil, nil
-	}
-
-	var participants []model.Participant
-
-	if len(parsed.Accounts) > 0 {
-		users, err := h.userStore.FindUsersByAccounts(ctx, parsed.Accounts)
-		if err != nil {
-			return nil, fmt.Errorf("find mentioned users: %w", err)
-		}
-		for i := range users {
-			participants = append(participants, model.Participant{
-				UserID:      users[i].ID,
-				Account:     users[i].Account,
-				ChineseName: users[i].ChineseName,
-				EngName:     users[i].EngName,
-			})
-		}
-	}
-
-	if parsed.MentionAll {
-		participants = append(participants, model.Participant{
-			Account: "all",
-			EngName: "all",
-		})
-	}
-
-	if len(participants) == 0 {
-		return nil, nil
-	}
-	return participants, nil
-}
-
 func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
 		return fmt.Errorf("unmarshal message event: %w", err)
 	}
 
-	mentions, err := h.resolveMentions(ctx, evt.Message.Content)
+	resolved, err := mention.Resolve(ctx, evt.Message.Content, h.userStore.FindUsersByAccounts)
 	if err != nil {
 		return fmt.Errorf("resolve mentions: %w", err)
 	}
-	evt.Message.Mentions = mentions
+	evt.Message.Mentions = resolved.Participants
 
 	user, err := h.userStore.FindUserByID(ctx, evt.Message.UserID)
 	if err != nil {

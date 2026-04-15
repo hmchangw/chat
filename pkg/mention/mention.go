@@ -1,8 +1,12 @@
 package mention
 
 import (
+	"context"
+	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 // mentionRe matches @mention tokens in message content.
@@ -41,4 +45,52 @@ func Parse(content string) ParseResult {
 	}
 
 	return result
+}
+
+// LookupFunc abstracts user-by-account lookup so Resolve is testable without a real DB.
+type LookupFunc func(ctx context.Context, accounts []string) ([]model.User, error)
+
+// ResolveResult holds mention resolution output.
+type ResolveResult struct {
+	Participants []model.Participant // enriched mentioned users + @all entry if present
+	MentionAll   bool                // true if @all or @here was mentioned
+	Accounts     []string            // raw parsed accounts (for caller use outside resolution)
+}
+
+// Resolve parses @mentions from content, looks up users via lookupFn,
+// and builds Participants. On lookup error, returns partial result
+// (MentionAll and Accounts populated, Participants empty) with the error.
+func Resolve(ctx context.Context, content string, lookupFn LookupFunc) (*ResolveResult, error) {
+	parsed := Parse(content)
+	result := &ResolveResult{
+		MentionAll: parsed.MentionAll,
+		Accounts:   parsed.Accounts,
+	}
+	if len(parsed.Accounts) == 0 && !parsed.MentionAll {
+		return result, nil
+	}
+
+	if len(parsed.Accounts) > 0 {
+		users, err := lookupFn(ctx, parsed.Accounts)
+		if err != nil {
+			return result, fmt.Errorf("find mentioned users: %w", err)
+		}
+		for i := range users {
+			result.Participants = append(result.Participants, model.Participant{
+				UserID:      users[i].ID,
+				Account:     users[i].Account,
+				ChineseName: users[i].ChineseName,
+				EngName:     users[i].EngName,
+			})
+		}
+	}
+
+	if parsed.MentionAll {
+		result.Participants = append(result.Participants, model.Participant{
+			Account: "all",
+			EngName: "all",
+		})
+	}
+
+	return result, nil
 }
