@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -16,7 +15,8 @@ import (
 func (s *HistoryService) getAccessSince(ctx context.Context, account, roomID string) (*time.Time, error) {
 	accessSince, subscribed, err := s.subscriptions.GetHistorySharedSince(ctx, account, roomID)
 	if err != nil {
-		return nil, fmt.Errorf("checking subscription: %w", err)
+		slog.Error("checking subscription", "error", err, "account", account, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("unable to verify room access")
 	}
 	if !subscribed {
 		return nil, natsrouter.ErrForbidden("not subscribed to room")
@@ -50,7 +50,8 @@ func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID stri
 	}
 	msg, err := s.messages.GetMessageByID(ctx, messageID)
 	if err != nil {
-		return nil, fmt.Errorf("finding message: %w", err)
+		slog.Error("finding message", "error", err, "messageID", messageID)
+		return nil, natsrouter.ErrInternal("failed to retrieve message")
 	}
 	if msg == nil {
 		return nil, natsrouter.ErrNotFound("message not found")
