@@ -391,6 +391,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 			RoomID:    req.RoomID,
 			Accounts:  accounts,
 			SiteID:    h.siteID,
+			OrgID:     req.OrgID,
 			Timestamp: now.UnixMilli(),
 		}
 		memberEvtData, _ := json.Marshal(memberEvt)
@@ -435,6 +436,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 			RoomID:    req.RoomID,
 			Accounts:  accounts,
 			SiteID:    h.siteID,
+			OrgID:     req.OrgID,
 			Timestamp: now.UnixMilli(),
 		}
 		outbox := model.OutboxEvent{
