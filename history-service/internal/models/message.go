@@ -1,34 +1,24 @@
 package models
 
-import "time"
+import "github.com/hmchangw/chat/pkg/model/cassandra"
 
-// Message represents a full message row from the messages_by_room Cassandra table.
-type Message struct {
-	RoomID                string                   `json:"roomId"`
-	CreatedAt             time.Time                `json:"createdAt"`
-	MessageID             string                   `json:"messageId"`
-	Sender                Participant              `json:"sender"`
-	TargetUser            *Participant             `json:"targetUser,omitempty"`
-	Msg                   string                   `json:"msg"`
-	Mentions              []Participant            `json:"mentions,omitempty"`
-	Attachments           [][]byte                 `json:"attachments,omitempty"`
-	File                  *File                    `json:"file,omitempty"`
-	Card                  *Card                    `json:"card,omitempty"`
-	CardAction            *CardAction              `json:"cardAction,omitempty"`
-	TShow                 bool                     `json:"tshow,omitempty"`
-	ThreadParentID        string                   `json:"threadParentId,omitempty"`
-	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty"`
-	QuotedParentMessage   *QuotedParentMessage     `json:"quotedParentMessage,omitempty"`
-	VisibleTo             string                   `json:"visibleTo,omitempty"`
-	Unread                bool                     `json:"unread,omitempty"`
-	Reactions             map[string][]Participant `json:"reactions,omitempty"`
-	Deleted               bool                     `json:"deleted,omitempty"`
-	Type                  string                   `json:"type,omitempty"`
-	SysMsgData            []byte                   `json:"sysMsgData,omitempty"`
-	SiteID                string                   `json:"siteId,omitempty"`
-	EditedAt              *time.Time               `json:"editedAt,omitempty"`
-	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"`
-}
+// Message is the Cassandra message record, now defined in pkg/model/cassandra.
+type Message = cassandra.Message
+
+// Participant is the Cassandra Participant UDT, now defined in pkg/model/cassandra.
+type Participant = cassandra.Participant
+
+// File is the Cassandra File UDT, now defined in pkg/model/cassandra.
+type File = cassandra.File
+
+// Card is the Cassandra Card UDT, now defined in pkg/model/cassandra.
+type Card = cassandra.Card
+
+// CardAction is the Cassandra CardAction UDT, now defined in pkg/model/cassandra.
+type CardAction = cassandra.CardAction
+
+// QuotedParentMessage is the Cassandra QuotedParentMessage UDT, now defined in pkg/model/cassandra.
+type QuotedParentMessage = cassandra.QuotedParentMessage
 
 // LoadHistoryRequest is the payload for loading message history before a timestamp.
 type LoadHistoryRequest struct {
