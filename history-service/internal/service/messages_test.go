@@ -688,6 +688,28 @@ func TestHistoryService_LoadSurroundingMessages_NotSubscribed(t *testing.T) {
 	assert.Contains(t, err.Error(), "not subscribed to room")
 }
 
+func TestHistoryService_GetMessageByID_MissingMessageID(t *testing.T) {
+	svc, _, subs := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	_, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "messageId is required")
+}
+
+func TestHistoryService_LoadSurroundingMessages_MissingMessageID(t *testing.T) {
+	svc, _, subs := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	_, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{Limit: 6})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "messageId is required")
+}
+
 func TestHistoryService_GetMessageByID_NotSubscribed(t *testing.T) {
 	svc, _, subs := newService(t)
 	c := testContext()
