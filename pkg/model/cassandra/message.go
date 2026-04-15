@@ -1,4 +1,4 @@
-package models
+package cassandra
 
 import (
 	"time"
@@ -94,4 +94,32 @@ func (q *QuotedParentMessage) UnmarshalUDT(name string, info gocql.TypeInfo, dat
 }
 func (q *QuotedParentMessage) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
 	return marshalUDTField(q, name, info)
+}
+
+// Message represents a full message row from the messages_by_room Cassandra table.
+type Message struct {
+	RoomID                string                   `json:"roomId"`
+	CreatedAt             time.Time                `json:"createdAt"`
+	MessageID             string                   `json:"messageId"`
+	Sender                Participant              `json:"sender"`
+	TargetUser            *Participant             `json:"targetUser,omitempty"`
+	Msg                   string                   `json:"msg"`
+	Mentions              []Participant            `json:"mentions,omitempty"`
+	Attachments           [][]byte                 `json:"attachments,omitempty"`
+	File                  *File                    `json:"file,omitempty"`
+	Card                  *Card                    `json:"card,omitempty"`
+	CardAction            *CardAction              `json:"cardAction,omitempty"`
+	TShow                 bool                     `json:"tshow,omitempty"`
+	ThreadParentID        string                   `json:"threadParentId,omitempty"`
+	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty"`
+	QuotedParentMessage   *QuotedParentMessage     `json:"quotedParentMessage,omitempty"`
+	VisibleTo             string                   `json:"visibleTo,omitempty"`
+	Unread                bool                     `json:"unread,omitempty"`
+	Reactions             map[string][]Participant `json:"reactions,omitempty"`
+	Deleted               bool                     `json:"deleted,omitempty"`
+	Type                  string                   `json:"type,omitempty"`
+	SysMsgData            []byte                   `json:"sysMsgData,omitempty"`
+	SiteID                string                   `json:"siteId,omitempty"`
+	EditedAt              *time.Time               `json:"editedAt,omitempty"`
+	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"`
 }

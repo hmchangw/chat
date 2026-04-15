@@ -1,4 +1,4 @@
-package models
+package cassandra
 
 import (
 	"fmt"
@@ -59,16 +59,16 @@ func marshalUDTField(ptr any, name string, info gocql.TypeInfo) ([]byte, error) 
 func verifyUDTTags(samplePtr any) {
 	rv := reflect.TypeOf(samplePtr)
 	if rv.Kind() != reflect.Ptr {
-		panic(fmt.Sprintf("models: verifyUDTTags requires a pointer, got %T", samplePtr))
+		panic(fmt.Sprintf("cassandra: verifyUDTTags requires a pointer, got %T", samplePtr))
 	}
 	t := rv.Elem()
 	if t.Kind() != reflect.Struct {
-		panic(fmt.Sprintf("models: verifyUDTTags requires a pointer to struct, got pointer to %s", t.Kind()))
+		panic(fmt.Sprintf("cassandra: verifyUDTTags requires a pointer to struct, got pointer to %s", t.Kind()))
 	}
 	for i := range t.NumField() {
 		f := t.Field(i)
 		if f.Tag.Get("cql") == "" {
-			panic(fmt.Sprintf("models: struct %s field %s is missing a `cql` tag", t.Name(), f.Name))
+			panic(fmt.Sprintf("cassandra: struct %s field %s is missing a `cql` tag", t.Name(), f.Name))
 		}
 	}
 }
