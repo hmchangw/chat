@@ -269,13 +269,19 @@ All writes are **synchronous before ack**. Any failure NAKs the message for JetS
 
 ## Inbox-Worker (Remote Site Processing)
 
-When a member is removed from a room on a remote site, the room's site publishes a `member_removed` outbox event to the member's home site. Inbox-worker processes both subscription and `room_members` cleanup from a single event:
+When a member is removed from a room on a remote site, the room's site publishes a `member_removed` outbox event to the member's home site. Inbox-worker processes both subscription and `room_members` cleanup from a single event, applying the same dual-membership guard as room-worker:
 
-| Event Type | Action |
-|------------|--------|
-| `member_removed` | 1. Delete subscriptions for all `Accounts` in the event from local MongoDB. 2. Delete `room_members` entries: if `OrgID` is set, delete the org entry (`type="org"`, `ID=orgID`); otherwise delete individual entries by account (`type="individual"`, `account=account`). 3. Publish `SubscriptionUpdateEvent` per removed account to the local user's subject. |
+**Individual removal** (`OrgID` empty):
+1. Delete subscription for the account.
+2. Delete individual `room_members` entry by account.
+3. Publish `SubscriptionUpdateEvent` (action: `"removed"`).
 
-This ensures the remote site's `room_members` collection stays in sync with the room's home site — the UI can display org vs individual membership without cross-site queries.
+**Org removal** (`OrgID` set):
+1. Delete the org `room_members` entry (`type="org"`, `ID=orgID`).
+2. For each account in `Accounts`, check if they also have an individual `room_members` entry locally. If yes, skip — their subscription stays. If no, delete their subscription.
+3. Publish `SubscriptionUpdateEvent` (action: `"removed"`) only for accounts whose subscriptions were actually deleted.
+
+This mirrors the room-worker's dual-membership logic: a user present as both individual and org member retains their subscription when the org is removed. It also ensures the remote site's `room_members` collection stays in sync — the UI can display org vs individual membership without cross-site queries.
 
 ## Store Interface (remove-member methods)
 
@@ -295,6 +301,7 @@ The following store methods are relevant to the remove-member flow. Aggregation 
 |--------|---------|---------|
 | `GetSubscription(roomID, account)` | room-service | Look up requester's subscription for auth checks (owner-removes-other path) |
 | `CountOwners(roomID)` | room-service | Last-owner guard |
+| `GetIndividualMemberAccounts(roomID, accounts)` | inbox-worker | Given a list of accounts, return the subset that have individual-type `room_members` entries (dual-membership guard for org removal) |
 
 ### Write operations
 

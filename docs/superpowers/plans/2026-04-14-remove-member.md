@@ -1678,6 +1678,7 @@ type InboxStore interface {
 	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
 	DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error
 	DeleteRoomMembersByAccount(ctx context.Context, roomID, account string) error
+	GetIndividualMemberAccounts(ctx context.Context, roomID string, accounts []string) ([]string, error)
 }
 ```
 
@@ -1775,29 +1776,47 @@ case "member_removed":
 		return fmt.Errorf("unmarshal member removed payload: %w", err)
 	}
 
-	// Delete subscriptions
-	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
-		return fmt.Errorf("delete subscriptions: %w", err)
-	}
+	var removedAccounts []string
 
-	// Delete room_members entries
 	if memberEvt.OrgID != "" {
-		// Org removal: delete the org room_members doc
+		// Org removal: delete org room_members doc first
 		if err := h.store.DeleteRoomMember(ctx, memberEvt.RoomID, model.RoomMemberOrg, memberEvt.OrgID); err != nil {
 			return fmt.Errorf("delete org room member: %w", err)
 		}
-	} else {
-		// Individual removal: delete individual room_members by account
+		// Dual-membership guard: find accounts that also have individual membership
+		individualAccounts, err := h.store.GetIndividualMemberAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts)
+		if err != nil {
+			return fmt.Errorf("get individual member accounts: %w", err)
+		}
+		individualSet := make(map[string]bool, len(individualAccounts))
+		for _, a := range individualAccounts {
+			individualSet[a] = true
+		}
+		// Only delete subscriptions for accounts WITHOUT individual membership
 		for _, account := range memberEvt.Accounts {
-			if err := h.store.DeleteRoomMembersByAccount(ctx, memberEvt.RoomID, account); err != nil {
-				return fmt.Errorf("delete room members for %s: %w", account, err)
+			if !individualSet[account] {
+				removedAccounts = append(removedAccounts, account)
 			}
 		}
+		if len(removedAccounts) > 0 {
+			if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, removedAccounts); err != nil {
+				return fmt.Errorf("delete subscriptions: %w", err)
+			}
+		}
+	} else {
+		// Individual removal: delete subscription + individual room_members
+		if err := h.store.DeleteSubscription(ctx, memberEvt.RoomID, memberEvt.Accounts[0]); err != nil {
+			return fmt.Errorf("delete subscription: %w", err)
+		}
+		if err := h.store.DeleteRoomMembersByAccount(ctx, memberEvt.RoomID, memberEvt.Accounts[0]); err != nil {
+			return fmt.Errorf("delete room members: %w", err)
+		}
+		removedAccounts = memberEvt.Accounts
 	}
 
-	// Publish SubscriptionUpdateEvent per removed account
+	// Publish SubscriptionUpdateEvent per actually removed account
 	now := time.Now().UTC()
-	for _, account := range memberEvt.Accounts {
+	for _, account := range removedAccounts {
 		subEvt := model.SubscriptionUpdateEvent{
 			Subscription: model.Subscription{
 				RoomID: memberEvt.RoomID,
@@ -1861,6 +1880,27 @@ func (s *mongoInboxStore) DeleteRoomMembersByAccount(ctx context.Context, roomID
 		return fmt.Errorf("delete room members for %q: %w", account, err)
 	}
 	return nil
+}
+
+func (s *mongoInboxStore) GetIndividualMemberAccounts(ctx context.Context, roomID string, accounts []string) ([]string, error) {
+	cursor, err := s.roomMembersCol.Find(ctx, bson.M{
+		"rid":            roomID,
+		"member.type":    model.RoomMemberIndividual,
+		"member.account": bson.M{"$in": accounts},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("find individual members: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var members []model.RoomMember
+	if err := cursor.All(ctx, &members); err != nil {
+		return nil, fmt.Errorf("decode individual members: %w", err)
+	}
+	result := make([]string, 0, len(members))
+	for _, m := range members {
+		result = append(result, m.Member.Account)
+	}
+	return result, nil
 }
 ```
 
