@@ -913,4 +913,245 @@ git commit -m "chore(room-service): add ListRoomsByIDs and regenerate mocks"
 
 ---
 
-<!-- TASKS 8-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
+## Task 8: Handler struct, constructor, and registration for batch RPC
+
+**Files:**
+- Modify: `room-service/handler.go`
+- Modify: `room-service/main.go` (minimal no-op patch so the package still compiles; real Valkey wiring arrives in Task 10)
+
+- [ ] **Step 1: Edit `handler.go` — add import, expand struct, update constructor, register subscription, stub method**
+
+Replace `room-service/handler.go` with:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+	"github.com/google/uuid"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/subject"
+)
+
+type Handler struct {
+	store           RoomStore
+	keyStore        roomkeystore.RoomKeyStore
+	siteID          string
+	maxRoomSize     int
+	maxBatchSize    int
+	publishToStream func(ctx context.Context, data []byte) error
+}
+
+func NewHandler(
+	store RoomStore,
+	keyStore roomkeystore.RoomKeyStore,
+	siteID string,
+	maxRoomSize, maxBatchSize int,
+	publishToStream func(context.Context, []byte) error,
+) *Handler {
+	return &Handler{
+		store:           store,
+		keyStore:        keyStore,
+		siteID:          siteID,
+		maxRoomSize:     maxRoomSize,
+		maxBatchSize:    maxBatchSize,
+		publishToStream: publishToStream,
+	}
+}
+
+// RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
+func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
+	const queue = "room-service"
+	if _, err := nc.QueueSubscribe(subject.RoomsCreateWildcard(), queue, h.natsCreateRoom); err != nil {
+		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomsListWildcard(), queue, h.natsListRooms); err != nil {
+		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
+		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchWildcard(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *Handler) natsCreateRoom(m otelnats.Msg) {
+	resp, err := h.handleCreateRoom(m.Context(), m.Msg.Data)
+	if err != nil {
+		natsutil.ReplyError(m.Msg, err.Error())
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
+}
+
+func (h *Handler) natsListRooms(m otelnats.Msg) {
+	rooms, err := h.store.ListRooms(m.Context())
+	if err != nil {
+		natsutil.ReplyError(m.Msg, err.Error())
+		return
+	}
+	natsutil.ReplyJSON(m.Msg, model.ListRoomsResponse{Rooms: rooms})
+}
+
+func (h *Handler) natsGetRoom(m otelnats.Msg) {
+	parts := strings.Split(m.Msg.Subject, ".")
+	roomID := parts[len(parts)-1]
+	room, err := h.store.GetRoom(m.Context(), roomID)
+	if err != nil {
+		natsutil.ReplyError(m.Msg, err.Error())
+		return
+	}
+	natsutil.ReplyJSON(m.Msg, room)
+}
+
+// NatsHandleInvite handles invite authorization requests.
+func (h *Handler) NatsHandleInvite(m otelnats.Msg) {
+	resp, err := h.handleInvite(m.Context(), m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		natsutil.ReplyError(m.Msg, err.Error())
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
+}
+
+func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, error) {
+	var req model.CreateRoomRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	now := time.Now().UTC()
+	room := model.Room{
+		ID:        uuid.New().String(),
+		Name:      req.Name,
+		Type:      req.Type,
+		CreatedBy: req.CreatedBy,
+		SiteID:    req.SiteID,
+		UserCount: 1,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := h.store.CreateRoom(ctx, &room); err != nil {
+		return nil, fmt.Errorf("create room: %w", err)
+	}
+
+	sub := model.Subscription{
+		ID:                 uuid.New().String(),
+		User:               model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByAccount},
+		RoomID:             room.ID,
+		SiteID:             req.SiteID,
+		Role:               model.RoleOwner,
+		HistorySharedSince: &now,
+		JoinedAt:           now,
+	}
+	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
+		slog.Warn("create owner subscription failed", "error", err)
+	}
+
+	return json.Marshal(room)
+}
+
+func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	inviterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid invite subject: %s", subj)
+	}
+
+	sub, err := h.store.GetSubscription(ctx, inviterAccount, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("inviter not found: %w", err)
+	}
+	if sub.Role != model.RoleOwner {
+		return nil, fmt.Errorf("only owners can invite members")
+	}
+
+	room, err := h.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("room not found: %w", err)
+	}
+	if room.UserCount >= h.maxRoomSize {
+		return nil, fmt.Errorf("room is at maximum capacity (%d)", h.maxRoomSize)
+	}
+
+	var req model.InviteMemberRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	req.Timestamp = time.Now().UTC().UnixMilli()
+
+	timestampedData, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal invite request: %w", err)
+	}
+
+	if err := h.publishToStream(ctx, timestampedData); err != nil {
+		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+
+	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+// natsRoomsInfoBatch is the batch room-info RPC dispatcher. The real implementation
+// is added in Task 9; this placeholder keeps the package compiling.
+func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
+	natsutil.ReplyError(m.Msg, "not implemented")
+}
+```
+
+- [ ] **Step 2: Minimal no-op patch to `main.go` so the package still builds**
+
+Edit `room-service/main.go`. Locate the `NewHandler` call and update it to pass `nil` for the key store and `500` for the batch-size cap (real Valkey wiring arrives in Task 10):
+
+```go
+store := NewMongoStore(db)
+handler := NewHandler(store, nil, cfg.SiteID, cfg.MaxRoomSize, 500, func(ctx context.Context, data []byte) error {
+    _, err := js.Publish(ctx, subject.MemberInviteWildcard(cfg.SiteID), data)
+    return err
+})
+```
+
+No other changes to `main.go` in this task.
+
+- [ ] **Step 3: Verify compilation**
+
+Run: `go build ./room-service/`
+Expected: no errors.
+
+- [ ] **Step 4: Run existing unit tests**
+
+Run: `make test SERVICE=room-service`
+Expected: PASS — the four pre-existing `TestHandler_*` tests remain green. The existing direct `&Handler{...}` struct literals in `handler_test.go` still compile — new fields `keyStore` and `maxBatchSize` zero-value cleanly.
+
+- [ ] **Step 5: Run lint**
+
+Run: `make lint`
+Expected: clean.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add room-service/handler.go room-service/main.go
+git commit -m "feat(room-service): wire RoomKeyStore + maxBatchSize into Handler and register batch-info subscription"
+```
+
+---
+
+<!-- TASKS 9-12 WILL BE APPENDED IN SUBSEQUENT COMMITS -->
