@@ -56,11 +56,22 @@ type NotificationEvent struct {
 }
 
 type OutboxEvent struct {
-	Type       string `json:"type"` // "member_added", "room_sync"
+	Type       string `json:"type"` // "subscription_created", "room_sync"
 	SiteID     string `json:"siteId"`
 	DestSiteID string `json:"destSiteId"`
 	Payload    []byte `json:"payload"` // JSON-encoded inner event
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
+}
+
+type MemberChangeEvent struct {
+	Type               string   `json:"type"                         bson:"type"`
+	RoomID             string   `json:"roomId"                       bson:"roomId"`
+	Accounts           []string `json:"accounts"                     bson:"accounts"`
+	SiteID             string   `json:"siteId"                       bson:"siteId"`
+	UserIDs            []string `json:"userIds,omitempty"            bson:"userIds,omitempty"`
+	JoinedAt           int64    `json:"joinedAt"                     bson:"joinedAt"`
+	HistorySharedSince int64    `json:"historySharedSince"           bson:"historySharedSince"`
+	Timestamp          int64    `json:"timestamp"                    bson:"timestamp"`
 }
 
 // Participant represents a user with display name info for client rendering.

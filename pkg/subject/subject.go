@@ -194,3 +194,15 @@ func MsgSurroundingPattern(siteID string) string {
 func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
 }
+
+func MemberAdd(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.add", account, roomID, siteID)
+}
+
+func MemberAddWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.add", siteID)
+}
+
+func RoomMemberEvent(roomID string) string {
+	return fmt.Sprintf("chat.room.%s.event.member", roomID)
+}

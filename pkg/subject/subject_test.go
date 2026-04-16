@@ -56,6 +56,8 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.event.room.key"},
 		{"MemberRemove", subject.MemberRemove("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.member.remove"},
+		{"MemberAdd", subject.MemberAdd("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.member.add"},
 		{"MemberEvent", subject.MemberEvent("r1"),
 			"chat.room.r1.event.member"},
 	}
@@ -149,6 +151,8 @@ func TestWildcardPatterns(t *testing.T) {
 			"chat.user.*.request.rooms.list"},
 		{"RoomsGetWild", subject.RoomsGetWildcard(),
 			"chat.user.*.request.rooms.get.*"},
+		{"MemberAddWild", subject.MemberAddWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.member.add"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
