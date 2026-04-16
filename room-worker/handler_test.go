@@ -639,7 +639,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	err := h.processAddMembers(context.Background(), reqData)
 	require.NoError(t, err)
 
-	// 2 SubscriptionUpdate + 1 MemberChangeEvent + 1 system msg + 1 batched outbox (site-b)
+	// 2 SubscriptionUpdate + 1 MemberAddEvent + 1 system msg + 1 batched outbox (site-b)
 	assert.GreaterOrEqual(t, len(published), 4)
 
 	// Verify exactly 1 outbox event for site-b (batched, not per-member)
@@ -650,7 +650,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 			assert.Contains(t, p.subj, "site-b")
 			var outboxEvt model.OutboxEvent
 			require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
-			var change model.MemberChangeEvent
+			var change model.MemberAddEvent
 			require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
 			assert.Equal(t, []string{"charlie"}, change.Accounts)
 		}
@@ -785,7 +785,7 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 	for _, p := range outboxEvents {
 		var outboxEvt model.OutboxEvent
 		require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
-		var change model.MemberChangeEvent
+		var change model.MemberAddEvent
 		require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
 
 		if strings.Contains(p.subj, "site-b") {

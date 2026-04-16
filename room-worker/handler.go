@@ -565,29 +565,28 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 	}
 
-	userIDs := make([]string, 0, len(subs))
+	// 8. Publish MemberAddEvent
 	actualAccounts := make([]string, 0, len(subs))
 	for _, sub := range subs {
-		userIDs = append(userIDs, sub.User.ID)
 		actualAccounts = append(actualAccounts, sub.User.Account)
 	}
 	var historySharedSince int64
 	if req.History.Mode == model.HistoryModeNone {
 		historySharedSince = now.UnixMilli()
 	}
-	memberChangeEvt := model.MemberChangeEvent{
-		Type:               "member-added",
+	memberAddEvt := model.MemberAddEvent{
+		Type:               "member_added",
 		RoomID:             req.RoomID,
 		Accounts:           actualAccounts,
+		Orgs:               req.Orgs,
 		SiteID:             room.SiteID,
-		UserIDs:            userIDs,
 		JoinedAt:           now.UnixMilli(),
 		HistorySharedSince: historySharedSince,
 		Timestamp:          now.UnixMilli(),
 	}
-	memberChangeData, _ := json.Marshal(memberChangeEvt)
-	if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberChangeData); err != nil {
-		slog.Error("member change event publish failed", "error", err, "roomID", req.RoomID)
+	memberAddData, _ := json.Marshal(memberAddEvt)
+	if err := h.publish(ctx, subject.RoomMemberEvent(req.RoomID), memberAddData); err != nil {
+		slog.Error("member add event publish failed", "error", err, "roomID", req.RoomID)
 	}
 
 	membersAdded := model.MembersAdded{
@@ -615,31 +614,33 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
 	}
 
-	remoteSiteMembers := make(map[string]struct{ accounts, userIDs []string })
+	// 10. Outbox for cross-site members — batched by destination site
+	remoteSiteMembers := make(map[string][]string)
 	for _, sub := range subs {
 		user, ok := userMap[sub.User.Account]
 		if !ok || user.SiteID == room.SiteID {
 			continue
 		}
-		entry := remoteSiteMembers[user.SiteID]
-		entry.accounts = append(entry.accounts, sub.User.Account)
-		entry.userIDs = append(entry.userIDs, sub.User.ID)
-		remoteSiteMembers[user.SiteID] = entry
+		remoteSiteMembers[user.SiteID] = append(remoteSiteMembers[user.SiteID], sub.User.Account)
 	}
-	for destSiteID, members := range remoteSiteMembers {
-		siteEvt := model.MemberChangeEvent{
-			Type: "member-added", RoomID: req.RoomID, Accounts: members.accounts,
-			SiteID: room.SiteID, UserIDs: members.userIDs,
-			JoinedAt: now.UnixMilli(), HistorySharedSince: historySharedSince,
-			Timestamp: now.UnixMilli(),
+	for destSiteID, accounts := range remoteSiteMembers {
+		siteEvt := model.MemberAddEvent{
+			Type:               "member_added",
+			RoomID:             req.RoomID,
+			Accounts:           accounts,
+			Orgs:               req.Orgs,
+			SiteID:             room.SiteID,
+			JoinedAt:           now.UnixMilli(),
+			HistorySharedSince: historySharedSince,
+			Timestamp:          now.UnixMilli(),
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)
 		outbox := model.OutboxEvent{
-			Type: "subscription_created", SiteID: room.SiteID, DestSiteID: destSiteID,
+			Type: "member_added", SiteID: room.SiteID, DestSiteID: destSiteID,
 			Payload: siteEvtData, Timestamp: now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "subscription_created"), outboxData); err != nil {
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData); err != nil {
 			slog.Error("outbox publish failed", "error", err, "destSiteID", destSiteID)
 		}
 	}

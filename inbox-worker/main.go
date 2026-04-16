@@ -34,8 +34,10 @@ type config struct {
 
 // mongoInboxStore implements InboxStore using MongoDB.
 type mongoInboxStore struct {
-	subCol  *mongo.Collection
-	roomCol *mongo.Collection
+	subCol        *mongo.Collection
+	roomCol       *mongo.Collection
+	roomMemberCol *mongo.Collection
+	userCol       *mongo.Collection
 }
 
 func (s *mongoInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -72,6 +74,71 @@ func (s *mongoInboxStore) DeleteSubscriptionsByAccounts(ctx context.Context, roo
 	return nil
 }
 
+func (s *mongoInboxStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
+	if len(accounts) == 0 {
+		return nil, nil
+	}
+	cursor, err := s.userCol.Find(ctx, bson.M{"account": bson.M{"$in": accounts}})
+	if err != nil {
+		return nil, fmt.Errorf("find users by accounts: %w", err)
+	}
+	var users []model.User
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, fmt.Errorf("decode users: %w", err)
+	}
+	return users, nil
+}
+
+func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+	if len(subs) == 0 {
+		return nil
+	}
+	docs := make([]interface{}, len(subs))
+	for i, sub := range subs {
+		docs[i] = sub
+	}
+	_, err := s.subCol.InsertMany(ctx, docs)
+	if err != nil {
+		return fmt.Errorf("bulk create subscriptions: %w", err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
+	_, err := s.roomMemberCol.InsertOne(ctx, member)
+	return err
+}
+
+func (s *mongoInboxStore) HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error) {
+	count, err := s.roomMemberCol.CountDocuments(ctx, bson.M{"rid": roomID, "member.type": "org"})
+	if err != nil {
+		return false, fmt.Errorf("check org room members: %w", err)
+	}
+	return count > 0, nil
+}
+
+func (s *mongoInboxStore) GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error) {
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{"roomId": roomID}},
+		bson.M{"$group": bson.M{"_id": nil, "accounts": bson.M{"$addToSet": "$u.account"}}},
+	}
+	cursor, err := s.subCol.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("get subscription accounts: %w", err)
+	}
+	var results []struct {
+		Accounts []string `bson:"accounts"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("decode subscription accounts: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return results[0].Accounts, nil
+}
+
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
@@ -96,8 +163,10 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
+		subCol:        db.Collection("subscriptions"),
+		roomCol:       db.Collection("rooms"),
+		roomMemberCol: db.Collection("room_members"),
+		userCol:       db.Collection("users"),
 	}
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)

@@ -57,20 +57,29 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
+		subCol:        db.Collection("subscriptions"),
+		roomCol:       db.Collection("rooms"),
+		roomMemberCol: db.Collection("room_members"),
+		userCol:       db.Collection("users"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
 
-	// Create outbox event for subscription_created
-	change := model.MemberChangeEvent{
-		Type: "member-added", RoomID: "r1", Accounts: []string{"u2"}, SiteID: "site-b",
-		UserIDs: []string{"u2"}, JoinedAt: time.Now().UTC().UnixMilli(),
+	// Seed user for lookup
+	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u2", Account: "u2", SiteID: "site-b"})
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	// Create outbox event for member_added
+	change := model.MemberAddEvent{
+		Type: "member_added", RoomID: "r1", Accounts: []string{"u2"}, SiteID: "site-b",
+		JoinedAt: time.Now().UTC().UnixMilli(),
 		HistorySharedSince: time.Now().UTC().UnixMilli(),
+		Timestamp: time.Now().UTC().UnixMilli(),
 	}
 	changeData, _ := json.Marshal(change)
-	evt := model.OutboxEvent{Type: "subscription_created", SiteID: "site-a", DestSiteID: "site-b", Payload: changeData}
+	evt := model.OutboxEvent{Type: "member_added", SiteID: "site-a", DestSiteID: "site-b", Payload: changeData}
 	evtData, _ := json.Marshal(evt)
 
 	if err := handler.HandleEvent(ctx, evtData); err != nil {
@@ -98,8 +107,10 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
+		subCol:        db.Collection("subscriptions"),
+		roomCol:       db.Collection("rooms"),
+		roomMemberCol: db.Collection("room_members"),
+		userCol:       db.Collection("users"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
@@ -129,8 +140,10 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
+		subCol:        db.Collection("subscriptions"),
+		roomCol:       db.Collection("rooms"),
+		roomMemberCol: db.Collection("room_members"),
+		userCol:       db.Collection("users"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)

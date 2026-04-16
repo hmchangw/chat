@@ -583,7 +583,7 @@ func TestInviteMemberRequestJSON(t *testing.T) {
 
 func TestOutboxEventJSON(t *testing.T) {
 	src := model.OutboxEvent{
-		Type:       "subscription_created",
+		Type:       "member_added",
 		SiteID:     "site-a",
 		DestSiteID: "site-b",
 		Payload:    []byte(`{"inviterId":"u1"}`),
@@ -820,25 +820,26 @@ func TestMembersAddedJSON(t *testing.T) {
 	assert.Equal(t, ma, dst)
 }
 
-func TestMemberChangeEventJSON(t *testing.T) {
-	src := model.MemberChangeEvent{
-		Type:               "member-added",
+func TestMemberAddEventJSON(t *testing.T) {
+	src := model.MemberAddEvent{
+		Type:               "member_added",
 		RoomID:             "r1",
 		Accounts:           []string{"alice", "bob"},
+		Orgs:               []string{"engineering"},
 		SiteID:             "site-a",
-		UserIDs:            []string{"u1", "u2"},
 		JoinedAt:           1735689600000,
 		HistorySharedSince: 1735689600000,
+		Timestamp:          1735689600000,
 	}
 	data, err := json.Marshal(src)
 	require.NoError(t, err)
-	var dst model.MemberChangeEvent
+	var dst model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Equal(t, src, dst)
 
-	// UserIDs omitted when nil
-	src2 := model.MemberChangeEvent{
-		Type:     "subscription_created",
+	// Orgs omitted when nil
+	src2 := model.MemberAddEvent{
+		Type:     "member_added",
 		RoomID:   "r2",
 		Accounts: []string{"charlie"},
 		SiteID:   "site-b",
@@ -847,8 +848,8 @@ func TestMemberChangeEventJSON(t *testing.T) {
 	require.NoError(t, err)
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data2, &raw))
-	_, hasUserIDs := raw["userIds"]
-	assert.False(t, hasUserIDs, "userIds should be omitted when nil")
+	_, hasOrgs := raw["orgs"]
+	assert.False(t, hasOrgs, "orgs should be omitted when nil")
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
