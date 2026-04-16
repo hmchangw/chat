@@ -17,22 +17,21 @@ import (
 )
 
 type Handler struct {
-	store       Store
-	userStore   userstore.UserStore
-	threadStore ThreadStore
+	store        Store
+	userStore    userstore.UserStore
+	threadStore  ThreadStore
+	maxRedeliver int
 }
 
-func NewHandler(store Store, userStore userstore.UserStore, threadStore ThreadStore) *Handler {
-	return &Handler{store: store, userStore: userStore, threadStore: threadStore}
+func NewHandler(store Store, userStore userstore.UserStore, threadStore ThreadStore, maxRedeliver int) *Handler {
+	return &Handler{store: store, userStore: userStore, threadStore: threadStore, maxRedeliver: maxRedeliver}
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES_CANONICAL stream.
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	if err := h.processMessage(ctx, msg.Data()); err != nil {
 		slog.Error("process message failed", "error", err)
-		if err := msg.Nak(); err != nil {
-			slog.Error("failed to nack message", "error", err)
-		}
+		h.nackOrTerminate(msg, err)
 		return
 	}
 
@@ -40,6 +39,41 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 		slog.Error("failed to ack message", "err", err)
 	}
 }
+
+// nackOrTerminate decides whether to NAK (allow JetStream redelivery) or permanently
+// terminate the message. Once a message has been delivered more than maxRedeliver times
+// it will never succeed — terminate it so it is never redelivered again.
+// If metadata is unavailable we fall back to NAK to avoid silently dropping messages.
+func (h *Handler) nackOrTerminate(msg jetstream.Msg, processErr error) {
+	meta, err := msg.Metadata()
+	if err != nil {
+		slog.Error("failed to read message metadata, falling back to nak", "error", err)
+		if nakErr := msg.Nak(); nakErr != nil {
+			slog.Error("failed to nack message", "error", nakErr)
+		}
+		return
+	}
+
+	if meta.NumDelivered > uint64(h.maxRedeliver) {
+		slog.Warn("message exceeded max redeliver limit, dropping permanently",
+			"numDelivered", meta.NumDelivered,
+			"maxRedeliver", h.maxRedeliver,
+			"stream", meta.Stream,
+			"streamSeq", meta.Sequence.Stream,
+			"processError", processErr,
+		)
+		reason := fmt.Sprintf("exceeded max redeliver %d", h.maxRedeliver)
+		if termErr := msg.TermWithReason(reason); termErr != nil {
+			slog.Error("failed to terminate message", "error", termErr)
+		}
+		return
+	}
+
+	if nakErr := msg.Nak(); nakErr != nil {
+		slog.Error("failed to nack message", "error", nakErr)
+	}
+}
+
 
 func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	var evt model.MessageEvent
