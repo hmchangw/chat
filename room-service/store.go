@@ -6,7 +6,8 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-//go:generate mockgen -destination=mock_store_test.go -package=main . RoomStore
+//go:generate mockgen -source=store.go -destination=mock_store_test.go -package=main
+//go:generate mockgen -source=../pkg/roomkeystore/roomkeystore.go -destination=mock_keystore_test.go -package=main
 
 // SubscriptionWithMembership is the result of the GetSubscriptionWithMembership
 // aggregation — the target's subscription joined with both the individual and
