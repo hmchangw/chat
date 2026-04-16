@@ -198,7 +198,7 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	memberEvt := model.MemberChangeEvent{
+	memberEvt := model.MemberRemoveEvent{
 		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
 	}
 	payload, _ := json.Marshal(memberEvt)

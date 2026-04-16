@@ -527,7 +527,7 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 	})
 	store.mu.Unlock()
 
-	memberEvt := model.MemberChangeEvent{
+	memberEvt := model.MemberRemoveEvent{
 		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
 	}
 	payload, _ := json.Marshal(memberEvt)
@@ -674,7 +674,7 @@ func TestHandleEvent_MemberRemoved_OrgWithDualMembership(t *testing.T) {
 	)
 	store.mu.Unlock()
 
-	memberEvt := model.MemberChangeEvent{
+	memberEvt := model.MemberRemoveEvent{
 		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob", "carol"},
 		SiteID: "site-a", OrgID: "eng-org", Timestamp: time.Now().UnixMilli(),
 	}
@@ -712,7 +712,7 @@ func TestHandleEvent_MemberRemoved_OrgNoIndividualMembers(t *testing.T) {
 	)
 	store.mu.Unlock()
 
-	memberEvt := model.MemberChangeEvent{
+	memberEvt := model.MemberRemoveEvent{
 		Type: "member-removed", RoomID: "r2", Accounts: []string{"alice", "dave"},
 		SiteID: "site-a", OrgID: "finance-org", Timestamp: time.Now().UnixMilli(),
 	}
@@ -750,7 +750,7 @@ func TestHandleEvent_MemberRemoved_IndividualDeletesRoomMembers(t *testing.T) {
 	store.mu.Unlock()
 
 	// Individual removal (no OrgID)
-	memberEvt := model.MemberChangeEvent{
+	memberEvt := model.MemberRemoveEvent{
 		Type: "member-removed", RoomID: "r3", Accounts: []string{"bob"},
 		SiteID: "site-a", Timestamp: time.Now().UnixMilli(),
 	}

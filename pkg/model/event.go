@@ -111,7 +111,7 @@ type RoomKeyEvent struct {
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
 }
 
-type MemberChangeEvent struct {
+type MemberRemoveEvent struct {
 	Type      string   `json:"type"            bson:"type"`
 	RoomID    string   `json:"roomId"          bson:"roomId"`
 	Accounts  []string `json:"accounts"        bson:"accounts"`
