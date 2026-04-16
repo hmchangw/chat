@@ -6,22 +6,90 @@ services:
       - "8222:8222"
     command: ["--jetstream", "--http_port", "8222"]
 
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+
   cassandra:
     image: cassandra:5
     ports:
       - "9042:9042"
     environment:
       - CASSANDRA_CLUSTER_NAME=chat-dev
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "DESCRIBE KEYSPACES"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  cassandra-init:
+    image: cassandra:5
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        cqlsh cassandra <<'CQL'
+        CREATE KEYSPACE IF NOT EXISTS chat WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+        CREATE TYPE IF NOT EXISTS chat."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT);
+        CREATE TABLE IF NOT EXISTS chat.messages_by_room (
+          room_id    TEXT,
+          created_at TIMESTAMP,
+          message_id TEXT,
+          sender     FROZEN<"Participant">,
+          msg        TEXT,
+          site_id    TEXT,
+          updated_at TIMESTAMP,
+          mentions   SET<FROZEN<"Participant">>,
+          PRIMARY KEY ((room_id), created_at, message_id)
+        ) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+        CREATE TABLE IF NOT EXISTS chat.messages_by_id (
+          message_id TEXT,
+          created_at TIMESTAMP,
+          sender     FROZEN<"Participant">,
+          msg        TEXT,
+          site_id    TEXT,
+          updated_at TIMESTAMP,
+          mentions   SET<FROZEN<"Participant">>,
+          PRIMARY KEY (message_id, created_at)
+        ) WITH CLUSTERING ORDER BY (created_at DESC);
+        CREATE TABLE IF NOT EXISTS chat.thread_messages_by_room (
+          room_id           TEXT,
+          thread_room_id    TEXT,
+          created_at        TIMESTAMP,
+          message_id        TEXT,
+          thread_message_id TEXT,
+          sender            FROZEN<"Participant">,
+          msg               TEXT,
+          site_id           TEXT,
+          updated_at        TIMESTAMP,
+          mentions          SET<FROZEN<"Participant">>,
+          PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
+        ) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC);
+        CQL
+        echo "Schema initialized successfully"
 
   message-worker:
     build:
       context: ../..
       dockerfile: message-worker/deploy/Dockerfile
+    pull_policy: build
     environment:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
     depends_on:
-      - nats
-      - cassandra
+      nats:
+        condition: service_started
+      mongodb:
+        condition: service_started
+      cassandra-init:
+        condition: service_completed_successfully
