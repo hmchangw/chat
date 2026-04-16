@@ -215,3 +215,49 @@ func TestValkeyStore_Integration_DeleteBothKeys(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, prev)
 }
+
+func TestValkeyStore_GetMany(t *testing.T) {
+	store := setupValkey(t, time.Hour)
+	ctx := context.Background()
+
+	pub1 := bytes.Repeat([]byte{0x01}, 65)
+	priv1 := bytes.Repeat([]byte{0x02}, 32)
+	pub2 := bytes.Repeat([]byte{0x03}, 65)
+	priv2 := bytes.Repeat([]byte{0x04}, 32)
+	pub3 := bytes.Repeat([]byte{0x05}, 65)
+	priv3 := bytes.Repeat([]byte{0x06}, 32)
+
+	_, err := store.Set(ctx, "room-1", RoomKeyPair{PublicKey: pub1, PrivateKey: priv1})
+	require.NoError(t, err)
+	_, err = store.Set(ctx, "room-2", RoomKeyPair{PublicKey: pub2, PrivateKey: priv2})
+	require.NoError(t, err)
+	_, err = store.Set(ctx, "room-3", RoomKeyPair{PublicKey: pub3, PrivateKey: priv3})
+	require.NoError(t, err)
+
+	got, err := store.GetMany(ctx, []string{"room-1", "room-2", "room-3", "room-missing"})
+	require.NoError(t, err)
+	require.Len(t, got, 3, "missing room must be omitted from result")
+
+	require.Contains(t, got, "room-1")
+	assert.Equal(t, 0, got["room-1"].Version)
+	assert.Equal(t, pub1, got["room-1"].KeyPair.PublicKey)
+	assert.Equal(t, priv1, got["room-1"].KeyPair.PrivateKey)
+
+	require.Contains(t, got, "room-2")
+	assert.Equal(t, 0, got["room-2"].Version)
+	assert.Equal(t, pub2, got["room-2"].KeyPair.PublicKey)
+	assert.Equal(t, priv2, got["room-2"].KeyPair.PrivateKey)
+
+	require.Contains(t, got, "room-3")
+	assert.Equal(t, 0, got["room-3"].Version)
+	assert.Equal(t, pub3, got["room-3"].KeyPair.PublicKey)
+	assert.Equal(t, priv3, got["room-3"].KeyPair.PrivateKey)
+
+	_, missing := got["room-missing"]
+	assert.False(t, missing, "room-missing must not be present in result")
+
+	empty, err := store.GetMany(ctx, []string{})
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	assert.Empty(t, empty)
+}
