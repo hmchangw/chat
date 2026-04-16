@@ -13,7 +13,7 @@ import (
 
 // baseColumns are shared across messages_by_room and messages_by_id.
 const baseColumns = "room_id, created_at, message_id, sender, target_user, " +
-	"msg, mentions, attachments, file, card, card_action, tshow, " +
+	"msg, mentions, attachments, file, card, card_action, tshow, tcount, " +
 	"thread_parent_id, thread_parent_created_at, quoted_parent_message, " +
 	"visible_to, unread, reactions, deleted, " +
 	"type, sys_msg_data, site_id, edited_at, updated_at"
@@ -30,7 +30,7 @@ func baseScanDest(m *models.Message) []any {
 		&m.RoomID, &m.CreatedAt, &m.MessageID,
 		&m.Sender, &m.TargetUser, &m.Msg,
 		&m.Mentions, &m.Attachments, &m.File,
-		&m.Card, &m.CardAction, &m.TShow,
+		&m.Card, &m.CardAction, &m.TShow, &m.TCount,
 		&m.ThreadParentID, &m.ThreadParentCreatedAt, &m.QuotedParentMessage,
 		&m.VisibleTo, &m.Unread, &m.Reactions,
 		&m.Deleted, &m.Type, &m.SysMsgData,

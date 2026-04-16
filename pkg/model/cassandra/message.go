@@ -110,6 +110,7 @@ type Message struct {
 	Card                  *Card                    `json:"card,omitempty"`
 	CardAction            *CardAction              `json:"cardAction,omitempty"`
 	TShow                 bool                     `json:"tshow,omitempty"`
+	TCount                int                      `json:"tcount,omitempty"`
 	ThreadParentID        string                   `json:"threadParentId,omitempty"`
 	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty"`
 	QuotedParentMessage   *QuotedParentMessage     `json:"quotedParentMessage,omitempty"`
