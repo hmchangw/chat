@@ -29,6 +29,7 @@ type RoomStore interface {
 	CreateRoom(ctx context.Context, room *model.Room) error
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
 	ListRooms(ctx context.Context) ([]model.Room, error)
+	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error)

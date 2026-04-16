@@ -873,3 +873,57 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		// struct definition — and is documented here for reviewers.
 	})
 }
+
+func TestMongoStore_ListRoomsByIDs(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	seed := []model.Room{
+		{ID: "r1", Name: "one", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now},
+		{ID: "r2", Name: "two", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(1 * time.Second)},
+		{ID: "r3", Name: "three", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(2 * time.Second)},
+		{ID: "r4", Name: "four", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(3 * time.Second)},
+		{ID: "r5", Name: "five", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(4 * time.Second)},
+	}
+	for i := range seed {
+		if err := store.CreateRoom(ctx, &seed[i]); err != nil {
+			t.Fatalf("seed CreateRoom %q: %v", seed[i].ID, err)
+		}
+	}
+
+	t.Run("returns matches and skips missing", func(t *testing.T) {
+		rooms, err := store.ListRoomsByIDs(ctx, []string{"r1", "r3", "r5", "missing"})
+		if err != nil {
+			t.Fatalf("ListRoomsByIDs: %v", err)
+		}
+		if len(rooms) != 3 {
+			t.Fatalf("got %d rooms, want 3", len(rooms))
+		}
+		byID := map[string]model.Room{}
+		for _, r := range rooms {
+			byID[r.ID] = r
+		}
+		for _, id := range []string{"r1", "r3", "r5"} {
+			r, ok := byID[id]
+			if !ok {
+				t.Errorf("expected roomID %q in result", id)
+				continue
+			}
+			if r.LastMsgAt.IsZero() {
+				t.Errorf("room %q: LastMsgAt is zero", id)
+			}
+		}
+	})
+
+	t.Run("empty slice returns nil without error", func(t *testing.T) {
+		rooms, err := store.ListRoomsByIDs(ctx, nil)
+		if err != nil {
+			t.Fatalf("ListRoomsByIDs(nil): %v", err)
+		}
+		if rooms != nil {
+			t.Errorf("got %v, want nil", rooms)
+		}
+	})
+}
