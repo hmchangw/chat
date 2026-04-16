@@ -216,7 +216,7 @@ func TestValkeyStore_Integration_DeleteBothKeys(t *testing.T) {
 	assert.Nil(t, prev)
 }
 
-func TestValkeyStore_GetMany(t *testing.T) {
+func TestValkeyStore_Integration_GetMany(t *testing.T) {
 	store := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
