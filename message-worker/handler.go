@@ -53,16 +53,23 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	}
 	evt.Message.Mentions = resolved.Participants
 
+	var sender *cassParticipant
 	user, err := h.userStore.FindUserByID(ctx, evt.Message.UserID)
 	if err != nil {
-		return fmt.Errorf("lookup user %s: %w", evt.Message.UserID, err)
-	}
-
-	sender := cassParticipant{
-		ID:          user.ID,
-		EngName:     user.EngName,
-		CompanyName: user.ChineseName,
-		Account:     evt.Message.UserAccount,
+		if evt.Message.Type != "" {
+			// System messages may have no real user; proceed with nil sender.
+			slog.Warn("user not found for system message, using nil sender",
+				"userID", evt.Message.UserID, "type", evt.Message.Type)
+		} else {
+			return fmt.Errorf("lookup user %s: %w", evt.Message.UserID, err)
+		}
+	} else {
+		sender = &cassParticipant{
+			ID:          user.ID,
+			EngName:     user.EngName,
+			CompanyName: user.ChineseName,
+			Account:     evt.Message.UserAccount,
+		}
 	}
 
 	if evt.Message.ThreadParentMessageID != "" {
@@ -72,11 +79,11 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		if err != nil {
 			return fmt.Errorf("handle thread room and subscriptions: %w", err)
 		}
-		if err := h.store.SaveThreadMessage(ctx, &evt.Message, &sender, evt.SiteID, threadRoomID); err != nil {
+		if err := h.store.SaveThreadMessage(ctx, &evt.Message, sender, evt.SiteID, threadRoomID); err != nil {
 			return fmt.Errorf("save thread message: %w", err)
 		}
 	} else {
-		if err := h.store.SaveMessage(ctx, &evt.Message, &sender, evt.SiteID); err != nil {
+		if err := h.store.SaveMessage(ctx, &evt.Message, sender, evt.SiteID); err != nil {
 			return fmt.Errorf("save message: %w", err)
 		}
 	}
