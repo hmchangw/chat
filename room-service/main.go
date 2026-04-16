@@ -72,7 +72,7 @@ func main() {
 	}
 
 	store := NewMongoStore(db)
-	handler := NewHandler(store, cfg.SiteID, cfg.MaxRoomSize, func(ctx context.Context, subj string, data []byte) error {
+	handler := NewHandler(store, nil, cfg.SiteID, cfg.MaxRoomSize, 500, func(ctx context.Context, subj string, data []byte) error {
 		if _, err := js.Publish(ctx, subj, data); err != nil {
 			return fmt.Errorf("publish to %q: %w", subj, err)
 		}

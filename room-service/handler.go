@@ -14,18 +14,21 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type Handler struct {
 	store           RoomStore
+	keyStore        roomkeystore.RoomKeyStore
 	siteID          string
 	maxRoomSize     int
+	maxBatchSize    int
 	publishToStream func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, siteID string, maxRoomSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
-	return &Handler{store: store, siteID: siteID, maxRoomSize: maxRoomSize, publishToStream: publishToStream}
+func NewHandler(store RoomStore, keyStore roomkeystore.RoomKeyStore, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
+	return &Handler{store: store, keyStore: keyStore, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
 }
 
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
@@ -38,6 +41,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 		return err
 	}
 	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
+		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchWildcard(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
 		return err
 	}
 	if _, err := nc.QueueSubscribe(subject.MemberInviteWildcard(h.siteID), queue, h.NatsHandleInvite); err != nil {
@@ -558,4 +564,8 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 	}
 
 	return orgIDs, accounts, nil
+}
+
+func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
+	natsutil.ReplyError(m.Msg, "not implemented")
 }
