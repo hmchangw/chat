@@ -28,6 +28,7 @@ type VersionedKeyPair struct {
 type RoomKeyStore interface {
 	Set(ctx context.Context, roomID string, pair RoomKeyPair) (int, error)
 	Get(ctx context.Context, roomID string) (*VersionedKeyPair, error)
+	GetMany(ctx context.Context, roomIDs []string) (map[string]*VersionedKeyPair, error)
 	GetByVersion(ctx context.Context, roomID string, version int) (*RoomKeyPair, error)
 	Rotate(ctx context.Context, roomID string, newPair RoomKeyPair) (int, error)
 	Delete(ctx context.Context, roomID string) error
@@ -45,6 +46,7 @@ type Config struct {
 type hashCommander interface {
 	hset(ctx context.Context, key string, pub, priv string) error
 	hgetall(ctx context.Context, key string) (map[string]string, error)
+	hgetallMany(ctx context.Context, keys []string) ([]map[string]string, error)
 	rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv string, gracePeriod time.Duration) (int, error)
 	deletePipeline(ctx context.Context, currentKey, prevKey string) error
 }
@@ -98,6 +100,39 @@ func (s *valkeyStore) Get(ctx context.Context, roomID string) (*VersionedKeyPair
 		Version: ver,
 		KeyPair: *pair,
 	}, nil
+}
+
+// GetMany retrieves the current key pairs for multiple roomIDs in a single batch call.
+// Returns a map of roomID to VersionedKeyPair for rooms that exist; absent rooms are omitted.
+func (s *valkeyStore) GetMany(ctx context.Context, roomIDs []string) (map[string]*VersionedKeyPair, error) {
+	if len(roomIDs) == 0 {
+		return map[string]*VersionedKeyPair{}, nil
+	}
+	keys := make([]string, len(roomIDs))
+	for i, id := range roomIDs {
+		keys[i] = roomkey(id)
+	}
+	results, err := s.client.hgetallMany(ctx, keys)
+	if err != nil {
+		return nil, fmt.Errorf("get many room keys: %w", err)
+	}
+	out := make(map[string]*VersionedKeyPair, len(roomIDs))
+	for i, fields := range results {
+		if len(fields) == 0 {
+			continue
+		}
+		roomID := roomIDs[i]
+		ver, err := strconv.Atoi(fields["ver"])
+		if err != nil {
+			return nil, fmt.Errorf("get many room keys: room %s: parse version: %w", roomID, err)
+		}
+		pair, err := decodeKeyPair(fields)
+		if err != nil {
+			return nil, fmt.Errorf("get many room keys: room %s: %w", roomID, err)
+		}
+		out[roomID] = &VersionedKeyPair{Version: ver, KeyPair: *pair}
+	}
+	return out, nil
 }
 
 // GetByVersion retrieves the key pair matching version from either the current or previous slot.

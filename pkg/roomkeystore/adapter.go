@@ -65,6 +65,10 @@ func (a *redisAdapter) deletePipeline(ctx context.Context, currentKey, prevKey s
 	return a.c.Del(ctx, currentKey, prevKey).Err()
 }
 
+func (a *redisAdapter) hgetallMany(_ context.Context, _ []string) ([]map[string]string, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
 // NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
 func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
 	c := redis.NewClient(&redis.Options{
