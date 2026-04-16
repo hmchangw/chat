@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -567,5 +571,114 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 }
 
 func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
-	natsutil.ReplyError(m.Msg, "not implemented")
+	account, _, _, _ := subject.ParseUserRoomSiteSubject(m.Msg.Subject)
+	resp, err := h.handleRoomsInfoBatch(m.Context(), account, m.Msg.Data)
+	if err != nil {
+		natsutil.ReplyError(m.Msg, err.Error())
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
+}
+
+func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data []byte) ([]byte, error) {
+	start := time.Now()
+	var req model.RoomsInfoBatchRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if len(req.RoomIDs) == 0 {
+		return nil, fmt.Errorf("roomIds must not be empty")
+	}
+	if len(req.RoomIDs) > h.maxBatchSize {
+		return nil, fmt.Errorf("batch size %d exceeds limit %d", len(req.RoomIDs), h.maxBatchSize)
+	}
+
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.Int("batch_size", len(req.RoomIDs)),
+			attribute.String("site_id", h.siteID),
+		)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var (
+		rooms []model.Room
+		keys  map[string]*roomkeystore.VersionedKeyPair
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		r, err := h.store.ListRoomsByIDs(gctx, req.RoomIDs)
+		if err != nil {
+			return fmt.Errorf("list rooms by ids: %w", err)
+		}
+		rooms = r
+		return nil
+	})
+	g.Go(func() error {
+		k, err := h.keyStore.GetMany(gctx, req.RoomIDs)
+		if err != nil {
+			return fmt.Errorf("get room keys: %w", err)
+		}
+		keys = k
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	infos := h.aggregateRoomInfo(req.RoomIDs, rooms, keys)
+
+	foundCount, keyedCount := 0, 0
+	for _, ri := range infos {
+		if ri.Found {
+			foundCount++
+		}
+		if ri.PrivateKey != nil {
+			keyedCount++
+		}
+	}
+	slog.Info("rooms info batch handled",
+		"account", account,
+		"site_id", h.siteID,
+		"batch_size", len(req.RoomIDs),
+		"found_count", foundCount,
+		"keyed_count", keyedCount,
+		"latency_ms", time.Since(start).Milliseconds(),
+	)
+
+	return json.Marshal(model.RoomsInfoBatchResponse{Rooms: infos})
+}
+
+func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[string]*roomkeystore.VersionedKeyPair) []model.RoomInfo {
+	byID := make(map[string]*model.Room, len(rooms))
+	for i := range rooms {
+		byID[rooms[i].ID] = &rooms[i]
+	}
+	out := make([]model.RoomInfo, len(ids))
+	for i, id := range ids {
+		entry := model.RoomInfo{RoomID: id}
+		r, ok := byID[id]
+		if !ok {
+			out[i] = entry
+			continue
+		}
+		entry.Found = true
+		entry.SiteID = r.SiteID
+		entry.Name = r.Name
+		if !r.LastMsgAt.IsZero() {
+			entry.LastMsgAt = r.LastMsgAt.UTC().UnixMilli()
+		}
+		if kp, ok := keys[id]; ok && kp != nil {
+			enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
+			ver := kp.Version
+			entry.PrivateKey = &enc
+			entry.KeyVersion = &ver
+		}
+		out[i] = entry
+	}
+	return out
 }

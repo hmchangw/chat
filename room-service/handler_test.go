@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -1361,6 +1363,203 @@ func TestHandler_ListOrgMembers(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.want.members, resp.Members)
+		})
+	}
+}
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	require.NoError(t, err)
+	return data
+}
+
+func TestHandler_handleRoomsInfoBatch(t *testing.T) {
+	// Shared key material for tests that need Valkey keys.
+	privBytes := []byte("01234567890123456789012345678901") // 32 bytes
+	privB64 := base64.StdEncoding.EncodeToString(privBytes)
+
+	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		payload    []byte
+		setupStore func(*MockRoomStore)
+		setupKeys  func(*MockRoomKeyStore)
+		wantErr    string
+		assertResp func(t *testing.T, resp model.RoomsInfoBatchResponse)
+	}{
+		{
+			name:    "happy path — 3 rooms, 2 keyed, order preserved",
+			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r2", "r3"}}),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1", "r2", "r3"}).Return([]model.Room{
+					{ID: "r1", Name: "general", SiteID: "site-a"},
+					{ID: "r2", Name: "random", SiteID: "site-a"},
+					{ID: "r3", Name: "help", SiteID: "site-b"},
+				}, nil)
+			},
+			setupKeys: func(k *MockRoomKeyStore) {
+				k.EXPECT().GetMany(gomock.Any(), []string{"r1", "r2", "r3"}).Return(map[string]*roomkeystore.VersionedKeyPair{
+					"r1": {Version: 1, KeyPair: roomkeystore.RoomKeyPair{PrivateKey: privBytes, PublicKey: []byte("pub1")}},
+					"r3": {Version: 5, KeyPair: roomkeystore.RoomKeyPair{PrivateKey: privBytes, PublicKey: []byte("pub3")}},
+				}, nil)
+			},
+			assertResp: func(t *testing.T, resp model.RoomsInfoBatchResponse) {
+				require.Len(t, resp.Rooms, 3)
+
+				// r1: found, keyed
+				assert.Equal(t, "r1", resp.Rooms[0].RoomID)
+				assert.True(t, resp.Rooms[0].Found)
+				assert.Equal(t, "general", resp.Rooms[0].Name)
+				require.NotNil(t, resp.Rooms[0].PrivateKey)
+				assert.Equal(t, privB64, *resp.Rooms[0].PrivateKey)
+				require.NotNil(t, resp.Rooms[0].KeyVersion)
+				assert.Equal(t, 1, *resp.Rooms[0].KeyVersion)
+
+				// r2: found, no key
+				assert.Equal(t, "r2", resp.Rooms[1].RoomID)
+				assert.True(t, resp.Rooms[1].Found)
+				assert.Nil(t, resp.Rooms[1].PrivateKey)
+				assert.Nil(t, resp.Rooms[1].KeyVersion)
+
+				// r3: found, keyed
+				assert.Equal(t, "r3", resp.Rooms[2].RoomID)
+				assert.True(t, resp.Rooms[2].Found)
+				require.NotNil(t, resp.Rooms[2].PrivateKey)
+				assert.Equal(t, 5, *resp.Rooms[2].KeyVersion)
+			},
+		},
+		{
+			name:    "missing room — Found=false, LastMsgAt=0",
+			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r-missing"}}),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r-missing"}).Return([]model.Room{}, nil)
+			},
+			setupKeys: func(k *MockRoomKeyStore) {
+				k.EXPECT().GetMany(gomock.Any(), []string{"r-missing"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+			},
+			assertResp: func(t *testing.T, resp model.RoomsInfoBatchResponse) {
+				require.Len(t, resp.Rooms, 1)
+				assert.Equal(t, "r-missing", resp.Rooms[0].RoomID)
+				assert.False(t, resp.Rooms[0].Found)
+				assert.Equal(t, int64(0), resp.Rooms[0].LastMsgAt)
+			},
+		},
+		{
+			name:    "empty RoomIDs → must not be empty",
+			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{}}),
+			wantErr: "must not be empty",
+		},
+		{
+			name: "oversized batch → exceeds limit",
+			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: func() []string {
+				ids := make([]string, 101)
+				for i := range ids {
+					ids[i] = fmt.Sprintf("r%d", i)
+				}
+				return ids
+			}()}),
+			wantErr: "exceeds limit",
+		},
+		{
+			name:    "invalid JSON → invalid request",
+			payload: []byte("not json"),
+			wantErr: "invalid request",
+		},
+		{
+			name:    "Mongo error → list rooms by ids",
+			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}}),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1"}).Return(nil, errors.New("mongo timeout"))
+			},
+			setupKeys: func(k *MockRoomKeyStore) {
+				k.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil).AnyTimes()
+			},
+			wantErr: "list rooms by ids",
+		},
+		{
+			name:    "Valkey error → get room keys",
+			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}}),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1"}).Return([]model.Room{{ID: "r1", Name: "x", SiteID: "s"}}, nil).AnyTimes()
+			},
+			setupKeys: func(k *MockRoomKeyStore) {
+				k.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(nil, errors.New("valkey down"))
+			},
+			wantErr: "get room keys",
+		},
+		{
+			name:    "duplicate IDs → 2 entries",
+			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r1"}}),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1", "r1"}).Return([]model.Room{
+					{ID: "r1", Name: "general", SiteID: "site-a"},
+				}, nil)
+			},
+			setupKeys: func(k *MockRoomKeyStore) {
+				k.EXPECT().GetMany(gomock.Any(), []string{"r1", "r1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+			},
+			assertResp: func(t *testing.T, resp model.RoomsInfoBatchResponse) {
+				require.Len(t, resp.Rooms, 2)
+				assert.Equal(t, "r1", resp.Rooms[0].RoomID)
+				assert.True(t, resp.Rooms[0].Found)
+				assert.Equal(t, "r1", resp.Rooms[1].RoomID)
+				assert.True(t, resp.Rooms[1].Found)
+			},
+		},
+		{
+			name:    "LastMsgAt set → correct millis",
+			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}}),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1"}).Return([]model.Room{
+					{ID: "r1", Name: "general", SiteID: "site-a", LastMsgAt: now},
+				}, nil)
+			},
+			setupKeys: func(k *MockRoomKeyStore) {
+				k.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+			},
+			assertResp: func(t *testing.T, resp model.RoomsInfoBatchResponse) {
+				require.Len(t, resp.Rooms, 1)
+				assert.Equal(t, now.UTC().UnixMilli(), resp.Rooms[0].LastMsgAt)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			keyStore := NewMockRoomKeyStore(ctrl)
+
+			if tc.setupStore != nil {
+				tc.setupStore(store)
+			}
+			if tc.setupKeys != nil {
+				tc.setupKeys(keyStore)
+			}
+
+			h := &Handler{
+				store:        store,
+				keyStore:     keyStore,
+				siteID:       "site-a",
+				maxBatchSize: 100,
+			}
+
+			resp, err := h.handleRoomsInfoBatch(context.Background(), "tester", tc.payload)
+
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.True(t, strings.Contains(err.Error(), tc.wantErr),
+					"error %q should contain %q", err.Error(), tc.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			var batchResp model.RoomsInfoBatchResponse
+			require.NoError(t, json.Unmarshal(resp, &batchResp))
+			if tc.assertResp != nil {
+				tc.assertResp(t, batchResp)
+			}
 		})
 	}
 }
