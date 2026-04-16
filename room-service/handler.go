@@ -139,7 +139,8 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
 	resp, err := h.handleRemoveMember(m.Context(), m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
+		slog.Error("remove member failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -157,6 +158,11 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
+
+	if req.RoomID != "" && req.RoomID != roomID {
+		return nil, fmt.Errorf("room ID mismatch")
+	}
+	req.RoomID = roomID
 
 	// Exactly one of Account or OrgID must be set.
 	if (req.Account == "") == (req.OrgID == "") {
@@ -195,6 +201,11 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	// Publish to ROOMS stream for room-worker processing.
+	var err error
+	data, err = json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal remove member request: %w", err)
+	}
 	if err := h.publishToStream(ctx, subj, data); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}

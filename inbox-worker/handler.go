@@ -139,6 +139,9 @@ func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEven
 			}
 		}
 	} else {
+		if len(memberEvt.Accounts) != 1 {
+			return fmt.Errorf("member_removed individual event must contain exactly one account")
+		}
 		// Individual removal: delete subscription + individual room_members
 		if err := h.store.DeleteSubscription(ctx, memberEvt.RoomID, memberEvt.Accounts[0]); err != nil {
 			return fmt.Errorf("delete subscription: %w", err)
