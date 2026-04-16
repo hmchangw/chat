@@ -80,10 +80,11 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 	return nil
 }
 
-// SaveThreadMessage inserts a thread reply into messages_by_id and thread_messages_by_room.
+// SaveThreadMessage inserts a thread reply into messages_by_id and thread_messages_by_room,
+// then increments tcount on the parent message in both messages_by_id and messages_by_room.
 // threadRoomID is the ID of the ThreadRoom document that anchors this thread (created or
 // fetched by handleThreadRoomAndSubscriptions before this call).
-// If either insert fails the error is returned immediately; JetStream will redeliver the message.
+// If any operation fails the error is returned immediately; JetStream will redeliver the message.
 func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
 	if err := s.cassSession.Query(
 		`INSERT INTO messages_by_id
@@ -104,6 +105,55 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
+	}
+
+	if err := s.incrementParentTcount(ctx, msg); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// incrementParentTcount increments tcount on the parent message row in both
+// messages_by_id and messages_by_room. It is a read-modify-write operation;
+// tcount uses Cassandra INT (not COUNTER) so atomic increment is not available.
+// Race conditions on concurrent replies to the same parent are accepted by design.
+// If ThreadParentMessageCreatedAt is nil the increment is silently skipped —
+// tcount cannot be updated without the full primary key of the parent row.
+func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.Message) error {
+	if msg.ThreadParentMessageCreatedAt == nil {
+		return nil
+	}
+	parentID := msg.ThreadParentMessageID
+	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
+
+	var tcount int
+	err := s.cassSession.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		parentID, parentCreatedAt,
+	).WithContext(ctx).Scan(&tcount)
+	if errors.Is(err, gocql.ErrNotFound) {
+		// Parent row absent in Cassandra — nothing to increment.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read tcount for parent message %s: %w", parentID, err)
+	}
+
+	newCount := tcount + 1
+
+	if err := s.cassSession.Query(
+		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ?`,
+		newCount, parentID, parentCreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update tcount in messages_by_id for parent %s: %w", parentID, err)
+	}
+
+	if err := s.cassSession.Query(
+		`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		newCount, msg.RoomID, parentCreatedAt, parentID,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update tcount in messages_by_room for parent %s: %w", parentID, err)
 	}
 
 	return nil
