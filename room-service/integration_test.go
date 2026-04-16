@@ -3,19 +3,29 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
@@ -37,6 +47,40 @@ func setupMongo(t *testing.T) *mongo.Database {
 	}
 	t.Cleanup(func() { client.Disconnect(ctx) })
 	return client.Database("chat_test")
+}
+
+func setupValkey(t *testing.T) *roomkeystore.Config {
+	t.Helper()
+	ctx := context.Background()
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "valkey/valkey:8",
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor:   wait.ForLog("Ready to accept connections"),
+		},
+		Started: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	host, err := container.Host(ctx)
+	require.NoError(t, err)
+	port, err := container.MappedPort(ctx, "6379")
+	require.NoError(t, err)
+	return &roomkeystore.Config{
+		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
+		GracePeriod: time.Hour,
+	}
+}
+
+func setupNATS(t *testing.T) string {
+	t.Helper()
+	ctx := context.Background()
+	container, err := natsmod.Run(ctx, "nats:2.11-alpine")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	url, err := container.ConnectionString(ctx)
+	require.NoError(t, err)
+	return url
 }
 
 func TestMongoStore_Integration(t *testing.T) {
@@ -926,4 +970,81 @@ func TestMongoStore_ListRoomsByIDs(t *testing.T) {
 			t.Errorf("got %v, want nil", rooms)
 		}
 	})
+}
+
+func TestRoomsInfoBatchRPC(t *testing.T) {
+	db := setupMongo(t)
+	valCfg := setupValkey(t)
+	natsURL := setupNATS(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	lastMsg := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	rooms := []model.Room{
+		{ID: "r1", Name: "room-1", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: lastMsg},
+		{ID: "r2", Name: "room-2", Type: model.RoomTypeGroup, SiteID: "site-a"},
+		{ID: "r3", Name: "room-3", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: lastMsg.Add(-time.Hour)},
+	}
+	for _, r := range rooms {
+		require.NoError(t, store.CreateRoom(ctx, &r))
+	}
+
+	pubKey := bytes.Repeat([]byte{0xAB}, 65)
+	privKey1 := bytes.Repeat([]byte{0x01}, 32)
+	privKey2 := bytes.Repeat([]byte{0x02}, 32)
+	_, err = keyStore.Set(ctx, "r1", roomkeystore.RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey1})
+	require.NoError(t, err)
+	_, err = keyStore.Set(ctx, "r2", roomkeystore.RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey2})
+	require.NoError(t, err)
+
+	otelNC, err := otelnats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNC.Drain() })
+
+	handler := NewHandler(store, keyStore, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	require.NoError(t, handler.RegisterCRUD(otelNC))
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Drain() })
+
+	req := model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r2", "r3", "missing"}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	msg, err := nc.Request(subject.RoomsInfoBatch("tester", "site-a"), data, 3*time.Second)
+	require.NoError(t, err)
+
+	var resp model.RoomsInfoBatchResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.Len(t, resp.Rooms, 4)
+
+	assert.Equal(t, "r1", resp.Rooms[0].RoomID)
+	assert.True(t, resp.Rooms[0].Found)
+	assert.Equal(t, lastMsg.UnixMilli(), resp.Rooms[0].LastMsgAt)
+	require.NotNil(t, resp.Rooms[0].PrivateKey)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(privKey1), *resp.Rooms[0].PrivateKey)
+	require.NotNil(t, resp.Rooms[0].KeyVersion)
+	assert.Equal(t, 0, *resp.Rooms[0].KeyVersion)
+
+	assert.Equal(t, "r2", resp.Rooms[1].RoomID)
+	assert.True(t, resp.Rooms[1].Found)
+	assert.Equal(t, int64(0), resp.Rooms[1].LastMsgAt)
+	require.NotNil(t, resp.Rooms[1].PrivateKey)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(privKey2), *resp.Rooms[1].PrivateKey)
+
+	assert.Equal(t, "r3", resp.Rooms[2].RoomID)
+	assert.True(t, resp.Rooms[2].Found)
+	assert.Nil(t, resp.Rooms[2].PrivateKey)
+	assert.Nil(t, resp.Rooms[2].KeyVersion)
+
+	assert.Equal(t, "missing", resp.Rooms[3].RoomID)
+	assert.False(t, resp.Rooms[3].Found)
+	assert.Equal(t, int64(0), resp.Rooms[3].LastMsgAt)
+	assert.Nil(t, resp.Rooms[3].PrivateKey)
+	assert.Nil(t, resp.Rooms[3].KeyVersion)
 }
