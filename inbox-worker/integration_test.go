@@ -127,8 +127,9 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
+		subCol:         db.Collection("subscriptions"),
+		roomCol:        db.Collection("rooms"),
+		roomMembersCol: db.Collection("room_members"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
@@ -171,11 +172,10 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 		t.Errorf("roles = %v, want to contain owner", sub.Roles)
 	}
 
-	if len(pub.subjects) != 1 {
-		t.Fatalf("expected 1 publish, got %d", len(pub.subjects))
-	}
-	if pub.subjects[0] != "chat.user.bob.event.subscription.update" {
-		t.Errorf("subject = %q, want bob subscription update", pub.subjects[0])
+	// No SubscriptionUpdateEvent is published — room-worker already handles
+	// user notification via NATS supercluster routing.
+	if len(pub.subjects) != 0 {
+		t.Fatalf("expected 0 publishes (room-worker handles notification), got %d", len(pub.subjects))
 	}
 }
 
