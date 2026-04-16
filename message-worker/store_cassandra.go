@@ -16,59 +16,18 @@ import (
 var errMessageNotFound = errors.New("message not found")
 
 // cassParticipant maps to the Cassandra "Participant" UDT.
+// cql struct tags tell gocql's reflection-based UDT marshaler how to map each
+// Go field to its Cassandra UDT field name. Without these tags, gocql would
+// lowercase the Go field names (e.g. "EngName" → "engname") which would not
+// match the snake_case UDT fields (e.g. "eng_name").
 type cassParticipant struct {
-	ID          string
-	EngName     string
-	CompanyName string // ChineseName
-	Account     string
-	AppID       string
-	AppName     string
-	IsBot       bool
-}
-
-// MarshalUDT implements gocql.UDTMarshaler for cassParticipant.
-func (p *cassParticipant) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
-	switch name {
-	case "id":
-		return gocql.Marshal(info, p.ID)
-	case "eng_name":
-		return gocql.Marshal(info, p.EngName)
-	case "company_name":
-		return gocql.Marshal(info, p.CompanyName)
-	case "account":
-		return gocql.Marshal(info, p.Account)
-	case "app_id":
-		return gocql.Marshal(info, p.AppID)
-	case "app_name":
-		return gocql.Marshal(info, p.AppName)
-	case "is_bot":
-		return gocql.Marshal(info, p.IsBot)
-	default:
-		return nil, nil
-	}
-}
-
-// UnmarshalUDT implements gocql.UDTUnmarshaler for cassParticipant.
-// Required to scan SET<FROZEN<"Participant">> columns back from Cassandra.
-func (p *cassParticipant) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte) error {
-	switch name {
-	case "id":
-		return gocql.Unmarshal(info, data, &p.ID)
-	case "eng_name":
-		return gocql.Unmarshal(info, data, &p.EngName)
-	case "company_name":
-		return gocql.Unmarshal(info, data, &p.CompanyName)
-	case "account":
-		return gocql.Unmarshal(info, data, &p.Account)
-	case "app_id":
-		return gocql.Unmarshal(info, data, &p.AppID)
-	case "app_name":
-		return gocql.Unmarshal(info, data, &p.AppName)
-	case "is_bot":
-		return gocql.Unmarshal(info, data, &p.IsBot)
-	default:
-		return nil
-	}
+	ID          string `cql:"id"`
+	EngName     string `cql:"eng_name"`
+	CompanyName string `cql:"company_name"` // ChineseName
+	Account     string `cql:"account"`
+	AppID       string `cql:"app_id"`
+	AppName     string `cql:"app_name"`
+	IsBot       bool   `cql:"is_bot"`
 }
 
 // toMentionSet converts []model.Participant to []*cassParticipant for binding
