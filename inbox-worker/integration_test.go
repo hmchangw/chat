@@ -198,6 +198,12 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	_, err = store.roomMembersCol.InsertOne(ctx, model.RoomMember{
+		ID: "rm1", RoomID: "r1", Ts: time.Now().UTC(),
+		Member: model.RoomMemberEntry{ID: "bob", Type: model.RoomMemberIndividual, Account: "bob"},
+	})
+	require.NoError(t, err)
+
 	memberEvt := model.MemberRemoveEvent{
 		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
 	}
@@ -213,4 +219,8 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 	count, err := store.subCol.CountDocuments(ctx, bson.M{"u._id": "u1", "roomId": "r1"})
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
+
+	rmCount, err := store.roomMembersCol.CountDocuments(ctx, bson.M{"rid": "r1", "member.account": "bob"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), rmCount)
 }

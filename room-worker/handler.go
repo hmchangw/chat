@@ -253,7 +253,11 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req 
 
 	// Subscription update event
 	subEvt := model.SubscriptionUpdateEvent{
-		UserID:    user.ID,
+		UserID: user.ID,
+		Subscription: model.Subscription{
+			RoomID: req.RoomID,
+			User:   model.SubscriptionUser{ID: user.ID, Account: req.Account},
+		},
 		Action:    "removed",
 		Timestamp: now.UnixMilli(),
 	}
@@ -371,6 +375,10 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 			sectName = m.SectName
 		}
 		subEvt := model.SubscriptionUpdateEvent{
+			Subscription: model.Subscription{
+				RoomID: req.RoomID,
+				User:   model.SubscriptionUser{Account: m.Account},
+			},
 			Action:    "removed",
 			Timestamp: now.UnixMilli(),
 		}
