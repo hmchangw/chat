@@ -290,7 +290,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
 						assert.Equal(t, "u-replier", sub.UserID)
 						assert.Equal(t, "replier", sub.UserAccount)
-						assert.Equal(t, now, sub.LastSeenAt, "replier's LastSeenAt should be now")
+						assert.True(t, sub.LastSeenAt.IsZero(), "replier's LastSeenAt should be zero on init")
 						return nil
 					})
 			},
@@ -404,7 +404,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
 						assert.Equal(t, "tr-existing", sub.ThreadRoomID)
 						assert.Equal(t, "u-replier", sub.UserID)
-						assert.Equal(t, now, sub.LastSeenAt, "replier's LastSeenAt should be now")
+						assert.True(t, sub.LastSeenAt.IsZero(), "replier's LastSeenAt should be zero on init")
 						return nil
 					})
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).
@@ -506,16 +506,16 @@ func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) {
 	}
 	return &jetstream.MsgMetadata{NumDelivered: m.numDelivered}, nil
 }
-func (m *fakeJSMsg) Headers() nats.Header              { return nil }
-func (m *fakeJSMsg) Subject() string                   { return "test.subject" }
-func (m *fakeJSMsg) Reply() string                     { return "" }
-func (m *fakeJSMsg) Ack() error                        { m.acked = true; return nil }
-func (m *fakeJSMsg) DoubleAck(context.Context) error   { m.acked = true; return nil }
-func (m *fakeJSMsg) Nak() error                        { m.naked = true; return nil }
-func (m *fakeJSMsg) NakWithDelay(time.Duration) error  { m.naked = true; return nil }
-func (m *fakeJSMsg) InProgress() error                 { return nil }
-func (m *fakeJSMsg) Term() error                       { m.termed = true; return nil }
-func (m *fakeJSMsg) TermWithReason(string) error       { m.termed = true; return nil }
+func (m *fakeJSMsg) Headers() nats.Header             { return nil }
+func (m *fakeJSMsg) Subject() string                  { return "test.subject" }
+func (m *fakeJSMsg) Reply() string                    { return "" }
+func (m *fakeJSMsg) Ack() error                       { m.acked = true; return nil }
+func (m *fakeJSMsg) DoubleAck(context.Context) error  { m.acked = true; return nil }
+func (m *fakeJSMsg) Nak() error                       { m.naked = true; return nil }
+func (m *fakeJSMsg) NakWithDelay(time.Duration) error { m.naked = true; return nil }
+func (m *fakeJSMsg) InProgress() error                { return nil }
+func (m *fakeJSMsg) Term() error                      { m.termed = true; return nil }
+func (m *fakeJSMsg) TermWithReason(string) error      { m.termed = true; return nil }
 
 func TestHandler_HandleJetStreamMsg(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -579,11 +579,11 @@ func TestHandler_HandleJetStreamMsg(t *testing.T) {
 			wantTerm:     true,
 		},
 		{
-			name:         "metadata error — fallback to Nak",
-			msgData:      invalidData,
-			metaErr:      errors.New("nats: metadata unavailable"),
-			setupMocks:   func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {},
-			wantNak:      true,
+			name:       "metadata error — fallback to Nak",
+			msgData:    invalidData,
+			metaErr:    errors.New("nats: metadata unavailable"),
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {},
+			wantNak:    true,
 		},
 	}
 
