@@ -52,26 +52,29 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			PRIMARY KEY ((room_id), created_at, message_id)
 		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`,
 		`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
-			message_id TEXT,
-			created_at TIMESTAMP,
-			sender     FROZEN<"Participant">,
-			msg        TEXT,
-			site_id    TEXT,
-			updated_at TIMESTAMP,
-			mentions   SET<FROZEN<"Participant">>,
+			message_id              TEXT,
+			created_at              TIMESTAMP,
+			sender                  FROZEN<"Participant">,
+			msg                     TEXT,
+			site_id                 TEXT,
+			updated_at              TIMESTAMP,
+			mentions                SET<FROZEN<"Participant">>,
+			thread_room_id          TEXT,
+			thread_parent_id        TEXT,
+			thread_parent_created_at TIMESTAMP,
 			PRIMARY KEY (message_id, created_at)
 		) WITH CLUSTERING ORDER BY (created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS chat_test.thread_messages_by_room (
-			room_id            TEXT,
-			thread_room_id     TEXT,
-			created_at         TIMESTAMP,
-			message_id         TEXT,
-			thread_message_id  TEXT,
-			sender             FROZEN<"Participant">,
-			msg                TEXT,
-			site_id            TEXT,
-			updated_at         TIMESTAMP,
-			mentions           SET<FROZEN<"Participant">>,
+			room_id          TEXT,
+			thread_room_id   TEXT,
+			created_at       TIMESTAMP,
+			message_id       TEXT,
+			thread_parent_id TEXT,
+			sender           FROZEN<"Participant">,
+			msg              TEXT,
+			site_id          TEXT,
+			updated_at       TIMESTAMP,
+			mentions         SET<FROZEN<"Participant">>,
 			PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
 		) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`,
 	}
@@ -214,14 +217,15 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 		}},
 	}
 
-	err := store.SaveThreadMessage(ctx, msg, sender, "site-a")
+	const threadRoomID = "tr-test-1"
+	err := store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID)
 	require.NoError(t, err)
 
 	t.Run("thread_messages_by_room mentions persisted", func(t *testing.T) {
 		var gotMentions []*cassParticipant
 		err := cassSession.Query(
 			`SELECT mentions FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
-			"r-1", "m-1", now, "m-2",
+			"r-1", threadRoomID, now, "m-2",
 		).Scan(&gotMentions)
 		require.NoError(t, err)
 		require.Len(t, gotMentions, 1)
@@ -241,6 +245,17 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 		assert.Equal(t, "bob", gotMentions[0].Account)
 		assert.Equal(t, "Bob Chen", gotMentions[0].EngName)
 		assert.Equal(t, "u-bob", gotMentions[0].ID)
+	})
+
+	t.Run("messages_by_id thread fields persisted", func(t *testing.T) {
+		var gotThreadRoomID, gotThreadParentID string
+		err := cassSession.Query(
+			`SELECT thread_room_id, thread_parent_id FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-2", now,
+		).Scan(&gotThreadRoomID, &gotThreadParentID)
+		require.NoError(t, err)
+		assert.Equal(t, threadRoomID, gotThreadRoomID)
+		assert.Equal(t, "m-1", gotThreadParentID)
 	})
 }
 

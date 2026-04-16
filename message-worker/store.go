@@ -13,7 +13,7 @@ import (
 // Store defines Cassandra persistence operations for the message worker.
 type Store interface {
 	SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error
-	SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error
+	SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error
 	GetMessageSender(ctx context.Context, messageID string) (*cassParticipant, error)
 }
 

@@ -66,11 +66,14 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	}
 
 	if evt.Message.ThreadParentMessageID != "" {
-		if err := h.store.SaveThreadMessage(ctx, &evt.Message, &sender, evt.SiteID); err != nil {
-			return fmt.Errorf("save thread message: %w", err)
-		}
-		if err := h.handleThreadRoomAndSubscriptions(ctx, &evt.Message, evt.SiteID); err != nil {
+		// Resolve (or create) the thread room first so we have the threadRoomID
+		// before persisting the message to Cassandra.
+		threadRoomID, err := h.handleThreadRoomAndSubscriptions(ctx, &evt.Message, evt.SiteID)
+		if err != nil {
 			return fmt.Errorf("handle thread room and subscriptions: %w", err)
+		}
+		if err := h.store.SaveThreadMessage(ctx, &evt.Message, &sender, evt.SiteID, threadRoomID); err != nil {
+			return fmt.Errorf("save thread message: %w", err)
 		}
 	} else {
 		if err := h.store.SaveMessage(ctx, &evt.Message, &sender, evt.SiteID); err != nil {
@@ -85,7 +88,8 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 // upserts ThreadSubscriptions for the parent author and the replier. On subsequent
 // replies it updates the existing ThreadRoom's last message and ensures both the
 // parent author and the replier have subscriptions. All operations are idempotent.
-func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *model.Message, siteID string) error {
+// It returns the threadRoomID so the caller can pass it to SaveThreadMessage.
+func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *model.Message, siteID string) (string, error) {
 	now := msg.CreatedAt
 
 	threadRoom := model.ThreadRoom{
@@ -102,11 +106,11 @@ func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *mod
 	err := h.threadStore.CreateThreadRoom(ctx, &threadRoom)
 	switch {
 	case err == nil:
-		return h.handleFirstThreadReply(ctx, msg, siteID, threadRoom.ID, now)
+		return threadRoom.ID, h.handleFirstThreadReply(ctx, msg, siteID, threadRoom.ID, now)
 	case errors.Is(err, errThreadRoomExists):
 		return h.handleSubsequentThreadReply(ctx, msg, siteID, now)
 	default:
-		return fmt.Errorf("create thread room: %w", err)
+		return "", fmt.Errorf("create thread room: %w", err)
 	}
 }
 
@@ -146,10 +150,11 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 // room. It fetches the existing room, ensures the parent author is subscribed
 // (guards against an orphaned subscription from a partial first-reply failure),
 // upserts the replier, and bumps the room's last-message pointer.
-func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Message, siteID string, now time.Time) error {
+// Returns the existing thread room ID so the caller can pass it to SaveThreadMessage.
+func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Message, siteID string, now time.Time) (string, error) {
 	existingRoom, err := h.threadStore.GetThreadRoomByParentMessageID(ctx, msg.ThreadParentMessageID)
 	if err != nil {
-		return fmt.Errorf("get existing thread room: %w", err)
+		return "", fmt.Errorf("get existing thread room: %w", err)
 	}
 
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
@@ -158,30 +163,30 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 			slog.Warn("thread reply parent not found — skipping subscription upsert",
 				"parentMessageID", msg.ThreadParentMessageID,
 				"replyID", msg.ID)
-			return nil
+			return existingRoom.ID, nil
 		}
-		return fmt.Errorf("get parent message sender: %w", err)
+		return "", fmt.Errorf("get parent message sender: %w", err)
 	}
 
 	if err := h.threadStore.UpsertThreadSubscription(ctx,
 		h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, siteID, time.Time{}, now),
 	); err != nil {
-		return fmt.Errorf("upsert parent author thread subscription: %w", err)
+		return "", fmt.Errorf("upsert parent author thread subscription: %w", err)
 	}
 
 	if msg.UserID != parentSender.ID {
 		if err := h.threadStore.UpsertThreadSubscription(ctx,
 			h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, siteID, now, now),
 		); err != nil {
-			return fmt.Errorf("upsert replier thread subscription: %w", err)
+			return "", fmt.Errorf("upsert replier thread subscription: %w", err)
 		}
 	}
 
 	if err := h.threadStore.UpdateThreadRoomLastMessage(ctx, existingRoom.ID, msg.ID, msg.CreatedAt); err != nil {
-		return fmt.Errorf("update thread room last message: %w", err)
+		return "", fmt.Errorf("update thread room last message: %w", err)
 	}
 
-	return nil
+	return existingRoom.ID, nil
 }
 
 // buildThreadSubscription constructs a ThreadSubscription for (threadRoomID, userID).

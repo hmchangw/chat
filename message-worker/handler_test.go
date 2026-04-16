@@ -155,18 +155,18 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			data: threadData,
 			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
-				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a").Return(nil)
+				// handleThreadRoomAndSubscriptions runs first to resolve the threadRoomID.
 				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(errThreadRoomExists)
 				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-1").
 					Return(&model.ThreadRoom{ID: "tr-1"}, nil)
-				// Subsequent-reply path now also fetches the parent author and
-				// upserts their subscription (guards against orphaned parent
-				// subscription from a partial first-reply failure).
+				// Subsequent-reply path fetches the parent author and upserts subscriptions.
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", now).Return(nil)
+				// SaveThreadMessage receives the resolved threadRoomID.
+				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", "tr-1").Return(nil)
 			},
 		},
 		{
@@ -174,7 +174,16 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			data: threadData,
 			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
-				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a").
+				// handleThreadRoomAndSubscriptions runs before SaveThreadMessage.
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-1").
+					Return(&model.ThreadRoom{ID: "tr-1"}, nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
+					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", now).Return(nil)
+				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", "tr-1").
 					Return(errors.New("cassandra: write timeout"))
 			},
 			wantErr: true,
@@ -467,7 +476,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			tt.setupMocks(mockStore, mockThreadStore)
 
 			h := NewHandler(mockStore, mockUserStore, mockThreadStore)
-			err := h.handleThreadRoomAndSubscriptions(context.Background(), tt.msg, tt.siteID)
+			_, err := h.handleThreadRoomAndSubscriptions(context.Background(), tt.msg, tt.siteID)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {

@@ -81,21 +81,27 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 }
 
 // SaveThreadMessage inserts a thread reply into messages_by_id and thread_messages_by_room.
-// thread_room_id is the parent message ID that anchors the thread.
+// threadRoomID is the ID of the ThreadRoom document that anchors this thread (created or
+// fetched by handleThreadRoomAndSubscriptions before this call).
 // If either insert fails the error is returned immediately; JetStream will redeliver the message.
-func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at, mentions)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages_by_id
+		 (message_id, created_at, sender, msg, site_id, updated_at, mentions,
+		  thread_room_id, thread_parent_id, thread_parent_created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
 	}
 
 	if err := s.cassSession.Query(
-		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, thread_message_id, sender, msg, site_id, updated_at, mentions)
+		`INSERT INTO thread_messages_by_room
+		 (room_id, thread_room_id, created_at, message_id, thread_parent_id, sender, msg, site_id, updated_at, mentions)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.ThreadParentMessageID, msg.CreatedAt, msg.ID, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		msg.RoomID, threadRoomID, msg.CreatedAt, msg.ID, msg.ThreadParentMessageID,
+		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
 	}
