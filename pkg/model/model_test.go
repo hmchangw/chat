@@ -1025,6 +1025,123 @@ func TestListOrgMembersResponseJSON(t *testing.T) {
 	assert.Equal(t, resp, dst)
 }
 
+func TestRoomsInfoBatchRequestJSON(t *testing.T) {
+	src := model.RoomsInfoBatchRequest{
+		RoomIDs: []string{"r1", "r2", "r3"},
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.RoomsInfoBatchRequest
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
+
+func TestRoomInfoJSON(t *testing.T) {
+	t.Run("happy path with all fields", func(t *testing.T) {
+		pk := "dGVzdC1wcml2YXRlLWtleS1iYXNlNjQ="
+		kv := 7
+		src := model.RoomInfo{
+			RoomID:     "r1",
+			Found:      true,
+			SiteID:     "site-a",
+			Name:       "general",
+			LastMsgAt:  1735689600000,
+			PrivateKey: &pk,
+			KeyVersion: &kv,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var dst model.RoomInfo
+		require.NoError(t, json.Unmarshal(data, &dst))
+		if !reflect.DeepEqual(src, dst) {
+			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+		}
+	})
+
+	t.Run("found=false omits optional fields but keeps lastMsgAt", func(t *testing.T) {
+		src := model.RoomInfo{
+			RoomID: "r1",
+			Found:  false,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+
+		assert.Contains(t, raw, "roomId")
+		assert.Equal(t, "r1", raw["roomId"])
+
+		foundVal, foundPresent := raw["found"]
+		assert.True(t, foundPresent, "found must be present")
+		assert.Equal(t, false, foundVal)
+
+		lastMsgAtVal, lastMsgAtPresent := raw["lastMsgAt"]
+		assert.True(t, lastMsgAtPresent, "lastMsgAt must be present even when zero")
+		assert.Equal(t, float64(0), lastMsgAtVal)
+
+		for _, key := range []string{"siteId", "name", "privateKey", "keyVersion", "error"} {
+			_, present := raw[key]
+			assert.False(t, present, "%q should be omitted", key)
+		}
+	})
+
+	t.Run("found=true with nil PrivateKey omits privateKey but keeps lastMsgAt", func(t *testing.T) {
+		src := model.RoomInfo{
+			RoomID:    "r1",
+			Found:     true,
+			SiteID:    "site-a",
+			Name:      "general",
+			LastMsgAt: 0,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+
+		lastMsgAtVal, lastMsgAtPresent := raw["lastMsgAt"]
+		assert.True(t, lastMsgAtPresent, "lastMsgAt must be present even when zero")
+		assert.Equal(t, float64(0), lastMsgAtVal)
+
+		_, pkPresent := raw["privateKey"]
+		assert.False(t, pkPresent, "privateKey should be omitted when nil")
+		_, kvPresent := raw["keyVersion"]
+		assert.False(t, kvPresent, "keyVersion should be omitted when nil")
+	})
+}
+
+func TestRoomsInfoBatchResponseJSON(t *testing.T) {
+	pk := "dGVzdC1rZXk="
+	kv := 3
+	src := model.RoomsInfoBatchResponse{
+		Rooms: []model.RoomInfo{
+			{
+				RoomID:     "r1",
+				Found:      true,
+				SiteID:     "site-a",
+				Name:       "general",
+				LastMsgAt:  1735689600000,
+				PrivateKey: &pk,
+				KeyVersion: &kv,
+			},
+			{
+				RoomID:    "r2",
+				Found:     false,
+				LastMsgAt: 0,
+			},
+		},
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.RoomsInfoBatchResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
 	t.Helper()
