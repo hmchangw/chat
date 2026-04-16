@@ -123,6 +123,7 @@ func TestMessage_JSON(t *testing.T) {
 		Card:                  &Card{Template: "approval", Data: []byte(`{"k":"v"}`)},
 		CardAction:            &CardAction{Verb: "approve", CardID: "c1"},
 		TShow:                 true,
+		TCount:                7,
 		ThreadParentID:        "m-parent",
 		ThreadParentCreatedAt: &threadParent,
 		QuotedParentMessage: &QuotedParentMessage{
@@ -155,6 +156,7 @@ func TestMessage_JSON(t *testing.T) {
 	assert.Equal(t, "approval", got.Card.Template)
 	assert.Equal(t, "approve", got.CardAction.Verb)
 	assert.True(t, got.TShow)
+	assert.Equal(t, 7, got.TCount)
 	assert.Equal(t, "m-parent", got.ThreadParentID)
 	assert.Equal(t, threadParent, *got.ThreadParentCreatedAt)
 	require.NotNil(t, got.QuotedParentMessage)
@@ -196,6 +198,7 @@ func TestMessage_JSON_Minimal(t *testing.T) {
 	assert.Nil(t, got.QuotedParentMessage)
 	assert.Empty(t, got.ThreadParentID)
 	assert.False(t, got.TShow)
+	assert.Zero(t, got.TCount)
 	assert.False(t, got.Unread)
 	assert.False(t, got.Deleted)
 	assert.Empty(t, got.ThreadRoomID)
