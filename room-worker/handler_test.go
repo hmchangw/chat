@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,7 +28,7 @@ func TestHandler_ProcessInvite(t *testing.T) {
 			return nil
 		})
 	store.EXPECT().
-		IncrementUserCount(gomock.Any(), "r1").
+		IncrementUserCount(gomock.Any(), "r1", 1).
 		Return(nil)
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
@@ -597,6 +598,204 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	}
 }
 
+// --- processAddMembers tests ---
+
+func TestHandler_ProcessAddMembers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var published []publishedMsg
+	publish := func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}
+	h := NewHandler(store, "site-a", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site-a"},
+		{ID: "u3", Account: "charlie", SiteID: "site-b"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, subs []*model.Subscription) error {
+			assert.Len(t, subs, 2)
+			for _, s := range subs {
+				assert.Equal(t, "site-a", s.SiteID)
+				assert.Equal(t, []model.Role{model.RoleMember}, s.Roles)
+				require.NotNil(t, s.HistorySharedSince)
+				assert.Equal(t, s.JoinedAt, *s.HistorySharedSince)
+			}
+			return nil
+		})
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 2).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	req := model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob", "charlie"},
+		History: model.HistoryConfig{Mode: model.HistoryModeNone},
+	}
+	reqData, _ := json.Marshal(req)
+
+	err := h.processAddMembers(context.Background(), reqData)
+	require.NoError(t, err)
+
+	// 2 SubscriptionUpdate + 1 MemberChangeEvent + 1 system msg + 1 batched outbox (site-b)
+	assert.GreaterOrEqual(t, len(published), 4)
+
+	// Verify exactly 1 outbox event for site-b (batched, not per-member)
+	var outboxCount int
+	for _, p := range published {
+		if strings.Contains(p.subj, "outbox") {
+			outboxCount++
+			assert.Contains(t, p.subj, "site-b")
+			var outboxEvt model.OutboxEvent
+			require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
+			var change model.MemberChangeEvent
+			require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
+			assert.Equal(t, []string{"charlie"}, change.Accounts)
+		}
+	}
+	assert.Equal(t, 1, outboxCount, "should publish exactly 1 batched outbox event per destination site")
+}
+
+func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	h := NewHandler(store, "site-a", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site-a"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, subs []*model.Subscription) error {
+			assert.Len(t, subs, 1)
+			assert.Nil(t, subs[0].HistorySharedSince, "HistorySharedSince should be nil for mode all")
+			return nil
+		})
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	req := model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"},
+		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	reqData, _ := json.Marshal(req)
+
+	err := h.processAddMembers(context.Background(), reqData)
+	require.NoError(t, err)
+}
+
+func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	h := NewHandler(store, "site-a", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site-a"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	// With orgs: CreateRoomMember called for individual "bob" + org "eng"
+	store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Times(2).Return(nil)
+
+	req := model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"}, Orgs: []string{"eng"},
+		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	reqData, _ := json.Marshal(req)
+
+	err := h.processAddMembers(context.Background(), reqData)
+	require.NoError(t, err)
+}
+
+func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	h := NewHandler(store, "site-a", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "ghost"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site-a"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, subs []*model.Subscription) error {
+			assert.Len(t, subs, 1, "ghost should be skipped")
+			assert.Equal(t, "bob", subs[0].User.Account)
+			return nil
+		})
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	req := model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob", "ghost"},
+		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	reqData, _ := json.Marshal(req)
+
+	err := h.processAddMembers(context.Background(), reqData)
+	require.NoError(t, err)
+}
+
+func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var published []publishedMsg
+	publish := func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}
+	h := NewHandler(store, "site-a", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{
+		{ID: "u1", Account: "alice", SiteID: "site-b"},
+		{ID: "u2", Account: "bob", SiteID: "site-b"},
+		{ID: "u3", Account: "charlie", SiteID: "site-c"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 3).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	req := model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"alice", "bob", "charlie"},
+		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	reqData, _ := json.Marshal(req)
+
+	err := h.processAddMembers(context.Background(), reqData)
+	require.NoError(t, err)
+
+	var outboxEvents []publishedMsg
+	for _, p := range published {
+		if strings.Contains(p.subj, "outbox") {
+			outboxEvents = append(outboxEvents, p)
+		}
+	}
+	assert.Len(t, outboxEvents, 2, "should batch outbox by site: 1 for site-b, 1 for site-c")
+
+	for _, p := range outboxEvents {
+		var outboxEvt model.OutboxEvent
+		require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
+		var change model.MemberChangeEvent
+		require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
+
+		if strings.Contains(p.subj, "site-b") {
+			assert.Len(t, change.Accounts, 2, "site-b should have alice and bob")
+		} else if strings.Contains(p.subj, "site-c") {
+			assert.Equal(t, []string{"charlie"}, change.Accounts)
+		}
+	}
+}
+
 func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
@@ -835,4 +1034,36 @@ func TestHandler_ProcessRemoveIndividual_DecrementUserCountError(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decrement user count")
+}
+
+func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	h := NewHandler(store, "site-a", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site-a"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(true, nil)
+	store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, m *model.RoomMember) error {
+			assert.Equal(t, model.RoomMemberIndividual, m.Member.Type)
+			assert.Equal(t, "bob", m.Member.Account)
+			return nil
+		})
+
+	req := model.AddMembersRequest{
+		RoomID:  "r1",
+		Users:   []string{"bob"},
+		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	reqData, _ := json.Marshal(req)
+
+	err := h.processAddMembers(context.Background(), reqData)
+	require.NoError(t, err)
 }

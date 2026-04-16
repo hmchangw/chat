@@ -34,6 +34,8 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 		err = h.processInvite(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".member.role-update"):
 		err = h.processRoleUpdate(ctx, msg.Data())
+	case strings.HasSuffix(subj, ".member.add"):
+		err = h.processAddMembers(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".member.remove"):
 		err = h.processRemoveMember(ctx, msg.Data())
 	default:
@@ -74,7 +76,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 	}
 
 	// Increment room user count
-	if err := h.store.IncrementUserCount(ctx, req.RoomID); err != nil {
+	if err := h.store.IncrementUserCount(ctx, req.RoomID, 1); err != nil {
 		slog.Warn("increment user count failed", "error", err, "roomID", req.RoomID)
 	}
 
@@ -450,6 +452,194 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		}
 		outboxData, _ := json.Marshal(outbox)
 		if err := h.publish(ctx, subject.Outbox(h.siteID, destSiteID, "member_removed"), outboxData); err != nil {
+			slog.Error("outbox publish failed", "error", err, "destSiteID", destSiteID)
+		}
+	}
+
+	return nil
+}
+
+func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
+	var req model.AddMembersRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("unmarshal add members request: %w", err)
+	}
+
+	room, err := h.store.GetRoom(ctx, req.RoomID)
+	if err != nil {
+		return fmt.Errorf("get room: %w", err)
+	}
+
+	accounts := req.Users
+	users, err := h.store.FindUsersByAccounts(ctx, accounts)
+	if err != nil {
+		return fmt.Errorf("find users by accounts: %w", err)
+	}
+	userMap := make(map[string]model.User, len(users))
+	for _, u := range users {
+		userMap[u.Account] = u
+	}
+
+	now := time.Now().UTC()
+
+	subs := make([]*model.Subscription, 0, len(accounts))
+	for _, account := range accounts {
+		user, ok := userMap[account]
+		if !ok {
+			slog.Warn("user not found for account", "account", account)
+			continue
+		}
+		sub := &model.Subscription{
+			ID:       uuid.New().String(),
+			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
+			RoomID:   req.RoomID,
+			SiteID:   room.SiteID,
+			Roles:    []model.Role{model.RoleMember},
+			JoinedAt: now,
+		}
+		if req.History.Mode == model.HistoryModeNone {
+			histTime := now
+			sub.HistorySharedSince = &histTime
+		}
+		subs = append(subs, sub)
+	}
+
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return fmt.Errorf("bulk create subscriptions: %w", err)
+	}
+
+	writeIndividuals := len(req.Orgs) > 0
+	if !writeIndividuals {
+		hasOrgs, err := h.store.HasOrgRoomMembers(ctx, req.RoomID)
+		if err != nil {
+			slog.Warn("check existing org room members failed", "error", err, "roomID", req.RoomID)
+		}
+		writeIndividuals = hasOrgs
+	}
+	if writeIndividuals {
+		for _, sub := range subs {
+			member := &model.RoomMember{
+				ID:     uuid.New().String(),
+				RoomID: req.RoomID,
+				Ts:     now,
+				Member: model.RoomMemberEntry{
+					ID:      sub.User.ID,
+					Type:    model.RoomMemberIndividual,
+					Account: sub.User.Account,
+				},
+			}
+			if err := h.store.CreateRoomMember(ctx, member); err != nil {
+				slog.Error("create room member failed", "error", err, "account", sub.User.Account)
+			}
+		}
+	}
+	for _, org := range req.Orgs {
+		member := &model.RoomMember{
+			ID:     uuid.New().String(),
+			RoomID: req.RoomID,
+			Ts:     now,
+			Member: model.RoomMemberEntry{
+				ID:   org,
+				Type: model.RoomMemberOrg,
+			},
+		}
+		if err := h.store.CreateRoomMember(ctx, member); err != nil {
+			slog.Error("create org room member failed", "error", err, "org", org)
+		}
+	}
+
+	if err := h.store.IncrementUserCount(ctx, req.RoomID, len(subs)); err != nil {
+		slog.Warn("increment user count failed", "error", err, "roomID", req.RoomID)
+	}
+
+	for _, sub := range subs {
+		subEvt := model.SubscriptionUpdateEvent{
+			UserID:       sub.User.ID,
+			Subscription: *sub,
+			Action:       "added",
+			Timestamp:    now.UnixMilli(),
+		}
+		subEvtData, _ := json.Marshal(subEvt)
+		if err := h.publish(ctx, subject.SubscriptionUpdate(sub.User.Account), subEvtData); err != nil {
+			slog.Error("subscription update publish failed", "error", err, "account", sub.User.Account)
+		}
+	}
+
+	userIDs := make([]string, 0, len(subs))
+	actualAccounts := make([]string, 0, len(subs))
+	for _, sub := range subs {
+		userIDs = append(userIDs, sub.User.ID)
+		actualAccounts = append(actualAccounts, sub.User.Account)
+	}
+	var historySharedSince int64
+	if req.History.Mode == model.HistoryModeNone {
+		historySharedSince = now.UnixMilli()
+	}
+	memberChangeEvt := model.MemberChangeEvent{
+		Type:               "member-added",
+		RoomID:             req.RoomID,
+		Accounts:           actualAccounts,
+		SiteID:             room.SiteID,
+		UserIDs:            userIDs,
+		JoinedAt:           now.UnixMilli(),
+		HistorySharedSince: historySharedSince,
+		Timestamp:          now.UnixMilli(),
+	}
+	memberChangeData, _ := json.Marshal(memberChangeEvt)
+	if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberChangeData); err != nil {
+		slog.Error("member change event publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	membersAdded := model.MembersAdded{
+		Individuals:     actualAccounts,
+		Orgs:            req.Orgs,
+		Channels:        req.Channels,
+		AddedUsersCount: len(subs),
+	}
+	sysMsgData, _ := json.Marshal(membersAdded)
+	sysMsg := model.Message{
+		ID:         uuid.New().String(),
+		RoomID:     req.RoomID,
+		Type:       "members_added",
+		SysMsgData: sysMsgData,
+		CreatedAt:  now,
+	}
+	msgEvt := model.MessageEvent{
+		Event:     model.EventCreated,
+		Message:   sysMsg,
+		SiteID:    room.SiteID,
+		Timestamp: now.UnixMilli(),
+	}
+	msgEvtData, _ := json.Marshal(msgEvt)
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData); err != nil {
+		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	remoteSiteMembers := make(map[string]struct{ accounts, userIDs []string })
+	for _, sub := range subs {
+		user, ok := userMap[sub.User.Account]
+		if !ok || user.SiteID == room.SiteID {
+			continue
+		}
+		entry := remoteSiteMembers[user.SiteID]
+		entry.accounts = append(entry.accounts, sub.User.Account)
+		entry.userIDs = append(entry.userIDs, sub.User.ID)
+		remoteSiteMembers[user.SiteID] = entry
+	}
+	for destSiteID, members := range remoteSiteMembers {
+		siteEvt := model.MemberChangeEvent{
+			Type: "member-added", RoomID: req.RoomID, Accounts: members.accounts,
+			SiteID: room.SiteID, UserIDs: members.userIDs,
+			JoinedAt: now.UnixMilli(), HistorySharedSince: historySharedSince,
+			Timestamp: now.UnixMilli(),
+		}
+		siteEvtData, _ := json.Marshal(siteEvt)
+		outbox := model.OutboxEvent{
+			Type: "subscription_created", SiteID: room.SiteID, DestSiteID: destSiteID,
+			Payload: siteEvtData, Timestamp: now.UnixMilli(),
+		}
+		outboxData, _ := json.Marshal(outbox)
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "subscription_created"), outboxData); err != nil {
 			slog.Error("outbox publish failed", "error", err, "destSiteID", destSiteID)
 		}
 	}

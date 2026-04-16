@@ -44,8 +44,8 @@ func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Sub
 	return subs, nil
 }
 
-func (s *MongoStore) IncrementUserCount(ctx context.Context, roomID string) error {
-	_, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$inc": bson.M{"userCount": 1}})
+func (s *MongoStore) IncrementUserCount(ctx context.Context, roomID string, count int) error {
+	_, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$inc": bson.M{"userCount": count}})
 	return err
 }
 
@@ -227,4 +227,44 @@ func (s *MongoStore) DecrementUserCount(ctx context.Context, roomID string, coun
 		return fmt.Errorf("decrement user count for room %q: %w", roomID, err)
 	}
 	return nil
+}
+
+func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+	if len(subs) == 0 {
+		return nil
+	}
+	docs := make([]interface{}, len(subs))
+	for i, sub := range subs {
+		docs[i] = sub
+	}
+	_, err := s.subscriptions.InsertMany(ctx, docs)
+	return err
+}
+
+func (s *MongoStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
+	_, err := s.roomMembers.InsertOne(ctx, member)
+	return err
+}
+
+func (s *MongoStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
+	if len(accounts) == 0 {
+		return nil, nil
+	}
+	cursor, err := s.users.Find(ctx, bson.M{"account": bson.M{"$in": accounts}})
+	if err != nil {
+		return nil, fmt.Errorf("find users by accounts: %w", err)
+	}
+	var users []model.User
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, fmt.Errorf("decode users: %w", err)
+	}
+	return users, nil
+}
+
+func (s *MongoStore) HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error) {
+	count, err := s.roomMembers.CountDocuments(ctx, bson.M{"rid": roomID})
+	if err != nil {
+		return false, fmt.Errorf("count room members for %q: %w", roomID, err)
+	}
+	return count > 0, nil
 }
