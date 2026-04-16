@@ -34,4 +34,8 @@ type RoomStore interface {
 	GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error)
 	CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error)
 	CountOwners(ctx context.Context, roomID string) (int, error)
+	CountSubscriptions(ctx context.Context, roomID string) (int, error)
+	GetRoomMembersByRooms(ctx context.Context, roomIDs []string) ([]model.RoomMember, error)
+	GetAccountsByRooms(ctx context.Context, roomIDs []string) ([]string, error)
+	ResolveAccounts(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error)
 }

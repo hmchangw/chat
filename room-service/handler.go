@@ -49,6 +49,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MemberRemoveWildcard(h.siteID), queue, h.NatsHandleRemoveMember); err != nil {
 		return fmt.Errorf("subscribe member remove: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.MemberAddWildcard(h.siteID), queue, h.natsAddMembers); err != nil {
+		return fmt.Errorf("subscribe member add: %w", err)
+	}
 	return nil
 }
 
@@ -348,4 +351,129 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 	return json.Marshal(map[string]string{"status": "accepted"})
+}
+
+func (h *Handler) natsAddMembers(m otelnats.Msg) {
+	resp, err := h.handleAddMembers(m.Context(), m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("add-members failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to add-members", "error", err)
+	}
+}
+
+func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	// 1. Parse subject → requester, roomID
+	requester, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid add-members subject: %s", subj)
+	}
+
+	// 2. Verify requester is in room
+	sub, err := h.store.GetSubscription(ctx, requester, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("requester not in room: %w", err)
+	}
+
+	// 3. Get room and guard on type
+	room, err := h.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("get room: %w", err)
+	}
+	if room.Type == model.RoomTypeDM {
+		return nil, fmt.Errorf("cannot add members to a DM room")
+	}
+	if room.Restricted && !hasRole(sub.Roles, model.RoleOwner) {
+		return nil, fmt.Errorf("only owners can add members to a restricted room")
+	}
+
+	// 4. Unmarshal request
+	var req model.AddMembersRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// 5. Expand channels
+	channelOrgIDs, channelAccounts, err := h.expandChannels(ctx, req.Channels)
+	if err != nil {
+		return nil, fmt.Errorf("expand channels: %w", err)
+	}
+
+	// 6. Dedup orgs and direct accounts
+	allOrgs := dedup(append(req.Orgs, channelOrgIDs...))
+	allUsers := dedup(append(req.Users, channelAccounts...))
+
+	// 7. Resolve accounts (net new only)
+	newAccounts, err := h.store.ResolveAccounts(ctx, allOrgs, allUsers, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve accounts: %w", err)
+	}
+
+	// 8. Capacity check
+	currentCount, err := h.store.CountSubscriptions(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("count subscriptions: %w", err)
+	}
+	if currentCount+len(newAccounts) > h.maxRoomSize {
+		return nil, fmt.Errorf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, len(newAccounts), currentCount)
+	}
+
+	// 9. Normalize and publish
+	req.Users = newAccounts
+	req.Orgs = allOrgs
+	req.RoomID = roomID
+	normalized, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal add-members request: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.add"), normalized); err != nil {
+		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+
+	// 10. Reply accepted
+	return json.Marshal(map[string]string{"status": "accepted"})
+}
+
+func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgIDs, accounts []string, err error) {
+	if len(channelIDs) == 0 {
+		return nil, nil, nil
+	}
+
+	// Batch fetch room_members for all channels
+	roomMembers, err := h.store.GetRoomMembersByRooms(ctx, channelIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get room members: %w", err)
+	}
+
+	// Build set of channels that have room_members
+	channelsWithMembers := make(map[string]struct{})
+	for _, rm := range roomMembers {
+		channelsWithMembers[rm.RoomID] = struct{}{}
+		switch rm.Member.Type {
+		case model.RoomMemberOrg:
+			orgIDs = append(orgIDs, rm.Member.ID)
+		case model.RoomMemberIndividual:
+			accounts = append(accounts, rm.Member.Account)
+		}
+	}
+
+	// Channels without room_members — fallback to GetAccountsByRooms
+	var noMemberChannels []string
+	for _, chID := range channelIDs {
+		if _, ok := channelsWithMembers[chID]; !ok {
+			noMemberChannels = append(noMemberChannels, chID)
+		}
+	}
+	if len(noMemberChannels) > 0 {
+		fallbackAccounts, err := h.store.GetAccountsByRooms(ctx, noMemberChannels)
+		if err != nil {
+			return nil, nil, fmt.Errorf("get accounts by rooms: %w", err)
+		}
+		accounts = append(accounts, fallbackAccounts...)
+	}
+
+	return orgIDs, accounts, nil
 }

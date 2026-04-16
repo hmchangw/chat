@@ -15,6 +15,7 @@ type MongoStore struct {
 	rooms         *mongo.Collection
 	subscriptions *mongo.Collection
 	roomMembers   *mongo.Collection
+	users         *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
@@ -22,6 +23,7 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		rooms:         db.Collection("rooms"),
 		subscriptions: db.Collection("subscriptions"),
 		roomMembers:   db.Collection("room_members"),
+		users:         db.Collection("users"),
 	}
 }
 
@@ -197,4 +199,105 @@ func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error
 		return 0, fmt.Errorf("count owners for room %q: %w", roomID, err)
 	}
 	return int(count), nil
+}
+
+func (s *MongoStore) CountSubscriptions(ctx context.Context, roomID string) (int, error) {
+	filter := bson.M{
+		"roomId":    roomID,
+		"u.account": bson.M{"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""}},
+	}
+	count, err := s.subscriptions.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("count subscriptions for room %q: %w", roomID, err)
+	}
+	return int(count), nil
+}
+
+func (s *MongoStore) GetRoomMembersByRooms(ctx context.Context, roomIDs []string) ([]model.RoomMember, error) {
+	if len(roomIDs) == 0 {
+		return nil, nil
+	}
+	cursor, err := s.roomMembers.Find(ctx, bson.M{"rid": bson.M{"$in": roomIDs}})
+	if err != nil {
+		return nil, fmt.Errorf("find room members: %w", err)
+	}
+	var members []model.RoomMember
+	if err := cursor.All(ctx, &members); err != nil {
+		return nil, fmt.Errorf("decode room members: %w", err)
+	}
+	return members, nil
+}
+
+func (s *MongoStore) GetAccountsByRooms(ctx context.Context, roomIDs []string) ([]string, error) {
+	if len(roomIDs) == 0 {
+		return nil, nil
+	}
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{"roomId": bson.M{"$in": roomIDs}}},
+		bson.M{"$group": bson.M{"_id": nil, "accounts": bson.M{"$addToSet": "$u.account"}}},
+	}
+	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate accounts by rooms: %w", err)
+	}
+	var results []struct {
+		Accounts []string `bson:"accounts"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("decode accounts by rooms: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return results[0].Accounts, nil
+}
+
+func (s *MongoStore) ResolveAccounts(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error) {
+	if len(orgIDs) == 0 && len(directAccounts) == 0 {
+		return nil, nil
+	}
+
+	orFilter := bson.A{}
+	if len(orgIDs) > 0 {
+		orFilter = append(orFilter, bson.M{"sectId": bson.M{"$in": orgIDs}})
+	}
+	if len(directAccounts) > 0 {
+		orFilter = append(orFilter, bson.M{"account": bson.M{"$in": directAccounts}})
+	}
+
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{
+			"$or":     orFilter,
+			"account": bson.M{"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""}},
+		}},
+		bson.M{"$lookup": bson.M{
+			"from": "subscriptions",
+			"let":  bson.M{"userAccount": "$account"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$roomId", roomID}},
+					bson.M{"$eq": bson.A{"$u.account", "$$userAccount"}},
+				}}}},
+				bson.M{"$limit": 1},
+			},
+			"as": "existingSub",
+		}},
+		bson.M{"$match": bson.M{"existingSub": bson.M{"$eq": bson.A{}}}},
+		bson.M{"$group": bson.M{"_id": nil, "accounts": bson.M{"$addToSet": "$account"}}},
+	}
+
+	cursor, err := s.users.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("resolve accounts: %w", err)
+	}
+	var results []struct {
+		Accounts []string `bson:"accounts"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("decode resolved accounts: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return results[0].Accounts, nil
 }
