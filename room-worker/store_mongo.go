@@ -7,6 +7,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -237,14 +238,20 @@ func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.
 	for i, sub := range subs {
 		docs[i] = sub
 	}
-	if _, err := s.subscriptions.InsertMany(ctx, docs); err != nil {
-		return fmt.Errorf("bulk create %d subscriptions: %w", len(subs), err)
+	opts := options.InsertMany().SetOrdered(false)
+	if _, err := s.subscriptions.InsertMany(ctx, docs, opts); err != nil {
+		if !mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("bulk create %d subscriptions: %w", len(subs), err)
+		}
 	}
 	return nil
 }
 
 func (s *MongoStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
 	if _, err := s.roomMembers.InsertOne(ctx, member); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil
+		}
 		return fmt.Errorf("create room member for room %q: %w", member.RoomID, err)
 	}
 	return nil
@@ -266,7 +273,7 @@ func (s *MongoStore) FindUsersByAccounts(ctx context.Context, accounts []string)
 }
 
 func (s *MongoStore) HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error) {
-	count, err := s.roomMembers.CountDocuments(ctx, bson.M{"rid": roomID})
+	count, err := s.roomMembers.CountDocuments(ctx, bson.M{"rid": roomID, "member.type": model.RoomMemberOrg})
 	if err != nil {
 		return false, fmt.Errorf("count room members for %q: %w", roomID, err)
 	}

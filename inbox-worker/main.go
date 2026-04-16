@@ -106,8 +106,13 @@ func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*m
 }
 
 func (s *mongoInboxStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
-	_, err := s.roomMemberCol.InsertOne(ctx, member)
-	return err
+	if _, err := s.roomMemberCol.InsertOne(ctx, member); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil
+		}
+		return fmt.Errorf("create room member for room %q: %w", member.RoomID, err)
+	}
+	return nil
 }
 
 func (s *mongoInboxStore) HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error) {

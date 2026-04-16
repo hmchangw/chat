@@ -395,6 +395,9 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
+	if req.RoomID != "" && req.RoomID != roomID {
+		return nil, fmt.Errorf("invalid request: room ID mismatch")
+	}
 
 	// 5. Expand channels
 	channelOrgIDs, channelAccounts, err := h.expandChannels(ctx, req.Channels)
