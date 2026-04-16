@@ -70,9 +70,9 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 	}
 
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at, mentions)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
 	}
@@ -88,10 +88,10 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
 	if err := s.cassSession.Query(
 		`INSERT INTO messages_by_id
-		 (message_id, created_at, sender, msg, site_id, updated_at, mentions,
+		 (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
 		  thread_room_id, thread_parent_id, thread_parent_created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)

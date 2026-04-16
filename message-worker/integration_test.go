@@ -55,6 +55,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
 			message_id              TEXT,
 			created_at              TIMESTAMP,
+			room_id                 TEXT,
 			sender                  FROZEN<"Participant">,
 			msg                     TEXT,
 			site_id                 TEXT,
@@ -189,6 +190,16 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 		assert.Equal(t, "Bob Chen", gotMentions[0].EngName)
 		assert.Equal(t, "u-bob", gotMentions[0].ID)
 	})
+
+	t.Run("messages_by_id room_id persisted", func(t *testing.T) {
+		var gotRoomID string
+		err := cassSession.Query(
+			`SELECT room_id FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-1", now,
+		).Scan(&gotRoomID)
+		require.NoError(t, err)
+		assert.Equal(t, "r-1", gotRoomID)
+	})
 }
 
 func TestCassandraStore_SaveThreadMessage(t *testing.T) {
@@ -258,6 +269,16 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, threadRoomID, gotThreadRoomID)
 		assert.Equal(t, "m-1", gotThreadParentID)
+	})
+
+	t.Run("messages_by_id room_id persisted for thread message", func(t *testing.T) {
+		var gotRoomID string
+		err := cassSession.Query(
+			`SELECT room_id FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-2", now,
+		).Scan(&gotRoomID)
+		require.NoError(t, err)
+		assert.Equal(t, "r-1", gotRoomID)
 	})
 }
 
