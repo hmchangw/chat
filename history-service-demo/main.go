@@ -53,6 +53,7 @@ type seedRow struct {
 	card                   *cassmodel.Card
 	cardAction             *cassmodel.CardAction
 	tshow                  bool
+	tcount                 int
 	threadParentID         string // message_id of thread parent
 	threadParentOffsetMins int    // 0 = nil
 	quotedParentMessage    *cassmodel.QuotedParentMessage
@@ -133,6 +134,7 @@ var chatMessages = []seedRow{
 		msg:                    "Let's target Thursday for the first canary. @bob can you prep staging?",
 		mentions:               []int{1},
 		tshow:                  true,
+		tcount:                 3,
 		threadParentID:         "msg-005",
 		threadParentOffsetMins: -9, // points back to msg-005 (3 min intervals, msg-005 is at offset 15)
 		threadRoomID:           "thread-room-canary",
@@ -247,22 +249,22 @@ func run() error {
 	const insertByRoomCQL = `INSERT INTO messages_by_room (
 		room_id, created_at, message_id, sender, target_user, msg,
 		mentions, attachments, file, card, card_action,
-		tshow, thread_parent_id, thread_parent_created_at,
+		tshow, tcount, thread_parent_id, thread_parent_created_at,
 		quoted_parent_message, visible_to, unread,
 		reactions, deleted, type, sys_msg_data,
 		site_id, edited_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	// messages_by_id has 3 extra columns: thread_room_id, pinned_at, pinned_by.
 	const insertByIDCQL = `INSERT INTO messages_by_id (
 		room_id, created_at, message_id, sender, target_user, msg,
 		mentions, attachments, file, card, card_action,
-		tshow, thread_parent_id, thread_parent_created_at,
+		tshow, tcount, thread_parent_id, thread_parent_created_at,
 		quoted_parent_message, visible_to, unread,
 		reactions, deleted, type, sys_msg_data,
 		site_id, edited_at, updated_at,
 		thread_room_id, pinned_at, pinned_by
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	for i := range chatMessages {
 		cm := &chatMessages[i]
@@ -312,7 +314,7 @@ func run() error {
 			roomID, ts, msgID,
 			&sender, target, cm.msg,
 			mentions, cm.attachments, cm.file, cm.card, cm.cardAction,
-			cm.tshow, cm.threadParentID, threadParent,
+			cm.tshow, cm.tcount, cm.threadParentID, threadParent,
 			cm.quotedParentMessage, cm.visibleTo, cm.unread,
 			reactions, cm.deleted, cm.msgType, cm.sysMsgData,
 			cm.siteID, editedAt, updatedAt,
