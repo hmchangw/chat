@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -135,23 +134,25 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	invite := model.InviteMemberRequest{
-		InviterID:      "alice",
-		InviteeID:      "bob",
-		InviteeAccount: "bob",
-		RoomID:         "room-1",
-		SiteID:         "site-b",
+	change := model.MemberChangeEvent{
+		Type:               "members_added",
+		RoomID:             "room-1",
+		Accounts:           []string{"bob"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"bob"},
+		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+		HistorySharedSince: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 	}
-	inviteData, err := json.Marshal(invite)
+	changeData, err := json.Marshal(change)
 	if err != nil {
-		t.Fatalf("marshal invite: %v", err)
+		t.Fatalf("marshal change: %v", err)
 	}
 
 	evt := model.OutboxEvent{
-		Type:       "member_added",
+		Type:       "subscription_created",
 		SiteID:     "site-b",
 		DestSiteID: "site-a",
-		Payload:    inviteData,
+		Payload:    changeData,
 	}
 	evtData, err := json.Marshal(evt)
 	if err != nil {
@@ -181,8 +182,8 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	if sub.SiteID != "site-b" {
 		t.Errorf("subscription SiteID = %q, want %q", sub.SiteID, "site-b")
 	}
-	if !slices.Contains(sub.Roles, model.RoleMember) {
-		t.Errorf("subscription Roles = %v, want to contain %q", sub.Roles, model.RoleMember)
+	if len(sub.Roles) != 1 || sub.Roles[0] != model.RoleMember {
+		t.Errorf("subscription Roles = %v, want [%q]", sub.Roles, model.RoleMember)
 	}
 	if sub.ID == "" {
 		t.Error("subscription ID should be non-empty (generated UUID)")
@@ -222,29 +223,32 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	invite := model.InviteMemberRequest{
-		InviterID:      "alice",
-		InviteeID:      "carol",
-		InviteeAccount: "carol",
-		RoomID:         "room-2",
-		SiteID:         "site-b",
+	joinedAt := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
+	historyShared := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
+
+	change := model.MemberChangeEvent{
+		Type:               "members_added",
+		RoomID:             "room-2",
+		Accounts:           []string{"carol"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"carol"},
+		JoinedAt:           joinedAt.UnixMilli(),
+		HistorySharedSince: historyShared.UnixMilli(),
 	}
-	inviteData, _ := json.Marshal(invite)
+	changeData, _ := json.Marshal(change)
 
 	evt := model.OutboxEvent{
-		Type:       "member_added",
+		Type:       "subscription_created",
 		SiteID:     "site-b",
 		DestSiteID: "site-a",
-		Payload:    inviteData,
+		Payload:    changeData,
 	}
 	evtData, _ := json.Marshal(evt)
 
-	before := time.Now()
 	err := h.HandleEvent(context.Background(), evtData)
 	if err != nil {
 		t.Fatalf("HandleEvent: %v", err)
 	}
-	after := time.Now()
 
 	subs := store.getSubscriptions()
 	if len(subs) != 1 {
@@ -252,11 +256,14 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 	}
 
 	sub := subs[0]
-	if sub.JoinedAt.Before(before) || sub.JoinedAt.After(after) {
-		t.Errorf("JoinedAt = %v, want between %v and %v", sub.JoinedAt, before, after)
+	if !sub.JoinedAt.Equal(joinedAt) {
+		t.Errorf("JoinedAt = %v, want %v", sub.JoinedAt, joinedAt)
 	}
-	if sub.HistorySharedSince == nil || sub.HistorySharedSince.Before(before) || sub.HistorySharedSince.After(after) {
-		t.Errorf("HistorySharedSince = %v, want between %v and %v", sub.HistorySharedSince, before, after)
+	if sub.HistorySharedSince == nil {
+		t.Fatal("HistorySharedSince should not be nil")
+	}
+	if !sub.HistorySharedSince.Equal(historyShared) {
+		t.Errorf("HistorySharedSince = %v, want %v", *sub.HistorySharedSince, historyShared)
 	}
 }
 
@@ -418,7 +425,7 @@ func TestHandleEvent_MemberAdded_InvalidPayload(t *testing.T) {
 	h := NewHandler(store, pub)
 
 	evt := model.OutboxEvent{
-		Type:       "member_added",
+		Type:       "subscription_created",
 		SiteID:     "site-b",
 		DestSiteID: "site-a",
 		Payload:    []byte("not valid json"),
@@ -441,23 +448,25 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	invite := model.InviteMemberRequest{
-		InviterID:      "alice",
-		InviteeID:      "uid-bob",
-		InviteeAccount: "account-bob",
-		RoomID:         "room-1",
-		SiteID:         "site-b",
+	change := model.MemberChangeEvent{
+		Type:               "members_added",
+		RoomID:             "room-1",
+		Accounts:           []string{"account-bob"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"uid-bob"},
+		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+		HistorySharedSince: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 	}
-	inviteData, err := json.Marshal(invite)
+	changeData, err := json.Marshal(change)
 	if err != nil {
-		t.Fatalf("marshal invite: %v", err)
+		t.Fatalf("marshal change: %v", err)
 	}
 
 	evt := model.OutboxEvent{
-		Type:       "member_added",
+		Type:       "subscription_created",
 		SiteID:     "site-b",
 		DestSiteID: "site-a",
-		Payload:    inviteData,
+		Payload:    changeData,
 	}
 	evtData, err := json.Marshal(evt)
 	if err != nil {
@@ -493,53 +502,168 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 	}
 }
 
-func TestHandleEvent_MemberRemoved(t *testing.T) {
+func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 	store := &stubInboxStore{}
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	store.mu.Lock()
-	store.subscriptions = append(store.subscriptions, model.Subscription{
-		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
-		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
-	})
-	store.mu.Unlock()
+	joinedAt := time.Date(2026, 4, 5, 10, 30, 0, 0, time.UTC)
+	historyShared := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 
-	memberEvt := model.MemberRemoveEvent{
-		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
+	change := model.MemberChangeEvent{
+		Type:               "members_added",
+		RoomID:             "room-99",
+		Accounts:           []string{"alice", "bob"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"uid-alice", "uid-bob"},
+		JoinedAt:           joinedAt.UnixMilli(),
+		HistorySharedSince: historyShared.UnixMilli(),
 	}
-	payload, _ := json.Marshal(memberEvt)
+	changeData, _ := json.Marshal(change)
+
 	evt := model.OutboxEvent{
-		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
-		Payload: payload, Timestamp: time.Now().UnixMilli(),
+		Type:       "subscription_created",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    changeData,
 	}
-	data, _ := json.Marshal(evt)
+	evtData, _ := json.Marshal(evt)
 
-	err := h.HandleEvent(context.Background(), data)
-	require.NoError(t, err)
+	if err := h.HandleEvent(context.Background(), evtData); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
 
 	subs := store.getSubscriptions()
-	assert.Empty(t, subs)
+	if len(subs) != 2 {
+		t.Fatalf("expected 2 subscriptions, got %d", len(subs))
+	}
 
-	// No SubscriptionUpdateEvent is published — room-worker already publishes
-	// via the NATS supercluster to the user's home site.
+	for i, want := range []struct {
+		userID  string
+		account string
+	}{
+		{"uid-alice", "alice"},
+		{"uid-bob", "bob"},
+	} {
+		sub := subs[i]
+		if sub.User.ID != want.userID {
+			t.Errorf("sub[%d] User.ID = %q, want %q", i, sub.User.ID, want.userID)
+		}
+		if sub.User.Account != want.account {
+			t.Errorf("sub[%d] User.Account = %q, want %q", i, sub.User.Account, want.account)
+		}
+		if sub.SiteID != "site-b" {
+			t.Errorf("sub[%d] SiteID = %q, want %q", i, sub.SiteID, "site-b")
+		}
+		if sub.RoomID != "room-99" {
+			t.Errorf("sub[%d] RoomID = %q, want %q", i, sub.RoomID, "room-99")
+		}
+		if !sub.JoinedAt.Equal(joinedAt) {
+			t.Errorf("sub[%d] JoinedAt = %v, want %v", i, sub.JoinedAt, joinedAt)
+		}
+		if sub.HistorySharedSince == nil {
+			t.Fatalf("sub[%d] HistorySharedSince should not be nil", i)
+		}
+		if !sub.HistorySharedSince.Equal(historyShared) {
+			t.Errorf("sub[%d] HistorySharedSince = %v, want %v", i, *sub.HistorySharedSince, historyShared)
+		}
+		if len(sub.Roles) != 1 || sub.Roles[0] != model.RoleMember {
+			t.Errorf("sub[%d] Roles = %v, want [%q]", i, sub.Roles, model.RoleMember)
+		}
+	}
+
+	// Verify 2 publish events
 	records := pub.getRecords()
-	assert.Empty(t, records)
+	if len(records) != 2 {
+		t.Fatalf("expected 2 publishes, got %d", len(records))
+	}
 }
 
-func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
+func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 	store := &stubInboxStore{}
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	evt := model.OutboxEvent{
-		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
-		Payload: []byte(`{invalid`), Timestamp: time.Now().UnixMilli(),
+	change := model.MemberChangeEvent{
+		Type:               "members_added",
+		RoomID:             "room-1",
+		Accounts:           []string{"dave"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"uid-dave"},
+		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+		HistorySharedSince: 0, // means "all history"
 	}
-	data, _ := json.Marshal(evt)
+	changeData, _ := json.Marshal(change)
 
-	err := h.HandleEvent(context.Background(), data)
-	require.Error(t, err)
+	evt := model.OutboxEvent{
+		Type:       "subscription_created",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    changeData,
+	}
+	evtData, _ := json.Marshal(evt)
+
+	if err := h.HandleEvent(context.Background(), evtData); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	subs := store.getSubscriptions()
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subscription, got %d", len(subs))
+	}
+	if subs[0].HistorySharedSince != nil {
+		t.Errorf("HistorySharedSince = %v, want nil (history all)", subs[0].HistorySharedSince)
+	}
+}
+
+func TestHandleEvent_MemberAdded_UserIDFallback(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	change := model.MemberChangeEvent{
+		Type:               "members_added",
+		RoomID:             "room-1",
+		Accounts:           []string{"alice", "bob"},
+		SiteID:             "site-b",
+		UserIDs:            []string{"uid-alice"}, // only 1 userID for 2 accounts
+		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+		HistorySharedSince: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+	}
+	changeData, _ := json.Marshal(change)
+
+	evt := model.OutboxEvent{
+		Type:       "subscription_created",
+		SiteID:     "site-b",
+		DestSiteID: "site-a",
+		Payload:    changeData,
+	}
+	evtData, _ := json.Marshal(evt)
+
+	if err := h.HandleEvent(context.Background(), evtData); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	subs := store.getSubscriptions()
+	if len(subs) != 2 {
+		t.Fatalf("expected 2 subscriptions, got %d", len(subs))
+	}
+
+	// First sub should use the provided userID
+	if subs[0].User.ID != "uid-alice" {
+		t.Errorf("sub[0] User.ID = %q, want %q", subs[0].User.ID, "uid-alice")
+	}
+	if subs[0].User.Account != "alice" {
+		t.Errorf("sub[0] User.Account = %q, want %q", subs[0].User.Account, "alice")
+	}
+
+	// Second sub should fall back to account as userID
+	if subs[1].User.ID != "bob" {
+		t.Errorf("sub[1] User.ID = %q, want %q (fallback to account)", subs[1].User.ID, "bob")
+	}
+	if subs[1].User.Account != "bob" {
+		t.Errorf("sub[1] User.Account = %q, want %q", subs[1].User.Account, "bob")
+	}
 }
 
 func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
@@ -621,6 +745,55 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	if len(store.getRoleUpdates()) != 0 {
 		t.Error("no role update should have been applied")
 	}
+}
+
+func TestHandleEvent_MemberRemoved(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	store.mu.Lock()
+	store.subscriptions = append(store.subscriptions, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
+	})
+	store.mu.Unlock()
+
+	memberEvt := model.MemberRemoveEvent{
+		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
+	}
+	payload, _ := json.Marshal(memberEvt)
+	evt := model.OutboxEvent{
+		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), data)
+	require.NoError(t, err)
+
+	subs := store.getSubscriptions()
+	assert.Empty(t, subs)
+
+	// No SubscriptionUpdateEvent is published — room-worker already publishes
+	// via the NATS supercluster to the user's home site.
+	records := pub.getRecords()
+	assert.Empty(t, records)
+}
+
+func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	evt := model.OutboxEvent{
+		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: []byte(`{invalid`), Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
 }
 
 func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {

@@ -46,7 +46,7 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 	}
 
 	switch evt.Type {
-	case "member_added":
+	case "subscription_created":
 		return h.handleMemberAdded(ctx, &evt)
 	case "member_removed":
 		return h.handleMemberRemoved(ctx, &evt)
@@ -61,41 +61,50 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 }
 
 func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent) error {
-	var invite model.InviteMemberRequest
-	if err := json.Unmarshal(evt.Payload, &invite); err != nil {
+	var change model.MemberChangeEvent
+	if err := json.Unmarshal(evt.Payload, &change); err != nil {
 		return fmt.Errorf("unmarshal member_added payload: %w", err)
 	}
 
-	now := time.Now().UTC()
-	sub := model.Subscription{
-		ID:                 uuid.New().String(),
-		User:               model.SubscriptionUser{ID: invite.InviteeID, Account: invite.InviteeAccount},
-		RoomID:             invite.RoomID,
-		SiteID:             invite.SiteID,
-		Roles:              []model.Role{model.RoleMember},
-		HistorySharedSince: &now,
-		JoinedAt:           now,
+	joinedAt := time.UnixMilli(change.JoinedAt).UTC()
+	var historySharedSince *time.Time
+	if change.HistorySharedSince > 0 {
+		t := time.UnixMilli(change.HistorySharedSince).UTC()
+		historySharedSince = &t
 	}
 
-	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
-		return fmt.Errorf("create subscription: %w", err)
-	}
+	publishNow := time.Now().UTC().UnixMilli()
+	for i, account := range change.Accounts {
+		userID := account // fallback
+		if i < len(change.UserIDs) {
+			userID = change.UserIDs[i]
+		}
 
-	updateEvt := model.SubscriptionUpdateEvent{
-		UserID:       invite.InviteeID,
-		Subscription: sub,
-		Action:       "added",
-		Timestamp:    now.UnixMilli(),
-	}
+		sub := model.Subscription{
+			ID:                 uuid.New().String(),
+			User:               model.SubscriptionUser{ID: userID, Account: account},
+			RoomID:             change.RoomID,
+			SiteID:             change.SiteID,
+			Roles:              []model.Role{model.RoleMember},
+			HistorySharedSince: historySharedSince,
+			JoinedAt:           joinedAt,
+		}
 
-	updateData, err := natsutil.MarshalResponse(updateEvt)
-	if err != nil {
-		return fmt.Errorf("marshal subscription update event: %w", err)
-	}
+		if err := h.store.CreateSubscription(ctx, &sub); err != nil {
+			return fmt.Errorf("create subscription for %q: %w", account, err)
+		}
 
-	subj := subject.SubscriptionUpdate(invite.InviteeAccount)
-	if err := h.pub.Publish(ctx, subj, updateData); err != nil {
-		slog.Error("publish subscription update failed", "error", err, "account", invite.InviteeAccount)
+		updateEvt := model.SubscriptionUpdateEvent{
+			UserID: userID, Subscription: sub, Action: "added",
+			Timestamp: publishNow,
+		}
+		updateData, err := natsutil.MarshalResponse(updateEvt)
+		if err != nil {
+			return fmt.Errorf("marshal subscription update event: %w", err)
+		}
+		if err := h.pub.Publish(ctx, subject.SubscriptionUpdate(account), updateData); err != nil {
+			slog.Error("publish subscription update failed", "error", err, "account", account)
+		}
 	}
 
 	return nil

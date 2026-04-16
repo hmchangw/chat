@@ -63,10 +63,14 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
 
-	// Create outbox event for member_added
-	invite := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", RoomID: "r1", SiteID: "site-b"}
-	inviteData, _ := json.Marshal(invite)
-	evt := model.OutboxEvent{Type: "member_added", SiteID: "site-a", DestSiteID: "site-b", Payload: inviteData}
+	// Create outbox event for subscription_created
+	change := model.MemberChangeEvent{
+		Type: "member-added", RoomID: "r1", Accounts: []string{"u2"}, SiteID: "site-b",
+		UserIDs: []string{"u2"}, JoinedAt: time.Now().UTC().UnixMilli(),
+		HistorySharedSince: time.Now().UTC().UnixMilli(),
+	}
+	changeData, _ := json.Marshal(change)
+	evt := model.OutboxEvent{Type: "subscription_created", SiteID: "site-a", DestSiteID: "site-b", Payload: changeData}
 	evtData, _ := json.Marshal(evt)
 
 	if err := handler.HandleEvent(ctx, evtData); err != nil {
