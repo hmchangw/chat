@@ -65,8 +65,30 @@ func (a *redisAdapter) deletePipeline(ctx context.Context, currentKey, prevKey s
 	return a.c.Del(ctx, currentKey, prevKey).Err()
 }
 
-func (a *redisAdapter) hgetallMany(_ context.Context, _ []string) ([]map[string]string, error) {
-	return nil, fmt.Errorf("not implemented")
+// hgetallMany issues HGETALL for every key in a single pipeline and returns
+// one map per input key (in the same order). A missing hash yields an empty
+// map rather than an error, matching go-redis v9 HGetAll semantics.
+func (a *redisAdapter) hgetallMany(ctx context.Context, keys []string) ([]map[string]string, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	pipe := a.c.Pipeline()
+	cmds := make([]*redis.MapStringStringCmd, len(keys))
+	for i, k := range keys {
+		cmds[i] = pipe.HGetAll(ctx, k)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+	out := make([]map[string]string, len(keys))
+	for i, c := range cmds {
+		m, err := c.Result()
+		if err != nil {
+			return nil, err
+		}
+		out[i] = m
+	}
+	return out, nil
 }
 
 // NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
