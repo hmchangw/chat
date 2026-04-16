@@ -63,7 +63,7 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent) error {
 	var change model.MemberChangeEvent
 	if err := json.Unmarshal(evt.Payload, &change); err != nil {
-		return fmt.Errorf("unmarshal member_added payload: %w", err)
+		return fmt.Errorf("unmarshal subscription_created payload: %w", err)
 	}
 
 	joinedAt := time.UnixMilli(change.JoinedAt).UTC()
