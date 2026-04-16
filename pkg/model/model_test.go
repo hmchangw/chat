@@ -640,8 +640,8 @@ func TestRemoveMemberRequestJSON(t *testing.T) {
 	})
 }
 
-func TestMemberChangeEventJSON(t *testing.T) {
-	src := model.MemberChangeEvent{
+func TestMemberRemoveEventJSON(t *testing.T) {
+	src := model.MemberRemoveEvent{
 		Type:     "member_removed",
 		RoomID:   "r1",
 		Accounts: []string{"alice", "bob"},
@@ -649,7 +649,7 @@ func TestMemberChangeEventJSON(t *testing.T) {
 	}
 	data, err := json.Marshal(&src)
 	require.NoError(t, err)
-	var dst model.MemberChangeEvent
+	var dst model.MemberRemoveEvent
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Equal(t, src, dst)
 }

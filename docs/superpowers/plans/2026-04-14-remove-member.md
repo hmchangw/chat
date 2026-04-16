@@ -66,8 +66,8 @@ func TestRemoveMemberRequestJSON(t *testing.T) {
 	})
 }
 
-func TestMemberChangeEventJSON(t *testing.T) {
-	src := model.MemberChangeEvent{
+func TestMemberRemoveEventJSON(t *testing.T) {
+	src := model.MemberRemoveEvent{
 		Type:     "member-removed",
 		RoomID:   "r1",
 		Accounts: []string{"alice", "bob"},
@@ -75,7 +75,7 @@ func TestMemberChangeEventJSON(t *testing.T) {
 	}
 	data, err := json.Marshal(&src)
 	require.NoError(t, err)
-	var dst model.MemberChangeEvent
+	var dst model.MemberRemoveEvent
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Equal(t, src, dst)
 }
@@ -233,12 +233,12 @@ type Message struct {
 }
 ```
 
-- [ ] **Step 5: Add MemberChangeEvent to event.go**
+- [ ] **Step 5: Add MemberRemoveEvent to event.go**
 
 Append to `pkg/model/event.go`:
 
 ```go
-type MemberChangeEvent struct {
+type MemberRemoveEvent struct {
 	Type      string   `json:"type"               bson:"type"`
 	RoomID    string   `json:"roomId"             bson:"roomId"`
 	Accounts  []string `json:"accounts"           bson:"accounts"`
@@ -1253,7 +1253,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), subj, data)
 	require.NoError(t, err)
 
-	// Expect: SubscriptionUpdateEvent + MemberChangeEvent + system message = 3 publishes
+	// Expect: SubscriptionUpdateEvent + MemberRemoveEvent + system message = 3 publishes
 	assert.GreaterOrEqual(t, len(published), 3)
 
 	subjectSet := make(map[string]bool)
@@ -1368,7 +1368,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), subj, data)
 	require.NoError(t, err)
 
-	// bob + dave get SubscriptionUpdateEvent (2) + MemberChangeEvent (1) + system msg (1) = 4
+	// bob + dave get SubscriptionUpdateEvent (2) + MemberRemoveEvent (1) + system msg (1) = 4
 	assert.GreaterOrEqual(t, len(published), 4)
 
 	subjectSet := make(map[string]bool)
@@ -1493,8 +1493,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, requester, roomID
 		return fmt.Errorf("publish subscription update: %w", err)
 	}
 
-	// Publish MemberChangeEvent
-	memberEvt := model.MemberChangeEvent{
+	// Publish MemberRemoveEvent
+	memberEvt := model.MemberRemoveEvent{
 		Type:     "member-removed",
 		RoomID:   roomID,
 		Accounts: []string{targetAccount},
@@ -1592,13 +1592,13 @@ func (h *Handler) processRemoveOrg(ctx context.Context, requester, roomID, orgID
 		}
 	}
 
-	// Publish MemberChangeEvent (only actually removed accounts)
+	// Publish MemberRemoveEvent (only actually removed accounts)
 	if len(toRemove) > 0 {
 		removedAccounts := make([]string, len(toRemove))
 		for i, m := range toRemove {
 			removedAccounts[i] = m.Account
 		}
-		memberEvt := model.MemberChangeEvent{
+		memberEvt := model.MemberRemoveEvent{
 			Type: "member-removed", RoomID: roomID, Accounts: removedAccounts, SiteID: h.siteID,
 		}
 		memberEvtData, _ := json.Marshal(memberEvt)
@@ -1624,7 +1624,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, requester, roomID, orgID
 	// Cross-site outbox per removed remote member
 	for _, m := range toRemove {
 		if m.SiteID != h.siteID {
-			evt := model.MemberChangeEvent{
+			evt := model.MemberRemoveEvent{
 				Type: "member-removed", RoomID: roomID, Accounts: []string{m.Account}, SiteID: h.siteID,
 			}
 			evtData, _ := json.Marshal(evt)
@@ -1717,7 +1717,7 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 	})
 	store.mu.Unlock()
 
-	memberEvt := model.MemberChangeEvent{
+	memberEvt := model.MemberRemoveEvent{
 		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
 	}
 	payload, _ := json.Marshal(memberEvt)
@@ -1771,7 +1771,7 @@ In `inbox-worker/handler.go`, add a case to the event type switch in `HandleEven
 
 ```go
 case "member_removed":
-	var memberEvt model.MemberChangeEvent
+	var memberEvt model.MemberRemoveEvent
 	if err := json.Unmarshal(evt.Payload, &memberEvt); err != nil {
 		return fmt.Errorf("unmarshal member removed payload: %w", err)
 	}
@@ -2172,7 +2172,7 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Process member_removed event
-	memberEvt := model.MemberChangeEvent{
+	memberEvt := model.MemberRemoveEvent{
 		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
 	}
 	payload, _ := json.Marshal(memberEvt)

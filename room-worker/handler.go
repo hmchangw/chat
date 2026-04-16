@@ -267,7 +267,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req 
 	if !isSelfLeave {
 		evtType = "member_removed"
 	}
-	memberEvt := model.MemberChangeEvent{
+	memberEvt := model.MemberRemoveEvent{
 		Type:      evtType,
 		RoomID:    req.RoomID,
 		Accounts:  []string{req.Account},
@@ -386,7 +386,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 		for i, m := range toRemove {
 			accounts[i] = m.Account
 		}
-		memberEvt := model.MemberChangeEvent{
+		memberEvt := model.MemberRemoveEvent{
 			Type:      "member_removed",
 			RoomID:    req.RoomID,
 			Accounts:  accounts,
@@ -431,7 +431,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 		}
 	}
 	for destSiteID, accounts := range siteAccounts {
-		evt := model.MemberChangeEvent{
+		evt := model.MemberRemoveEvent{
 			Type:      "member_removed",
 			RoomID:    req.RoomID,
 			Accounts:  accounts,

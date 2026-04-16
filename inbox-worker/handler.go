@@ -106,7 +106,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 }
 
 func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEvent) error {
-	var memberEvt model.MemberChangeEvent
+	var memberEvt model.MemberRemoveEvent
 	if err := json.Unmarshal(evt.Payload, &memberEvt); err != nil {
 		return fmt.Errorf("unmarshal member removed payload: %w", err)
 	}

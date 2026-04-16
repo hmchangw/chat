@@ -533,7 +533,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	// Verify the sys msg has type "member_removed"
 	for _, p := range published {
 		if p.subj == subject.MemberEvent(roomID) {
-			var evt model.MemberChangeEvent
+			var evt model.MemberRemoveEvent
 			require.NoError(t, json.Unmarshal(p.data, &evt))
 			assert.Equal(t, "member_removed", evt.Type)
 			assert.Contains(t, evt.Accounts, account)
