@@ -10,7 +10,7 @@ Adding members to a chat room supports three sources: **individual users** (by a
 
 ## Scope
 
-Covers the NATS request/reply endpoint for add-member operations; org expansion via `users` collection; channel-sourced member copying; bot filtering; capacity enforcement; subscription and room member persistence; `userCount` maintenance; system message publishing; per-user and room-scoped event fan-out; cross-site outbox publishing for subscription replication; and inbox-worker processing of remote `subscription_created` events.
+Covers the NATS request/reply endpoint for add-member operations; org expansion via `users` collection; channel-sourced member copying; bot filtering; capacity enforcement; subscription and room member persistence; `userCount` maintenance; system message publishing; per-user and room-scoped event fan-out; cross-site outbox publishing for subscription and room_members replication; and inbox-worker processing of remote `member_added` events.
 
 Out of scope: room creation/deletion, member removal, role updates, message history access control, typing indicators, presence, and read receipts.
 
@@ -33,9 +33,9 @@ Stream `ROOMS_{siteID}` captures validated member mutations. Room-service publis
 | Subject | Payload | Purpose |
 |---------|---------|---------|
 | `chat.user.{account}.event.subscription.update` | `SubscriptionUpdateEvent` | Notify individual user their room list changed |
-| `chat.room.{roomID}.event.member` | `MemberChangeEvent` | Notify all room subscribers of membership change |
+| `chat.room.{roomID}.event.member` | `MemberAddEvent` | Notify all room subscribers of membership change |
 | `chat.msg.canonical.{siteID}.created` | `MessageEvent` | System message (`members_added`) persisted via message-worker pipeline |
-| `outbox.{room.SiteID}.to.{user.SiteID}.subscription_created` | `OutboxEvent` (wraps `MemberChangeEvent` in `Payload`) | Remote site creates subscription |
+| `outbox.{room.SiteID}.to.{destSiteID}.member_added` | `OutboxEvent` (wraps `MemberAddEvent` in `Payload`) | Remote site creates subscriptions + room_members |
 
 ## Data Models
 
@@ -108,7 +108,7 @@ type RoomMember struct {
 
 type RoomMemberEntry struct {
     ID      string         `json:"id"                bson:"id"`
-    Type    RoomMemberType `json:"type"              bson:"type"`    // "individual" or "org"
+    Type    RoomMemberType `json:"type"              bson:"type"`    // RoomMemberIndividual or RoomMemberOrg
     Account string         `json:"account,omitempty" bson:"account,omitempty"`
 }
 ```
@@ -144,14 +144,18 @@ type AddMembersRequest struct {
 ### Event Payloads
 
 ```go
-type MemberChangeEvent struct {
-    Type               string   `json:"type"                         bson:"type"`     // "member-added"
-    RoomID             string   `json:"roomId"                       bson:"roomId"`
-    Accounts           []string `json:"accounts"                     bson:"accounts"`
-    SiteID             string   `json:"siteId"                       bson:"siteId"`
-    UserIDs            []string `json:"userIds,omitempty"            bson:"userIds,omitempty"`
-    JoinedAt           int64    `json:"joinedAt"                     bson:"joinedAt"`
-    HistorySharedSince int64    `json:"historySharedSince"           bson:"historySharedSince"`
+// MemberAddEvent is the domain event for add-member operations.
+// Used for room-scoped notifications and cross-site outbox replication.
+// Separate from MemberRemoveEvent (used by remove-member feature).
+type MemberAddEvent struct {
+    Type               string   `json:"type"               bson:"type"`               // "member-added"
+    RoomID             string   `json:"roomId"             bson:"roomId"`
+    Accounts           []string `json:"accounts"           bson:"accounts"`
+    Orgs               []string `json:"orgs,omitempty"     bson:"orgs,omitempty"`
+    SiteID             string   `json:"siteId"             bson:"siteId"`
+    JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
+    HistorySharedSince int64    `json:"historySharedSince" bson:"historySharedSince"`
+    Timestamp          int64    `json:"timestamp"          bson:"timestamp"`
 }
 
 type SubscriptionUpdateEvent struct {
@@ -162,15 +166,17 @@ type SubscriptionUpdateEvent struct {
 }
 
 type OutboxEvent struct {
-    Type       string `json:"type"`       // "subscription_created"
+    Type       string `json:"type"`       // "member_added", "member_removed", "role_updated", "room_sync"
     SiteID     string `json:"siteId"`
     DestSiteID string `json:"destSiteId"`
-    Payload    []byte `json:"payload"`    // JSON-encoded inner event (e.g., MemberChangeEvent)
+    Payload    []byte `json:"payload"`    // JSON-encoded inner event (e.g., MemberAddEvent)
     Timestamp  int64  `json:"timestamp" bson:"timestamp"`
 }
 ```
 
-`MemberChangeEvent.UserIDs`, `JoinedAt`, and `HistorySharedSince` are set by room-worker at publish time. `JoinedAt` is always set to `now.UnixMilli()`. `HistorySharedSince` is set to the same value as `JoinedAt` when history mode is `"none"`, or `0` when mode is `"all"`/absent (meaning full history — inbox-worker treats `0` as omit). Inbox-worker on the remote site uses these values to create **identical subscriptions** — same user ID, same join timestamp, same history access — ensuring data consistency across sites. `UserIDs[i]` corresponds to `Accounts[i]`.
+`MemberAddEvent` carries `Accounts` (the new members), `Orgs` (org IDs if any orgs were added), `JoinedAt`, and `HistorySharedSince`. All set by room-worker at publish time. `JoinedAt` is always `now.UnixMilli()`. `HistorySharedSince` equals `JoinedAt` when history mode is `"none"`, or `0` when mode is `"all"`/absent (inbox-worker treats `0` as omit).
+
+Inbox-worker on the remote site uses `Accounts` to look up users locally via `FindUsersByAccounts`, and uses `Orgs` to determine whether room_members docs need to be written. No `UserIDs` field — inbox-worker resolves user IDs from its own `users` collection.
 
 ### Message Struct Updates
 
@@ -305,31 +311,48 @@ All operations are **fully synchronous before ack**. Any failure NAKs the messag
 2. **Build subscriptions** — Capture `now = time.Now().UTC()` once. For each user, create `Subscription` with `SiteID = room.SiteID`, `Roles = [RoleMember]`, `JoinedAt = now`. If `req.History.Mode == HistoryModeNone`, set `HistorySharedSince = &now` (same timestamp as `JoinedAt`); if mode is `HistoryModeAll` or absent, omit `HistorySharedSince` (`nil`). Then `BulkCreateSubscriptions` (existing in `room-worker/store.go`)
 3. Write `room_members` docs if current request has orgs OR room already has org-based room_members (`HasOrgRoomMembers(roomID)` — single doc lookup). Write individual docs for new members + org docs for new orgs. This ensures individuals added later are visible to channel expansion in rooms that use org membership.
 4. Increment `userCount` via `IncrementUserCount` (existing in `room-worker/store.go`)
-5. Publish `SubscriptionUpdateEvent` (action: `"added"`) per member via `subject.SubscriptionUpdate` (existing in `pkg/subject`)
-6. Publish `MemberChangeEvent` (with `UserIDs`, `JoinedAt` = `now.UnixMilli()`, `HistorySharedSince` = `now.UnixMilli()` if mode is `"none"` or `0` if mode is `"all"`/absent) to `chat.room.{roomID}.event.member` via `subject.RoomMemberEvent` (existing in `pkg/subject`)
+5. Publish `SubscriptionUpdateEvent` (action: `"added"`) per new member via `subject.SubscriptionUpdate` (existing in `pkg/subject`)
+6. Publish `MemberAddEvent` (with `Accounts`, `Orgs`, `JoinedAt` = `now.UnixMilli()`, `HistorySharedSince` = `now.UnixMilli()` if mode is `"none"` or `0` if mode is `"all"`/absent) to `chat.room.{roomID}.event.member` via `subject.RoomMemberEvent` (existing in `pkg/subject`)
 7. Publish system message (`members_added`) to MESSAGES_CANONICAL via `subject.MsgCanonicalCreated` (existing in `pkg/subject`)
-8. **Outbox for cross-site members (batched by destination site)** — Group cross-site members by their `user.SiteID`. For each unique remote site, build a `MemberChangeEvent` containing only that site's accounts and userIDs, wrap in `OutboxEvent`, and publish to `outbox.{room.SiteID}.to.{destSiteID}.subscription_created` via `subject.Outbox`. This produces one outbox event per remote site instead of one per cross-site member — reducing JetStream persistence and cross-network traffic while keeping payloads lightweight (account strings, not full Subscription documents).
+8. **Outbox for cross-site members (batched by destination site)** — Group cross-site members by their `user.SiteID`. For each unique remote site, build a `MemberAddEvent` containing only that site's accounts plus all `Orgs` from the request, wrap in `OutboxEvent`, and publish to `outbox.{room.SiteID}.to.{destSiteID}.member_added` via `subject.Outbox`. This produces one outbox event per remote site. The `Orgs` field is included so inbox-worker can determine whether room_members docs need to be written on the remote site.
 9. **Ack**
 
 ## Inbox-Worker (Remote Site Processing)
 
-Inbox-worker processes inbound `subscription_created` events from remote sites. The incoming message is an `OutboxEvent` — unwrap `Payload` to get the `MemberChangeEvent`.
+Inbox-worker processes inbound `member_added` events from remote sites. The incoming message is an `OutboxEvent` — unwrap `Payload` to get the `MemberAddEvent`.
 
 | Event Type | Action |
 |------------|--------|
-| `subscription_created` | Create subscription in local MongoDB from `MemberChangeEvent` payload |
+| `member_added` | Create subscriptions + room_members in local MongoDB from `MemberAddEvent` payload |
 
-For each account in `MemberChangeEvent.Accounts`:
+### Step-by-step flow
 
-1. **Create subscription** with values from the event (not generated locally):
-   - `User.ID` = `MemberChangeEvent.UserIDs[i]` (falls back to account if index out of range)
-   - `SiteID` = `MemberChangeEvent.SiteID` (room's origin site)
-   - `JoinedAt` = `time.UnixMilli(MemberChangeEvent.JoinedAt)` (preserves original join time)
-   - `HistorySharedSince` = `time.UnixMilli(MemberChangeEvent.HistorySharedSince)` if > 0, else omit (`nil`). When present, this equals `JoinedAt` (same timestamp set by room-worker)
-   - `Roles` = `[RoleMember]`
-2. **Publish `SubscriptionUpdateEvent`** (action: `"added"`) to `subject.SubscriptionUpdate(account)` to notify the local user's client
+1. **Unmarshal** `MemberAddEvent` from `OutboxEvent.Payload`
+2. **Look up users locally** — `FindUsersByAccounts(event.Accounts)` to get `User.ID` for each account on this site. Build a `userMap[account]*User`.
+3. **Create subscriptions** — For each account in `event.Accounts`:
+   - Look up user from `userMap` (skip if not found)
+   - Create `Subscription` with `User.ID` from local lookup, `SiteID = event.SiteID` (room's origin site), `Roles = [RoleMember]`, `JoinedAt` from event, `HistorySharedSince` from event (nil if 0)
+   - `BulkCreateSubscriptions`
+4. **Write room_members** — Determine if room_members docs are needed:
+   - **If `event.Orgs` is non-empty**: the add-member operation included orgs. Write:
+     - Org room_member docs for each org in `event.Orgs`
+     - Individual room_member docs for each new account in `event.Accounts`
+     - **Backfill**: query existing subscription accounts for this room (`GetSubscriptionAccounts(roomID)`) and write individual room_member docs for any that don't already have one. This covers members added before orgs existed in the room.
+   - **If `event.Orgs` is empty but room already has org room_members** (`HasOrgRoomMembers(roomID)`): write individual room_member docs for new accounts only
+   - **If no orgs anywhere**: skip room_members (just subscriptions)
+5. **Publish `SubscriptionUpdateEvent`** (action: `"added"`) per new member to `subject.SubscriptionUpdate(account)`
 
-This ensures **identical subscription data** exists on both the room's origin site and the user's home site — same user ID, same join timestamp, same history access.
+### New inbox-worker store methods
+
+| Method | Signature | Purpose |
+|--------|-----------|---------|
+| `FindUsersByAccounts` | `(ctx, accounts []string) ([]model.User, error)` | Batch user lookup for local user IDs |
+| `BulkCreateSubscriptions` | `(ctx, subs []*model.Subscription) error` | Batch subscription creation |
+| `CreateRoomMember` | `(ctx, member *model.RoomMember) error` | Write individual/org room_member docs |
+| `HasOrgRoomMembers` | `(ctx, roomID string) (bool, error)` | Check if room has any org-based room_members |
+| `GetSubscriptionAccounts` | `(ctx, roomID string) ([]string, error)` | Get all subscription accounts for backfill |
+
+This ensures both **subscriptions** and **room_members** are consistent across sites. When orgs appear for the first time via a cross-site event, existing members are backfilled into room_members so channel expansion works identically on all sites.
 
 ## Message-Worker Changes
 
@@ -340,7 +363,7 @@ This ensures **identical subscription data** exists on both the room's origin si
 - **Clients** — send NATS request/reply to room-service (routed via gateways to room's site)
 - **room-service** — validates add-member requests, publishes to `ROOMS_{siteID}` stream
 - **room-worker** — consumes from `ROOMS_{siteID}`, performs all DB writes and events synchronously before ack
-- **inbox-worker** — processes `subscription_created` events from INBOX stream to replicate subscriptions on remote user's site
+- **inbox-worker** — processes `member_added` events from INBOX stream to replicate subscriptions and room_members on remote user's site
 - **message-worker** — persists system messages (type + sys_msg_data) to Cassandra
 
 ## Design Decisions
@@ -360,7 +383,12 @@ This ensures **identical subscription data** exists on both the room's origin si
 | Batch room_members fetch | `GetRoomMembersByRooms` uses `{rid: {$in: roomIDs}}` to fetch all channel room_members in one call instead of per-channel queries |
 | Batch subscription accounts | `GetAccountsByRooms` uses aggregation pipeline to get distinct accounts across multiple rooms in one call instead of per-channel queries |
 | Two-subject design | Client request/reply uses `member.invite` pattern (`chat.user.{account}.request.room.{roomID}.{siteID}.member.add`); room-service publishes validated payload to canonical stream (`chat.room.canonical.{siteID}.member.add`) — request subject carries routing context, canonical subject signals validation is done |
-| `OutboxEvent` wrapper | Outbox events wrap inner payloads (e.g., `MemberChangeEvent`) in a typed envelope with `Type`, `SiteID`, `DestSiteID`, and `Timestamp` — lets inbox-worker route by type without parsing the inner payload first |
-| Outbox batched by destination site | Group cross-site members by `user.SiteID`, publish one `OutboxEvent` per remote site instead of one per member. `MemberChangeEvent` payload carries only account strings (lightweight), so even hundreds of accounts per event is ~10KB — well within NATS limits. Reduces outbox event count from K (cross-site members) to S (unique remote sites) |
-| Event-sourced subscription fields | `MemberChangeEvent` carries `UserIDs`, `JoinedAt`, `HistorySharedSince` so inbox-worker creates identical subscriptions on remote sites without local lookups or timestamp drift |
+| `OutboxEvent` wrapper | Outbox events wrap inner payloads (e.g., `MemberAddEvent`) in a typed envelope with `Type`, `SiteID`, `DestSiteID`, and `Timestamp` — lets inbox-worker route by type without parsing the inner payload first |
+| Outbox batched by destination site | Group cross-site members by `user.SiteID`, publish one `OutboxEvent` per remote site instead of one per member. `MemberAddEvent` payload carries account strings + org IDs (lightweight). Reduces outbox event count from K (cross-site members) to S (unique remote sites) |
+| `MemberAddEvent` separate from `MemberRemoveEvent` | Add-member and remove-member have different payload needs — add carries `Orgs`, `JoinedAt`, `HistorySharedSince`; remove carries `OrgID` for single-org removal. Separate structs avoid overloaded fields |
+| Outbox type `"member_added"` | Consistent with `"member_removed"` (remove-member feature). Both describe the domain operation, not the implementation detail |
+| No `UserIDs` in event | Inbox-worker resolves user IDs locally via `FindUsersByAccounts` — avoids cross-site user ID assumptions and keeps the event payload minimal |
+| Outbox carries `Orgs` | Inbox-worker needs org IDs to determine whether room_members docs should be written on the remote site. Without this, remote sites would miss room_members for org-based rooms |
+| Room_members backfill on first org | When orgs appear for the first time via outbox, inbox-worker backfills existing subscription holders into room_members. This ensures channel expansion works identically on all sites |
 | `Subscription.SiteID` = room's site | Subscriptions always reference the room's origin site, not the user's site — consistent across both local and remote sites |
+| `RoomMemberIndividual`/`RoomMemberOrg` constants | Aligned with remove-member PR (#79) naming convention — shorter, no "Type" suffix |

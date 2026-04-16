@@ -345,14 +345,14 @@ func TestRoomMemberJSON(t *testing.T) {
 		Ts:     now,
 		Member: model.RoomMemberEntry{
 			ID:   "org-eng",
-			Type: model.RoomMemberTypeOrg,
+			Type: model.RoomMemberOrg,
 		},
 	}
 	data, err := json.Marshal(rm)
 	require.NoError(t, err)
 	var dst model.RoomMember
 	require.NoError(t, json.Unmarshal(data, &dst))
-	assert.Equal(t, model.RoomMemberTypeOrg, dst.Member.Type)
+	assert.Equal(t, model.RoomMemberOrg, dst.Member.Type)
 }
 
 func TestMembersAddedJSON(t *testing.T) {
@@ -385,8 +385,8 @@ import "time"
 type RoomMemberType string
 
 const (
-	RoomMemberTypeIndividual RoomMemberType = "individual"
-	RoomMemberTypeOrg        RoomMemberType = "org"
+	RoomMemberIndividual RoomMemberType = "individual"
+	RoomMemberOrg        RoomMemberType = "org"
 )
 
 type HistoryMode string
@@ -443,7 +443,7 @@ git commit -m "feat(model): add member types — AddMembersRequest, RoomMember, 
 
 ---
 
-### Task 6: Add MemberChangeEvent to event.go
+### Task 6: Add MemberAddEvent to event.go
 
 **Files:**
 - Modify: `pkg/model/event.go` (add after OutboxEvent, line 49)
@@ -454,8 +454,8 @@ git commit -m "feat(model): add member types — AddMembersRequest, RoomMember, 
 Add to `pkg/model/model_test.go`:
 
 ```go
-func TestMemberChangeEventJSON(t *testing.T) {
-	evt := model.MemberChangeEvent{
+func TestMemberAddEventJSON(t *testing.T) {
+	evt := model.MemberAddEvent{
 		Type:               "member-added",
 		RoomID:             "r1",
 		Accounts:           []string{"alice", "bob"},
@@ -467,14 +467,14 @@ func TestMemberChangeEventJSON(t *testing.T) {
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
 
-	var dst model.MemberChangeEvent
+	var dst model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Equal(t, "member-added", dst.Type)
 	assert.Equal(t, []string{"u1", "u2"}, dst.UserIDs)
 	assert.Equal(t, int64(1713200000000), dst.JoinedAt)
 
 	// UserIDs omitempty
-	evt2 := model.MemberChangeEvent{Type: "member-added", RoomID: "r1", Accounts: []string{"alice"}, SiteID: "site-a"}
+	evt2 := model.MemberAddEvent{Type: "member-added", RoomID: "r1", Accounts: []string{"alice"}, SiteID: "site-a"}
 	data2, _ := json.Marshal(evt2)
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(data2, &m))
@@ -486,14 +486,14 @@ func TestMemberChangeEventJSON(t *testing.T) {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `make test SERVICE=pkg/model`
-Expected: Compilation error — `model.MemberChangeEvent` undefined
+Expected: Compilation error — `model.MemberAddEvent` undefined
 
-- [ ] **Step 3: Add MemberChangeEvent to event.go**
+- [ ] **Step 3: Add MemberAddEvent to event.go**
 
 Add after `OutboxEvent` struct in `pkg/model/event.go`:
 
 ```go
-type MemberChangeEvent struct {
+type MemberAddEvent struct {
 	Type               string   `json:"type"                         bson:"type"`
 	RoomID             string   `json:"roomId"                       bson:"roomId"`
 	Accounts           []string `json:"accounts"                     bson:"accounts"`
@@ -513,7 +513,7 @@ Expected: PASS
 
 ```bash
 git add pkg/model/event.go pkg/model/model_test.go
-git commit -m "feat(model): add MemberChangeEvent with event-sourced subscription fields"
+git commit -m "feat(model): add MemberAddEvent with event-sourced subscription fields"
 ```
 
 ---
@@ -688,11 +688,11 @@ func TestMongoStore_GetRoomMembersByRooms(t *testing.T) {
 	now := time.Now().UTC()
 	ms := store.(*MongoStore)
 	ms.roomMembers.InsertOne(ctx, model.RoomMember{ID: "rm1", RoomID: "roomA", Ts: now,
-		Member: model.RoomMemberEntry{ID: "eng", Type: model.RoomMemberTypeOrg}})
+		Member: model.RoomMemberEntry{ID: "eng", Type: model.RoomMemberOrg}})
 	ms.roomMembers.InsertOne(ctx, model.RoomMember{ID: "rm2", RoomID: "roomA", Ts: now,
-		Member: model.RoomMemberEntry{ID: "alice", Type: model.RoomMemberTypeIndividual, Account: "alice"}})
+		Member: model.RoomMemberEntry{ID: "alice", Type: model.RoomMemberIndividual, Account: "alice"}})
 	ms.roomMembers.InsertOne(ctx, model.RoomMember{ID: "rm3", RoomID: "roomB", Ts: now,
-		Member: model.RoomMemberEntry{ID: "bob", Type: model.RoomMemberTypeIndividual, Account: "bob"}})
+		Member: model.RoomMemberEntry{ID: "bob", Type: model.RoomMemberIndividual, Account: "bob"}})
 
 	members, err := store.GetRoomMembersByRooms(ctx, []string{"roomA", "roomB"})
 	require.NoError(t, err)
@@ -1435,9 +1435,9 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 	for _, m := range members {
 		channelHasMembers[m.RoomID] = true
 		switch m.Member.Type {
-		case model.RoomMemberTypeOrg:
+		case model.RoomMemberOrg:
 			orgIDs = append(orgIDs, m.Member.ID)
-		case model.RoomMemberTypeIndividual:
+		case model.RoomMemberIndividual:
 			accounts = append(accounts, m.Member.Account)
 		}
 	}
@@ -1650,7 +1650,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	err := h.processAddMembers(context.Background(), reqData)
 	require.NoError(t, err)
 
-	// Should have: 2 SubscriptionUpdate + 1 MemberChangeEvent + 1 system msg + 1 outbox (batched for site-b)
+	// Should have: 2 SubscriptionUpdate + 1 MemberAddEvent + 1 system msg + 1 outbox (batched for site-b)
 	assert.GreaterOrEqual(t, len(published), 4)
 
 	// Verify exactly 1 outbox event for site-b (batched, not per-member)
@@ -1662,7 +1662,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 			// Verify the outbox payload contains charlie's account
 			var outboxEvt model.OutboxEvent
 			require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
-			var change model.MemberChangeEvent
+			var change model.MemberAddEvent
 			require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
 			assert.Equal(t, []string{"charlie"}, change.Accounts)
 		}
@@ -1808,7 +1808,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		for _, sub := range subs {
 			m := &model.RoomMember{
 				ID: uuid.New().String(), RoomID: req.RoomID, Ts: now,
-				Member: model.RoomMemberEntry{ID: sub.User.ID, Type: model.RoomMemberTypeIndividual, Account: sub.User.Account},
+				Member: model.RoomMemberEntry{ID: sub.User.ID, Type: model.RoomMemberIndividual, Account: sub.User.Account},
 			}
 			if err := h.store.CreateRoomMember(ctx, m); err != nil {
 				slog.Error("create room member failed", "error", err, "account", sub.User.Account)
@@ -1818,7 +1818,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	for _, orgID := range req.Orgs {
 		m := &model.RoomMember{
 			ID: uuid.New().String(), RoomID: req.RoomID, Ts: now,
-			Member: model.RoomMemberEntry{ID: orgID, Type: model.RoomMemberTypeOrg},
+			Member: model.RoomMemberEntry{ID: orgID, Type: model.RoomMemberOrg},
 		}
 		if err := h.store.CreateRoomMember(ctx, m); err != nil {
 			slog.Error("create org room member failed", "error", err, "orgID", orgID)
@@ -1843,7 +1843,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	if req.History.Mode == model.HistoryModeNone {
 		historySharedSince = now.UnixMilli()
 	}
-	memberEvt := model.MemberChangeEvent{
+	memberEvt := model.MemberAddEvent{
 		Type: "member-added", RoomID: req.RoomID, Accounts: accounts, SiteID: room.SiteID,
 		UserIDs: userIDs, JoinedAt: now.UnixMilli(), HistorySharedSince: historySharedSince,
 	}
@@ -1880,18 +1880,18 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		remoteSiteMembers[user.SiteID] = entry
 	}
 	for destSiteID, members := range remoteSiteMembers {
-		siteEvt := model.MemberChangeEvent{
+		siteEvt := model.MemberAddEvent{
 			Type: "member-added", RoomID: req.RoomID, Accounts: members.accounts,
 			SiteID: room.SiteID, UserIDs: members.userIDs,
 			JoinedAt: now.UnixMilli(), HistorySharedSince: historySharedSince,
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)
 		outbox := model.OutboxEvent{
-			Type: "subscription_created", SiteID: room.SiteID, DestSiteID: destSiteID,
+			Type: "member_added", SiteID: room.SiteID, DestSiteID: destSiteID,
 			Payload: siteEvtData, Timestamp: now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "subscription_created"), outboxData); err != nil {
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData); err != nil {
 			slog.Error("outbox publish failed", "error", err, "destSiteID", destSiteID)
 		}
 	}
@@ -1921,7 +1921,7 @@ git commit -m "feat(room-worker): implement processAddMembers with event publish
 
 ## Section 5: inbox-worker + message-worker
 
-### Task 17: Update inbox-worker handleMemberAdded to use MemberChangeEvent
+### Task 17: Update inbox-worker handleMemberAdded to use MemberAddEvent
 
 **Files:**
 - Modify: `inbox-worker/handler.go:57-96`
@@ -1939,14 +1939,14 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 
 	joinedAt := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
 
-	change := model.MemberChangeEvent{
+	change := model.MemberAddEvent{
 		Type: "member-added", RoomID: "r1",
 		Accounts: []string{"alice", "bob"}, SiteID: "site-a",
 		UserIDs: []string{"u1", "u2"},
 		JoinedAt: joinedAt.UnixMilli(), HistorySharedSince: joinedAt.UnixMilli(),
 	}
 	changeData, _ := json.Marshal(change)
-	evt := model.OutboxEvent{Type: "subscription_created", Payload: changeData}
+	evt := model.OutboxEvent{Type: "member_added", Payload: changeData}
 	evtData, _ := json.Marshal(evt)
 
 	err := h.HandleEvent(context.Background(), evtData)
@@ -1970,14 +1970,14 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	change := model.MemberChangeEvent{
+	change := model.MemberAddEvent{
 		Type: "member-added", RoomID: "r1",
 		Accounts: []string{"alice"}, SiteID: "site-a",
 		UserIDs: []string{"u1"}, JoinedAt: time.Now().UnixMilli(),
 		HistorySharedSince: 0,
 	}
 	changeData, _ := json.Marshal(change)
-	evt := model.OutboxEvent{Type: "subscription_created", Payload: changeData}
+	evt := model.OutboxEvent{Type: "member_added", Payload: changeData}
 	evtData, _ := json.Marshal(evt)
 
 	err := h.HandleEvent(context.Background(), evtData)
@@ -1993,14 +1993,14 @@ func TestHandleEvent_MemberAdded_UserIDFallback(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
-	change := model.MemberChangeEvent{
+	change := model.MemberAddEvent{
 		Type: "member-added", RoomID: "r1",
 		Accounts: []string{"alice", "bob"}, SiteID: "site-a",
 		UserIDs: []string{"u1"}, // short — bob falls back to account
 		JoinedAt: time.Now().UnixMilli(),
 	}
 	changeData, _ := json.Marshal(change)
-	evt := model.OutboxEvent{Type: "subscription_created", Payload: changeData}
+	evt := model.OutboxEvent{Type: "member_added", Payload: changeData}
 	evtData, _ := json.Marshal(evt)
 
 	err := h.HandleEvent(context.Background(), evtData)
@@ -2023,7 +2023,7 @@ Replace `handleMemberAdded` in `inbox-worker/handler.go`:
 
 ```go
 func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent) error {
-	var change model.MemberChangeEvent
+	var change model.MemberAddEvent
 	if err := json.Unmarshal(evt.Payload, &change); err != nil {
 		return fmt.Errorf("unmarshal subscription_created payload: %w", err)
 	}
@@ -2074,7 +2074,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 
 - [ ] **Step 4: Update existing tests that used InviteMemberRequest payload**
 
-Change existing test data setup from `model.InviteMemberRequest{...}` to `model.MemberChangeEvent{...}` and update assertions for `Roles` instead of `Role`.
+Change existing test data setup from `model.InviteMemberRequest{...}` to `model.MemberAddEvent{...}` and update assertions for `Roles` instead of `Role`.
 
 - [ ] **Step 5: Run tests**
 
@@ -2085,7 +2085,7 @@ Expected: PASS
 
 ```bash
 git add inbox-worker/handler.go inbox-worker/handler_test.go
-git commit -m "feat(inbox-worker): update handleMemberAdded to use MemberChangeEvent with event-sourced fields"
+git commit -m "feat(inbox-worker): update handleMemberAdded to use MemberAddEvent with event-sourced fields"
 ```
 
 ---
