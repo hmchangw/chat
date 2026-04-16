@@ -555,7 +555,7 @@ func TestThreadStoreMongo_GetThreadRoomByParentMessageID(t *testing.T) {
 	})
 }
 
-func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
+func TestThreadStoreMongo_InsertThreadSubscription(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
 	store := newThreadStoreMongo(db)
@@ -570,13 +570,12 @@ func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
 		UserID:          "u-1",
 		UserAccount:     "alice",
 		SiteID:          "site-a",
-		LastSeenAt:      now,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
 
-	t.Run("first upsert creates document", func(t *testing.T) {
-		err := store.UpsertThreadSubscription(ctx, sub)
+	t.Run("insert creates document with correct fields", func(t *testing.T) {
+		err := store.InsertThreadSubscription(ctx, sub)
 		require.NoError(t, err)
 
 		var got model.ThreadSubscription
@@ -587,36 +586,48 @@ func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "ts-1", got.ID)
 		assert.Equal(t, "alice", got.UserAccount)
+		assert.True(t, got.LastSeenAt.IsZero(), "lastSeenAt should be zero on insert")
 		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond))
 	})
 
-	t.Run("second upsert updates fields but preserves createdAt and ID", func(t *testing.T) {
-		later := now.Add(5 * time.Minute)
-		sub2 := &model.ThreadSubscription{
-			ID:              "ts-should-be-ignored",
-			ParentMessageID: "msg-parent",
-			RoomID:          "r-1",
-			ThreadRoomID:    "tr-1",
-			UserID:          "u-1",
-			UserAccount:     "alice",
-			SiteID:          "site-a",
-			LastSeenAt:      later,
-			CreatedAt:       later,
-			UpdatedAt:       later,
+	t.Run("duplicate insert returns error", func(t *testing.T) {
+		dup := &model.ThreadSubscription{
+			ID:           "ts-dup",
+			ThreadRoomID: "tr-1",
+			UserID:       "u-1",
 		}
-		err := store.UpsertThreadSubscription(ctx, sub2)
-		require.NoError(t, err)
+		err := store.InsertThreadSubscription(ctx, dup)
+		require.Error(t, err, "second insert with same (threadRoomId, userId) must fail")
+	})
+}
 
-		var got model.ThreadSubscription
-		err = db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
-			"threadRoomId": "tr-1",
-			"userId":       "u-1",
-		}).Decode(&got)
+func TestThreadStoreMongo_ThreadSubscriptionExists(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := newThreadStoreMongo(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	t.Run("returns false when subscription absent", func(t *testing.T) {
+		exists, err := store.ThreadSubscriptionExists(ctx, "tr-nonexistent", "u-1")
 		require.NoError(t, err)
-		assert.Equal(t, "ts-1", got.ID, "ID should not change on upsert")
-		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond), "createdAt should not change on upsert")
-		assert.Equal(t, now, got.LastSeenAt.UTC().Truncate(time.Millisecond), "lastSeenAt should not change on upsert")
-		assert.Equal(t, later, got.UpdatedAt.UTC().Truncate(time.Millisecond))
+		assert.False(t, exists)
+	})
+
+	t.Run("returns true after insertion", func(t *testing.T) {
+		sub := &model.ThreadSubscription{
+			ID:           "ts-exists",
+			ThreadRoomID: "tr-exists",
+			UserID:       "u-exists",
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		require.NoError(t, store.InsertThreadSubscription(ctx, sub))
+
+		exists, err := store.ThreadSubscriptionExists(ctx, "tr-exists", "u-exists")
+		require.NoError(t, err)
+		assert.True(t, exists)
 	})
 }
 

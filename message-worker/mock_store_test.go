@@ -152,16 +152,31 @@ func (mr *MockThreadStoreMockRecorder) UpdateThreadRoomLastMessage(ctx, threadRo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateThreadRoomLastMessage", reflect.TypeOf((*MockThreadStore)(nil).UpdateThreadRoomLastMessage), ctx, threadRoomID, lastMsgID, lastMsgAt)
 }
 
-// UpsertThreadSubscription mocks base method.
-func (m *MockThreadStore) UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
+// InsertThreadSubscription mocks base method.
+func (m *MockThreadStore) InsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpsertThreadSubscription", ctx, sub)
+	ret := m.ctrl.Call(m, "InsertThreadSubscription", ctx, sub)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// UpsertThreadSubscription indicates an expected call of UpsertThreadSubscription.
-func (mr *MockThreadStoreMockRecorder) UpsertThreadSubscription(ctx, sub any) *gomock.Call {
+// InsertThreadSubscription indicates an expected call of InsertThreadSubscription.
+func (mr *MockThreadStoreMockRecorder) InsertThreadSubscription(ctx, sub any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertThreadSubscription", reflect.TypeOf((*MockThreadStore)(nil).UpsertThreadSubscription), ctx, sub)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertThreadSubscription", reflect.TypeOf((*MockThreadStore)(nil).InsertThreadSubscription), ctx, sub)
+}
+
+// ThreadSubscriptionExists mocks base method.
+func (m *MockThreadStore) ThreadSubscriptionExists(ctx context.Context, threadRoomID, userID string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ThreadSubscriptionExists", ctx, threadRoomID, userID)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ThreadSubscriptionExists indicates an expected call of ThreadSubscriptionExists.
+func (mr *MockThreadStoreMockRecorder) ThreadSubscriptionExists(ctx, threadRoomID, userID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ThreadSubscriptionExists", reflect.TypeOf((*MockThreadStore)(nil).ThreadSubscriptionExists), ctx, threadRoomID, userID)
 }

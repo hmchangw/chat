@@ -118,10 +118,10 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	return nil
 }
 
-// handleThreadRoomAndSubscriptions creates the ThreadRoom on first reply, and
-// upserts ThreadSubscriptions for the parent author and the replier. On subsequent
-// replies it updates the existing ThreadRoom's last message and ensures both the
-// parent author and the replier have subscriptions. All operations are idempotent.
+// handleThreadRoomAndSubscriptions creates the ThreadRoom on first reply and
+// inserts ThreadSubscriptions for the parent author and replier. On subsequent
+// replies it checks whether the replier already has a subscription (inserting
+// if not) and bumps the room's last-message pointer.
 // It returns the threadRoomID so the caller can pass it to SaveThreadMessage.
 func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *model.Message, siteID string) (string, error) {
 	now := msg.CreatedAt
@@ -149,9 +149,9 @@ func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *mod
 }
 
 // handleFirstThreadReply runs after the thread room has just been created.
-// It upserts subscriptions for the parent author and, if distinct, for the
-// replier. lastSeenAt is always zero on init — MongoDB $setOnInsert ensures
-// it is never overwritten on subsequent upserts.
+// It inserts subscriptions for the parent author and, if distinct, for the replier.
+// lastSeenAt is always zero — the subscription is brand-new and the user has not
+// yet "seen" the thread.
 func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message, siteID, threadRoomID string, now time.Time) error {
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
 	if err != nil {
@@ -164,27 +164,26 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 		return fmt.Errorf("get parent message sender: %w", err)
 	}
 
-	if err := h.threadStore.UpsertThreadSubscription(ctx,
+	if err := h.threadStore.InsertThreadSubscription(ctx,
 		h.buildThreadSubscription(msg, threadRoomID, parentSender.ID, parentSender.Account, siteID, now),
 	); err != nil {
-		return fmt.Errorf("upsert parent author thread subscription: %w", err)
+		return fmt.Errorf("insert parent author thread subscription: %w", err)
 	}
 
 	if msg.UserID != parentSender.ID {
-		if err := h.threadStore.UpsertThreadSubscription(ctx,
+		if err := h.threadStore.InsertThreadSubscription(ctx,
 			h.buildThreadSubscription(msg, threadRoomID, msg.UserID, msg.UserAccount, siteID, now),
 		); err != nil {
-			return fmt.Errorf("upsert replier thread subscription: %w", err)
+			return fmt.Errorf("insert replier thread subscription: %w", err)
 		}
 	}
 
 	return nil
 }
 
-// handleSubsequentThreadReply runs when CreateThreadRoom reported an existing
-// room. It fetches the existing room, ensures the parent author is subscribed
-// (guards against an orphaned subscription from a partial first-reply failure),
-// upserts the replier, and bumps the room's last-message pointer.
+// handleSubsequentThreadReply runs when CreateThreadRoom reported an existing room.
+// It checks whether the replier already has a subscription and inserts one if not,
+// then bumps the room's last-message pointer.
 // Returns the existing thread room ID so the caller can pass it to SaveThreadMessage.
 func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Message, siteID string, now time.Time) (string, error) {
 	existingRoom, err := h.threadStore.GetThreadRoomByParentMessageID(ctx, msg.ThreadParentMessageID)
@@ -192,28 +191,15 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 		return "", fmt.Errorf("get existing thread room: %w", err)
 	}
 
-	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
+	exists, err := h.threadStore.ThreadSubscriptionExists(ctx, existingRoom.ID, msg.UserID)
 	if err != nil {
-		if errors.Is(err, errMessageNotFound) {
-			slog.Warn("thread reply parent not found — skipping subscription upsert",
-				"parentMessageID", msg.ThreadParentMessageID,
-				"replyID", msg.ID)
-			return existingRoom.ID, nil
-		}
-		return "", fmt.Errorf("get parent message sender: %w", err)
+		return "", fmt.Errorf("check replier thread subscription: %w", err)
 	}
-
-	if err := h.threadStore.UpsertThreadSubscription(ctx,
-		h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, siteID, now),
-	); err != nil {
-		return "", fmt.Errorf("upsert parent author thread subscription: %w", err)
-	}
-
-	if msg.UserID != parentSender.ID {
-		if err := h.threadStore.UpsertThreadSubscription(ctx,
+	if !exists {
+		if err := h.threadStore.InsertThreadSubscription(ctx,
 			h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, siteID, now),
 		); err != nil {
-			return "", fmt.Errorf("upsert replier thread subscription: %w", err)
+			return "", fmt.Errorf("insert replier thread subscription: %w", err)
 		}
 	}
 
@@ -225,8 +211,8 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 }
 
 // buildThreadSubscription constructs a ThreadSubscription for (threadRoomID, userID).
-// lastSeenAt is always zero on init — MongoDB $setOnInsert ensures it is never
-// overwritten on subsequent upserts, so subsequent replies never touch it.
+// lastSeenAt is always zero — subscriptions are insert-only; the field is never
+// updated by the message worker.
 func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, userID, userAccount, siteID string, now time.Time) *model.ThreadSubscription {
 	return &model.ThreadSubscription{
 		ID:              uuid.NewString(),

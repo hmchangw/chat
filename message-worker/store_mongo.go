@@ -74,27 +74,22 @@ func (s *threadStoreMongo) GetThreadRoomByParentMessageID(ctx context.Context, p
 	return &room, nil
 }
 
-func (s *threadStoreMongo) UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
-	filter := bson.M{"threadRoomId": sub.ThreadRoomID, "userId": sub.UserID}
-	update := bson.M{
-		"$set": bson.M{
-			"parentMessageId": sub.ParentMessageID,
-			"roomId":          sub.RoomID,
-			"userAccount":     sub.UserAccount,
-			"siteId":          sub.SiteID,
-			"updatedAt":       sub.UpdatedAt,
-		},
-		"$setOnInsert": bson.M{
-			"_id":        sub.ID,
-			"createdAt":  sub.CreatedAt,
-			"lastSeenAt": sub.LastSeenAt,
-		},
-	}
-	_, err := s.threadSubscriptions.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true))
-	if err != nil {
-		return fmt.Errorf("upsert thread subscription: %w", err)
+func (s *threadStoreMongo) InsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
+	if _, err := s.threadSubscriptions.InsertOne(ctx, sub); err != nil {
+		return fmt.Errorf("insert thread subscription: %w", err)
 	}
 	return nil
+}
+
+func (s *threadStoreMongo) ThreadSubscriptionExists(ctx context.Context, threadRoomID, userID string) (bool, error) {
+	err := s.threadSubscriptions.FindOne(ctx, bson.M{"threadRoomId": threadRoomID, "userId": userID}).Err()
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check thread subscription existence: %w", err)
+	}
+	return true, nil
 }
 
 func (s *threadStoreMongo) UpdateThreadRoomLastMessage(ctx context.Context, threadRoomID string, lastMsgID string, lastMsgAt time.Time) error {
