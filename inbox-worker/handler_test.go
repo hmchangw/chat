@@ -701,6 +701,7 @@ func TestHandleEvent_MemberAdded_WithOrgs(t *testing.T) {
 	store := &stubInboxStore{
 		users: []model.User{
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
+			{ID: "uid-alice", Account: "alice", SiteID: "site-a"},
 		},
 		subAccounts: []string{"alice"}, // existing subscription account
 	}
@@ -740,11 +741,10 @@ func TestHandleEvent_MemberAdded_WithOrgs(t *testing.T) {
 		t.Errorf("sub User.ID = %q, want %q", subs[0].User.ID, "uid-bob")
 	}
 
-	// Verify room_members were created: 1 org + 1 individual (bob)
-	// (alice backfill is skipped because she's not in userMap)
+	// Verify room_members were created: 1 org + 1 individual (bob) + 1 backfill (alice)
 	members := store.getRoomMembers()
-	if len(members) < 2 {
-		t.Fatalf("expected at least 2 room members, got %d", len(members))
+	if len(members) != 3 {
+		t.Fatalf("expected 3 room members, got %d", len(members))
 	}
 
 	var orgCount, individualCount int
@@ -762,8 +762,8 @@ func TestHandleEvent_MemberAdded_WithOrgs(t *testing.T) {
 	if orgCount != 1 {
 		t.Errorf("expected 1 org room member, got %d", orgCount)
 	}
-	if individualCount < 1 {
-		t.Errorf("expected at least 1 individual room member, got %d", individualCount)
+	if individualCount != 2 {
+		t.Errorf("expected 2 individual room members (bob + alice backfill), got %d", individualCount)
 	}
 }
 

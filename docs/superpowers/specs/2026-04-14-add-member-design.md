@@ -148,7 +148,7 @@ type AddMembersRequest struct {
 // Used for room-scoped notifications and cross-site outbox replication.
 // Separate from MemberRemoveEvent (used by remove-member feature).
 type MemberAddEvent struct {
-    Type               string   `json:"type"               bson:"type"`               // "member-added"
+    Type               string   `json:"type"               bson:"type"`               // "member_added"
     RoomID             string   `json:"roomId"             bson:"roomId"`
     Accounts           []string `json:"accounts"           bson:"accounts"`
     Orgs               []string `json:"orgs,omitempty"     bson:"orgs,omitempty"`

@@ -701,8 +701,14 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
-	// With orgs: CreateRoomMember called for individual "bob" + org "eng"
-	store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Times(2).Return(nil)
+	// With orgs: CreateRoomMember called for individual "bob" + org "eng" + backfill "alice"
+	store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Times(3).Return(nil)
+	// Backfill: GetSubscriptionAccounts returns existing "alice" + new "bob"
+	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), "r1").Return([]string{"alice", "bob"}, nil)
+	// Backfill: FindUsersByAccounts for existing accounts that aren't new
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{
+		{ID: "u1", Account: "alice", SiteID: "site-a"},
+	}, nil)
 
 	req := model.AddMembersRequest{
 		RoomID: "r1", Users: []string{"bob"}, Orgs: []string{"eng"},

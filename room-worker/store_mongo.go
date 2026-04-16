@@ -272,3 +272,23 @@ func (s *MongoStore) HasOrgRoomMembers(ctx context.Context, roomID string) (bool
 	}
 	return count > 0, nil
 }
+
+func (s *MongoStore) GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error) {
+	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
+	if err != nil {
+		return nil, fmt.Errorf("get subscription accounts for room %q: %w", roomID, err)
+	}
+	var subs []struct {
+		User struct {
+			Account string `bson:"account"`
+		} `bson:"u"`
+	}
+	if err := cursor.All(ctx, &subs); err != nil {
+		return nil, fmt.Errorf("decode subscription accounts: %w", err)
+	}
+	accounts := make([]string, len(subs))
+	for i, s := range subs {
+		accounts[i] = s.User.Account
+	}
+	return accounts, nil
+}

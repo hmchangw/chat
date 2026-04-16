@@ -383,8 +383,8 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("get room: %w", err)
 	}
-	if room.Type == model.RoomTypeDM {
-		return nil, fmt.Errorf("cannot add members to a DM room")
+	if room.Type != model.RoomTypeChannel {
+		return nil, fmt.Errorf("cannot add members to a non-channel room")
 	}
 	if room.Restricted && !hasRole(sub.Roles, model.RoleOwner) {
 		return nil, fmt.Errorf("only owners can add members to a restricted room")

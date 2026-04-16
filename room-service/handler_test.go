@@ -915,7 +915,7 @@ func TestHandler_AddMembers_DMRejected(t *testing.T) {
 
 	_, err := h.handleAddMembers(context.Background(), subj, data)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot add members to a DM room")
+	assert.Contains(t, err.Error(), "non-channel room")
 }
 
 func TestHandler_AddMembers_RestrictedNonOwnerRejected(t *testing.T) {

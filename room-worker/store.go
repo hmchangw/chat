@@ -53,4 +53,5 @@ type SubscriptionStore interface {
 	CreateRoomMember(ctx context.Context, member *model.RoomMember) error
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
 	HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error)
+	GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error)
 }

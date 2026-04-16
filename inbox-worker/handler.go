@@ -157,14 +157,33 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 			for _, sub := range subs {
 				newAccountSet[sub.User.Account] = struct{}{}
 			}
+			// Collect accounts needing lookup
+			var missingAccounts []string
+			for _, account := range existingAccounts {
+				if _, isNew := newAccountSet[account]; isNew {
+					continue
+				}
+				if _, inMap := userMap[account]; !inMap {
+					missingAccounts = append(missingAccounts, account)
+				}
+			}
+			// Fetch missing users and merge into userMap
+			if len(missingAccounts) > 0 {
+				extraUsers, err := h.store.FindUsersByAccounts(ctx, missingAccounts)
+				if err != nil {
+					slog.Warn("find users for backfill failed", "error", err)
+				} else {
+					for _, u := range extraUsers {
+						userMap[u.Account] = u
+					}
+				}
+			}
 			for _, account := range existingAccounts {
 				if _, isNew := newAccountSet[account]; isNew {
 					continue
 				}
 				user, ok := userMap[account]
 				if !ok {
-					// Need to look up user - but we only have the accounts from subs
-					// Skip accounts we don't have user info for
 					continue
 				}
 				member := &model.RoomMember{

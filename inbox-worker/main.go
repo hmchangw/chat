@@ -97,8 +97,9 @@ func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*m
 	for i, sub := range subs {
 		docs[i] = sub
 	}
-	_, err := s.subCol.InsertMany(ctx, docs)
-	if err != nil {
+	opts := options.InsertMany().SetOrdered(false)
+	_, err := s.subCol.InsertMany(ctx, docs, opts)
+	if err != nil && !mongo.IsDuplicateKeyError(err) {
 		return fmt.Errorf("bulk create subscriptions: %w", err)
 	}
 	return nil

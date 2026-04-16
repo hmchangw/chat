@@ -548,6 +548,49 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 	}
 
+	// Backfill existing subscribers into room_members
+	if writeIndividuals && len(req.Orgs) > 0 {
+		existingAccounts, err := h.store.GetSubscriptionAccounts(ctx, req.RoomID)
+		if err != nil {
+			slog.Warn("get subscription accounts for backfill failed", "error", err)
+		} else {
+			newAccountSet := make(map[string]struct{}, len(subs))
+			for _, sub := range subs {
+				newAccountSet[sub.User.Account] = struct{}{}
+			}
+			// Collect accounts needing backfill
+			var backfillAccounts []string
+			for _, account := range existingAccounts {
+				if _, isNew := newAccountSet[account]; !isNew {
+					backfillAccounts = append(backfillAccounts, account)
+				}
+			}
+			if len(backfillAccounts) > 0 {
+				backfillUsers, err := h.store.FindUsersByAccounts(ctx, backfillAccounts)
+				if err != nil {
+					slog.Warn("find users for backfill failed", "error", err)
+				} else {
+					for _, user := range backfillUsers {
+						m := &model.RoomMember{
+							ID:     uuid.New().String(),
+							RoomID: req.RoomID,
+							Ts:     now,
+							Member: model.RoomMemberEntry{
+								ID:      user.ID,
+								Type:    model.RoomMemberIndividual,
+								Account: user.Account,
+							},
+						}
+						if err := h.store.CreateRoomMember(ctx, m); err != nil {
+							slog.Error("backfill room member failed", "error", err, "account", user.Account)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 6. Increment user count
 	if err := h.store.IncrementUserCount(ctx, req.RoomID, len(subs)); err != nil {
 		slog.Warn("increment user count failed", "error", err, "roomID", req.RoomID)
 	}
@@ -641,7 +684,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 		outboxData, _ := json.Marshal(outbox)
 		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData); err != nil {
-			slog.Error("outbox publish failed", "error", err, "destSiteID", destSiteID)
+			return fmt.Errorf("outbox publish to %s failed: %w", destSiteID, err)
 		}
 	}
 
