@@ -42,6 +42,7 @@ docker run --rm \
 
     # Create chatapp account
     nsc add account --name chatapp 2>&1 | sed "s/^/  /"
+    nsc edit account chatapp --js-mem-storage 512M --js-disk-storage 5G --js-streams 10 2>&1 | sed "s/^/  /"
 
     # Extract JWTs
     nsc describe operator --raw > /output/operator.jwt
@@ -66,7 +67,16 @@ docker run --rm \
     fi
 
     cat "$SEED_FILE" > /output/account_seed.txt
+
+    # Create the backend user JWT
+    nsc add user --account chatapp --name backend
+    nsc edit user --account chatapp --name backend --allow-sub ">" --allow-pub ">"
+    nsc generate creds --account chatapp --name backend > /output/backend.creds
+
   '
+
+# Get backend user JWT
+cp "$TMPDIR/backend.creds" backend.creds
 
 # Read generated values
 OPERATOR_JWT=$(cat "$TMPDIR/operator.jwt")
@@ -82,6 +92,7 @@ echo "  Account Public Key: $ACCOUNT_PUB_KEY"
 echo "  Account JWT:        ${ACCOUNT_JWT:0:50}..."
 echo "  Account Seed:       ${ACCOUNT_SEED:0:12}..."
 echo "  SYS Public Key:     $SYS_PUB_KEY"
+echo "  User JWT:           backend.creds"
 echo ""
 
 # Write .env
