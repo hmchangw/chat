@@ -89,7 +89,7 @@ func TestHandleAuth_ValidToken(t *testing.T) {
 		deptName:    "Engineering",
 		deptId:      "ABC123",
 	}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	body := `{"ssoToken":"valid-token","natsPublicKey":"` + userPub + `"}`
@@ -135,7 +135,7 @@ func TestHandleAuth_ValidToken(t *testing.T) {
 func TestHandleAuth_ExpiredToken(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	validator := &fakeValidator{expired: true}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	userPub := mustUserNKey(t)
@@ -152,7 +152,7 @@ func TestHandleAuth_ExpiredToken(t *testing.T) {
 func TestHandleAuth_InvalidToken(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	validator := &fakeValidator{invalid: true}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	userPub := mustUserNKey(t)
@@ -169,7 +169,7 @@ func TestHandleAuth_InvalidToken(t *testing.T) {
 func TestHandleAuth_InvalidNKey(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	validator := &fakeValidator{account: "alice", subject: "uuid-alice"}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	body := `{"ssoToken":"valid-token","natsPublicKey":"NOT-A-VALID-NKEY"}`
@@ -185,7 +185,7 @@ func TestHandleAuth_InvalidNKey(t *testing.T) {
 func TestHandleAuth_MissingFields(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	validator := &fakeValidator{account: "alice"}
-	handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	tests := []struct {
@@ -215,7 +215,7 @@ func TestHandleAuth_PermissionsPerUser(t *testing.T) {
 	for _, account := range accounts {
 		t.Run(account, func(t *testing.T) {
 			validator := &fakeValidator{account: account, subject: "uuid-" + account}
-			handler := NewAuthHandler(validator, signingKP, 2*time.Hour)
+			handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
 			router := setupRouter(t, handler)
 
 			userPub := mustUserNKey(t)
@@ -242,9 +242,72 @@ func TestHandleAuth_PermissionsPerUser(t *testing.T) {
 	}
 }
 
+func TestHandleAuth_DevMode_ValidRequest(t *testing.T) {
+	signingKP := mustAccountKP(t)
+	userPub := mustUserNKey(t)
+
+	handler := NewAuthHandler(nil, signingKP, 2*time.Hour, true)
+	router := setupRouter(t, handler)
+
+	body := `{"account":"alice","natsPublicKey":"` + userPub + `"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp authResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+
+	assert.Equal(t, "alice", resp.UserInfo.Account)
+	assert.Equal(t, "alice", resp.UserInfo.EngName)
+	assert.Equal(t, "alice@dev.local", resp.UserInfo.Email)
+
+	// Verify NATS JWT is valid and scoped to alice.
+	claims, err := jwt.DecodeUserClaims(resp.NATSJWT)
+	require.NoError(t, err)
+	assert.Equal(t, userPub, claims.Subject)
+	assert.Contains(t, []string(claims.Pub.Allow), "chat.user.alice.>")
+	assert.Contains(t, []string(claims.Sub.Allow), "chat.user.alice.>")
+}
+
+func TestHandleAuth_DevMode_MissingAccount(t *testing.T) {
+	signingKP := mustAccountKP(t)
+	userPub := mustUserNKey(t)
+
+	handler := NewAuthHandler(nil, signingKP, 2*time.Hour, true)
+	router := setupRouter(t, handler)
+
+	body := `{"natsPublicKey":"` + userPub + `"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "account")
+}
+
+func TestHandleAuth_DevMode_InvalidNKey(t *testing.T) {
+	signingKP := mustAccountKP(t)
+
+	handler := NewAuthHandler(nil, signingKP, 2*time.Hour, true)
+	router := setupRouter(t, handler)
+
+	body := `{"account":"alice","natsPublicKey":"NOT-VALID"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid natsPublicKey")
+}
+
 func TestHandleHealth(t *testing.T) {
 	signingKP := mustAccountKP(t)
-	handler := NewAuthHandler(&fakeValidator{}, signingKP, 2*time.Hour)
+	handler := NewAuthHandler(&fakeValidator{}, signingKP, 2*time.Hour, false)
 	router := setupRouter(t, handler)
 
 	w := httptest.NewRecorder()

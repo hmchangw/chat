@@ -26,6 +26,11 @@ type authRequest struct {
 	NATSPublicKey string `json:"natsPublicKey" binding:"required"`
 }
 
+type devAuthRequest struct {
+	Account       string `json:"account" binding:"required"`
+	NATSPublicKey string `json:"natsPublicKey" binding:"required"`
+}
+
 type authResponse struct {
 	NATSJWT  string       `json:"natsJwt"`
 	UserInfo userInfoResp `json:"user"`
@@ -47,21 +52,28 @@ type AuthHandler struct {
 	validator  TokenValidator
 	signingKey nkeys.KeyPair
 	jwtExpiry  time.Duration
+	devMode    bool
 }
 
 // NewAuthHandler creates an AuthHandler with the given token validator,
 // NATS account signing key, and JWT expiry duration.
-func NewAuthHandler(validator TokenValidator, signingKey nkeys.KeyPair, jwtExpiry time.Duration) *AuthHandler {
+func NewAuthHandler(validator TokenValidator, signingKey nkeys.KeyPair, jwtExpiry time.Duration, devMode bool) *AuthHandler {
 	return &AuthHandler{
 		validator:  validator,
 		signingKey: signingKey,
 		jwtExpiry:  jwtExpiry,
+		devMode:    devMode,
 	}
 }
 
 // HandleAuth validates the SSO token, resolves permissions based on
 // the user account, and returns a signed NATS JWT.
 func (h *AuthHandler) HandleAuth(c *gin.Context) {
+	if h.devMode {
+		h.handleDevAuth(c)
+		return
+	}
+
 	var req authRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ssoToken and natsPublicKey are required"})
@@ -112,6 +124,39 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 			ChineseName: chineseName,
 			DeptName:    claims.DeptName,
 			DeptID:      claims.DeptID,
+		},
+	})
+}
+
+// handleDevAuth handles auth in dev mode: accepts account name directly
+// without OIDC validation, for use during local development only.
+func (h *AuthHandler) handleDevAuth(c *gin.Context) {
+	var req devAuthRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "account and natsPublicKey are required"})
+		return
+	}
+
+	if !nkeys.IsValidPublicUserKey(req.NATSPublicKey) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid natsPublicKey format"})
+		return
+	}
+
+	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, req.Account)
+	if err != nil {
+		slog.Error("nats jwt signing failed", "error", err, "account", req.Account)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate NATS token"})
+		return
+	}
+
+	slog.Debug("dev auth success", "account", req.Account)
+
+	c.JSON(http.StatusOK, authResponse{
+		NATSJWT: natsJWT,
+		UserInfo: userInfoResp{
+			Email:   req.Account + "@dev.local",
+			Account: req.Account,
+			EngName: req.Account,
 		},
 	})
 }

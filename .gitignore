@@ -36,3 +36,10 @@ bin/
 # .idea/
 # .vscode/
 bin/
+
+# Superpowers brainstorming artifacts
+.superpowers/
+
+# Frontend
+node_modules/
+chat-frontend/dist/
