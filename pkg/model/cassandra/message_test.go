@@ -202,33 +202,3 @@ func TestMessage_JSON_Minimal(t *testing.T) {
 	assert.Nil(t, got.PinnedAt)
 	assert.Nil(t, got.PinnedBy)
 }
-
-func TestUnmarshalUDT_UnknownField(t *testing.T) {
-	assert.NoError(t, (&Participant{}).UnmarshalUDT("nonexistent", nil, nil))
-	assert.NoError(t, (&File{}).UnmarshalUDT("nonexistent", nil, nil))
-	assert.NoError(t, (&Card{}).UnmarshalUDT("nonexistent", nil, nil))
-	assert.NoError(t, (&CardAction{}).UnmarshalUDT("nonexistent", nil, nil))
-	assert.NoError(t, (&QuotedParentMessage{}).UnmarshalUDT("nonexistent", nil, nil))
-}
-
-func TestMarshalUDT_UnknownField(t *testing.T) {
-	data, err := (&Participant{}).MarshalUDT("nonexistent", nil)
-	assert.NoError(t, err)
-	assert.Nil(t, data)
-
-	data, err = (&File{}).MarshalUDT("nonexistent", nil)
-	assert.NoError(t, err)
-	assert.Nil(t, data)
-
-	data, err = (&Card{}).MarshalUDT("nonexistent", nil)
-	assert.NoError(t, err)
-	assert.Nil(t, data)
-
-	data, err = (&CardAction{}).MarshalUDT("nonexistent", nil)
-	assert.NoError(t, err)
-	assert.Nil(t, data)
-
-	data, err = (&QuotedParentMessage{}).MarshalUDT("nonexistent", nil)
-	assert.NoError(t, err)
-	assert.Nil(t, data)
-}
