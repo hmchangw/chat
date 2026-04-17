@@ -1,0 +1,32 @@
+[
+  {
+    "_id": "u-alice",
+    "account": "alice",
+    "siteId": "site1",
+    "sectId": "",
+    "sectName": "",
+    "engName": "Alice Wang",
+    "chineseName": "愛麗絲",
+    "employeeId": "E001"
+  },
+  {
+    "_id": "u-bob",
+    "account": "bob",
+    "siteId": "site1",
+    "sectId": "",
+    "sectName": "",
+    "engName": "Bob Chen",
+    "chineseName": "鮑勃",
+    "employeeId": "E002"
+  },
+  {
+    "_id": "u-carol",
+    "account": "carol",
+    "siteId": "site2",
+    "sectId": "",
+    "sectName": "",
+    "engName": "Carol Lee",
+    "chineseName": "卡蘿",
+    "employeeId": "E003"
+  }
+]

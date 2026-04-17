@@ -1,0 +1,13 @@
+{
+  "event": "created",
+  "siteId": "site1",
+  "timestamp": 1744891200000,
+  "message": {
+    "id": "m-group-plain",
+    "roomId": "group-1",
+    "userId": "u-alice",
+    "userAccount": "alice",
+    "content": "hello team",
+    "createdAt": "2026-04-17T12:00:00Z"
+  }
+}

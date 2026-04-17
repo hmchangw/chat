@@ -55,6 +55,12 @@ Docker compose file: `broadcast-worker/deploy/docker-compose.test.yml`.
   Env: `SITE_ID=site1`, `NATS_URL=nats://nats_site1:4222`,
   `MONGO_URI=mongodb://mongodb:27017`, `MONGO_DB=chat`. Depends on
   `nats_site1` and `mongodb`.
+- **`tools`** — `natsio/nats-box:latest`, started with
+  `command: ["sleep", "infinity"]`. This is a long-lived helper container
+  attached to the compose network; `publish.sh` uses
+  `docker compose exec tools nats pub ...` instead of spinning up a new
+  container per publish. Seed + verify scripts use
+  `docker compose exec mongodb mongosh ...` for the same reason.
 
 This leaves the existing `broadcast-worker/deploy/docker-compose.yml` untouched
 so the simple single-node flow still works.
@@ -131,11 +137,12 @@ must traverse the gateway.
 ### `seed.sh`
 
 - `set -euo pipefail`.
-- Waits for MongoDB readiness via `mongosh --eval "db.adminCommand('ping')"`
-  with a 10 × 1s retry loop.
-- For each collection, drops the existing collection and runs
-  `db.<coll>.insertMany(<file>)` via `docker compose run --rm mongodb
-  mongosh mongodb://mongodb:27017/chat --quiet --eval ...`.
+- Waits for MongoDB readiness via `docker compose exec mongodb mongosh
+  --quiet --eval "db.adminCommand('ping')"` with a 10 × 1s retry loop.
+- Copies each seed JSON file into the `mongodb` container with
+  `docker compose cp`, then drops and repopulates the collection with
+  `docker compose exec mongodb mongosh mongodb://localhost:27017/chat
+  --quiet --eval "db.<coll>.drop(); db.<coll>.insertMany(<parsed json>)"`.
 - Idempotent: re-running fully resets the data.
 
 ## Scenario payloads
@@ -160,22 +167,23 @@ this is fine — each publish still produces a fresh NATS broadcast event.
 
 - Validates `SCENARIO` against the files in `scenarios/`.
 - Reads the file into a shell variable with `"$(cat scenarios/$SCENARIO.json)"`.
-- Publishes via:
+- Publishes via the already-running `tools` service:
 
 ```
-docker compose -f docker-compose.test.yml run --rm \
-    --entrypoint nats natsio/nats-box \
-    -s nats://nats_site1:4222 \
+docker compose -f docker-compose.test.yml exec -T tools \
+    nats --server nats://nats_site1:4222 \
     pub chat.msg.canonical.site1.created "$PAYLOAD"
 ```
 
-No `jq`, no `envsubst`, no host-side NATS CLI.
+`exec -T` (no TTY) keeps the script safe for non-interactive use. No `jq`,
+no `envsubst`, no host-side NATS CLI, and no new container per publish.
 
 ## Verification scripts
 
 Each script in `test/verify/` runs a MongoDB query via
-`docker compose ... run --rm mongodb mongosh ...`, prints the queried document,
-and exits 0 on success / 1 on failure.
+`docker compose exec mongodb mongosh ...` (reusing the already-running
+MongoDB container), prints the queried document, and exits 0 on success /
+1 on failure.
 
 - **`verify/group-plain.sh`**
   - Query: `db.rooms.findOne({_id:"group-1"}, {lastMsgAt:1, lastMsgId:1})`.
@@ -225,6 +233,140 @@ logs:
 ```
 
 Invoked from the repo root as `make -C broadcast-worker/deploy <target>`.
+
+## Manager demo script — step by step
+
+Goal: demonstrate in ~5 minutes that the broadcast-worker correctly handles
+three group scenarios and one cross-site DM scenario.
+
+Prerequisites (one-time on the demo machine):
+
+- `docker` + `docker compose` installed and running
+- `make` and `bash` available
+- Repo cloned; current working directory is the repo root
+- Ports `4222`, `4223`, `8222`, `8223`, `27017`, `8090` free
+
+### Step 1 — Bring up the stack (30 seconds)
+
+```
+make -C broadcast-worker/deploy up
+```
+
+Wait for the output to settle. Confirm all containers are healthy:
+
+```
+docker compose -f broadcast-worker/deploy/docker-compose.test.yml ps
+```
+
+Expected services: `nats_site1`, `nats_site2`, `mongodb`, `broadcast-worker`,
+`tools` — all `running`.
+
+### Step 2 — Seed MongoDB (5 seconds)
+
+```
+make -C broadcast-worker/deploy seed
+```
+
+Console shows "inserted 3 users, 2 rooms, 4 subscriptions".
+
+### Step 3 — Start the nats-debug UI (separate terminal)
+
+```
+docker compose -f tools/nats-debug/deploy/docker-compose.yml up
+```
+
+Open http://localhost:8090 in a browser.
+
+### Step 4 — Demo scenario 1: group message, no mention
+
+In nats-debug:
+
+- Source NATS: `nats://localhost:4222`
+- Dest NATS: `nats://localhost:4222`
+- Subscribe to `chat.room.group-1.event`
+
+Publish:
+
+```
+make -C broadcast-worker/deploy send SCENARIO=group-plain
+```
+
+**Point out in the UI:** one event appears with `type: "new_message"`,
+`roomType: "group"`, sender enriched with `engName: "Alice Wang"`.
+
+Verify MongoDB side:
+
+```
+make -C broadcast-worker/deploy verify SCENARIO=group-plain
+```
+
+**Point out:** `lastMsgAt` on `group-1` is updated, `lastMsgId` is
+`m-group-plain`, script prints `OK:`.
+
+### Step 5 — Demo scenario 2: group message with @bob
+
+Keep the same subscription open. Publish:
+
+```
+make -C broadcast-worker/deploy send SCENARIO=group-mention-bob
+```
+
+**Point out in the UI:** event payload now has a `mentions` array containing
+bob's enriched record (engName `Bob Chen`, chineseName `鮑勃`).
+
+Verify:
+
+```
+make -C broadcast-worker/deploy verify SCENARIO=group-mention-bob
+```
+
+**Point out:** bob's subscription row now has `hasMention: true`.
+
+### Step 6 — Demo scenario 3: group message with @all
+
+Publish:
+
+```
+make -C broadcast-worker/deploy send SCENARIO=group-mention-all
+```
+
+**Point out in the UI:** event payload has `mentionAll: true`.
+
+Verify:
+
+```
+make -C broadcast-worker/deploy verify SCENARIO=group-mention-all
+```
+
+**Point out:** `lastMentionAllAt` on `group-1` is set.
+
+### Step 7 — Demo scenario 4: cross-site DM over a NATS supercluster
+
+This is the highlight scenario. In nats-debug, change the **Dest NATS** to
+`nats://localhost:4223` (site2) and subscribe to
+`chat.user.carol.event.room`.
+
+**Explain to the audience:** the message is being published to site1's
+JetStream. The broadcast-worker is running on site1. Carol's client is
+listening on a completely separate NATS server on site2. The two servers
+are connected via a NATS supercluster gateway.
+
+Publish:
+
+```
+make -C broadcast-worker/deploy send SCENARIO=dm-cross-site
+```
+
+**Point out in the UI:** the event appears on the site2 subscription, proving
+the broadcast crossed the gateway.
+
+### Step 8 — Tear down
+
+```
+make -C broadcast-worker/deploy down
+```
+
+All data and containers removed.
 
 ## Operator workflow
 
