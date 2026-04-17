@@ -703,6 +703,17 @@ func TestHandler_RemoveMember_OwnerRemovesOrg_Success(t *testing.T) {
 	assert.Equal(t, "eng-org", published.OrgID)
 }
 
+func TestHandler_RemoveMember_BothAccountAndOrgID_Rejected(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob", OrgID: "eng-org"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one")
+}
+
 func TestHandler_RemoveMember_NeitherAccountNorOrgID_Rejected(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
@@ -711,5 +722,5 @@ func TestHandler_RemoveMember_NeitherAccountNorOrgID_Rejected(t *testing.T) {
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "account or orgId must be set")
+	assert.Contains(t, err.Error(), "exactly one")
 }
