@@ -106,7 +106,7 @@ func (s *MongoStore) RemoveRole(ctx context.Context, account, roomID string, rol
 	return nil
 }
 
-func (s *MongoStore) GetUserWithOrgMembership(ctx context.Context, roomID, account string) (*UserWithOrgMembership, error) {
+func (s *MongoStore) GetUserWithMembership(ctx context.Context, roomID, account string) (*UserWithMembership, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"account": account}}},
 		{{Key: "$lookup", Value: bson.M{
@@ -122,25 +122,42 @@ func (s *MongoStore) GetUserWithOrgMembership(ctx context.Context, roomID, accou
 			},
 			"as": "orgMembership",
 		}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from": "subscriptions",
+			"let":  bson.M{"acct": "$account"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$roomId", roomID}},
+					bson.M{"$eq": bson.A{"$u.account", "$$acct"}},
+				}}}},
+				bson.M{"$limit": 1},
+				bson.M{"$project": bson.M{"roles": 1}},
+			},
+			"as": "targetSub",
+		}}},
 		{{Key: "$addFields", Value: bson.M{
 			"hasOrgMembership": bson.M{"$gt": bson.A{bson.M{"$size": "$orgMembership"}, 0}},
+			"roles": bson.M{"$ifNull": bson.A{
+				bson.M{"$arrayElemAt": bson.A{"$targetSub.roles", 0}},
+				bson.A{},
+			}},
 		}}},
-		{{Key: "$project", Value: bson.M{"orgMembership": 0}}},
+		{{Key: "$project", Value: bson.M{"orgMembership": 0, "targetSub": 0}}},
 	}
 	cursor, err := s.users.Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, fmt.Errorf("aggregate user with org membership: %w", err)
+		return nil, fmt.Errorf("aggregate user with membership: %w", err)
 	}
 	defer cursor.Close(ctx)
-	var result UserWithOrgMembership
+	var result UserWithMembership
 	if !cursor.Next(ctx) {
 		if err := cursor.Err(); err != nil {
-			return nil, fmt.Errorf("iterate user with org membership: %w", err)
+			return nil, fmt.Errorf("iterate user with membership: %w", err)
 		}
 		return nil, fmt.Errorf("user %q not found: %w", account, mongo.ErrNoDocuments)
 	}
 	if err := cursor.Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode user with org membership: %w", err)
+		return nil, fmt.Errorf("decode user with membership: %w", err)
 	}
 	return &result, nil
 }
