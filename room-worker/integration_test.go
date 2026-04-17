@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
@@ -299,4 +300,42 @@ func TestMongoStore_DecrementUserCount_Integration(t *testing.T) {
 	updated, err := store.GetRoom(ctx, "r1")
 	require.NoError(t, err)
 	assert.Equal(t, 7, updated.UserCount)
+}
+
+func TestMongoStore_DeleteRoomMember_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Seed an individual doc whose `id` differs from `account` to confirm the
+	// individual filter keys on `member.account`, not `member.id`.
+	_, err := db.Collection("room_members").InsertMany(ctx, []interface{}{
+		model.RoomMember{
+			ID: "rm-ind", RoomID: "r1", Ts: time.Now().UTC(),
+			Member: model.RoomMemberEntry{ID: "generated-entry-id", Type: model.RoomMemberIndividual, Account: "alice"},
+		},
+		model.RoomMember{
+			ID: "rm-org", RoomID: "r1", Ts: time.Now().UTC(),
+			Member: model.RoomMemberEntry{ID: "eng-org", Type: model.RoomMemberOrg},
+		},
+	})
+	require.NoError(t, err)
+
+	t.Run("individual deletes by account", func(t *testing.T) {
+		require.NoError(t, store.DeleteRoomMember(ctx, "r1", model.RoomMemberIndividual, "alice"))
+		count, err := db.Collection("room_members").CountDocuments(ctx, bson.M{"_id": "rm-ind"})
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), count)
+	})
+
+	t.Run("individual missing account is a no-op", func(t *testing.T) {
+		require.NoError(t, store.DeleteRoomMember(ctx, "r1", model.RoomMemberIndividual, "ghost"))
+	})
+
+	t.Run("org deletes by id", func(t *testing.T) {
+		require.NoError(t, store.DeleteRoomMember(ctx, "r1", model.RoomMemberOrg, "eng-org"))
+		count, err := db.Collection("room_members").CountDocuments(ctx, bson.M{"_id": "rm-org"})
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), count)
+	})
 }
