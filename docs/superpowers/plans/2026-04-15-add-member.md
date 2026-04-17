@@ -456,11 +456,10 @@ Add to `pkg/model/model_test.go`:
 ```go
 func TestMemberAddEventJSON(t *testing.T) {
 	evt := model.MemberAddEvent{
-		Type:               "member-added",
+		Type:               "member_added",
 		RoomID:             "r1",
 		Accounts:           []string{"alice", "bob"},
 		SiteID:             "site-a",
-		UserIDs:            []string{"u1", "u2"},
 		JoinedAt:           1713200000000,
 		HistorySharedSince: 1713200000000,
 	}
@@ -469,17 +468,9 @@ func TestMemberAddEventJSON(t *testing.T) {
 
 	var dst model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(data, &dst))
-	assert.Equal(t, "member-added", dst.Type)
-	assert.Equal(t, []string{"u1", "u2"}, dst.UserIDs)
+	assert.Equal(t, "member_added", dst.Type)
+	assert.Equal(t, []string{"alice", "bob"}, dst.Accounts)
 	assert.Equal(t, int64(1713200000000), dst.JoinedAt)
-
-	// UserIDs omitempty
-	evt2 := model.MemberAddEvent{Type: "member-added", RoomID: "r1", Accounts: []string{"alice"}, SiteID: "site-a"}
-	data2, _ := json.Marshal(evt2)
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(data2, &m))
-	_, hasUserIDs := m["userIds"]
-	assert.False(t, hasUserIDs, "userIds should be omitted when empty")
 }
 ```
 
@@ -494,13 +485,13 @@ Add after `OutboxEvent` struct in `pkg/model/event.go`:
 
 ```go
 type MemberAddEvent struct {
-	Type               string   `json:"type"                         bson:"type"`
-	RoomID             string   `json:"roomId"                       bson:"roomId"`
-	Accounts           []string `json:"accounts"                     bson:"accounts"`
-	SiteID             string   `json:"siteId"                       bson:"siteId"`
-	UserIDs            []string `json:"userIds,omitempty"            bson:"userIds,omitempty"`
-	JoinedAt           int64    `json:"joinedAt"                     bson:"joinedAt"`
-	HistorySharedSince int64    `json:"historySharedSince"           bson:"historySharedSince"`
+	Type               string   `json:"type"               bson:"type"`
+	RoomID             string   `json:"roomId"             bson:"roomId"`
+	Accounts           []string `json:"accounts"           bson:"accounts"`
+	SiteID             string   `json:"siteId"             bson:"siteId"`
+	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
+	HistorySharedSince int64    `json:"historySharedSince" bson:"historySharedSince"`
+	Timestamp          int64    `json:"timestamp"          bson:"timestamp"`
 }
 ```
 
@@ -1825,6 +1816,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 	}
 
+	// Note: room_members stay on the room's origin site only — not replicated cross-site
+
 	if err := h.store.IncrementUserCount(ctx, req.RoomID, len(accounts)); err != nil {
 		return fmt.Errorf("increment user count: %w", err)
 	}
@@ -1844,8 +1837,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		historySharedSince = now.UnixMilli()
 	}
 	memberEvt := model.MemberAddEvent{
-		Type: "member-added", RoomID: req.RoomID, Accounts: accounts, SiteID: room.SiteID,
-		UserIDs: userIDs, JoinedAt: now.UnixMilli(), HistorySharedSince: historySharedSince,
+		Type: "member_added", RoomID: req.RoomID, Accounts: accounts, SiteID: room.SiteID,
+		JoinedAt: now.UnixMilli(), HistorySharedSince: historySharedSince,
 	}
 	memberEvtData, _ := json.Marshal(memberEvt)
 	if err := h.publish(ctx, subject.RoomMemberEvent(req.RoomID), memberEvtData); err != nil {
@@ -1867,22 +1860,21 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
 	}
 
-	// 10. Outbox for cross-site members — batched by destination site
-	remoteSiteMembers := make(map[string]struct{ accounts, userIDs []string })
+	// 10. Outbox for cross-site members — batched by destination site.
+	// Room member data (orgs/individuals) stays on the room's site — only accounts
+	// are replicated so remote sites can create subscriptions.
+	remoteSiteMembers := make(map[string][]string)
 	for _, sub := range subs {
 		user, ok := userMap[sub.User.Account]
 		if !ok || user.SiteID == room.SiteID {
 			continue
 		}
-		entry := remoteSiteMembers[user.SiteID]
-		entry.accounts = append(entry.accounts, sub.User.Account)
-		entry.userIDs = append(entry.userIDs, sub.User.ID)
-		remoteSiteMembers[user.SiteID] = entry
+		remoteSiteMembers[user.SiteID] = append(remoteSiteMembers[user.SiteID], sub.User.Account)
 	}
-	for destSiteID, members := range remoteSiteMembers {
+	for destSiteID, accounts := range remoteSiteMembers {
 		siteEvt := model.MemberAddEvent{
-			Type: "member-added", RoomID: req.RoomID, Accounts: members.accounts,
-			SiteID: room.SiteID, UserIDs: members.userIDs,
+			Type: "member_added", RoomID: req.RoomID, Accounts: accounts,
+			SiteID: room.SiteID,
 			JoinedAt: now.UnixMilli(), HistorySharedSince: historySharedSince,
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)
@@ -1933,16 +1925,20 @@ Add to `inbox-worker/handler_test.go`:
 
 ```go
 func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
-	store := &stubInboxStore{}
+	store := &stubInboxStore{
+		users: []model.User{
+			{ID: "u1", Account: "alice", SiteID: "site-a"},
+			{ID: "u2", Account: "bob", SiteID: "site-a"},
+		},
+	}
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
 	joinedAt := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
 
 	change := model.MemberAddEvent{
-		Type: "member-added", RoomID: "r1",
+		Type: "member_added", RoomID: "r1",
 		Accounts: []string{"alice", "bob"}, SiteID: "site-a",
-		UserIDs: []string{"u1", "u2"},
 		JoinedAt: joinedAt.UnixMilli(), HistorySharedSince: joinedAt.UnixMilli(),
 	}
 	changeData, _ := json.Marshal(change)
@@ -1966,14 +1962,16 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 }
 
 func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
-	store := &stubInboxStore{}
+	store := &stubInboxStore{
+		users: []model.User{{ID: "u1", Account: "alice", SiteID: "site-a"}},
+	}
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
 	change := model.MemberAddEvent{
-		Type: "member-added", RoomID: "r1",
+		Type: "member_added", RoomID: "r1",
 		Accounts: []string{"alice"}, SiteID: "site-a",
-		UserIDs: []string{"u1"}, JoinedAt: time.Now().UnixMilli(),
+		JoinedAt: time.Now().UnixMilli(),
 		HistorySharedSince: 0,
 	}
 	changeData, _ := json.Marshal(change)
@@ -1987,29 +1985,6 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 	require.Len(t, subs, 1)
 	assert.Nil(t, subs[0].HistorySharedSince)
 }
-
-func TestHandleEvent_MemberAdded_UserIDFallback(t *testing.T) {
-	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
-
-	change := model.MemberAddEvent{
-		Type: "member-added", RoomID: "r1",
-		Accounts: []string{"alice", "bob"}, SiteID: "site-a",
-		UserIDs: []string{"u1"}, // short — bob falls back to account
-		JoinedAt: time.Now().UnixMilli(),
-	}
-	changeData, _ := json.Marshal(change)
-	evt := model.OutboxEvent{Type: "member_added", Payload: changeData}
-	evtData, _ := json.Marshal(evt)
-
-	err := h.HandleEvent(context.Background(), evtData)
-	require.NoError(t, err)
-
-	subs := store.getSubscriptions()
-	assert.Equal(t, "u1", subs[0].User.ID)
-	assert.Equal(t, "bob", subs[1].User.ID)
-}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2019,58 +1994,96 @@ Expected: FAIL — existing handler unmarshals `InviteMemberRequest`
 
 - [ ] **Step 3: Rewrite handleMemberAdded**
 
-Replace `handleMemberAdded` in `inbox-worker/handler.go`:
+Replace `handleMemberAdded` in `inbox-worker/handler.go`. The handler should only:
+1. Unmarshal `MemberAddEvent`
+2. Look up users locally via `FindUsersByAccounts`
+3. Bulk-create subscriptions
+4. Publish `SubscriptionUpdateEvent` per new member
+
+Room member data (orgs/individuals) stays on the room's origin site — no room_members writes, no backfill.
 
 ```go
 func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent) error {
-	var change model.MemberAddEvent
-	if err := json.Unmarshal(evt.Payload, &change); err != nil {
-		return fmt.Errorf("unmarshal subscription_created payload: %w", err)
+	var event model.MemberAddEvent
+	if err := json.Unmarshal(evt.Payload, &event); err != nil {
+		return fmt.Errorf("unmarshal member_added payload: %w", err)
 	}
 
-	joinedAt := time.UnixMilli(change.JoinedAt).UTC()
+	// 1. Look up users locally
+	users, err := h.store.FindUsersByAccounts(ctx, event.Accounts)
+	if err != nil {
+		return fmt.Errorf("find users by accounts: %w", err)
+	}
+	userMap := make(map[string]model.User, len(users))
+	for _, u := range users {
+		userMap[u.Account] = u
+	}
+
+	joinedAt := time.UnixMilli(event.JoinedAt).UTC()
 	var historySharedSince *time.Time
-	if change.HistorySharedSince > 0 {
-		t := time.UnixMilli(change.HistorySharedSince).UTC()
+	if event.HistorySharedSince > 0 {
+		t := time.UnixMilli(event.HistorySharedSince).UTC()
 		historySharedSince = &t
 	}
 
-	for i, account := range change.Accounts {
-		userID := account
-		if i < len(change.UserIDs) {
-			userID = change.UserIDs[i]
+	// 2. Build subscriptions
+	subs := make([]*model.Subscription, 0, len(event.Accounts))
+	for _, account := range event.Accounts {
+		user, ok := userMap[account]
+		if !ok {
+			slog.Warn("user not found for account", "account", account)
+			continue
 		}
-
-		sub := model.Subscription{
+		sub := &model.Subscription{
 			ID:                 uuid.New().String(),
-			User:               model.SubscriptionUser{ID: userID, Account: account},
-			RoomID:             change.RoomID,
-			SiteID:             change.SiteID,
+			User:               model.SubscriptionUser{ID: user.ID, Account: user.Account},
+			RoomID:             event.RoomID,
+			SiteID:             event.SiteID,
 			Roles:              []model.Role{model.RoleMember},
 			HistorySharedSince: historySharedSince,
 			JoinedAt:           joinedAt,
 		}
+		subs = append(subs, sub)
+	}
 
-		if err := h.store.CreateSubscription(ctx, &sub); err != nil {
-			return fmt.Errorf("create subscription for %q: %w", account, err)
-		}
+	// 3. Bulk create subscriptions
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return fmt.Errorf("bulk create subscriptions: %w", err)
+	}
 
+	// 4. Publish SubscriptionUpdateEvent per new member
+	publishNow := time.Now().UTC().UnixMilli()
+	for _, sub := range subs {
 		updateEvt := model.SubscriptionUpdateEvent{
-			UserID: userID, Subscription: sub, Action: "added",
-			Timestamp: time.Now().UTC().UnixMilli(),
+			UserID: sub.User.ID, Subscription: *sub, Action: "added",
+			Timestamp: publishNow,
 		}
 		updateData, err := natsutil.MarshalResponse(updateEvt)
 		if err != nil {
 			return fmt.Errorf("marshal subscription update event: %w", err)
 		}
-		if err := h.pub.Publish(ctx, subject.SubscriptionUpdate(account), updateData); err != nil {
-			slog.Error("publish subscription update failed", "error", err, "account", account)
+		if err := h.pub.Publish(ctx, subject.SubscriptionUpdate(sub.User.Account), updateData); err != nil {
+			slog.Error("publish subscription update failed", "error", err, "account", sub.User.Account)
 		}
 	}
 
 	return nil
 }
 ```
+
+The `InboxStore` interface for this handler is:
+
+```go
+type InboxStore interface {
+	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
+	UpsertRoom(ctx context.Context, room *model.Room) error
+	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
+	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
+}
+```
+
+No `CreateRoomMember`, `HasOrgRoomMembers`, or `GetSubscriptionAccounts` — room_members data is not synced cross-site.
 
 - [ ] **Step 4: Update existing tests that used InviteMemberRequest payload**
 

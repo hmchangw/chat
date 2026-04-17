@@ -23,15 +23,12 @@ type roleUpdate struct {
 }
 
 type stubInboxStore struct {
-	mu                   sync.Mutex
-	subscriptions        []model.Subscription
-	bulkSubscriptions    []*model.Subscription
-	rooms                []model.Room
-	roleUpdates          []roleUpdate
-	roomMembers          []model.RoomMember
-	users                []model.User
-	hasOrgRoomMembersVal bool
-	subAccounts          []string
+	mu                sync.Mutex
+	subscriptions     []model.Subscription
+	bulkSubscriptions []*model.Subscription
+	rooms             []model.Room
+	roleUpdates       []roleUpdate
+	users             []model.User
 }
 
 func (s *stubInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -129,35 +126,6 @@ func (s *stubInboxStore) BulkCreateSubscriptions(_ context.Context, subs []*mode
 		s.subscriptions = append(s.subscriptions, *sub)
 	}
 	return nil
-}
-
-func (s *stubInboxStore) CreateRoomMember(_ context.Context, member *model.RoomMember) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.roomMembers = append(s.roomMembers, *member)
-	return nil
-}
-
-func (s *stubInboxStore) HasOrgRoomMembers(_ context.Context, roomID string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.hasOrgRoomMembersVal, nil
-}
-
-func (s *stubInboxStore) GetSubscriptionAccounts(_ context.Context, roomID string) ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cp := make([]string, len(s.subAccounts))
-	copy(cp, s.subAccounts)
-	return cp, nil
-}
-
-func (s *stubInboxStore) getRoomMembers() []model.RoomMember {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cp := make([]model.RoomMember, len(s.roomMembers))
-	copy(cp, s.roomMembers)
-	return cp
 }
 
 // --- NATS publish recorder ---
@@ -694,122 +662,6 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 	}
 	if subs[0].HistorySharedSince != nil {
 		t.Errorf("HistorySharedSince = %v, want nil (history all)", subs[0].HistorySharedSince)
-	}
-}
-
-func TestHandleEvent_MemberAdded_WithOrgs(t *testing.T) {
-	store := &stubInboxStore{
-		users: []model.User{
-			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
-			{ID: "uid-alice", Account: "alice", SiteID: "site-a"},
-		},
-		subAccounts: []string{"alice"}, // existing subscription account
-	}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
-
-	change := model.MemberAddEvent{
-		Type:               "member_added",
-		RoomID:             "room-1",
-		Accounts:           []string{"bob"},
-		Orgs:               []string{"engineering"},
-		SiteID:             "site-b",
-		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
-		HistorySharedSince: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
-		Timestamp:          time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
-	}
-	changeData, _ := json.Marshal(change)
-
-	evt := model.OutboxEvent{
-		Type:       "member_added",
-		SiteID:     "site-b",
-		DestSiteID: "site-a",
-		Payload:    changeData,
-	}
-	evtData, _ := json.Marshal(evt)
-
-	if err := h.HandleEvent(context.Background(), evtData); err != nil {
-		t.Fatalf("HandleEvent: %v", err)
-	}
-
-	// Verify subscription was created
-	subs := store.getSubscriptions()
-	if len(subs) != 1 {
-		t.Fatalf("expected 1 subscription, got %d", len(subs))
-	}
-	if subs[0].User.ID != "uid-bob" {
-		t.Errorf("sub User.ID = %q, want %q", subs[0].User.ID, "uid-bob")
-	}
-
-	// Verify room_members were created: 1 org + 1 individual (bob) + 1 backfill (alice)
-	members := store.getRoomMembers()
-	if len(members) != 3 {
-		t.Fatalf("expected 3 room members, got %d", len(members))
-	}
-
-	var orgCount, individualCount int
-	for _, m := range members {
-		switch m.Member.Type {
-		case model.RoomMemberOrg:
-			orgCount++
-			if m.Member.ID != "engineering" {
-				t.Errorf("org member ID = %q, want %q", m.Member.ID, "engineering")
-			}
-		case model.RoomMemberIndividual:
-			individualCount++
-		}
-	}
-	if orgCount != 1 {
-		t.Errorf("expected 1 org room member, got %d", orgCount)
-	}
-	if individualCount != 2 {
-		t.Errorf("expected 2 individual room members (bob + alice backfill), got %d", individualCount)
-	}
-}
-
-func TestHandleEvent_MemberAdded_ExistingOrgsWritesIndividuals(t *testing.T) {
-	store := &stubInboxStore{
-		users: []model.User{
-			{ID: "uid-charlie", Account: "charlie", SiteID: "site-a"},
-		},
-		hasOrgRoomMembersVal: true,
-	}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
-
-	change := model.MemberAddEvent{
-		Type:               "member_added",
-		RoomID:             "room-1",
-		Accounts:           []string{"charlie"},
-		SiteID:             "site-b",
-		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
-		HistorySharedSince: 0,
-		Timestamp:          time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
-	}
-	changeData, _ := json.Marshal(change)
-
-	evt := model.OutboxEvent{
-		Type:       "member_added",
-		SiteID:     "site-b",
-		DestSiteID: "site-a",
-		Payload:    changeData,
-	}
-	evtData, _ := json.Marshal(evt)
-
-	if err := h.HandleEvent(context.Background(), evtData); err != nil {
-		t.Fatalf("HandleEvent: %v", err)
-	}
-
-	// Verify individual room_member was created because room already has org room_members
-	members := store.getRoomMembers()
-	if len(members) != 1 {
-		t.Fatalf("expected 1 room member, got %d", len(members))
-	}
-	if members[0].Member.Type != model.RoomMemberIndividual {
-		t.Errorf("member type = %q, want %q", members[0].Member.Type, model.RoomMemberIndividual)
-	}
-	if members[0].Member.Account != "charlie" {
-		t.Errorf("member account = %q, want %q", members[0].Member.Account, "charlie")
 	}
 }
 

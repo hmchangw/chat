@@ -34,10 +34,9 @@ type config struct {
 
 // mongoInboxStore implements InboxStore using MongoDB.
 type mongoInboxStore struct {
-	subCol        *mongo.Collection
-	roomCol       *mongo.Collection
-	roomMemberCol *mongo.Collection
-	userCol       *mongo.Collection
+	subCol  *mongo.Collection
+	roomCol *mongo.Collection
+	userCol *mongo.Collection
 }
 
 func (s *mongoInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -105,46 +104,6 @@ func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*m
 	return nil
 }
 
-func (s *mongoInboxStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
-	if _, err := s.roomMemberCol.InsertOne(ctx, member); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return nil
-		}
-		return fmt.Errorf("create room member for room %q: %w", member.RoomID, err)
-	}
-	return nil
-}
-
-func (s *mongoInboxStore) HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error) {
-	count, err := s.roomMemberCol.CountDocuments(ctx, bson.M{"rid": roomID, "member.type": "org"})
-	if err != nil {
-		return false, fmt.Errorf("check org room members: %w", err)
-	}
-	return count > 0, nil
-}
-
-func (s *mongoInboxStore) GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error) {
-	pipeline := bson.A{
-		bson.M{"$match": bson.M{"roomId": roomID}},
-		bson.M{"$group": bson.M{"_id": nil, "accounts": bson.M{"$addToSet": "$u.account"}}},
-	}
-	cursor, err := s.subCol.Aggregate(ctx, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("get subscription accounts: %w", err)
-	}
-	var results []struct {
-		Accounts []string `bson:"accounts"`
-	}
-	if err := cursor.All(ctx, &results); err != nil {
-		return nil, fmt.Errorf("decode subscription accounts: %w", err)
-	}
-	if len(results) == 0 {
-		return nil, nil
-	}
-	return results[0].Accounts, nil
-}
-
-
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
@@ -169,10 +128,9 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 	store := &mongoInboxStore{
-		subCol:        db.Collection("subscriptions"),
-		roomCol:       db.Collection("rooms"),
-		roomMemberCol: db.Collection("room_members"),
-		userCol:       db.Collection("users"),
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
 	}
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)

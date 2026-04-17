@@ -825,7 +825,6 @@ func TestMemberAddEventJSON(t *testing.T) {
 		Type:               "member_added",
 		RoomID:             "r1",
 		Accounts:           []string{"alice", "bob"},
-		Orgs:               []string{"engineering"},
 		SiteID:             "site-a",
 		JoinedAt:           1735689600000,
 		HistorySharedSince: 1735689600000,
@@ -836,20 +835,6 @@ func TestMemberAddEventJSON(t *testing.T) {
 	var dst model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Equal(t, src, dst)
-
-	// Orgs omitted when nil
-	src2 := model.MemberAddEvent{
-		Type:     "member_added",
-		RoomID:   "r2",
-		Accounts: []string{"charlie"},
-		SiteID:   "site-b",
-	}
-	data2, err := json.Marshal(src2)
-	require.NoError(t, err)
-	var raw map[string]any
-	require.NoError(t, json.Unmarshal(data2, &raw))
-	_, hasOrgs := raw["orgs"]
-	assert.False(t, hasOrgs, "orgs should be omitted when nil")
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.

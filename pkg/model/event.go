@@ -67,7 +67,6 @@ type MemberAddEvent struct {
 	Type               string   `json:"type"               bson:"type"`
 	RoomID             string   `json:"roomId"             bson:"roomId"`
 	Accounts           []string `json:"accounts"           bson:"accounts"`
-	Orgs               []string `json:"orgs,omitempty"     bson:"orgs,omitempty"`
 	SiteID             string   `json:"siteId"             bson:"siteId"`
 	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
 	HistorySharedSince int64    `json:"historySharedSince" bson:"historySharedSince"`

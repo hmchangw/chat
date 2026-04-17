@@ -17,14 +17,11 @@ import (
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
 	UpsertRoom(ctx context.Context, room *model.Room) error
 	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
 	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
-	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
-	CreateRoomMember(ctx context.Context, member *model.RoomMember) error
-	HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error)
-	GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error)
 }
 
 // Publisher abstracts NATS publishing so the handler is testable.
@@ -113,119 +110,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		return fmt.Errorf("bulk create subscriptions: %w", err)
 	}
 
-	// 4. Write room_members
-	now := time.Now().UTC()
-	if len(event.Orgs) > 0 {
-		// Write org room_member docs
-		for _, org := range event.Orgs {
-			member := &model.RoomMember{
-				ID:     uuid.New().String(),
-				RoomID: event.RoomID,
-				Ts:     now,
-				Member: model.RoomMemberEntry{
-					ID:   org,
-					Type: model.RoomMemberOrg,
-				},
-			}
-			if err := h.store.CreateRoomMember(ctx, member); err != nil {
-				slog.Error("create org room member failed", "error", err, "org", org)
-			}
-		}
-		// Write individual room_member docs for new accounts
-		for _, sub := range subs {
-			member := &model.RoomMember{
-				ID:     uuid.New().String(),
-				RoomID: event.RoomID,
-				Ts:     now,
-				Member: model.RoomMemberEntry{
-					ID:      sub.User.ID,
-					Type:    model.RoomMemberIndividual,
-					Account: sub.User.Account,
-				},
-			}
-			if err := h.store.CreateRoomMember(ctx, member); err != nil {
-				slog.Error("create individual room member failed", "error", err, "account", sub.User.Account)
-			}
-		}
-		// Backfill existing subscription accounts
-		existingAccounts, err := h.store.GetSubscriptionAccounts(ctx, event.RoomID)
-		if err != nil {
-			slog.Warn("get subscription accounts failed", "error", err, "roomID", event.RoomID)
-		} else {
-			// Build set of new accounts to avoid duplicates
-			newAccountSet := make(map[string]struct{}, len(subs))
-			for _, sub := range subs {
-				newAccountSet[sub.User.Account] = struct{}{}
-			}
-			// Collect accounts needing lookup
-			var missingAccounts []string
-			for _, account := range existingAccounts {
-				if _, isNew := newAccountSet[account]; isNew {
-					continue
-				}
-				if _, inMap := userMap[account]; !inMap {
-					missingAccounts = append(missingAccounts, account)
-				}
-			}
-			// Fetch missing users and merge into userMap
-			if len(missingAccounts) > 0 {
-				extraUsers, err := h.store.FindUsersByAccounts(ctx, missingAccounts)
-				if err != nil {
-					slog.Warn("find users for backfill failed", "error", err)
-				} else {
-					for _, u := range extraUsers {
-						userMap[u.Account] = u
-					}
-				}
-			}
-			for _, account := range existingAccounts {
-				if _, isNew := newAccountSet[account]; isNew {
-					continue
-				}
-				user, ok := userMap[account]
-				if !ok {
-					continue
-				}
-				member := &model.RoomMember{
-					ID:     uuid.New().String(),
-					RoomID: event.RoomID,
-					Ts:     now,
-					Member: model.RoomMemberEntry{
-						ID:      user.ID,
-						Type:    model.RoomMemberIndividual,
-						Account: user.Account,
-					},
-				}
-				if err := h.store.CreateRoomMember(ctx, member); err != nil {
-					slog.Error("backfill room member failed", "error", err, "account", account)
-				}
-			}
-		}
-	} else {
-		hasOrgs, err := h.store.HasOrgRoomMembers(ctx, event.RoomID)
-		if err != nil {
-			slog.Warn("check existing org room members failed", "error", err, "roomID", event.RoomID)
-		}
-		if hasOrgs {
-			for _, sub := range subs {
-				member := &model.RoomMember{
-					ID:     uuid.New().String(),
-					RoomID: event.RoomID,
-					Ts:     now,
-					Member: model.RoomMemberEntry{
-						ID:      sub.User.ID,
-						Type:    model.RoomMemberIndividual,
-						Account: sub.User.Account,
-					},
-				}
-				if err := h.store.CreateRoomMember(ctx, member); err != nil {
-					slog.Error("create individual room member failed", "error", err, "account", sub.User.Account)
-				}
-			}
-		}
-	}
-
-	// 5. Publish SubscriptionUpdateEvent per new member
+	// 4. Publish SubscriptionUpdateEvent per new member
 	publishNow := time.Now().UTC().UnixMilli()
 	for _, sub := range subs {
 		updateEvt := model.SubscriptionUpdateEvent{
