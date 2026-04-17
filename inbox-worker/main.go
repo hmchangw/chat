@@ -62,10 +62,10 @@ func (s *mongoInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, 
 	return nil
 }
 
-func (s *mongoInboxStore) DeleteSubscription(ctx context.Context, roomID, account string) error {
-	_, err := s.subCol.DeleteOne(ctx, bson.M{"roomId": roomID, "u.account": account})
+func (s *mongoInboxStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error {
+	_, err := s.subCol.DeleteMany(ctx, bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}})
 	if err != nil {
-		return fmt.Errorf("delete subscription for %q in room %q: %w", account, roomID, err)
+		return fmt.Errorf("delete subscriptions in room %q: %w", roomID, err)
 	}
 	return nil
 }
