@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -658,4 +659,40 @@ func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 	// No SubscriptionUpdateEvent publishes — room-worker handles that
 	records := pub.getRecords()
 	assert.Empty(t, records)
+}
+
+func TestHandleEvent_MemberRemoved_EmptyAccountsNoOp(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{}}
+	payload, _ := json.Marshal(memberEvt)
+	outboxPayload, _ := json.Marshal(model.OutboxEvent{
+		Type: "member_removed", SiteID: "a", DestSiteID: "b", Payload: payload,
+	})
+	require.NoError(t, h.HandleEvent(context.Background(), outboxPayload))
+}
+
+type errorDeleteStore struct {
+	*stubInboxStore
+}
+
+func (s *errorDeleteStore) DeleteSubscriptionsByAccounts(_ context.Context, _ string, _ []string) error {
+	return fmt.Errorf("boom")
+}
+
+func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
+	store := &errorDeleteStore{stubInboxStore: &stubInboxStore{}}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"alice"}}
+	payload, _ := json.Marshal(memberEvt)
+	outboxPayload, _ := json.Marshal(model.OutboxEvent{
+		Type: "member_removed", SiteID: "a", DestSiteID: "b", Payload: payload,
+	})
+	err := h.HandleEvent(context.Background(), outboxPayload)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete subscriptions")
 }

@@ -148,6 +148,12 @@ func TestMongoStore_GetUserWithMembership_Integration(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result.HasOrgMembership)
 	})
+
+	t.Run("user not found", func(t *testing.T) {
+		_, err := store.GetUserWithMembership(ctx, "r1", "nonexistent")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, mongo.ErrNoDocuments)
+	})
 }
 
 func TestMongoStore_GetOrgMembersWithIndividualStatus_Integration(t *testing.T) {
