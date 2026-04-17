@@ -67,7 +67,7 @@ func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscrip
 	return err
 }
 
-func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*model.Subscription, bool, error) {
+func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*model.Subscription, bool, bool, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"roomId": roomID, "u.account": account}}},
 		{{Key: "$lookup", Value: bson.M{
@@ -83,32 +83,57 @@ func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, 
 			},
 			"as": "individualMembership",
 		}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from": "users",
+			"let":  bson.M{"acct": "$u.account"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$eq": bson.A{"$account", "$$acct"}}}},
+				bson.M{"$limit": 1},
+				bson.M{"$project": bson.M{"sectId": 1}},
+			},
+			"as": "userDoc",
+		}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from": "room_members",
+			"let":  bson.M{"sectId": bson.M{"$arrayElemAt": bson.A{"$userDoc.sectId", 0}}},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$rid", roomID}},
+					bson.M{"$eq": bson.A{"$member.type", "org"}},
+					bson.M{"$eq": bson.A{"$member.id", "$$sectId"}},
+				}}}},
+				bson.M{"$limit": 1},
+			},
+			"as": "orgMembership",
+		}}},
 		{{Key: "$addFields", Value: bson.M{
 			"hasIndividualMembership": bson.M{"$gt": bson.A{bson.M{"$size": "$individualMembership"}, 0}},
+			"hasOrgMembership":        bson.M{"$gt": bson.A{bson.M{"$size": "$orgMembership"}, 0}},
 		}}},
-		{{Key: "$project", Value: bson.M{"individualMembership": 0}}},
+		{{Key: "$project", Value: bson.M{"individualMembership": 0, "orgMembership": 0, "userDoc": 0}}},
 	}
 
 	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, false, fmt.Errorf("aggregate subscription with membership: %w", err)
+		return nil, false, false, fmt.Errorf("aggregate subscription with membership: %w", err)
 	}
 	defer cursor.Close(ctx)
 
 	var result struct {
 		model.Subscription      `bson:",inline"`
 		HasIndividualMembership bool `bson:"hasIndividualMembership"`
+		HasOrgMembership        bool `bson:"hasOrgMembership"`
 	}
 	if !cursor.Next(ctx) {
 		if err := cursor.Err(); err != nil {
-			return nil, false, fmt.Errorf("iterate subscription with membership: %w", err)
+			return nil, false, false, fmt.Errorf("iterate subscription with membership: %w", err)
 		}
-		return nil, false, fmt.Errorf("subscription not found for account %q in room %q: %w", account, roomID, mongo.ErrNoDocuments)
+		return nil, false, false, fmt.Errorf("subscription not found for account %q in room %q: %w", account, roomID, mongo.ErrNoDocuments)
 	}
 	if err := cursor.Decode(&result); err != nil {
-		return nil, false, fmt.Errorf("decode subscription with membership: %w", err)
+		return nil, false, false, fmt.Errorf("decode subscription with membership: %w", err)
 	}
-	return &result.Subscription, result.HasIndividualMembership, nil
+	return &result.Subscription, result.HasIndividualMembership, result.HasOrgMembership, nil
 }
 
 func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {

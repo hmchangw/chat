@@ -204,14 +204,6 @@ func (s *MongoStore) DeleteRoomMember(ctx context.Context, roomID string, member
 	return nil
 }
 
-func (s *MongoStore) DeleteRoomMembersByAccount(ctx context.Context, roomID, account string) error {
-	_, err := s.roomMembers.DeleteMany(ctx, bson.M{"rid": roomID, "member.account": account})
-	if err != nil {
-		return fmt.Errorf("delete room members for %q: %w", account, err)
-	}
-	return nil
-}
-
 func (s *MongoStore) DecrementUserCount(ctx context.Context, roomID string, count int) error {
 	_, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$inc": bson.M{"userCount": -count}})
 	if err != nil {

@@ -23,9 +23,10 @@ type RoomMemberEntry struct {
 }
 
 type RemoveMemberRequest struct {
-	RoomID  string `json:"roomId"            bson:"roomId"`
-	Account string `json:"account,omitempty" bson:"account,omitempty"`
-	OrgID   string `json:"orgId,omitempty"   bson:"orgId,omitempty"`
+	RoomID    string `json:"roomId"             bson:"roomId"`
+	Requester string `json:"requester"          bson:"requester"`
+	Account   string `json:"account,omitempty"  bson:"account,omitempty"`
+	OrgID     string `json:"orgId,omitempty"    bson:"orgId,omitempty"`
 }
 
 type SysMsgUser struct {

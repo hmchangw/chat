@@ -20,10 +20,6 @@ type InboxStore interface {
 	UpsertRoom(ctx context.Context, room *model.Room) error
 	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
 	DeleteSubscription(ctx context.Context, roomID, account string) error
-	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
-	DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error
-	DeleteRoomMembersByAccount(ctx context.Context, roomID, account string) error
-	GetIndividualMemberAccounts(ctx context.Context, roomID string, accounts []string) ([]string, error)
 }
 
 // Publisher abstracts NATS publishing so the handler is testable.
@@ -105,67 +101,20 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 	return nil
 }
 
+// handleMemberRemoved deletes the subscriptions for the accounts listed in the
+// event. The room's home site has already filtered out dual-membership users,
+// so this site only needs to sync subscriptions. No SubscriptionUpdateEvent is
+// published here — room-worker already publishes to the user's subject and the
+// NATS supercluster routes it to the user's home site.
 func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEvent) error {
 	var memberEvt model.MemberRemoveEvent
 	if err := json.Unmarshal(evt.Payload, &memberEvt); err != nil {
 		return fmt.Errorf("unmarshal member removed payload: %w", err)
 	}
 
-	var removedAccounts []string
-
-	if memberEvt.OrgID != "" {
-		// Org removal: delete org room_members doc first
-		if err := h.store.DeleteRoomMember(ctx, memberEvt.RoomID, model.RoomMemberOrg, memberEvt.OrgID); err != nil {
-			return fmt.Errorf("delete org room member: %w", err)
-		}
-		// Dual-membership guard: find accounts that also have individual membership
-		individualAccounts, err := h.store.GetIndividualMemberAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts)
-		if err != nil {
-			return fmt.Errorf("get individual member accounts: %w", err)
-		}
-		individualSet := make(map[string]bool, len(individualAccounts))
-		for _, a := range individualAccounts {
-			individualSet[a] = true
-		}
-		// Only delete subscriptions for accounts WITHOUT individual membership
-		for _, account := range memberEvt.Accounts {
-			if !individualSet[account] {
-				removedAccounts = append(removedAccounts, account)
-			}
-		}
-		if len(removedAccounts) > 0 {
-			if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, removedAccounts); err != nil {
-				return fmt.Errorf("delete subscriptions: %w", err)
-			}
-		}
-	} else {
-		if len(memberEvt.Accounts) != 1 {
-			return fmt.Errorf("member_removed individual event must contain exactly one account")
-		}
-		// Individual removal: delete subscription + individual room_members
-		if err := h.store.DeleteSubscription(ctx, memberEvt.RoomID, memberEvt.Accounts[0]); err != nil {
-			return fmt.Errorf("delete subscription: %w", err)
-		}
-		if err := h.store.DeleteRoomMembersByAccount(ctx, memberEvt.RoomID, memberEvt.Accounts[0]); err != nil {
-			return fmt.Errorf("delete room members: %w", err)
-		}
-		removedAccounts = memberEvt.Accounts
-	}
-
-	// Publish SubscriptionUpdateEvent per actually removed account
-	now := time.Now().UTC()
-	for _, account := range removedAccounts {
-		subEvt := model.SubscriptionUpdateEvent{
-			Subscription: model.Subscription{
-				RoomID: memberEvt.RoomID,
-				User:   model.SubscriptionUser{Account: account},
-			},
-			Action:    "removed",
-			Timestamp: now.UnixMilli(),
-		}
-		subEvtData, _ := json.Marshal(subEvt)
-		if err := h.pub.Publish(ctx, subject.SubscriptionUpdate(account), subEvtData); err != nil {
-			slog.Error("subscription update publish failed", "error", err, "account", account)
+	for _, account := range memberEvt.Accounts {
+		if err := h.store.DeleteSubscription(ctx, memberEvt.RoomID, account); err != nil {
+			return fmt.Errorf("delete subscription for %s: %w", account, err)
 		}
 	}
 	return nil
