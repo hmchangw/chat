@@ -170,29 +170,30 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		return nil, fmt.Errorf("exactly one of account or orgId must be set")
 	}
 
-	isSelfLeave := req.Account == requesterAccount
-
-	if isSelfLeave {
-		// Self-leave path: use GetSubscriptionWithMembership to detect org-only membership.
-		sub, hasIndividual, hasOrg, err := h.store.GetSubscriptionWithMembership(ctx, roomID, requesterAccount)
+	if req.Account != "" {
+		// Individual removal (self-leave or owner-removes-other): one aggregation
+		// returns target's subscription, membership flags, member/owner counts,
+		// and requester's owner status. Applies the same guards to both flows.
+		v, err := h.store.ValidateIndividualRemove(ctx, roomID, req.Account, requesterAccount)
 		if err != nil {
-			return nil, fmt.Errorf("get subscription: %w", err)
+			return nil, fmt.Errorf("validate individual remove: %w", err)
 		}
-		// Reject only when the user is an org-only member (has org but no individual membership).
-		if hasOrg && !hasIndividual {
+		isSelfLeave := req.Account == requesterAccount
+		if !isSelfLeave && !v.RequesterIsOwner {
+			return nil, fmt.Errorf("only owners can remove members")
+		}
+		if v.HasOrgMembership && !v.HasIndividualMembership {
 			return nil, fmt.Errorf("org members cannot leave individually")
 		}
-		if hasRole(sub.Roles, model.RoleOwner) {
-			count, err := h.store.CountOwners(ctx, roomID)
-			if err != nil {
-				return nil, fmt.Errorf("count owners: %w", err)
-			}
-			if count <= 1 {
-				return nil, fmt.Errorf("last owner cannot leave the room")
-			}
+		if hasRole(v.Subscription.Roles, model.RoleOwner) && v.OwnerCount <= 1 {
+			return nil, fmt.Errorf("last owner cannot leave the room")
+		}
+		if v.MemberCount <= 1 {
+			return nil, fmt.Errorf("cannot remove the last member of the room")
 		}
 	} else {
-		// Owner-removes-other or owner-removes-org path.
+		// Owner-removes-org path: only the requester's owner role matters; the org
+		// member set is resolved downstream in room-worker.
 		sub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
 		if err != nil {
 			return nil, fmt.Errorf("get requester subscription: %w", err)

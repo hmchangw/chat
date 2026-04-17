@@ -489,9 +489,10 @@ func TestHandler_RemoveMember_SelfLeave_Success(t *testing.T) {
 		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
 		HistorySharedSince: &hss, JoinedAt: hss,
 	}
-	// Individual-only: has individual membership, no org membership
-	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
-		Return(sub, true, false, nil)
+	store.EXPECT().ValidateIndividualRemove(gomock.Any(), "r1", "alice", "alice").
+		Return(&IndividualRemoveValidation{
+			Subscription: sub, HasIndividualMembership: true, MemberCount: 3, OwnerCount: 2,
+		}, nil)
 
 	var publishedSubj string
 	var publishedData []byte
@@ -512,42 +513,56 @@ func TestHandler_RemoveMember_SelfLeave_Success(t *testing.T) {
 	assert.Equal(t, "accepted", status["status"])
 	require.NotNil(t, publishedData)
 
-	// Verify the published payload carries the Requester set from the subject
 	var published model.RemoveMemberRequest
 	require.NoError(t, json.Unmarshal(publishedData, &published))
 	assert.Equal(t, "alice", published.Requester)
 }
 
-func TestHandler_RemoveMember_SelfLeave_OrgOnly_Rejected(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockRoomStore(ctrl)
-	sub := &model.Subscription{
-		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", Roles: []model.Role{model.RoleMember},
+func TestHandler_RemoveMember_OrgOnly_Rejected(t *testing.T) {
+	cases := []struct {
+		name      string
+		requester string
+		target    string
+		reqOwner  bool
+	}{
+		{"self-leave", "alice", "alice", false},
+		{"owner-removes", "bob", "alice", true},
 	}
-	// Org-only: has org membership but no individual membership -> reject
-	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
-		Return(sub, false, true, nil)
-	handler := NewHandler(store, "site-a", 1000, nil)
-	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
-	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
-	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "org members cannot leave individually")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			sub := &model.Subscription{
+				ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+				RoomID: "r1", Roles: []model.Role{model.RoleMember},
+			}
+			store.EXPECT().ValidateIndividualRemove(gomock.Any(), "r1", "alice", tc.requester).
+				Return(&IndividualRemoveValidation{
+					Subscription: sub, HasOrgMembership: true,
+					MemberCount: 3, OwnerCount: 1, RequesterIsOwner: tc.reqOwner,
+				}, nil)
+			handler := NewHandler(store, "site-a", 1000, nil)
+			reqSubj := subject.MemberRemove(tc.requester, "r1", "site-a")
+			reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: tc.target})
+			_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "org members cannot leave individually")
+		})
+	}
 }
 
 func TestHandler_RemoveMember_SelfLeave_NoOrgs_Allowed(t *testing.T) {
-	// When the room has no orgs at all, individual/org flags may both be false
-	// (e.g., the user was added as owner during room creation without a
-	// `room_members` doc). Self-leave should still be allowed.
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	sub := &model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
-	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
-		Return(sub, false, false, nil)
+	store.EXPECT().ValidateIndividualRemove(gomock.Any(), "r1", "alice", "alice").
+		Return(&IndividualRemoveValidation{
+			Subscription: sub, HasIndividualMembership: false, HasOrgMembership: false,
+			MemberCount: 2, OwnerCount: 1,
+		}, nil)
 
 	var publishedData []byte
 	handler := NewHandler(store, "site-a", 1000, func(ctx context.Context, _ string, data []byte) error {
@@ -561,32 +576,70 @@ func TestHandler_RemoveMember_SelfLeave_NoOrgs_Allowed(t *testing.T) {
 	require.NotNil(t, publishedData)
 }
 
-func TestHandler_RemoveMember_SelfLeave_LastOwner_Rejected(t *testing.T) {
+func TestHandler_RemoveMember_LastOwner_Rejected(t *testing.T) {
+	cases := []struct {
+		name      string
+		requester string
+		reqOwner  bool
+	}{
+		{"self-leave", "alice", false},
+		{"owner-removes-last-owner", "bob", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			sub := &model.Subscription{
+				ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+				RoomID: "r1", Roles: []model.Role{model.RoleOwner},
+			}
+			store.EXPECT().ValidateIndividualRemove(gomock.Any(), "r1", "alice", tc.requester).
+				Return(&IndividualRemoveValidation{
+					Subscription: sub, HasIndividualMembership: true,
+					MemberCount: 3, OwnerCount: 1, RequesterIsOwner: tc.reqOwner,
+				}, nil)
+			handler := NewHandler(store, "site-a", 1000, nil)
+			reqSubj := subject.MemberRemove(tc.requester, "r1", "site-a")
+			reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
+			_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "last owner")
+		})
+	}
+}
+
+func TestHandler_RemoveMember_LastMember_Rejected(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	sub := &model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
+		RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
-	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
-		Return(sub, true, false, nil)
-	store.EXPECT().CountOwners(gomock.Any(), "r1").Return(1, nil)
+	store.EXPECT().ValidateIndividualRemove(gomock.Any(), "r1", "alice", "alice").
+		Return(&IndividualRemoveValidation{
+			Subscription: sub, HasIndividualMembership: true,
+			MemberCount: 1, OwnerCount: 0,
+		}, nil)
 	handler := NewHandler(store, "site-a", 1000, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "last owner")
+	assert.Contains(t, err.Error(), "last member")
 }
 
 func TestHandler_RemoveMember_OwnerRemovesOther_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	ownerSub := &model.Subscription{
-		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
+	targetSub := &model.Subscription{
+		ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
+	store.EXPECT().ValidateIndividualRemove(gomock.Any(), "r1", "bob", "alice").
+		Return(&IndividualRemoveValidation{
+			Subscription: targetSub, HasIndividualMembership: true,
+			MemberCount: 3, OwnerCount: 1, RequesterIsOwner: true,
+		}, nil)
 	var publishedData []byte
 	handler := NewHandler(store, "site-a", 1000, func(ctx context.Context, subj string, data []byte) error {
 		publishedData = data
@@ -603,11 +656,15 @@ func TestHandler_RemoveMember_OwnerRemovesOther_Success(t *testing.T) {
 func TestHandler_RemoveMember_NonOwnerRemovesOther_Rejected(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	memberSub := &model.Subscription{
-		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+	targetSub := &model.Subscription{
+		ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(memberSub, nil)
+	store.EXPECT().ValidateIndividualRemove(gomock.Any(), "r1", "bob", "alice").
+		Return(&IndividualRemoveValidation{
+			Subscription: targetSub, HasIndividualMembership: true,
+			MemberCount: 3, OwnerCount: 1, RequesterIsOwner: false,
+		}, nil)
 	handler := NewHandler(store, "site-a", 1000, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob"})

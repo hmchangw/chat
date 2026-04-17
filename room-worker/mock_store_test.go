@@ -187,19 +187,19 @@ func (mr *MockSubscriptionStoreMockRecorder) GetUser(ctx, account any) *gomock.C
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUser", reflect.TypeOf((*MockSubscriptionStore)(nil).GetUser), ctx, account)
 }
 
-// GetUserWithOrgMembership mocks base method.
-func (m *MockSubscriptionStore) GetUserWithOrgMembership(ctx context.Context, roomID, account string) (*UserWithOrgMembership, error) {
+// GetUserWithMembership mocks base method.
+func (m *MockSubscriptionStore) GetUserWithMembership(ctx context.Context, roomID, account string) (*UserWithMembership, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUserWithOrgMembership", ctx, roomID, account)
-	ret0, _ := ret[0].(*UserWithOrgMembership)
+	ret := m.ctrl.Call(m, "GetUserWithMembership", ctx, roomID, account)
+	ret0, _ := ret[0].(*UserWithMembership)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetUserWithOrgMembership indicates an expected call of GetUserWithOrgMembership.
-func (mr *MockSubscriptionStoreMockRecorder) GetUserWithOrgMembership(ctx, roomID, account any) *gomock.Call {
+// GetUserWithMembership indicates an expected call of GetUserWithMembership.
+func (mr *MockSubscriptionStoreMockRecorder) GetUserWithMembership(ctx, roomID, account any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserWithOrgMembership", reflect.TypeOf((*MockSubscriptionStore)(nil).GetUserWithOrgMembership), ctx, roomID, account)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserWithMembership", reflect.TypeOf((*MockSubscriptionStore)(nil).GetUserWithMembership), ctx, roomID, account)
 }
 
 // IncrementUserCount mocks base method.

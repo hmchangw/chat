@@ -8,10 +8,15 @@ import (
 
 //go:generate mockgen -destination=mock_store_test.go -package=main . SubscriptionStore
 
-// UserWithOrgMembership is the result of the GetUserWithOrgMembership aggregation pipeline.
-type UserWithOrgMembership struct {
+// UserWithMembership is the result of the GetUserWithMembership aggregation pipeline.
+// It carries the target user along with a flag indicating whether an org-sourced
+// membership covers them in the room, and the roles on their subscription — so
+// the dual-membership branch in room-worker can demote owners without an extra
+// database round trip.
+type UserWithMembership struct {
 	model.User       `bson:",inline"`
-	HasOrgMembership bool `bson:"hasOrgMembership"`
+	HasOrgMembership bool         `bson:"hasOrgMembership"`
+	Roles            []model.Role `bson:"roles"`
 }
 
 // OrgMemberStatus is one element returned by GetOrgMembersWithIndividualStatus.
@@ -34,7 +39,7 @@ type SubscriptionStore interface {
 	RemoveRole(ctx context.Context, account, roomID string, role model.Role) error
 
 	// --- aggregation pipelines (remove flow) ---
-	GetUserWithOrgMembership(ctx context.Context, roomID, account string) (*UserWithOrgMembership, error)
+	GetUserWithMembership(ctx context.Context, roomID, account string) (*UserWithMembership, error)
 	GetOrgMembersWithIndividualStatus(ctx context.Context, roomID, orgID string) ([]OrgMemberStatus, error)
 
 	// --- write operations (remove flow) ---

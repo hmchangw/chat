@@ -104,7 +104,7 @@ func TestMongoStore_GetSubscription_Integration(t *testing.T) {
 	}
 }
 
-func TestMongoStore_GetUserWithOrgMembership_Integration(t *testing.T) {
+func TestMongoStore_GetUserWithMembership_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
@@ -115,11 +115,24 @@ func TestMongoStore_GetUserWithOrgMembership_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	t.Run("no org membership in room", func(t *testing.T) {
-		result, err := store.GetUserWithOrgMembership(ctx, "r1", "alice")
+	t.Run("no org membership and no subscription", func(t *testing.T) {
+		result, err := store.GetUserWithMembership(ctx, "r1", "alice")
 		require.NoError(t, err)
 		assert.Equal(t, "alice", result.Account)
 		assert.False(t, result.HasOrgMembership)
+		assert.Empty(t, result.Roles)
+	})
+
+	t.Run("with subscription returns roles", func(t *testing.T) {
+		_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+			ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1", Roles: []model.Role{model.RoleOwner, model.RoleMember},
+		})
+		require.NoError(t, err)
+
+		result, err := store.GetUserWithMembership(ctx, "r1", "alice")
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []model.Role{model.RoleOwner, model.RoleMember}, result.Roles)
 	})
 
 	t.Run("with org membership in room", func(t *testing.T) {
@@ -129,7 +142,7 @@ func TestMongoStore_GetUserWithOrgMembership_Integration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		result, err := store.GetUserWithOrgMembership(ctx, "r1", "alice")
+		result, err := store.GetUserWithMembership(ctx, "r1", "alice")
 		require.NoError(t, err)
 		assert.True(t, result.HasOrgMembership)
 	})

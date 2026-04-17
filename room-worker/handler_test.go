@@ -373,7 +373,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		siteID  = "site-a"
 	)
 
-	userResult := &UserWithOrgMembership{
+	userResult := &UserWithMembership{
 		User: model.User{
 			ID:          "u1",
 			Account:     account,
@@ -385,7 +385,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	}
 
 	store.EXPECT().
-		GetUserWithOrgMembership(gomock.Any(), roomID, account).
+		GetUserWithMembership(gomock.Any(), roomID, account).
 		Return(userResult, nil)
 	store.EXPECT().
 		DeleteSubscription(gomock.Any(), roomID, account).
@@ -445,18 +445,20 @@ func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
 		siteID  = "site-a"
 	)
 
-	userResult := &UserWithOrgMembership{
+	userResult := &UserWithMembership{
 		User: model.User{
 			ID:      "u1",
 			Account: account,
 			SiteID:  siteID,
 		},
 		HasOrgMembership: true,
+		Roles:            []model.Role{model.RoleMember},
 	}
 
-	// Only DeleteRoomMember(individual) called — no subscription delete, no events
+	// Only DeleteRoomMember(individual) called — no subscription delete, no events,
+	// no role change (target is not an owner).
 	store.EXPECT().
-		GetUserWithOrgMembership(gomock.Any(), roomID, account).
+		GetUserWithMembership(gomock.Any(), roomID, account).
 		Return(userResult, nil)
 	store.EXPECT().
 		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
@@ -477,6 +479,61 @@ func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
 	assert.Empty(t, published, "expected no publishes for dual-membership self-leave")
 }
 
+func TestHandler_ProcessRemoveMember_DualMembership_OwnerDemoted(t *testing.T) {
+	// Dual-member who also holds the owner role must be demoted when their
+	// individual source is removed — org members cannot be owners.
+	cases := []struct {
+		name      string
+		requester string
+	}{
+		{"self-leave", "alice"},
+		{"owner-removes-other", "bob"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockSubscriptionStore(ctrl)
+
+			const (
+				roomID  = "room-1"
+				account = "alice"
+				siteID  = "site-a"
+			)
+
+			userResult := &UserWithMembership{
+				User:             model.User{ID: "u1", Account: account, SiteID: siteID},
+				HasOrgMembership: true,
+				Roles:            []model.Role{model.RoleOwner, model.RoleMember},
+			}
+
+			gomock.InOrder(
+				store.EXPECT().
+					GetUserWithMembership(gomock.Any(), roomID, account).
+					Return(userResult, nil),
+				store.EXPECT().
+					RemoveRole(gomock.Any(), account, roomID, model.RoleOwner).
+					Return(nil),
+				store.EXPECT().
+					DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+					Return(nil),
+			)
+
+			var published []publishedMsg
+			h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+				published = append(published, publishedMsg{subj: subj, data: data})
+				return nil
+			})
+
+			req := model.RemoveMemberRequest{RoomID: roomID, Requester: tc.requester, Account: account}
+			data, _ := json.Marshal(req)
+
+			err := h.processRemoveMember(context.Background(), data)
+			require.NoError(t, err)
+			assert.Empty(t, published, "dual-membership removal emits no events")
+		})
+	}
+}
+
 func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
@@ -488,7 +545,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 		siteID    = "site-a"
 	)
 
-	userResult := &UserWithOrgMembership{
+	userResult := &UserWithMembership{
 		User: model.User{
 			ID:          "u2",
 			Account:     account,
@@ -500,7 +557,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	}
 
 	store.EXPECT().
-		GetUserWithOrgMembership(gomock.Any(), roomID, account).
+		GetUserWithMembership(gomock.Any(), roomID, account).
 		Return(userResult, nil)
 	store.EXPECT().
 		DeleteSubscription(gomock.Any(), roomID, account).
@@ -608,7 +665,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		userSite  = "site-b" // user is on a different site
 	)
 
-	userResult := &UserWithOrgMembership{
+	userResult := &UserWithMembership{
 		User: model.User{
 			ID:      "u1",
 			Account: account,
@@ -618,7 +675,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 	}
 
 	store.EXPECT().
-		GetUserWithOrgMembership(gomock.Any(), roomID, account).
+		GetUserWithMembership(gomock.Any(), roomID, account).
 		Return(userResult, nil)
 	store.EXPECT().
 		DeleteSubscription(gomock.Any(), roomID, account).

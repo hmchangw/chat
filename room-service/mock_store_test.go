@@ -114,23 +114,6 @@ func (mr *MockRoomStoreMockRecorder) GetSubscription(ctx, account, roomID any) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSubscription", reflect.TypeOf((*MockRoomStore)(nil).GetSubscription), ctx, account, roomID)
 }
 
-// GetSubscriptionWithMembership mocks base method.
-func (m *MockRoomStore) GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*model.Subscription, bool, bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetSubscriptionWithMembership", ctx, roomID, account)
-	ret0, _ := ret[0].(*model.Subscription)
-	ret1, _ := ret[1].(bool)
-	ret2, _ := ret[2].(bool)
-	ret3, _ := ret[3].(error)
-	return ret0, ret1, ret2, ret3
-}
-
-// GetSubscriptionWithMembership indicates an expected call of GetSubscriptionWithMembership.
-func (mr *MockRoomStoreMockRecorder) GetSubscriptionWithMembership(ctx, roomID, account any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSubscriptionWithMembership", reflect.TypeOf((*MockRoomStore)(nil).GetSubscriptionWithMembership), ctx, roomID, account)
-}
-
 // ListRooms mocks base method.
 func (m *MockRoomStore) ListRooms(ctx context.Context) ([]model.Room, error) {
 	m.ctrl.T.Helper()
@@ -144,4 +127,19 @@ func (m *MockRoomStore) ListRooms(ctx context.Context) ([]model.Room, error) {
 func (mr *MockRoomStoreMockRecorder) ListRooms(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRooms", reflect.TypeOf((*MockRoomStore)(nil).ListRooms), ctx)
+}
+
+// ValidateIndividualRemove mocks base method.
+func (m *MockRoomStore) ValidateIndividualRemove(ctx context.Context, roomID, targetAccount, requesterAccount string) (*IndividualRemoveValidation, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ValidateIndividualRemove", ctx, roomID, targetAccount, requesterAccount)
+	ret0, _ := ret[0].(*IndividualRemoveValidation)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ValidateIndividualRemove indicates an expected call of ValidateIndividualRemove.
+func (mr *MockRoomStoreMockRecorder) ValidateIndividualRemove(ctx, roomID, targetAccount, requesterAccount any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ValidateIndividualRemove", reflect.TypeOf((*MockRoomStore)(nil).ValidateIndividualRemove), ctx, roomID, targetAccount, requesterAccount)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -210,13 +211,21 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest) error {
 	isSelfLeave := req.Requester == req.Account
 
-	user, err := h.store.GetUserWithOrgMembership(ctx, req.RoomID, req.Account)
+	user, err := h.store.GetUserWithMembership(ctx, req.RoomID, req.Account)
 	if err != nil {
-		return fmt.Errorf("get user with org membership: %w", err)
+		return fmt.Errorf("get user with membership: %w", err)
 	}
 
-	// Dual-membership case: only remove the individual room-member entry, no events
+	// Dual-membership: the user stays via the org source. Strip the owner role
+	// if present (org members cannot be owners) and delete only the individual
+	// entry. Room-service's last-owner guard has already ensured at least one
+	// owner remains after this demotion.
 	if user.HasOrgMembership {
+		if slices.Contains(user.Roles, model.RoleOwner) {
+			if err := h.store.RemoveRole(ctx, req.Account, req.RoomID, model.RoleOwner); err != nil {
+				return fmt.Errorf("demote dual-member owner: %w", err)
+			}
+		}
 		if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, req.Account); err != nil {
 			return fmt.Errorf("delete room member (individual): %w", err)
 		}
