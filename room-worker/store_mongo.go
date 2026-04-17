@@ -214,18 +214,7 @@ func (s *MongoStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID s
 }
 
 func (s *MongoStore) DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error {
-	filter := bson.M{"rid": roomID, "member.type": memberType}
-	switch memberType {
-	case model.RoomMemberIndividual:
-		// Individuals are keyed by member.account (their login), per the
-		// $lookup pipelines and the unique (rid, type, id, account) index.
-		filter["member.account"] = memberID
-	case model.RoomMemberOrg:
-		filter["member.id"] = memberID
-	default:
-		return fmt.Errorf("unknown room member type %q", memberType)
-	}
-	_, err := s.roomMembers.DeleteOne(ctx, filter)
+	_, err := s.roomMembers.DeleteOne(ctx, bson.M{"rid": roomID, "member.type": memberType, "member.id": memberID})
 	if err != nil {
 		return fmt.Errorf("delete room member: %w", err)
 	}

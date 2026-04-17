@@ -119,6 +119,7 @@ func TestMongoStore_GetUserWithMembership_Integration(t *testing.T) {
 	t.Run("no org membership and no subscription", func(t *testing.T) {
 		result, err := store.GetUserWithMembership(ctx, "r1", "alice")
 		require.NoError(t, err)
+		assert.Equal(t, "u1", result.ID)
 		assert.Equal(t, "alice", result.Account)
 		assert.False(t, result.HasOrgMembership)
 		assert.Empty(t, result.Roles)
@@ -307,12 +308,10 @@ func TestMongoStore_DeleteRoomMember_Integration(t *testing.T) {
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
-	// Seed an individual doc whose `id` differs from `account` to confirm the
-	// individual filter keys on `member.account`, not `member.id`.
 	_, err := db.Collection("room_members").InsertMany(ctx, []interface{}{
 		model.RoomMember{
 			ID: "rm-ind", RoomID: "r1", Ts: time.Now().UTC(),
-			Member: model.RoomMemberEntry{ID: "generated-entry-id", Type: model.RoomMemberIndividual, Account: "alice"},
+			Member: model.RoomMemberEntry{ID: "u1", Type: model.RoomMemberIndividual, Account: "alice"},
 		},
 		model.RoomMember{
 			ID: "rm-org", RoomID: "r1", Ts: time.Now().UTC(),
@@ -321,15 +320,15 @@ func TestMongoStore_DeleteRoomMember_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	t.Run("individual deletes by account", func(t *testing.T) {
-		require.NoError(t, store.DeleteRoomMember(ctx, "r1", model.RoomMemberIndividual, "alice"))
+	t.Run("individual deletes by user id", func(t *testing.T) {
+		require.NoError(t, store.DeleteRoomMember(ctx, "r1", model.RoomMemberIndividual, "u1"))
 		count, err := db.Collection("room_members").CountDocuments(ctx, bson.M{"_id": "rm-ind"})
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), count)
 	})
 
-	t.Run("individual missing account is a no-op", func(t *testing.T) {
-		require.NoError(t, store.DeleteRoomMember(ctx, "r1", model.RoomMemberIndividual, "ghost"))
+	t.Run("passing the account for an individual is a no-op", func(t *testing.T) {
+		require.NoError(t, store.DeleteRoomMember(ctx, "r1", model.RoomMemberIndividual, "alice"))
 	})
 
 	t.Run("org deletes by id", func(t *testing.T) {

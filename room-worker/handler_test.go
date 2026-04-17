@@ -391,7 +391,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		DeleteSubscription(gomock.Any(), roomID, account).
 		Return(int64(1), nil)
 	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 		Return(nil)
 	store.EXPECT().
 		DecrementUserCount(gomock.Any(), roomID, 1).
@@ -461,7 +461,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
 		GetUserWithMembership(gomock.Any(), roomID, account).
 		Return(userResult, nil)
 	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 		Return(nil)
 
 	var published []publishedMsg
@@ -511,7 +511,7 @@ func TestHandler_ProcessRemoveMember_DualMembership_OwnerDemoted(t *testing.T) {
 					GetUserWithMembership(gomock.Any(), roomID, account).
 					Return(userResult, nil),
 				store.EXPECT().
-					DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+					DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 					Return(nil),
 				store.EXPECT().
 					RemoveRole(gomock.Any(), account, roomID, model.RoleOwner).
@@ -565,7 +565,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	// Owner-removes uses the same single-entry delete as self-leave since the
 	// dual-membership branch is the only case that needs separate handling.
 	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u2").
 		Return(nil)
 	store.EXPECT().
 		DecrementUserCount(gomock.Any(), roomID, 1).
@@ -681,7 +681,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		DeleteSubscription(gomock.Any(), roomID, account).
 		Return(int64(1), nil)
 	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 		Return(nil)
 	store.EXPECT().
 		DecrementUserCount(gomock.Any(), roomID, 1).
