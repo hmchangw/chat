@@ -216,33 +216,33 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("get user with membership: %w", err)
 	}
 
-	// Dual-membership: the user stays via the org source. Strip the owner role
-	// if present (org members cannot be owners) and delete only the individual
-	// entry. Room-service's last-owner guard has already ensured at least one
-	// owner remains after this demotion.
+	// Deleting the individual room_members entry is shared by both branches
+	// below — dual-membership removes only the individual source, and the
+	// individual-only branch wants it gone along with the subscription.
+	// DeleteOne is a no-op when the doc is absent (rooms without any orgs
+	// have no individual room_members docs), so this is always safe to run.
+	if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, req.Account); err != nil {
+		return fmt.Errorf("delete room member (individual): %w", err)
+	}
+
+	// Dual-membership: the user stays via the org source. Strip the owner
+	// role if present — org members cannot be owners. Room-service's
+	// last-owner guard has already ensured at least one owner remains after
+	// this demotion. No subscription delete, no userCount change, no events.
 	if user.HasOrgMembership {
 		if slices.Contains(user.Roles, model.RoleOwner) {
 			if err := h.store.RemoveRole(ctx, req.Account, req.RoomID, model.RoleOwner); err != nil {
 				return fmt.Errorf("demote dual-member owner: %w", err)
 			}
 		}
-		if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, req.Account); err != nil {
-			return fmt.Errorf("delete room member (individual): %w", err)
-		}
 		return nil
 	}
 
-	// Individual-only: full removal. Self-leave and owner-removes both only need
-	// to delete the individual room_members entry — the dual-membership branch
-	// above already returned if an org entry exists, so there is no other entry
-	// to clean up here.
+	// Individual-only: full removal — delete the subscription, decrement
+	// userCount, and publish leave/removed events.
 	deleted, err := h.store.DeleteSubscription(ctx, req.RoomID, req.Account)
 	if err != nil {
 		return fmt.Errorf("delete subscription: %w", err)
-	}
-
-	if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, req.Account); err != nil {
-		return fmt.Errorf("delete room member (individual): %w", err)
 	}
 
 	if deleted > 0 {
