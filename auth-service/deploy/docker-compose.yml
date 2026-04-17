@@ -28,7 +28,7 @@ services:
     volumes:
       - ./nats.conf:/etc/nats/nats.conf:ro
       - nats-data:/data/jetstream
-    command: ["-c", "/etc/nats/nats.conf"]
+    command: ["-c", "/etc/nats/nats.conf", "-DV", "-T"]
 
   auth-service:
     build:
