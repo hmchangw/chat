@@ -269,7 +269,7 @@ Self-leave (`req.Requester == req.Account`) and owner-removes-other share the sa
 
 `room_members` data lives only on the room's home site. Inbox-worker on other sites only needs to keep subscriptions in sync. The outbox event's `Accounts` list has already been filtered at the room's site (dual-membership users excluded), so the inbox-worker simply deletes the listed subscriptions:
 
-1. For each account in `memberEvt.Accounts`, call `DeleteSubscription(roomID, account)`.
+1. Call `DeleteSubscriptionsByAccounts(roomID, memberEvt.Accounts)` — a single `deleteMany` with `$in` removes every listed subscription in one round trip. No-op when the list is empty.
 
 No dual-membership filtering, no `room_members` updates, and no `SubscriptionUpdateEvent` publishing — the room-worker on the room's site already publishes the subscription update events to the users' subjects, and the NATS supercluster routes them to the user's home site directly.
 
@@ -300,8 +300,8 @@ Prefer bulk MongoDB operations (`deleteMany` with `$in`) over looping individual
 
 | Method | Service | Implementation |
 |--------|---------|----------------|
-| `DeleteSubscription(roomID, account)` | room-worker, inbox-worker | `deleteOne({roomId, "u.account": account})` on `subscriptions` |
-| `DeleteSubscriptionsByAccounts(roomID, accounts)` | room-worker | `deleteMany({roomId, "u.account": {$in: accounts}})` on `subscriptions` — single round trip for all org members |
+| `DeleteSubscription(roomID, account)` | room-worker | `deleteOne({roomId, "u.account": account})` on `subscriptions` — single-account self-leave / owner-removes-individual path |
+| `DeleteSubscriptionsByAccounts(roomID, accounts)` | room-worker, inbox-worker | `deleteMany({roomId, "u.account": {$in: accounts}})` on `subscriptions` — single round trip for org removal (room-worker) and cross-site subscription sync (inbox-worker) |
 | `DeleteRoomMember(roomID, memberType, memberID)` | room-worker | `deleteOne({rid, "member.type": type, "member.id": id})` on `room_members` (room's site only) |
 | `DeleteRoomMembersByAccount(roomID, account)` | room-worker | `deleteMany({rid, "member.account": account})` on `room_members` (room's site only) |
 | `RemoveSubscriptionRole(roomID, account, role)` | room-worker | `updateOne({roomId, "u.account": account}, {$pull: {roles: role}})` on `subscriptions` — used to demote a dual-membership owner after their individual source is removed |

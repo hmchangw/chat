@@ -49,14 +49,21 @@ func (s *stubInboxStore) UpsertRoom(ctx context.Context, room *model.Room) error
 	return nil
 }
 
-func (s *stubInboxStore) DeleteSubscription(_ context.Context, roomID, account string) error {
+func (s *stubInboxStore) DeleteSubscriptionsByAccounts(_ context.Context, roomID string, accounts []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	want := make(map[string]struct{}, len(accounts))
+	for _, a := range accounts {
+		want[a] = struct{}{}
+	}
 	filtered := s.subscriptions[:0]
 	for i := range s.subscriptions {
-		if s.subscriptions[i].RoomID != roomID || s.subscriptions[i].User.Account != account {
-			filtered = append(filtered, s.subscriptions[i])
+		if s.subscriptions[i].RoomID == roomID {
+			if _, match := want[s.subscriptions[i].User.Account]; match {
+				continue
+			}
 		}
+		filtered = append(filtered, s.subscriptions[i])
 	}
 	s.subscriptions = filtered
 	return nil

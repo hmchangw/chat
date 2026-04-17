@@ -19,7 +19,7 @@ type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	UpsertRoom(ctx context.Context, room *model.Room) error
 	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
-	DeleteSubscription(ctx context.Context, roomID, account string) error
+	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
 }
 
 // Publisher abstracts NATS publishing so the handler is testable.
@@ -103,19 +103,20 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 
 // handleMemberRemoved deletes the subscriptions for the accounts listed in the
 // event. The room's home site has already filtered out dual-membership users,
-// so this site only needs to sync subscriptions. No SubscriptionUpdateEvent is
-// published here — room-worker already publishes to the user's subject and the
-// NATS supercluster routes it to the user's home site.
+// so this site only needs to sync subscriptions in a single round trip. No
+// SubscriptionUpdateEvent is published here — room-worker already publishes
+// to the user's subject and the NATS supercluster routes it to the user's
+// home site.
 func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEvent) error {
 	var memberEvt model.MemberRemoveEvent
 	if err := json.Unmarshal(evt.Payload, &memberEvt); err != nil {
 		return fmt.Errorf("unmarshal member removed payload: %w", err)
 	}
-
-	for _, account := range memberEvt.Accounts {
-		if err := h.store.DeleteSubscription(ctx, memberEvt.RoomID, account); err != nil {
-			return fmt.Errorf("delete subscription for %s: %w", account, err)
-		}
+	if len(memberEvt.Accounts) == 0 {
+		return nil
+	}
+	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
+		return fmt.Errorf("delete subscriptions for room %s: %w", memberEvt.RoomID, err)
 	}
 	return nil
 }
