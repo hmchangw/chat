@@ -137,13 +137,19 @@ func (s *MongoStore) ValidateIndividualRemove(ctx context.Context, roomID, targe
 		{{Key: "$addFields", Value: bson.M{
 			"hasIndividualMembership": bson.M{"$gt": bson.A{bson.M{"$size": "$individualMembership"}, 0}},
 			"hasOrgMembership":        bson.M{"$gt": bson.A{bson.M{"$size": "$orgMembership"}, 0}},
-			"memberCount": bson.M{"$ifNull": bson.A{
-				bson.M{"$arrayElemAt": bson.A{"$counts.members.count", 0}},
-				0,
+			"memberCount": bson.M{"$let": bson.M{
+				"vars": bson.M{"f": bson.M{"$arrayElemAt": bson.A{"$counts", 0}}},
+				"in": bson.M{"$ifNull": bson.A{
+					bson.M{"$arrayElemAt": bson.A{"$$f.members.count", 0}},
+					0,
+				}},
 			}},
-			"ownerCount": bson.M{"$ifNull": bson.A{
-				bson.M{"$arrayElemAt": bson.A{"$counts.owners.count", 0}},
-				0,
+			"ownerCount": bson.M{"$let": bson.M{
+				"vars": bson.M{"f": bson.M{"$arrayElemAt": bson.A{"$counts", 0}}},
+				"in": bson.M{"$ifNull": bson.A{
+					bson.M{"$arrayElemAt": bson.A{"$$f.owners.count", 0}},
+					0,
+				}},
 			}},
 			"requesterIsOwner": bson.M{"$in": bson.A{
 				model.RoleOwner,
