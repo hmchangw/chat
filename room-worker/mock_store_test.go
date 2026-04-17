@@ -55,6 +55,20 @@ func (mr *MockSubscriptionStoreMockRecorder) AddRole(ctx, account, roomID, role 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddRole", reflect.TypeOf((*MockSubscriptionStore)(nil).AddRole), ctx, account, roomID, role)
 }
 
+// BulkCreateRoomMembers mocks base method.
+func (m *MockSubscriptionStore) BulkCreateRoomMembers(ctx context.Context, members []*model.RoomMember) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BulkCreateRoomMembers", ctx, members)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// BulkCreateRoomMembers indicates an expected call of BulkCreateRoomMembers.
+func (mr *MockSubscriptionStoreMockRecorder) BulkCreateRoomMembers(ctx, members any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkCreateRoomMembers", reflect.TypeOf((*MockSubscriptionStore)(nil).BulkCreateRoomMembers), ctx, members)
+}
+
 // BulkCreateSubscriptions mocks base method.
 func (m *MockSubscriptionStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
 	m.ctrl.T.Helper()

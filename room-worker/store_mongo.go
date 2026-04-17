@@ -257,6 +257,23 @@ func (s *MongoStore) CreateRoomMember(ctx context.Context, member *model.RoomMem
 	return nil
 }
 
+func (s *MongoStore) BulkCreateRoomMembers(ctx context.Context, members []*model.RoomMember) error {
+	if len(members) == 0 {
+		return nil
+	}
+	docs := make([]interface{}, len(members))
+	for i, m := range members {
+		docs[i] = m
+	}
+	opts := options.InsertMany().SetOrdered(false)
+	if _, err := s.roomMembers.InsertMany(ctx, docs, opts); err != nil {
+		if !mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("bulk create %d room members: %w", len(members), err)
+		}
+	}
+	return nil
+}
+
 func (s *MongoStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
 	if len(accounts) == 0 {
 		return nil, nil

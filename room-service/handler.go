@@ -428,6 +428,9 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	req.Users = newAccounts
 	req.Orgs = allOrgs
 	req.RoomID = roomID
+	req.RequesterID = sub.User.ID
+	req.RequesterAccount = sub.User.Account
+	req.Timestamp = time.Now().UTC().UnixMilli()
 	normalized, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal add-members request: %w", err)

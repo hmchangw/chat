@@ -110,9 +110,9 @@ func (s *stubInboxStore) FindUsersByAccounts(_ context.Context, accounts []strin
 		accountSet[a] = struct{}{}
 	}
 	var result []model.User
-	for _, u := range s.users {
-		if _, ok := accountSet[u.Account]; ok {
-			result = append(result, u)
+	for i := range s.users {
+		if _, ok := accountSet[s.users[i].Account]; ok {
+			result = append(result, s.users[i])
 		}
 	}
 	return result, nil
@@ -221,32 +221,11 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 		t.Error("subscription ID should be non-empty (generated UUID)")
 	}
 
-	// Verify SubscriptionUpdateEvent was published
+	// No SubscriptionUpdateEvent is published here — room-worker already
+	// publishes via the NATS supercluster to the user's home site.
 	records := pub.getRecords()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 publish, got %d", len(records))
-	}
-
-	wantSubject := "chat.user.bob.event.subscription.update"
-	if records[0].subject != wantSubject {
-		t.Errorf("publish subject = %q, want %q", records[0].subject, wantSubject)
-	}
-
-	var updateEvt model.SubscriptionUpdateEvent
-	if err := json.Unmarshal(records[0].data, &updateEvt); err != nil {
-		t.Fatalf("unmarshal update event: %v", err)
-	}
-	if updateEvt.UserID != "uid-bob" {
-		t.Errorf("update event UserID = %q, want %q", updateEvt.UserID, "uid-bob")
-	}
-	if updateEvt.Action != "added" {
-		t.Errorf("update event Action = %q, want %q", updateEvt.Action, "added")
-	}
-	if updateEvt.Subscription.RoomID != "room-1" {
-		t.Errorf("update event subscription RoomID = %q, want %q", updateEvt.Subscription.RoomID, "room-1")
-	}
-	if updateEvt.Timestamp <= 0 {
-		t.Error("expected Timestamp > 0 on SubscriptionUpdateEvent")
+	if len(records) != 0 {
+		t.Fatalf("expected 0 publishes, got %d", len(records))
 	}
 }
 
@@ -531,14 +510,10 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 		t.Errorf("subscription User.Account = %q, want %q", sub.User.Account, "account-bob")
 	}
 
-	// Verify subject is routed by user account, not user ID
-	records := pub.getRecords()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 publish, got %d", len(records))
-	}
-	wantSubject := "chat.user.account-bob.event.subscription.update"
-	if records[0].subject != wantSubject {
-		t.Errorf("publish subject = %q, want %q", records[0].subject, wantSubject)
+	// No SubscriptionUpdateEvent is published here — room-worker already
+	// publishes via the NATS supercluster to the user's home site.
+	if len(pub.getRecords()) != 0 {
+		t.Errorf("expected 0 publishes, got %d", len(pub.getRecords()))
 	}
 }
 
@@ -617,10 +592,10 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 		}
 	}
 
-	// Verify 2 publish events
-	records := pub.getRecords()
-	if len(records) != 2 {
-		t.Fatalf("expected 2 publishes, got %d", len(records))
+	// No SubscriptionUpdateEvent is published here — room-worker already
+	// publishes via the NATS supercluster to the user's home site.
+	if len(pub.getRecords()) != 0 {
+		t.Fatalf("expected 0 publishes, got %d", len(pub.getRecords()))
 	}
 }
 

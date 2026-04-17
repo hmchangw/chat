@@ -21,11 +21,14 @@ type HistoryConfig struct {
 }
 
 type AddMembersRequest struct {
-	RoomID   string        `json:"roomId"   bson:"roomId"`
-	Users    []string      `json:"users"    bson:"users"`
-	Orgs     []string      `json:"orgs"     bson:"orgs"`
-	Channels []string      `json:"channels" bson:"channels"`
-	History  HistoryConfig `json:"history"  bson:"history"`
+	RoomID           string        `json:"roomId"           bson:"roomId"`
+	Users            []string      `json:"users"            bson:"users"`
+	Orgs             []string      `json:"orgs"             bson:"orgs"`
+	Channels         []string      `json:"channels"         bson:"channels"`
+	History          HistoryConfig `json:"history"          bson:"history"`
+	RequesterID      string        `json:"requesterId"      bson:"requesterId"`
+	RequesterAccount string        `json:"requesterAccount" bson:"requesterAccount"`
+	Timestamp        int64         `json:"timestamp"        bson:"timestamp"`
 }
 
 type RoomMember struct {

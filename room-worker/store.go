@@ -51,6 +51,7 @@ type SubscriptionStore interface {
 
 	// --- add-member flow ---
 	CreateRoomMember(ctx context.Context, member *model.RoomMember) error
+	BulkCreateRoomMembers(ctx context.Context, members []*model.RoomMember) error
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
 	HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error)
 	GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error)

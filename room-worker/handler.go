@@ -476,13 +476,25 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		return fmt.Errorf("find users by accounts: %w", err)
 	}
 	userMap := make(map[string]model.User, len(users))
-	for _, u := range users {
-		userMap[u.Account] = u
+	for i := range users {
+		userMap[users[i].Account] = users[i]
 	}
 
+	// acceptedAt is the stable request-acceptance time (set by room-service).
+	// It's used for every domain-level timestamp that must survive event replay
+	// (subscription.JoinedAt, historySharedSince, room_members.Ts, system
+	// message CreatedAt, MemberAddEvent.JoinedAt) so that reprocessing yields
+	// the same values. `now` below is the event-emission time and is only used
+	// for transient event metadata (Timestamp fields on outbound events).
+	acceptedAt := time.UnixMilli(req.Timestamp).UTC()
 	now := time.Now().UTC()
 
+	// Build subscriptions and collect the resolved accounts in a single pass
+	// so we don't re-iterate `subs` later to build an account set or an
+	// actualAccounts slice.
 	subs := make([]*model.Subscription, 0, len(accounts))
+	actualAccounts := make([]string, 0, len(accounts))
+	resolvedAccountSet := make(map[string]struct{}, len(accounts))
 	for _, account := range accounts {
 		user, ok := userMap[account]
 		if !ok {
@@ -495,13 +507,15 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			RoomID:   req.RoomID,
 			SiteID:   room.SiteID,
 			Roles:    []model.Role{model.RoleMember},
-			JoinedAt: now,
+			JoinedAt: acceptedAt,
 		}
 		if req.History.Mode == model.HistoryModeNone {
-			histTime := now
+			histTime := acceptedAt
 			sub.HistorySharedSince = &histTime
 		}
 		subs = append(subs, sub)
+		actualAccounts = append(actualAccounts, user.Account)
+		resolvedAccountSet[user.Account] = struct{}{}
 	}
 
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
@@ -516,52 +530,46 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 		writeIndividuals = hasOrgs
 	}
+
+	// Collect all room_member docs to write in a single bulk insert:
+	// new individuals + new orgs + (optional) backfill of existing subscribers.
+	roomMembers := make([]*model.RoomMember, 0, len(subs)+len(req.Orgs))
 	if writeIndividuals {
 		for _, sub := range subs {
-			member := &model.RoomMember{
+			roomMembers = append(roomMembers, &model.RoomMember{
 				ID:     uuid.New().String(),
 				RoomID: req.RoomID,
-				Ts:     now,
+				Ts:     acceptedAt,
 				Member: model.RoomMemberEntry{
 					ID:      sub.User.ID,
 					Type:    model.RoomMemberIndividual,
 					Account: sub.User.Account,
 				},
-			}
-			if err := h.store.CreateRoomMember(ctx, member); err != nil {
-				slog.Error("create room member failed", "error", err, "account", sub.User.Account)
-			}
+			})
 		}
 	}
 	for _, org := range req.Orgs {
-		member := &model.RoomMember{
+		roomMembers = append(roomMembers, &model.RoomMember{
 			ID:     uuid.New().String(),
 			RoomID: req.RoomID,
-			Ts:     now,
+			Ts:     acceptedAt,
 			Member: model.RoomMemberEntry{
 				ID:   org,
 				Type: model.RoomMemberOrg,
 			},
-		}
-		if err := h.store.CreateRoomMember(ctx, member); err != nil {
-			slog.Error("create org room member failed", "error", err, "org", org)
-		}
+		})
 	}
 
-	// Backfill existing subscribers into room_members
+	// Backfill existing subscribers into room_members only when orgs are
+	// joining for the first time and we're starting to track individuals.
 	if writeIndividuals && len(req.Orgs) > 0 {
 		existingAccounts, err := h.store.GetSubscriptionAccounts(ctx, req.RoomID)
 		if err != nil {
 			slog.Warn("get subscription accounts for backfill failed", "error", err)
 		} else {
-			newAccountSet := make(map[string]struct{}, len(subs))
-			for _, sub := range subs {
-				newAccountSet[sub.User.Account] = struct{}{}
-			}
-			// Collect accounts needing backfill
 			var backfillAccounts []string
 			for _, account := range existingAccounts {
-				if _, isNew := newAccountSet[account]; !isNew {
+				if _, isNew := resolvedAccountSet[account]; !isNew {
 					backfillAccounts = append(backfillAccounts, account)
 				}
 			}
@@ -570,23 +578,26 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 				if err != nil {
 					slog.Warn("find users for backfill failed", "error", err)
 				} else {
-					for _, user := range backfillUsers {
-						m := &model.RoomMember{
+					for i := range backfillUsers {
+						roomMembers = append(roomMembers, &model.RoomMember{
 							ID:     uuid.New().String(),
 							RoomID: req.RoomID,
-							Ts:     now,
+							Ts:     acceptedAt,
 							Member: model.RoomMemberEntry{
-								ID:      user.ID,
+								ID:      backfillUsers[i].ID,
 								Type:    model.RoomMemberIndividual,
-								Account: user.Account,
+								Account: backfillUsers[i].Account,
 							},
-						}
-						if err := h.store.CreateRoomMember(ctx, m); err != nil {
-							slog.Error("backfill room member failed", "error", err, "account", user.Account)
-						}
+						})
 					}
 				}
 			}
+		}
+	}
+
+	if len(roomMembers) > 0 {
+		if err := h.store.BulkCreateRoomMembers(ctx, roomMembers); err != nil {
+			slog.Error("bulk create room members failed", "error", err, "roomID", req.RoomID)
 		}
 	}
 
@@ -608,21 +619,17 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 	}
 
-	// 8. Publish MemberAddEvent
-	actualAccounts := make([]string, 0, len(subs))
-	for _, sub := range subs {
-		actualAccounts = append(actualAccounts, sub.User.Account)
-	}
+	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)
 	var historySharedSince int64
 	if req.History.Mode == model.HistoryModeNone {
-		historySharedSince = now.UnixMilli()
+		historySharedSince = req.Timestamp
 	}
 	memberAddEvt := model.MemberAddEvent{
 		Type:               "member_added",
 		RoomID:             req.RoomID,
 		Accounts:           actualAccounts,
 		SiteID:             room.SiteID,
-		JoinedAt:           now.UnixMilli(),
+		JoinedAt:           req.Timestamp,
 		HistorySharedSince: historySharedSince,
 		Timestamp:          now.UnixMilli(),
 	}
@@ -639,11 +646,13 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 	sysMsgData, _ := json.Marshal(membersAdded)
 	sysMsg := model.Message{
-		ID:         uuid.New().String(),
-		RoomID:     req.RoomID,
-		Type:       "members_added",
-		SysMsgData: sysMsgData,
-		CreatedAt:  now,
+		ID:          uuid.New().String(),
+		RoomID:      req.RoomID,
+		UserID:      req.RequesterID,
+		UserAccount: req.RequesterAccount,
+		Type:        "members_added",
+		SysMsgData:  sysMsgData,
+		CreatedAt:   acceptedAt,
 	}
 	msgEvt := model.MessageEvent{
 		Event:     model.EventCreated,
@@ -671,7 +680,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			RoomID:             req.RoomID,
 			Accounts:           accounts,
 			SiteID:             room.SiteID,
-			JoinedAt:           now.UnixMilli(),
+			JoinedAt:           req.Timestamp,
 			HistorySharedSince: historySharedSince,
 			Timestamp:          now.UnixMilli(),
 		}

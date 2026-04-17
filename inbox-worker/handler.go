@@ -10,8 +10,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsutil"
-	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
@@ -74,8 +72,8 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		return fmt.Errorf("find users by accounts: %w", err)
 	}
 	userMap := make(map[string]model.User, len(users))
-	for _, u := range users {
-		userMap[u.Account] = u
+	for i := range users {
+		userMap[users[i].Account] = users[i]
 	}
 
 	joinedAt := time.UnixMilli(event.JoinedAt).UTC()
@@ -110,22 +108,9 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		return fmt.Errorf("bulk create subscriptions: %w", err)
 	}
 
-	// 4. Publish SubscriptionUpdateEvent per new member
-	publishNow := time.Now().UTC().UnixMilli()
-	for _, sub := range subs {
-		updateEvt := model.SubscriptionUpdateEvent{
-			UserID: sub.User.ID, Subscription: *sub, Action: "added",
-			Timestamp: publishNow,
-		}
-		updateData, err := natsutil.MarshalResponse(updateEvt)
-		if err != nil {
-			return fmt.Errorf("marshal subscription update event: %w", err)
-		}
-		if err := h.pub.Publish(ctx, subject.SubscriptionUpdate(sub.User.Account), updateData); err != nil {
-			slog.Error("publish subscription update failed", "error", err, "account", sub.User.Account)
-		}
-	}
-
+	// No SubscriptionUpdateEvent is published here — room-worker already publishes
+	// to the user's subject and the NATS supercluster routes it to the user's
+	// home site.
 	return nil
 }
 

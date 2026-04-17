@@ -701,8 +701,12 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
-	// With orgs: CreateRoomMember called for individual "bob" + org "eng" + backfill "alice"
-	store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).Times(3).Return(nil)
+	// With orgs: BulkCreateRoomMembers called once with individual "bob" + org "eng" + backfill "alice"
+	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, members []*model.RoomMember) error {
+			assert.Len(t, members, 3)
+			return nil
+		})
 	// Backfill: GetSubscriptionAccounts returns existing "alice" + new "bob"
 	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), "r1").Return([]string{"alice", "bob"}, nil)
 	// Backfill: FindUsersByAccounts for existing accounts that aren't new
@@ -1056,10 +1060,11 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(true, nil)
-	store.EXPECT().CreateRoomMember(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, m *model.RoomMember) error {
-			assert.Equal(t, model.RoomMemberIndividual, m.Member.Type)
-			assert.Equal(t, "bob", m.Member.Account)
+	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, members []*model.RoomMember) error {
+			require.Len(t, members, 1)
+			assert.Equal(t, model.RoomMemberIndividual, members[0].Member.Type)
+			assert.Equal(t, "bob", members[0].Member.Account)
 			return nil
 		})
 
