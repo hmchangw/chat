@@ -8,13 +8,13 @@
 
 Remove-member covers removing a single user (self-leave or owner-removes-other) or all users belonging to an org from a chat room.
 
-`room-service` validates the request (authorization, last-owner guard, org-only self-leave guard) and publishes to the `ROOMS_{siteID}` JetStream stream. `room-worker` consumes from the stream and performs all DB deletes, event fan-out, system message publishing, and cross-site outbox publishing **synchronously before ack**. Any failure NAKs the message for JetStream retry.
+`room-service` validates the request (authorization, org-only guard, last-owner guard, last-member guard) in a single aggregation pipeline and publishes to the `ROOMS_{siteID}` JetStream stream. `room-worker` consumes from the stream and performs all DB deletes, event fan-out, system message publishing, and cross-site outbox publishing **synchronously before ack**. Any failure NAKs the message for JetStream retry. Self-leave and owner-removes-individual share the same validation and processing paths; authorization is the only difference.
 
 All operations are processed at the **room's site**. NATS gateways route cross-site requests to the correct cluster transparently. Room-service only handles requests for rooms belonging to its own site.
 
 ## Scope
 
-Covers the NATS request/reply endpoint for removing a member; authorization guards (owner-only removal, self-leave for individual members, last-owner protection, org-only self-leave rejection); dual-membership handling during org removal; subscription and room-member deletion; `userCount` maintenance; system message publishing (with distinct messages for self-leave vs owner-removes); per-user and room-scoped event fan-out; cross-site outbox publishing for subscription replication; and inbox-worker processing of remote `member_removed` events.
+Covers the NATS request/reply endpoint for removing a member; authorization guards (owner-only removal, self-leave for individual members, last-owner protection, last-member protection, org-only removal rejection); dual-membership handling including owner demotion; subscription and room-member deletion; `userCount` maintenance; system message publishing (with distinct messages for self-leave vs owner-removes); per-user and room-scoped event fan-out; cross-site outbox publishing for subscription replication; and inbox-worker processing of remote `member_removed` events.
 
 Out of scope: adding members, role updates, room creation/deletion, message history access control, typing indicators, presence, and read receipts.
 
@@ -90,11 +90,11 @@ A user has a single `subscription` per room regardless of how they were added. `
 
 A user can have **both** an individual and an org membership source simultaneously (e.g., explicitly added as individual, then their org is also added). They still have only one subscription. The `room_members` entries determine what happens on removal:
 
-| Membership sources | Self-leave | Owner removes individual | Org removal |
-|--------------------|------------|--------------------------|-------------|
-| Individual only | Allowed — subscription deleted, individual entry deleted | Subscription deleted, individual entry deleted | N/A |
-| Org only | Blocked — org members cannot leave individually | Subscription deleted, all entries deleted | Subscription deleted, org entry deleted |
-| Individual + Org | Allowed — individual entry deleted, **subscription stays** (user remains as org member) | Individual entry deleted, **subscription stays** (user remains as org member) | Org entry deleted, **subscription stays** (individual entry remains) |
+| Membership sources | Self-leave / Owner removes individual | Org removal |
+|--------------------|---------------------------------------|-------------|
+| Individual only | Subscription + individual entry deleted; system message published | N/A |
+| Org only | Blocked — org members cannot leave or be removed individually; the owner must remove the org | Subscription + org entry deleted |
+| Individual + Org | Individual entry deleted; if target held the `owner` role, demote (strip `owner`, keep other roles) because org members cannot be owners; **subscription kept** (user remains via org); no events, no system message | Org entry deleted; **subscription kept** (individual entry remains) |
 
 **Prerequisite:** The add-member flow must write `room_members` docs for both individual and org entries to support these semantics.
 
@@ -209,13 +209,24 @@ Federation is determined by `SiteID` comparison. `Account` is the stable plain i
 1. Parse requester `account` and `roomID` from the NATS subject.
 2. Unmarshal `RemoveMemberRequest` from the message payload. Bind `req.RoomID = roomID` and `req.Requester = account` (overwrite any client-supplied values).
 3. Exactly one of `Account` or `OrgID` must be set. If both or neither are provided, reply with an error.
-4. **Self-leave** (requester's account == `request.Account`):
-   - **Single pipeline:** `GetSubscriptionWithMembership(roomID, account)` — aggregates `subscriptions` with a `$lookup` into `room_members` to return the subscription, `hasIndividualMembership`, and `hasOrgMembership` in one query.
-   - **Org-only guard:** reject **only** if `hasOrgMembership` is true AND `hasIndividualMembership` is false. If the user has no org membership in this room, self-leave is always allowed regardless of whether a `room_members` doc exists for them (rooms without any orgs have no individual `room_members` docs).
-   - **Last-owner guard:** if the subscription's role is owner and `CountOwners(roomID) <= 1`, reject — the room must retain at least one owner.
-5. **Owner-removes-other** (requester's account != `request.Account`, or `OrgID` is set):
+4. **Individual removal** (`request.Account` is set — covers both self-leave and owner-removes-other):
+   - **Single aggregation pipeline:** `ValidateIndividualRemove(roomID, targetAccount, requesterAccount)` returns, in one round trip:
+     - Target's `Subscription` (including its `Roles`).
+     - `hasIndividualMembership` — target has an individual `room_members` doc in this room.
+     - `hasOrgMembership` — target's `SectID` has an org `room_members` doc in this room.
+     - `memberCount` — total subscriptions for this room.
+     - `ownerCount` — subscriptions for this room where `Roles` contains `owner`.
+     - `requesterIsOwner` — requester's subscription has the `owner` role (looked up via the same pipeline when `requesterAccount != targetAccount`; trivially derivable from the target when they match).
+   - **Authorization:**
+     - Self-leave (`targetAccount == requesterAccount`): always authorized to initiate.
+     - Owner-removes-other (`targetAccount != requesterAccount`): reject if `!requesterIsOwner`.
+   - **Common guards (applied after authorization, same for both flows):**
+     - **Org-only guard:** reject if `hasOrgMembership && !hasIndividualMembership` — users sourced only via an org cannot be removed individually; the org must be removed instead.
+     - **Last-owner guard:** reject if target has the `owner` role AND `ownerCount <= 1` — the room must retain at least one owner.
+     - **Last-member guard:** reject if `memberCount <= 1` — the room must retain at least one member.
+5. **Org removal** (`request.OrgID` is set):
    - Look up the requester's subscription.
-   - Requester must have the `owner` role. If not, reject with an authorization error.
+   - Reject if the requester does not have the `owner` role.
 6. On success, publish the validated request to `subject.RoomCanonical(siteID, "member.remove")` (captured by the `ROOMS_{siteID}` stream) and reply `{"status":"accepted"}`.
 
 ## Processing Order (room-worker)
@@ -224,15 +235,22 @@ All writes are **synchronous before ack**. Any failure NAKs the message for JetS
 
 ### Individual removal (request.Account is set)
 
-Used for both self-leave (`req.Requester == req.Account`) and owner-removes-other. Logic is identical except for the system message type.
+Self-leave (`req.Requester == req.Account`) and owner-removes-other share the same processing path. The only difference is the system message type and the event type field.
 
-1. **Single pipeline:** `GetUserWithOrgMembership(roomID, account)` — aggregates `users` with a `$lookup` into `room_members` (matching `rid=roomID`, `member.type="org"`, `member.id=user.SectID`) to return user data (`SiteID`, `EngName`, `ChineseName`, `SectID`) and a `hasOrgMembership` flag in one query.
-2. **If user has org membership (dual-membership):**
-   a. **Delete individual `room_members` doc** only. Subscription is preserved — the user remains in the room as an org member.
-   b. **Ack**. No subscription deletion, no userCount change, no events, no system message.
-3. **If user has no org membership:**
+1. **Single aggregation pipeline:** `GetUserWithMembership(roomID, account)` — aggregates `users` with:
+   - `$lookup` into `room_members` (match `rid=roomID`, `type="org"`, `id=user.SectID`) → `hasOrgMembership`.
+   - `$lookup` into `subscriptions` (match `roomId=roomID`, `u.account=user.Account`) → target's `Roles`.
+
+   Returns user data (`SiteID`, `EngName`, `ChineseName`, `SectID`), `hasOrgMembership`, and the subscription's `Roles`. One DB round trip.
+
+2. **If `hasOrgMembership` (dual-membership):**
+   a. If the subscription's `Roles` include `owner`, update the subscription to strip the `owner` role (retaining any other roles). Org members cannot be owners; the room-service last-owner guard has already ensured at least one owner remains. This is a no-op when the target is not an owner.
+   b. **Delete the individual `room_members` doc.** Subscription is preserved — the user remains in the room as an org member.
+   c. **Ack.** No subscription deletion, no userCount change, no leave/removed events, no system message.
+
+3. **If no org membership (individual-only, or no `room_members` doc at all):**
    a. **Delete subscription** by `(roomId, account)`.
-   b. **Delete individual `room_members` doc** (`deleteOne`).
+   b. **Delete individual `room_members` doc** (`deleteOne`, no-op when absent — e.g. rooms without any orgs have no individual `room_members` docs).
    c. **Decrement `userCount`** by the actual `DeletedCount` returned from subscription deletion (0 or 1).
    d. **Publish `SubscriptionUpdateEvent`** (action: `"removed"`) to `chat.user.{account}.event.subscription.update`.
    e. **Publish `MemberRemoveEvent`** to `chat.room.{roomID}.event.member`. `Type` = `"member_left"` if `req.Requester == req.Account`, otherwise `"member_removed"`.
@@ -240,7 +258,7 @@ Used for both self-leave (`req.Requester == req.Account`) and owner-removes-othe
       - Self-leave: type `"member_left"`, data `MemberLeft{User: SysMsgUser{Account, EngName, ChineseName}}`.
       - Owner removes: type `"member_removed"`, data `MemberRemoved{User: &SysMsgUser{target}, RemovedUsersCount: 1}`.
    g. **If `user.SiteID != room.SiteID`:** publish outbox event to `outbox.{room.SiteID}.to.{user.SiteID}.member_removed` with `MemberRemoveEvent` payload.
-   h. **Ack**.
+   h. **Ack.**
 
 ### Owner removes org (request.OrgID is set)
 
@@ -273,16 +291,15 @@ The following store methods are relevant to the remove-member flow. Aggregation 
 
 | Method | Service | Pipeline | Returns |
 |--------|---------|----------|---------|
-| `GetSubscriptionWithMembership(roomID, account)` | room-service | `subscriptions` → `$lookup room_members` (match `rid=roomID`, `type="individual"`, `account=account`) | Subscription + `hasIndividualMembership` flag |
-| `GetUserWithOrgMembership(roomID, account)` | room-worker | `users` → `$lookup room_members` (match `rid=roomID`, `type="org"`, `id=user.SectID`) | User data (`Account`, `SiteID`, `SectID`, `EngName`, `ChineseName`) + `hasOrgMembership` flag |
+| `ValidateIndividualRemove(roomID, targetAccount, requesterAccount)` | room-service | `subscriptions` (match `roomId=roomID`, `u.account=targetAccount`) → `$lookup room_members` for target's individual doc (by `account`) and for target's org doc (by user's `sectId` via `$lookup users`) → `$lookup subscriptions` for the room using a `$facet` stage that produces `memberCount` and `ownerCount` in a single pipeline → `$lookup subscriptions` for the requester (match `roomId`, `u.account=requesterAccount`, skipped when `requesterAccount == targetAccount`) | Target's `Subscription`, `hasIndividualMembership`, `hasOrgMembership`, `memberCount`, `ownerCount`, `requesterIsOwner` |
+| `GetUserWithMembership(roomID, account)` | room-worker | `users` (match `account`) → `$lookup room_members` (match `rid=roomID`, `type="org"`, `id=user.SectID`) → `$lookup subscriptions` (match `roomId=roomID`, `u.account=user.Account`) | User data (`Account`, `SiteID`, `SectID`, `EngName`, `ChineseName`), `hasOrgMembership`, and target's subscription `Roles` |
 | `GetOrgMembersWithIndividualStatus(roomID, orgID)` | room-worker | `users` (match `sectId=orgID`) → `$lookup room_members` (match `rid=roomID`, `type="individual"`, `account=user.Account`) | List of org members with `Account`, `SiteID`, `SectName`, `hasIndividualMembership` flag |
 
 ### Simple queries (read)
 
 | Method | Service | Purpose |
 |--------|---------|---------|
-| `GetSubscription(roomID, account)` | room-service | Look up requester's subscription for auth checks (owner-removes-other path) |
-| `CountOwners(roomID)` | room-service | Last-owner guard |
+| `GetSubscription(roomID, account)` | room-service | Look up requester's subscription for auth check (org-removal path only) |
 
 ### Write operations
 
@@ -294,12 +311,13 @@ Prefer bulk MongoDB operations (`deleteMany` with `$in`) over looping individual
 | `DeleteSubscriptionsByAccounts(roomID, accounts)` | room-worker | `deleteMany({roomId, "u.account": {$in: accounts}})` on `subscriptions` — single round trip for all org members |
 | `DeleteRoomMember(roomID, memberType, memberID)` | room-worker | `deleteOne({rid, "member.type": type, "member.id": id})` on `room_members` (room's site only) |
 | `DeleteRoomMembersByAccount(roomID, account)` | room-worker | `deleteMany({rid, "member.account": account})` on `room_members` (room's site only) |
+| `RemoveSubscriptionRole(roomID, account, role)` | room-worker | `updateOne({roomId, "u.account": account}, {$pull: {roles: role}})` on `subscriptions` — used to demote a dual-membership owner after their individual source is removed |
 | `DecrementUserCount(roomID, count)` | room-worker | `updateOne({_id: roomID}, {$inc: {userCount: -count}})` on `rooms` |
 
 ## Callers
 
 - **Clients** — send NATS request/reply to room-service (routed via gateways to room's site)
-- **room-service** — validates the remove request (authorization, org-only guard, last-owner guard), publishes to `chat.room.canonical.{siteID}.member.remove` captured by `ROOMS_{siteID}` stream
+- **room-service** — validates the remove request (authorization, org-only guard, last-owner guard, last-member guard) via a single aggregation pipeline, then publishes to `chat.room.canonical.{siteID}.member.remove` captured by `ROOMS_{siteID}` stream
 - **room-worker** — consumes from `ROOMS_{siteID}`, performs all DB deletes and event fan-out synchronously before ack
 - **inbox-worker** — processes inbound `member_removed` events from the INBOX stream; deletes subscriptions for listed accounts (`room_members` is not replicated)
 - **message-worker** — persists the system message (type + sys_msg_data) to Cassandra
@@ -313,8 +331,12 @@ Prefer bulk MongoDB operations (`deleteMany` with `$in`) over looping individual
 | Published subject = original request subject | Preserves requester account and roomID context so room-worker can reconstruct identity without embedding it redundantly in the payload |
 | Outbox from room's site to user's site | Room's site is the authority for membership; it pushes removal to each remote member's home site |
 | Last-owner guard | The room must always have at least one owner; prevents orphaned rooms |
-| Org-only self-leave guard | Users added exclusively through an org cannot leave individually; the org relationship is managed by an owner removing the org |
+| Last-member guard | The room must always have at least one member; a user cannot be the final removal |
+| Org-only removal guard (both self-leave and owner-removes) | Users sourced only via an org cannot be removed individually; the org must be removed as a whole — applies uniformly regardless of who initiates |
 | Dual-membership preserves subscription | A user present as both individual and org member retains their subscription when either source is removed — the remaining source keeps them in the room. Only when all membership sources are gone is the subscription deleted |
+| Dual-membership owner demotion | When a dual-member's individual source is removed, any `owner` role is stripped from their subscription: org members cannot be owners. The last-owner guard in room-service prevents demoting the sole owner |
+| Unified self-leave / owner-removes-individual | Both flows share one validation pipeline and one worker processing path; only the authorization check (skipped for self-leave) and the system message type differ |
+| Single aggregation for validation (`ValidateIndividualRemove`) | Room-service does all reads for individual removal in one DB round trip — target subscription, both membership flags, member count, owner count, and requester authorization — eliminating the previous two separate calls (`GetSubscriptionWithMembership` + `CountOwners`) |
 | Distinct system message types (`member_left` vs `member_removed`) | Clients render different text for self-leave vs owner-initiated removal; org removal uses `orgId` instead of individual account in the message |
 | `RemoveMemberRequest` both fields omitempty | Clean payload — client sends exactly one of `account` or `orgId` |
 | System messages via MESSAGES_CANONICAL | Reuses existing message-worker + broadcast-worker pipeline; no new delivery mechanism needed |
