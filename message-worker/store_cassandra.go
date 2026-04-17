@@ -27,7 +27,14 @@ type cassParticipant struct {
 }
 
 // MarshalUDT implements gocql.UDTMarshaler for cassParticipant.
-func (p *cassParticipant) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+// Value receiver is required: gocql's top-level Marshal dereferences pointer
+// values before dispatching to marshalUDT, so the UDTMarshaler interface check
+// happens on the value type. A pointer-receiver method would not be in the
+// value type's method set and would silently fall through to gocql's
+// reflection-based fallback, writing all fields as null.
+//
+//nolint:gocritic // value receiver is required for gocql's UDTMarshaler dispatch; see above
+func (p cassParticipant) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
 	switch name {
 	case "id":
 		return gocql.Marshal(info, p.ID)
