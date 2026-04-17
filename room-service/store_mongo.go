@@ -67,10 +67,12 @@ func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscrip
 	return err
 }
 
-func (s *MongoStore) ValidateIndividualRemove(ctx context.Context, roomID, targetAccount, requesterAccount string) (*IndividualRemoveValidation, error) {
+// GetSubscriptionWithMembership loads the target subscription joined with their
+// individual and org membership sources. Used by the remove-member validation
+// flow to decide whether a user can leave or be removed individually.
+func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error) {
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"roomId": roomID, "u.account": targetAccount}}},
-		// Target's individual room_members doc.
+		{{Key: "$match", Value: bson.M{"roomId": roomID, "u.account": account}}},
 		{{Key: "$lookup", Value: bson.M{
 			"from": "room_members",
 			"let":  bson.M{"acct": "$u.account"},
@@ -84,7 +86,6 @@ func (s *MongoStore) ValidateIndividualRemove(ctx context.Context, roomID, targe
 			},
 			"as": "individualMembership",
 		}}},
-		// Target's user doc (for sectId).
 		{{Key: "$lookup", Value: bson.M{
 			"from": "users",
 			"let":  bson.M{"acct": "$u.account"},
@@ -95,7 +96,6 @@ func (s *MongoStore) ValidateIndividualRemove(ctx context.Context, roomID, targe
 			},
 			"as": "userDoc",
 		}}},
-		// Target's org room_members doc, joined via sectId.
 		{{Key: "$lookup", Value: bson.M{
 			"from": "room_members",
 			"let":  bson.M{"sectId": bson.M{"$arrayElemAt": bson.A{"$userDoc.sectId", 0}}},
@@ -109,68 +109,16 @@ func (s *MongoStore) ValidateIndividualRemove(ctx context.Context, roomID, targe
 			},
 			"as": "orgMembership",
 		}}},
-		// Member and owner counts for this room via a single $lookup + $facet.
-		{{Key: "$lookup", Value: bson.M{
-			"from": "subscriptions",
-			"pipeline": bson.A{
-				bson.M{"$match": bson.M{"roomId": roomID}},
-				bson.M{"$facet": bson.M{
-					"members": bson.A{bson.M{"$count": "count"}},
-					"owners": bson.A{
-						bson.M{"$match": bson.M{"roles": model.RoleOwner}},
-						bson.M{"$count": "count"},
-					},
-				}},
-			},
-			"as": "counts",
-		}}},
-		// Requester's subscription (only needed when requester != target).
-		{{Key: "$lookup", Value: bson.M{
-			"from": "subscriptions",
-			"pipeline": bson.A{
-				bson.M{"$match": bson.M{"roomId": roomID, "u.account": requesterAccount}},
-				bson.M{"$limit": 1},
-				bson.M{"$project": bson.M{"roles": 1}},
-			},
-			"as": "requesterSub",
-		}}},
 		{{Key: "$addFields", Value: bson.M{
 			"hasIndividualMembership": bson.M{"$gt": bson.A{bson.M{"$size": "$individualMembership"}, 0}},
 			"hasOrgMembership":        bson.M{"$gt": bson.A{bson.M{"$size": "$orgMembership"}, 0}},
-			"memberCount": bson.M{"$let": bson.M{
-				"vars": bson.M{"f": bson.M{"$arrayElemAt": bson.A{"$counts", 0}}},
-				"in": bson.M{"$ifNull": bson.A{
-					bson.M{"$arrayElemAt": bson.A{"$$f.members.count", 0}},
-					0,
-				}},
-			}},
-			"ownerCount": bson.M{"$let": bson.M{
-				"vars": bson.M{"f": bson.M{"$arrayElemAt": bson.A{"$counts", 0}}},
-				"in": bson.M{"$ifNull": bson.A{
-					bson.M{"$arrayElemAt": bson.A{"$$f.owners.count", 0}},
-					0,
-				}},
-			}},
-			"requesterIsOwner": bson.M{"$in": bson.A{
-				model.RoleOwner,
-				bson.M{"$ifNull": bson.A{
-					bson.M{"$arrayElemAt": bson.A{"$requesterSub.roles", 0}},
-					bson.A{},
-				}},
-			}},
 		}}},
-		{{Key: "$project", Value: bson.M{
-			"individualMembership": 0,
-			"orgMembership":        0,
-			"userDoc":              0,
-			"counts":               0,
-			"requesterSub":         0,
-		}}},
+		{{Key: "$project", Value: bson.M{"individualMembership": 0, "orgMembership": 0, "userDoc": 0}}},
 	}
 
 	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, fmt.Errorf("aggregate validate individual remove: %w", err)
+		return nil, fmt.Errorf("aggregate subscription with membership: %w", err)
 	}
 	defer cursor.Close(ctx)
 
@@ -178,28 +126,69 @@ func (s *MongoStore) ValidateIndividualRemove(ctx context.Context, roomID, targe
 		model.Subscription      `bson:",inline"`
 		HasIndividualMembership bool `bson:"hasIndividualMembership"`
 		HasOrgMembership        bool `bson:"hasOrgMembership"`
-		MemberCount             int  `bson:"memberCount"`
-		OwnerCount              int  `bson:"ownerCount"`
-		RequesterIsOwner        bool `bson:"requesterIsOwner"`
 	}
 	if !cursor.Next(ctx) {
 		if err := cursor.Err(); err != nil {
-			return nil, fmt.Errorf("iterate validate individual remove: %w", err)
+			return nil, fmt.Errorf("iterate subscription with membership: %w", err)
 		}
-		return nil, fmt.Errorf("subscription not found for account %q in room %q: %w", targetAccount, roomID, mongo.ErrNoDocuments)
+		return nil, fmt.Errorf("subscription not found for account %q in room %q: %w", account, roomID, mongo.ErrNoDocuments)
 	}
 	if err := cursor.Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode validate individual remove: %w", err)
+		return nil, fmt.Errorf("decode subscription with membership: %w", err)
 	}
 	sub := result.Subscription
-	return &IndividualRemoveValidation{
+	return &SubscriptionWithMembership{
 		Subscription:            &sub,
 		HasIndividualMembership: result.HasIndividualMembership,
 		HasOrgMembership:        result.HasOrgMembership,
-		MemberCount:             result.MemberCount,
-		OwnerCount:              result.OwnerCount,
-		RequesterIsOwner:        result.RequesterIsOwner,
 	}, nil
+}
+
+// CountMembersAndOwners returns the total and owner-role subscription counts
+// for a room in a single aggregation, driving the last-owner and last-member
+// guards in remove-member validation.
+func (s *MongoStore) CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
+		{{Key: "$facet", Value: bson.M{
+			"members": bson.A{bson.M{"$count": "count"}},
+			"owners": bson.A{
+				bson.M{"$match": bson.M{"roles": model.RoleOwner}},
+				bson.M{"$count": "count"},
+			},
+		}}},
+	}
+	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate room counts: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var result struct {
+		Members []struct {
+			Count int `bson:"count"`
+		} `bson:"members"`
+		Owners []struct {
+			Count int `bson:"count"`
+		} `bson:"owners"`
+	}
+	if !cursor.Next(ctx) {
+		if err := cursor.Err(); err != nil {
+			return nil, fmt.Errorf("iterate room counts: %w", err)
+		}
+		return &RoomCounts{}, nil
+	}
+	if err := cursor.Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode room counts: %w", err)
+	}
+	counts := &RoomCounts{}
+	if len(result.Members) > 0 {
+		counts.MemberCount = result.Members[0].Count
+	}
+	if len(result.Owners) > 0 {
+		counts.OwnerCount = result.Owners[0].Count
+	}
+	return counts, nil
 }
 
 func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {
