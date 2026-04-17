@@ -8,15 +8,21 @@ import (
 
 //go:generate mockgen -destination=mock_store_test.go -package=main . RoomStore
 
-// IndividualRemoveValidation is the result of the ValidateIndividualRemove aggregation
-// pipeline used by room-service to authorize and guard individual remove requests.
-type IndividualRemoveValidation struct {
+// SubscriptionWithMembership is the result of the GetSubscriptionWithMembership
+// aggregation — the target's subscription joined with both the individual and
+// org membership sources so the handler can decide whether the target is
+// removable individually.
+type SubscriptionWithMembership struct {
 	Subscription            *model.Subscription
 	HasIndividualMembership bool
 	HasOrgMembership        bool
-	MemberCount             int
-	OwnerCount              int
-	RequesterIsOwner        bool
+}
+
+// RoomCounts is the result of CountMembersAndOwners — member and owner counts
+// for a single room, computed in one aggregation.
+type RoomCounts struct {
+	MemberCount int
+	OwnerCount  int
 }
 
 type RoomStore interface {
@@ -25,6 +31,7 @@ type RoomStore interface {
 	ListRooms(ctx context.Context) ([]model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
-	ValidateIndividualRemove(ctx context.Context, roomID, targetAccount, requesterAccount string) (*IndividualRemoveValidation, error)
+	GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error)
+	CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error)
 	CountOwners(ctx context.Context, roomID string) (int, error)
 }

@@ -85,39 +85,24 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 }
 
-func TestMongoStore_ValidateIndividualRemove_Integration(t *testing.T) {
+func TestMongoStore_GetSubscriptionWithMembership_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
-	// Seed target + requester subscriptions and a bystander to produce memberCount=3.
-	_, err := db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{
-			ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleOwner},
-			JoinedAt: time.Now().UTC(),
-		},
-		model.Subscription{
-			ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
-			RoomID: "r1", Roles: []model.Role{model.RoleOwner, model.RoleMember},
-		},
-		model.Subscription{
-			ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"},
-			RoomID: "r1", Roles: []model.Role{model.RoleMember},
-		},
-	})
-	require.NoError(t, err)
+	sub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleOwner},
+		JoinedAt: time.Now().UTC(),
+	}
+	require.NoError(t, store.CreateSubscription(ctx, sub))
 
 	t.Run("no individual or org membership", func(t *testing.T) {
-		v, err := store.ValidateIndividualRemove(ctx, "r1", "alice", "alice")
+		result, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
 		require.NoError(t, err)
-		assert.Equal(t, "alice", v.Subscription.User.Account)
-		assert.False(t, v.HasIndividualMembership)
-		assert.False(t, v.HasOrgMembership)
-		assert.Equal(t, 3, v.MemberCount)
-		assert.Equal(t, 2, v.OwnerCount)
-		// Requester == target, target has owner role
-		assert.True(t, v.RequesterIsOwner)
+		assert.Equal(t, "alice", result.Subscription.User.Account)
+		assert.False(t, result.HasIndividualMembership)
+		assert.False(t, result.HasOrgMembership)
 	})
 
 	t.Run("with individual membership", func(t *testing.T) {
@@ -127,9 +112,9 @@ func TestMongoStore_ValidateIndividualRemove_Integration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		v, err := store.ValidateIndividualRemove(ctx, "r1", "alice", "alice")
+		result, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
 		require.NoError(t, err)
-		assert.True(t, v.HasIndividualMembership)
+		assert.True(t, result.HasIndividualMembership)
 	})
 
 	t.Run("with org membership", func(t *testing.T) {
@@ -144,24 +129,49 @@ func TestMongoStore_ValidateIndividualRemove_Integration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		v, err := store.ValidateIndividualRemove(ctx, "r1", "alice", "alice")
+		result, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
 		require.NoError(t, err)
-		assert.True(t, v.HasOrgMembership)
+		assert.True(t, result.HasOrgMembership)
 	})
 
-	t.Run("owner-removes-other: requesterIsOwner from separate subscription", func(t *testing.T) {
-		v, err := store.ValidateIndividualRemove(ctx, "r1", "carol", "bob")
+	t.Run("subscription not found", func(t *testing.T) {
+		_, err := store.GetSubscriptionWithMembership(ctx, "r1", "nonexistent")
+		require.Error(t, err)
+	})
+}
+
+func TestMongoStore_CountMembersAndOwners_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	_, err := db.Collection("subscriptions").InsertMany(ctx, []interface{}{
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner, model.RoleMember}},
+		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+		model.Subscription{ID: "s4", User: model.SubscriptionUser{ID: "u4", Account: "dave"}, RoomID: "r2", Roles: []model.Role{model.RoleOwner}},
+	})
+	require.NoError(t, err)
+
+	t.Run("counts members and owners", func(t *testing.T) {
+		counts, err := store.CountMembersAndOwners(ctx, "r1")
 		require.NoError(t, err)
-		assert.Equal(t, "carol", v.Subscription.User.Account)
-		assert.True(t, v.RequesterIsOwner, "bob is owner")
-		assert.Equal(t, 3, v.MemberCount)
-		assert.Equal(t, 2, v.OwnerCount)
+		assert.Equal(t, 3, counts.MemberCount)
+		assert.Equal(t, 2, counts.OwnerCount)
 	})
 
-	t.Run("non-owner requester", func(t *testing.T) {
-		v, err := store.ValidateIndividualRemove(ctx, "r1", "bob", "carol")
+	t.Run("only owner", func(t *testing.T) {
+		counts, err := store.CountMembersAndOwners(ctx, "r2")
 		require.NoError(t, err)
-		assert.False(t, v.RequesterIsOwner, "carol is not owner")
+		assert.Equal(t, 1, counts.MemberCount)
+		assert.Equal(t, 1, counts.OwnerCount)
+	})
+
+	t.Run("empty room returns zeros", func(t *testing.T) {
+		counts, err := store.CountMembersAndOwners(ctx, "nonexistent")
+		require.NoError(t, err)
+		assert.Equal(t, 0, counts.MemberCount)
+		assert.Equal(t, 0, counts.OwnerCount)
 	})
 }
 

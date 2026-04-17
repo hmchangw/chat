@@ -171,25 +171,35 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	if req.Account != "" {
-		// Individual removal (self-leave or owner-removes-other): one aggregation
-		// returns target's subscription, membership flags, member/owner counts,
-		// and requester's owner status. Applies the same guards to both flows.
-		v, err := h.store.ValidateIndividualRemove(ctx, roomID, req.Account, requesterAccount)
+		// Individual removal (self-leave or owner-removes-other). Validation runs
+		// cheapest-first: target membership → requester role (owner-removes only)
+		// → room counts. Each step short-circuits so we never run the more
+		// expensive count aggregation for requests that would fail early anyway.
+		target, err := h.store.GetSubscriptionWithMembership(ctx, roomID, req.Account)
 		if err != nil {
-			return nil, fmt.Errorf("validate individual remove: %w", err)
+			return nil, fmt.Errorf("get target subscription: %w", err)
 		}
-		isSelfLeave := req.Account == requesterAccount
-		if !isSelfLeave && !v.RequesterIsOwner {
-			return nil, fmt.Errorf("only owners can remove members")
-		}
-		if v.HasOrgMembership && !v.HasIndividualMembership {
+		if target.HasOrgMembership && !target.HasIndividualMembership {
 			return nil, fmt.Errorf("org members cannot leave individually")
 		}
-		if hasRole(v.Subscription.Roles, model.RoleOwner) && v.OwnerCount <= 1 {
-			return nil, fmt.Errorf("last owner cannot leave the room")
+		if req.Account != requesterAccount {
+			requesterSub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
+			if err != nil {
+				return nil, fmt.Errorf("get requester subscription: %w", err)
+			}
+			if !hasRole(requesterSub.Roles, model.RoleOwner) {
+				return nil, fmt.Errorf("only owners can remove members")
+			}
 		}
-		if v.MemberCount <= 1 {
+		counts, err := h.store.CountMembersAndOwners(ctx, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("count members: %w", err)
+		}
+		if counts.MemberCount <= 1 {
 			return nil, fmt.Errorf("cannot remove the last member of the room")
+		}
+		if hasRole(target.Subscription.Roles, model.RoleOwner) && counts.OwnerCount <= 1 {
+			return nil, fmt.Errorf("last owner cannot leave the room")
 		}
 	} else {
 		// Owner-removes-org path: only the requester's owner role matters; the org
