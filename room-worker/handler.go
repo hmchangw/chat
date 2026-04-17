@@ -34,7 +34,7 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	case strings.HasSuffix(subj, ".member.role-update"):
 		err = h.processRoleUpdate(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".member.remove"):
-		err = h.processRemoveMember(ctx, subj, msg.Data())
+		err = h.processRemoveMember(ctx, msg.Data())
 	default:
 		slog.Warn("unknown member operation", "subject", subj)
 	}
@@ -195,24 +195,20 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 	return nil
 }
 
-func (h *Handler) processRemoveMember(ctx context.Context, subj string, data []byte) error {
+func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 	var req model.RemoveMemberRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return fmt.Errorf("unmarshal RemoveMemberRequest: %w", err)
 	}
 
 	if req.OrgID != "" {
-		return h.processRemoveOrg(ctx, subj, &req)
+		return h.processRemoveOrg(ctx, &req)
 	}
-	return h.processRemoveIndividual(ctx, subj, &req)
+	return h.processRemoveIndividual(ctx, &req)
 }
 
-func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req *model.RemoveMemberRequest) error {
-	requester, _, ok := subject.ParseUserRoomSubject(subj)
-	if !ok {
-		return fmt.Errorf("invalid subject for remove member: %s", subj)
-	}
-	isSelfLeave := requester == req.Account
+func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest) error {
+	isSelfLeave := req.Requester == req.Account
 
 	user, err := h.store.GetUserWithOrgMembership(ctx, req.RoomID, req.Account)
 	if err != nil {
@@ -227,20 +223,17 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req 
 		return nil
 	}
 
-	// Individual-only: full removal
+	// Individual-only: full removal. Self-leave and owner-removes both only need
+	// to delete the individual room_members entry — the dual-membership branch
+	// above already returned if an org entry exists, so there is no other entry
+	// to clean up here.
 	deleted, err := h.store.DeleteSubscription(ctx, req.RoomID, req.Account)
 	if err != nil {
 		return fmt.Errorf("delete subscription: %w", err)
 	}
 
-	if isSelfLeave {
-		if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, req.Account); err != nil {
-			return fmt.Errorf("delete room member (individual): %w", err)
-		}
-	} else {
-		if err := h.store.DeleteRoomMembersByAccount(ctx, req.RoomID, req.Account); err != nil {
-			return fmt.Errorf("delete room members by account: %w", err)
-		}
+	if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, req.Account); err != nil {
+		return fmt.Errorf("delete room member (individual): %w", err)
 	}
 
 	if deleted > 0 {
@@ -330,7 +323,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, subj string, req 
 	return nil
 }
 
-func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.RemoveMemberRequest) error {
+func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest) error {
 	members, err := h.store.GetOrgMembersWithIndividualStatus(ctx, req.RoomID, req.OrgID)
 	if err != nil {
 		return fmt.Errorf("get org members with individual status: %w", err)
@@ -343,13 +336,13 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 		}
 	}
 
+	accounts := make([]string, len(toRemove))
+	for i, m := range toRemove {
+		accounts[i] = m.Account
+	}
+
 	var deletedCount int64
-	if len(toRemove) > 0 {
-		accounts := make([]string, len(toRemove))
-		for i, m := range toRemove {
-			accounts[i] = m.Account
-		}
-		var err error
+	if len(accounts) > 0 {
 		deletedCount, err = h.store.DeleteSubscriptionsByAccounts(ctx, req.RoomID, accounts)
 		if err != nil {
 			return fmt.Errorf("delete subscriptions by accounts: %w", err)
@@ -389,11 +382,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, _ string, req *model.Rem
 	}
 
 	// Member change event with all removed accounts
-	if len(toRemove) > 0 {
-		accounts := make([]string, len(toRemove))
-		for i, m := range toRemove {
-			accounts[i] = m.Account
-		}
+	if len(accounts) > 0 {
 		memberEvt := model.MemberRemoveEvent{
 			Type:      "member_removed",
 			RoomID:    req.RoomID,

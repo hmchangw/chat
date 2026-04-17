@@ -41,6 +41,5 @@ type SubscriptionStore interface {
 	DeleteSubscription(ctx context.Context, roomID, account string) (int64, error)
 	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) (int64, error)
 	DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error
-	DeleteRoomMembersByAccount(ctx context.Context, roomID, account string) error
 	DecrementUserCount(ctx context.Context, roomID string, count int) error
 }

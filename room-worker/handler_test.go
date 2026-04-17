@@ -403,11 +403,11 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Account: account}
+	// Self-leave: Requester == Account
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
 	data, _ := json.Marshal(req)
-	subj := subject.MemberRemove(account, roomID, siteID)
 
-	err := h.processRemoveMember(context.Background(), subj, data)
+	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
 	// Expect: subscription update + member change event + system message = 3 publishes
@@ -468,11 +468,10 @@ func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
 	data, _ := json.Marshal(req)
-	subj := subject.MemberRemove(account, roomID, siteID)
 
-	err := h.processRemoveMember(context.Background(), subj, data)
+	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
 	assert.Empty(t, published, "expected no publishes for dual-membership self-leave")
@@ -506,9 +505,10 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	store.EXPECT().
 		DeleteSubscription(gomock.Any(), roomID, account).
 		Return(int64(1), nil)
-	// Owner removes: DeleteRoomMembersByAccount (all entries)
+	// Owner-removes uses the same single-entry delete as self-leave since the
+	// dual-membership branch is the only case that needs separate handling.
 	store.EXPECT().
-		DeleteRoomMembersByAccount(gomock.Any(), roomID, account).
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
 		Return(nil)
 	store.EXPECT().
 		DecrementUserCount(gomock.Any(), roomID, 1).
@@ -520,12 +520,11 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Account: account}
+	// requester != account means this is owner-removes-other
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, Account: account}
 	data, _ := json.Marshal(req)
-	// requester != account: different account in subject
-	subj := subject.MemberRemove(requester, roomID, siteID)
 
-	err := h.processRemoveMember(context.Background(), subj, data)
+	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
 	assert.Len(t, published, 3, "expected 3 publishes: sub update, member event, sys msg")
@@ -578,11 +577,10 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, OrgID: orgID}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID}
 	data, _ := json.Marshal(req)
-	subj := subject.MemberRemove(requester, roomID, siteID)
 
-	err := h.processRemoveMember(context.Background(), subj, data)
+	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
 	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 sys msg = 4 publishes
@@ -638,11 +636,10 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
 	data, _ := json.Marshal(req)
-	subj := subject.MemberRemove(account, roomID, localSite)
 
-	err := h.processRemoveMember(context.Background(), subj, data)
+	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
 	// Expect: sub update + member event + sys msg + outbox = 4 publishes

@@ -97,11 +97,12 @@ func TestMongoStore_GetSubscriptionWithMembership_Integration(t *testing.T) {
 	}
 	require.NoError(t, store.CreateSubscription(ctx, sub))
 
-	t.Run("no individual membership", func(t *testing.T) {
-		result, hasIndividual, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
+	t.Run("no individual or org membership", func(t *testing.T) {
+		result, hasIndividual, hasOrg, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
 		require.NoError(t, err)
 		assert.Equal(t, "alice", result.User.Account)
 		assert.False(t, hasIndividual)
+		assert.False(t, hasOrg)
 	})
 
 	t.Run("with individual membership", func(t *testing.T) {
@@ -111,10 +112,29 @@ func TestMongoStore_GetSubscriptionWithMembership_Integration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		result, hasIndividual, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
+		result, hasIndividual, _, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
 		require.NoError(t, err)
 		assert.Equal(t, "alice", result.User.Account)
 		assert.True(t, hasIndividual)
+	})
+
+	t.Run("with org membership", func(t *testing.T) {
+		// Seed user so the aggregation can look up sectId
+		_, err := db.Collection("users").InsertOne(ctx, model.User{
+			ID: "u1", Account: "alice", SiteID: "site-a", SectID: "eng-org",
+		})
+		require.NoError(t, err)
+
+		// Seed an org room_members doc matching the user's sectId
+		_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+			ID: "rm-org", RoomID: "r1", Ts: time.Now().UTC(),
+			Member: model.RoomMemberEntry{ID: "eng-org", Type: model.RoomMemberOrg},
+		})
+		require.NoError(t, err)
+
+		_, _, hasOrg, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
+		require.NoError(t, err)
+		assert.True(t, hasOrg)
 	})
 }
 

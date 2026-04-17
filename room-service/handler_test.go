@@ -489,8 +489,9 @@ func TestHandler_RemoveMember_SelfLeave_Success(t *testing.T) {
 		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
 		HistorySharedSince: &hss, JoinedAt: hss,
 	}
+	// Individual-only: has individual membership, no org membership
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
-		Return(sub, true, nil)
+		Return(sub, true, false, nil)
 
 	var publishedSubj string
 	var publishedData []byte
@@ -505,11 +506,16 @@ func TestHandler_RemoveMember_SelfLeave_Success(t *testing.T) {
 	resp, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	assert.Equal(t, reqSubj, publishedSubj)
+	assert.Equal(t, subject.RoomCanonical("site-a", "member.remove"), publishedSubj)
 	var status map[string]string
 	require.NoError(t, json.Unmarshal(resp, &status))
 	assert.Equal(t, "accepted", status["status"])
 	require.NotNil(t, publishedData)
+
+	// Verify the published payload carries the Requester set from the subject
+	var published model.RemoveMemberRequest
+	require.NoError(t, json.Unmarshal(publishedData, &published))
+	assert.Equal(t, "alice", published.Requester)
 }
 
 func TestHandler_RemoveMember_SelfLeave_OrgOnly_Rejected(t *testing.T) {
@@ -519,14 +525,40 @@ func TestHandler_RemoveMember_SelfLeave_OrgOnly_Rejected(t *testing.T) {
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
+	// Org-only: has org membership but no individual membership -> reject
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
-		Return(sub, false, nil)
+		Return(sub, false, true, nil)
 	handler := NewHandler(store, "site-a", 1000, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "org members cannot leave individually")
+}
+
+func TestHandler_RemoveMember_SelfLeave_NoOrgs_Allowed(t *testing.T) {
+	// When the room has no orgs at all, individual/org flags may both be false
+	// (e.g., the user was added as owner during room creation without a
+	// `room_members` doc). Self-leave should still be allowed.
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	sub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", Roles: []model.Role{model.RoleMember},
+	}
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
+		Return(sub, false, false, nil)
+
+	var publishedData []byte
+	handler := NewHandler(store, "site-a", 1000, func(ctx context.Context, _ string, data []byte) error {
+		publishedData = data
+		return nil
+	})
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.NoError(t, err)
+	require.NotNil(t, publishedData)
 }
 
 func TestHandler_RemoveMember_SelfLeave_LastOwner_Rejected(t *testing.T) {
@@ -537,7 +569,7 @@ func TestHandler_RemoveMember_SelfLeave_LastOwner_Rejected(t *testing.T) {
 		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
 	}
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
-		Return(sub, true, nil)
+		Return(sub, true, false, nil)
 	store.EXPECT().CountOwners(gomock.Any(), "r1").Return(1, nil)
 	handler := NewHandler(store, "site-a", 1000, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")

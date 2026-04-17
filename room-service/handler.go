@@ -163,6 +163,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		return nil, fmt.Errorf("room ID mismatch")
 	}
 	req.RoomID = roomID
+	req.Requester = requesterAccount
 
 	// Exactly one of Account or OrgID must be set.
 	if (req.Account == "") == (req.OrgID == "") {
@@ -173,11 +174,12 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 
 	if isSelfLeave {
 		// Self-leave path: use GetSubscriptionWithMembership to detect org-only membership.
-		sub, hasIndividual, err := h.store.GetSubscriptionWithMembership(ctx, roomID, requesterAccount)
+		sub, hasIndividual, hasOrg, err := h.store.GetSubscriptionWithMembership(ctx, roomID, requesterAccount)
 		if err != nil {
 			return nil, fmt.Errorf("get subscription: %w", err)
 		}
-		if !hasIndividual {
+		// Reject only when the user is an org-only member (has org but no individual membership).
+		if hasOrg && !hasIndividual {
 			return nil, fmt.Errorf("org members cannot leave individually")
 		}
 		if hasRole(sub.Roles, model.RoleOwner) {
@@ -206,7 +208,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	if err != nil {
 		return nil, fmt.Errorf("marshal remove member request: %w", err)
 	}
-	if err := h.publishToStream(ctx, subj, data); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.remove"), data); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 

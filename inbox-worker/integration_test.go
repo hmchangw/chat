@@ -57,9 +57,8 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	store := &mongoInboxStore{
-		subCol:         db.Collection("subscriptions"),
-		roomCol:        db.Collection("rooms"),
-		roomMembersCol: db.Collection("room_members"),
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
@@ -95,9 +94,8 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	store := &mongoInboxStore{
-		subCol:         db.Collection("subscriptions"),
-		roomCol:        db.Collection("rooms"),
-		roomMembersCol: db.Collection("room_members"),
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
@@ -127,9 +125,8 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	store := &mongoInboxStore{
-		subCol:         db.Collection("subscriptions"),
-		roomCol:        db.Collection("rooms"),
-		roomMembersCol: db.Collection("room_members"),
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
@@ -182,9 +179,8 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := &mongoInboxStore{
-		subCol:         db.Collection("subscriptions"),
-		roomCol:        db.Collection("rooms"),
-		roomMembersCol: db.Collection("room_members"),
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
 	}
 	pub := &recordingPublisher{}
 	h := NewHandler(store, pub)
@@ -195,12 +191,6 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "bob"},
 		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
 		JoinedAt: time.Now().UTC(),
-	})
-	require.NoError(t, err)
-
-	_, err = store.roomMembersCol.InsertOne(ctx, model.RoomMember{
-		ID: "rm1", RoomID: "r1", Ts: time.Now().UTC(),
-		Member: model.RoomMemberEntry{ID: "bob", Type: model.RoomMemberIndividual, Account: "bob"},
 	})
 	require.NoError(t, err)
 
@@ -216,11 +206,11 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 
 	require.NoError(t, h.HandleEvent(ctx, data))
 
+	// Subscription deleted — room_members lives only on the room's site.
 	count, err := store.subCol.CountDocuments(ctx, bson.M{"u._id": "u1", "roomId": "r1"})
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 
-	rmCount, err := store.roomMembersCol.CountDocuments(ctx, bson.M{"rid": "r1", "member.account": "bob"})
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), rmCount)
+	// No publish — room-worker handles user notification via NATS supercluster.
+	assert.Empty(t, pub.subjects)
 }
