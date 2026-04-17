@@ -67,47 +67,40 @@ func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 	return data
 }
 
-func expectUserLookup(us *MockUserStore, accounts []string, users []model.User) {
-	us.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.InAnyOrder(accounts)).Return(users, nil)
-}
-
 func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 	msgTime := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
+	senderUser := model.User{ID: "u-sender", Account: "sender", EngName: "Sender Lin", ChineseName: "寄件者", SiteID: "site-a"}
 
 	tests := []struct {
 		name            string
 		content         string
 		wantMentionAll  bool
-		wantMentions    []string
-		wantSetMentions bool
+		wantMentions    []string // expected accounts in evt.Mentions (includes "all" if present)
+		wantSetMentions []string // accounts for SetSubscriptionMentions (nil = not called)
 	}{
 		{
-			name:            "no mentions",
-			content:         "hello group",
-			wantMentionAll:  false,
-			wantMentions:    nil,
-			wantSetMentions: false,
+			name:           "no mentions",
+			content:        "hello group",
+			wantMentionAll: false,
 		},
 		{
 			name:            "individual mentions",
 			content:         "hey @alice and @bob",
-			wantMentionAll:  false,
 			wantMentions:    []string{"alice", "bob"},
-			wantSetMentions: true,
+			wantSetMentions: []string{"alice", "bob"},
 		},
 		{
-			name:            "mention all case insensitive",
-			content:         "attention @all",
-			wantMentionAll:  true,
-			wantMentions:    nil,
-			wantSetMentions: false,
+			name:           "mention all case insensitive",
+			content:        "attention @all",
+			wantMentionAll: true,
+			wantMentions:   []string{"all"},
 		},
 		{
 			name:            "mention all and individual",
 			content:         "@All and @alice",
 			wantMentionAll:  true,
-			wantMentions:    []string{"alice"},
-			wantSetMentions: true,
+			wantMentions:    []string{"alice", "all"},
+			wantSetMentions: []string{"alice"},
 		},
 	}
 
@@ -121,21 +114,19 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 			store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
 			store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, tc.wantMentionAll).Return(nil)
 
-			if tc.wantSetMentions {
-				store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.InAnyOrder(tc.wantMentions)).Return(nil)
+			if tc.wantSetMentions != nil {
+				store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.InAnyOrder(tc.wantSetMentions)).Return(nil)
 			}
 
-			senderUser := model.User{ID: "u-sender", Account: "sender", EngName: "Sender Lin", ChineseName: "寄件者", SiteID: "site-a"}
+			// Mention lookup (inside Resolve)
 			switch tc.name {
-			case "no mentions":
-				expectUserLookup(us, []string{"sender"}, []model.User{senderUser})
 			case "individual mentions":
-				expectUserLookup(us, []string{"sender", "alice", "bob"}, append([]model.User{senderUser}, testUsers...))
-			case "mention all case insensitive":
-				expectUserLookup(us, []string{"sender"}, []model.User{senderUser})
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob"}).Return(testUsers, nil)
 			case "mention all and individual":
-				expectUserLookup(us, []string{"sender", "alice"}, []model.User{senderUser, testUsers[0]})
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil)
 			}
+			// Sender lookup
+			us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil)
 
 			h := NewHandler(store, us, pub)
 			err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", tc.content, msgTime))
@@ -169,11 +160,6 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 					mentionAccounts[i] = m.Account
 				}
 				assert.ElementsMatch(t, tc.wantMentions, mentionAccounts)
-				for _, m := range evt.Mentions {
-					assert.Empty(t, m.UserID, "mention participants should not have userID")
-					assert.NotEmpty(t, m.ChineseName)
-					assert.NotEmpty(t, m.EngName)
-				}
 			} else {
 				assert.Empty(t, evt.Mentions)
 			}
@@ -233,12 +219,12 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 				store.EXPECT().SetSubscriptionMentions(gomock.Any(), "dm-1", gomock.InAnyOrder(tc.mentionedUsers)).Return(nil)
 			}
 
-			switch tc.name {
-			case "no mentions":
-				expectUserLookup(us, []string{"alice"}, testUsers[:1])
-			case "with mention":
-				expectUserLookup(us, []string{"alice", "bob"}, testUsers)
+			// Mention lookup (inside Resolve)
+			if tc.wantSetMentions {
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), tc.mentionedUsers).Return([]model.User{testUsers[1]}, nil)
 			}
+			// Sender lookup
+			us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil)
 
 			h := NewHandler(store, us, pub)
 			err := h.HandleMessage(context.Background(), data)
@@ -322,6 +308,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		pub := &mockPublisher{}
 
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
+		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return(testUsers[:1], nil) // inside Resolve
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.Any()).Return(errors.New("db error"))
 
@@ -344,7 +331,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		}
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(unknownRoom, nil)
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
-		us.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, nil)
+		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil) // sender lookup
 
 		h := NewHandler(store, us, pub)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
@@ -360,7 +347,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 
 		store.EXPECT().GetRoom(gomock.Any(), "dm-1").Return(testDMRoom, nil)
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
-		us.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, nil)
+		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil) // sender lookup
 		store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(nil, errors.New("db error"))
 
 		h := NewHandler(store, us, pub)
@@ -378,16 +365,18 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		assert.Empty(t, pub.records)
 	})
 
-	t.Run("sender mentioned deduplicates lookup", func(t *testing.T) {
+	t.Run("sender mentioned resolves with user data", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		us := NewMockUserStore(ctrl)
 		pub := &mockPublisher{}
 
+		senderUser := model.User{ID: "u-sender", Account: "sender", EngName: "Sender Lin", ChineseName: "寄件者", SiteID: "site-a"}
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", []string{"sender"}).Return(nil)
-		expectUserLookup(us, []string{"sender"}, []model.User{{ID: "u-sender", Account: "sender", EngName: "Sender Lin", ChineseName: "寄件者", SiteID: "site-a"}})
+		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil) // mention lookup
+		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil) // sender lookup
 
 		h := NewHandler(store, us, pub)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hey @sender", msgTime))
@@ -398,9 +387,10 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		require.Len(t, evt.Mentions, 1)
 		assert.Equal(t, "sender", evt.Mentions[0].Account)
 		assert.Equal(t, "寄件者", evt.Mentions[0].ChineseName)
+		assert.Equal(t, "u-sender", evt.Mentions[0].UserID)
 	})
 
-	t.Run("user lookup fails fallback to account", func(t *testing.T) {
+	t.Run("sender lookup fails fallback to account", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		us := NewMockUserStore(ctrl)
@@ -408,7 +398,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 
 		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
 		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
-		us.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, errors.New("db error"))
+		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, errors.New("db error")) // sender lookup
 
 		h := NewHandler(store, us, pub)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
@@ -450,7 +440,7 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "dm-1").Return(testDMRoom, nil)
 	store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
 	store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
-	us.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(testUsers, nil)
+	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil) // sender lookup
 
 	h := NewHandler(store, us, pub)
 	evt := model.MessageEvent{
@@ -465,41 +455,6 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	err := h.HandleMessage(context.Background(), data)
 	require.NoError(t, err)
 	assert.Equal(t, 2, pub.callCount)
-}
-
-func TestBuildMentionParticipants(t *testing.T) {
-	users := map[string]model.User{
-		"alice": {ID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲"},
-	}
-
-	t.Run("empty accounts returns nil", func(t *testing.T) {
-		result := buildMentionParticipants(nil, users)
-		assert.Nil(t, result)
-	})
-
-	t.Run("user found uses user data", func(t *testing.T) {
-		result := buildMentionParticipants([]string{"alice"}, users)
-		require.Len(t, result, 1)
-		assert.Equal(t, "alice", result[0].Account)
-		assert.Equal(t, "愛麗絲", result[0].ChineseName)
-		assert.Equal(t, "Alice Wang", result[0].EngName)
-		assert.Empty(t, result[0].UserID)
-	})
-
-	t.Run("user not found falls back to account", func(t *testing.T) {
-		result := buildMentionParticipants([]string{"unknown"}, users)
-		require.Len(t, result, 1)
-		assert.Equal(t, "unknown", result[0].Account)
-		assert.Equal(t, "unknown", result[0].ChineseName)
-		assert.Equal(t, "unknown", result[0].EngName)
-	})
-
-	t.Run("mixed found and not found", func(t *testing.T) {
-		result := buildMentionParticipants([]string{"alice", "unknown"}, users)
-		require.Len(t, result, 2)
-		assert.Equal(t, "愛麗絲", result[0].ChineseName)
-		assert.Equal(t, "unknown", result[1].ChineseName)
-	})
 }
 
 func TestBuildClientMessage(t *testing.T) {
@@ -527,49 +482,4 @@ func TestBuildClientMessage(t *testing.T) {
 		assert.Equal(t, "alice", cm.Sender.ChineseName)
 		assert.Equal(t, "alice", cm.Sender.EngName)
 	})
-}
-
-func TestDetectMentionAll(t *testing.T) {
-	tests := []struct {
-		name    string
-		content string
-		want    bool
-	}{
-		{"@All uppercase", "attention @All everyone", true},
-		{"@all lowercase", "hey @all", true},
-		{"@HERE uppercase", "look @HERE please", true},
-		{"@here lowercase", "look @here please", true},
-		{"no mentions", "just a normal message", false},
-		{"partial match not detected", "email@all.com", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, detectMentionAll(tc.content))
-		})
-	}
-}
-
-func TestExtractMentionedAccounts(t *testing.T) {
-	tests := []struct {
-		name    string
-		content string
-		want    []string
-	}{
-		{"two mentions", "hey @Alice and @Bob", []string{"alice", "bob"}},
-		{"no mentions", "no mentions here", nil},
-		{"dedup case insensitive", "@alice @Alice", []string{"alice"}},
-		{"@all excluded", "hey @all and @alice", []string{"alice"}},
-		{"@here excluded", "@here @bob", []string{"bob"}},
-		{"mixed case", "hey @BOB", []string{"bob"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := extractMentionedAccounts(tc.content)
-			if tc.want == nil {
-				assert.Empty(t, got)
-			} else {
-				assert.ElementsMatch(t, tc.want, got)
-			}
-		})
-	}
 }
