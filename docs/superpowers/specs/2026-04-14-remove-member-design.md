@@ -30,7 +30,7 @@ The `{siteID}` in the subject is the room's site. NATS gateways route cross-site
 
 ### ROOMS Stream (room-service -> room-worker)
 
-Stream `ROOMS_{siteID}` captures validated member mutations. The published subject equals the original request subject, preserving requester account and roomID context for the worker. Consumer `room-worker` is durable with explicit ack.
+Stream `ROOMS_{siteID}` captures all canonical room operations. `room-service` publishes to `subject.RoomCanonical(siteID, "member.remove")` (= `chat.room.canonical.{siteID}.member.remove`). Consumer `room-worker` is durable with explicit ack. Since canonical subjects don't carry the requester account, `RemoveMemberRequest` includes a `Requester` field that `room-service` fills in before publishing.
 
 ### Events (room-worker -> clients/systems)
 
@@ -39,7 +39,7 @@ Stream `ROOMS_{siteID}` captures validated member mutations. The published subje
 | `chat.user.{account}.event.subscription.update` | `SubscriptionUpdateEvent` | Notify individual user their room list changed |
 | `chat.room.{roomID}.event.member` | `MemberRemoveEvent` | Notify all room subscribers of membership change |
 | `chat.msg.canonical.{siteID}.created` | `MessageEvent` | System message (`member_left` or `member_removed`) persisted via message-worker pipeline |
-| `outbox.{room.SiteID}.to.{user.SiteID}.member_removed` | `MemberRemoveEvent` | Remote site deletes subscription and `room_members` entries for the removed user(s) |
+| `outbox.{room.SiteID}.to.{user.SiteID}.member_removed` | `MemberRemoveEvent` | Remote site deletes subscriptions for the accounts listed in the event (already filtered at room's site) |
 
 ## Data Models
 
@@ -119,28 +119,28 @@ type User struct {
 
 ```go
 type RemoveMemberRequest struct {
-    RoomID  string `json:"roomId"             bson:"roomId"`
-    Account string `json:"account,omitempty"  bson:"account,omitempty"`
-    OrgID   string `json:"orgId,omitempty"    bson:"orgId,omitempty"`
+    RoomID    string `json:"roomId"              bson:"roomId"`
+    Requester string `json:"requester"           bson:"requester"`
+    Account   string `json:"account,omitempty"   bson:"account,omitempty"`
+    OrgID     string `json:"orgId,omitempty"     bson:"orgId,omitempty"`
 }
 ```
 
-Exactly one of `Account` or `OrgID` is set, never both. Both fields are `omitempty` for a clean payload.
+Exactly one of `Account` or `OrgID` is set, never both. `Requester` is the account of the user initiating the request (parsed from the NATS subject by `room-service`), so `room-worker` can distinguish self-leave from owner-initiated removal without re-parsing the subject.
 
 ### Event Payloads
 
 ```go
 type MemberRemoveEvent struct {
-    Type      string   `json:"type"               bson:"type"`      // "member-removed"
+    Type      string   `json:"type"               bson:"type"`      // "member_left" | "member_removed"
     RoomID    string   `json:"roomId"             bson:"roomId"`
     Accounts  []string `json:"accounts"           bson:"accounts"`
     SiteID    string   `json:"siteId"             bson:"siteId"`
-    OrgID     string   `json:"orgId,omitempty"    bson:"orgId,omitempty"`
     Timestamp int64    `json:"timestamp"          bson:"timestamp"`
 }
 ```
 
-`OrgID` is set when the removal was an org removal. This allows the inbox-worker to handle both subscription and `room_members` cleanup from a single outbox event — no need for separate events per collection.
+`Accounts` carries the accounts whose subscriptions were actually deleted (after dual-membership filtering on the room's site). The inbox-worker on the member's home site simply deletes these subscriptions — no further filtering or event publishing needed.
 
 ```go
 type SubscriptionUpdateEvent struct {
@@ -207,51 +207,39 @@ Federation is determined by `SiteID` comparison. `Account` is the stable plain i
 ## Validation Rules (room-service)
 
 1. Parse requester `account` and `roomID` from the NATS subject.
-2. Unmarshal `RemoveMemberRequest` from the message payload.
+2. Unmarshal `RemoveMemberRequest` from the message payload. Bind `req.RoomID = roomID` and `req.Requester = account` (overwrite any client-supplied values).
 3. Exactly one of `Account` or `OrgID` must be set. If both or neither are provided, reply with an error.
 4. **Self-leave** (requester's account == `request.Account`):
-   - **Single pipeline:** `GetSubscriptionWithMembership(roomID, account)` — aggregates `subscriptions` with a `$lookup` into `room_members` to return the subscription and an `hasIndividualMembership` flag in one query.
-   - **Org-only guard:** if `hasIndividualMembership` is false, reject — org members cannot leave individually; an owner must remove the org.
+   - **Single pipeline:** `GetSubscriptionWithMembership(roomID, account)` — aggregates `subscriptions` with a `$lookup` into `room_members` to return the subscription, `hasIndividualMembership`, and `hasOrgMembership` in one query.
+   - **Org-only guard:** reject **only** if `hasOrgMembership` is true AND `hasIndividualMembership` is false. If the user has no org membership in this room, self-leave is always allowed regardless of whether a `room_members` doc exists for them (rooms without any orgs have no individual `room_members` docs).
    - **Last-owner guard:** if the subscription's role is owner and `CountOwners(roomID) <= 1`, reject — the room must retain at least one owner.
 5. **Owner-removes-other** (requester's account != `request.Account`, or `OrgID` is set):
    - Look up the requester's subscription.
    - Requester must have the `owner` role. If not, reject with an authorization error.
-6. On success, publish the validated request to the `ROOMS_{siteID}` stream (subject = original request subject) and reply `{"status":"accepted"}`.
+6. On success, publish the validated request to `subject.RoomCanonical(siteID, "member.remove")` (captured by the `ROOMS_{siteID}` stream) and reply `{"status":"accepted"}`.
 
 ## Processing Order (room-worker)
 
 All writes are **synchronous before ack**. Any failure NAKs the message for JetStream retry. Unique indexes ensure idempotency on retries (duplicate key errors treated as no-ops, missing deletes treated as no-ops).
 
-### Self-leave (requester == request.Account)
+### Individual removal (request.Account is set)
+
+Used for both self-leave (`req.Requester == req.Account`) and owner-removes-other. Logic is identical except for the system message type.
 
 1. **Single pipeline:** `GetUserWithOrgMembership(roomID, account)` — aggregates `users` with a `$lookup` into `room_members` (matching `rid=roomID`, `member.type="org"`, `member.id=user.SectID`) to return user data (`SiteID`, `EngName`, `ChineseName`, `SectID`) and a `hasOrgMembership` flag in one query.
-2. **If user also has org membership (dual-membership):**
+2. **If user has org membership (dual-membership):**
    a. **Delete individual `room_members` doc** only. Subscription is preserved — the user remains in the room as an org member.
    b. **Ack**. No subscription deletion, no userCount change, no events, no system message.
-3. **If user has individual membership only:**
+3. **If user has no org membership:**
    a. **Delete subscription** by `(roomId, account)`.
-   b. **Delete individual `room_members` doc**.
-   c. **Decrement `userCount`** by 1.
+   b. **Delete individual `room_members` doc** (`deleteOne`).
+   c. **Decrement `userCount`** by the actual `DeletedCount` returned from subscription deletion (0 or 1).
    d. **Publish `SubscriptionUpdateEvent`** (action: `"removed"`) to `chat.user.{account}.event.subscription.update`.
-   e. **Publish `MemberRemoveEvent`** (type: `"member-removed"`) to `chat.room.{roomID}.event.member`.
-   f. **Publish system message** (type: `"member_left"`, data: `MemberLeft{User: SysMsgUser{Account, EngName, ChineseName}}`) to `chat.msg.canonical.{siteID}.created`.
-   g. **If `user.SiteID != room.SiteID`:** publish outbox event to `outbox.{room.SiteID}.to.{user.SiteID}.member_removed`.
-   h. **Ack**.
-
-### Owner removes individual (request.Account is set, requester != request.Account)
-
-1. **Single pipeline:** `GetUserWithOrgMembership(roomID, account)` — same pipeline as self-leave. Returns user data + `hasOrgMembership` flag in one query.
-2. **If user also has org membership (dual-membership):**
-   a. **Delete individual `room_members` doc** only. Subscription is preserved — the user remains in the room as an org member.
-   b. **Ack**. No subscription deletion, no userCount change, no events, no system message.
-3. **If user has individual membership only (or no org membership):**
-   a. **Delete subscription** by `(roomId, account)`.
-   b. **Delete all `room_members` docs** for this account.
-   c. **Decrement `userCount`** by 1.
-   d. **Publish `SubscriptionUpdateEvent`** (action: `"removed"`) to `chat.user.{account}.event.subscription.update`.
-   e. **Publish `MemberRemoveEvent`** (type: `"member-removed"`) to `chat.room.{roomID}.event.member`.
-   f. **Publish system message** (type: `"member_removed"`, data: `MemberRemoved{User: &SysMsgUser{target}, RemovedUsersCount: 1}`) to `chat.msg.canonical.{siteID}.created`.
-   g. **If `user.SiteID != room.SiteID`:** publish outbox event to `outbox.{room.SiteID}.to.{user.SiteID}.member_removed`.
+   e. **Publish `MemberRemoveEvent`** to `chat.room.{roomID}.event.member`. `Type` = `"member_left"` if `req.Requester == req.Account`, otherwise `"member_removed"`.
+   f. **Publish system message** to `chat.msg.canonical.{siteID}.created`:
+      - Self-leave: type `"member_left"`, data `MemberLeft{User: SysMsgUser{Account, EngName, ChineseName}}`.
+      - Owner removes: type `"member_removed"`, data `MemberRemoved{User: &SysMsgUser{target}, RemovedUsersCount: 1}`.
+   g. **If `user.SiteID != room.SiteID`:** publish outbox event to `outbox.{room.SiteID}.to.{user.SiteID}.member_removed` with `MemberRemoveEvent` payload.
    h. **Ack**.
 
 ### Owner removes org (request.OrgID is set)
@@ -264,24 +252,18 @@ All writes are **synchronous before ack**. Any failure NAKs the message for JetS
 6. **Publish `SubscriptionUpdateEvent`** (action: `"removed"`) per `toRemove` account.
 7. **Publish `MemberRemoveEvent`** (type: `"member-removed"`, accounts: `toRemove` only, `OrgID`: orgId) to `chat.room.{roomID}.event.member`.
 8. **Publish system message** (type: `"member_removed"`, data: `MemberRemoved{OrgID, SectName, RemovedUsersCount: len(toRemove)}`) to `chat.msg.canonical.{siteID}.created`.
-9. **Outbox grouped by destination site:** for each remote site, publish one `MemberRemoveEvent` (with `OrgID` set) to `outbox.{room.SiteID}.to.{destSiteID}.member_removed`. Inbox-worker uses `OrgID` to delete the org `room_members` entry and `Accounts` to delete subscriptions.
+9. **Outbox grouped by destination site:** for each remote site, publish one `MemberRemoveEvent` carrying only the accounts whose subscriptions were actually deleted to `outbox.{room.SiteID}.to.{destSiteID}.member_removed`.
 10. **Ack**.
 
 ## Inbox-Worker (Remote Site Processing)
 
-When a member is removed from a room on a remote site, the room's site publishes a `member_removed` outbox event to the member's home site. Inbox-worker processes both subscription and `room_members` cleanup from a single event, applying the same dual-membership guard as room-worker:
+`room_members` data lives only on the room's home site. Inbox-worker on other sites only needs to keep subscriptions in sync. The outbox event's `Accounts` list has already been filtered at the room's site (dual-membership users excluded), so the inbox-worker simply deletes the listed subscriptions:
 
-**Individual removal** (`OrgID` empty):
-1. Delete subscription for the account.
-2. Delete individual `room_members` entry by account.
-3. Publish `SubscriptionUpdateEvent` (action: `"removed"`).
+1. For each account in `memberEvt.Accounts`, call `DeleteSubscription(roomID, account)`.
 
-**Org removal** (`OrgID` set):
-1. Delete the org `room_members` entry (`type="org"`, `ID=orgID`).
-2. For each account in `Accounts`, check if they also have an individual `room_members` entry locally. If yes, skip — their subscription stays. If no, delete their subscription.
-3. Publish `SubscriptionUpdateEvent` (action: `"removed"`) only for accounts whose subscriptions were actually deleted.
+No dual-membership filtering, no `room_members` updates, and no `SubscriptionUpdateEvent` publishing — the room-worker on the room's site already publishes the subscription update events to the users' subjects, and the NATS supercluster routes them to the user's home site directly.
 
-This mirrors the room-worker's dual-membership logic: a user present as both individual and org member retains their subscription when the org is removed. It also ensures the remote site's `room_members` collection stays in sync — the UI can display org vs individual membership without cross-site queries.
+**Rationale:** centralizing `room_members` on the room's site avoids cross-site replication complexity. UIs that need to display org vs individual membership query the room's site directly (via a future RPC or request/reply).
 
 ## Store Interface (remove-member methods)
 
@@ -301,26 +283,25 @@ The following store methods are relevant to the remove-member flow. Aggregation 
 |--------|---------|---------|
 | `GetSubscription(roomID, account)` | room-service | Look up requester's subscription for auth checks (owner-removes-other path) |
 | `CountOwners(roomID)` | room-service | Last-owner guard |
-| `GetIndividualMemberAccounts(roomID, accounts)` | inbox-worker | Given a list of accounts, return the subset that have individual-type `room_members` entries (dual-membership guard for org removal) |
 
 ### Write operations
 
-Prefer bulk MongoDB operations (`deleteMany` with `$in`, `BulkWrite`) over looping individual calls. Each method below is a single DB round trip.
+Prefer bulk MongoDB operations (`deleteMany` with `$in`) over looping individual calls. Each method below is a single DB round trip.
 
 | Method | Service | Implementation |
 |--------|---------|----------------|
 | `DeleteSubscription(roomID, account)` | room-worker, inbox-worker | `deleteOne({roomId, "u.account": account})` on `subscriptions` |
-| `DeleteSubscriptionsByAccounts(roomID, accounts)` | room-worker, inbox-worker | `deleteMany({roomId, "u.account": {$in: accounts}})` on `subscriptions` — single round trip for all org members |
-| `DeleteRoomMember(roomID, memberType, memberID)` | room-worker, inbox-worker | `deleteOne({rid, "member.type": type, "member.id": id})` on `room_members` |
-| `DeleteRoomMembersByAccount(roomID, account)` | room-worker, inbox-worker | `deleteMany({rid, "member.account": account})` on `room_members` — removes all entries (individual + org) for this account in one call |
+| `DeleteSubscriptionsByAccounts(roomID, accounts)` | room-worker | `deleteMany({roomId, "u.account": {$in: accounts}})` on `subscriptions` — single round trip for all org members |
+| `DeleteRoomMember(roomID, memberType, memberID)` | room-worker | `deleteOne({rid, "member.type": type, "member.id": id})` on `room_members` (room's site only) |
+| `DeleteRoomMembersByAccount(roomID, account)` | room-worker | `deleteMany({rid, "member.account": account})` on `room_members` (room's site only) |
 | `DecrementUserCount(roomID, count)` | room-worker | `updateOne({_id: roomID}, {$inc: {userCount: -count}})` on `rooms` |
 
 ## Callers
 
 - **Clients** — send NATS request/reply to room-service (routed via gateways to room's site)
-- **room-service** — validates the remove request (authorization, org-only guard, last-owner guard), publishes to `ROOMS_{siteID}` stream
+- **room-service** — validates the remove request (authorization, org-only guard, last-owner guard), publishes to `chat.room.canonical.{siteID}.member.remove` captured by `ROOMS_{siteID}` stream
 - **room-worker** — consumes from `ROOMS_{siteID}`, performs all DB deletes and event fan-out synchronously before ack
-- **inbox-worker** — processes inbound `member_removed` events from the INBOX stream to delete subscriptions and `room_members` entries on the remote user's site
+- **inbox-worker** — processes inbound `member_removed` events from the INBOX stream; deletes subscriptions for listed accounts (`room_members` is not replicated)
 - **message-worker** — persists the system message (type + sys_msg_data) to Cassandra
 
 ## Design Decisions
