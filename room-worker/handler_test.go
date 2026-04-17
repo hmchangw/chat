@@ -391,7 +391,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		DeleteSubscription(gomock.Any(), roomID, account).
 		Return(int64(1), nil)
 	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 		Return(nil)
 	store.EXPECT().
 		DecrementUserCount(gomock.Any(), roomID, 1).
@@ -461,7 +461,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
 		GetUserWithMembership(gomock.Any(), roomID, account).
 		Return(userResult, nil)
 	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 		Return(nil)
 
 	var published []publishedMsg
@@ -511,7 +511,7 @@ func TestHandler_ProcessRemoveMember_DualMembership_OwnerDemoted(t *testing.T) {
 					GetUserWithMembership(gomock.Any(), roomID, account).
 					Return(userResult, nil),
 				store.EXPECT().
-					DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+					DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 					Return(nil),
 				store.EXPECT().
 					RemoveRole(gomock.Any(), account, roomID, model.RoleOwner).
@@ -565,7 +565,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	// Owner-removes uses the same single-entry delete as self-leave since the
 	// dual-membership branch is the only case that needs separate handling.
 	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u2").
 		Return(nil)
 	store.EXPECT().
 		DecrementUserCount(gomock.Any(), roomID, 1).
@@ -681,7 +681,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		DeleteSubscription(gomock.Any(), roomID, account).
 		Return(int64(1), nil)
 	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 		Return(nil)
 	store.EXPECT().
 		DecrementUserCount(gomock.Any(), roomID, 1).
@@ -708,4 +708,131 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		subjSet[p.subj] = true
 	}
 	assert.True(t, subjSet[outboxSubj], "expected outbox event published for remote user")
+}
+
+func TestHandler_ProcessRemoveMember_UnmarshalError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+
+	err := h.processRemoveMember(context.Background(), []byte("{not json"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unmarshal")
+}
+
+func TestHandler_ProcessRemoveIndividual_GetUserError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().
+		GetUserWithMembership(gomock.Any(), "r1", "alice").
+		Return(nil, fmt.Errorf("db down"))
+
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	data, _ := json.Marshal(req)
+
+	err := h.processRemoveMember(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get user with membership")
+}
+
+func TestHandler_ProcessRemoveIndividual_DeleteRoomMemberError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().
+		GetUserWithMembership(gomock.Any(), "r1", "alice").
+		Return(&UserWithMembership{
+			User:  model.User{ID: "u1", Account: "alice"},
+			Roles: []model.Role{model.RoleMember},
+		}, nil)
+	store.EXPECT().
+		DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u1").
+		Return(fmt.Errorf("write failed"))
+
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	data, _ := json.Marshal(req)
+
+	err := h.processRemoveMember(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete room member")
+}
+
+func TestHandler_ProcessRemoveIndividual_DualDemoteError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().
+		GetUserWithMembership(gomock.Any(), "r1", "alice").
+		Return(&UserWithMembership{
+			User:             model.User{ID: "u1", Account: "alice"},
+			HasOrgMembership: true,
+			Roles:            []model.Role{model.RoleOwner, model.RoleMember},
+		}, nil)
+	store.EXPECT().
+		DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u1").
+		Return(nil)
+	store.EXPECT().
+		RemoveRole(gomock.Any(), "alice", "r1", model.RoleOwner).
+		Return(fmt.Errorf("write failed"))
+
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	data, _ := json.Marshal(req)
+
+	err := h.processRemoveMember(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "demote dual-member owner")
+}
+
+func TestHandler_ProcessRemoveIndividual_DeleteSubscriptionError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().
+		GetUserWithMembership(gomock.Any(), "r1", "alice").
+		Return(&UserWithMembership{
+			User:  model.User{ID: "u1", Account: "alice"},
+			Roles: []model.Role{model.RoleMember},
+		}, nil)
+	store.EXPECT().
+		DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u1").
+		Return(nil)
+	store.EXPECT().
+		DeleteSubscription(gomock.Any(), "r1", "alice").
+		Return(int64(0), fmt.Errorf("write failed"))
+
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	data, _ := json.Marshal(req)
+
+	err := h.processRemoveMember(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete subscription")
+}
+
+func TestHandler_ProcessRemoveIndividual_DecrementUserCountError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().
+		GetUserWithMembership(gomock.Any(), "r1", "alice").
+		Return(&UserWithMembership{
+			User:  model.User{ID: "u1", Account: "alice"},
+			Roles: []model.Role{model.RoleMember},
+		}, nil)
+	store.EXPECT().
+		DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u1").
+		Return(nil)
+	store.EXPECT().
+		DeleteSubscription(gomock.Any(), "r1", "alice").
+		Return(int64(1), nil)
+	store.EXPECT().
+		DecrementUserCount(gomock.Any(), "r1", 1).
+		Return(fmt.Errorf("write failed"))
+
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	data, _ := json.Marshal(req)
+
+	err := h.processRemoveMember(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decrement user count")
 }

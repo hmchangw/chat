@@ -216,12 +216,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("get user with membership: %w", err)
 	}
 
-	// Deleting the individual room_members entry is shared by both branches
-	// below — dual-membership removes only the individual source, and the
-	// individual-only branch wants it gone along with the subscription.
-	// DeleteOne is a no-op when the doc is absent (rooms without any orgs
-	// have no individual room_members docs), so this is always safe to run.
-	if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, req.Account); err != nil {
+	// room_members.member.id stores the user's internal ID, not the account.
+	if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, user.ID); err != nil {
 		return fmt.Errorf("delete room member (individual): %w", err)
 	}
 

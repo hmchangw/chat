@@ -724,3 +724,115 @@ func TestHandler_RemoveMember_NeitherAccountNorOrgID_Rejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exactly one")
 }
+
+func TestHandler_RemoveMember_InvalidSubject(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	handler := NewHandler(store, "site-a", 1000, nil)
+	_, err := handler.handleRemoveMember(context.Background(), "bogus", []byte("{}"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid remove-member subject")
+}
+
+func TestHandler_RemoveMember_InvalidJSON(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, []byte("{not json"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid request")
+}
+
+func TestHandler_RemoveMember_RoomIDMismatch(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r2", Account: "alice"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "room ID mismatch")
+}
+
+func TestHandler_RemoveMember_GetTargetError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
+		Return(nil, fmt.Errorf("db down"))
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get target subscription")
+}
+
+func TestHandler_RemoveMember_OwnerRemoves_RequesterLookupError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	targetSub := &model.Subscription{
+		User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember},
+	}
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{Subscription: targetSub, HasIndividualMembership: true}, nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(nil, fmt.Errorf("db down"))
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get requester subscription")
+}
+
+func TestHandler_RemoveMember_CountsError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	sub := &model.Subscription{
+		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember},
+	}
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
+		Return(&SubscriptionWithMembership{Subscription: sub, HasIndividualMembership: true}, nil)
+	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
+		Return(nil, fmt.Errorf("db down"))
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "count members")
+}
+
+func TestHandler_RemoveMember_OrgPath_RequesterLookupError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(nil, fmt.Errorf("db down"))
+	handler := NewHandler(store, "site-a", 1000, nil)
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", OrgID: "eng-org"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get requester subscription")
+}
+
+func TestHandler_RemoveMember_PublishError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	sub := &model.Subscription{
+		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember},
+	}
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
+		Return(&SubscriptionWithMembership{Subscription: sub, HasIndividualMembership: true}, nil)
+	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
+		Return(&RoomCounts{MemberCount: 3, OwnerCount: 2}, nil)
+	handler := NewHandler(store, "site-a", 1000, func(_ context.Context, _ string, _ []byte) error {
+		return fmt.Errorf("nats down")
+	})
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "publish to stream")
+}
