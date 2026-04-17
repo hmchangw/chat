@@ -511,10 +511,10 @@ func TestHandler_ProcessRemoveMember_DualMembership_OwnerDemoted(t *testing.T) {
 					GetUserWithMembership(gomock.Any(), roomID, account).
 					Return(userResult, nil),
 				store.EXPECT().
-					RemoveRole(gomock.Any(), account, roomID, model.RoleOwner).
+					DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
 					Return(nil),
 				store.EXPECT().
-					DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, account).
+					RemoveRole(gomock.Any(), account, roomID, model.RoleOwner).
 					Return(nil),
 			)
 
