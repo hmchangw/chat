@@ -166,8 +166,8 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	req.Requester = requesterAccount
 
 	// Exactly one of Account or OrgID must be set.
-	if req.Account == "" && req.OrgID == "" {
-		return nil, fmt.Errorf("account or orgId must be set")
+	if (req.Account == "") == (req.OrgID == "") {
+		return nil, fmt.Errorf("exactly one of account or orgId must be set")
 	}
 
 	if req.Account != "" {
