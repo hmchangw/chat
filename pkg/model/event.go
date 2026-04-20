@@ -39,24 +39,25 @@ type UpdateRoleRequest struct {
 	NewRole Role   `json:"newRole" bson:"newRole"`
 }
 
-// MemberAddedPayload is the payload of an OutboxEvent{Type: "member_added" |
-// "member_removed"}. It carries one or more Subscriptions against the same
-// Room so downstream consumers (inbox-worker, search-sync-worker) can
-// index/persist without DB lookups.
+// InboxMemberEvent is the payload of an OutboxEvent{Type: "member_added" |
+// "member_removed"} carried on the INBOX stream for local consumers like
+// search-sync-worker. One event represents a bulk add/remove of N Accounts
+// against a single room; downstream consumers fan out per-account.
 //
-// The Subscriptions slice supports bulk invites: one admin action adding N
-// users to a single room produces a single event with N Subscriptions, all
-// sharing the same Room. For single-user operations the slice has length 1.
-// All subscriptions in one event target the same Room — if you need to touch
-// multiple rooms, publish one event per room.
-//
-// Downstream consumers that care about the full set (spotlight-sync,
-// user-room-sync) fan the event out into one ES bulk action per
-// subscription. Consumers that only care about the Room (e.g. future
-// room-sync) can ignore the Subscriptions slice and act on the Room field.
-type MemberAddedPayload struct {
-	Subscriptions []Subscription `json:"subscriptions"`
-	Room          Room           `json:"room"`
+// HistorySharedSince is a single event-level flag shared by all accounts in
+// the bulk: when non-zero, the room is history-restricted and consumers MUST
+// skip indexing the entire event (the search service handles restricted rooms
+// via DB+cache at query time). JoinedAt is only meaningful on add events and
+// omitted on removes.
+type InboxMemberEvent struct {
+	RoomID             string   `json:"roomId"`
+	RoomName           string   `json:"roomName"`
+	RoomType           RoomType `json:"roomType"`
+	SiteID             string   `json:"siteId"`
+	Accounts           []string `json:"accounts"`
+	HistorySharedSince int64    `json:"historySharedSince,omitempty"`
+	JoinedAt           int64    `json:"joinedAt,omitempty"`
+	Timestamp          int64    `json:"timestamp"`
 }
 
 type InviteMemberRequest struct {

@@ -78,9 +78,13 @@ func (b *inboxMemberCollection) FilterSubjects(siteID string) []string {
 }
 
 // parseMemberEvent decodes an INBOX message into an OutboxEvent + its
-// MemberAddedPayload and validates the common preconditions shared by all
-// inbox-member collections.
-func parseMemberEvent(data []byte) (*model.OutboxEvent, *model.MemberAddedPayload, error) {
+// InboxMemberEvent payload and validates the common preconditions shared by
+// all inbox-member collections.
+//
+// Callers are responsible for the event-level restricted-room short-circuit:
+// when payload.HistorySharedSince != 0 the entire event should be skipped
+// (the search service handles restricted rooms via DB+cache at query time).
+func parseMemberEvent(data []byte) (*model.OutboxEvent, *model.InboxMemberEvent, error) {
 	var evt model.OutboxEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
 		return nil, nil, fmt.Errorf("unmarshal outbox event: %w", err)
@@ -88,9 +92,9 @@ func parseMemberEvent(data []byte) (*model.OutboxEvent, *model.MemberAddedPayloa
 	if evt.Timestamp <= 0 {
 		return nil, nil, fmt.Errorf("parse member event: missing timestamp")
 	}
-	var payload model.MemberAddedPayload
+	var payload model.InboxMemberEvent
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal member added payload: %w", err)
+		return nil, nil, fmt.Errorf("unmarshal inbox member event: %w", err)
 	}
 	return &evt, &payload, nil
 }

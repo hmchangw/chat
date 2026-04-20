@@ -598,51 +598,60 @@ func TestOutboxEventJSON(t *testing.T) {
 	}
 }
 
-func TestMemberAddedPayloadJSON(t *testing.T) {
-	joinedAt := time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)
-	historyFrom := time.Date(2026, 4, 9, 11, 0, 0, 0, time.UTC)
-	// Two subscriptions to the same room — exercises the bulk-invite shape
-	// (one restricted, one unrestricted) and verifies the Subscriptions
-	// slice round-trips.
-	src := model.MemberAddedPayload{
-		Subscriptions: []model.Subscription{
-			{
-				ID:         "sub-1",
-				User:       model.SubscriptionUser{ID: "u1", Account: "alice"},
-				RoomID:     "r1",
-				SiteID:     "site-a",
-				Roles:      []model.Role{model.RoleMember},
-				JoinedAt:   joinedAt,
-				LastSeenAt: joinedAt,
-			},
-			{
-				ID:                 "sub-2",
-				User:               model.SubscriptionUser{ID: "u2", Account: "bob"},
-				RoomID:             "r1",
-				SiteID:             "site-a",
-				Roles:              []model.Role{model.RoleMember},
-				HistorySharedSince: &historyFrom,
-				JoinedAt:           joinedAt,
-				LastSeenAt:         joinedAt,
-			},
-		},
-		Room: model.Room{
-			ID: "r1", Name: "engineering", Type: model.RoomTypeGroup,
-			CreatedBy: "u0", SiteID: "site-a", UserCount: 2,
-			LastMsgAt:        joinedAt,
-			LastMsgID:        "m1",
-			LastMentionAllAt: joinedAt,
-			CreatedAt:        joinedAt,
-			UpdatedAt:        joinedAt,
-		},
-	}
-	data, err := json.Marshal(&src)
-	require.NoError(t, err)
-	var dst model.MemberAddedPayload
-	require.NoError(t, json.Unmarshal(data, &dst))
-	if !reflect.DeepEqual(src, dst) {
-		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
-	}
+func TestInboxMemberEventJSON(t *testing.T) {
+	t.Run("add event, unrestricted room", func(t *testing.T) {
+		src := model.InboxMemberEvent{
+			RoomID:    "r1",
+			RoomName:  "engineering",
+			RoomType:  model.RoomTypeGroup,
+			SiteID:    "site-a",
+			Accounts:  []string{"alice", "bob"},
+			JoinedAt:  1735689600000,
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var dst model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+	})
+
+	t.Run("add event, restricted room carries HistorySharedSince", func(t *testing.T) {
+		src := model.InboxMemberEvent{
+			RoomID:             "r1",
+			RoomName:           "engineering",
+			RoomType:           model.RoomTypeGroup,
+			SiteID:             "site-a",
+			Accounts:           []string{"alice"},
+			HistorySharedSince: 1735689500000,
+			JoinedAt:           1735689600000,
+			Timestamp:          1735689600000,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var dst model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+	})
+
+	t.Run("remove event omits HistorySharedSince and JoinedAt when zero", func(t *testing.T) {
+		src := model.InboxMemberEvent{
+			RoomID:    "r1",
+			RoomName:  "engineering",
+			RoomType:  model.RoomTypeGroup,
+			SiteID:    "site-a",
+			Accounts:  []string{"alice", "bob"},
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasHSS := raw["historySharedSince"]
+		assert.False(t, hasHSS, "historySharedSince should be omitted when zero")
+		_, hasJoinedAt := raw["joinedAt"]
+		assert.False(t, hasJoinedAt, "joinedAt should be omitted when zero")
+	})
 }
 
 func TestRoomMetadataUpdateEventJSON(t *testing.T) {

@@ -10,8 +10,10 @@ import (
 )
 
 // spotlightCollection implements Collection for spotlight room-typeahead
-// search. Documents are per-subscription (one doc per (user, room) pair) so
-// the search service can filter by userAccount and match on roomName.
+// search. Documents are per (user, room) pair — one doc for every account
+// that holds a subscription to a given room — so the search service can
+// filter by userAccount and match on roomName. Doc IDs are synthesized as
+// `{account}_{roomID}` since the INBOX payload doesn't carry subscription IDs.
 type spotlightCollection struct {
 	inboxMemberCollection
 	indexName string
@@ -34,32 +36,42 @@ func (c *spotlightCollection) TemplateBody() json.RawMessage {
 }
 
 // BuildAction fans a member_added / member_removed event out into one ES
-// action per Subscription in the payload. Bulk invites produce N spotlight
-// docs from a single event; single-user invites produce one.
+// action per account in the payload. Bulk invites produce N spotlight docs
+// from a single event; single-user invites produce one.
 //
 // All actions in the returned slice carry the same external Version
 // (evt.Timestamp) because they all represent the same logical event — if the
 // event is redelivered, every action 409s uniformly and is treated as a
 // successful idempotent replay.
+//
+// Restricted rooms (HistorySharedSince != 0 on the event) short-circuit the
+// entire bulk and return an empty slice — the search service handles
+// restricted rooms via DB+cache at query time, so nothing needs to be indexed.
 func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	evt, payload, err := parseMemberEvent(data)
 	if err != nil {
 		return nil, err
 	}
-	if len(payload.Subscriptions) == 0 {
-		return nil, fmt.Errorf("build spotlight action: empty subscriptions")
+	if payload.RoomID == "" {
+		return nil, fmt.Errorf("build spotlight action: missing roomId")
+	}
+	if len(payload.Accounts) == 0 {
+		return nil, fmt.Errorf("build spotlight action: empty accounts")
+	}
+	if payload.HistorySharedSince != 0 {
+		return nil, nil
 	}
 
-	actions := make([]searchengine.BulkAction, 0, len(payload.Subscriptions))
-	for i := range payload.Subscriptions {
-		sub := &payload.Subscriptions[i]
-		if sub.ID == "" {
-			return nil, fmt.Errorf("build spotlight action: missing subscription id at index %d", i)
+	actions := make([]searchengine.BulkAction, 0, len(payload.Accounts))
+	for i, account := range payload.Accounts {
+		if account == "" {
+			return nil, fmt.Errorf("build spotlight action: empty account at index %d", i)
 		}
+		docID := fmt.Sprintf("%s_%s", account, payload.RoomID)
 
 		switch evt.Type {
 		case model.OutboxMemberAdded:
-			doc := newSpotlightSearchIndex(sub, &payload.Room)
+			doc := newSpotlightSearchIndex(account, payload)
 			body, err := json.Marshal(doc)
 			if err != nil {
 				return nil, fmt.Errorf("marshal spotlight doc: %w", err)
@@ -67,7 +79,7 @@ func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkActio
 			actions = append(actions, searchengine.BulkAction{
 				Action:  searchengine.ActionIndex,
 				Index:   c.indexName,
-				DocID:   sub.ID,
+				DocID:   docID,
 				Version: evt.Timestamp,
 				Doc:     body,
 			})
@@ -75,7 +87,7 @@ func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkActio
 			actions = append(actions, searchengine.BulkAction{
 				Action:  searchengine.ActionDelete,
 				Index:   c.indexName,
-				DocID:   sub.ID,
+				DocID:   docID,
 				Version: evt.Timestamp,
 			})
 		default:
@@ -86,28 +98,28 @@ func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkActio
 }
 
 // SpotlightSearchIndex defines the Elasticsearch document structure for the
-// spotlight index. One doc per subscription.
+// spotlight index. One doc per (user, room) pair.
 type SpotlightSearchIndex struct {
-	SubscriptionID string    `json:"subscriptionId" es:"keyword"`
-	UserID         string    `json:"userId"         es:"keyword"`
-	UserAccount    string    `json:"userAccount"    es:"keyword"`
-	RoomID         string    `json:"roomId"         es:"keyword"`
-	RoomName       string    `json:"roomName"       es:"search_as_you_type,custom_analyzer"`
-	RoomType       string    `json:"roomType"       es:"keyword"`
-	SiteID         string    `json:"siteId"         es:"keyword"`
-	JoinedAt       time.Time `json:"joinedAt"       es:"date"`
+	UserAccount string    `json:"userAccount" es:"keyword"`
+	RoomID      string    `json:"roomId"      es:"keyword"`
+	RoomName    string    `json:"roomName"    es:"search_as_you_type,custom_analyzer"`
+	RoomType    string    `json:"roomType"    es:"keyword"`
+	SiteID      string    `json:"siteId"      es:"keyword"`
+	JoinedAt    time.Time `json:"joinedAt"    es:"date"`
 }
 
-func newSpotlightSearchIndex(sub *model.Subscription, room *model.Room) SpotlightSearchIndex {
+func newSpotlightSearchIndex(account string, evt *model.InboxMemberEvent) SpotlightSearchIndex {
+	var joinedAt time.Time
+	if evt.JoinedAt > 0 {
+		joinedAt = time.UnixMilli(evt.JoinedAt).UTC()
+	}
 	return SpotlightSearchIndex{
-		SubscriptionID: sub.ID,
-		UserID:         sub.User.ID,
-		UserAccount:    sub.User.Account,
-		RoomID:         sub.RoomID,
-		RoomName:       room.Name,
-		RoomType:       string(room.Type),
-		SiteID:         sub.SiteID,
-		JoinedAt:       sub.JoinedAt,
+		UserAccount: account,
+		RoomID:      evt.RoomID,
+		RoomName:    evt.RoomName,
+		RoomType:    string(evt.RoomType),
+		SiteID:      evt.SiteID,
+		JoinedAt:    joinedAt,
 	}
 }
 

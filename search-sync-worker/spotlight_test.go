@@ -2,10 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,7 +14,7 @@ import (
 	"github.com/hmchangw/chat/pkg/searchengine"
 )
 
-func makeMemberAddedEvent(t *testing.T, typ string, payload *model.MemberAddedPayload, ts int64) []byte {
+func makeInboxMemberEvent(t *testing.T, typ string, payload *model.InboxMemberEvent, ts int64) []byte {
 	t.Helper()
 	payloadData, err := json.Marshal(payload)
 	require.NoError(t, err)
@@ -30,64 +30,18 @@ func makeMemberAddedEvent(t *testing.T, typ string, payload *model.MemberAddedPa
 	return data
 }
 
-// baseMemberAddedPayload builds a single-subscription payload for the common
-// unit-test case. Bulk-invite test cases use baseBulkMemberAddedPayload with
-// the full [] of subscriptions.
-func baseMemberAddedPayload() *model.MemberAddedPayload {
-	joinedAt := time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)
-	return &model.MemberAddedPayload{
-		Subscriptions: []model.Subscription{{
-			ID:       "sub-1",
-			User:     model.SubscriptionUser{ID: "u-alice", Account: "alice"},
-			RoomID:   "r-eng",
-			SiteID:   "site-a",
-			Roles:    []model.Role{model.RoleMember},
-			JoinedAt: joinedAt,
-		}},
-		Room: model.Room{
-			ID:        "r-eng",
-			Name:      "engineering",
-			Type:      model.RoomTypeGroup,
-			CreatedBy: "u-admin",
-			SiteID:    "site-a",
-		},
-	}
-}
-
-// baseBulkMemberAddedPayload builds a multi-subscription payload for bulk
-// invite test cases. All subscriptions target the same room; caller
-// supplies (userAccount, subID, restricted) tuples per user.
-func baseBulkMemberAddedPayload(subs []struct {
-	Account    string
-	SubID      string
-	Restricted bool
-}) *model.MemberAddedPayload {
-	joinedAt := time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)
-	historyFrom := time.Date(2026, 4, 9, 11, 0, 0, 0, time.UTC)
-	subscriptions := make([]model.Subscription, 0, len(subs))
-	for _, s := range subs {
-		sub := model.Subscription{
-			ID:       s.SubID,
-			User:     model.SubscriptionUser{ID: "u-" + s.Account, Account: s.Account},
-			RoomID:   "r-eng",
-			SiteID:   "site-a",
-			Roles:    []model.Role{model.RoleMember},
-			JoinedAt: joinedAt,
-		}
-		if s.Restricted {
-			sub.HistorySharedSince = &historyFrom
-		}
-		subscriptions = append(subscriptions, sub)
-	}
-	return &model.MemberAddedPayload{
-		Subscriptions: subscriptions,
-		Room: model.Room{
-			ID:        "r-eng",
-			Name:      "engineering",
-			Type:      model.RoomTypeGroup,
-			CreatedBy: "u-admin",
-			SiteID:    "site-a",
-		},
+// baseInboxMemberEvent builds a single-account event for the common unit-test
+// case. Bulk-invite test cases supply their own Accounts slice.
+func baseInboxMemberEvent() *model.InboxMemberEvent {
+	const joinedAt int64 = 1735689600000
+	return &model.InboxMemberEvent{
+		RoomID:    "r-eng",
+		RoomName:  "engineering",
+		RoomType:  model.RoomTypeGroup,
+		SiteID:    "site-a",
+		Accounts:  []string{"alice"},
+		JoinedAt:  joinedAt,
+		Timestamp: joinedAt,
 	}
 }
 
@@ -99,15 +53,10 @@ func TestSpotlightCollection_Metadata(t *testing.T) {
 
 	cfg := coll.StreamConfig("site-a")
 	assert.Equal(t, "INBOX_site-a", cfg.Name)
-	// Baseline stream config carries the two non-overlapping subject
-	// patterns from pkg/stream.Inbox — local (`chat.inbox.{site}.*`) and
-	// federated (`chat.inbox.{site}.aggregate.>`).
 	assert.Equal(t, []string{
 		"chat.inbox.site-a.*",
 		"chat.inbox.site-a.aggregate.>",
 	}, cfg.Subjects)
-	// Cross-site Sources are a bootstrap concern layered on in main.go,
-	// not on the collection's baseline stream config.
 	assert.Empty(t, cfg.Sources)
 
 	filters := coll.FilterSubjects("site-a")
@@ -129,14 +78,11 @@ func TestSpotlightCollection_TemplateBody(t *testing.T) {
 
 	patterns, ok := parsed["index_patterns"].([]any)
 	require.True(t, ok)
-	// Template targets the exact configured index name so a custom
-	// SPOTLIGHT_INDEX value still receives the right mapping.
 	assert.Equal(t, "spotlight-site-a-v1-chat", patterns[0])
 
 	tmpl := parsed["template"].(map[string]any)
 	mappings := tmpl["mappings"].(map[string]any)
 	props := mappings["properties"].(map[string]any)
-	assert.Contains(t, props, "subscriptionId")
 	assert.Contains(t, props, "userAccount")
 	assert.Contains(t, props, "roomId")
 	assert.Contains(t, props, "roomName")
@@ -170,8 +116,8 @@ func TestSpotlightTemplateProperties_MatchesStruct(t *testing.T) {
 
 func TestSpotlightCollection_BuildAction_MemberAdded(t *testing.T) {
 	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
-	payload := baseMemberAddedPayload()
-	data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 1000)
+	payload := baseInboxMemberEvent()
+	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 1000)
 
 	actions, err := coll.BuildAction(data)
 	require.NoError(t, err)
@@ -180,14 +126,14 @@ func TestSpotlightCollection_BuildAction_MemberAdded(t *testing.T) {
 	action := actions[0]
 	assert.Equal(t, searchengine.ActionIndex, action.Action)
 	assert.Equal(t, "spotlight-site-a-v1-chat", action.Index)
-	assert.Equal(t, "sub-1", action.DocID)
+	// DocID is synthesized as {account}_{roomID} since the new payload shape
+	// doesn't carry subscription IDs.
+	assert.Equal(t, "alice_r-eng", action.DocID)
 	assert.Equal(t, int64(1000), action.Version)
 	require.NotNil(t, action.Doc)
 
 	var doc map[string]any
 	require.NoError(t, json.Unmarshal(action.Doc, &doc))
-	assert.Equal(t, "sub-1", doc["subscriptionId"])
-	assert.Equal(t, "u-alice", doc["userId"])
 	assert.Equal(t, "alice", doc["userAccount"])
 	assert.Equal(t, "r-eng", doc["roomId"])
 	assert.Equal(t, "engineering", doc["roomName"])
@@ -197,8 +143,8 @@ func TestSpotlightCollection_BuildAction_MemberAdded(t *testing.T) {
 
 func TestSpotlightCollection_BuildAction_MemberRemoved(t *testing.T) {
 	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
-	payload := baseMemberAddedPayload()
-	data := makeMemberAddedEvent(t, model.OutboxMemberRemoved, payload, 2000)
+	payload := baseInboxMemberEvent()
+	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 2000)
 
 	actions, err := coll.BuildAction(data)
 	require.NoError(t, err)
@@ -207,9 +153,24 @@ func TestSpotlightCollection_BuildAction_MemberRemoved(t *testing.T) {
 	action := actions[0]
 	assert.Equal(t, searchengine.ActionDelete, action.Action)
 	assert.Equal(t, "spotlight-site-a-v1-chat", action.Index)
-	assert.Equal(t, "sub-1", action.DocID)
+	assert.Equal(t, "alice_r-eng", action.DocID)
 	assert.Equal(t, int64(2000), action.Version)
 	assert.Nil(t, action.Doc)
+}
+
+func TestSpotlightCollection_BuildAction_RestrictedRoomSkipped(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	payload := baseInboxMemberEvent()
+	payload.Accounts = []string{"alice", "bob"}
+	// Event-level HistorySharedSince short-circuits the entire bulk —
+	// restricted rooms are handled by the search service via DB+cache.
+	payload.HistorySharedSince = 1735689500000
+
+	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	assert.Empty(t, actions, "restricted-room event should produce no actions")
 }
 
 func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
@@ -231,54 +192,55 @@ func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("missing subscription id", func(t *testing.T) {
-		payload := baseMemberAddedPayload()
-		payload.Subscriptions[0].ID = ""
-		data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 100)
+	t.Run("empty accounts", func(t *testing.T) {
+		payload := baseInboxMemberEvent()
+		payload.Accounts = nil
+		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("empty account in list", func(t *testing.T) {
+		payload := baseInboxMemberEvent()
+		payload.Accounts = []string{"alice", ""}
+		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("missing roomId", func(t *testing.T) {
+		payload := baseInboxMemberEvent()
+		payload.RoomID = ""
+		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
 		_, err := coll.BuildAction(data)
 		assert.Error(t, err)
 	})
 
 	t.Run("missing timestamp", func(t *testing.T) {
-		data := makeMemberAddedEvent(t, model.OutboxMemberAdded, baseMemberAddedPayload(), 0)
-		_, err := coll.BuildAction(data)
-		assert.Error(t, err)
-	})
-
-	t.Run("empty subscriptions", func(t *testing.T) {
-		payload := baseMemberAddedPayload()
-		payload.Subscriptions = nil
-		data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 100)
+		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, baseInboxMemberEvent(), 0)
 		_, err := coll.BuildAction(data)
 		assert.Error(t, err)
 	})
 
 	t.Run("unsupported event type", func(t *testing.T) {
-		data := makeMemberAddedEvent(t, "room_created", baseMemberAddedPayload(), 100) // intentionally invalid type
+		data := makeInboxMemberEvent(t, "room_created", baseInboxMemberEvent(), 100)
 		_, err := coll.BuildAction(data)
 		assert.Error(t, err)
 	})
 }
 
 // TestSpotlightCollection_BuildAction_BulkInvite verifies fan-out: a single
-// event carrying N subscriptions produces N index actions, all sharing the
-// same external Version (event timestamp).
+// event carrying N accounts produces N index actions, all sharing the same
+// external Version (event timestamp).
 func TestSpotlightCollection_BuildAction_BulkInvite(t *testing.T) {
 	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
-	payload := baseBulkMemberAddedPayload([]struct {
-		Account    string
-		SubID      string
-		Restricted bool
-	}{
-		{Account: "alice", SubID: "sub-1", Restricted: false},
-		{Account: "bob", SubID: "sub-2", Restricted: false},
-		{Account: "carol", SubID: "sub-3", Restricted: false},
-	})
-	data := makeMemberAddedEvent(t, model.OutboxMemberAdded, payload, 12345)
+	payload := baseInboxMemberEvent()
+	payload.Accounts = []string{"alice", "bob", "carol"}
+	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 12345)
 
 	actions, err := coll.BuildAction(data)
 	require.NoError(t, err)
-	require.Len(t, actions, 3, "3 subscriptions should fan out to 3 actions")
+	require.Len(t, actions, 3, "3 accounts should fan out to 3 actions")
 
 	seenDocIDs := make(map[string]bool)
 	for _, action := range actions {
@@ -289,24 +251,19 @@ func TestSpotlightCollection_BuildAction_BulkInvite(t *testing.T) {
 		require.NotNil(t, action.Doc)
 		seenDocIDs[action.DocID] = true
 	}
-	assert.True(t, seenDocIDs["sub-1"])
-	assert.True(t, seenDocIDs["sub-2"])
-	assert.True(t, seenDocIDs["sub-3"])
+	for _, account := range payload.Accounts {
+		assert.True(t, seenDocIDs[fmt.Sprintf("%s_%s", account, payload.RoomID)],
+			"expected DocID for %s", account)
+	}
 }
 
-// TestSpotlightCollection_BuildAction_BulkRemove verifies fan-out on the
-// remove path: N subscriptions → N delete actions.
+// TestSpotlightCollection_BuildAction_BulkRemove verifies fan-out on remove:
+// N accounts → N delete actions.
 func TestSpotlightCollection_BuildAction_BulkRemove(t *testing.T) {
 	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
-	payload := baseBulkMemberAddedPayload([]struct {
-		Account    string
-		SubID      string
-		Restricted bool
-	}{
-		{Account: "alice", SubID: "sub-1"},
-		{Account: "bob", SubID: "sub-2"},
-	})
-	data := makeMemberAddedEvent(t, model.OutboxMemberRemoved, payload, 67890)
+	payload := baseInboxMemberEvent()
+	payload.Accounts = []string{"alice", "bob"}
+	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 67890)
 
 	actions, err := coll.BuildAction(data)
 	require.NoError(t, err)
