@@ -110,6 +110,10 @@ func drainConsumer(
 			handler.Add(msg)
 			received++
 		}
+		// Surface any mid-batch error (consumer deleted, leader change,
+		// transient connection). Without this, batch.Messages() just closes
+		// silently and only the outer Equal would fail — losing the root cause.
+		require.NoError(t, batch.Error(), "batch error after draining (attempt %d, received %d of %d)", attempts, received, expected)
 	}
 	require.Equal(t, expected, received, "drained %d of %d expected messages", received, expected)
 	handler.Flush(ctx)

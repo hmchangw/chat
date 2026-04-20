@@ -87,11 +87,15 @@ func (c *userRoomCollection) BuildAction(data []byte) ([]searchengine.BulkAction
 	if payload.RoomID == "" {
 		return nil, fmt.Errorf("build user-room action: missing roomId")
 	}
-	if len(payload.Accounts) == 0 {
-		return nil, fmt.Errorf("build user-room action: empty accounts")
-	}
+	// Event-level restricted-room short-circuit runs BEFORE account
+	// validation so restricted events with any payload shape (including an
+	// empty Accounts slice) are uniformly skipped per the InboxMemberEvent
+	// contract — no surprise error on an otherwise-valid "skip me" event.
 	if payload.HistorySharedSince != 0 {
 		return nil, nil
+	}
+	if len(payload.Accounts) == 0 {
+		return nil, fmt.Errorf("build user-room action: empty accounts")
 	}
 
 	ts := evt.Timestamp
