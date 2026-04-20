@@ -15,7 +15,6 @@ services:
       - NATS_JWT_EXPIRY=2h
       - OIDC_ISSUER_URL=http://keycloak:8080/realms/chatapp
       - OIDC_AUDIENCE=nats-chat
-      - OIDC_VERIFY_AZP=true
       - TLS_SKIP_VERIFY=false
     networks:
       - chat-local

@@ -45,6 +45,18 @@
         "profile",
         "roles",
         "email"
+      ],
+      "protocolMappers": [
+        {
+          "name": "audience-nats-chat",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "nats-chat",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
       ]
     }
   ],
