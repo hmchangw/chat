@@ -137,17 +137,6 @@ describe('RoomEventsProvider', () => {
   })
 })
 
-function makeSub() {
-  const handlers = []
-  return {
-    handlers,
-    sub: {
-      unsubscribe: vi.fn(),
-    },
-    deliver: (data) => handlers.forEach((h) => h(data)),
-  }
-}
-
 describe('RoomEventsProvider subscriptions', () => {
   beforeEach(() => vi.clearAllMocks())
 
@@ -252,5 +241,30 @@ describe('RoomEventsProvider subscriptions', () => {
     })
     await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('0'))
     expect(unsubs[0].unsubscribe).toHaveBeenCalled()
+  })
+
+  it('tears down old subscriptions and opens new ones when the user changes', async () => {
+    const request = vi.fn().mockResolvedValue({ rooms: [] })
+    const subs = []
+    const subscribe = vi.fn().mockImplementation((subject) => {
+      const sub = { subject, unsubscribe: vi.fn() }
+      subs.push(sub)
+      return sub
+    })
+    const aliceNats = mockNats({ request, subscribe, user: { account: 'alice', siteId: 'site-A' } })
+    const bobNats = mockNats({ request, subscribe, user: { account: 'bob', siteId: 'site-A' } })
+
+    const { rerender } = render(wrap(<SummariesProbe />, aliceNats))
+    await waitFor(() => expect(subs.some((s) => s.subject === 'chat.user.alice.event.room')).toBe(true))
+    const aliceSubs = subs.filter((s) => s.subject.includes('alice'))
+
+    rerender(wrap(<SummariesProbe />, bobNats))
+    await waitFor(() =>
+      expect(subs.some((s) => s.subject === 'chat.user.bob.event.room')).toBe(true)
+    )
+
+    for (const s of aliceSubs) {
+      expect(s.unsubscribe).toHaveBeenCalled()
+    }
   })
 })

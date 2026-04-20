@@ -21,14 +21,20 @@ export function RoomEventsProvider({ children }) {
   stateRef.current = state
 
   const groupSubs = useRef(new Map())
+  const cancelledRef = useRef(false)
 
   useEffect(() => {
     if (!user) return
-    let cancelled = false
+    cancelledRef.current = false
+
+    const safeDispatch = (action) => {
+      if (cancelledRef.current) return
+      dispatch(action)
+    }
 
     const dmSub = subscribe(userRoomEvent(user.account), (evt) => {
       if (evt?.type === 'new_message') {
-        dispatch({ type: 'MESSAGE_RECEIVED', event: evt })
+        safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
       }
     })
 
@@ -36,7 +42,7 @@ export function RoomEventsProvider({ children }) {
       if (groupSubs.current.has(roomId)) return
       const sub = subscribe(roomEvent(roomId), (evt) => {
         if (evt?.type === 'new_message') {
-          dispatch({ type: 'MESSAGE_RECEIVED', event: evt })
+          safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
         }
       })
       groupSubs.current.set(roomId, sub)
@@ -51,15 +57,16 @@ export function RoomEventsProvider({ children }) {
     }
 
     const subUpdate = subscribe(subscriptionUpdate(user.account), (evt) => {
+      if (cancelledRef.current) return
       if (evt.action === 'added') {
         if (evt.room) {
-          dispatch({ type: 'ROOM_ADDED', room: evt.room })
+          safeDispatch({ type: 'ROOM_ADDED', room: evt.room })
           if (evt.room.type === 'group') openGroupSub(evt.room.id)
         } else if (evt.subscription?.roomId) {
           request(roomsGet(user.account, evt.subscription.roomId), {})
             .then((room) => {
-              if (cancelled || !room) return
-              dispatch({ type: 'ROOM_ADDED', room })
+              if (cancelledRef.current || !room) return
+              safeDispatch({ type: 'ROOM_ADDED', room })
               if (room.type === 'group') openGroupSub(room.id)
             })
             .catch(() => {})
@@ -68,12 +75,12 @@ export function RoomEventsProvider({ children }) {
         const roomId = evt.subscription?.roomId
         if (!roomId) return
         closeGroupSub(roomId)
-        dispatch({ type: 'ROOM_REMOVED', roomId })
+        safeDispatch({ type: 'ROOM_REMOVED', roomId })
       }
     })
 
     const metaUpdate = subscribe(roomMetadataUpdate(user.account), (evt) => {
-      dispatch({
+      safeDispatch({
         type: 'ROOM_METADATA_UPDATED',
         roomId: evt.roomId,
         name: evt.name,
@@ -84,25 +91,25 @@ export function RoomEventsProvider({ children }) {
 
     request(roomsList(user.account), {})
       .then((resp) => {
-        if (cancelled) return
+        if (cancelledRef.current) return
         const rooms = resp.rooms ?? []
-        dispatch({ type: 'ROOMS_LOADED', rooms })
+        safeDispatch({ type: 'ROOMS_LOADED', rooms })
         for (const r of rooms) {
           if (r.type === 'group') openGroupSub(r.id)
         }
       })
       .catch((err) => {
-        if (!cancelled) dispatch({ type: 'ROOMS_FAILED', error: err.message })
+        if (!cancelledRef.current) safeDispatch({ type: 'ROOMS_FAILED', error: err.message })
       })
 
     return () => {
-      cancelled = true
+      cancelledRef.current = true
       dmSub.unsubscribe()
       subUpdate.unsubscribe()
       metaUpdate.unsubscribe()
       for (const sub of groupSubs.current.values()) sub.unsubscribe()
       groupSubs.current.clear()
-      dispatch({ type: 'RESET' })
+      dispatch({ type: 'RESET' })   // RESET runs even when cancelled — it's the cleanup itself
     }
   }, [user, subscribe, request])
 
