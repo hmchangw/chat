@@ -115,6 +115,60 @@ export function roomEventsReducer(state, action) {
         roomState: { ...state.roomState, [roomId]: nextRoomState },
       }
     }
+    case 'HISTORY_LOADED': {
+      const prev = state.roomState[action.roomId] ?? emptyRoomState()
+      const existingIds = new Set(prev.messages.map((m) => m.id))
+      const merged = [
+        ...action.messages.filter((m) => !existingIds.has(m.id)),
+        ...prev.messages,
+      ]
+      const bounded = merged.length > MAX_CACHED ? merged.slice(merged.length - MAX_CACHED) : merged
+      return {
+        ...state,
+        roomState: {
+          ...state.roomState,
+          [action.roomId]: {
+            ...prev,
+            messages: bounded,
+            hasLoadedHistory: true,
+            historyError: null,
+          },
+        },
+      }
+    }
+    case 'HISTORY_FAILED': {
+      const prev = state.roomState[action.roomId] ?? emptyRoomState()
+      return {
+        ...state,
+        roomState: {
+          ...state.roomState,
+          [action.roomId]: { ...prev, historyError: action.error },
+        },
+      }
+    }
+    case 'SET_ACTIVE_ROOM': {
+      const roomId = action.roomId
+      if (roomId === null) {
+        return { ...state, activeRoomId: null }
+      }
+      const prev = state.roomState[roomId] ?? emptyRoomState()
+      const nextRoomState = { ...prev, unreadCount: 0, hasMention: false, mentionAll: false }
+      const summaries = state.summaries.map((r) =>
+        r.id === roomId ? { ...r, unreadCount: 0, hasMention: false, mentionAll: false } : r
+      )
+      return {
+        ...state,
+        activeRoomId: roomId,
+        summaries,
+        roomState: { ...state.roomState, [roomId]: nextRoomState },
+      }
+    }
+    case 'RESET': {
+      return initialState
+    }
+    case 'ROOMS_FAILED': {
+      return { ...state, roomsError: action.error }
+    }
     default:
       return state
   }

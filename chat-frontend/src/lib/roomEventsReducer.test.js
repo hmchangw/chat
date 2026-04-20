@@ -210,3 +210,100 @@ describe('roomEventsReducer: MESSAGE_RECEIVED', () => {
     expect(msgs[MAX_CACHED - 1].id).toBe(`m${MAX_CACHED + 4}`)
   })
 })
+
+describe('roomEventsReducer: history and active room', () => {
+  it('HISTORY_LOADED merges ascending messages and preserves live ones', () => {
+    const live = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent({
+        message: { id: 'm3', roomId: 'a', content: 'live', createdAt: '2026-04-17T12:00:00Z', sender: { account: 'bob' } },
+      }),
+    })
+    const hist = [
+      { id: 'm1', roomId: 'a', content: 'old1', createdAt: '2026-04-17T10:00:00Z', sender: { account: 'bob' } },
+      { id: 'm2', roomId: 'a', content: 'old2', createdAt: '2026-04-17T11:00:00Z', sender: { account: 'bob' } },
+    ]
+    const next = roomEventsReducer(live, {
+      type: 'HISTORY_LOADED',
+      roomId: 'a',
+      messages: hist,
+    })
+    expect(next.roomState.a.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3'])
+    expect(next.roomState.a.hasLoadedHistory).toBe(true)
+    expect(next.roomState.a.historyError).toBe(null)
+  })
+
+  it('HISTORY_LOADED dedupes overlaps', () => {
+    const live = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent({
+        message: { id: 'm2', roomId: 'a', content: 'live', createdAt: '2026-04-17T11:00:00Z', sender: { account: 'bob' } },
+      }),
+    })
+    const hist = [
+      { id: 'm1', roomId: 'a', content: 'old1', createdAt: '2026-04-17T10:00:00Z', sender: { account: 'bob' } },
+      { id: 'm2', roomId: 'a', content: 'old2', createdAt: '2026-04-17T11:00:00Z', sender: { account: 'bob' } },
+    ]
+    const next = roomEventsReducer(live, { type: 'HISTORY_LOADED', roomId: 'a', messages: hist })
+    expect(next.roomState.a.messages.map((m) => m.id)).toEqual(['m1', 'm2'])
+  })
+
+  it('HISTORY_FAILED sets historyError and does not flip hasLoadedHistory', () => {
+    const next = roomEventsReducer(initialState, {
+      type: 'HISTORY_FAILED',
+      roomId: 'a',
+      error: 'boom',
+    })
+    expect(next.roomState.a.historyError).toBe('boom')
+    expect(next.roomState.a.hasLoadedHistory).toBe(false)
+  })
+
+  it('SET_ACTIVE_ROOM updates activeRoomId and clears unread/mention for that room', () => {
+    const s1 = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent({ hasMention: true, mentionAll: true }),
+    })
+    expect(s1.roomState.a.unreadCount).toBe(1)
+    const s2 = roomEventsReducer(s1, { type: 'SET_ACTIVE_ROOM', roomId: 'a' })
+    expect(s2.activeRoomId).toBe('a')
+    expect(s2.roomState.a.unreadCount).toBe(0)
+    expect(s2.roomState.a.hasMention).toBe(false)
+    expect(s2.roomState.a.mentionAll).toBe(false)
+  })
+
+  it('SET_ACTIVE_ROOM clears the matching summary flags', () => {
+    const loaded = roomEventsReducer(initialState, {
+      type: 'ROOMS_LOADED',
+      rooms: [{ id: 'a', name: 'a', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T10:00:00Z' }],
+    })
+    const withMsg = roomEventsReducer(loaded, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent({ hasMention: true }),
+    })
+    expect(withMsg.summaries[0].hasMention).toBe(true)
+    expect(withMsg.summaries[0].unreadCount).toBe(1)
+    const next = roomEventsReducer(withMsg, { type: 'SET_ACTIVE_ROOM', roomId: 'a' })
+    expect(next.summaries[0].hasMention).toBe(false)
+    expect(next.summaries[0].unreadCount).toBe(0)
+  })
+
+  it('SET_ACTIVE_ROOM to null clears the activeRoomId only', () => {
+    const s1 = { ...initialState, activeRoomId: 'a' }
+    const next = roomEventsReducer(s1, { type: 'SET_ACTIVE_ROOM', roomId: null })
+    expect(next.activeRoomId).toBe(null)
+  })
+
+  it('RESET returns the initial state', () => {
+    const s1 = roomEventsReducer(initialState, {
+      type: 'ROOMS_LOADED',
+      rooms: [{ id: 'a', name: 'a', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null }],
+    })
+    const next = roomEventsReducer(s1, { type: 'RESET' })
+    expect(next).toEqual(initialState)
+  })
+
+  it('ROOMS_FAILED stores the error message', () => {
+    const next = roomEventsReducer(initialState, { type: 'ROOMS_FAILED', error: 'boom' })
+    expect(next.roomsError).toBe('boom')
+  })
+})
