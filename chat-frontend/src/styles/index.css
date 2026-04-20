@@ -483,3 +483,51 @@ body {
   flex: 1;
   overflow-y: auto;
 }
+
+/* Unread + mention badges */
+.room-item-unread .room-name {
+  font-weight: 700;
+  color: #fff;
+}
+
+.room-item-unread::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5865f2;
+  margin-right: 0.375rem;
+  flex-shrink: 0;
+}
+
+.room-badge-unread {
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: #5865f2;
+  color: #fff;
+  margin-left: 0.375rem;
+  flex-shrink: 0;
+}
+
+.room-badge-mention,
+.room-badge-mention-all {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  margin-left: 0.375rem;
+  flex-shrink: 0;
+  color: #fff;
+}
+
+.room-badge-mention {
+  background: #faa61a;
+}
+
+.room-badge-mention-all {
+  background: #ed4245;
+}
