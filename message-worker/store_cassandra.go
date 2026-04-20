@@ -114,10 +114,39 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 	return nil
 }
 
+// casMaxRetries is the maximum number of CAS attempts per tcount increment.
+// A conflict means another thread-reply landed between our read and write;
+// 16 attempts is sufficient for any realistic burst while preventing an
+// infinite loop if something unexpected keeps the row locked.
+const casMaxRetries = 16
+
+// casIncrement atomically increments the nullable INT counter starting at
+// initial by calling update(newVal, expected) in a retry loop. On conflict
+// (applied==false) it retries with the value returned by update.  Returns an
+// error after maxRetries consecutive failures.
+func casIncrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
+	tcount := initial
+	for range maxRetries {
+		newVal := 1
+		if tcount != nil {
+			newVal = *tcount + 1
+		}
+		applied, current, err := update(newVal, tcount)
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
+		tcount = current
+	}
+	return fmt.Errorf("cas increment exceeded %d retries", maxRetries)
+}
+
 // incrementParentTcount increments tcount on the parent message row in both
 // messages_by_id and messages_by_room using Cassandra Lightweight Transactions
-// (IF tcount = ?). Each table is incremented independently via a CAS retry loop:
-// on conflict ScanCAS returns the current value so the next attempt uses it.
+// (IF tcount = ?). Each table is incremented independently via casIncrement,
+// which retries up to casMaxRetries times on CAS conflict.
 // Binding a nil *int as the IF condition evaluates to IF tcount = null, which
 // handles the initial case where tcount has never been set on the parent row.
 // If ThreadParentMessageCreatedAt is nil the increment is silently skipped —
@@ -140,23 +169,15 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 		}
 		return fmt.Errorf("read tcount for parent message %s: %w", parentID, err)
 	}
-	for {
-		newVal := 1
-		if tcount != nil {
-			newVal = *tcount + 1
-		}
+	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
 		var current *int
 		applied, err := s.cassSession.Query(
 			`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ? IF tcount = ?`,
-			newVal, parentID, parentCreatedAt, tcount,
+			newVal, parentID, parentCreatedAt, expected,
 		).WithContext(ctx).ScanCAS(&current)
-		if err != nil {
-			return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
-		}
-		if applied {
-			break
-		}
-		tcount = current
+		return applied, current, err
+	}); err != nil {
+		return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
 	}
 
 	// CAS increment on messages_by_room.
@@ -169,23 +190,15 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 		}
 		return fmt.Errorf("read tcount in messages_by_room for parent %s: %w", parentID, err)
 	}
-	for {
-		newVal := 1
-		if tcount != nil {
-			newVal = *tcount + 1
-		}
+	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
 		var current *int
 		applied, err := s.cassSession.Query(
 			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
-			newVal, msg.RoomID, parentCreatedAt, parentID, tcount,
+			newVal, msg.RoomID, parentCreatedAt, parentID, expected,
 		).WithContext(ctx).ScanCAS(&current)
-		if err != nil {
-			return fmt.Errorf("cas tcount in messages_by_room for parent %s: %w", parentID, err)
-		}
-		if applied {
-			break
-		}
-		tcount = current
+		return applied, current, err
+	}); err != nil {
+		return fmt.Errorf("cas tcount in messages_by_room for parent %s: %w", parentID, err)
 	}
 
 	return nil
