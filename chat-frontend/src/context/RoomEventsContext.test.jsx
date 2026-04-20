@@ -136,3 +136,121 @@ describe('RoomEventsProvider', () => {
     }
   })
 })
+
+function makeSub() {
+  const handlers = []
+  return {
+    handlers,
+    sub: {
+      unsubscribe: vi.fn(),
+    },
+    deliver: (data) => handlers.forEach((h) => h(data)),
+  }
+}
+
+describe('RoomEventsProvider subscriptions', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('fetches rooms on mount and subscribes to user-scoped events', async () => {
+    const rooms = [
+      { id: 'g1', name: 'group', type: 'group', siteId: 'site-A', userCount: 3, lastMsgAt: '2026-04-17T10:00:00Z' },
+      { id: 'd1', name: 'dm',    type: 'dm',    siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T11:00:00Z' },
+    ]
+    const request = vi.fn().mockImplementation((subject) => {
+      if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms })
+      throw new Error('unexpected request: ' + subject)
+    })
+    const subjects = []
+    const subscribe = vi.fn().mockImplementation((subject) => {
+      subjects.push(subject)
+      return { unsubscribe: vi.fn() }
+    })
+    const nats = mockNats({ request, subscribe })
+
+    render(wrap(<SummariesProbe />, nats))
+    await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('2'))
+
+    expect(subjects).toContain('chat.user.alice.event.room')
+    expect(subjects).toContain('chat.user.alice.event.subscription.update')
+    expect(subjects).toContain('chat.user.alice.event.room.metadata.update')
+    expect(subjects).toContain('chat.room.g1.event')
+    expect(subjects).not.toContain('chat.room.d1.event')
+  })
+
+  it('applies DM events from the user-scoped subscription', async () => {
+    const rooms = [{ id: 'd1', name: 'dm', type: 'dm', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
+    const request = vi.fn().mockResolvedValue({ rooms })
+    const handlers = new Map()
+    const subscribe = vi.fn().mockImplementation((subject, cb) => {
+      handlers.set(subject, cb)
+      return { unsubscribe: vi.fn() }
+    })
+    const nats = mockNats({ request, subscribe })
+
+    render(wrap(<EventsProbe roomId="d1" />, nats))
+    await waitFor(() => expect(subscribe).toHaveBeenCalled())
+
+    act(() => {
+      handlers.get('chat.user.alice.event.room')({
+        type: 'new_message',
+        roomId: 'd1',
+        hasMention: false,
+        lastMsgAt: '2026-04-17T12:00:00Z',
+        lastMsgId: 'mdm1',
+        message: { id: 'mdm1', roomId: 'd1', content: 'hey', createdAt: '2026-04-17T12:00:00Z', sender: { account: 'bob' } },
+      })
+    })
+    await waitFor(() => expect(screen.getByTestId('messages').textContent).toBe('mdm1'))
+  })
+
+  it('opens a new group subscription when a group room is added', async () => {
+    const request = vi.fn().mockResolvedValue({ rooms: [] })
+    const handlers = new Map()
+    const subscribe = vi.fn().mockImplementation((subject, cb) => {
+      handlers.set(subject, cb)
+      return { unsubscribe: vi.fn() }
+    })
+    const nats = mockNats({ request, subscribe })
+
+    render(wrap(<SummariesProbe />, nats))
+    await waitFor(() => expect(subscribe).toHaveBeenCalled())
+
+    act(() => {
+      handlers.get('chat.user.alice.event.subscription.update')({
+        action: 'added',
+        subscription: { roomId: 'g2' },
+        room: { id: 'g2', name: 'new', type: 'group', siteId: 'site-A', userCount: 1, lastMsgAt: null },
+      })
+    })
+    await waitFor(() =>
+      expect(subscribe.mock.calls.map((c) => c[0])).toContain('chat.room.g2.event')
+    )
+    expect(screen.getByTestId('count').textContent).toBe('1')
+  })
+
+  it('drops state and unsubscribes on room removal', async () => {
+    const rooms = [{ id: 'g1', name: 'g', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
+    const request = vi.fn().mockResolvedValue({ rooms })
+    const unsubs = []
+    const handlers = new Map()
+    const subscribe = vi.fn().mockImplementation((subject, cb) => {
+      handlers.set(subject, cb)
+      const sub = { unsubscribe: vi.fn() }
+      if (subject === 'chat.room.g1.event') unsubs.push(sub)
+      return sub
+    })
+    const nats = mockNats({ request, subscribe })
+
+    render(wrap(<SummariesProbe />, nats))
+    await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('1'))
+
+    act(() => {
+      handlers.get('chat.user.alice.event.subscription.update')({
+        action: 'removed',
+        subscription: { roomId: 'g1' },
+      })
+    })
+    await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('0'))
+    expect(unsubs[0].unsubscribe).toHaveBeenCalled()
+  })
+})

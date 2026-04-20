@@ -1,16 +1,110 @@
-import { createContext, useCallback, useContext, useMemo, useReducer, useRef } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react'
 import { useNats } from './NatsContext'
 import { initialState, roomEventsReducer } from '../lib/roomEventsReducer'
-import { msgHistory } from '../lib/subjects'
+import {
+  msgHistory,
+  roomEvent,
+  roomsGet,
+  roomsList,
+  subscriptionUpdate,
+  roomMetadataUpdate,
+  userRoomEvent,
+} from '../lib/subjects'
 
 const RoomEventsContext = createContext(null)
 
 export function RoomEventsProvider({ children }) {
-  const { user, request } = useNats()
+  const { user, request, subscribe } = useNats()
   const [state, dispatch] = useReducer(roomEventsReducer, initialState)
   const inflightHistory = useRef(new Map())
   const stateRef = useRef(state)
   stateRef.current = state
+
+  const groupSubs = useRef(new Map())
+
+  useEffect(() => {
+    if (!user) return
+    let cancelled = false
+
+    const dmSub = subscribe(userRoomEvent(user.account), (evt) => {
+      if (evt?.type === 'new_message') {
+        dispatch({ type: 'MESSAGE_RECEIVED', event: evt })
+      }
+    })
+
+    const openGroupSub = (roomId) => {
+      if (groupSubs.current.has(roomId)) return
+      const sub = subscribe(roomEvent(roomId), (evt) => {
+        if (evt?.type === 'new_message') {
+          dispatch({ type: 'MESSAGE_RECEIVED', event: evt })
+        }
+      })
+      groupSubs.current.set(roomId, sub)
+    }
+
+    const closeGroupSub = (roomId) => {
+      const sub = groupSubs.current.get(roomId)
+      if (sub) {
+        sub.unsubscribe()
+        groupSubs.current.delete(roomId)
+      }
+    }
+
+    const subUpdate = subscribe(subscriptionUpdate(user.account), (evt) => {
+      if (evt.action === 'added') {
+        if (evt.room) {
+          dispatch({ type: 'ROOM_ADDED', room: evt.room })
+          if (evt.room.type === 'group') openGroupSub(evt.room.id)
+        } else if (evt.subscription?.roomId) {
+          request(roomsGet(user.account, evt.subscription.roomId), {})
+            .then((room) => {
+              if (cancelled || !room) return
+              dispatch({ type: 'ROOM_ADDED', room })
+              if (room.type === 'group') openGroupSub(room.id)
+            })
+            .catch(() => {})
+        }
+      } else if (evt.action === 'removed') {
+        const roomId = evt.subscription?.roomId
+        if (!roomId) return
+        closeGroupSub(roomId)
+        dispatch({ type: 'ROOM_REMOVED', roomId })
+      }
+    })
+
+    const metaUpdate = subscribe(roomMetadataUpdate(user.account), (evt) => {
+      dispatch({
+        type: 'ROOM_METADATA_UPDATED',
+        roomId: evt.roomId,
+        name: evt.name,
+        userCount: evt.userCount,
+        lastMsgAt: evt.lastMsgAt,
+      })
+    })
+
+    request(roomsList(user.account), {})
+      .then((resp) => {
+        if (cancelled) return
+        const rooms = resp.rooms ?? []
+        dispatch({ type: 'ROOMS_LOADED', rooms })
+        for (const r of rooms) {
+          if (r.type === 'group') openGroupSub(r.id)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) dispatch({ type: 'ROOMS_FAILED', error: err.message })
+      })
+
+    return () => {
+      cancelled = true
+      dmSub.unsubscribe()
+      subUpdate.unsubscribe()
+      metaUpdate.unsubscribe()
+      for (const sub of groupSubs.current.values()) sub.unsubscribe()
+      groupSubs.current.clear()
+      dispatch({ type: 'RESET' })
+    }
+  }, [user, subscribe, request])
 
   const loadHistory = useCallback(
     async (roomId) => {
