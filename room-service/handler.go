@@ -571,7 +571,11 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 }
 
 func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
-	account, _, _, _ := subject.ParseUserRoomSiteSubject(m.Msg.Subject)
+	parts := strings.Split(m.Msg.Subject, ".")
+	var account string
+	if len(parts) > 2 {
+		account = parts[2]
+	}
 	resp, err := h.handleRoomsInfoBatch(m.Context(), account, m.Msg.Data)
 	if err != nil {
 		natsutil.ReplyError(m.Msg, err.Error())
@@ -630,17 +634,8 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data
 		return nil, err
 	}
 
-	infos := h.aggregateRoomInfo(req.RoomIDs, rooms, keys)
+	infos, foundCount, keyedCount := h.aggregateRoomInfo(req.RoomIDs, rooms, keys)
 
-	foundCount, keyedCount := 0, 0
-	for _, ri := range infos {
-		if ri.Found {
-			foundCount++
-		}
-		if ri.PrivateKey != nil {
-			keyedCount++
-		}
-	}
 	slog.Info("rooms info batch handled",
 		"account", account,
 		"site_id", h.siteID,
@@ -653,12 +648,13 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data
 	return json.Marshal(model.RoomsInfoBatchResponse{Rooms: infos})
 }
 
-func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[string]*roomkeystore.VersionedKeyPair) []model.RoomInfo {
+func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[string]*roomkeystore.VersionedKeyPair) ([]model.RoomInfo, int, int) {
 	byID := make(map[string]*model.Room, len(rooms))
 	for i := range rooms {
 		byID[rooms[i].ID] = &rooms[i]
 	}
 	out := make([]model.RoomInfo, len(ids))
+	var foundCount, keyedCount int
 	for i, id := range ids {
 		entry := model.RoomInfo{RoomID: id}
 		r, ok := byID[id]
@@ -667,6 +663,7 @@ func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[s
 			continue
 		}
 		entry.Found = true
+		foundCount++
 		entry.SiteID = r.SiteID
 		entry.Name = r.Name
 		if !r.LastMsgAt.IsZero() {
@@ -677,8 +674,9 @@ func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[s
 			ver := kp.Version
 			entry.PrivateKey = &enc
 			entry.KeyVersion = &ver
+			keyedCount++
 		}
 		out[i] = entry
 	}
-	return out
+	return out, foundCount, keyedCount
 }

@@ -44,13 +44,12 @@ type RoomsInfoBatchRequest struct {
 }
 
 // RoomInfo is a single aggregated room record: Mongo metadata + Valkey key.
-// LastMsgAt has no omitempty — it is always emitted so callers can distinguish
-// "found, never messaged" (lastMsgAt: 0) from "not found" (found: false).
 type RoomInfo struct {
-	RoomID     string  `json:"roomId"`
-	Found      bool    `json:"found"`
-	SiteID     string  `json:"siteId,omitempty"`
-	Name       string  `json:"name,omitempty"`
+	RoomID string `json:"roomId"`
+	Found  bool   `json:"found"`
+	SiteID string `json:"siteId,omitempty"`
+	Name   string `json:"name,omitempty"`
+	// No omitempty: always emitted so callers distinguish "never messaged" (0) from "not found" (found=false).
 	LastMsgAt  int64   `json:"lastMsgAt"`
 	PrivateKey *string `json:"privateKey,omitempty"`
 	KeyVersion *int    `json:"keyVersion,omitempty"`

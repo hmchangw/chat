@@ -1549,8 +1549,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 
 			if tc.wantErr != "" {
 				require.Error(t, err)
-				assert.True(t, strings.Contains(err.Error(), tc.wantErr),
-					"error %q should contain %q", err.Error(), tc.wantErr)
+				assert.Contains(t, err.Error(), tc.wantErr)
 				return
 			}
 
