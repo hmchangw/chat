@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -20,10 +21,10 @@ type Handler struct {
 	store           RoomStore
 	siteID          string
 	maxRoomSize     int
-	publishToStream func(ctx context.Context, data []byte) error
+	publishToStream func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, siteID string, maxRoomSize int, publishToStream func(context.Context, []byte) error) *Handler {
+func NewHandler(store RoomStore, siteID string, maxRoomSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
 	return &Handler{store: store, siteID: siteID, maxRoomSize: maxRoomSize, publishToStream: publishToStream}
 }
 
@@ -38,6 +39,18 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	}
 	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
 		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.MemberInviteWildcard(h.siteID), queue, h.NatsHandleInvite); err != nil {
+		return fmt.Errorf("subscribe member invite: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.MemberRoleUpdateWildcard(h.siteID), queue, h.natsUpdateRole); err != nil {
+		return fmt.Errorf("subscribe member role update: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.MemberRemoveWildcard(h.siteID), queue, h.NatsHandleRemoveMember); err != nil {
+		return fmt.Errorf("subscribe member remove: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.MemberAddWildcard(h.siteID), queue, h.natsAddMembers); err != nil {
+		return fmt.Errorf("subscribe member add: %w", err)
 	}
 	return nil
 }
@@ -77,7 +90,8 @@ func (h *Handler) natsGetRoom(m otelnats.Msg) {
 func (h *Handler) NatsHandleInvite(m otelnats.Msg) {
 	resp, err := h.handleInvite(m.Context(), m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
+		slog.Error("invite failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -113,7 +127,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		User:               model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByAccount},
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
-		Role:               model.RoleOwner,
+		Roles:              []model.Role{model.RoleOwner},
 		HistorySharedSince: &now,
 		JoinedAt:           now,
 	}
@@ -122,6 +136,97 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 	}
 
 	return json.Marshal(room)
+}
+
+// NatsHandleRemoveMember handles remove-member authorization requests.
+func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
+	resp, err := h.handleRemoveMember(m.Context(), m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("remove member failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
+}
+
+func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	requesterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid remove-member subject: %s", subj)
+	}
+
+	var req model.RemoveMemberRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.RoomID != "" && req.RoomID != roomID {
+		return nil, fmt.Errorf("room ID mismatch")
+	}
+	req.RoomID = roomID
+	req.Requester = requesterAccount
+
+	// Exactly one of Account or OrgID must be set.
+	if (req.Account == "") == (req.OrgID == "") {
+		return nil, fmt.Errorf("exactly one of account or orgId must be set")
+	}
+
+	if req.Account != "" {
+		// Individual removal (self-leave or owner-removes-other). Validation runs
+		// cheapest-first: target membership → requester role (owner-removes only)
+		// → room counts. Each step short-circuits so we never run the more
+		// expensive count aggregation for requests that would fail early anyway.
+		target, err := h.store.GetSubscriptionWithMembership(ctx, roomID, req.Account)
+		if err != nil {
+			return nil, fmt.Errorf("get target subscription: %w", err)
+		}
+		if target.HasOrgMembership && !target.HasIndividualMembership {
+			return nil, fmt.Errorf("org members cannot leave individually")
+		}
+		if req.Account != requesterAccount {
+			requesterSub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
+			if err != nil {
+				return nil, fmt.Errorf("get requester subscription: %w", err)
+			}
+			if !hasRole(requesterSub.Roles, model.RoleOwner) {
+				return nil, fmt.Errorf("only owners can remove members")
+			}
+		}
+		counts, err := h.store.CountMembersAndOwners(ctx, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("count members: %w", err)
+		}
+		if counts.MemberCount <= 1 {
+			return nil, fmt.Errorf("cannot remove the last member of the room")
+		}
+		if hasRole(target.Subscription.Roles, model.RoleOwner) && counts.OwnerCount <= 1 {
+			return nil, fmt.Errorf("last owner cannot leave the room")
+		}
+	} else {
+		// Owner-removes-org path: only the requester's owner role matters; the org
+		// member set is resolved downstream in room-worker.
+		sub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("get requester subscription: %w", err)
+		}
+		if !hasRole(sub.Roles, model.RoleOwner) {
+			return nil, fmt.Errorf("only owners can remove members")
+		}
+	}
+
+	// Publish to ROOMS stream for room-worker processing.
+	var err error
+	data, err = json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal remove member request: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.remove"), data); err != nil {
+		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+
+	return json.Marshal(map[string]string{"status": "accepted"})
 }
 
 func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([]byte, error) {
@@ -136,7 +241,7 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 	if err != nil {
 		return nil, fmt.Errorf("inviter not found: %w", err)
 	}
-	if sub.Role != model.RoleOwner {
+	if !hasRole(sub.Roles, model.RoleOwner) {
 		return nil, fmt.Errorf("only owners can invite members")
 	}
 
@@ -164,9 +269,217 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 	}
 
 	// Publish to ROOMS stream for room-worker processing
-	if err := h.publishToStream(ctx, timestampedData); err != nil {
+	if err := h.publishToStream(ctx, subject.MemberInvite(inviterAccount, roomID, h.siteID), timestampedData); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
 	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+func (h *Handler) natsUpdateRole(m otelnats.Msg) {
+	resp, err := h.handleUpdateRole(m.Context(), m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("update role failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to update-role message", "error", err)
+	}
+}
+
+func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	requester, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid subject: %s", subj)
+	}
+	var req model.UpdateRoleRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if req.RoomID != "" && req.RoomID != roomID {
+		return nil, fmt.Errorf("invalid request: room ID mismatch")
+	}
+	req.RoomID = roomID
+	if req.NewRole != model.RoleOwner && req.NewRole != model.RoleMember {
+		return nil, errInvalidRole
+	}
+	room, err := h.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("get room: %w", err)
+	}
+	if room.Type != model.RoomTypeGroup {
+		return nil, errRoomTypeGuard
+	}
+	requesterSub, err := h.store.GetSubscription(ctx, requester, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("requester not found: %w", err)
+	}
+	if !hasRole(requesterSub.Roles, model.RoleOwner) {
+		return nil, errOnlyOwners
+	}
+	targetSub, err := h.store.GetSubscription(ctx, req.Account, roomID)
+	if err != nil {
+		if errors.Is(err, model.ErrSubscriptionNotFound) {
+			return nil, errTargetNotMember
+		}
+		return nil, fmt.Errorf("get target subscription: %w", err)
+	}
+	// Promote: target must not already be owner. Demote: target must be owner.
+	if req.NewRole == model.RoleOwner && hasRole(targetSub.Roles, model.RoleOwner) {
+		return nil, errAlreadyOwner
+	}
+	if req.NewRole == model.RoleMember && !hasRole(targetSub.Roles, model.RoleOwner) {
+		return nil, errNotOwner
+	}
+	// Last-owner guard: only needed for self-demotion since rule #5 guarantees
+	// requester is an owner, so demoting another owner always leaves the requester as owner.
+	if req.NewRole == model.RoleMember && req.Account == requester {
+		count, err := h.store.CountOwners(ctx, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("count owners: %w", err)
+		}
+		if count <= 1 {
+			return nil, errCannotDemoteLast
+		}
+	}
+	data, err = json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal role update request: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.role-update"), data); err != nil {
+		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+	return json.Marshal(map[string]string{"status": "accepted"})
+}
+
+func (h *Handler) natsAddMembers(m otelnats.Msg) {
+	resp, err := h.handleAddMembers(m.Context(), m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("add-members failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to add-members", "error", err)
+	}
+}
+
+func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	// 1. Parse subject → requester, roomID
+	requester, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid add-members subject: %s", subj)
+	}
+
+	// 2. Verify requester is in room
+	sub, err := h.store.GetSubscription(ctx, requester, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("requester not in room: %w", err)
+	}
+
+	// 3. Get room and guard on type
+	room, err := h.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("get room: %w", err)
+	}
+	if room.Type != model.RoomTypeChannel {
+		return nil, fmt.Errorf("cannot add members to a non-channel room")
+	}
+	if room.Restricted && !hasRole(sub.Roles, model.RoleOwner) {
+		return nil, fmt.Errorf("only owners can add members to a restricted room")
+	}
+
+	// 4. Unmarshal request
+	var req model.AddMembersRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if req.RoomID != "" && req.RoomID != roomID {
+		return nil, fmt.Errorf("invalid request: room ID mismatch")
+	}
+
+	// 5. Expand channels
+	channelOrgIDs, channelAccounts, err := h.expandChannels(ctx, req.Channels)
+	if err != nil {
+		return nil, fmt.Errorf("expand channels: %w", err)
+	}
+
+	// 6. Dedup orgs and direct accounts
+	allOrgs := dedup(append(req.Orgs, channelOrgIDs...))
+	allUsers := dedup(append(req.Users, channelAccounts...))
+
+	// 7. Resolve accounts (net new only)
+	newAccounts, err := h.store.ResolveAccounts(ctx, allOrgs, allUsers, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve accounts: %w", err)
+	}
+
+	// 8. Capacity check
+	currentCount, err := h.store.CountSubscriptions(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("count subscriptions: %w", err)
+	}
+	if currentCount+len(newAccounts) > h.maxRoomSize {
+		return nil, fmt.Errorf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, len(newAccounts), currentCount)
+	}
+
+	// 9. Normalize and publish
+	req.Users = newAccounts
+	req.Orgs = allOrgs
+	req.RoomID = roomID
+	req.RequesterID = sub.User.ID
+	req.RequesterAccount = sub.User.Account
+	req.Timestamp = time.Now().UTC().UnixMilli()
+	normalized, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal add-members request: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.add"), normalized); err != nil {
+		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+
+	// 10. Reply accepted
+	return json.Marshal(map[string]string{"status": "accepted"})
+}
+
+func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgIDs, accounts []string, err error) {
+	if len(channelIDs) == 0 {
+		return nil, nil, nil
+	}
+
+	// Batch fetch room_members for all channels
+	roomMembers, err := h.store.GetRoomMembersByRooms(ctx, channelIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get room members: %w", err)
+	}
+
+	// Build set of channels that have room_members
+	channelsWithMembers := make(map[string]struct{})
+	for _, rm := range roomMembers {
+		channelsWithMembers[rm.RoomID] = struct{}{}
+		switch rm.Member.Type {
+		case model.RoomMemberOrg:
+			orgIDs = append(orgIDs, rm.Member.ID)
+		case model.RoomMemberIndividual:
+			accounts = append(accounts, rm.Member.Account)
+		}
+	}
+
+	// Channels without room_members — fallback to GetAccountsByRooms
+	var noMemberChannels []string
+	for _, chID := range channelIDs {
+		if _, ok := channelsWithMembers[chID]; !ok {
+			noMemberChannels = append(noMemberChannels, chID)
+		}
+	}
+	if len(noMemberChannels) > 0 {
+		fallbackAccounts, err := h.store.GetAccountsByRooms(ctx, noMemberChannels)
+		if err != nil {
+			return nil, nil, fmt.Errorf("get accounts by rooms: %w", err)
+		}
+		accounts = append(accounts, fallbackAccounts...)
+	}
+
+	return orgIDs, accounts, nil
 }

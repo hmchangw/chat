@@ -1,0 +1,13 @@
+{
+  "event": "created",
+  "siteId": "site1",
+  "timestamp": 1744891260000,
+  "message": {
+    "id": "m-group-mention-bob",
+    "roomId": "group-1",
+    "userId": "u-alice",
+    "userAccount": "alice",
+    "content": "hey @bob can you review?",
+    "createdAt": "2026-04-17T12:01:00Z"
+  }
+}

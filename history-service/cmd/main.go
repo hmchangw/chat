@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
-
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/config"
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
@@ -16,6 +14,7 @@ import (
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
@@ -37,7 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	nc, err := otelnats.Connect(cfg.NATS.URL)
+	nc, err := natsutil.Connect(cfg.NATS.URL, cfg.NATS.CredsFile)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)

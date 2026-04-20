@@ -33,10 +33,6 @@ type Config struct {
 	IssuerURL     string
 	Audience      string
 	TLSSkipVerify bool
-
-	// VerifyAZP checks the "azp" (authorized party) claim instead of "aud".
-	// Keycloak often sets aud to "account" and puts the client_id in azp.
-	VerifyAZP bool
 }
 
 // Validator verifies OIDC tokens against an issuer's JWKS endpoint.
@@ -44,7 +40,6 @@ type Validator struct {
 	verifier   *oidc.IDTokenVerifier
 	httpClient *http.Client
 	audience   string
-	verifyAZP  bool
 }
 
 const issuerDiscoveryTimeout = 10 * time.Second
@@ -83,21 +78,16 @@ func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
 		ClientID: cfg.Audience,
 	}
 
-	// When verifying azp instead of aud, tell go-oidc to skip its aud check.
-	if cfg.VerifyAZP {
-		oidcConfig.SkipClientIDCheck = true
-	}
-
 	return &Validator{
 		verifier:   provider.Verifier(oidcConfig),
 		httpClient: httpClient,
 		audience:   cfg.Audience,
-		verifyAZP:  cfg.VerifyAZP,
 	}, nil
 }
 
 // Validate verifies the raw OIDC token string and extracts user claims.
-// Returns ErrTokenExpired if the token's exp claim is in the past.
+// Returns ErrTokenExpired if the token's exp claim is in the past — expiry
+// is enforced by go-oidc's Verifier, we just translate its sentinel error.
 func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, error) {
 	// Re-attach the custom HTTP client so JWKS fetches also use TLSSkipVerify.
 	if v.httpClient != nil {
@@ -113,10 +103,6 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 		return Claims{}, fmt.Errorf("oidc token verification failed: %w", err)
 	}
 
-	if idToken.Expiry.Before(time.Now()) {
-		return Claims{}, ErrTokenExpired
-	}
-
 	var tokenClaims struct {
 		Email             string `json:"email"`
 		Name              string `json:"name"`
@@ -126,17 +112,10 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 		Description       string `json:"description"`
 		DeptID            string `json:"deptid"`
 		DeptName          string `json:"deptname"`
-		AZP               string `json:"azp"`
 	}
 
 	if err := idToken.Claims(&tokenClaims); err != nil {
 		return Claims{}, fmt.Errorf("parse oidc token claims: %w", err)
-	}
-
-	if v.verifyAZP {
-		if tokenClaims.AZP != v.audience {
-			return Claims{}, fmt.Errorf("oidc azp claim %q does not match expected audience %q", tokenClaims.AZP, v.audience)
-		}
 	}
 
 	// Parse all claims into Extra for custom fields (roles, groups, etc.)
@@ -148,7 +127,7 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 		"sub", "email", "name", "preferred_username",
 		"given_name", "family_name", "description", "deptid", "deptname",
 		"iss", "aud", "exp", "iat", "nbf", "jti",
-		"azp", "typ", "sid", "at_hash", "email_verified",
+		"typ", "sid", "at_hash", "email_verified",
 	} {
 		delete(allClaims, key)
 	}

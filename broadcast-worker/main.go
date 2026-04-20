@@ -15,17 +15,20 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 type config struct {
-	NatsURL    string `env:"NATS_URL"    envDefault:"nats://localhost:4222"`
-	SiteID     string `env:"SITE_ID"     envDefault:"default"`
-	MongoURI   string `env:"MONGO_URI"   envDefault:"mongodb://localhost:27017"`
-	MongoDB    string `env:"MONGO_DB"    envDefault:"chat"`
-	MaxWorkers int    `env:"MAX_WORKERS" envDefault:"100"`
+	NatsURL       string `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
+	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID        string `env:"SITE_ID"         envDefault:"default"`
+	MongoURI      string `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
+	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
+	MaxWorkers    int    `env:"MAX_WORKERS"     envDefault:"100"`
 }
 
 func main() {
@@ -51,9 +54,10 @@ func main() {
 		os.Exit(1)
 	}
 	db := mongoClient.Database(cfg.MongoDB)
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
 
-	nc, err := otelnats.Connect(cfg.NatsURL)
+	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)
@@ -84,7 +88,7 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(store, publisher)
+	handler := NewHandler(store, us, publisher)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {

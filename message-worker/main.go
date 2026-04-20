@@ -13,10 +13,10 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
-	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
@@ -25,10 +25,12 @@ import (
 
 type config struct {
 	NatsURL           string `env:"NATS_URL,required"`
+	NatsCredsFile     string `env:"NATS_CREDS_FILE"    envDefault:""`
 	SiteID            string `env:"SITE_ID,required"`
 	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
 	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
 	MaxWorkers        int    `env:"MAX_WORKERS"        envDefault:"100"`
+	MaxRedeliver      int    `env:"MAX_REDELIVER"      envDefault:"5"`
 	MongoURI          string `env:"MONGO_URI,required"`
 	MongoDB           string `env:"MONGO_DB"           envDefault:"chat"`
 }
@@ -50,7 +52,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	nc, err := otelnats.Connect(cfg.NatsURL)
+	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)
@@ -76,7 +78,12 @@ func main() {
 	us := userstore.NewMongoStore(db.Collection("users"))
 
 	store := NewCassandraStore(cassSession)
-	handler := NewHandler(store, us)
+	threadStore := newThreadStoreMongo(db)
+	if err := threadStore.EnsureIndexes(ctx); err != nil {
+		slog.Error("ensure thread store indexes failed", "error", err)
+		os.Exit(1)
+	}
+	handler := NewHandler(store, us, threadStore)
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
@@ -88,8 +95,9 @@ func main() {
 	}
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
-		Durable:   "message-worker",
-		AckPolicy: jetstream.AckExplicitPolicy,
+		Durable:    "message-worker",
+		AckPolicy:  jetstream.AckExplicitPolicy,
+		MaxDeliver: cfg.MaxRedeliver + 1, // initial delivery + MaxRedeliver retries
 	})
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)

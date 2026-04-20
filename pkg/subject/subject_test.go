@@ -26,6 +26,10 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.stream.msg"},
 		{"MemberInvite", subject.MemberInvite("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.member.invite"},
+		{"MemberRoleUpdate", subject.MemberRoleUpdate("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.member.role-update"},
+		{"RoomCanonical", subject.RoomCanonical("site-a", "invited"),
+			"chat.room.canonical.site-a.invited"},
 		{"SubscriptionUpdate", subject.SubscriptionUpdate("alice"),
 			"chat.user.alice.event.subscription.update"},
 		{"RoomMetadataChanged", subject.RoomMetadataChanged("alice"),
@@ -36,6 +40,10 @@ func TestSubjectBuilders(t *testing.T) {
 			"outbox.site-a.to.site-b.member_added"},
 		{"MsgCanonicalCreated", subject.MsgCanonicalCreated("site-a"),
 			"chat.msg.canonical.site-a.created"},
+		{"MsgCanonicalUpdated", subject.MsgCanonicalUpdated("site-a"),
+			"chat.msg.canonical.site-a.updated"},
+		{"MsgCanonicalDeleted", subject.MsgCanonicalDeleted("site-a"),
+			"chat.msg.canonical.site-a.deleted"},
 		{"RoomsCreate", subject.RoomsCreate("alice"),
 			"chat.user.alice.request.rooms.create"},
 		{"RoomsList", subject.RoomsList("alice"),
@@ -46,6 +54,12 @@ func TestSubjectBuilders(t *testing.T) {
 		{"UserRoomEvent", subject.UserRoomEvent("alice"), "chat.user.alice.event.room"},
 		{"RoomKeyUpdate", subject.RoomKeyUpdate("alice"),
 			"chat.user.alice.event.room.key"},
+		{"MemberRemove", subject.MemberRemove("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.member.remove"},
+		{"MemberAdd", subject.MemberAdd("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.member.add"},
+		{"MemberEvent", subject.MemberEvent("r1"),
+			"chat.room.r1.event.member"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -66,6 +80,7 @@ func TestParseUserRoomSubject(t *testing.T) {
 	}{
 		{"invite", "chat.user.alice.request.room.r1.site-a.member.invite", "alice", "r1", true},
 		{"history", "chat.user.alice.request.room.r1.site-a.msg.history", "alice", "r1", true},
+		{"role_update", "chat.user.alice.request.room.r1.site-a.member.role-update", "alice", "r1", true},
 		{"msg_send", "chat.user.alice.room.r1.site-a.msg.send", "alice", "r1", true},
 		{"too_short", "chat.user.alice", "", "", false},
 		{"no_room", "chat.user.alice.request.foo.bar", "", "", false},
@@ -119,7 +134,11 @@ func TestWildcardPatterns(t *testing.T) {
 		{"MsgSendWild", subject.MsgSendWildcard("site-a"),
 			"chat.user.*.room.*.site-a.msg.send"},
 		{"MemberInviteWild", subject.MemberInviteWildcard("site-a"),
-			"chat.user.*.request.room.*.site-a.member.>"},
+			"chat.user.*.request.room.*.site-a.member.invite"},
+		{"MemberRoleUpdateWild", subject.MemberRoleUpdateWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.member.role-update"},
+		{"RoomCanonicalWild", subject.RoomCanonicalWildcard("site-a"),
+			"chat.room.canonical.site-a.>"},
 		{"MsgHistoryWild", subject.MsgHistoryWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.msg.history"},
 		{"MsgCanonicalWild", subject.MsgCanonicalWildcard("site-a"),
@@ -132,6 +151,8 @@ func TestWildcardPatterns(t *testing.T) {
 			"chat.user.*.request.rooms.list"},
 		{"RoomsGetWild", subject.RoomsGetWildcard(),
 			"chat.user.*.request.rooms.get.*"},
+		{"MemberAddWild", subject.MemberAddWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.member.add"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

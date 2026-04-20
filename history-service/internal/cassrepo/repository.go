@@ -11,24 +11,36 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/models"
 )
 
-const messageQuery = "SELECT room_id, created_at, message_id, sender, target_user, " +
-	"msg, mentions, attachments, file, card, card_action, tshow, " +
-	"thread_parent_created_at, visible_to, unread, reactions, deleted, " +
-	"sys_msg_type, sys_msg_data, federate_from, edited_at, updated_at " +
-	"FROM messages_by_room"
+// baseColumns are shared across messages_by_room and messages_by_id.
+const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, target_user, " +
+	"msg, mentions, attachments, file, card, card_action, tshow, tcount, " +
+	"thread_parent_id, thread_parent_created_at, quoted_parent_message, " +
+	"visible_to, unread, reactions, deleted, " +
+	"type, sys_msg_data, site_id, edited_at, updated_at"
 
-// messageScanDest returns the Scan destination pointers for a Message in column order.
-func messageScanDest(m *models.Message) []any {
+// messageByIDExtraColumns are the columns only present in messages_by_id.
+const messageByIDExtraColumns = ", pinned_at, pinned_by"
+
+const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
+const messageByIDQuery = "SELECT " + baseColumns + messageByIDExtraColumns + " FROM messages_by_id"
+
+// baseScanDest returns Scan destination pointers for the baseColumns in order.
+func baseScanDest(m *models.Message) []any {
 	return []any{
-		&m.RoomID, &m.CreatedAt, &m.MessageID,
+		&m.RoomID, &m.CreatedAt, &m.MessageID, &m.ThreadRoomID,
 		&m.Sender, &m.TargetUser, &m.Msg,
 		&m.Mentions, &m.Attachments, &m.File,
-		&m.Card, &m.CardAction, &m.TShow,
-		&m.ThreadParentCreatedAt, &m.VisibleTo, &m.Unread,
-		&m.Reactions, &m.Deleted, &m.SysMsgType,
-		&m.SysMsgData, &m.FederateFrom, &m.EditedAt,
-		&m.UpdatedAt,
+		&m.Card, &m.CardAction, &m.TShow, &m.TCount,
+		&m.ThreadParentID, &m.ThreadParentCreatedAt, &m.QuotedParentMessage,
+		&m.VisibleTo, &m.Unread, &m.Reactions,
+		&m.Deleted, &m.Type, &m.SysMsgData,
+		&m.SiteID, &m.EditedAt, &m.UpdatedAt,
 	}
+}
+
+// messageByIDScanDest returns Scan destination pointers for all messages_by_id columns.
+func messageByIDScanDest(m *models.Message) []any {
+	return append(baseScanDest(m), &m.PinnedAt, &m.PinnedBy)
 }
 
 // Repository implements service.MessageRepository using Cassandra.
@@ -45,7 +57,7 @@ func scanMessages(iter *gocql.Iter) []models.Message {
 	messages := make([]models.Message, 0)
 	for {
 		var m models.Message
-		if !iter.Scan(messageScanDest(&m)...) {
+		if !iter.Scan(baseScanDest(&m)...) {
 			break
 		}
 		messages = append(messages, m)
@@ -59,7 +71,7 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, befor
 
 	nextCursor, err := NewQueryBuilder(
 		r.session.Query(
-			messageQuery+` WHERE room_id = ? AND created_at < ? ORDER BY created_at DESC`,
+			messageByRoomQuery+` WHERE room_id = ? AND created_at < ? ORDER BY created_at DESC`,
 			roomID, before,
 		).WithContext(ctx),
 	).
@@ -86,7 +98,7 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 
 	nextCursor, err := NewQueryBuilder(
 		r.session.Query(
-			messageQuery+` WHERE room_id = ? AND created_at > ? AND created_at < ? ORDER BY created_at DESC`,
+			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? AND created_at < ? ORDER BY created_at DESC`,
 			roomID, since, before,
 		).WithContext(ctx),
 	).
@@ -112,7 +124,7 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 
 	nextCursor, err := NewQueryBuilder(
 		r.session.Query(
-			messageQuery+` WHERE room_id = ? AND created_at > ? ORDER BY created_at ASC`,
+			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? ORDER BY created_at ASC`,
 			roomID, after,
 		).WithContext(ctx),
 	).
@@ -139,7 +151,7 @@ func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q Pag
 
 	nextCursor, err := NewQueryBuilder(
 		r.session.Query(
-			messageQuery+` WHERE room_id = ? ORDER BY created_at ASC`,
+			messageByRoomQuery+` WHERE room_id = ? ORDER BY created_at ASC`,
 			roomID,
 		).WithContext(ctx),
 	).
@@ -159,19 +171,19 @@ func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q Pag
 	}, nil
 }
 
-// GetMessage returns a single message using the full primary key (room_id, created_at, message_id).
+// GetMessageByID returns a single message from the messages_by_id lookup table.
 // Returns (nil, nil) if the message is not found.
-func (r *Repository) GetMessage(ctx context.Context, roomID string, createdAt time.Time, messageID string) (*models.Message, error) {
+func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*models.Message, error) {
 	var m models.Message
 	err := r.session.Query(
-		messageQuery+` WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-		roomID, createdAt, messageID,
-	).WithContext(ctx).Scan(messageScanDest(&m)...)
+		messageByIDQuery+` WHERE message_id = ?`,
+		messageID,
+	).WithContext(ctx).Scan(messageByIDScanDest(&m)...)
 	if errors.Is(err, gocql.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("querying message: %w", err)
+		return nil, fmt.Errorf("querying message by id: %w", err)
 	}
 	return &m, nil
 }

@@ -61,6 +61,7 @@ const (
 	CodeNotFound   = "not_found"
 	CodeForbidden  = "forbidden"
 	CodeConflict   = "conflict"
+	CodeInternal   = "internal"
 )
 
 // ErrBadRequest creates a user-facing bad request error.
@@ -74,3 +75,6 @@ func ErrForbidden(message string) *RouteError { return ErrWithCode(CodeForbidden
 
 // ErrConflict creates a user-facing conflict error.
 func ErrConflict(message string) *RouteError { return ErrWithCode(CodeConflict, message) }
+
+// ErrInternal creates a user-facing internal error.
+func ErrInternal(message string) *RouteError { return ErrWithCode(CodeInternal, message) }

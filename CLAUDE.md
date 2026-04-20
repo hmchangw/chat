@@ -230,6 +230,9 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Use `cassutil.Connect` from `pkg/cassutil` — `LocalQuorum` consistency, 10-second timeout
 - Cassandra is ONLY for message history (time-series) — MongoDB handles everything else
 - Design tables around query patterns (partition key = room ID, clustering key = timestamp), no secondary indexes
+- `docs/cassandra_message_model.md` is the single source of truth for the message schema. Any PR that touches it MUST, in the same PR, update both downstream mirrors:
+  1. The Go UDT/row structs in `pkg/model/cassandra/` (keep `cql:"…"` tags aligned with the columns).
+  2. The init DDL under `docker-local/cassandra/init/*.cql` that creates the types and tables.
 
 ### HTTP (Gin + Resty)
 - Use Gin for all HTTP servers — never `net/http` mux directly
@@ -247,7 +250,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Always provide `envDefault` for non-critical config (port, database name, log level); never default secrets or connection strings — mark them `required`
 
 ### Docker
-- Multi-stage Dockerfiles: `golang:1.25-alpine` builder, `alpine:3.21` runtime
+- Multi-stage Dockerfiles: `golang:1.25.8-alpine` builder, `alpine:3.21` runtime
 - Location: `<service>/deploy/Dockerfile`
 - Build context: repo root so `pkg/` and `go.mod` are accessible
 - Docker Compose for local dev only — include only the dependencies the service needs

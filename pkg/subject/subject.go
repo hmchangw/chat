@@ -61,6 +61,22 @@ func MemberInvite(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", account, roomID, siteID)
 }
 
+func MemberRoleUpdate(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.role-update", account, roomID, siteID)
+}
+
+func MemberRemove(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.remove", account, roomID, siteID)
+}
+
+func MemberEvent(roomID string) string {
+	return fmt.Sprintf("chat.room.%s.event.member", roomID)
+}
+
+func RoomCanonical(siteID, operation string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.%s", siteID, operation)
+}
+
 func SubscriptionUpdate(account string) string {
 	return fmt.Sprintf("chat.user.%s.event.subscription.update", account)
 }
@@ -79,6 +95,14 @@ func Outbox(siteID, destSiteID, eventType string) string {
 
 func MsgCanonicalCreated(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.created", siteID)
+}
+
+func MsgCanonicalUpdated(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.updated", siteID)
+}
+
+func MsgCanonicalDeleted(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.deleted", siteID)
 }
 
 func RoomEvent(roomID string) string {
@@ -114,7 +138,19 @@ func MsgSendWildcard(siteID string) string {
 }
 
 func MemberInviteWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.>", siteID)
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.invite", siteID)
+}
+
+func MemberRoleUpdateWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.role-update", siteID)
+}
+
+func MemberRemoveWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.remove", siteID)
+}
+
+func RoomCanonicalWildcard(siteID string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.>", siteID)
 }
 
 func MsgHistoryWildcard(siteID string) string {
@@ -157,4 +193,16 @@ func MsgSurroundingPattern(siteID string) string {
 
 func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
+}
+
+func MemberAdd(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.add", account, roomID, siteID)
+}
+
+func MemberAddWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.add", siteID)
+}
+
+func RoomMemberEvent(roomID string) string {
+	return fmt.Sprintf("chat.room.%s.event.member", roomID)
 }

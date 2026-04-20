@@ -2,10 +2,19 @@ package model
 
 import "time"
 
+type EventType string
+
+const (
+	EventCreated EventType = "created"
+	EventUpdated EventType = "updated"
+	EventDeleted EventType = "deleted"
+)
+
 type MessageEvent struct {
-	Message   Message `json:"message"`
-	SiteID    string  `json:"siteId"`
-	Timestamp int64   `json:"timestamp" bson:"timestamp"`
+	Event     EventType `json:"event,omitempty" bson:"event,omitempty"`
+	Message   Message   `json:"message"`
+	SiteID    string    `json:"siteId"`
+	Timestamp int64     `json:"timestamp" bson:"timestamp"`
 }
 
 type RoomMetadataUpdateEvent struct {
@@ -22,6 +31,12 @@ type SubscriptionUpdateEvent struct {
 	Subscription Subscription `json:"subscription"`
 	Action       string       `json:"action"` // "added" | "removed"
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
+}
+
+type UpdateRoleRequest struct {
+	RoomID  string `json:"roomId"  bson:"roomId"`
+	Account string `json:"account" bson:"account"`
+	NewRole Role   `json:"newRole" bson:"newRole"`
 }
 
 type InviteMemberRequest struct {
@@ -46,6 +61,16 @@ type OutboxEvent struct {
 	DestSiteID string `json:"destSiteId"`
 	Payload    []byte `json:"payload"` // JSON-encoded inner event
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
+}
+
+type MemberAddEvent struct {
+	Type               string   `json:"type"               bson:"type"`
+	RoomID             string   `json:"roomId"             bson:"roomId"`
+	Accounts           []string `json:"accounts"           bson:"accounts"`
+	SiteID             string   `json:"siteId"             bson:"siteId"`
+	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
+	HistorySharedSince int64    `json:"historySharedSince" bson:"historySharedSince"`
+	Timestamp          int64    `json:"timestamp"          bson:"timestamp"`
 }
 
 // Participant represents a user with display name info for client rendering.
@@ -94,4 +119,13 @@ type RoomKeyEvent struct {
 	PublicKey  []byte `json:"publicKey"`
 	PrivateKey []byte `json:"privateKey"`
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
+}
+
+type MemberRemoveEvent struct {
+	Type      string   `json:"type"            bson:"type"`
+	RoomID    string   `json:"roomId"          bson:"roomId"`
+	Accounts  []string `json:"accounts"        bson:"accounts"`
+	SiteID    string   `json:"siteId"          bson:"siteId"`
+	OrgID     string   `json:"orgId,omitempty" bson:"orgId,omitempty"`
+	Timestamp int64    `json:"timestamp"       bson:"timestamp"`
 }

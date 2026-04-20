@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 // Publisher abstracts NATS publishing so the handler is testable.
@@ -19,12 +20,13 @@ type Publisher interface {
 
 // Handler processes MESSAGES_CANONICAL messages and broadcasts room events.
 type Handler struct {
-	store Store
-	pub   Publisher
+	store     Store
+	userStore userstore.UserStore
+	pub       Publisher
 }
 
-func NewHandler(store Store, pub Publisher) *Handler {
-	return &Handler{store: store, pub: pub}
+func NewHandler(store Store, userStore userstore.UserStore, pub Publisher) *Handler {
+	return &Handler{store: store, userStore: userStore, pub: pub}
 }
 
 // HandleMessage processes a single MESSAGES_CANONICAL message payload.
@@ -41,46 +43,38 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("get room %s: %w", msg.RoomID, err)
 	}
 
-	mentionAll := detectMentionAll(msg.Content)
-	mentionedAccounts := extractMentionedAccounts(msg.Content)
+	resolved, err := mention.Resolve(ctx, msg.Content, h.userStore.FindUsersByAccounts)
+	if err != nil {
+		slog.Warn("mention resolve failed", "error", err)
+	}
 
-	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, mentionAll); err != nil {
+	if err := h.store.UpdateRoomOnNewMessage(ctx, room.ID, msg.ID, msg.CreatedAt, resolved.MentionAll); err != nil {
 		return fmt.Errorf("update room on new message: %w", err)
 	}
 
-	if len(mentionedAccounts) > 0 {
-		if err := h.store.SetSubscriptionMentions(ctx, room.ID, mentionedAccounts); err != nil {
+	if len(resolved.Accounts) > 0 {
+		if err := h.store.SetSubscriptionMentions(ctx, room.ID, resolved.Accounts); err != nil {
 			return fmt.Errorf("set subscription mentions: %w", err)
 		}
 	}
 
-	// Collect all user accounts for employee lookup (sender + mentioned)
-	lookupAccounts := make([]string, 0, 1+len(mentionedAccounts))
-	lookupAccounts = append(lookupAccounts, msg.UserAccount)
-	for _, u := range mentionedAccounts {
-		if u != msg.UserAccount {
-			lookupAccounts = append(lookupAccounts, u)
-		}
-	}
-
-	employeeMap := make(map[string]model.Employee)
-	employees, err := h.store.FindEmployeesByAccountNames(ctx, lookupAccounts)
+	senderMap := make(map[string]model.User)
+	senderUsers, err := h.userStore.FindUsersByAccounts(ctx, []string{msg.UserAccount})
 	if err != nil {
-		slog.Warn("employee lookup failed, falling back to accounts", "error", err)
+		slog.Warn("sender lookup failed, falling back to account", "error", err)
 	} else {
-		for _, emp := range employees {
-			employeeMap[emp.AccountName] = emp
+		for i := range senderUsers {
+			senderMap[senderUsers[i].Account] = senderUsers[i]
 		}
 	}
 
-	clientMsg := buildClientMessage(&msg, employeeMap)
-	mentionParticipants := buildMentionParticipants(mentionedAccounts, employeeMap)
+	clientMsg := buildClientMessage(&msg, senderMap)
 
 	switch room.Type {
 	case model.RoomTypeGroup:
-		return h.publishGroupEvent(ctx, room, clientMsg, mentionAll, mentionParticipants)
+		return h.publishGroupEvent(ctx, room, clientMsg, resolved.MentionAll, resolved.Participants)
 	case model.RoomTypeDM:
-		return h.publishDMEvents(ctx, room, clientMsg, mentionedAccounts)
+		return h.publishDMEvents(ctx, room, clientMsg, resolved.Accounts)
 	default:
 		slog.Warn("unknown room type, skipping fan-out", "type", room.Type, "roomID", room.ID)
 		return nil
@@ -144,14 +138,14 @@ func buildRoomEvent(room *model.Room, clientMsg *model.ClientMessage) model.Room
 	}
 }
 
-func buildClientMessage(msg *model.Message, employeeMap map[string]model.Employee) *model.ClientMessage {
+func buildClientMessage(msg *model.Message, userMap map[string]model.User) *model.ClientMessage {
 	sender := model.Participant{
 		UserID:  msg.UserID,
 		Account: msg.UserAccount,
 	}
-	if emp, ok := employeeMap[msg.UserAccount]; ok {
-		sender.ChineseName = emp.Name
-		sender.EngName = emp.EngName
+	if u, ok := userMap[msg.UserAccount]; ok {
+		sender.ChineseName = u.ChineseName
+		sender.EngName = u.EngName
 	} else {
 		sender.ChineseName = msg.UserAccount
 		sender.EngName = msg.UserAccount
@@ -160,53 +154,4 @@ func buildClientMessage(msg *model.Message, employeeMap map[string]model.Employe
 		Message: *msg,
 		Sender:  &sender,
 	}
-}
-
-func buildMentionParticipants(mentionedAccounts []string, employeeMap map[string]model.Employee) []model.Participant {
-	if len(mentionedAccounts) == 0 {
-		return nil
-	}
-	participants := make([]model.Participant, len(mentionedAccounts))
-	for i, account := range mentionedAccounts {
-		p := model.Participant{Account: account}
-		if emp, ok := employeeMap[account]; ok {
-			p.ChineseName = emp.Name
-			p.EngName = emp.EngName
-		} else {
-			p.ChineseName = account
-			p.EngName = account
-		}
-		participants[i] = p
-	}
-	return participants
-}
-
-func detectMentionAll(content string) bool {
-	for _, token := range strings.Fields(content) {
-		lower := strings.ToLower(token)
-		if lower == "@all" || lower == "@here" {
-			return true
-		}
-	}
-	return false
-}
-
-func extractMentionedAccounts(content string) []string {
-	seen := make(map[string]struct{})
-	var accounts []string
-	for _, token := range strings.Fields(content) {
-		if !strings.HasPrefix(token, "@") || len(token) == 1 {
-			continue
-		}
-		name := strings.ToLower(token[1:])
-		if name == "all" || name == "here" {
-			continue
-		}
-		if _, exists := seen[name]; exists {
-			continue
-		}
-		seen[name] = struct{}{}
-		accounts = append(accounts, name)
-	}
-	return accounts
 }

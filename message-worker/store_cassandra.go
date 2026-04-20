@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/gocql/gocql"
@@ -9,37 +10,42 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+// errMessageNotFound is returned by GetMessageSender when the message row is
+// missing from Cassandra. Handler code checks for this sentinel to ack-and-skip
+// instead of NAK'ing (which would cause infinite JetStream redelivery).
+var errMessageNotFound = errors.New("message not found")
+
 // cassParticipant maps to the Cassandra "Participant" UDT.
+// cql struct tags tell gocql's reflection-based UDT marshaler how to map each
+// Go field to its Cassandra UDT field name. Without these tags, gocql would
+// lowercase the Go field names (e.g. "EngName" → "engname") which would not
+// match the snake_case UDT fields (e.g. "eng_name").
 type cassParticipant struct {
-	ID          string
-	EngName     string
-	CompanyName string // ChineseName
-	Account     string
-	AppID       string
-	AppName     string
-	IsBot       bool
+	ID          string `cql:"id"`
+	EngName     string `cql:"eng_name"`
+	CompanyName string `cql:"company_name"` // ChineseName
+	Account     string `cql:"account"`
+	AppID       string `cql:"app_id"`
+	AppName     string `cql:"app_name"`
+	IsBot       bool   `cql:"is_bot"`
 }
 
-// MarshalUDT implements gocql.UDTMarshaler for cassParticipant.
-func (p *cassParticipant) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
-	switch name {
-	case "id":
-		return gocql.Marshal(info, p.ID)
-	case "eng_name":
-		return gocql.Marshal(info, p.EngName)
-	case "company_name":
-		return gocql.Marshal(info, p.CompanyName)
-	case "account":
-		return gocql.Marshal(info, p.Account)
-	case "app_id":
-		return gocql.Marshal(info, p.AppID)
-	case "app_name":
-		return gocql.Marshal(info, p.AppName)
-	case "is_bot":
-		return gocql.Marshal(info, p.IsBot)
-	default:
-		return nil, nil
+// toMentionSet converts []model.Participant to []*cassParticipant for binding
+// to a Cassandra SET<FROZEN<"Participant">> column.
+func toMentionSet(mentions []model.Participant) []*cassParticipant {
+	if len(mentions) == 0 {
+		return nil
 	}
+	result := make([]*cassParticipant, len(mentions))
+	for i, m := range mentions {
+		result[i] = &cassParticipant{
+			ID:          m.UserID,
+			EngName:     m.EngName,
+			CompanyName: m.ChineseName,
+			Account:     m.Account,
+		}
+	}
+	return result
 }
 
 // CassandraStore implements Store using a Cassandra session.
@@ -56,17 +62,17 @@ func NewCassandraStore(session *gocql.Session) *CassandraStore {
 // If either insert fails the error is returned immediately; JetStream will redeliver the message.
 func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_room %s: %w", msg.ID, err)
 	}
 
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
 	}
@@ -74,25 +80,142 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 	return nil
 }
 
-// SaveThreadMessage inserts a thread reply into messages_by_id and thread_messages_by_room.
-// thread_room_id is the parent message ID that anchors the thread.
-// If either insert fails the error is returned immediately; JetStream will redeliver the message.
-func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+// SaveThreadMessage inserts a thread reply into messages_by_id and thread_messages_by_room,
+// then increments tcount on the parent message in both messages_by_id and messages_by_room.
+// threadRoomID is the ID of the ThreadRoom document that anchors this thread (created or
+// fetched by handleThreadRoomAndSubscriptions before this call).
+// If any operation fails the error is returned immediately; JetStream will redeliver the message.
+func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_id (message_id, created_at, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.CreatedAt, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO messages_by_id
+		 (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
+		  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.SysMsgData,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
 	}
 
 	if err := s.cassSession.Query(
-		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, thread_message_id, sender, msg, site_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.ThreadParentMessageID, msg.CreatedAt, msg.ID, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
+		`INSERT INTO thread_messages_by_room
+		 (room_id, thread_room_id, created_at, message_id, thread_parent_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, threadRoomID, msg.CreatedAt, msg.ID, msg.ThreadParentMessageID,
+		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
 	}
 
+	if err := s.incrementParentTcount(ctx, msg); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// casMaxRetries is the maximum number of CAS attempts per tcount increment.
+// A conflict means another thread-reply landed between our read and write;
+// 16 attempts is sufficient for any realistic burst while preventing an
+// infinite loop if something unexpected keeps the row locked.
+const casMaxRetries = 16
+
+// casIncrement atomically increments the nullable INT counter starting at
+// initial by calling update(newVal, expected) in a retry loop. On conflict
+// (applied==false) it retries with the value returned by update.  Returns an
+// error after maxRetries consecutive failures.
+func casIncrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
+	tcount := initial
+	for range maxRetries {
+		newVal := 1
+		if tcount != nil {
+			newVal = *tcount + 1
+		}
+		applied, current, err := update(newVal, tcount)
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
+		tcount = current
+	}
+	return fmt.Errorf("cas increment exceeded %d retries", maxRetries)
+}
+
+// incrementParentTcount increments tcount on the parent message row in both
+// messages_by_id and messages_by_room using Cassandra Lightweight Transactions
+// (IF tcount = ?). Each table is incremented independently via casIncrement,
+// which retries up to casMaxRetries times on CAS conflict.
+// Binding a nil *int as the IF condition evaluates to IF tcount = null, which
+// handles the initial case where tcount has never been set on the parent row.
+// If ThreadParentMessageCreatedAt is nil the increment is silently skipped —
+// tcount cannot be updated without the full primary key of the parent row.
+func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.Message) error {
+	if msg.ThreadParentMessageCreatedAt == nil {
+		return nil
+	}
+	parentID := msg.ThreadParentMessageID
+	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
+
+	// CAS increment on messages_by_id.
+	var tcount *int
+	if err := s.cassSession.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		parentID, parentCreatedAt,
+	).WithContext(ctx).Scan(&tcount); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("read tcount for parent message %s: %w", parentID, err)
+	}
+	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
+		var current *int
+		applied, err := s.cassSession.Query(
+			`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ? IF tcount = ?`,
+			newVal, parentID, parentCreatedAt, expected,
+		).WithContext(ctx).ScanCAS(&current)
+		return applied, current, err
+	}); err != nil {
+		return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
+	}
+
+	// CAS increment on messages_by_room.
+	if err := s.cassSession.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		msg.RoomID, parentCreatedAt, parentID,
+	).WithContext(ctx).Scan(&tcount); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("read tcount in messages_by_room for parent %s: %w", parentID, err)
+	}
+	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
+		var current *int
+		applied, err := s.cassSession.Query(
+			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
+			newVal, msg.RoomID, parentCreatedAt, parentID, expected,
+		).WithContext(ctx).ScanCAS(&current)
+		return applied, current, err
+	}); err != nil {
+		return fmt.Errorf("cas tcount in messages_by_room for parent %s: %w", parentID, err)
+	}
+
+	return nil
+}
+
+// GetMessageSender reads the sender UDT from messages_by_id for the given message ID.
+// Returns an error if the message does not exist.
+func (s *CassandraStore) GetMessageSender(ctx context.Context, messageID string) (*cassParticipant, error) {
+	var sender cassParticipant
+	if err := s.cassSession.Query(
+		`SELECT sender FROM messages_by_id WHERE message_id = ? LIMIT 1`,
+		messageID,
+	).WithContext(ctx).Scan(&sender); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil, fmt.Errorf("get sender for message %s: %w", messageID, errMessageNotFound)
+		}
+		return nil, fmt.Errorf("get sender for message %s: %w", messageID, err)
+	}
+	return &sender, nil
 }

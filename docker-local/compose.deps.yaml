@@ -1,0 +1,146 @@
+name: chat-local-deps
+
+# Shared third-party dependencies for local dev. Owns the chat-local network
+# that every microservice compose joins as external.
+#
+# Start:  make deps-up      (detached, waits for healthchecks)
+# Stop:   make deps-down
+
+services:
+  nats:
+    image: nats:2.11-alpine
+    container_name: chat-local-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+      - "9222:9222"
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf:ro
+      - nats-data:/data/jetstream
+    command: ["-c", "/etc/nats/nats.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - chat-local
+
+  mongodb:
+    image: mongo:8
+    container_name: chat-local-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'db.runCommand({ping:1}).ok' | mongosh --quiet | grep -q 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - chat-local
+
+  cassandra:
+    image: cassandra:5
+    container_name: chat-local-cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=chat-dev
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "DESCRIBE KEYSPACES"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - chat-local
+
+  # Schema bootstrap. One-shot: runs every *.cql under docker-local/cassandra/init
+  # in sorted order (01-, 02-, …) and exits 0. Lives in the "init" profile so
+  # `docker compose up --wait` (used by `make deps-up`) ignores it — see
+  # https://github.com/docker/compose/issues/10596. The Makefile runs it
+  # explicitly with `docker compose --profile init run --rm cassandra-init`.
+  cassandra-init:
+    image: cassandra:5
+    container_name: chat-local-cassandra-init
+    profiles: ["init"]
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    restart: "no"
+    volumes:
+      - ./cassandra/init:/init:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        shopt -s nullglob
+        for f in /init/*.cql; do
+          echo "==> applying $$f"
+          cqlsh cassandra -f "$$f"
+        done
+        echo "Schema initialized successfully"
+    networks:
+      - chat-local
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: chat-local-elasticsearch
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health | grep -Eq '\"status\":\"(yellow|green)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - chat-local
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: chat-local-keycloak
+    ports:
+      - "9090:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Keycloak 26 serves /health/ready on the dedicated management port (9000)
+      # and the endpoint is opt-in.
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ../auth-service/deploy/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    command: ["start-dev", "--import-realm"]
+    healthcheck:
+      test: >
+        sh -c 'exec 3<>/dev/tcp/localhost/9000 &&
+        echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+        cat <&3 | grep -q "200"'
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+    networks:
+      - chat-local
+
+volumes:
+  nats-data:
+  mongo-data:
+  cassandra-data:
+  es-data:
+
+networks:
+  chat-local:
+    name: chat-local

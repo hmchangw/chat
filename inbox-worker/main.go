@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -17,22 +18,25 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
 
 type config struct {
-	NatsURL  string `env:"NATS_URL"  envDefault:"nats://localhost:4222"`
-	SiteID   string `env:"SITE_ID"   envDefault:"default"`
-	MongoURI string `env:"MONGO_URI" envDefault:"mongodb://localhost:27017"`
-	MongoDB  string `env:"MONGO_DB"  envDefault:"chat"`
+	NatsURL       string `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
+	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID        string `env:"SITE_ID"         envDefault:"default"`
+	MongoURI      string `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
+	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
 }
 
 // mongoInboxStore implements InboxStore using MongoDB.
 type mongoInboxStore struct {
 	subCol  *mongo.Collection
 	roomCol *mongo.Collection
+	userCol *mongo.Collection
 }
 
 func (s *mongoInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -46,6 +50,58 @@ func (s *mongoInboxStore) UpsertRoom(ctx context.Context, room *model.Room) erro
 	opts := options.UpdateOne().SetUpsert(true)
 	_, err := s.roomCol.UpdateOne(ctx, filter, update, opts)
 	return err
+}
+
+func (s *mongoInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error {
+	filter := bson.M{"u.account": account, "roomId": roomID}
+	update := bson.M{"$set": bson.M{"roles": roles}}
+	res, err := s.subCol.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("update subscription roles for %q in room %q: %w", account, roomID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("subscription not found for %q in room %q", account, roomID)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error {
+	_, err := s.subCol.DeleteMany(ctx, bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}})
+	if err != nil {
+		return fmt.Errorf("delete subscriptions in room %q: %w", roomID, err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
+	if len(accounts) == 0 {
+		return nil, nil
+	}
+	cursor, err := s.userCol.Find(ctx, bson.M{"account": bson.M{"$in": accounts}})
+	if err != nil {
+		return nil, fmt.Errorf("find users by accounts: %w", err)
+	}
+	var users []model.User
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, fmt.Errorf("decode users: %w", err)
+	}
+	return users, nil
+}
+
+func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+	if len(subs) == 0 {
+		return nil
+	}
+	docs := make([]interface{}, len(subs))
+	for i, sub := range subs {
+		docs[i] = sub
+	}
+	opts := options.InsertMany().SetOrdered(false)
+	_, err := s.subCol.InsertMany(ctx, docs, opts)
+	if err != nil && !mongo.IsDuplicateKeyError(err) {
+		return fmt.Errorf("bulk create subscriptions: %w", err)
+	}
+	return nil
 }
 
 func main() {
@@ -74,9 +130,10 @@ func main() {
 	store := &mongoInboxStore{
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
 	}
 
-	nc, err := otelnats.Connect(cfg.NatsURL)
+	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)

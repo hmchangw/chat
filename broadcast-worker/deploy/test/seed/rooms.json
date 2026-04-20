@@ -1,0 +1,20 @@
+[
+  {
+    "_id": "group-1",
+    "name": "general",
+    "type": "group",
+    "createdBy": "u-alice",
+    "siteId": "site1",
+    "userCount": 2,
+    "lastMsgId": ""
+  },
+  {
+    "_id": "dm-1",
+    "name": "",
+    "type": "dm",
+    "createdBy": "u-alice",
+    "siteId": "site1",
+    "userCount": 2,
+    "lastMsgId": ""
+  }
+]

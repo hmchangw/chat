@@ -25,8 +25,7 @@ type config struct {
 	// OIDC settings — required when DEV_MODE is false.
 	OIDCIssuerURL string `env:"OIDC_ISSUER_URL"`
 	OIDCAudience  string `env:"OIDC_AUDIENCE"`
-	OIDCVerifyAZP bool   `env:"OIDC_VERIFY_AZP"           envDefault:"false"`
-	TLSSkipVerify bool   `env:"TLS_SKIP_VERIFY"            envDefault:"false"`
+	TLSSkipVerify bool   `env:"TLS_SKIP_VERIFY"           envDefault:"false"`
 }
 
 func main() {
@@ -65,7 +64,6 @@ func run() error {
 		oidcValidator, err := pkgoidc.NewValidator(ctx, pkgoidc.Config{
 			IssuerURL:     cfg.OIDCIssuerURL,
 			Audience:      cfg.OIDCAudience,
-			VerifyAZP:     cfg.OIDCVerifyAZP,
 			TLSSkipVerify: cfg.TLSSkipVerify,
 		})
 		if err != nil {

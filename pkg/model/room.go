@@ -5,8 +5,9 @@ import "time"
 type RoomType string
 
 const (
-	RoomTypeGroup RoomType = "group"
-	RoomTypeDM    RoomType = "dm"
+	RoomTypeGroup   RoomType = "group"
+	RoomTypeChannel RoomType = "channel"
+	RoomTypeDM      RoomType = "dm"
 )
 
 type Room struct {
@@ -21,6 +22,7 @@ type Room struct {
 	LastMentionAllAt time.Time `json:"lastMentionAllAt" bson:"lastMentionAllAt"`
 	CreatedAt        time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt" bson:"updatedAt"`
+	Restricted       bool      `json:"restricted,omitempty" bson:"restricted,omitempty"`
 }
 
 type CreateRoomRequest struct {

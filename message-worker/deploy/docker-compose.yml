@@ -1,27 +1,24 @@
+name: message-worker
+
 services:
-  nats:
-    image: nats:2.11-alpine
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-    command: ["--jetstream", "--http_port", "8222"]
-
-  cassandra:
-    image: cassandra:5
-    ports:
-      - "9042:9042"
-    environment:
-      - CASSANDRA_CLUSTER_NAME=chat-dev
-
   message-worker:
     build:
       context: ../..
       dockerfile: message-worker/deploy/Dockerfile
+    pull_policy: build
     environment:
       - NATS_URL=nats://nats:4222
+      - NATS_CREDS_FILE=/etc/nats/backend.creds
       - SITE_ID=site-local
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat
-    depends_on:
-      - nats
-      - cassandra
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+    volumes:
+      - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+    networks:
+      - chat-local
+
+networks:
+  chat-local:
+    external: true

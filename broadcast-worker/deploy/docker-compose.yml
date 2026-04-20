@@ -1,25 +1,21 @@
+name: broadcast-worker
+
 services:
-  nats:
-    image: nats:2.11-alpine
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-    command: ["--jetstream", "--http_port", "8222"]
-
-  mongodb:
-    image: mongo:8
-    ports:
-      - "27017:27017"
-
   broadcast-worker:
     build:
       context: ../..
       dockerfile: broadcast-worker/deploy/Dockerfile
     environment:
       - NATS_URL=nats://nats:4222
+      - NATS_CREDS_FILE=/etc/nats/backend.creds
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
-    depends_on:
-      - nats
-      - mongodb
+    volumes:
+      - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+    networks:
+      - chat-local
+
+networks:
+  chat-local:
+    external: true

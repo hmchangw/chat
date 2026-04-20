@@ -1,0 +1,13 @@
+{
+  "event": "created",
+  "siteId": "site1",
+  "timestamp": 1744891380000,
+  "message": {
+    "id": "m-dm-cross-site",
+    "roomId": "dm-1",
+    "userId": "u-alice",
+    "userAccount": "alice",
+    "content": "ping from site1",
+    "createdAt": "2026-04-17T12:03:00Z"
+  }
+}

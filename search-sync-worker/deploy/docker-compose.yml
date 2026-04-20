@@ -1,0 +1,22 @@
+name: search-sync-worker
+
+services:
+  search-sync-worker:
+    build:
+      context: ../..
+      dockerfile: search-sync-worker/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - NATS_CREDS_FILE=/etc/nats/backend.creds
+      - SITE_ID=site-local
+      - SEARCH_URL=http://elasticsearch:9200
+      - SEARCH_BACKEND=elasticsearch
+      - MSG_INDEX_PREFIX=messages-site-local-v1
+    volumes:
+      - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+    networks:
+      - chat-local
+
+networks:
+  chat-local:
+    external: true

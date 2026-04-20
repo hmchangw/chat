@@ -18,6 +18,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
@@ -46,7 +47,7 @@ type recordingPublisher struct {
 	records []publishRecord
 }
 
-func (p *recordingPublisher) Publish(subj string, data []byte) error {
+func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.records = append(p.records, publishRecord{subject: subj, data: data})
@@ -59,6 +60,15 @@ func (p *recordingPublisher) getRecords() []publishRecord {
 	cp := make([]publishRecord, len(p.records))
 	copy(cp, p.records)
 	return cp
+}
+
+func seedUsers(t *testing.T, db *mongo.Database) {
+	t.Helper()
+	_, err := db.Collection("users").InsertMany(context.Background(), []interface{}{
+		model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice Wang", ChineseName: "愛麗絲", EmployeeID: "E001"},
+		model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", EngName: "Bob Chen", ChineseName: "鮑勃", EmployeeID: "E002"},
+	})
+	require.NoError(t, err)
 }
 
 func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
@@ -74,15 +84,12 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
 	})
 	require.NoError(t, err)
-	_, err = db.Collection("employee").InsertMany(ctx, []interface{}{
-		bson.M{"accountName": "alice", "name": "愛麗絲", "engName": "Alice Wang"},
-		bson.M{"accountName": "bob", "name": "鮑勃", "engName": "Bob Chen"},
-	})
-	require.NoError(t, err)
+	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	handler := NewHandler(store, us, pub)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -120,15 +127,12 @@ func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
 		ID: "r2", Name: "announcements", Type: model.RoomTypeGroup, UserCount: 2, SiteID: "site-a",
 	})
 	require.NoError(t, err)
-	_, err = db.Collection("employee").InsertMany(ctx, []interface{}{
-		bson.M{"accountName": "alice", "name": "愛麗絲", "engName": "Alice Wang"},
-		bson.M{"accountName": "bob", "name": "鮑勃", "engName": "Bob Chen"},
-	})
-	require.NoError(t, err)
+	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	handler := NewHandler(store, us, pub)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -159,15 +163,12 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 		model.Subscription{ID: "s6", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r3"},
 	})
 	require.NoError(t, err)
-	_, err = db.Collection("employee").InsertMany(ctx, []interface{}{
-		bson.M{"accountName": "alice", "name": "愛麗絲", "engName": "Alice Wang"},
-		bson.M{"accountName": "bob", "name": "鮑勃", "engName": "Bob Chen"},
-	})
-	require.NoError(t, err)
+	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	handler := NewHandler(store, us, pub)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -211,15 +212,12 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 		model.Subscription{ID: "s8", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "dm-1"},
 	})
 	require.NoError(t, err)
-	_, err = db.Collection("employee").InsertMany(ctx, []interface{}{
-		bson.M{"accountName": "alice", "name": "愛麗絲", "engName": "Alice Wang"},
-		bson.M{"accountName": "bob", "name": "鮑勃", "engName": "Bob Chen"},
-	})
-	require.NoError(t, err)
+	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("employee"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	handler := NewHandler(store, us, pub)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{

@@ -5,9 +5,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -19,7 +23,7 @@ import (
 func setupMongo(t *testing.T) *mongo.Database {
 	t.Helper()
 	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:8")
+	container, err := mongodb.Run(ctx, "mongo:4.4.15")
 	if err != nil {
 		t.Fatalf("start mongo: %v", err)
 	}
@@ -41,7 +45,7 @@ type recordingPublisher struct {
 	subjects []string
 }
 
-func (p *recordingPublisher) Publish(subj string, data []byte) error {
+func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.subjects = append(p.subjects, subj)
@@ -55,14 +59,26 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	store := &mongoInboxStore{
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
 
+	// Seed user for lookup
+	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u2", Account: "u2", SiteID: "site-b"})
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
 	// Create outbox event for member_added
-	invite := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", RoomID: "r1", SiteID: "site-b"}
-	inviteData, _ := json.Marshal(invite)
-	evt := model.OutboxEvent{Type: "member_added", SiteID: "site-a", DestSiteID: "site-b", Payload: inviteData}
+	change := model.MemberAddEvent{
+		Type: "member_added", RoomID: "r1", Accounts: []string{"u2"}, SiteID: "site-b",
+		JoinedAt: time.Now().UTC().UnixMilli(),
+		HistorySharedSince: time.Now().UTC().UnixMilli(),
+		Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	changeData, _ := json.Marshal(change)
+	evt := model.OutboxEvent{Type: "member_added", SiteID: "site-a", DestSiteID: "site-b", Payload: changeData}
 	evtData, _ := json.Marshal(evt)
 
 	if err := handler.HandleEvent(ctx, evtData); err != nil {
@@ -71,12 +87,12 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 
 	// Verify subscription was created in MongoDB
 	var sub model.Subscription
-	err := db.Collection("subscriptions").FindOne(ctx, bson.M{"u._id": "u2", "roomId": "r1"}).Decode(&sub)
+	err = db.Collection("subscriptions").FindOne(ctx, bson.M{"u._id": "u2", "roomId": "r1"}).Decode(&sub)
 	if err != nil {
 		t.Fatalf("subscription not found: %v", err)
 	}
-	if sub.Role != model.RoleMember {
-		t.Errorf("Role = %q, want member", sub.Role)
+	if len(sub.Roles) == 0 || sub.Roles[0] != model.RoleMember {
+		t.Errorf("Roles = %v, want [member]", sub.Roles)
 	}
 
 	// Verify notification was published
@@ -92,6 +108,7 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 	store := &mongoInboxStore{
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
 	}
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
@@ -114,4 +131,100 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 	if got.Name != "synced-room" {
 		t.Errorf("Name = %q, want synced-room", got.Name)
 	}
+}
+
+func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+	pub := &recordingPublisher{}
+	handler := NewHandler(store, pub)
+
+	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: "room-1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
+	})
+	if err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID: "u2",
+		Subscription: model.Subscription{
+			ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+			RoomID: "room-1", SiteID: "site-a", Roles: []model.Role{model.RoleOwner},
+		},
+		Action: "role_updated", Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	subEvtData, _ := json.Marshal(subEvt)
+
+	evt := model.OutboxEvent{
+		Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: subEvtData, Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	evtData, _ := json.Marshal(evt)
+
+	err = handler.HandleEvent(ctx, evtData)
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	var sub model.Subscription
+	err = db.Collection("subscriptions").FindOne(ctx, bson.M{"u.account": "bob", "roomId": "room-1"}).Decode(&sub)
+	if err != nil {
+		t.Fatalf("subscription not found: %v", err)
+	}
+	if !slices.Contains(sub.Roles, model.RoleOwner) {
+		t.Errorf("roles = %v, want to contain owner", sub.Roles)
+	}
+
+	// No SubscriptionUpdateEvent is published — room-worker already handles
+	// user notification via NATS supercluster routing.
+	if len(pub.subjects) != 0 {
+		t.Fatalf("expected 0 publishes (room-worker handles notification), got %d", len(pub.subjects))
+	}
+}
+
+func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+	}
+	pub := &recordingPublisher{}
+	h := NewHandler(store, pub)
+
+	ctx := context.Background()
+
+	_, err := store.subCol.InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "bob"},
+		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	memberEvt := model.MemberRemoveEvent{
+		Type: "member-removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
+	}
+	payload, _ := json.Marshal(memberEvt)
+	evt := model.OutboxEvent{
+		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(ctx, data))
+
+	// Subscription deleted — room_members lives only on the room's site.
+	count, err := store.subCol.CountDocuments(ctx, bson.M{"u._id": "u1", "roomId": "r1"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), count)
+
+	// No publish — room-worker handles user notification via NATS supercluster.
+	assert.Empty(t, pub.subjects)
 }
