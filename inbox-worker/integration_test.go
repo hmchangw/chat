@@ -95,9 +95,11 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		t.Errorf("Roles = %v, want [member]", sub.Roles)
 	}
 
-	// Verify notification was published
-	if len(pub.subjects) != 1 {
-		t.Fatalf("got %d publishes, want 1", len(pub.subjects))
+	// handleMemberAdded does not publish SubscriptionUpdateEvent — room-worker
+	// publishes on the user's subject and the NATS supercluster routes it to
+	// the user's home site.
+	if len(pub.subjects) != 0 {
+		t.Fatalf("got %d publishes, want 0", len(pub.subjects))
 	}
 }
 

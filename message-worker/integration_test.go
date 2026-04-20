@@ -817,36 +817,6 @@ func TestThreadStoreMongo_MarkThreadSubscriptionMention(t *testing.T) {
 	})
 }
 
-func TestThreadStoreMongo_ThreadSubscriptionExists(t *testing.T) {
-	ctx := context.Background()
-	db := setupMongo(t)
-	store := newThreadStoreMongo(db)
-	require.NoError(t, store.EnsureIndexes(ctx))
-
-	now := time.Now().UTC().Truncate(time.Millisecond)
-
-	t.Run("returns false when subscription absent", func(t *testing.T) {
-		exists, err := store.ThreadSubscriptionExists(ctx, "tr-nonexistent", "u-1")
-		require.NoError(t, err)
-		assert.False(t, exists)
-	})
-
-	t.Run("returns true after insertion", func(t *testing.T) {
-		sub := &model.ThreadSubscription{
-			ID:           "ts-exists",
-			ThreadRoomID: "tr-exists",
-			UserID:       "u-exists",
-			CreatedAt:    now,
-			UpdatedAt:    now,
-		}
-		require.NoError(t, store.InsertThreadSubscription(ctx, sub))
-
-		exists, err := store.ThreadSubscriptionExists(ctx, "tr-exists", "u-exists")
-		require.NoError(t, err)
-		assert.True(t, exists)
-	})
-}
-
 func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
