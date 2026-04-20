@@ -116,7 +116,7 @@ func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *mod
 
 // handleFirstThreadReply runs after the thread room has just been created.
 // It inserts subscriptions for the parent author and, if distinct, for the replier.
-// lastSeenAt is always zero — the subscription is brand-new and the user has not
+// lastSeenAt is always nil — the subscription is brand-new and the user has not
 // yet "seen" the thread.
 func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message, siteID, threadRoomID string, now time.Time) error {
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
@@ -194,7 +194,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 }
 
 // buildThreadSubscription constructs a ThreadSubscription for (threadRoomID, userID).
-// lastSeenAt is always zero — subscriptions are insert-only; the field is never
+// lastSeenAt is always nil — subscriptions are insert-only; the field is never
 // updated by the message worker.
 func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, userID, userAccount, siteID string, now time.Time) *model.ThreadSubscription {
 	return &model.ThreadSubscription{
