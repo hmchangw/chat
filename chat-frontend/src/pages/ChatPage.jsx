@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNats } from '../context/NatsContext'
+import { useRoomSummaries } from '../context/RoomEventsContext'
 import RoomList from '../components/RoomList'
 import MessageArea from '../components/MessageArea'
 import MessageInput from '../components/MessageInput'
@@ -7,8 +8,22 @@ import CreateRoomDialog from '../components/CreateRoomDialog'
 
 export default function ChatPage() {
   const { user, disconnect } = useNats()
+  const { summaries, setActiveRoom } = useRoomSummaries()
   const [selectedRoom, setSelectedRoom] = useState(null)
   const [showCreateRoom, setShowCreateRoom] = useState(false)
+
+  // Clear selection if the selected room disappears from summaries
+  useEffect(() => {
+    if (selectedRoom && !summaries.some((r) => r.id === selectedRoom.id)) {
+      setSelectedRoom(null)
+      setActiveRoom(null)
+    }
+  }, [summaries, selectedRoom, setActiveRoom])
+
+  const handleSelectRoom = (room) => {
+    setSelectedRoom(room)
+    setActiveRoom(room?.id ?? null)
+  }
 
   return (
     <div className="chat-layout">
@@ -25,7 +40,7 @@ export default function ChatPage() {
         <div className="chat-sidebar">
           <RoomList
             selectedRoomId={selectedRoom?.id}
-            onSelectRoom={setSelectedRoom}
+            onSelectRoom={handleSelectRoom}
           />
           <button
             className="create-room-btn"
@@ -42,7 +57,7 @@ export default function ChatPage() {
       {showCreateRoom && (
         <CreateRoomDialog
           onClose={() => setShowCreateRoom(false)}
-          onCreated={(room) => setSelectedRoom(room)}
+          onCreated={(room) => handleSelectRoom(room)}
         />
       )}
     </div>
