@@ -115,9 +115,11 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 }
 
 // incrementParentTcount increments tcount on the parent message row in both
-// messages_by_id and messages_by_room. It is a read-modify-write operation;
-// tcount uses Cassandra INT (not COUNTER) so atomic increment is not available.
-// Race conditions on concurrent replies to the same parent are accepted by design.
+// messages_by_id and messages_by_room using Cassandra Lightweight Transactions
+// (IF tcount = ?). Each table is incremented independently via a CAS retry loop:
+// on conflict ScanCAS returns the current value so the next attempt uses it.
+// Binding a nil *int as the IF condition evaluates to IF tcount = null, which
+// handles the initial case where tcount has never been set on the parent row.
 // If ThreadParentMessageCreatedAt is nil the increment is silently skipped —
 // tcount cannot be updated without the full primary key of the parent row.
 func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.Message) error {
@@ -127,33 +129,63 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 	parentID := msg.ThreadParentMessageID
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
 
-	var tcount int
-	err := s.cassSession.Query(
+	// CAS increment on messages_by_id.
+	var tcount *int
+	if err := s.cassSession.Query(
 		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
 		parentID, parentCreatedAt,
-	).WithContext(ctx).Scan(&tcount)
-	if errors.Is(err, gocql.ErrNotFound) {
-		// Parent row absent in Cassandra — nothing to increment.
-		return nil
-	}
-	if err != nil {
+	).WithContext(ctx).Scan(&tcount); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil
+		}
 		return fmt.Errorf("read tcount for parent message %s: %w", parentID, err)
 	}
-
-	newCount := tcount + 1
-
-	if err := s.cassSession.Query(
-		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ?`,
-		newCount, parentID, parentCreatedAt,
-	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("update tcount in messages_by_id for parent %s: %w", parentID, err)
+	for {
+		newVal := 1
+		if tcount != nil {
+			newVal = *tcount + 1
+		}
+		var current *int
+		applied, err := s.cassSession.Query(
+			`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ? IF tcount = ?`,
+			newVal, parentID, parentCreatedAt, tcount,
+		).WithContext(ctx).ScanCAS(&current)
+		if err != nil {
+			return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
+		}
+		if applied {
+			break
+		}
+		tcount = current
 	}
 
+	// CAS increment on messages_by_room.
 	if err := s.cassSession.Query(
-		`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-		newCount, msg.RoomID, parentCreatedAt, parentID,
-	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("update tcount in messages_by_room for parent %s: %w", parentID, err)
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		msg.RoomID, parentCreatedAt, parentID,
+	).WithContext(ctx).Scan(&tcount); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("read tcount in messages_by_room for parent %s: %w", parentID, err)
+	}
+	for {
+		newVal := 1
+		if tcount != nil {
+			newVal = *tcount + 1
+		}
+		var current *int
+		applied, err := s.cassSession.Query(
+			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
+			newVal, msg.RoomID, parentCreatedAt, parentID, tcount,
+		).WithContext(ctx).ScanCAS(&current)
+		if err != nil {
+			return fmt.Errorf("cas tcount in messages_by_room for parent %s: %w", parentID, err)
+		}
+		if applied {
+			break
+		}
+		tcount = current
 	}
 
 	return nil
