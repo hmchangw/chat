@@ -48,6 +48,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		room_id TEXT,
 		created_at TIMESTAMP,
 		message_id TEXT,
+		thread_room_id TEXT,
 		sender FROZEN<"Participant">,
 		target_user FROZEN<"Participant">,
 		msg TEXT,
@@ -218,6 +219,27 @@ func TestRepository_GetMessageByID_NotFound(t *testing.T) {
 	msg, err := repo.GetMessageByID(ctx, "nonexistent")
 	require.NoError(t, err)
 	assert.Nil(t, msg)
+}
+
+func TestRepository_GetMessagesBefore_ThreadRoomID(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "user1"}
+	ts := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_room_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		"r-thread", ts, "m-thread", sender, "reply", "tr-42",
+	).Exec())
+
+	q, err := ParsePageRequest("", 10)
+	require.NoError(t, err)
+
+	page, err := repo.GetMessagesBefore(ctx, "r-thread", ts.Add(1*time.Minute), q)
+	require.NoError(t, err)
+	require.Len(t, page.Data, 1)
+	assert.Equal(t, "tr-42", page.Data[0].ThreadRoomID)
 }
 
 func TestRepository_FullRow_AllColumns(t *testing.T) {
