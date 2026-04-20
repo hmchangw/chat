@@ -117,4 +117,22 @@ describe('RoomEventsProvider', () => {
     // No rooms loaded; nothing to click. Just assert setActiveRoom exists.
     expect(typeof captured.setActiveRoom).toBe('function')
   })
+
+  it('useRoomEvents returns a stable loadHistory across renders for the same roomId', () => {
+    const nats = mockNats()
+    const captured = []
+    function Probe() {
+      const { loadHistory } = useRoomEvents('a')
+      captured.push(loadHistory)
+      return null
+    }
+    const { rerender } = render(wrap(<Probe />, nats))
+    rerender(wrap(<Probe />, nats))
+    rerender(wrap(<Probe />, nats))
+    expect(captured.length).toBeGreaterThanOrEqual(2)
+    // All loadHistory references should be the same identity for the same roomId
+    for (let i = 1; i < captured.length; i++) {
+      expect(captured[i]).toBe(captured[0])
+    }
+  })
 })

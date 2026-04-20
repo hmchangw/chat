@@ -9,11 +9,13 @@ export function RoomEventsProvider({ children }) {
   const { user, request } = useNats()
   const [state, dispatch] = useReducer(roomEventsReducer, initialState)
   const inflightHistory = useRef(new Map())
+  const stateRef = useRef(state)
+  stateRef.current = state
 
   const loadHistory = useCallback(
     async (roomId) => {
       if (!user || !roomId) return
-      const prev = state.roomState[roomId]
+      const prev = stateRef.current.roomState[roomId]
       if (prev?.hasLoadedHistory) return
       if (inflightHistory.current.has(roomId)) return inflightHistory.current.get(roomId)
 
@@ -32,7 +34,7 @@ export function RoomEventsProvider({ children }) {
       inflightHistory.current.set(roomId, promise)
       return promise
     },
-    [user, request, state.roomState]
+    [user, request]
   )
 
   const setActiveRoom = useCallback((roomId) => {
@@ -56,11 +58,12 @@ function useRoomEventsInternal() {
 export function useRoomEvents(roomId) {
   const { state, loadHistory } = useRoomEventsInternal()
   const room = state.roomState[roomId]
+  const load = useCallback(() => loadHistory(roomId), [loadHistory, roomId])
   return {
     messages: room?.messages ?? [],
     hasLoadedHistory: !!room?.hasLoadedHistory,
     historyError: room?.historyError ?? null,
-    loadHistory: () => loadHistory(roomId),
+    loadHistory: load,
   }
 }
 
