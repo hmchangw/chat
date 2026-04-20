@@ -1,3 +1,5 @@
+name: auth-service
+
 services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
@@ -19,27 +21,29 @@ services:
       retries: 15
       start_period: 60s
 
-  nats:
-    image: nats:2.11-alpine
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-      - "9222:9222"
-    volumes:
-      - ./nats.conf:/etc/nats/nats.conf:ro
-      - nats-data:/data/jetstream
-    command: ["-c", "/etc/nats/nats.conf", "-DV", "-T"]
-
   auth-service:
     build:
       context: ../..
       dockerfile: auth-service/deploy/Dockerfile
     ports:
       - "8080:8080"
-    env_file: .env
+    env_file:
+      - path: ../../docker-local/.env
+        required: false
+    environment:
+      - PORT=8080
+      - NATS_JWT_EXPIRY=2h
+      - OIDC_ISSUER_URL=http://keycloak:8080/realms/chatapp
+      - OIDC_AUDIENCE=nats-chat
+      - OIDC_VERIFY_AZP=true
+      - TLS_SKIP_VERIFY=false
     depends_on:
       keycloak:
         condition: service_healthy
+    networks:
+      - chat-local
+      - default
 
-volumes:
-  nats-data:
+networks:
+  chat-local:
+    external: true

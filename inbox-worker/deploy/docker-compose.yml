@@ -1,11 +1,6 @@
-services:
-  nats:
-    image: nats:2.11-alpine
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-    command: ["--jetstream", "--http_port", "8222"]
+name: inbox-worker
 
+services:
   mongodb:
     image: mongo:8
     ports:
@@ -17,9 +12,18 @@ services:
       dockerfile: inbox-worker/deploy/Dockerfile
     environment:
       - NATS_URL=nats://nats:4222
+      - NATS_CREDS_FILE=/etc/nats/backend.creds
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
+    volumes:
+      - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     depends_on:
-      - nats
       - mongodb
+    networks:
+      - chat-local
+      - default
+
+networks:
+  chat-local:
+    external: true

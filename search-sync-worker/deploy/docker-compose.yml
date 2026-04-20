@@ -1,11 +1,6 @@
-services:
-  nats:
-    image: nats:2.11-alpine
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-    command: ["--jetstream", "--http_port", "8222"]
+name: search-sync-worker
 
+services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
     ports:
@@ -21,10 +16,19 @@ services:
       dockerfile: search-sync-worker/deploy/Dockerfile
     environment:
       - NATS_URL=nats://nats:4222
+      - NATS_CREDS_FILE=/etc/nats/backend.creds
       - SITE_ID=site-local
       - SEARCH_URL=http://elasticsearch:9200
       - SEARCH_BACKEND=elasticsearch
       - MSG_INDEX_PREFIX=messages-site-local-v1
+    volumes:
+      - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     depends_on:
-      - nats
       - elasticsearch
+    networks:
+      - chat-local
+      - default
+
+networks:
+  chat-local:
+    external: true
