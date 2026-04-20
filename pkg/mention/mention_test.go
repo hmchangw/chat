@@ -22,20 +22,32 @@ func TestParse(t *testing.T) {
 		{name: "single mention", content: "hello @bob", accounts: []string{"bob"}, mentionAll: false},
 		{name: "multiple mentions", content: "@alice check with @bob", accounts: []string{"alice", "bob"}, mentionAll: false},
 		{name: "mention at start", content: "@alice hello", accounts: []string{"alice"}, mentionAll: false},
-		{name: "email-style mention", content: "ping @user@domain.com", accounts: []string{"user@domain.com"}, mentionAll: false},
-		{name: "quoted reply prefix", content: ">@alice this is quoted", accounts: []string{"alice"}, mentionAll: false},
+		{name: "mention after newline", content: "line1\n@bob", accounts: []string{"bob"}, mentionAll: false},
+		{name: "mention after tab", content: "hi\t@bob", accounts: []string{"bob"}, mentionAll: false},
 		{name: "duplicates deduplicated", content: "@bob and @bob again", accounts: []string{"bob"}, mentionAll: false},
 		{name: "dots and hyphens", content: "cc @first.last and @my-user", accounts: []string{"first.last", "my-user"}, mentionAll: false},
 		{name: "empty content", content: "", accounts: nil, mentionAll: false},
 		{name: "trailing period not captured", content: "hey @bob. check this", accounts: []string{"bob"}, mentionAll: false},
 		{name: "@all lowercase", content: "hey @all check this", accounts: nil, mentionAll: true},
 		{name: "@All uppercase", content: "attention @All everyone", accounts: nil, mentionAll: true},
-		{name: "@here lowercase", content: "look @here please", accounts: nil, mentionAll: true},
-		{name: "@HERE uppercase", content: "look @HERE please", accounts: nil, mentionAll: true},
+		{name: "@all at start", content: "@all team", accounts: nil, mentionAll: true},
 		{name: "@all and individual", content: "@All and @alice", accounts: []string{"alice"}, mentionAll: true},
 		{name: "case-insensitive dedup", content: "@alice @Alice", accounts: []string{"alice"}, mentionAll: false},
 		{name: "mixed case lowered", content: "hey @BOB", accounts: []string{"bob"}, mentionAll: false},
-		{name: "partial email@all not detected", content: "email@all.com", accounts: []string{"all.com"}, mentionAll: false},
+
+		// @ must be at start-of-text or after whitespace.
+		{name: "email rejected", content: "contact me at bob@example.com", accounts: nil, mentionAll: false},
+		{name: "email plain", content: "email@example.com", accounts: nil, mentionAll: false},
+		{name: "no space before @", content: "hello@bob", accounts: nil, mentionAll: false},
+		{name: "punctuation before @", content: "hi,@bob", accounts: nil, mentionAll: false},
+		{name: "word@all not @all", content: "say hi here@all team", accounts: nil, mentionAll: false},
+
+		// Email-style suffix no longer captured: only the leading @user matches.
+		{name: "email-style suffix dropped", content: "ping @user@domain.com", accounts: []string{"user"}, mentionAll: false},
+
+		// @here is no longer a mentionAll alias — it parses as a regular account.
+		{name: "@here lowercase no longer mentionAll", content: "look @here please", accounts: []string{"here"}, mentionAll: false},
+		{name: "@HERE uppercase no longer mentionAll", content: "look @HERE please", accounts: []string{"here"}, mentionAll: false},
 	}
 
 	for _, tt := range tests {
