@@ -47,6 +47,7 @@ func TestSanitizeError(t *testing.T) {
 		{"sentinel: not owner", errNotOwner, "user is not an owner"},
 		{"sentinel: room type", errRoomTypeGuard, "role update is only allowed in group rooms"},
 		{"sentinel: target not member", errTargetNotMember, "target user is not a member of this room"},
+		{"sentinel: not room member", errNotRoomMember, "only room members can list members"},
 		{"wrapped sentinel passes through", fmt.Errorf("get room: %w", errRoomTypeGuard), "get room: role update is only allowed in group rooms"},
 		{"safe owner message", errors.New("only owners can add members"), "only owners can add members"},
 		{"safe cannot add", errors.New("cannot add members to a DM room"), "cannot add members to a DM room"},

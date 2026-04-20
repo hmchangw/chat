@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -1073,4 +1074,207 @@ func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
 	var status map[string]string
 	require.NoError(t, json.Unmarshal(resp, &status))
 	assert.Equal(t, "accepted", status["status"])
+}
+
+func TestHandler_ListMembers(t *testing.T) {
+	const siteID = "site-a"
+	const roomID = "r1"
+	const requester = "alice"
+	subj := subject.MemberList(requester, roomID, siteID)
+
+	existingMember := model.RoomMember{
+		ID: "rm1", RoomID: roomID, Ts: time.Unix(1, 0).UTC(),
+		Member: model.RoomMemberEntry{ID: "alice", Type: model.RoomMemberIndividual, Account: "alice"},
+	}
+	orgMember := model.RoomMember{
+		ID: "rm2", RoomID: roomID, Ts: time.Unix(2, 0).UTC(),
+		Member: model.RoomMemberEntry{ID: "org-1", Type: model.RoomMemberOrg},
+	}
+
+	type want struct {
+		errContains string
+		errIs       error
+		members     []model.RoomMember
+	}
+	tests := []struct {
+		name      string
+		subject   string
+		body      []byte
+		setupMock func(*MockRoomStore)
+		want      want
+	}{
+		{
+			name:    "happy path returns members",
+			subject: subj,
+			body:    nil,
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
+				s.EXPECT().ListRoomMembers(gomock.Any(), roomID, (*int)(nil), (*int)(nil), false).
+					Return([]model.RoomMember{orgMember, existingMember}, nil)
+			},
+			want: want{members: []model.RoomMember{orgMember, existingMember}},
+		},
+		{
+			name:    "fallback path returns synthesized individuals",
+			subject: subj,
+			body:    nil,
+			setupMock: func(s *MockRoomStore) {
+				synth := model.RoomMember{
+					ID: "sub-xyz", RoomID: roomID, Ts: time.Unix(3, 0).UTC(),
+					Member: model.RoomMemberEntry{ID: "u-alice", Type: model.RoomMemberIndividual, Account: "alice"},
+				}
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
+				s.EXPECT().ListRoomMembers(gomock.Any(), roomID, (*int)(nil), (*int)(nil), false).
+					Return([]model.RoomMember{synth}, nil)
+			},
+			want: want{members: []model.RoomMember{{
+				ID: "sub-xyz", RoomID: roomID, Ts: time.Unix(3, 0).UTC(),
+				Member: model.RoomMemberEntry{ID: "u-alice", Type: model.RoomMemberIndividual, Account: "alice"},
+			}}},
+		},
+		{
+			name:    "requester not a member",
+			subject: subj,
+			body:    nil,
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(nil, fmt.Errorf("missing: %w", model.ErrSubscriptionNotFound))
+			},
+			want: want{errIs: errNotRoomMember},
+		},
+		{
+			name:      "invalid subject",
+			subject:   "chat.garbage",
+			body:      nil,
+			setupMock: func(s *MockRoomStore) {},
+			want:      want{errContains: "invalid list-members subject"},
+		},
+		{
+			name:    "invalid JSON body",
+			subject: subj,
+			body:    []byte("{not json"),
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
+			},
+			want: want{errContains: "invalid request"},
+		},
+		{
+			name:    "negative limit",
+			subject: subj,
+			body:    []byte(`{"limit":-1}`),
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
+			},
+			want: want{errContains: "limit must be >= 0"},
+		},
+		{
+			name:    "negative offset",
+			subject: subj,
+			body:    []byte(`{"offset":-1}`),
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
+			},
+			want: want{errContains: "offset must be >= 0"},
+		},
+		{
+			name:    "pagination passed through",
+			subject: subj,
+			body:    []byte(`{"limit":10,"offset":5}`),
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
+				s.EXPECT().ListRoomMembers(gomock.Any(), roomID, gomock.Any(), gomock.Any(), false).
+					DoAndReturn(func(_ context.Context, _ string, limit, offset *int, _ bool) ([]model.RoomMember, error) {
+						require.NotNil(t, limit)
+						require.NotNil(t, offset)
+						assert.Equal(t, 10, *limit)
+						assert.Equal(t, 5, *offset)
+						return []model.RoomMember{}, nil
+					})
+			},
+			want: want{members: []model.RoomMember{}},
+		},
+		{
+			name:    "auth probe infra error",
+			subject: subj,
+			body:    nil,
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(nil, fmt.Errorf("mongo exploded"))
+			},
+			want: want{errContains: "check room membership"},
+		},
+		{
+			name:    "store error on list",
+			subject: subj,
+			body:    nil,
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
+				s.EXPECT().ListRoomMembers(gomock.Any(), roomID, (*int)(nil), (*int)(nil), false).
+					Return(nil, fmt.Errorf("mongo exploded"))
+			},
+			want: want{errContains: "get room members"},
+		},
+		{
+			name:    "enrich=true passed through to store",
+			subject: subj,
+			body:    []byte(`{"enrich":true}`),
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
+				s.EXPECT().ListRoomMembers(gomock.Any(), roomID, (*int)(nil), (*int)(nil), true).
+					Return([]model.RoomMember{
+						{
+							ID: "rm1", RoomID: roomID, Ts: time.Unix(1, 0).UTC(),
+							Member: model.RoomMemberEntry{
+								ID: "alice", Type: model.RoomMemberIndividual, Account: "alice",
+								EngName: "Alice Wang", ChineseName: "愛麗絲", IsOwner: true,
+							},
+						},
+					}, nil)
+			},
+			want: want{members: []model.RoomMember{
+				{
+					ID: "rm1", RoomID: roomID, Ts: time.Unix(1, 0).UTC(),
+					Member: model.RoomMemberEntry{
+						ID: "alice", Type: model.RoomMemberIndividual, Account: "alice",
+						EngName: "Alice Wang", ChineseName: "愛麗絲", IsOwner: true,
+					},
+				},
+			}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			tc.setupMock(store)
+
+			h := &Handler{store: store, siteID: siteID}
+			resp, err := h.handleListMembers(context.Background(), tc.subject, tc.body)
+
+			if tc.want.errContains != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.want.errContains)
+				return
+			}
+			if tc.want.errIs != nil {
+				require.Error(t, err)
+				assert.True(t, errors.Is(err, tc.want.errIs), "error chain should contain %v, got %v", tc.want.errIs, err)
+				return
+			}
+
+			require.NoError(t, err)
+			var decoded model.ListRoomMembersResponse
+			require.NoError(t, json.Unmarshal(resp, &decoded))
+			assert.Equal(t, tc.want.members, decoded.Members)
+		})
+	}
 }
