@@ -13,10 +13,10 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
-	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
@@ -25,6 +25,7 @@ import (
 
 type config struct {
 	NatsURL           string `env:"NATS_URL,required"`
+	NatsCredsFile     string `env:"NATS_CREDS_FILE"    envDefault:""`
 	SiteID            string `env:"SITE_ID,required"`
 	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
 	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
@@ -51,7 +52,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	nc, err := otelnats.Connect(cfg.NatsURL)
+	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)

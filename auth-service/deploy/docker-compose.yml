@@ -1,45 +1,24 @@
+name: auth-service
+
 services:
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.0
-    ports:
-      - "9090:8080"
-    environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-    volumes:
-      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
-    command: ["start-dev", "--import-realm"]
-    healthcheck:
-      test: >
-        sh -c 'exec 3<>/dev/tcp/localhost/8080 &&
-        echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
-        cat <&3 | grep -q "200"'
-      interval: 10s
-      timeout: 10s
-      retries: 15
-      start_period: 60s
-
-  nats:
-    image: nats:2.11-alpine
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-      - "9222:9222"
-    volumes:
-      - ./nats.conf:/etc/nats/nats.conf:ro
-      - nats-data:/data/jetstream
-    command: ["-c", "/etc/nats/nats.conf", "-DV", "-T"]
-
   auth-service:
     build:
       context: ../..
       dockerfile: auth-service/deploy/Dockerfile
     ports:
       - "8080:8080"
-    env_file: .env
-    depends_on:
-      keycloak:
-        condition: service_healthy
+    env_file:
+      - path: ../../docker-local/.env
+        required: false
+    environment:
+      - PORT=8080
+      - NATS_JWT_EXPIRY=2h
+      - OIDC_ISSUER_URL=http://keycloak:8080/realms/chatapp
+      - OIDC_AUDIENCE=nats-chat
+      - TLS_SKIP_VERIFY=false
+    networks:
+      - chat-local
 
-volumes:
-  nats-data:
+networks:
+  chat-local:
+    external: true

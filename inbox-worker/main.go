@@ -18,16 +18,18 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
 
 type config struct {
-	NatsURL  string `env:"NATS_URL"  envDefault:"nats://localhost:4222"`
-	SiteID   string `env:"SITE_ID"   envDefault:"default"`
-	MongoURI string `env:"MONGO_URI" envDefault:"mongodb://localhost:27017"`
-	MongoDB  string `env:"MONGO_DB"  envDefault:"chat"`
+	NatsURL       string `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
+	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID        string `env:"SITE_ID"         envDefault:"default"`
+	MongoURI      string `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
+	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
 }
 
 // mongoInboxStore implements InboxStore using MongoDB.
@@ -98,7 +100,7 @@ func main() {
 		roomCol: db.Collection("rooms"),
 	}
 
-	nc, err := otelnats.Connect(cfg.NatsURL)
+	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect failed", "error", err)
 		os.Exit(1)

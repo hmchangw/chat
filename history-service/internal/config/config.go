@@ -17,9 +17,10 @@ type MongoConfig struct {
 }
 
 // NATSConfig holds NATS connection settings.
-// Env vars: NATS_URL
+// Env vars: NATS_URL, NATS_CREDS_FILE
 type NATSConfig struct {
-	URL string `env:"URL" required:"true"`
+	URL       string `env:"URL" required:"true"`
+	CredsFile string `env:"CREDS_FILE" envDefault:""`
 }
 
 // Config is the top-level configuration for history-service.
