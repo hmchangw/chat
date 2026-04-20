@@ -80,10 +80,11 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 	return nil
 }
 
-// SaveThreadMessage inserts a thread reply into messages_by_id and thread_messages_by_room,
-// then increments tcount on the parent message in both messages_by_id and messages_by_room.
+// SaveThreadMessage inserts a thread reply into messages_by_id and thread_messages_by_room.
 // threadRoomID is the ID of the ThreadRoom document that anchors this thread (created or
 // fetched by handleThreadRoomAndSubscriptions before this call).
+// The per-parent reply count is not maintained on write; readers compute it via
+// SELECT COUNT(*) FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ?.
 // If any operation fails the error is returned immediately; JetStream will redeliver the message.
 func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
 	if err := s.cassSession.Query(
@@ -105,87 +106,6 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
-	}
-
-	if err := s.incrementParentTcount(ctx, msg); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// incrementParentTcount increments tcount on the parent message row in both
-// messages_by_id and messages_by_room using Cassandra Lightweight Transactions
-// (IF tcount = ?). Each table is incremented independently via a CAS retry loop:
-// on conflict ScanCAS returns the current value so the next attempt uses it.
-// Binding a nil *int as the IF condition evaluates to IF tcount = null, which
-// handles the initial case where tcount has never been set on the parent row.
-// If ThreadParentMessageCreatedAt is nil the increment is silently skipped —
-// tcount cannot be updated without the full primary key of the parent row.
-func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.Message) error {
-	if msg.ThreadParentMessageCreatedAt == nil {
-		return nil
-	}
-	parentID := msg.ThreadParentMessageID
-	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
-
-	// CAS increment on messages_by_id.
-	var tcount *int
-	if err := s.cassSession.Query(
-		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
-	).WithContext(ctx).Scan(&tcount); err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return nil
-		}
-		return fmt.Errorf("read tcount for parent message %s: %w", parentID, err)
-	}
-	for {
-		newVal := 1
-		if tcount != nil {
-			newVal = *tcount + 1
-		}
-		var current *int
-		applied, err := s.cassSession.Query(
-			`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ? IF tcount = ?`,
-			newVal, parentID, parentCreatedAt, tcount,
-		).WithContext(ctx).ScanCAS(&current)
-		if err != nil {
-			return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
-		}
-		if applied {
-			break
-		}
-		tcount = current
-	}
-
-	// CAS increment on messages_by_room.
-	if err := s.cassSession.Query(
-		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-		msg.RoomID, parentCreatedAt, parentID,
-	).WithContext(ctx).Scan(&tcount); err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return nil
-		}
-		return fmt.Errorf("read tcount in messages_by_room for parent %s: %w", parentID, err)
-	}
-	for {
-		newVal := 1
-		if tcount != nil {
-			newVal = *tcount + 1
-		}
-		var current *int
-		applied, err := s.cassSession.Query(
-			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
-			newVal, msg.RoomID, parentCreatedAt, parentID, tcount,
-		).WithContext(ctx).ScanCAS(&current)
-		if err != nil {
-			return fmt.Errorf("cas tcount in messages_by_room for parent %s: %w", parentID, err)
-		}
-		if applied {
-			break
-		}
-		tcount = current
 	}
 
 	return nil

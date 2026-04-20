@@ -49,7 +49,6 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			site_id       TEXT,
 			updated_at    TIMESTAMP,
 			mentions      SET<FROZEN<"Participant">>,
-			tcount        INT,
 			PRIMARY KEY ((room_id), created_at, message_id)
 		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`,
 		`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
@@ -64,7 +63,6 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			thread_room_id          TEXT,
 			thread_parent_id        TEXT,
 			thread_parent_created_at TIMESTAMP,
-			tcount                  INT,
 			PRIMARY KEY (message_id, created_at)
 		) WITH CLUSTERING ORDER BY (created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS chat_test.thread_messages_by_room (
@@ -679,111 +677,4 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "msg-5", got.LastMsgID)
 	assert.Equal(t, later, got.LastMsgAt.UTC().Truncate(time.Millisecond))
-}
-
-func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
-	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
-	ctx := context.Background()
-
-	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
-	replyCreatedAt := parentCreatedAt.Add(5 * time.Minute)
-
-	parentSender := &cassParticipant{ID: "u-parent", Account: "alice", EngName: "Alice"}
-	parentMsg := &model.Message{
-		ID:        "tcount-parent",
-		RoomID:    "tcount-room",
-		UserID:    "u-parent",
-		CreatedAt: parentCreatedAt,
-		Content:   "parent message",
-	}
-	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
-
-	replySender := &cassParticipant{ID: "u-replier", Account: "bob", EngName: "Bob"}
-	replyMsg := &model.Message{
-		ID:                           "tcount-reply-1",
-		RoomID:                       "tcount-room",
-		UserID:                       "u-replier",
-		Content:                      "first reply",
-		CreatedAt:                    replyCreatedAt,
-		ThreadParentMessageID:        "tcount-parent",
-		ThreadParentMessageCreatedAt: &parentCreatedAt,
-	}
-	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-tcount-1"))
-
-	t.Run("tcount incremented to 1 in messages_by_id", func(t *testing.T) {
-		var tcount int
-		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"tcount-parent", parentCreatedAt,
-		).Scan(&tcount)
-		require.NoError(t, err)
-		assert.Equal(t, 1, tcount)
-	})
-
-	t.Run("tcount incremented to 1 in messages_by_room", func(t *testing.T) {
-		var tcount int
-		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-			"tcount-room", parentCreatedAt, "tcount-parent",
-		).Scan(&tcount)
-		require.NoError(t, err)
-		assert.Equal(t, 1, tcount)
-	})
-
-	// A second reply must increment tcount to 2.
-	reply2CreatedAt := replyCreatedAt.Add(5 * time.Minute)
-	replyMsg2 := &model.Message{
-		ID:                           "tcount-reply-2",
-		RoomID:                       "tcount-room",
-		UserID:                       "u-replier",
-		Content:                      "second reply",
-		CreatedAt:                    reply2CreatedAt,
-		ThreadParentMessageID:        "tcount-parent",
-		ThreadParentMessageCreatedAt: &parentCreatedAt,
-	}
-	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg2, replySender, "site-a", "tr-tcount-1"))
-
-	t.Run("tcount incremented to 2 in messages_by_id after second reply", func(t *testing.T) {
-		var tcount int
-		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"tcount-parent", parentCreatedAt,
-		).Scan(&tcount)
-		require.NoError(t, err)
-		assert.Equal(t, 2, tcount)
-	})
-
-	t.Run("tcount incremented to 2 in messages_by_room after second reply", func(t *testing.T) {
-		var tcount int
-		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-			"tcount-room", parentCreatedAt, "tcount-parent",
-		).Scan(&tcount)
-		require.NoError(t, err)
-		assert.Equal(t, 2, tcount)
-	})
-
-	t.Run("nil ThreadParentMessageCreatedAt skips tcount update without error", func(t *testing.T) {
-		noTsReply := &model.Message{
-			ID:                    "tcount-reply-nots",
-			RoomID:                "tcount-room",
-			UserID:                "u-replier",
-			Content:               "reply without parent ts",
-			CreatedAt:             reply2CreatedAt.Add(5 * time.Minute),
-			ThreadParentMessageID: "tcount-parent",
-			// ThreadParentMessageCreatedAt intentionally nil
-		}
-		err := store.SaveThreadMessage(ctx, noTsReply, replySender, "site-a", "tr-tcount-1")
-		assert.NoError(t, err)
-
-		// tcount must stay at 2 — nil timestamp skips the increment
-		var tcount int
-		err = cassSession.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"tcount-parent", parentCreatedAt,
-		).Scan(&tcount)
-		require.NoError(t, err)
-		assert.Equal(t, 2, tcount)
-	})
 }
