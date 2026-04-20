@@ -224,7 +224,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			mockThreadStore := NewMockThreadStore(ctrl)
 			tt.setupMocks(mockStore, mockUserStore, mockThreadStore)
 
-			h := NewHandler(mockStore, mockUserStore, mockThreadStore, 5)
+			h := NewHandler(mockStore, mockUserStore, mockThreadStore)
 			err := h.processMessage(context.Background(), tt.data)
 			if tt.wantErr {
 				require.Error(t, err)
@@ -482,7 +482,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			mockUserStore := NewMockUserStore(ctrl)
 			tt.setupMocks(mockStore, mockThreadStore)
 
-			h := NewHandler(mockStore, mockUserStore, mockThreadStore, 5)
+			h := NewHandler(mockStore, mockUserStore, mockThreadStore)
 			_, err := h.handleThreadRoomAndSubscriptions(context.Background(), tt.msg, tt.siteID)
 			if tt.wantErr {
 				require.Error(t, err)
@@ -493,23 +493,17 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 	}
 }
 
-// fakeJSMsg is a minimal jetstream.Msg test double that records which ack
-// method was called so tests can assert on ack/nak/term behaviour.
+// fakeJSMsg is a minimal jetstream.Msg test double that records whether Ack or
+// Nak was called so tests can assert on ack/nak behaviour.
 type fakeJSMsg struct {
-	data         []byte
-	numDelivered uint64
-	metaErr      error
-	acked        bool
-	naked        bool
-	termed       bool
+	data  []byte
+	acked bool
+	naked bool
 }
 
-func (m *fakeJSMsg) Data() []byte { return m.data }
+func (m *fakeJSMsg) Data() []byte                           { return m.data }
 func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) {
-	if m.metaErr != nil {
-		return nil, m.metaErr
-	}
-	return &jetstream.MsgMetadata{NumDelivered: m.numDelivered}, nil
+	return &jetstream.MsgMetadata{}, nil
 }
 func (m *fakeJSMsg) Headers() nats.Header             { return nil }
 func (m *fakeJSMsg) Subject() string                  { return "test.subject" }
@@ -519,8 +513,8 @@ func (m *fakeJSMsg) DoubleAck(context.Context) error  { m.acked = true; return n
 func (m *fakeJSMsg) Nak() error                       { m.naked = true; return nil }
 func (m *fakeJSMsg) NakWithDelay(time.Duration) error { m.naked = true; return nil }
 func (m *fakeJSMsg) InProgress() error                { return nil }
-func (m *fakeJSMsg) Term() error                      { m.termed = true; return nil }
-func (m *fakeJSMsg) TermWithReason(string) error      { m.termed = true; return nil }
+func (m *fakeJSMsg) Term() error                      { return nil }
+func (m *fakeJSMsg) TermWithReason(string) error      { return nil }
 
 func TestHandler_HandleJetStreamMsg(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -540,22 +534,16 @@ func TestHandler_HandleJetStreamMsg(t *testing.T) {
 		ID: user.ID, EngName: user.EngName, CompanyName: user.ChineseName, Account: msg.UserAccount,
 	}
 
-	const maxRedeliver = 3
-
 	tests := []struct {
-		name         string
-		msgData      []byte
-		numDelivered uint64
-		metaErr      error
-		setupMocks   func(store *MockStore, us *MockUserStore, ts *MockThreadStore)
-		wantAck      bool
-		wantNak      bool
-		wantTerm     bool
+		name       string
+		msgData    []byte
+		setupMocks func(store *MockStore, us *MockUserStore, ts *MockThreadStore)
+		wantAck    bool
+		wantNak    bool
 	}{
 		{
-			name:         "success — Ack called",
-			msgData:      validData,
-			numDelivered: 1,
+			name:    "success — Ack called",
+			msgData: validData,
 			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
 				store.EXPECT().SaveMessage(gomock.Any(), &msg, &expectedSender, "site-a").Return(nil)
@@ -563,30 +551,8 @@ func TestHandler_HandleJetStreamMsg(t *testing.T) {
 			wantAck: true,
 		},
 		{
-			name:         "failure within budget — Nak called",
-			msgData:      invalidData,
-			numDelivered: 1, // first of maxRedeliver+1 total attempts
-			setupMocks:   func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {},
-			wantNak:      true,
-		},
-		{
-			name:         "failure at budget limit — still Nak (not yet exceeded)",
-			msgData:      invalidData,
-			numDelivered: uint64(maxRedeliver), // == maxRedeliver, not yet over
-			setupMocks:   func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {},
-			wantNak:      true,
-		},
-		{
-			name:         "failure over budget — Term called",
-			msgData:      invalidData,
-			numDelivered: uint64(maxRedeliver) + 1, // exceeded
-			setupMocks:   func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {},
-			wantTerm:     true,
-		},
-		{
-			name:       "metadata error — fallback to Nak",
+			name:       "failure — Nak called",
 			msgData:    invalidData,
-			metaErr:    errors.New("nats: metadata unavailable"),
 			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {},
 			wantNak:    true,
 		},
@@ -600,18 +566,13 @@ func TestHandler_HandleJetStreamMsg(t *testing.T) {
 			mockThreadStore := NewMockThreadStore(ctrl)
 			tt.setupMocks(mockStore, mockUserStore, mockThreadStore)
 
-			h := NewHandler(mockStore, mockUserStore, mockThreadStore, maxRedeliver)
+			h := NewHandler(mockStore, mockUserStore, mockThreadStore)
 
-			fakeMsg := &fakeJSMsg{
-				data:         tt.msgData,
-				numDelivered: tt.numDelivered,
-				metaErr:      tt.metaErr,
-			}
+			fakeMsg := &fakeJSMsg{data: tt.msgData}
 			h.HandleJetStreamMsg(context.Background(), fakeMsg)
 
 			assert.Equal(t, tt.wantAck, fakeMsg.acked, "acked")
 			assert.Equal(t, tt.wantNak, fakeMsg.naked, "naked")
-			assert.Equal(t, tt.wantTerm, fakeMsg.termed, "termed")
 		})
 	}
 }

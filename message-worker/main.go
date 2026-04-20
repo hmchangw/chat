@@ -82,7 +82,7 @@ func main() {
 		slog.Error("ensure thread store indexes failed", "error", err)
 		os.Exit(1)
 	}
-	handler := NewHandler(store, us, threadStore, cfg.MaxRedeliver)
+	handler := NewHandler(store, us, threadStore)
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
