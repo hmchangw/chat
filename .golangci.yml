@@ -10,9 +10,6 @@ linters:
     - bodyclose
     - exhaustive
   settings:
-    goimports:
-      local-prefixes:
-        - github.com/hmchangw/chat
     exhaustive:
       default-signifies-exhaustive: true
     gocritic:
