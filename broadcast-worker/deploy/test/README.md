@@ -12,7 +12,10 @@ Zero-code way to exercise the `broadcast-worker` against a locally running
 
 ## Prerequisites
 
-- `docker` + `docker compose`
+- Docker daemon running
+- Docker Compose — either **V2** (`docker compose`, preferred) or **V1**
+  (`docker-compose` with a hyphen). The scripts auto-detect which is
+  installed and use whichever they find.
 - `make`, `bash`
 - Free host ports: `4222`, `4223`, `8222`, `8223`, `27017`, plus `8090` if
   running `tools/nats-debug` alongside.
@@ -173,6 +176,13 @@ a throwaway container per call, which is slower and noisier.
 To avoid requiring the `nats` CLI on the host. The `tools` service runs
 `natsio/nats-box` with `sleep infinity` so `publish.sh` can
 `exec tools nats pub ...` into it.
+
+**I'm on the old `docker-compose` (V1, with hyphen) — does this work?**
+
+Yes. The scripts auto-detect: if `docker compose version` succeeds they
+use V2, otherwise they fall back to `docker-compose`. `seed.sh` pipes
+JSON via stdin to `mongoimport` rather than using `docker compose cp`
+(which V1 lacks), so the seeding step works on both.
 
 **Why one MongoDB instead of one per site?**
 

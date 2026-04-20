@@ -3,11 +3,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE_CMD=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD=(docker-compose)
+else
+  echo "error: neither 'docker compose' nor 'docker-compose' is available" >&2
+  exit 1
+fi
+
 COMPOSE_FILES=(-f "$DEPLOY_DIR/docker-compose.test.yml")
 if [[ -n "${COMPOSE_OVERRIDE:-}" ]]; then
   COMPOSE_FILES+=(-f "$COMPOSE_OVERRIDE")
 fi
-COMPOSE=(docker compose "${COMPOSE_FILES[@]}")
+COMPOSE=("${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}")
 
 SCENARIO="${1:-}"
 if [[ -z "$SCENARIO" ]]; then
