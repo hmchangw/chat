@@ -501,7 +501,7 @@ type fakeJSMsg struct {
 	naked bool
 }
 
-func (m *fakeJSMsg) Data() []byte { return m.data }
+func (m *fakeJSMsg) Data() []byte                           { return m.data }
 func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) {
 	return &jetstream.MsgMetadata{}, nil
 }
