@@ -42,6 +42,14 @@ type RoomMemberEntry struct {
 	ID      string         `json:"id"                bson:"id"`
 	Type    RoomMemberType `json:"type"              bson:"type"`
 	Account string         `json:"account,omitempty" bson:"account,omitempty"`
+
+	// Display fields — never persisted (bson:"-"); populated only when
+	// ListRoomMembers is called with enrich=true. Elided from JSON when zero.
+	EngName     string `json:"engName,omitempty"     bson:"-"`
+	ChineseName string `json:"chineseName,omitempty" bson:"-"`
+	IsOwner     bool   `json:"isOwner,omitempty"     bson:"-"`
+	SectName    string `json:"sectName,omitempty"    bson:"-"`
+	MemberCount int    `json:"memberCount,omitempty" bson:"-"`
 }
 
 type RemoveMemberRequest struct {
@@ -73,4 +81,14 @@ type MembersAdded struct {
 	Orgs            []string `json:"orgs"`
 	Channels        []string `json:"channels"`
 	AddedUsersCount int      `json:"addedUsersCount"`
+}
+
+type ListRoomMembersRequest struct {
+	Limit  *int `json:"limit,omitempty"`
+	Offset *int `json:"offset,omitempty"`
+	Enrich bool `json:"enrich,omitempty"`
+}
+
+type ListRoomMembersResponse struct {
+	Members []RoomMember `json:"members"`
 }
