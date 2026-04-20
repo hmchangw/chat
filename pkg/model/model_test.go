@@ -64,6 +64,7 @@ func TestThreadSubscriptionJSON(t *testing.T) {
 		UserAccount:     "alice",
 		SiteID:          "site-a",
 		LastSeenAt:      nil,
+		HasMention:      true,
 		CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 	}

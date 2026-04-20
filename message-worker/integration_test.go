@@ -523,6 +523,90 @@ func TestHandler_Integration_ThreadReply(t *testing.T) {
 	})
 }
 
+func TestHandler_Integration_ThreadReplyWithMention(t *testing.T) {
+	ctx := context.Background()
+
+	cassSession := setupCassandra(t)
+	db := setupMongo(t)
+
+	userCol := db.Collection("users")
+	_, err := userCol.InsertMany(ctx, []interface{}{
+		bson.M{"_id": "u-parent", "account": "parent-user", "siteId": "site-a", "engName": "Parent User", "chineseName": "家長", "employeeId": "EMP001"},
+		bson.M{"_id": "u-replier", "account": "replier", "siteId": "site-a", "engName": "Replier User", "chineseName": "回覆者", "employeeId": "EMP002"},
+		bson.M{"_id": "u-bob", "account": "bob", "siteId": "site-a", "engName": "Bob Chen", "chineseName": "鮑勃", "employeeId": "EMP003"},
+	})
+	require.NoError(t, err)
+
+	store := NewCassandraStore(cassSession)
+	us := userstore.NewMongoStore(userCol)
+	ts := newThreadStoreMongo(db)
+	require.NoError(t, ts.EnsureIndexes(ctx))
+	h := NewHandler(store, us, ts)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Save parent message so GetMessageSender can find it.
+	parentMsg := &model.Message{
+		ID: "msg-parent-mention", RoomID: "r-mention", UserID: "u-parent", UserAccount: "parent-user",
+		Content: "parent message", CreatedAt: now.Add(-1 * time.Minute),
+	}
+	parentSender := &cassParticipant{ID: "u-parent", EngName: "Parent User", Account: "parent-user"}
+	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
+
+	// Thread reply from replier that mentions @bob (non-participant).
+	replyEvt := model.MessageEvent{
+		Message: model.Message{
+			ID: "msg-reply-mention", RoomID: "r-mention", UserID: "u-replier", UserAccount: "replier",
+			Content: "hey @bob take a look", CreatedAt: now,
+			ThreadParentMessageID: "msg-parent-mention",
+		},
+		SiteID: "site-a", Timestamp: now.UnixMilli(),
+	}
+	data, err := json.Marshal(replyEvt)
+	require.NoError(t, err)
+	require.NoError(t, h.processMessage(ctx, data))
+
+	t.Run("bob auto-subscribed with hasMention=true", func(t *testing.T) {
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"parentMessageId": "msg-parent-mention",
+			"userId":          "u-bob",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "bob", got.UserAccount)
+		assert.True(t, got.HasMention, "mentionee must have hasMention=true")
+		assert.Nil(t, got.LastSeenAt)
+	})
+
+	t.Run("parent author subscribed with hasMention=false (not mentioned)", func(t *testing.T) {
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"parentMessageId": "msg-parent-mention",
+			"userId":          "u-parent",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.False(t, got.HasMention)
+	})
+
+	t.Run("replier subscribed with hasMention=false (sender excluded)", func(t *testing.T) {
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"parentMessageId": "msg-parent-mention",
+			"userId":          "u-replier",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.False(t, got.HasMention)
+	})
+
+	t.Run("three thread subscriptions total", func(t *testing.T) {
+		count, err := db.Collection("threadSubscriptions").CountDocuments(ctx, bson.M{
+			"parentMessageId": "msg-parent-mention",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), count)
+	})
+}
+
 func TestThreadStoreMongo_CreateThreadRoom(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
@@ -625,6 +709,111 @@ func TestThreadStoreMongo_InsertThreadSubscription(t *testing.T) {
 		}
 		err := store.InsertThreadSubscription(ctx, dup)
 		require.Error(t, err, "second insert with same (threadRoomId, userId) must fail")
+	})
+}
+
+func TestThreadStoreMongo_MarkThreadSubscriptionMention(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := newThreadStoreMongo(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	t.Run("upsert creates new subscription with hasMention=true", func(t *testing.T) {
+		sub := &model.ThreadSubscription{
+			ID:              "ts-new-1",
+			ParentMessageID: "msg-parent-mk-1",
+			RoomID:          "r-1",
+			ThreadRoomID:    "tr-mk-1",
+			UserID:          "u-mk-new",
+			UserAccount:     "bob",
+			SiteID:          "site-a",
+			LastSeenAt:      nil,
+			HasMention:      true,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		require.NoError(t, store.MarkThreadSubscriptionMention(ctx, sub))
+
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"threadRoomId": "tr-mk-1",
+			"userId":       "u-mk-new",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "ts-new-1", got.ID)
+		assert.Equal(t, "bob", got.UserAccount)
+		assert.True(t, got.HasMention, "hasMention must be true for new mentionee sub")
+		assert.Nil(t, got.LastSeenAt)
+	})
+
+	t.Run("upsert flips hasMention=true on existing subscription without overwriting other fields", func(t *testing.T) {
+		original := &model.ThreadSubscription{
+			ID:              "ts-existing-1",
+			ParentMessageID: "msg-parent-mk-2",
+			RoomID:          "r-1",
+			ThreadRoomID:    "tr-mk-2",
+			UserID:          "u-mk-existing",
+			UserAccount:     "alice",
+			SiteID:          "site-a",
+			LastSeenAt:      nil,
+			HasMention:      false,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		require.NoError(t, store.InsertThreadSubscription(ctx, original))
+
+		later := now.Add(10 * time.Minute)
+		mention := &model.ThreadSubscription{
+			ID:              "ts-should-be-ignored",
+			ParentMessageID: "msg-parent-mk-2",
+			RoomID:          "r-1",
+			ThreadRoomID:    "tr-mk-2",
+			UserID:          "u-mk-existing",
+			UserAccount:     "alice",
+			SiteID:          "site-a",
+			LastSeenAt:      nil,
+			HasMention:      true,
+			CreatedAt:       later,
+			UpdatedAt:       later,
+		}
+		require.NoError(t, store.MarkThreadSubscriptionMention(ctx, mention))
+
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"threadRoomId": "tr-mk-2",
+			"userId":       "u-mk-existing",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "ts-existing-1", got.ID, "original _id preserved on update")
+		assert.True(t, got.HasMention, "hasMention flipped to true")
+		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond), "createdAt preserved")
+		assert.Equal(t, later, got.UpdatedAt.UTC().Truncate(time.Millisecond), "updatedAt advanced")
+	})
+
+	t.Run("repeat call is idempotent", func(t *testing.T) {
+		sub := &model.ThreadSubscription{
+			ID:              "ts-idem",
+			ParentMessageID: "msg-parent-mk-3",
+			RoomID:          "r-1",
+			ThreadRoomID:    "tr-mk-3",
+			UserID:          "u-mk-idem",
+			UserAccount:     "charlie",
+			SiteID:          "site-a",
+			HasMention:      true,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		require.NoError(t, store.MarkThreadSubscriptionMention(ctx, sub))
+		require.NoError(t, store.MarkThreadSubscriptionMention(ctx, sub))
+
+		count, err := db.Collection("threadSubscriptions").CountDocuments(ctx, bson.M{
+			"threadRoomId": "tr-mk-3",
+			"userId":       "u-mk-idem",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), count, "second upsert must not create a second row")
 	})
 }
 
