@@ -267,4 +267,130 @@ describe('RoomEventsProvider subscriptions', () => {
       expect(s.unsubscribe).toHaveBeenCalled()
     }
   })
+
+  it('computes hasMention from mentions[] for group events', async () => {
+    const rooms = [{ id: 'g1', name: 'g', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
+    const request = vi.fn().mockResolvedValue({ rooms })
+    const handlers = new Map()
+    const subscribe = vi.fn().mockImplementation((subject, cb) => {
+      handlers.set(subject, cb)
+      return { unsubscribe: vi.fn() }
+    })
+    const nats = mockNats({ request, subscribe })
+
+    // Render a probe that reads summaries from the same provider that receives the event
+    let captured
+    function MentionProbe() {
+      const { summaries } = useRoomSummaries()
+      captured = summaries
+      return <div data-testid="count">{summaries.length}</div>
+    }
+    render(wrap(<MentionProbe />, nats))
+    await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('1'))
+
+    act(() => {
+      handlers.get('chat.room.g1.event')({
+        type: 'new_message',
+        roomId: 'g1',
+        mentions: [{ account: 'alice', engName: 'Alice' }],
+        mentionAll: false,
+        lastMsgAt: '2026-04-17T12:00:00Z',
+        lastMsgId: 'mg1',
+        message: { id: 'mg1', roomId: 'g1', content: '@alice hi', createdAt: '2026-04-17T12:00:00Z', sender: { account: 'bob' } },
+      })
+    })
+
+    await waitFor(() => {
+      const g1 = captured?.find((r) => r.id === 'g1')
+      expect(g1?.hasMention).toBe(true)
+    })
+  })
+
+  it('does not set hasMention for group events that do not mention the user', async () => {
+    const rooms = [{ id: 'g1', name: 'g', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
+    const request = vi.fn().mockResolvedValue({ rooms })
+    const handlers = new Map()
+    const subscribe = vi.fn().mockImplementation((subject, cb) => {
+      handlers.set(subject, cb)
+      return { unsubscribe: vi.fn() }
+    })
+    const nats = mockNats({ request, subscribe })
+
+    let captured
+    function MentionProbe() {
+      const { summaries } = useRoomSummaries()
+      captured = summaries
+      return <div data-testid="count">{summaries.length}</div>
+    }
+    render(wrap(<MentionProbe />, nats))
+    await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('1'))
+
+    act(() => {
+      handlers.get('chat.room.g1.event')({
+        type: 'new_message',
+        roomId: 'g1',
+        mentions: [{ account: 'charlie' }],
+        mentionAll: false,
+        lastMsgAt: '2026-04-17T12:00:00Z',
+        lastMsgId: 'mg2',
+        message: { id: 'mg2', roomId: 'g1', content: '@charlie hi', createdAt: '2026-04-17T12:00:00Z', sender: { account: 'bob' } },
+      })
+    })
+
+    await waitFor(() => {
+      const g1 = captured?.find((r) => r.id === 'g1')
+      expect(g1?.hasMention).toBe(false)
+    })
+  })
+
+  it('does not dispatch HISTORY_LOADED after the user changes (cancelledRef guard)', async () => {
+    // This tests the real bug: user A starts a loadHistory, user switches to B, the
+    // cleanup sets cancelledRef=true and the new effect sets it back to false. Without
+    // the guard on the dispatch, user A's late resolve would dispatch into user B's state.
+    let resolveAliceHistory
+    const request = vi.fn().mockImplementation((subject) => {
+      if (subject.endsWith('.rooms.list')) return Promise.resolve({ rooms: [] })
+      if (subject.includes('alice') && subject.includes('.msg.history')) {
+        return new Promise((resolve) => { resolveAliceHistory = resolve })
+      }
+      if (subject.includes('bob') && subject.includes('.msg.history')) {
+        return new Promise(() => {}) // bob's history never resolves in this test
+      }
+      throw new Error('unexpected: ' + subject)
+    })
+    const subscribe = vi.fn().mockReturnValue({ unsubscribe: vi.fn() })
+
+    const aliceNats = mockNats({ request, subscribe, user: { account: 'alice', siteId: 'site-A' } })
+    const bobNats   = mockNats({ request, subscribe, user: { account: 'bob',   siteId: 'site-A' } })
+
+    // Trigger alice's loadHistory, then switch user to bob mid-flight
+    function Trigger() {
+      const { loadHistory } = useRoomEvents('a')
+      return <button onClick={() => { loadHistory().catch(() => {}) }}>load</button>
+    }
+
+    const { rerender } = render(wrap(<Trigger />, aliceNats))
+    await waitFor(() => expect(subscribe).toHaveBeenCalled())
+    await act(async () => { screen.getByText('load').click() })
+
+    // Switch to bob — this triggers cleanup (cancelledRef=true) then new effect (cancelledRef=false)
+    let bobMessages
+    function BobProbe() {
+      const { messages } = useRoomEvents('a')
+      bobMessages = messages
+      return null
+    }
+    rerender(wrap(<BobProbe />, bobNats))
+    await waitFor(() => expect(subscribe.mock.calls.some((c) => c[0].includes('bob'))).toBe(true))
+
+    // Now alice's inflight history resolves — the guard must prevent it landing in bob's state
+    await act(async () => {
+      resolveAliceHistory({ messages: [{ id: 'alice-msg', roomId: 'a', content: 'hi', createdAt: '2026-04-17T10:00:00Z', sender: { account: 'alice' } }] })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // Bob's state should be empty — the stale alice dispatch must not have gone through
+    expect(bobMessages).toEqual([])
+  })
 })

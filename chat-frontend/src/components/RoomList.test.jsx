@@ -68,7 +68,7 @@ describe('RoomList', () => {
     expect(container.querySelector('.room-badge-mention')).not.toBeInTheDocument()
   })
 
-  it('calls onSelectRoom and setActiveRoom on click', () => {
+  it('calls onSelectRoom on click', () => {
     const onSelectRoom = vi.fn()
     const setActiveRoom = vi.fn()
     useRoomSummaries.mockReturnValue({

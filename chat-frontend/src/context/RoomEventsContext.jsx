@@ -22,10 +22,12 @@ export function RoomEventsProvider({ children }) {
 
   const groupSubs = useRef(new Map())
   const cancelledRef = useRef(false)
+  const generationRef = useRef(0)
 
   useEffect(() => {
     if (!user) return
     cancelledRef.current = false
+    const generation = ++generationRef.current
 
     const safeDispatch = (action) => {
       if (cancelledRef.current) return
@@ -42,7 +44,10 @@ export function RoomEventsProvider({ children }) {
       if (groupSubs.current.has(roomId)) return
       const sub = subscribe(roomEvent(roomId), (evt) => {
         if (evt?.type === 'new_message') {
-          safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
+          const hasMention = (evt.mentions ?? []).some(
+            (p) => p.account === user.account
+          )
+          safeDispatch({ type: 'MESSAGE_RECEIVED', event: { ...evt, hasMention } })
         }
       })
       groupSubs.current.set(roomId, sub)
@@ -120,13 +125,14 @@ export function RoomEventsProvider({ children }) {
       if (prev?.hasLoadedHistory) return
       if (inflightHistory.current.has(roomId)) return inflightHistory.current.get(roomId)
 
+      const gen = generationRef.current
       const promise = (async () => {
         try {
           const resp = await request(msgHistory(user.account, roomId, user.siteId), { limit: 50 })
           const asc = [...(resp.messages ?? [])].reverse()
-          dispatch({ type: 'HISTORY_LOADED', roomId, messages: asc })
+          if (generationRef.current === gen) dispatch({ type: 'HISTORY_LOADED', roomId, messages: asc })
         } catch (err) {
-          dispatch({ type: 'HISTORY_FAILED', roomId, error: err.message })
+          if (generationRef.current === gen) dispatch({ type: 'HISTORY_FAILED', roomId, error: err.message })
           throw err
         } finally {
           inflightHistory.current.delete(roomId)
