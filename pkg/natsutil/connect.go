@@ -18,6 +18,10 @@ const defaultReconnectWait = 2 * time.Second
 // mounted as the user credentials (JWT + NKey); when empty the connection
 // authenticates without credentials. Extra opts are appended and override any
 // same-kind default.
+//
+// The initial connect fails fast: if NATS is unreachable at startup, the
+// caller receives the error and is expected to log + exit. Reconnect handlers
+// fire only after the first successful connect.
 func Connect(url, credsFile string, opts ...nats.Option) (*otelnats.Conn, error) {
 	if credsFile != "" {
 		if _, err := os.Stat(credsFile); err != nil {
@@ -31,7 +35,6 @@ func Connect(url, credsFile string, opts ...nats.Option) (*otelnats.Conn, error)
 		nats.Name(name),
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(defaultReconnectWait),
-		nats.RetryOnFailedConnect(true),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			log.Warn("nats disconnected", "error", err)
 		}),
@@ -48,7 +51,15 @@ func Connect(url, credsFile string, opts ...nats.Option) (*otelnats.Conn, error)
 	baseOpts = append(baseOpts, opts...)
 
 	if credsFile == "" {
-		return otelnats.ConnectWithOptions(url, baseOpts)
+		conn, err := otelnats.ConnectWithOptions(url, baseOpts)
+		if err != nil {
+			return nil, fmt.Errorf("connect nats: %w", err)
+		}
+		return conn, nil
 	}
-	return otelnats.ConnectWithCredentialsWithOptions(url, credsFile, baseOpts)
+	conn, err := otelnats.ConnectWithCredentialsWithOptions(url, credsFile, baseOpts)
+	if err != nil {
+		return nil, fmt.Errorf("connect nats with credentials: %w", err)
+	}
+	return conn, nil
 }

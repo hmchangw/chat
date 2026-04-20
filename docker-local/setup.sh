@@ -6,7 +6,7 @@
 # Uses the nats-box Docker image so it works on any OS (Mac, Ubuntu, etc.)
 # without requiring local nsc/nk installation.
 #
-# Run once before `docker compose -f compose.nats.yaml up`.
+# Run once before `make deps-up`.
 #
 set -euo pipefail
 
@@ -78,7 +78,7 @@ ACCOUNT_SEED=$(cat "$TMPDIR/account_seed.txt")
 echo ""
 echo "  Operator JWT:       ${OPERATOR_JWT:0:50}..."
 echo "  Account Public Key: $ACCOUNT_PUB_KEY"
-echo "  Account Seed:       ${ACCOUNT_SEED:0:12}..."
+echo "  Account Seed:       <hidden — written to $ENV_FILE>"
 echo "  SYS Public Key:     $SYS_PUB_KEY"
 echo "  Backend creds:      $BACKEND_CREDS"
 echo ""
