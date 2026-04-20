@@ -147,7 +147,8 @@ func main() {
 
 	inboxCfg := stream.Inbox(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: inboxCfg.Name,
+		Name:     inboxCfg.Name,
+		Subjects: inboxCfg.Subjects,
 	}); err != nil {
 		slog.Error("create inbox stream failed", "error", err)
 		os.Exit(1)

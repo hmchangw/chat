@@ -411,8 +411,9 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	// Expect: subscription update + member change event + system message = 3 publishes
-	assert.Len(t, published, 3, "expected 3 publishes: sub update, member event, sys msg")
+	// Expect: subscription update + member change event + system message +
+	// local INBOX publish (for search-sync) = 4 publishes
+	assert.Len(t, published, 4, "expected 4 publishes: sub update, member event, sys msg, inbox")
 
 	subjSet := make(map[string]bool)
 	for _, p := range published {
@@ -421,6 +422,24 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 
 	assert.True(t, subjSet[subject.SubscriptionUpdate(account)], "expected subscription update published")
 	assert.True(t, subjSet[subject.MemberEvent(roomID)], "expected member event published")
+	assert.True(t, subjSet[subject.InboxMemberRemoved(siteID)], "expected local inbox member_removed published")
+
+	// Verify the inbox publish wraps an InboxMemberEvent with the expected
+	// remove-path shape (no RoomName/RoomType, one account).
+	for _, p := range published {
+		if p.subj != subject.InboxMemberRemoved(siteID) {
+			continue
+		}
+		var outbox model.OutboxEvent
+		require.NoError(t, json.Unmarshal(p.data, &outbox))
+		assert.Equal(t, model.OutboxMemberRemoved, outbox.Type)
+		assert.Equal(t, siteID, outbox.SiteID)
+		assert.Equal(t, siteID, outbox.DestSiteID, "local INBOX publish has DestSiteID == SiteID")
+		var inbox model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(outbox.Payload, &inbox))
+		assert.Equal(t, roomID, inbox.RoomID)
+		assert.Equal(t, []string{account}, inbox.Accounts)
+	}
 
 	// Verify timestamps on all events
 	for _, p := range published {
@@ -585,7 +604,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	assert.Len(t, published, 3, "expected 3 publishes: sub update, member event, sys msg")
+	assert.Len(t, published, 4, "expected 4 publishes: sub update, member event, sys msg, inbox")
 
 	// Verify the sys msg has type "member_removed"
 	for _, p := range published {
@@ -596,6 +615,23 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 			assert.Contains(t, evt.Accounts, account)
 		}
 	}
+
+	// Verify local inbox publish carries the expected InboxMemberEvent.
+	var sawInbox bool
+	for _, p := range published {
+		if p.subj != subject.InboxMemberRemoved(siteID) {
+			continue
+		}
+		sawInbox = true
+		var outbox model.OutboxEvent
+		require.NoError(t, json.Unmarshal(p.data, &outbox))
+		assert.Equal(t, model.OutboxMemberRemoved, outbox.Type)
+		var inbox model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(outbox.Payload, &inbox))
+		assert.Equal(t, []string{account}, inbox.Accounts)
+		assert.Equal(t, roomID, inbox.RoomID)
+	}
+	assert.True(t, sawInbox, "expected local inbox member_removed publish")
 }
 
 // --- processAddMembers tests ---
@@ -656,6 +692,78 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, outboxCount, "should publish exactly 1 batched outbox event per destination site")
+}
+
+// TestHandler_ProcessAddMembers_PublishesToInbox verifies the INBOX publishes
+// added for search-sync-worker:
+//   - Local accounts fan out to `chat.inbox.{site}.member_added` with an
+//     InboxMemberEvent carrying RoomName + RoomType.
+//   - Cross-site OUTBOX payload was migrated from MemberAddEvent to
+//     InboxMemberEvent so the remote site's search-sync sees room metadata.
+func TestHandler_ProcessAddMembers_PublishesToInbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var published []publishedMsg
+	publish := func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}
+	h := NewHandler(store, "site-a", publish)
+
+	// Room with a name + type — these must propagate to InboxMemberEvent.
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Name: "engineering", Type: model.RoomTypeGroup, SiteID: "site-a",
+	}, nil)
+	// Two local users (site-a) + one remote (site-b). Local accounts batch
+	// into one INBOX publish; remote user goes to OUTBOX for site-b.
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "carol", "dave"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site-a"},
+		{ID: "u3", Account: "carol", SiteID: "site-a"},
+		{ID: "u4", Account: "dave", SiteID: "site-b"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 3).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	req := model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob", "carol", "dave"},
+		History:   model.HistoryConfig{Mode: model.HistoryModeAll},
+		Timestamp: 1735689600000,
+	}
+	reqData, _ := json.Marshal(req)
+
+	err := h.processAddMembers(context.Background(), reqData)
+	require.NoError(t, err)
+
+	var sawLocalInbox, sawRemoteOutbox bool
+	for _, p := range published {
+		switch p.subj {
+		case subject.InboxMemberAdded("site-a"):
+			sawLocalInbox = true
+			var outbox model.OutboxEvent
+			require.NoError(t, json.Unmarshal(p.data, &outbox))
+			assert.Equal(t, model.OutboxMemberAdded, outbox.Type)
+			assert.Equal(t, "site-a", outbox.SiteID)
+			assert.Equal(t, "site-a", outbox.DestSiteID, "local INBOX: DestSiteID == SiteID")
+			var inbox model.InboxMemberEvent
+			require.NoError(t, json.Unmarshal(outbox.Payload, &inbox))
+			assert.Equal(t, "r1", inbox.RoomID)
+			assert.Equal(t, "engineering", inbox.RoomName)
+			assert.Equal(t, model.RoomTypeGroup, inbox.RoomType)
+			assert.ElementsMatch(t, []string{"bob", "carol"}, inbox.Accounts)
+		case subject.Outbox("site-a", "site-b", "member_added"):
+			sawRemoteOutbox = true
+			var outbox model.OutboxEvent
+			require.NoError(t, json.Unmarshal(p.data, &outbox))
+			var inbox model.InboxMemberEvent
+			require.NoError(t, json.Unmarshal(outbox.Payload, &inbox))
+			assert.Equal(t, "engineering", inbox.RoomName, "cross-site payload must carry RoomName")
+			assert.Equal(t, []string{"dave"}, inbox.Accounts)
+		}
+	}
+	assert.True(t, sawLocalInbox, "expected local INBOX publish for same-site accounts")
+	assert.True(t, sawRemoteOutbox, "expected cross-site OUTBOX publish for remote account")
 }
 
 func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
@@ -849,8 +957,9 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 sys msg = 4 publishes
-	assert.Len(t, published, 4, "expected 4 publishes: 2 sub updates, member event, sys msg")
+	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 sys msg +
+	// 1 local INBOX publish (for search-sync) = 5 publishes
+	assert.Len(t, published, 5, "expected 5 publishes: 2 sub updates, member event, sys msg, inbox")
 
 	subjSet := make(map[string]bool)
 	for _, p := range published {
@@ -861,6 +970,20 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	assert.True(t, subjSet[subject.SubscriptionUpdate("dave")], "expected subscription update for dave")
 	assert.False(t, subjSet[subject.SubscriptionUpdate("eve")], "eve has individual membership, should not be removed")
 	assert.True(t, subjSet[subject.MemberEvent(roomID)], "expected member event published")
+	assert.True(t, subjSet[subject.InboxMemberRemoved(siteID)], "expected local inbox member_removed")
+
+	// Local INBOX publish batches all removed accounts for same-site users.
+	for _, p := range published {
+		if p.subj != subject.InboxMemberRemoved(siteID) {
+			continue
+		}
+		var outbox model.OutboxEvent
+		require.NoError(t, json.Unmarshal(p.data, &outbox))
+		var inbox model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(outbox.Payload, &inbox))
+		assert.Equal(t, roomID, inbox.RoomID)
+		assert.ElementsMatch(t, []string{"carol", "dave"}, inbox.Accounts)
+	}
 }
 
 func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
@@ -917,6 +1040,25 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		subjSet[p.subj] = true
 	}
 	assert.True(t, subjSet[outboxSubj], "expected outbox event published for remote user")
+	// No local INBOX publish — the user is on a different site, so search-
+	// sync indexing happens on the remote side via federation.
+	assert.False(t, subjSet[subject.InboxMemberRemoved(localSite)],
+		"local INBOX publish must NOT fire when the removed user is remote")
+
+	// Verify the cross-site OUTBOX payload is an InboxMemberEvent (so the
+	// remote site's search-sync sees RoomID + Accounts for spotlight/user-room
+	// updates via the Sources+SubjectTransform federation).
+	for _, p := range published {
+		if p.subj != outboxSubj {
+			continue
+		}
+		var outbox model.OutboxEvent
+		require.NoError(t, json.Unmarshal(p.data, &outbox))
+		var inbox model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(outbox.Payload, &inbox))
+		assert.Equal(t, roomID, inbox.RoomID)
+		assert.Equal(t, []string{account}, inbox.Accounts)
+	}
 }
 
 func TestHandler_ProcessRemoveMember_UnmarshalError(t *testing.T) {
