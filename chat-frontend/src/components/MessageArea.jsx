@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useRoomEvents } from '../context/RoomEventsContext'
+import { roomPrefix } from '../lib/roomFormat'
 
 function formatTime(dateStr) {
   const d = new Date(dateStr)
@@ -23,9 +24,7 @@ export default function MessageArea({ room }) {
 
   useEffect(() => {
     if (!room) return
-    loadHistory().catch(() => {
-      // historyError is surfaced via the hook; nothing to do here
-    })
+    loadHistory().catch(() => {})
   }, [room, loadHistory])
 
   useEffect(() => {
@@ -44,7 +43,7 @@ export default function MessageArea({ room }) {
     <div className="message-area">
       <div className="message-area-header">
         <span className="message-area-room-name">
-          {room.type === 'dm' ? '@ ' : '# '}{room.name}
+          {roomPrefix(room.type)}{room.name}
         </span>
         <span className="message-area-members">{room.userCount} members</span>
       </div>

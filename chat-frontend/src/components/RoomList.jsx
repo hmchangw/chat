@@ -1,4 +1,5 @@
 import { useRoomSummaries } from '../context/RoomEventsContext'
+import { roomPrefix } from '../lib/roomFormat'
 
 function mentionBadge(summary) {
   if (summary.mentionAll) return <span className="room-badge-mention-all">!</span>
@@ -27,7 +28,7 @@ export default function RoomList({ selectedRoomId, onSelectRoom }) {
               onClick={() => onSelectRoom(room)}
             >
               <span className="room-name">
-                {room.type === 'dm' ? '@ ' : '# '}{room.name}
+                {roomPrefix(room.type)}{room.name}
               </span>
               {mentionBadge(room)}
               <span className="room-meta">{room.userCount}</span>

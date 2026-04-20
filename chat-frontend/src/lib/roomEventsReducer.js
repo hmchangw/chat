@@ -68,7 +68,15 @@ export function roomEventsReducer(state, action) {
       return { ...state, summaries, roomState: rest }
     }
     case 'ROOM_METADATA_UPDATED': {
-      if (!state.summaries.some((r) => r.id === action.roomId)) return state
+      const existing = state.summaries.find((r) => r.id === action.roomId)
+      if (!existing) return state
+      if (
+        existing.name === action.name &&
+        existing.userCount === action.userCount &&
+        existing.lastMsgAt === action.lastMsgAt
+      ) {
+        return state
+      }
       const summaries = sortByLastMsgDesc(
         state.summaries.map((r) =>
           r.id === action.roomId
@@ -82,15 +90,15 @@ export function roomEventsReducer(state, action) {
       const evt = action.event
       const roomId = evt.roomId
       const prev = state.roomState[roomId] ?? emptyRoomState()
-      const isDup = prev.messages.some((m) => m.id === evt.message.id)
+      if (prev.messages.some((m) => m.id === evt.message.id)) return state
       const messages = appendBounded(prev.messages, evt.message)
       const isActive = state.activeRoomId === roomId
       const nextRoomState = {
         ...prev,
         messages,
-        lastMsgAt: isDup ? prev.lastMsgAt : (evt.lastMsgAt ?? prev.lastMsgAt),
-        lastMsgId: isDup ? prev.lastMsgId : (evt.lastMsgId ?? prev.lastMsgId),
-        unreadCount: isDup || isActive ? prev.unreadCount : prev.unreadCount + 1,
+        lastMsgAt: evt.lastMsgAt ?? prev.lastMsgAt,
+        lastMsgId: evt.lastMsgId ?? prev.lastMsgId,
+        unreadCount: isActive ? prev.unreadCount : prev.unreadCount + 1,
         hasMention: isActive ? false : prev.hasMention || !!evt.hasMention,
         mentionAll: isActive ? false : prev.mentionAll || !!evt.mentionAll,
       }
@@ -148,6 +156,7 @@ export function roomEventsReducer(state, action) {
     }
     case 'SET_ACTIVE_ROOM': {
       const roomId = action.roomId
+      if (roomId === state.activeRoomId) return state
       if (roomId === null) {
         return { ...state, activeRoomId: null }
       }

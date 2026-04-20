@@ -63,19 +63,14 @@ export function RoomEventsProvider({ children }) {
 
     const subUpdate = subscribe(subscriptionUpdate(user.account), (evt) => {
       if (cancelledRef.current) return
-      if (evt.action === 'added') {
-        if (evt.room) {
-          safeDispatch({ type: 'ROOM_ADDED', room: evt.room })
-          if (evt.room.type === 'group') openGroupSub(evt.room.id)
-        } else if (evt.subscription?.roomId) {
-          request(roomsGet(user.account, evt.subscription.roomId), {})
-            .then((room) => {
-              if (cancelledRef.current || !room) return
-              safeDispatch({ type: 'ROOM_ADDED', room })
-              if (room.type === 'group') openGroupSub(room.id)
-            })
-            .catch(() => {})
-        }
+      if (evt.action === 'added' && evt.subscription?.roomId) {
+        request(roomsGet(user.account, evt.subscription.roomId), {})
+          .then((room) => {
+            if (cancelledRef.current || !room) return
+            safeDispatch({ type: 'ROOM_ADDED', room })
+            if (room.type === 'group') openGroupSub(room.id)
+          })
+          .catch(() => {})
       } else if (evt.action === 'removed') {
         const roomId = evt.subscription?.roomId
         if (!roomId) return
@@ -149,7 +144,7 @@ export function RoomEventsProvider({ children }) {
   }, [])
 
   const value = useMemo(
-    () => ({ state, dispatch, loadHistory, setActiveRoom }),
+    () => ({ state, loadHistory, setActiveRoom }),
     [state, loadHistory, setActiveRoom]
   )
 
@@ -166,12 +161,15 @@ export function useRoomEvents(roomId) {
   const { state, loadHistory } = useRoomEventsInternal()
   const room = state.roomState[roomId]
   const load = useCallback(() => loadHistory(roomId), [loadHistory, roomId])
-  return {
-    messages: room?.messages ?? [],
-    hasLoadedHistory: !!room?.hasLoadedHistory,
-    historyError: room?.historyError ?? null,
-    loadHistory: load,
-  }
+  return useMemo(
+    () => ({
+      messages: room?.messages ?? [],
+      hasLoadedHistory: !!room?.hasLoadedHistory,
+      historyError: room?.historyError ?? null,
+      loadHistory: load,
+    }),
+    [room, load]
+  )
 }
 
 export function useRoomSummaries() {

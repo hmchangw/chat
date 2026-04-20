@@ -43,10 +43,12 @@ function EventsProbe({ roomId }) {
 describe('RoomEventsProvider', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('exposes empty summaries before rooms load', () => {
+  it('exposes empty summaries before rooms load', async () => {
     const nats = mockNats()
     render(wrap(<SummariesProbe />, nats))
     expect(screen.getByTestId('count').textContent).toBe('0')
+    // Let the empty rooms.list promise settle
+    await waitFor(() => expect(nats.request).toHaveBeenCalled())
   })
 
   it('loadHistory requests msg.history and populates messages', async () => {
@@ -105,20 +107,7 @@ describe('RoomEventsProvider', () => {
     await waitFor(() => expect(screen.getByTestId('error').textContent).toBe('boom'))
   })
 
-  it('setActiveRoom clears unread after receiving a message while inactive', async () => {
-    const nats = mockNats()
-    let captured
-    function Probe() {
-      const { summaries, setActiveRoom } = useRoomSummaries()
-      captured = { summaries, setActiveRoom }
-      return null
-    }
-    render(wrap(<Probe />, nats))
-    // No rooms loaded; nothing to click. Just assert setActiveRoom exists.
-    expect(typeof captured.setActiveRoom).toBe('function')
-  })
-
-  it('useRoomEvents returns a stable loadHistory across renders for the same roomId', () => {
+  it('useRoomEvents returns a stable loadHistory across renders for the same roomId', async () => {
     const nats = mockNats()
     const captured = []
     function Probe() {
@@ -130,10 +119,10 @@ describe('RoomEventsProvider', () => {
     rerender(wrap(<Probe />, nats))
     rerender(wrap(<Probe />, nats))
     expect(captured.length).toBeGreaterThanOrEqual(2)
-    // All loadHistory references should be the same identity for the same roomId
     for (let i = 1; i < captured.length; i++) {
       expect(captured[i]).toBe(captured[0])
     }
+    await waitFor(() => expect(nats.request).toHaveBeenCalled())
   })
 })
 
@@ -193,7 +182,13 @@ describe('RoomEventsProvider subscriptions', () => {
   })
 
   it('opens a new group subscription when a group room is added', async () => {
-    const request = vi.fn().mockResolvedValue({ rooms: [] })
+    const request = vi.fn().mockImplementation((subject) => {
+      if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms: [] })
+      if (subject === 'chat.user.alice.request.rooms.get.g2') {
+        return Promise.resolve({ id: 'g2', name: 'new', type: 'group', siteId: 'site-A', userCount: 1, lastMsgAt: null })
+      }
+      throw new Error('unexpected request: ' + subject)
+    })
     const handlers = new Map()
     const subscribe = vi.fn().mockImplementation((subject, cb) => {
       handlers.set(subject, cb)
@@ -208,7 +203,6 @@ describe('RoomEventsProvider subscriptions', () => {
       handlers.get('chat.user.alice.event.subscription.update')({
         action: 'added',
         subscription: { roomId: 'g2' },
-        room: { id: 'g2', name: 'new', type: 'group', siteId: 'site-A', userCount: 1, lastMsgAt: null },
       })
     })
     await waitFor(() =>
@@ -268,7 +262,7 @@ describe('RoomEventsProvider subscriptions', () => {
     }
   })
 
-  it('computes hasMention from mentions[] for group events', async () => {
+  async function setupMentionScenario() {
     const rooms = [{ id: 'g1', name: 'g', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
     const request = vi.fn().mockResolvedValue({ rooms })
     const handlers = new Map()
@@ -278,16 +272,19 @@ describe('RoomEventsProvider subscriptions', () => {
     })
     const nats = mockNats({ request, subscribe })
 
-    // Render a probe that reads summaries from the same provider that receives the event
-    let captured
+    const captured = { summaries: null }
     function MentionProbe() {
       const { summaries } = useRoomSummaries()
-      captured = summaries
+      captured.summaries = summaries
       return <div data-testid="count">{summaries.length}</div>
     }
     render(wrap(<MentionProbe />, nats))
     await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('1'))
+    return { handlers, captured }
+  }
 
+  it('computes hasMention from mentions[] for group events', async () => {
+    const { handlers, captured } = await setupMentionScenario()
     act(() => {
       handlers.get('chat.room.g1.event')({
         type: 'new_message',
@@ -299,32 +296,13 @@ describe('RoomEventsProvider subscriptions', () => {
         message: { id: 'mg1', roomId: 'g1', content: '@alice hi', createdAt: '2026-04-17T12:00:00Z', sender: { account: 'bob' } },
       })
     })
-
     await waitFor(() => {
-      const g1 = captured?.find((r) => r.id === 'g1')
-      expect(g1?.hasMention).toBe(true)
+      expect(captured.summaries.find((r) => r.id === 'g1')?.hasMention).toBe(true)
     })
   })
 
   it('does not set hasMention for group events that do not mention the user', async () => {
-    const rooms = [{ id: 'g1', name: 'g', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
-    const request = vi.fn().mockResolvedValue({ rooms })
-    const handlers = new Map()
-    const subscribe = vi.fn().mockImplementation((subject, cb) => {
-      handlers.set(subject, cb)
-      return { unsubscribe: vi.fn() }
-    })
-    const nats = mockNats({ request, subscribe })
-
-    let captured
-    function MentionProbe() {
-      const { summaries } = useRoomSummaries()
-      captured = summaries
-      return <div data-testid="count">{summaries.length}</div>
-    }
-    render(wrap(<MentionProbe />, nats))
-    await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('1'))
-
+    const { handlers, captured } = await setupMentionScenario()
     act(() => {
       handlers.get('chat.room.g1.event')({
         type: 'new_message',
@@ -336,10 +314,8 @@ describe('RoomEventsProvider subscriptions', () => {
         message: { id: 'mg2', roomId: 'g1', content: '@charlie hi', createdAt: '2026-04-17T12:00:00Z', sender: { account: 'bob' } },
       })
     })
-
     await waitFor(() => {
-      const g1 = captured?.find((r) => r.id === 'g1')
-      expect(g1?.hasMention).toBe(false)
+      expect(captured.summaries.find((r) => r.id === 'g1')?.hasMention).toBe(false)
     })
   })
 

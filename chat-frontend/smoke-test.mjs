@@ -2,6 +2,7 @@
 // Tests: auth -> NATS WebSocket connect -> send message -> receive message -> request/reply
 import { connect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
+import { roomEvent, roomsList, userRoomEvent } from './src/lib/subjects.js'
 
 const sc = StringCodec()
 const AUTH_URL = 'http://localhost:8080'
@@ -52,13 +53,13 @@ async function main() {
   console.log('5. Alice subscribes to room events...')
   const roomId = 'test-room-' + Date.now()
   const received = []
-  const sub = aliceNc.subscribe(`chat.room.${roomId}.event`)
+  const sub = aliceNc.subscribe(roomEvent(roomId))
   ;(async () => {
     for await (const msg of sub) {
       received.push(JSON.parse(sc.decode(msg.data)))
     }
   })()
-  console.log(`   ✓ Subscribed to chat.room.${roomId}.event`)
+  console.log(`   ✓ Subscribed to ${roomEvent(roomId)}`)
 
   console.log('6. Bob publishes a message to the room...')
   const testEvent = {
@@ -72,7 +73,7 @@ async function main() {
     },
     timestamp: Date.now(),
   }
-  bobNc.publish(`chat.room.${roomId}.event`, sc.encode(JSON.stringify(testEvent)))
+  bobNc.publish(roomEvent(roomId), sc.encode(JSON.stringify(testEvent)))
   console.log('   ✓ Published')
 
   console.log('7. Waiting for alice to receive the message...')
@@ -88,31 +89,33 @@ async function main() {
 
   console.log('7b. Bob subscribes to his DM event stream...')
   const bobDmReceived = []
-  const bobDmSub = bobNc.subscribe('chat.user.bob.event.room')
+  const bobDmSub = bobNc.subscribe(userRoomEvent('bob'))
   ;(async () => {
     for await (const msg of bobDmSub) {
       bobDmReceived.push(JSON.parse(sc.decode(msg.data)))
     }
   })()
-  console.log('   ✓ Subscribed to chat.user.bob.event.room')
+  console.log(`   ✓ Subscribed to ${userRoomEvent('bob')}`)
 
   console.log('7c. Alice publishes a DM event directly to bob...')
+  const dmMsgId = 'dm-msg-' + Date.now()
+  const nowIso = new Date().toISOString()
   const dmEvent = {
     type: 'new_message',
     roomId: 'dm-' + Date.now(),
     roomType: 'dm',
     hasMention: false,
-    lastMsgAt: new Date().toISOString(),
-    lastMsgId: 'dm-msg-' + Date.now(),
+    lastMsgAt: nowIso,
+    lastMsgId: dmMsgId,
     message: {
-      id: 'dm-msg-' + Date.now(),
+      id: dmMsgId,
       content: 'Direct hello from alice',
       sender: { account: 'alice', engName: 'alice' },
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
     },
     timestamp: Date.now(),
   }
-  aliceNc.publish('chat.user.bob.event.room', sc.encode(JSON.stringify(dmEvent)))
+  aliceNc.publish(userRoomEvent('bob'), sc.encode(JSON.stringify(dmEvent)))
   console.log('   ✓ Published DM event')
 
   console.log('7d. Waiting for bob to receive the DM event...')
@@ -126,7 +129,7 @@ async function main() {
   bobDmSub.unsubscribe()
 
   console.log('8. Testing request/reply pattern...')
-  const respSub = aliceNc.subscribe('chat.user.alice.request.rooms.list')
+  const respSub = aliceNc.subscribe(roomsList('alice'))
   ;(async () => {
     for await (const msg of respSub) {
       const reply = { rooms: [{ id: roomId, name: 'test-room', type: 'group', userCount: 2 }] }
@@ -136,7 +139,7 @@ async function main() {
   })()
 
   const resp = await aliceNc.request(
-    'chat.user.alice.request.rooms.list',
+    roomsList('alice'),
     sc.encode(JSON.stringify({})),
     { timeout: 3000 }
   )
