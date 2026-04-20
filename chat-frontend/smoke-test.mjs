@@ -86,6 +86,45 @@ async function main() {
     process.exitCode = 1
   }
 
+  console.log('7b. Bob subscribes to his DM event stream...')
+  const bobDmReceived = []
+  const bobDmSub = bobNc.subscribe('chat.user.bob.event.room')
+  ;(async () => {
+    for await (const msg of bobDmSub) {
+      bobDmReceived.push(JSON.parse(sc.decode(msg.data)))
+    }
+  })()
+  console.log('   ✓ Subscribed to chat.user.bob.event.room')
+
+  console.log('7c. Alice publishes a DM event directly to bob...')
+  const dmEvent = {
+    type: 'new_message',
+    roomId: 'dm-' + Date.now(),
+    roomType: 'dm',
+    hasMention: false,
+    lastMsgAt: new Date().toISOString(),
+    lastMsgId: 'dm-msg-' + Date.now(),
+    message: {
+      id: 'dm-msg-' + Date.now(),
+      content: 'Direct hello from alice',
+      sender: { account: 'alice', engName: 'alice' },
+      createdAt: new Date().toISOString(),
+    },
+    timestamp: Date.now(),
+  }
+  aliceNc.publish('chat.user.bob.event.room', sc.encode(JSON.stringify(dmEvent)))
+  console.log('   ✓ Published DM event')
+
+  console.log('7d. Waiting for bob to receive the DM event...')
+  await new Promise((r) => setTimeout(r, 500))
+  if (bobDmReceived.length > 0 && bobDmReceived[0].message.content === 'Direct hello from alice') {
+    console.log(`   ✓ Bob received DM: "${bobDmReceived[0].message.content}"`)
+  } else {
+    console.log('   ✗ Bob did NOT receive the DM event')
+    process.exitCode = 1
+  }
+  bobDmSub.unsubscribe()
+
   console.log('8. Testing request/reply pattern...')
   const respSub = aliceNc.subscribe('chat.user.alice.request.rooms.list')
   ;(async () => {
