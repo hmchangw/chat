@@ -230,6 +230,9 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Use `cassutil.Connect` from `pkg/cassutil` — `LocalQuorum` consistency, 10-second timeout
 - Cassandra is ONLY for message history (time-series) — MongoDB handles everything else
 - Design tables around query patterns (partition key = room ID, clustering key = timestamp), no secondary indexes
+- `docs/cassandra_message_model.md` is the single source of truth for the message schema. Any PR that touches it MUST, in the same PR, update both downstream mirrors:
+  1. The Go UDT/row structs in `pkg/model/cassandra/` (keep `cql:"…"` tags aligned with the columns).
+  2. The init DDL under `docker-local/cassandra/init/*.cql` that creates the types and tables.
 
 ### HTTP (Gin + Resty)
 - Use Gin for all HTTP servers — never `net/http` mux directly
