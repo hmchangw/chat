@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -45,6 +48,11 @@ func TestSanitizeError(t *testing.T) {
 		{"sentinel: room type", errRoomTypeGuard, "role update is only allowed in group rooms"},
 		{"sentinel: target not member", errTargetNotMember, "target user is not a member of this room"},
 		{"wrapped sentinel passes through", fmt.Errorf("get room: %w", errRoomTypeGuard), "get room: role update is only allowed in group rooms"},
+		{"safe owner message", errors.New("only owners can add members"), "only owners can add members"},
+		{"safe cannot add", errors.New("cannot add members to a DM room"), "cannot add members to a DM room"},
+		{"safe capacity", errors.New("room is at maximum capacity (1000)"), "room is at maximum capacity (1000)"},
+		{"safe requester", errors.New("requester not in room: not found"), "requester not in room: not found"},
+		{"safe invalid", errors.New("invalid request: bad json"), "invalid request: bad json"},
 		{"internal db error", fmt.Errorf("mongo timeout"), "internal error"},
 		{"generic error", fmt.Errorf("unexpected failure"), "internal error"},
 	}
@@ -56,4 +64,45 @@ func TestSanitizeError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIsBot(t *testing.T) {
+	tests := []struct {
+		name    string
+		account string
+		want    bool
+	}{
+		{"bot suffix", "helper.bot", true},
+		{"bot prefix", "p_scheduler", true},
+		{"normal user", "alice", false},
+		{"contains bot but not suffix", "botmaster", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isBot(tt.account))
+		})
+	}
+}
+
+func TestFilterBots(t *testing.T) {
+	input := []string{"alice", "helper.bot", "bob", "p_scheduler"}
+	got := filterBots(input)
+	assert.Equal(t, []string{"alice", "bob"}, got)
+}
+
+func TestFilterBots_AllBots(t *testing.T) {
+	input := []string{"helper.bot", "p_scheduler"}
+	got := filterBots(input)
+	assert.Nil(t, got)
+}
+
+func TestDedup(t *testing.T) {
+	input := []string{"a", "b", "a", "c", "b"}
+	got := dedup(input)
+	assert.Equal(t, []string{"a", "b", "c"}, got)
+}
+
+func TestDedup_Empty(t *testing.T) {
+	got := dedup([]string{})
+	assert.Nil(t, got)
 }

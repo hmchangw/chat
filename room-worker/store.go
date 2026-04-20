@@ -30,8 +30,9 @@ type OrgMemberStatus struct {
 type SubscriptionStore interface {
 	// --- existing methods (invite flow) ---
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
-	IncrementUserCount(ctx context.Context, roomID string) error
+	IncrementUserCount(ctx context.Context, roomID string, count int) error
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	GetUser(ctx context.Context, account string) (*model.User, error)
@@ -47,4 +48,11 @@ type SubscriptionStore interface {
 	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) (int64, error)
 	DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error
 	DecrementUserCount(ctx context.Context, roomID string, count int) error
+
+	// --- add-member flow ---
+	CreateRoomMember(ctx context.Context, member *model.RoomMember) error
+	BulkCreateRoomMembers(ctx context.Context, members []*model.RoomMember) error
+	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
+	HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error)
+	GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error)
 }

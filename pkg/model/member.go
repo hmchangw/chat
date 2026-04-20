@@ -9,6 +9,28 @@ const (
 	RoomMemberOrg        RoomMemberType = "org"
 )
 
+type HistoryMode string
+
+const (
+	HistoryModeNone HistoryMode = "none"
+	HistoryModeAll  HistoryMode = "all"
+)
+
+type HistoryConfig struct {
+	Mode HistoryMode `json:"mode" bson:"mode"`
+}
+
+type AddMembersRequest struct {
+	RoomID           string        `json:"roomId"           bson:"roomId"`
+	Users            []string      `json:"users"            bson:"users"`
+	Orgs             []string      `json:"orgs"             bson:"orgs"`
+	Channels         []string      `json:"channels"         bson:"channels"`
+	History          HistoryConfig `json:"history"          bson:"history"`
+	RequesterID      string        `json:"requesterId"      bson:"requesterId"`
+	RequesterAccount string        `json:"requesterAccount" bson:"requesterAccount"`
+	Timestamp        int64         `json:"timestamp"        bson:"timestamp"`
+}
+
 type RoomMember struct {
 	ID     string          `json:"id"     bson:"_id"`
 	RoomID string          `json:"rid"    bson:"rid"`
@@ -44,4 +66,11 @@ type MemberRemoved struct {
 	OrgID             string      `json:"orgId,omitempty"`
 	SectName          string      `json:"sectName,omitempty"`
 	RemovedUsersCount int         `json:"removedUsersCount"`
+}
+
+type MembersAdded struct {
+	Individuals     []string `json:"individuals"`
+	Orgs            []string `json:"orgs"`
+	Channels        []string `json:"channels"`
+	AddedUsersCount int      `json:"addedUsersCount"`
 }

@@ -654,6 +654,74 @@ func TestMemberRemoveEventJSON(t *testing.T) {
 	assert.Equal(t, src, dst)
 }
 
+func TestRoomTypeChannel(t *testing.T) {
+	assert.Equal(t, model.RoomType("channel"), model.RoomTypeChannel)
+}
+
+func TestRoom_RestrictedJSON(t *testing.T) {
+	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel, Restricted: true, SiteID: "site-a"}
+	data, err := json.Marshal(room)
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data, &m))
+	assert.Equal(t, "channel", m["type"])
+	assert.Equal(t, true, m["restricted"])
+
+	room.Restricted = false
+	data2, _ := json.Marshal(room)
+	var m2 map[string]any
+	require.NoError(t, json.Unmarshal(data2, &m2))
+	_, exists := m2["restricted"]
+	assert.False(t, exists, "restricted=false should be omitted")
+}
+
+func TestUser_SectIDJSON(t *testing.T) {
+	user := model.User{ID: "u1", Account: "alice", SiteID: "site-a", SectID: "engineering"}
+	var dst model.User
+	data, err := json.Marshal(user)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, "engineering", dst.SectID)
+}
+
+func TestMessage_TypeAndSysMsgDataJSON(t *testing.T) {
+	sysData := []byte(`{"individuals":["alice"]}`)
+	msg := model.Message{ID: "m1", RoomID: "r1", Content: "added members", Type: "members_added", SysMsgData: sysData}
+	data, err := json.Marshal(msg)
+	require.NoError(t, err)
+	var dst model.Message
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, "members_added", dst.Type)
+	assert.Equal(t, sysData, dst.SysMsgData)
+
+	regular := model.Message{ID: "m2", RoomID: "r1", Content: "hello"}
+	data2, _ := json.Marshal(regular)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data2, &m))
+	_, hasType := m["type"]
+	assert.False(t, hasType, "type should be omitted for regular messages")
+}
+
+func TestAddMembersRequestJSON(t *testing.T) {
+	req := model.AddMembersRequest{
+		RoomID:   "r1",
+		Users:    []string{"alice", "bob"},
+		Orgs:     []string{"engineering"},
+		Channels: []string{"general"},
+		History:  model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	var dst model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, req, dst)
+}
+
+func TestHistoryModeConstants(t *testing.T) {
+	assert.Equal(t, model.HistoryMode("none"), model.HistoryModeNone)
+	assert.Equal(t, model.HistoryMode("all"), model.HistoryModeAll)
+}
+
 func TestRoomMemberJSON(t *testing.T) {
 	rm := model.RoomMember{
 		ID:     "rm1",
@@ -736,6 +804,37 @@ func TestMemberRemovedJSON(t *testing.T) {
 func TestRoomMemberTypeValues(t *testing.T) {
 	assert.Equal(t, model.RoomMemberType("individual"), model.RoomMemberIndividual)
 	assert.Equal(t, model.RoomMemberType("org"), model.RoomMemberOrg)
+}
+
+func TestMembersAddedJSON(t *testing.T) {
+	ma := model.MembersAdded{
+		Individuals:     []string{"alice", "bob"},
+		Orgs:            []string{"engineering"},
+		Channels:        []string{"general"},
+		AddedUsersCount: 5,
+	}
+	data, err := json.Marshal(ma)
+	require.NoError(t, err)
+	var dst model.MembersAdded
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, ma, dst)
+}
+
+func TestMemberAddEventJSON(t *testing.T) {
+	src := model.MemberAddEvent{
+		Type:               "member_added",
+		RoomID:             "r1",
+		Accounts:           []string{"alice", "bob"},
+		SiteID:             "site-a",
+		JoinedAt:           1735689600000,
+		HistorySharedSince: 1735689600000,
+		Timestamp:          1735689600000,
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+	var dst model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.

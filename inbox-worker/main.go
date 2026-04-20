@@ -36,6 +36,7 @@ type config struct {
 type mongoInboxStore struct {
 	subCol  *mongo.Collection
 	roomCol *mongo.Collection
+	userCol *mongo.Collection
 }
 
 func (s *mongoInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -72,6 +73,37 @@ func (s *mongoInboxStore) DeleteSubscriptionsByAccounts(ctx context.Context, roo
 	return nil
 }
 
+func (s *mongoInboxStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
+	if len(accounts) == 0 {
+		return nil, nil
+	}
+	cursor, err := s.userCol.Find(ctx, bson.M{"account": bson.M{"$in": accounts}})
+	if err != nil {
+		return nil, fmt.Errorf("find users by accounts: %w", err)
+	}
+	var users []model.User
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, fmt.Errorf("decode users: %w", err)
+	}
+	return users, nil
+}
+
+func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+	if len(subs) == 0 {
+		return nil
+	}
+	docs := make([]interface{}, len(subs))
+	for i, sub := range subs {
+		docs[i] = sub
+	}
+	opts := options.InsertMany().SetOrdered(false)
+	_, err := s.subCol.InsertMany(ctx, docs, opts)
+	if err != nil && !mongo.IsDuplicateKeyError(err) {
+		return fmt.Errorf("bulk create subscriptions: %w", err)
+	}
+	return nil
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
@@ -98,6 +130,7 @@ func main() {
 	store := &mongoInboxStore{
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
 	}
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)

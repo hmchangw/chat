@@ -7,6 +7,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -44,8 +45,8 @@ func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Sub
 	return subs, nil
 }
 
-func (s *MongoStore) IncrementUserCount(ctx context.Context, roomID string) error {
-	_, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$inc": bson.M{"userCount": 1}})
+func (s *MongoStore) IncrementUserCount(ctx context.Context, roomID string, count int) error {
+	_, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$inc": bson.M{"userCount": count}})
 	return err
 }
 
@@ -227,4 +228,91 @@ func (s *MongoStore) DecrementUserCount(ctx context.Context, roomID string, coun
 		return fmt.Errorf("decrement user count for room %q: %w", roomID, err)
 	}
 	return nil
+}
+
+func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+	if len(subs) == 0 {
+		return nil
+	}
+	docs := make([]interface{}, len(subs))
+	for i, sub := range subs {
+		docs[i] = sub
+	}
+	opts := options.InsertMany().SetOrdered(false)
+	if _, err := s.subscriptions.InsertMany(ctx, docs, opts); err != nil {
+		if !mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("bulk create %d subscriptions: %w", len(subs), err)
+		}
+	}
+	return nil
+}
+
+func (s *MongoStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
+	if _, err := s.roomMembers.InsertOne(ctx, member); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil
+		}
+		return fmt.Errorf("create room member for room %q: %w", member.RoomID, err)
+	}
+	return nil
+}
+
+func (s *MongoStore) BulkCreateRoomMembers(ctx context.Context, members []*model.RoomMember) error {
+	if len(members) == 0 {
+		return nil
+	}
+	docs := make([]interface{}, len(members))
+	for i, m := range members {
+		docs[i] = m
+	}
+	opts := options.InsertMany().SetOrdered(false)
+	if _, err := s.roomMembers.InsertMany(ctx, docs, opts); err != nil {
+		if !mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("bulk create %d room members: %w", len(members), err)
+		}
+	}
+	return nil
+}
+
+func (s *MongoStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
+	if len(accounts) == 0 {
+		return nil, nil
+	}
+	cursor, err := s.users.Find(ctx, bson.M{"account": bson.M{"$in": accounts}})
+	if err != nil {
+		return nil, fmt.Errorf("find users by accounts: %w", err)
+	}
+	var users []model.User
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, fmt.Errorf("decode users: %w", err)
+	}
+	return users, nil
+}
+
+func (s *MongoStore) HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error) {
+	count, err := s.roomMembers.CountDocuments(ctx, bson.M{"rid": roomID, "member.type": model.RoomMemberOrg})
+	if err != nil {
+		return false, fmt.Errorf("count room members for %q: %w", roomID, err)
+	}
+	return count > 0, nil
+}
+
+func (s *MongoStore) GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error) {
+	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
+	if err != nil {
+		return nil, fmt.Errorf("get subscription accounts for room %q: %w", roomID, err)
+	}
+	var subs []struct {
+		User struct {
+			Account string `bson:"account"`
+		} `bson:"u"`
+	}
+	if err := cursor.All(ctx, &subs); err != nil {
+		return nil, fmt.Errorf("decode subscription accounts: %w", err)
+	}
+	accounts := make([]string, len(subs))
+	for i, s := range subs {
+		accounts[i] = s.User.Account
+	}
+	return accounts, nil
 }

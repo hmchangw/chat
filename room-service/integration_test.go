@@ -214,3 +214,224 @@ func TestMongoStore_CountOwners_Integration(t *testing.T) {
 		t.Errorf("CountOwners(nonexistent) = %d, want 0", count)
 	}
 }
+
+func TestMongoStore_CountSubscriptions_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	subs := []interface{}{
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
+		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "helper.bot"}, RoomID: "r1"},
+		model.Subscription{ID: "s4", User: model.SubscriptionUser{ID: "u4", Account: "p_webhook"}, RoomID: "r1"},
+		model.Subscription{ID: "s5", User: model.SubscriptionUser{ID: "u5", Account: "charlie"}, RoomID: "r2"},
+	}
+	if _, err := store.subscriptions.InsertMany(ctx, subs); err != nil {
+		t.Fatalf("seed subscriptions: %v", err)
+	}
+
+	count, err := store.CountSubscriptions(ctx, "r1")
+	if err != nil {
+		t.Fatalf("CountSubscriptions: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("CountSubscriptions(r1) = %d, want 2", count)
+	}
+
+	count, err = store.CountSubscriptions(ctx, "r2")
+	if err != nil {
+		t.Fatalf("CountSubscriptions r2: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("CountSubscriptions(r2) = %d, want 1", count)
+	}
+
+	count, err = store.CountSubscriptions(ctx, "r999")
+	if err != nil {
+		t.Fatalf("CountSubscriptions r999: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("CountSubscriptions(r999) = %d, want 0", count)
+	}
+}
+
+func TestMongoStore_GetRoomMembersByRooms_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	members := []interface{}{
+		model.RoomMember{ID: "m1", RoomID: "r1", Ts: now, Member: model.RoomMemberEntry{ID: "alice", Type: model.RoomMemberIndividual, Account: "alice"}},
+		model.RoomMember{ID: "m2", RoomID: "r1", Ts: now, Member: model.RoomMemberEntry{ID: "org1", Type: model.RoomMemberOrg}},
+		model.RoomMember{ID: "m3", RoomID: "r2", Ts: now, Member: model.RoomMemberEntry{ID: "bob", Type: model.RoomMemberIndividual, Account: "bob"}},
+		model.RoomMember{ID: "m4", RoomID: "r3", Ts: now, Member: model.RoomMemberEntry{ID: "charlie", Type: model.RoomMemberIndividual, Account: "charlie"}},
+	}
+	if _, err := store.roomMembers.InsertMany(ctx, members); err != nil {
+		t.Fatalf("seed room members: %v", err)
+	}
+
+	got, err := store.GetRoomMembersByRooms(ctx, []string{"r1", "r2"})
+	if err != nil {
+		t.Fatalf("GetRoomMembersByRooms: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("got %d members, want 3", len(got))
+	}
+
+	got, err = store.GetRoomMembersByRooms(ctx, []string{})
+	if err != nil {
+		t.Fatalf("GetRoomMembersByRooms empty: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for empty roomIDs, got %v", got)
+	}
+
+	got, err = store.GetRoomMembersByRooms(ctx, nil)
+	if err != nil {
+		t.Fatalf("GetRoomMembersByRooms nil: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for nil roomIDs, got %v", got)
+	}
+
+	got, err = store.GetRoomMembersByRooms(ctx, []string{"r999"})
+	if err != nil {
+		t.Fatalf("GetRoomMembersByRooms non-existent: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d members for non-existent room, want 0", len(got))
+	}
+}
+
+func TestMongoStore_GetAccountsByRooms_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	subs := []interface{}{
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
+		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r2"},
+		model.Subscription{ID: "s4", User: model.SubscriptionUser{ID: "u3", Account: "charlie"}, RoomID: "r2"},
+		model.Subscription{ID: "s5", User: model.SubscriptionUser{ID: "u4", Account: "dave"}, RoomID: "r3"},
+	}
+	if _, err := store.subscriptions.InsertMany(ctx, subs); err != nil {
+		t.Fatalf("seed subscriptions: %v", err)
+	}
+
+	accounts, err := store.GetAccountsByRooms(ctx, []string{"r1", "r2"})
+	if err != nil {
+		t.Fatalf("GetAccountsByRooms: %v", err)
+	}
+	if len(accounts) != 3 {
+		t.Errorf("got %d accounts, want 3", len(accounts))
+	}
+	accountSet := make(map[string]bool)
+	for _, a := range accounts {
+		accountSet[a] = true
+	}
+	for _, expected := range []string{"alice", "bob", "charlie"} {
+		if !accountSet[expected] {
+			t.Errorf("missing account %q in results", expected)
+		}
+	}
+
+	accounts, err = store.GetAccountsByRooms(ctx, []string{})
+	if err != nil {
+		t.Fatalf("GetAccountsByRooms empty: %v", err)
+	}
+	if accounts != nil {
+		t.Errorf("expected nil for empty roomIDs, got %v", accounts)
+	}
+
+	accounts, err = store.GetAccountsByRooms(ctx, []string{"r999"})
+	if err != nil {
+		t.Fatalf("GetAccountsByRooms non-existent: %v", err)
+	}
+	if accounts != nil {
+		t.Errorf("expected nil for non-existent room, got %v", accounts)
+	}
+}
+
+func TestMongoStore_ResolveAccounts_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	users := []interface{}{
+		model.User{ID: "u1", Account: "alice", SiteID: "site-a", SectID: "org1"},
+		model.User{ID: "u2", Account: "bob", SiteID: "site-a", SectID: "org1"},
+		model.User{ID: "u3", Account: "charlie", SiteID: "site-a", SectID: "org1"},
+		model.User{ID: "u4", Account: "helper.bot", SiteID: "site-a", SectID: "org1"},
+		model.User{ID: "u5", Account: "p_webhook", SiteID: "site-a", SectID: "org1"},
+		model.User{ID: "u6", Account: "dave", SiteID: "site-a", SectID: "org2"},
+		model.User{ID: "u7", Account: "eve", SiteID: "site-a", SectID: "org3"},
+	}
+	if _, err := store.users.InsertMany(ctx, users); err != nil {
+		t.Fatalf("seed users: %v", err)
+	}
+
+	subs := []interface{}{
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
+	}
+	if _, err := store.subscriptions.InsertMany(ctx, subs); err != nil {
+		t.Fatalf("seed subscriptions: %v", err)
+	}
+
+	accounts, err := store.ResolveAccounts(ctx, []string{"org1"}, nil, "r1")
+	if err != nil {
+		t.Fatalf("ResolveAccounts org1: %v", err)
+	}
+	if len(accounts) != 2 {
+		t.Fatalf("got %d accounts, want 2: %v", len(accounts), accounts)
+	}
+	accountSet := make(map[string]bool)
+	for _, a := range accounts {
+		accountSet[a] = true
+	}
+	if !accountSet["bob"] || !accountSet["charlie"] {
+		t.Errorf("expected bob and charlie, got %v", accounts)
+	}
+
+	accounts, err = store.ResolveAccounts(ctx, nil, []string{"eve"}, "r1")
+	if err != nil {
+		t.Fatalf("ResolveAccounts direct: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0] != "eve" {
+		t.Errorf("expected [eve], got %v", accounts)
+	}
+
+	accounts, err = store.ResolveAccounts(ctx, []string{"org2"}, []string{"dave"}, "r1")
+	if err != nil {
+		t.Fatalf("ResolveAccounts dedup: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0] != "dave" {
+		t.Errorf("expected [dave], got %v", accounts)
+	}
+
+	accounts, err = store.ResolveAccounts(ctx, nil, nil, "r1")
+	if err != nil {
+		t.Fatalf("ResolveAccounts empty: %v", err)
+	}
+	if accounts != nil {
+		t.Errorf("expected nil for empty inputs, got %v", accounts)
+	}
+
+	accounts, err = store.ResolveAccounts(ctx, nil, []string{"alice"}, "r1")
+	if err != nil {
+		t.Fatalf("ResolveAccounts all existing: %v", err)
+	}
+	if accounts != nil {
+		t.Errorf("expected nil when all accounts already members, got %v", accounts)
+	}
+
+	accounts, err = store.ResolveAccounts(ctx, nil, []string{"helper.bot", "p_webhook"}, "r1")
+	if err != nil {
+		t.Fatalf("ResolveAccounts bots: %v", err)
+	}
+	if accounts != nil {
+		t.Errorf("expected nil for bot accounts, got %v", accounts)
+	}
+}

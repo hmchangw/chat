@@ -63,6 +63,16 @@ type OutboxEvent struct {
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
 }
 
+type MemberAddEvent struct {
+	Type               string   `json:"type"               bson:"type"`
+	RoomID             string   `json:"roomId"             bson:"roomId"`
+	Accounts           []string `json:"accounts"           bson:"accounts"`
+	SiteID             string   `json:"siteId"             bson:"siteId"`
+	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
+	HistorySharedSince int64    `json:"historySharedSince" bson:"historySharedSince"`
+	Timestamp          int64    `json:"timestamp"          bson:"timestamp"`
+}
+
 // Participant represents a user with display name info for client rendering.
 type Participant struct {
 	UserID      string `json:"userId,omitempty" bson:"userId,omitempty"`

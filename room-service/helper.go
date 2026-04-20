@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"regexp"
+	"strings"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -17,6 +19,8 @@ var (
 	errTargetNotMember  = errors.New("target user is not a member of this room")
 )
 
+var botPattern = regexp.MustCompile(`\.bot$|^p_`)
+
 func hasRole(roles []model.Role, target model.Role) bool {
 	for _, r := range roles {
 		if r == target {
@@ -24,6 +28,30 @@ func hasRole(roles []model.Role, target model.Role) bool {
 		}
 	}
 	return false
+}
+
+func isBot(account string) bool { return botPattern.MatchString(account) }
+
+func filterBots(accounts []string) []string {
+	var filtered []string
+	for _, a := range accounts {
+		if !isBot(a) {
+			filtered = append(filtered, a)
+		}
+	}
+	return filtered
+}
+
+func dedup(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	var result []string
+	for _, item := range items {
+		if _, ok := seen[item]; !ok {
+			seen[item] = struct{}{}
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func sanitizeError(err error) string {
@@ -37,6 +65,12 @@ func sanitizeError(err error) string {
 		errors.Is(err, errTargetNotMember):
 		return err.Error()
 	default:
+		msg := err.Error()
+		for _, safe := range []string{"only owners can", "cannot add members", "room is at maximum capacity", "requester not in room", "invalid request"} {
+			if strings.Contains(msg, safe) {
+				return msg
+			}
+		}
 		return "internal error"
 	}
 }

@@ -836,3 +836,241 @@ func TestHandler_RemoveMember_PublishError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "publish to stream")
 }
+
+// --- Add Members tests ---
+
+func TestHandler_AddMembers_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().
+		GetRoomMembersByRooms(gomock.Any(), []string{"ch1"}).
+		Return([]model.RoomMember{
+			{ID: "rm1", RoomID: "ch1", Member: model.RoomMemberEntry{ID: "org1", Type: model.RoomMemberOrg}},
+			{ID: "rm2", RoomID: "ch1", Member: model.RoomMemberEntry{ID: "bob", Type: model.RoomMemberIndividual, Account: "bob"}},
+		}, nil)
+	store.EXPECT().
+		ResolveAccounts(gomock.Any(), []string{"org1"}, []string{"bob"}, "r1").
+		Return([]string{"bob"}, nil)
+	store.EXPECT().
+		CountSubscriptions(gomock.Any(), "r1").
+		Return(5, nil)
+
+	var publishedSubj string
+	var publishedData []byte
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10,
+		publishToStream: func(_ context.Context, subj string, data []byte) error {
+			publishedSubj = subj
+			publishedData = data
+			return nil
+		},
+	}
+
+	req := model.AddMembersRequest{RoomID: "r1", Channels: []string{"ch1"}}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberAdd("alice", "r1", "site-a")
+
+	resp, err := h.handleAddMembers(context.Background(), subj, data)
+	require.NoError(t, err)
+
+	var result map[string]string
+	require.NoError(t, json.Unmarshal(resp, &result))
+	assert.Equal(t, "accepted", result["status"])
+
+	// Verify published subject is RoomCanonical
+	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
+
+	// Verify normalized request
+	var normalized model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(publishedData, &normalized))
+	assert.Equal(t, "r1", normalized.RoomID)
+	assert.Equal(t, []string{"bob"}, normalized.Users)
+	assert.Equal(t, []string{"org1"}, normalized.Orgs)
+}
+
+func TestHandler_AddMembers_DMRejected(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "dm-room", Type: model.RoomTypeDM}, nil)
+
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"bob"}}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberAdd("alice", "r1", "site-a")
+
+	_, err := h.handleAddMembers(context.Background(), subj, data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-channel room")
+}
+
+func TestHandler_AddMembers_RestrictedNonOwnerRejected(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "bob", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "restricted-room", Type: model.RoomTypeChannel, Restricted: true}, nil)
+
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"charlie"}}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberAdd("bob", "r1", "site-a")
+
+	_, err := h.handleAddMembers(context.Background(), subj, data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only owners can add members")
+}
+
+func TestHandler_AddMembers_CapacityExceeded(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().
+		ResolveAccounts(gomock.Any(), gomock.Any(), []string{"u1", "u2", "u3", "u4", "u5"}, "r1").
+		Return([]string{"u1", "u2", "u3", "u4", "u5"}, nil)
+	store.EXPECT().
+		CountSubscriptions(gomock.Any(), "r1").
+		Return(8, nil)
+
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"u1", "u2", "u3", "u4", "u5"}}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberAdd("alice", "r1", "site-a")
+
+	_, err := h.handleAddMembers(context.Background(), subj, data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "maximum capacity")
+}
+
+func TestHandler_AddMembers_WithChannels(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	var publishedData []byte
+	publish := func(_ context.Context, _ string, data []byte) error {
+		publishedData = data
+		return nil
+	}
+	h := NewHandler(store, "site-a", 100, publish)
+
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		Roles: []model.Role{model.RoleMember},
+	}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Type: model.RoomTypeChannel,
+	}, nil)
+	store.EXPECT().GetRoomMembersByRooms(gomock.Any(), []string{"c1", "c2"}).Return([]model.RoomMember{
+		{RoomID: "c1", Member: model.RoomMemberEntry{ID: "eng", Type: model.RoomMemberOrg}},
+		{RoomID: "c1", Member: model.RoomMemberEntry{ID: "bob", Type: model.RoomMemberIndividual, Account: "bob"}},
+	}, nil)
+	store.EXPECT().GetAccountsByRooms(gomock.Any(), []string{"c2"}).Return([]string{"dave"}, nil)
+	store.EXPECT().ResolveAccounts(gomock.Any(), []string{"eng"}, gomock.Any(), "r1").
+		Return([]string{"bob", "dave"}, nil)
+	store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(2, nil)
+
+	req := model.AddMembersRequest{
+		RoomID:   "r1",
+		Channels: []string{"c1", "c2"},
+		History:  model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	reqData, _ := json.Marshal(req)
+
+	resp, err := h.handleAddMembers(context.Background(), subject.MemberAdd("alice", "r1", "site-a"), reqData)
+	require.NoError(t, err)
+
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(resp, &status))
+	assert.Equal(t, "accepted", status["status"])
+
+	var published model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(publishedData, &published))
+	assert.Contains(t, published.Users, "bob")
+	assert.Contains(t, published.Users, "dave")
+	assert.Equal(t, []string{"eng"}, published.Orgs)
+}
+
+func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	h := NewHandler(store, "site-a", 100, publish)
+
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		Roles: []model.Role{model.RoleOwner},
+	}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Type: model.RoomTypeChannel, Restricted: true,
+	}, nil)
+	store.EXPECT().ResolveAccounts(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return([]string{"bob"}, nil)
+	store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(1, nil)
+
+	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"bob"}}
+	reqData, _ := json.Marshal(req)
+
+	resp, err := h.handleAddMembers(context.Background(), subject.MemberAdd("alice", "r1", "site-a"), reqData)
+	require.NoError(t, err)
+
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(resp, &status))
+	assert.Equal(t, "accepted", status["status"])
+}
+
+func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	h := NewHandler(store, "site-a", 100, publish)
+
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		Roles: []model.Role{model.RoleMember},
+	}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Type: model.RoomTypeChannel,
+	}, nil)
+	store.EXPECT().ResolveAccounts(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return(nil, nil)
+	store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
+
+	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"alice"}}
+	reqData, _ := json.Marshal(req)
+
+	resp, err := h.handleAddMembers(context.Background(), subject.MemberAdd("alice", "r1", "site-a"), reqData)
+	require.NoError(t, err)
+
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(resp, &status))
+	assert.Equal(t, "accepted", status["status"])
+}

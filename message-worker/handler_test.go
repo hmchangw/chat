@@ -218,6 +218,38 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "system message with unknown user — saved with nil sender",
+			data: func() []byte {
+				sysMsg := model.Message{
+					ID: "msg-sys-1", RoomID: "r1", Content: "added members",
+					CreatedAt: now, Type: "members_added",
+					SysMsgData: []byte(`{"individuals":["bob"]}`),
+				}
+				e := model.MessageEvent{Message: sysMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
+				d, _ := json.Marshal(e)
+				return d
+			}(),
+			setupMocks: func(store *MockStore, us *MockUserStore, _ *MockThreadStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "").
+					Return(nil, errors.New("user not found"))
+				expectedMsg := model.Message{
+					ID: "msg-sys-1", RoomID: "r1", Content: "added members",
+					CreatedAt: now, Type: "members_added",
+					SysMsgData: []byte(`{"individuals":["bob"]}`),
+				}
+				store.EXPECT().SaveMessage(gomock.Any(), &expectedMsg, (*cassParticipant)(nil), "site-a").Return(nil)
+			},
+		},
+		{
+			name: "regular message with user lookup error — still returns error",
+			data: validData,
+			setupMocks: func(_ *MockStore, us *MockUserStore, _ *MockThreadStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").
+					Return(nil, errors.New("user not found"))
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
