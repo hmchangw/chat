@@ -290,7 +290,9 @@ with:
 
 ```go
 func (s *MongoStore) ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error) {
-    err := s.roomMembers.FindOne(ctx, bson.M{"rid": roomID}).Err()
+    // Lightweight existence probe — project only _id to minimize payload.
+    err := s.roomMembers.FindOne(ctx, bson.M{"rid": roomID},
+        options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
     switch {
     case err == nil:
         return s.getRoomMembers(ctx, roomID, limit, offset, enrich)
@@ -713,10 +715,12 @@ func (s *MongoStore) getRoomSubscriptions(ctx context.Context, roomID string, li
         {Key: "joinedAt", Value: 1},
         {Key: "_id", Value: 1},
     })
-    if offset != nil {
+    if offset != nil && *offset > 0 {
         opts.SetSkip(int64(*offset))
     }
-    if limit != nil {
+    // SetLimit(0) means "no limit" in the driver, which would silently return
+    // unbounded results. Only set when >0 so it matches the aggregation path.
+    if limit != nil && *limit > 0 {
         opts.SetLimit(int64(*limit))
     }
     cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID}, opts)
@@ -918,10 +922,12 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
             {Key: "_id", Value: 1},
         }}},
     }
-    if offset != nil {
+    if offset != nil && *offset > 0 {
         pipeline = append(pipeline, bson.D{{Key: "$skip", Value: int64(*offset)}})
     }
-    if limit != nil {
+    // Mongo rejects {$limit: 0}; the handler guards against <=0 but we
+    // defend here too so the store is robust to direct internal callers.
+    if limit != nil && *limit > 0 {
         pipeline = append(pipeline, bson.D{{Key: "$limit", Value: int64(*limit)}})
     }
 
@@ -1042,6 +1048,9 @@ func enrichRoomMembersStages(roomID string) []bson.D {
                     bson.M{"$eq": bson.A{"$$mtyp", "org"}},
                     bson.M{"$eq": bson.A{"$sectId", "$$orgId"}},
                 }}}},
+                // $first:$sectName relies on the invariant that all users
+                // sharing a sectId carry the same sectName; if that ever drifts,
+                // the chosen name is non-deterministic without an upstream $sort.
                 bson.M{"$group": bson.M{
                     "_id":         nil,
                     "sectName":    bson.M{"$first": "$sectName"},
@@ -1128,6 +1137,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
         t.Helper()
         require.NoError(t, store.CreateSubscription(ctx, &sub))
     }
+    ptr := func(i int) *int { return &i }
 
     t.Run("individual enrichment via room_members path", func(t *testing.T) {
         db := setupMongo(t)
@@ -1287,6 +1297,17 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
         assert.Equal(t, model.RoomMemberOrg, got[0].Member.Type)
         assert.Equal(t, "a", got[1].Member.Account)
         assert.Equal(t, "b", got[2].Member.Account)
+
+        // Pagination is applied before enrichment — paging to the same slice
+        // with enrich=true and enrich=false must yield the same members (by ID).
+        bare, err := store.ListRoomMembers(ctx, "r1", ptr(1), ptr(1), false)
+        require.NoError(t, err)
+        enriched, err := store.ListRoomMembers(ctx, "r1", ptr(1), ptr(1), true)
+        require.NoError(t, err)
+        require.Len(t, bare, 1)
+        require.Len(t, enriched, 1)
+        assert.Equal(t, bare[0].ID, enriched[0].ID)
+        assert.Equal(t, bare[0].Member.Type, enriched[0].Member.Type)
     })
 }
 ```
