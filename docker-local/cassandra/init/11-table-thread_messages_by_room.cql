@@ -1,0 +1,26 @@
+CREATE TABLE IF NOT EXISTS chat.thread_messages_by_room (
+  room_id               TEXT,
+  thread_room_id        TEXT, // TODO: future value from threadRooms collection; currently holds "N/A"
+  created_at            TIMESTAMP,
+  message_id            TEXT,
+  thread_parent_id      TEXT,
+  sender                FROZEN<"Participant">,
+  target_user           FROZEN<"Participant">,
+  msg                   TEXT,
+  mentions              SET<FROZEN<"Participant">>,
+  attachments           LIST<BLOB>,
+  file                  FROZEN<"File">,
+  card                  FROZEN<"Card">,
+  card_action           FROZEN<"CardAction">,
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
+  visible_to            TEXT,
+  unread                BOOLEAN,
+  reactions             MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+  deleted               BOOLEAN,
+  type                  TEXT,
+  sys_msg_data          BLOB,
+  site_id               TEXT,
+  edited_at             TIMESTAMP,
+  updated_at            TIMESTAMP,
+  PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
+) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC);

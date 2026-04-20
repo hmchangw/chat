@@ -61,10 +61,11 @@ services:
     networks:
       - chat-local
 
-  # Schema bootstrap. One-shot: exits 0 after CREATE statements run. Lives in
-  # the "init" profile so `docker compose up --wait` (used by `make deps-up`)
-  # ignores it — see https://github.com/docker/compose/issues/10596. The Makefile
-  # runs it explicitly with `docker compose run --rm --profile init cassandra-init`.
+  # Schema bootstrap. One-shot: runs every *.cql under docker-local/cassandra/init
+  # in sorted order (01-, 02-, …) and exits 0. Lives in the "init" profile so
+  # `docker compose up --wait` (used by `make deps-up`) ignores it — see
+  # https://github.com/docker/compose/issues/10596. The Makefile runs it
+  # explicitly with `docker compose --profile init run --rm cassandra-init`.
   cassandra-init:
     image: cassandra:5
     container_name: chat-local-cassandra-init
@@ -73,48 +74,17 @@ services:
       cassandra:
         condition: service_healthy
     restart: "no"
+    volumes:
+      - ./cassandra/init:/init:ro
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        set -e
-        cqlsh cassandra <<'CQL'
-        CREATE KEYSPACE IF NOT EXISTS chat WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
-        CREATE TYPE IF NOT EXISTS chat."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT);
-        CREATE TABLE IF NOT EXISTS chat.messages_by_room (
-          room_id    TEXT,
-          created_at TIMESTAMP,
-          message_id TEXT,
-          sender     FROZEN<"Participant">,
-          msg        TEXT,
-          site_id    TEXT,
-          updated_at TIMESTAMP,
-          mentions   SET<FROZEN<"Participant">>,
-          PRIMARY KEY ((room_id), created_at, message_id)
-        ) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
-        CREATE TABLE IF NOT EXISTS chat.messages_by_id (
-          message_id TEXT,
-          created_at TIMESTAMP,
-          sender     FROZEN<"Participant">,
-          msg        TEXT,
-          site_id    TEXT,
-          updated_at TIMESTAMP,
-          mentions   SET<FROZEN<"Participant">>,
-          PRIMARY KEY (message_id, created_at)
-        ) WITH CLUSTERING ORDER BY (created_at DESC);
-        CREATE TABLE IF NOT EXISTS chat.thread_messages_by_room (
-          room_id           TEXT,
-          thread_room_id    TEXT,
-          created_at        TIMESTAMP,
-          message_id        TEXT,
-          thread_message_id TEXT,
-          sender            FROZEN<"Participant">,
-          msg               TEXT,
-          site_id           TEXT,
-          updated_at        TIMESTAMP,
-          mentions          SET<FROZEN<"Participant">>,
-          PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
-        ) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC);
-        CQL
+        set -euo pipefail
+        shopt -s nullglob
+        for f in /init/*.cql; do
+          echo "==> applying $$f"
+          cqlsh cassandra -f "$$f"
+        done
         echo "Schema initialized successfully"
     networks:
       - chat-local
