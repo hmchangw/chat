@@ -586,7 +586,7 @@ Expected: FAIL with a mock expectation miss — the handler is still calling `Li
 
 The exact error looks like:
 
-```
+```text
 Unexpected call to *main.MockRoomStore.ListRoomMembers(...) at ... because:
 expected call at ... has the following arguments:
     arg #4: is equal to true (bool), but got false (bool)

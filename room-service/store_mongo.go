@@ -309,7 +309,9 @@ func (s *MongoStore) ResolveAccounts(ctx context.Context, orgIDs, directAccounts
 // callers always see the same response shape. Sort: orgs first, then
 // individuals, each group by ts ascending with _id tiebreaker.
 func (s *MongoStore) ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error) {
-	err := s.roomMembers.FindOne(ctx, bson.M{"rid": roomID}).Err()
+	// Lightweight existence probe — project only _id to minimize payload.
+	err := s.roomMembers.FindOne(ctx, bson.M{"rid": roomID},
+		options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
 	switch {
 	case err == nil:
 		return s.getRoomMembers(ctx, roomID, limit, offset, enrich)
@@ -334,10 +336,12 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 			{Key: "_id", Value: 1},
 		}}},
 	}
-	if offset != nil {
+	if offset != nil && *offset > 0 {
 		pipeline = append(pipeline, bson.D{{Key: "$skip", Value: int64(*offset)}})
 	}
-	if limit != nil {
+	// Mongo rejects {$limit: 0}; the handler guards against <=0 but we
+	// defend here too so the store is robust to direct internal callers.
+	if limit != nil && *limit > 0 {
 		pipeline = append(pipeline, bson.D{{Key: "$limit", Value: int64(*limit)}})
 	}
 
@@ -458,6 +462,9 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 					bson.M{"$eq": bson.A{"$$mtyp", "org"}},
 					bson.M{"$eq": bson.A{"$sectId", "$$orgId"}},
 				}}}},
+				// $first:$sectName relies on the invariant that all users
+				// sharing a sectId carry the same sectName; if that ever drifts,
+				// the chosen name is non-deterministic without an upstream $sort.
 				bson.M{"$group": bson.M{
 					"_id":         nil,
 					"sectName":    bson.M{"$first": "$sectName"},
@@ -492,10 +499,12 @@ func (s *MongoStore) getRoomSubscriptions(ctx context.Context, roomID string, li
 		{Key: "joinedAt", Value: 1},
 		{Key: "_id", Value: 1},
 	})
-	if offset != nil {
+	if offset != nil && *offset > 0 {
 		opts.SetSkip(int64(*offset))
 	}
-	if limit != nil {
+	// SetLimit(0) means "no limit" in the driver, which would silently return
+	// unbounded results. Only set when >0 so it matches the aggregation path.
+	if limit != nil && *limit > 0 {
 		opts.SetLimit(int64(*limit))
 	}
 	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID}, opts)

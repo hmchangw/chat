@@ -622,6 +622,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		t.Helper()
 		require.NoError(t, store.CreateSubscription(ctx, &sub))
 	}
+	ptr := func(i int) *int { return &i }
 
 	t.Run("individual enrichment via room_members path", func(t *testing.T) {
 		db := setupMongo(t)
@@ -781,5 +782,16 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		assert.Equal(t, model.RoomMemberOrg, got[0].Member.Type)
 		assert.Equal(t, "a", got[1].Member.Account)
 		assert.Equal(t, "b", got[2].Member.Account)
+
+		// Pagination is applied before enrichment — paging to the same slice
+		// with enrich=true and enrich=false must yield the same members (by ID).
+		bare, err := store.ListRoomMembers(ctx, "r1", ptr(1), ptr(1), false)
+		require.NoError(t, err)
+		enriched, err := store.ListRoomMembers(ctx, "r1", ptr(1), ptr(1), true)
+		require.NoError(t, err)
+		require.Len(t, bare, 1)
+		require.Len(t, enriched, 1)
+		assert.Equal(t, bare[0].ID, enriched[0].ID)
+		assert.Equal(t, bare[0].Member.Type, enriched[0].Member.Type)
 	})
 }

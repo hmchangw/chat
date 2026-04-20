@@ -194,9 +194,7 @@ pipeline = append(pipeline, bson.D{{Key: "$project", Value: bson.M{
 }}})
 ```
 
-Decode results directly into `[]model.RoomMember`. The `bson:"-"` tags on the display fields mean the BSON codec would ignore any matching keys — so the pipeline must rehome the looked-up values into the `member.*` sub-document via `$addFields`/`$set` with BSON keys that map to the struct's other fields. (Implementation detail for the coder: use `$set: {"member.engName": ..., "member.isOwner": ...}` etc., then let the driver decode directly.)
-
-**Wait — because display fields are `bson:"-"`, we cannot decode them from BSON.** The aggregation must therefore write those fields into a parallel map, and Go-side post-processing copies them onto `RoomMember.Member` before returning. In practice:
+Because the display fields on `RoomMemberEntry` are tagged `bson:"-"`, the driver will refuse to decode them from BSON — any enrichment written to `member.engName`/`member.isOwner`/etc. would be silently dropped during `cursor.All`. The aggregation must therefore write those fields into a **parallel `display` sub-document**, and Go-side post-processing copies them onto `RoomMember.Member` before returning. In practice:
 
 1. Run the aggregation with `$set` placing the enrichment into e.g. `display.engName`, `display.isOwner`, etc. on a parallel temp field (not inside `member`, to avoid the `bson:"-"` filter).
 2. Decode into a small local struct `roomMemberRow { RoomMember; Display roomMemberDisplay }`, where `roomMemberDisplay` has normal bson tags for the same five fields.
@@ -315,7 +313,7 @@ func (h *Handler) natsListMembers(m otelnats.Msg) {
 func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byte) ([]byte, error) {
     requesterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
     if !ok {
-        return nil, fmt.Errorf("invalid list-members subject: %s", subj)
+        return nil, fmt.Errorf("invalid list-members subject")
     }
 
     _, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
@@ -332,8 +330,8 @@ func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byt
             return nil, fmt.Errorf("invalid request: %w", err)
         }
     }
-    if req.Limit != nil && *req.Limit < 0 {
-        return nil, fmt.Errorf("limit must be >= 0")
+    if req.Limit != nil && *req.Limit <= 0 {
+        return nil, fmt.Errorf("limit must be > 0")
     }
     if req.Offset != nil && *req.Offset < 0 {
         return nil, fmt.Errorf("offset must be >= 0")
@@ -379,7 +377,7 @@ Table-driven `TestHandler_ListMembers` using `NewMockRoomStore`:
 | 4 | Invalid subject | subject doesn't match `chat.user.*.room.*` | error contains "invalid list-members subject" |
 | 5 | Invalid JSON body | body = `[]byte("{not json")` | error contains "invalid request" |
 | 6 | Empty body | `data = nil`; store called with `enrich=false` and nil pagination | succeeds |
-| 7 | Negative limit | `Limit=-1` | error "limit must be >= 0" |
+| 7 | Non-positive limit (negative or zero) | `Limit=-1` or `Limit=0` | error "limit must be > 0" |
 | 8 | Negative offset | `Offset=-1` | error "offset must be >= 0" |
 | 9 | Pagination passed through | `Limit=10, Offset=5` | store called with matching `*int` values |
 | 10 | Auth probe infra error | `GetSubscription` → generic err | wrapped "check room membership" |

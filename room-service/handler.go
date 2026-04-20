@@ -157,7 +157,7 @@ func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
 func (h *Handler) natsListMembers(m otelnats.Msg) {
 	resp, err := h.handleListMembers(m.Context(), m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("list members failed", "error", err)
+		slog.Error("list members failed", "subject", m.Msg.Subject, "error", err)
 		natsutil.ReplyError(m.Msg, sanitizeError(err))
 		return
 	}
@@ -169,7 +169,7 @@ func (h *Handler) natsListMembers(m otelnats.Msg) {
 func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byte) ([]byte, error) {
 	requesterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
-		return nil, fmt.Errorf("invalid list-members subject: %s", subj)
+		return nil, fmt.Errorf("invalid list-members subject")
 	}
 
 	_, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
@@ -186,8 +186,8 @@ func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byt
 			return nil, fmt.Errorf("invalid request: %w", err)
 		}
 	}
-	if req.Limit != nil && *req.Limit < 0 {
-		return nil, fmt.Errorf("limit must be >= 0")
+	if req.Limit != nil && *req.Limit <= 0 {
+		return nil, fmt.Errorf("limit must be > 0")
 	}
 	if req.Offset != nil && *req.Offset < 0 {
 		return nil, fmt.Errorf("offset must be >= 0")

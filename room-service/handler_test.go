@@ -1162,14 +1162,24 @@ func TestHandler_ListMembers(t *testing.T) {
 			want: want{errContains: "invalid request"},
 		},
 		{
-			name:    "negative limit",
+			name:    "non-positive limit: negative",
 			subject: subj,
 			body:    []byte(`{"limit":-1}`),
 			setupMock: func(s *MockRoomStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
 					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
 			},
-			want: want{errContains: "limit must be >= 0"},
+			want: want{errContains: "limit must be > 0"},
+		},
+		{
+			name:    "non-positive limit: zero",
+			subject: subj,
+			body:    []byte(`{"limit":0}`),
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{Account: requester}, RoomID: roomID}, nil)
+			},
+			want: want{errContains: "limit must be > 0"},
 		},
 		{
 			name:    "negative offset",
