@@ -1,0 +1,34 @@
+[
+  {
+    "_id": "s1",
+    "u": { "_id": "u-alice", "account": "alice" },
+    "roomId": "group-1",
+    "siteId": "site1",
+    "roles": ["owner"],
+    "hasMention": false
+  },
+  {
+    "_id": "s2",
+    "u": { "_id": "u-bob", "account": "bob" },
+    "roomId": "group-1",
+    "siteId": "site1",
+    "roles": ["member"],
+    "hasMention": false
+  },
+  {
+    "_id": "s3",
+    "u": { "_id": "u-alice", "account": "alice" },
+    "roomId": "dm-1",
+    "siteId": "site1",
+    "roles": ["member"],
+    "hasMention": false
+  },
+  {
+    "_id": "s4",
+    "u": { "_id": "u-carol", "account": "carol" },
+    "roomId": "dm-1",
+    "siteId": "site1",
+    "roles": ["member"],
+    "hasMention": false
+  }
+]
