@@ -81,15 +81,15 @@ func (s *threadStoreMongo) InsertThreadSubscription(ctx context.Context, sub *mo
 	return nil
 }
 
-func (s *threadStoreMongo) ThreadSubscriptionExists(ctx context.Context, threadRoomID, userID string) (bool, error) {
-	err := s.threadSubscriptions.FindOne(ctx, bson.M{"threadRoomId": threadRoomID, "userId": userID}).Err()
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return false, nil
+// UpsertThreadSubscription inserts sub if no document exists for (threadRoomId, userId);
+// otherwise it is a no-op. $setOnInsert ensures existing subscriptions are never overwritten.
+func (s *threadStoreMongo) UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
+	filter := bson.M{"threadRoomId": sub.ThreadRoomID, "userId": sub.UserID}
+	update := bson.M{"$setOnInsert": sub}
+	if _, err := s.threadSubscriptions.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
+		return fmt.Errorf("upsert thread subscription: %w", err)
 	}
-	if err != nil {
-		return false, fmt.Errorf("check thread subscription existence: %w", err)
-	}
-	return true, nil
+	return nil
 }
 
 func (s *threadStoreMongo) UpdateThreadRoomLastMessage(ctx context.Context, threadRoomID string, lastMsgID string, lastMsgAt time.Time) error {

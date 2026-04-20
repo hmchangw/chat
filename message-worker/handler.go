@@ -41,7 +41,6 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	}
 }
 
-
 func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
@@ -149,7 +148,8 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 }
 
 // handleSubsequentThreadReply runs when CreateThreadRoom reported an existing room.
-// It checks whether the replier already has a subscription and inserts one if not,
+// It upserts subscriptions for both the parent author and the replier — idempotent
+// so redeliveries after a partial first attempt never lose the parent subscription —
 // then bumps the room's last-message pointer.
 // Returns the existing thread room ID so the caller can pass it to SaveThreadMessage.
 func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Message, siteID string, now time.Time) (string, error) {
@@ -158,16 +158,32 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 		return "", fmt.Errorf("get existing thread room: %w", err)
 	}
 
-	exists, err := h.threadStore.ThreadSubscriptionExists(ctx, existingRoom.ID, msg.UserID)
-	if err != nil {
-		return "", fmt.Errorf("check replier thread subscription: %w", err)
-	}
-	if !exists {
-		if err := h.threadStore.InsertThreadSubscription(ctx,
+	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
+	switch {
+	case err == nil:
+		if err := h.threadStore.UpsertThreadSubscription(ctx,
+			h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, siteID, now),
+		); err != nil {
+			return "", fmt.Errorf("upsert parent author thread subscription: %w", err)
+		}
+		if msg.UserID != parentSender.ID {
+			if err := h.threadStore.UpsertThreadSubscription(ctx,
+				h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, siteID, now),
+			); err != nil {
+				return "", fmt.Errorf("upsert replier thread subscription: %w", err)
+			}
+		}
+	case errors.Is(err, errMessageNotFound):
+		slog.Warn("thread reply parent not found — skipping parent subscription upsert",
+			"parentMessageID", msg.ThreadParentMessageID,
+			"replyID", msg.ID)
+		if err := h.threadStore.UpsertThreadSubscription(ctx,
 			h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, siteID, now),
 		); err != nil {
-			return "", fmt.Errorf("insert replier thread subscription: %w", err)
+			return "", fmt.Errorf("upsert replier thread subscription: %w", err)
 		}
+	default:
+		return "", fmt.Errorf("get parent message sender: %w", err)
 	}
 
 	if err := h.threadStore.UpdateThreadRoomLastMessage(ctx, existingRoom.ID, msg.ID, now); err != nil {

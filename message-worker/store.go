@@ -22,6 +22,6 @@ type ThreadStore interface {
 	CreateThreadRoom(ctx context.Context, room *model.ThreadRoom) error
 	GetThreadRoomByParentMessageID(ctx context.Context, parentMessageID string) (*model.ThreadRoom, error)
 	InsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
-	ThreadSubscriptionExists(ctx context.Context, threadRoomID, userID string) (bool, error)
+	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
 	UpdateThreadRoomLastMessage(ctx context.Context, threadRoomID string, lastMsgID string, lastMsgAt time.Time) error
 }
