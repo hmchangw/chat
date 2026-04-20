@@ -12,14 +12,14 @@ import (
 )
 
 // baseColumns are shared across messages_by_room and messages_by_id.
-const baseColumns = "room_id, created_at, message_id, sender, target_user, " +
+const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, target_user, " +
 	"msg, mentions, attachments, file, card, card_action, tshow, tcount, " +
 	"thread_parent_id, thread_parent_created_at, quoted_parent_message, " +
 	"visible_to, unread, reactions, deleted, " +
 	"type, sys_msg_data, site_id, edited_at, updated_at"
 
 // messageByIDExtraColumns are the columns only present in messages_by_id.
-const messageByIDExtraColumns = ", thread_room_id, pinned_at, pinned_by"
+const messageByIDExtraColumns = ", pinned_at, pinned_by"
 
 const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 const messageByIDQuery = "SELECT " + baseColumns + messageByIDExtraColumns + " FROM messages_by_id"
@@ -27,7 +27,7 @@ const messageByIDQuery = "SELECT " + baseColumns + messageByIDExtraColumns + " F
 // baseScanDest returns Scan destination pointers for the baseColumns in order.
 func baseScanDest(m *models.Message) []any {
 	return []any{
-		&m.RoomID, &m.CreatedAt, &m.MessageID,
+		&m.RoomID, &m.CreatedAt, &m.MessageID, &m.ThreadRoomID,
 		&m.Sender, &m.TargetUser, &m.Msg,
 		&m.Mentions, &m.Attachments, &m.File,
 		&m.Card, &m.CardAction, &m.TShow, &m.TCount,
@@ -40,7 +40,7 @@ func baseScanDest(m *models.Message) []any {
 
 // messageByIDScanDest returns Scan destination pointers for all messages_by_id columns.
 func messageByIDScanDest(m *models.Message) []any {
-	return append(baseScanDest(m), &m.ThreadRoomID, &m.PinnedAt, &m.PinnedBy)
+	return append(baseScanDest(m), &m.PinnedAt, &m.PinnedBy)
 }
 
 // Repository implements service.MessageRepository using Cassandra.
