@@ -24,14 +24,14 @@ import (
 
 type Handler struct {
 	store           RoomStore
-	keyStore        roomkeystore.RoomKeyStore
+	keyStore        RoomKeyStore
 	siteID          string
 	maxRoomSize     int
 	maxBatchSize    int
 	publishToStream func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, keyStore roomkeystore.RoomKeyStore, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
+func NewHandler(store RoomStore, keyStore RoomKeyStore, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
 	return &Handler{store: store, keyStore: keyStore, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
 }
 
@@ -578,7 +578,8 @@ func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
 	}
 	resp, err := h.handleRoomsInfoBatch(m.Context(), account, m.Msg.Data)
 	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
+		slog.Error("rooms info batch failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {

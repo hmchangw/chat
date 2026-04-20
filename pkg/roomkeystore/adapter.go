@@ -102,5 +102,5 @@ func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
 	if err := c.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("valkey connect: %w", err)
 	}
-	return &valkeyStore{client: &redisAdapter{c: c}, gracePeriod: cfg.GracePeriod}, nil
+	return &valkeyStore{client: &redisAdapter{c: c}, closer: c, gracePeriod: cfg.GracePeriod}, nil
 }

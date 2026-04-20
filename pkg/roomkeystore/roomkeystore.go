@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"time"
 )
@@ -54,7 +55,16 @@ type hashCommander interface {
 // valkeyStore is the Valkey-backed implementation of RoomKeyStore.
 type valkeyStore struct {
 	client      hashCommander
+	closer      io.Closer
 	gracePeriod time.Duration
+}
+
+// Close releases the underlying Valkey connection.
+func (s *valkeyStore) Close() error {
+	if s.closer != nil {
+		return s.closer.Close()
+	}
+	return nil
 }
 
 // roomkey returns the Valkey hash key for a room's current key pair.

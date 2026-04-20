@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	model "github.com/hmchangw/chat/pkg/model"
+	roomkeystore "github.com/hmchangw/chat/pkg/roomkeystore"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -247,4 +248,43 @@ func (m *MockRoomStore) ResolveAccounts(ctx context.Context, orgIDs, directAccou
 func (mr *MockRoomStoreMockRecorder) ResolveAccounts(ctx, orgIDs, directAccounts, roomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveAccounts", reflect.TypeOf((*MockRoomStore)(nil).ResolveAccounts), ctx, orgIDs, directAccounts, roomID)
+}
+
+// MockRoomKeyStore is a mock of RoomKeyStore interface.
+type MockRoomKeyStore struct {
+	ctrl     *gomock.Controller
+	recorder *MockRoomKeyStoreMockRecorder
+	isgomock struct{}
+}
+
+// MockRoomKeyStoreMockRecorder is the mock recorder for MockRoomKeyStore.
+type MockRoomKeyStoreMockRecorder struct {
+	mock *MockRoomKeyStore
+}
+
+// NewMockRoomKeyStore creates a new mock instance.
+func NewMockRoomKeyStore(ctrl *gomock.Controller) *MockRoomKeyStore {
+	mock := &MockRoomKeyStore{ctrl: ctrl}
+	mock.recorder = &MockRoomKeyStoreMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockRoomKeyStore) EXPECT() *MockRoomKeyStoreMockRecorder {
+	return m.recorder
+}
+
+// GetMany mocks base method.
+func (m *MockRoomKeyStore) GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMany", ctx, roomIDs)
+	ret0, _ := ret[0].(map[string]*roomkeystore.VersionedKeyPair)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetMany indicates an expected call of GetMany.
+func (mr *MockRoomKeyStoreMockRecorder) GetMany(ctx, roomIDs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMany", reflect.TypeOf((*MockRoomKeyStore)(nil).GetMany), ctx, roomIDs)
 }

@@ -4,10 +4,10 @@ import (
 	"context"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
 //go:generate mockgen -source=store.go -destination=mock_store_test.go -package=main
-//go:generate mockgen -source=../pkg/roomkeystore/roomkeystore.go -destination=mock_keystore_test.go -package=main
 
 // SubscriptionWithMembership is the result of the GetSubscriptionWithMembership
 // aggregation — the target's subscription joined with both the individual and
@@ -49,4 +49,10 @@ type RoomStore interface {
 	// as OrgMember rows sorted by account ascending. Returns errInvalidOrg
 	// when no users match (treated as "orgId is not valid").
 	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
+}
+
+// RoomKeyStore is the consumer-side interface for room encryption key lookups.
+// Only the methods room-service needs are declared here.
+type RoomKeyStore interface {
+	GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error)
 }
