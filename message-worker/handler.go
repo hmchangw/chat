@@ -189,7 +189,7 @@ func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, user
 		UserID:          userID,
 		UserAccount:     userAccount,
 		SiteID:          siteID,
-		LastSeenAt:      time.Time{},
+		LastSeenAt:      nil,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}

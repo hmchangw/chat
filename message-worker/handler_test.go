@@ -279,14 +279,14 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
 						assert.Equal(t, "u-parent", sub.UserID)
 						assert.Equal(t, "parent-user", sub.UserAccount)
-						assert.True(t, sub.LastSeenAt.IsZero(), "parent's LastSeenAt should be zero")
+						assert.Nil(t, sub.LastSeenAt, "parent's LastSeenAt should be nil on init")
 						return nil
 					})
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
 						assert.Equal(t, "u-replier", sub.UserID)
 						assert.Equal(t, "replier", sub.UserAccount)
-						assert.True(t, sub.LastSeenAt.IsZero(), "replier's LastSeenAt should be zero on init")
+						assert.Nil(t, sub.LastSeenAt, "replier's LastSeenAt should be nil on init")
 						return nil
 					})
 			},
@@ -380,7 +380,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
 						assert.Equal(t, "tr-existing", sub.ThreadRoomID)
 						assert.Equal(t, "u-replier", sub.UserID)
-						assert.True(t, sub.LastSeenAt.IsZero(), "replier's LastSeenAt should be zero on init")
+						assert.Nil(t, sub.LastSeenAt, "replier's LastSeenAt should be nil on init")
 						return nil
 					})
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).

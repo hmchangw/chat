@@ -607,7 +607,7 @@ func TestThreadStoreMongo_InsertThreadSubscription(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "ts-1", got.ID)
 		assert.Equal(t, "alice", got.UserAccount)
-		assert.True(t, got.LastSeenAt.IsZero(), "lastSeenAt should be zero on insert")
+		assert.Nil(t, got.LastSeenAt, "lastSeenAt should be nil on insert")
 		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond))
 	})
 
