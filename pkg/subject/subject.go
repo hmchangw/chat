@@ -69,6 +69,10 @@ func MemberRemove(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.remove", account, roomID, siteID)
 }
 
+func MemberList(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.list", account, roomID, siteID)
+}
+
 func MemberEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event.member", roomID)
 }
@@ -185,6 +189,10 @@ func MemberRoleUpdateWildcard(siteID string) string {
 
 func MemberRemoveWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.remove", siteID)
+}
+
+func MemberListWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.list", siteID)
 }
 
 func RoomCanonicalWildcard(siteID string) string {
