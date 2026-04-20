@@ -163,7 +163,7 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(store, publisher)
+	handler := NewHandler(store, publisher, cfg.SiteID)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
 		if err := handler.HandleEvent(m.Context(), m.Data()); err != nil {

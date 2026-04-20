@@ -153,6 +153,21 @@ func RoomCanonicalWildcard(siteID string) string {
 	return fmt.Sprintf("chat.room.canonical.%s.>", siteID)
 }
 
+func RoomCanonicalMemberAdded(siteID string) string {
+	return RoomCanonical(siteID, "member_added")
+}
+
+func RoomCanonicalMemberRemoved(siteID string) string {
+	return RoomCanonical(siteID, "member_removed")
+}
+
+func RoomCanonicalMemberEventSubjects(siteID string) []string {
+	return []string{
+		RoomCanonicalMemberAdded(siteID),
+		RoomCanonicalMemberRemoved(siteID),
+	}
+}
+
 func MsgHistoryWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.history", siteID)
 }

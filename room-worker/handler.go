@@ -103,8 +103,33 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 		slog.Error("subscription update publish failed", "error", err)
 	}
 
-	// Notify all existing members: room metadata changed
+	// Publish MemberAddEvent for search-sync-worker (spotlight + user-room indexes).
+	// The legacy invite path creates one subscription at a time. Room metadata
+	// is loaded below for the metadata-update broadcast; reuse it here.
 	room, err := h.store.GetRoom(ctx, req.RoomID)
+	if err == nil {
+		var historySharedSince int64
+		if sub.HistorySharedSince != nil {
+			historySharedSince = sub.HistorySharedSince.UnixMilli()
+		}
+		inviteAddEvt := model.MemberAddEvent{
+			Type:               "member_added",
+			RoomID:             req.RoomID,
+			Accounts:           []string{req.InviteeAccount},
+			SiteID:             room.SiteID,
+			RoomName:           room.Name,
+			RoomType:           room.Type,
+			JoinedAt:           now.UnixMilli(),
+			HistorySharedSince: historySharedSince,
+			Timestamp:          now.UnixMilli(),
+		}
+		inviteAddData, _ := json.Marshal(inviteAddEvt)
+		if err := h.publish(ctx, subject.RoomCanonicalMemberAdded(h.siteID), inviteAddData); err != nil {
+			slog.Error("room canonical member_added publish failed (invite path)", "error", err, "roomID", req.RoomID)
+		}
+	}
+
+	// Notify all existing members: room metadata changed
 	if err == nil {
 		metaEvt := model.RoomMetadataUpdateEvent{
 			RoomID:    req.RoomID,
@@ -282,6 +307,9 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData); err != nil {
 		slog.Error("member event publish failed", "error", err, "roomID", req.RoomID)
 	}
+	if err := h.publish(ctx, subject.RoomCanonicalMemberRemoved(h.siteID), memberEvtData); err != nil {
+		slog.Error("room canonical member_removed publish failed", "error", err, "roomID", req.RoomID)
+	}
 
 	// System message
 	sysMsgUser := model.SysMsgUser{
@@ -401,6 +429,9 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		memberEvtData, _ := json.Marshal(memberEvt)
 		if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData); err != nil {
 			slog.Error("member event publish failed", "error", err, "roomID", req.RoomID)
+		}
+		if err := h.publish(ctx, subject.RoomCanonicalMemberRemoved(h.siteID), memberEvtData); err != nil {
+			slog.Error("room canonical member_removed publish failed", "error", err, "roomID", req.RoomID)
 		}
 	}
 
@@ -629,6 +660,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		RoomID:             req.RoomID,
 		Accounts:           actualAccounts,
 		SiteID:             room.SiteID,
+		RoomName:           room.Name,
+		RoomType:           room.Type,
 		JoinedAt:           req.Timestamp,
 		HistorySharedSince: historySharedSince,
 		Timestamp:          now.UnixMilli(),
@@ -636,6 +669,9 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	memberAddData, _ := json.Marshal(memberAddEvt)
 	if err := h.publish(ctx, subject.RoomMemberEvent(req.RoomID), memberAddData); err != nil {
 		slog.Error("member add event publish failed", "error", err, "roomID", req.RoomID)
+	}
+	if err := h.publish(ctx, subject.RoomCanonicalMemberAdded(h.siteID), memberAddData); err != nil {
+		slog.Error("room canonical member_added publish failed", "error", err, "roomID", req.RoomID)
 	}
 
 	membersAdded := model.MembersAdded{
@@ -680,6 +716,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			RoomID:             req.RoomID,
 			Accounts:           accounts,
 			SiteID:             room.SiteID,
+			RoomName:           room.Name,
+			RoomType:           room.Type,
 			JoinedAt:           req.Timestamp,
 			HistorySharedSince: historySharedSince,
 			Timestamp:          now.UnixMilli(),

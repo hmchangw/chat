@@ -60,7 +60,7 @@ func TestHandler_Add(t *testing.T) {
 	msg := makeStubMsg(t, &evt)
 
 	h.Add(msg)
-	assert.Equal(t, 1, h.BufferLen())
+	assert.Equal(t, 1, h.ActionCount())
 }
 
 func TestHandler_Add_MalformedJSON(t *testing.T) {
@@ -70,7 +70,7 @@ func TestHandler_Add_MalformedJSON(t *testing.T) {
 
 	msg := &stubMsg{data: []byte("{invalid")}
 	h.Add(msg)
-	assert.Equal(t, 0, h.BufferLen())
+	assert.Equal(t, 0, h.ActionCount())
 	assert.True(t, msg.acked)
 }
 
@@ -99,7 +99,7 @@ func TestHandler_Flush(t *testing.T) {
 
 		assert.True(t, msg.acked)
 		assert.False(t, msg.nacked)
-		assert.Equal(t, 0, h.BufferLen())
+		assert.Equal(t, 0, h.ActionCount())
 	})
 
 	t.Run("version conflict (409) — acked not nacked", func(t *testing.T) {
@@ -153,7 +153,7 @@ func TestHandler_Flush(t *testing.T) {
 
 		assert.True(t, msg1.nacked)
 		assert.True(t, msg2.nacked)
-		assert.Equal(t, 0, h.BufferLen())
+		assert.Equal(t, 0, h.ActionCount())
 	})
 
 	t.Run("empty flush is no-op", func(t *testing.T) {
@@ -161,7 +161,7 @@ func TestHandler_Flush(t *testing.T) {
 		store := NewMockStore(ctrl)
 		h := NewHandler(store, newMessageCollection("msgs-v1"), 500)
 		h.Flush(context.Background())
-		assert.Equal(t, 0, h.BufferLen())
+		assert.Equal(t, 0, h.ActionCount())
 	})
 
 	t.Run("mixed results — per-item ack/nak", func(t *testing.T) {

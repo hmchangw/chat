@@ -18,15 +18,26 @@ import (
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
+// bootstrapConfig groups fields meaningful ONLY in dev / integration tests.
+// In production, streams are owned by their publisher services and
+// search-sync-worker only manages its own durable consumers.
+type bootstrapConfig struct {
+	Enabled bool `env:"STREAMS" envDefault:"false"`
+}
+
 type config struct {
-	NatsURL        string `env:"NATS_URL,required"`
-	NatsCredsFile  string `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID         string `env:"SITE_ID,required"`
-	SearchURL      string `env:"SEARCH_URL,required"`
-	SearchBackend  string `env:"SEARCH_BACKEND"  envDefault:"elasticsearch"`
-	MsgIndexPrefix string `env:"MSG_INDEX_PREFIX,required"`
-	BatchSize      int    `env:"BATCH_SIZE"      envDefault:"500"`
-	FlushInterval  int    `env:"FLUSH_INTERVAL"  envDefault:"5"`
+	NatsURL           string          `env:"NATS_URL,required"`
+	NatsCredsFile     string          `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID            string          `env:"SITE_ID,required"`
+	SearchURL         string          `env:"SEARCH_URL,required"`
+	SearchBackend     string          `env:"SEARCH_BACKEND"    envDefault:"elasticsearch"`
+	MsgIndexPrefix    string          `env:"MSG_INDEX_PREFIX,required"`
+	SpotlightIndex    string          `env:"SPOTLIGHT_INDEX"   envDefault:""`
+	UserRoomIndex     string          `env:"USER_ROOM_INDEX"   envDefault:""`
+	FetchBatchSize    int             `env:"FETCH_BATCH_SIZE"  envDefault:"100"`
+	BulkBatchSize     int             `env:"BULK_BATCH_SIZE"   envDefault:"500"`
+	BulkFlushInterval int             `env:"BULK_FLUSH_INTERVAL" envDefault:"5"`
+	Bootstrap         bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 }
 
 func main() {
@@ -35,6 +46,26 @@ func main() {
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
+		os.Exit(1)
+	}
+
+	if cfg.SpotlightIndex == "" {
+		cfg.SpotlightIndex = fmt.Sprintf("spotlight-%s-v1-chat", cfg.SiteID)
+	}
+	if cfg.UserRoomIndex == "" {
+		cfg.UserRoomIndex = fmt.Sprintf("user-room-%s", cfg.SiteID)
+	}
+
+	if cfg.FetchBatchSize <= 0 {
+		slog.Error("invalid config", "name", "FETCH_BATCH_SIZE", "value", cfg.FetchBatchSize, "reason", "must be > 0")
+		os.Exit(1)
+	}
+	if cfg.BulkBatchSize <= 0 {
+		slog.Error("invalid config", "name", "BULK_BATCH_SIZE", "value", cfg.BulkBatchSize, "reason", "must be > 0")
+		os.Exit(1)
+	}
+	if cfg.BulkFlushInterval <= 0 {
+		slog.Error("invalid config", "name", "BULK_FLUSH_INTERVAL", "value", cfg.BulkFlushInterval, "reason", "must be > 0")
 		os.Exit(1)
 	}
 
@@ -52,15 +83,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	coll := newMessageCollection(cfg.MsgIndexPrefix)
-
-	tmplName := coll.TemplateName()
-	tmplBody := coll.TemplateBody()
-	if err := engine.UpsertTemplate(ctx, tmplName, tmplBody); err != nil {
-		slog.Error("upsert index template failed", "error", err)
-		os.Exit(1)
+	collections := []Collection{
+		newMessageCollection(cfg.MsgIndexPrefix),
+		newSpotlightCollection(cfg.SpotlightIndex),
+		newUserRoomCollection(cfg.UserRoomIndex),
 	}
-	slog.Info("index template upserted", "name", tmplName)
+
+	for _, coll := range collections {
+		name := coll.TemplateName()
+		body := coll.TemplateBody()
+		if name == "" || body == nil {
+			continue
+		}
+		if err := engine.UpsertTemplate(ctx, name, body); err != nil {
+			slog.Error("upsert index template failed", "template", name, "error", err)
+			os.Exit(1)
+		}
+		slog.Info("index template upserted", "name", name)
+	}
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
@@ -73,34 +113,63 @@ func main() {
 		os.Exit(1)
 	}
 
-	canonicalCfg := coll.StreamConfig(cfg.SiteID)
-	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     canonicalCfg.Name,
-		Subjects: canonicalCfg.Subjects,
-	}); err != nil {
-		slog.Error("create MESSAGES_CANONICAL stream failed", "error", err)
-		os.Exit(1)
-	}
-
-	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
-		Durable:   coll.ConsumerName(),
-		AckPolicy: jetstream.AckExplicitPolicy,
-		BackOff:   []time.Duration{1 * time.Second, 5 * time.Second, 30 * time.Second},
-	})
-	if err != nil {
-		slog.Error("create consumer failed", "error", err)
-		os.Exit(1)
-	}
-
-	handler := NewHandler(&engineAdapter{engine: engine}, coll, cfg.BatchSize)
-
-	flushInterval := time.Duration(cfg.FlushInterval) * time.Second
+	bulkFlushInterval := time.Duration(cfg.BulkFlushInterval) * time.Second
 	stopCh := make(chan struct{})
-	doneCh := make(chan struct{})
+	doneChs := make([]chan struct{}, 0, len(collections))
 
-	go runConsumer(ctx, cons, handler, cfg.BatchSize, flushInterval, stopCh, doneCh)
+	createdStreams := make(map[string]struct{}, len(collections))
 
-	slog.Info("search-sync-worker running", "site", cfg.SiteID, "prefix", cfg.MsgIndexPrefix)
+	for _, coll := range collections {
+		streamCfg := coll.StreamConfig(cfg.SiteID)
+		if cfg.Bootstrap.Enabled {
+			if _, alreadyCreated := createdStreams[streamCfg.Name]; !alreadyCreated {
+				if _, err := js.CreateOrUpdateStream(ctx, streamCfg); err != nil {
+					slog.Error("create stream failed", "stream", streamCfg.Name, "error", err)
+					os.Exit(1)
+				}
+				createdStreams[streamCfg.Name] = struct{}{}
+				slog.Info("stream bootstrapped", "stream", streamCfg.Name)
+			}
+		}
+
+		consumerCfg := jetstream.ConsumerConfig{
+			Durable:   coll.ConsumerName(),
+			AckPolicy: jetstream.AckExplicitPolicy,
+			BackOff:   []time.Duration{1 * time.Second, 5 * time.Second, 30 * time.Second},
+		}
+		if filters := coll.FilterSubjects(cfg.SiteID); len(filters) > 0 {
+			consumerCfg.FilterSubjects = filters
+		}
+		cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, consumerCfg)
+		if err != nil {
+			slog.Error("create consumer failed",
+				"stream", streamCfg.Name,
+				"consumer", coll.ConsumerName(),
+				"error", err,
+			)
+			os.Exit(1)
+		}
+
+		handler := NewHandler(&engineAdapter{engine: engine}, coll, cfg.BulkBatchSize)
+		doneCh := make(chan struct{})
+		doneChs = append(doneChs, doneCh)
+
+		slog.Info("collection wired",
+			"stream", streamCfg.Name,
+			"consumer", coll.ConsumerName(),
+			"filters", consumerCfg.FilterSubjects,
+		)
+
+		go runConsumer(ctx, cons, handler, cfg.FetchBatchSize, cfg.BulkBatchSize, bulkFlushInterval, stopCh, doneCh)
+	}
+
+	slog.Info("search-sync-worker running",
+		"site", cfg.SiteID,
+		"msgPrefix", cfg.MsgIndexPrefix,
+		"spotlightIndex", cfg.SpotlightIndex,
+		"userRoomIndex", cfg.UserRoomIndex,
+		"collections", len(collections),
+	)
 
 	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error {
@@ -108,22 +177,29 @@ func main() {
 			return nil
 		},
 		func(ctx context.Context) error {
-			select {
-			case <-doneCh:
-				return nil
-			case <-ctx.Done():
-				return fmt.Errorf("consumer loop drain timed out: %w", ctx.Err())
+			for _, ch := range doneChs {
+				select {
+				case <-ch:
+				case <-ctx.Done():
+					return fmt.Errorf("consumer loop drain timed out: %w", ctx.Err())
+				}
 			}
+			return nil
 		},
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 	)
 }
 
-// runConsumer is the batch-flush consumer loop for a single collection.
-// It fetches messages from the JetStream consumer, adds them to the handler buffer,
-// and flushes when the buffer is full or the flush interval elapses.
-func runConsumer(ctx context.Context, cons oteljetstream.Consumer, handler *Handler, batchSize int, flushInterval time.Duration, stopCh <-chan struct{}, doneCh chan<- struct{}) {
+func runConsumer(
+	ctx context.Context,
+	cons oteljetstream.Consumer,
+	handler *Handler,
+	fetchBatchSize, bulkBatchSize int,
+	bulkFlushInterval time.Duration,
+	stopCh <-chan struct{},
+	doneCh chan<- struct{},
+) {
 	defer close(doneCh)
 	lastFlush := time.Now()
 
@@ -135,12 +211,18 @@ func runConsumer(ctx context.Context, cons oteljetstream.Consumer, handler *Hand
 		default:
 		}
 
-		fetchSize := batchSize - handler.BufferLen()
-		if fetchSize <= 0 {
-			fetchSize = 1
+		remaining := bulkBatchSize - handler.ActionCount()
+		if remaining <= 0 {
+			handler.Flush(ctx)
+			lastFlush = time.Now()
+			continue
+		}
+		fetchCount := fetchBatchSize
+		if fetchCount > remaining {
+			fetchCount = remaining
 		}
 
-		batch, err := cons.Fetch(fetchSize, jetstream.FetchMaxWait(time.Second))
+		batch, err := cons.Fetch(fetchCount, jetstream.FetchMaxWait(time.Second))
 		if err != nil {
 			select {
 			case <-stopCh:
@@ -148,7 +230,7 @@ func runConsumer(ctx context.Context, cons oteljetstream.Consumer, handler *Hand
 				return
 			default:
 			}
-			if handler.BufferLen() > 0 && time.Since(lastFlush) >= flushInterval {
+			if handler.ActionCount() > 0 && time.Since(lastFlush) >= bulkFlushInterval {
 				handler.Flush(ctx)
 				lastFlush = time.Now()
 			}
@@ -157,19 +239,22 @@ func runConsumer(ctx context.Context, cons oteljetstream.Consumer, handler *Hand
 
 		for msg := range batch.Messages() {
 			handler.Add(msg.Msg)
+			if handler.ActionCount() >= bulkBatchSize {
+				handler.Flush(ctx)
+				lastFlush = time.Now()
+			}
 		}
 
-		if handler.BufferFull() {
+		if handler.ActionCount() >= bulkBatchSize {
 			handler.Flush(ctx)
 			lastFlush = time.Now()
-		} else if handler.BufferLen() > 0 && time.Since(lastFlush) >= flushInterval {
+		} else if handler.ActionCount() > 0 && time.Since(lastFlush) >= bulkFlushInterval {
 			handler.Flush(ctx)
 			lastFlush = time.Now()
 		}
 	}
 }
 
-// engineAdapter adapts searchengine.SearchEngine to the Handler's Store interface.
 type engineAdapter struct {
 	engine searchengine.SearchEngine
 }

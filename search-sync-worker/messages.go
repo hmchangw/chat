@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/stream"
@@ -21,12 +23,17 @@ func newMessageCollection(indexPrefix string) *messageCollection {
 	return &messageCollection{indexPrefix: indexPrefix}
 }
 
-func (c *messageCollection) StreamConfig(siteID string) stream.Config {
-	return stream.MessagesCanonical(siteID)
+func (c *messageCollection) StreamConfig(siteID string) jetstream.StreamConfig {
+	cfg := stream.MessagesCanonical(siteID)
+	return jetstream.StreamConfig{Name: cfg.Name, Subjects: cfg.Subjects}
 }
 
 func (c *messageCollection) ConsumerName() string {
-	return "search-sync-worker"
+	return "message-sync"
+}
+
+func (c *messageCollection) FilterSubjects(_ string) []string {
+	return nil
 }
 
 func (c *messageCollection) TemplateName() string {
@@ -37,21 +44,21 @@ func (c *messageCollection) TemplateBody() json.RawMessage {
 	return messageTemplateBody(c.indexPrefix)
 }
 
-func (c *messageCollection) BuildAction(data []byte) (searchengine.BulkAction, error) {
+func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
-		return searchengine.BulkAction{}, fmt.Errorf("unmarshal message event: %w", err)
+		return nil, fmt.Errorf("unmarshal message event: %w", err)
 	}
 	if evt.Message.ID == "" {
-		return searchengine.BulkAction{}, fmt.Errorf("build message action: missing message id")
+		return nil, fmt.Errorf("build message action: missing message id")
 	}
 	if evt.Message.CreatedAt.IsZero() {
-		return searchengine.BulkAction{}, fmt.Errorf("build message action: missing createdAt")
+		return nil, fmt.Errorf("build message action: missing createdAt")
 	}
 	if evt.Timestamp <= 0 {
-		return searchengine.BulkAction{}, fmt.Errorf("build message action: missing timestamp")
+		return nil, fmt.Errorf("build message action: missing timestamp")
 	}
-	return buildMessageAction(&evt, c.indexPrefix), nil
+	return []searchengine.BulkAction{buildMessageAction(&evt, c.indexPrefix)}, nil
 }
 
 // --- Message-specific internals ---

@@ -72,6 +72,13 @@ func (a *httpAdapter) Bulk(ctx context.Context, actions []BulkAction) ([]BulkRes
 			line, _ := json.Marshal(map[string]bulkActionMeta{"delete": meta})
 			buf.Write(line)
 			buf.WriteByte('\n')
+		case ActionUpdate:
+			updateMeta := bulkActionMeta{Index: action.Index, ID: action.DocID}
+			line, _ := json.Marshal(map[string]bulkActionMeta{"update": updateMeta})
+			buf.Write(line)
+			buf.WriteByte('\n')
+			buf.Write(action.Doc)
+			buf.WriteByte('\n')
 		}
 	}
 
@@ -101,8 +108,9 @@ func (a *httpAdapter) Bulk(ctx context.Context, actions []BulkAction) ([]BulkRes
 	for i, item := range bulkResp.Items {
 		for _, detail := range item {
 			results[i] = BulkResult{
-				Status: detail.Status,
-				Error:  detail.Error.Reason,
+				Status:    detail.Status,
+				ErrorType: detail.Error.Type,
+				Error:     detail.Error.Reason,
 			}
 		}
 	}

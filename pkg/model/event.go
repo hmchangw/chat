@@ -68,6 +68,8 @@ type MemberAddEvent struct {
 	RoomID             string   `json:"roomId"             bson:"roomId"`
 	Accounts           []string `json:"accounts"           bson:"accounts"`
 	SiteID             string   `json:"siteId"             bson:"siteId"`
+	RoomName           string   `json:"roomName"           bson:"roomName"`
+	RoomType           RoomType `json:"roomType"           bson:"roomType"`
 	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
 	HistorySharedSince int64    `json:"historySharedSince" bson:"historySharedSince"`
 	Timestamp          int64    `json:"timestamp"          bson:"timestamp"`

@@ -412,7 +412,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	// Expect: subscription update + member change event + system message = 3 publishes
-	assert.Len(t, published, 3, "expected 3 publishes: sub update, member event, sys msg")
+	assert.Len(t, published, 4, "expected 4 publishes: sub update, member event, room canonical member_removed, sys msg")
 
 	subjSet := make(map[string]bool)
 	for _, p := range published {
@@ -585,7 +585,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	assert.Len(t, published, 3, "expected 3 publishes: sub update, member event, sys msg")
+	assert.Len(t, published, 4, "expected 4 publishes: sub update, member event, room canonical member_removed, sys msg")
 
 	// Verify the sys msg has type "member_removed"
 	for _, p := range published {
@@ -850,7 +850,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	require.NoError(t, err)
 
 	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 sys msg = 4 publishes
-	assert.Len(t, published, 4, "expected 4 publishes: 2 sub updates, member event, sys msg")
+	assert.Len(t, published, 5, "expected 5 publishes: 2 sub updates, member event, room canonical member_removed, sys msg")
 
 	subjSet := make(map[string]bool)
 	for _, p := range published {
@@ -909,7 +909,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 	require.NoError(t, err)
 
 	// Expect: sub update + member event + sys msg + outbox = 4 publishes
-	assert.Len(t, published, 4, "expected 4 publishes including outbox for federated user")
+	assert.Len(t, published, 5, "expected 5 publishes: sub update, member event, room canonical member_removed, sys msg, outbox")
 
 	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
 	subjSet := make(map[string]bool)

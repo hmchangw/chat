@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
@@ -29,13 +30,14 @@ type Publisher interface {
 
 // Handler processes incoming cross-site OutboxEvent messages.
 type Handler struct {
-	store InboxStore
-	pub   Publisher
+	store  InboxStore
+	pub    Publisher
+	siteID string
 }
 
-// NewHandler creates a Handler with the given store and publisher.
-func NewHandler(store InboxStore, pub Publisher) *Handler {
-	return &Handler{store: store, pub: pub}
+// NewHandler creates a Handler with the given store, publisher, and local site ID.
+func NewHandler(store InboxStore, pub Publisher, siteID string) *Handler {
+	return &Handler{store: store, pub: pub, siteID: siteID}
 }
 
 // HandleEvent processes a single JetStream message payload.
@@ -108,9 +110,14 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		return fmt.Errorf("bulk create subscriptions: %w", err)
 	}
 
-	// No SubscriptionUpdateEvent is published here — room-worker already publishes
-	// to the user's subject and the NATS supercluster routes it to the user's
-	// home site.
+	// Re-publish the enriched MemberAddEvent to the local ROOMS stream so
+	// search-sync-worker on this (remote) site picks it up for spotlight +
+	// user-room indexing. The event already carries RoomName/RoomType from the
+	// source site's room-worker, so no additional lookup needed.
+	if err := h.pub.Publish(ctx, subject.RoomCanonicalMemberAdded(h.siteID), evt.Payload); err != nil {
+		return fmt.Errorf("re-publish member_added to local ROOMS: %w", err)
+	}
+
 	return nil
 }
 
@@ -131,6 +138,12 @@ func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEven
 	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
 		return fmt.Errorf("delete subscriptions for room %s: %w", memberEvt.RoomID, err)
 	}
+
+	// Re-publish to local ROOMS stream for search-sync-worker.
+	if err := h.pub.Publish(ctx, subject.RoomCanonicalMemberRemoved(h.siteID), evt.Payload); err != nil {
+		return fmt.Errorf("re-publish member_removed to local ROOMS: %w", err)
+	}
+
 	return nil
 }
 
