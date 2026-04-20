@@ -1,11 +1,6 @@
 name: message-gatekeeper
 
 services:
-  mongodb:
-    image: mongo:8
-    ports:
-      - "27017:27017"
-
   message-gatekeeper:
     build:
       context: ../..
@@ -18,11 +13,8 @@ services:
       - MONGO_DB=chat
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
-    depends_on:
-      - mongodb
     networks:
       - chat-local
-      - default
 
 networks:
   chat-local:

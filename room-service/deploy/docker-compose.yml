@@ -1,11 +1,6 @@
 name: room-service
 
 services:
-  mongodb:
-    image: mongo:8
-    ports:
-      - "27017:27017"
-
   room-service:
     build:
       context: ../..
@@ -19,11 +14,8 @@ services:
       - MAX_ROOM_SIZE=1000
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
-    depends_on:
-      - mongodb
     networks:
       - chat-local
-      - default
 
 networks:
   chat-local:

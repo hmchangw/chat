@@ -1,15 +1,6 @@
 name: search-sync-worker
 
 services:
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
-    ports:
-      - "9200:9200"
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
-
   search-sync-worker:
     build:
       context: ../..
@@ -23,11 +14,8 @@ services:
       - MSG_INDEX_PREFIX=messages-site-local-v1
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
-    depends_on:
-      - elasticsearch
     networks:
       - chat-local
-      - default
 
 networks:
   chat-local:

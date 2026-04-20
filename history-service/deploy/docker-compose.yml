@@ -1,18 +1,6 @@
 name: history-service
 
 services:
-  mongodb:
-    image: mongo:8
-    ports:
-      - "27017:27017"
-
-  cassandra:
-    image: cassandra:5
-    ports:
-      - "9042:9042"
-    environment:
-      - CASSANDRA_CLUSTER_NAME=chat-dev
-
   history-service:
     build:
       context: ../..
@@ -27,12 +15,8 @@ services:
       - CASSANDRA_KEYSPACE=chat
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
-    depends_on:
-      - mongodb
-      - cassandra
     networks:
       - chat-local
-      - default
 
 networks:
   chat-local:
