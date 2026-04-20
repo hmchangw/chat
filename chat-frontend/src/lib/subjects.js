@@ -32,3 +32,7 @@ export function subscriptionUpdate(account) {
 export function roomMetadataUpdate(account) {
   return `chat.user.${account}.event.room.metadata.update`
 }
+
+export function userRoomEvent(account) {
+  return `chat.user.${account}.event.room`
+}
