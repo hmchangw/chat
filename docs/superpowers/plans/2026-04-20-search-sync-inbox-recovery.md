@@ -107,10 +107,12 @@ format.
 - `search-sync-worker/spotlight_test.go` + `user_room_test.go` — updated
   helpers (`baseInboxMemberEvent`, `makeInboxMemberEvent`) and all assertions.
 
-### Files remaining in Phase 2 (not yet committed)
+### Files migrated in Phase 2 (commit `c7a303b`)
 
-- `search-sync-worker/inbox_integration_test.go` — still uses old
-  `MemberAddedPayload`. Needs full migration. See task list below.
+- `search-sync-worker/inbox_integration_test.go` — full migration to new
+  helpers (`buildInboxMemberEvent`, `publishInboxMemberEvent`), synthesized
+  `{account}_{roomID}` DocID assertions, and all-or-nothing restricted-room
+  coverage.
 
 ### Files NOT modified (confirmed unchanged on this branch)
 
@@ -139,7 +141,10 @@ format.
 - [x] `make lint` clean + `make test` green
 - [x] Commit + push
 
-### Phase 2: integration tests (TODO)
+### Phase 2: integration tests (DONE — commit `c7a303b`)
+
+Historical note — the task breakdown below is kept for traceability. All
+items landed in `c7a303b`.
 
 - [ ] **Task 2.1: Update shared helpers in `inbox_integration_test.go`**
 
@@ -261,7 +266,7 @@ format.
 
   Requires Docker for testcontainers-go.
 
-  ```
+  ```shell
   make test-integration SERVICE=search-sync-worker
   ```
 
@@ -269,7 +274,7 @@ format.
 
 - [ ] **Task 2.8: Commit + push**
 
-  ```
+  ```shell
   git add search-sync-worker/inbox_integration_test.go
   git commit -m "test(search-sync-worker): migrate integration tests to InboxMemberEvent"
   git push

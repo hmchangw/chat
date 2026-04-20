@@ -158,8 +158,15 @@ const (
 // per action type.
 //
 //   - 2xx is always success.
-//   - 409 is success on every action: it means external versioning rejected
-//     a stale write and the desired state is already reached or newer.
+//   - 409 is success ONLY for externally-versioned writes (ActionIndex,
+//     ActionDelete): it means external versioning rejected a stale write and
+//     the desired state is already reached or newer. ActionUpdate does NOT
+//     use external versioning (the adapter omits version/version_type on
+//     _update); idempotency there comes from the painless LWW guard via
+//     `params.ts > stored`. A 409 on an update means an internal
+//     version_conflict_engine_exception from concurrent writers — the script
+//     did NOT execute, so the update was dropped. We NAK so JetStream
+//     redelivers and retries.
 //   - 404 is success ONLY for specific idempotent outcomes:
 //   - ActionDelete with no error type set: delete of a missing doc
 //     sets `result:"not_found"` and no error block — desired state
@@ -179,7 +186,12 @@ func isBulkItemSuccess(action searchengine.ActionType, result searchengine.BulkR
 		return true
 	}
 	if result.Status == 409 {
-		return true
+		switch action {
+		case searchengine.ActionIndex, searchengine.ActionDelete:
+			return true
+		case searchengine.ActionUpdate:
+			return false
+		}
 	}
 	if result.Status == 404 {
 		switch action {

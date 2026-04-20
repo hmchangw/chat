@@ -135,7 +135,7 @@ func toStringSlice(t *testing.T, v any) []string {
 
 // --- Spotlight integration test ---
 
-func TestSpotlightSyncIntegration(t *testing.T) {
+func TestSpotlightSync_Integration(t *testing.T) {
 	esURL := setupElasticsearch(t)
 	js, _ := setupNATSJetStream(t)
 	ctx := context.Background()
@@ -301,7 +301,7 @@ func TestSpotlightSync_BulkInvite(t *testing.T) {
 
 // --- User-room integration test ---
 
-func TestUserRoomSyncIntegration(t *testing.T) {
+func TestUserRoomSync_Integration(t *testing.T) {
 	esURL := setupElasticsearch(t)
 	js, _ := setupNATSJetStream(t)
 	ctx := context.Background()

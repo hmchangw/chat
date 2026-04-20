@@ -73,11 +73,13 @@ func (a *httpAdapter) Bulk(ctx context.Context, actions []BulkAction) ([]BulkRes
 			buf.Write(line)
 			buf.WriteByte('\n')
 		case ActionUpdate:
-			// ES _update is a read-modify-write operation (server reads the
-			// doc, applies the partial update or script, writes it back), so
-			// it does not accept `version`/`version_type=external` — that's
-			// only for full-document replacement via `index`. Omit them here
-			// regardless of whether the caller set Version.
+			// ES 8.x / OpenSearch 2.x bulk _update DOES accept version +
+			// version_type=external. We intentionally omit them because
+			// user-room scripted updates already enforce ordering via the
+			// painless LWW guard (`params.ts > stored` against the stored
+			// roomTimestamps), so layering external versioning on top would
+			// be redundant and complicate 409-handling semantics. Omit Version
+			// even when the caller sets it.
 			updateMeta := bulkActionMeta{Index: action.Index, ID: action.DocID}
 			line, _ := json.Marshal(map[string]bulkActionMeta{"update": updateMeta})
 			buf.Write(line)

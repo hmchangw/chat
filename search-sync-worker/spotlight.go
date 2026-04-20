@@ -145,9 +145,12 @@ func spotlightTemplateBody(indexName string) json.RawMessage {
 						},
 					},
 					"tokenizer": map[string]any{
+						// Whitespace tokenizer only supports max_token_length
+						// (default 255). `token_chars` is valid on ngram /
+						// edge_ngram tokenizers, not whitespace — sending it
+						// here would reject the UpsertTemplate request.
 						"custom_tokenizer": map[string]any{
-							"type":        "whitespace",
-							"token_chars": []string{"letter", "digit", "punctuation", "symbol"},
+							"type": "whitespace",
 						},
 					},
 				},
@@ -158,6 +161,8 @@ func spotlightTemplateBody(indexName string) json.RawMessage {
 			},
 		},
 	}
+	// tmpl is built entirely from map/slice/string/int literals that are
+	// always JSON-marshalable, so the error cannot occur in practice.
 	data, _ := json.Marshal(tmpl)
 	return data
 }

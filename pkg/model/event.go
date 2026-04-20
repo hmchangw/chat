@@ -57,7 +57,7 @@ type InboxMemberEvent struct {
 	Accounts           []string `json:"accounts"`
 	HistorySharedSince int64    `json:"historySharedSince,omitempty"`
 	JoinedAt           int64    `json:"joinedAt,omitempty"`
-	Timestamp          int64    `json:"timestamp"`
+	Timestamp          int64    `json:"timestamp" bson:"timestamp"`
 }
 
 type InviteMemberRequest struct {
