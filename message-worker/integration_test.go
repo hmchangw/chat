@@ -49,29 +49,35 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			site_id       TEXT,
 			updated_at    TIMESTAMP,
 			mentions      SET<FROZEN<"Participant">>,
+			tcount        INT,
 			PRIMARY KEY ((room_id), created_at, message_id)
 		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`,
 		`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
-			message_id TEXT,
-			created_at TIMESTAMP,
-			sender     FROZEN<"Participant">,
-			msg        TEXT,
-			site_id    TEXT,
-			updated_at TIMESTAMP,
-			mentions   SET<FROZEN<"Participant">>,
+			message_id              TEXT,
+			created_at              TIMESTAMP,
+			room_id                 TEXT,
+			sender                  FROZEN<"Participant">,
+			msg                     TEXT,
+			site_id                 TEXT,
+			updated_at              TIMESTAMP,
+			mentions                SET<FROZEN<"Participant">>,
+			thread_room_id          TEXT,
+			thread_parent_id        TEXT,
+			thread_parent_created_at TIMESTAMP,
+			tcount                  INT,
 			PRIMARY KEY (message_id, created_at)
 		) WITH CLUSTERING ORDER BY (created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS chat_test.thread_messages_by_room (
-			room_id            TEXT,
-			thread_room_id     TEXT,
-			created_at         TIMESTAMP,
-			message_id         TEXT,
-			thread_message_id  TEXT,
-			sender             FROZEN<"Participant">,
-			msg                TEXT,
-			site_id            TEXT,
-			updated_at         TIMESTAMP,
-			mentions           SET<FROZEN<"Participant">>,
+			room_id          TEXT,
+			thread_room_id   TEXT,
+			created_at       TIMESTAMP,
+			message_id       TEXT,
+			thread_parent_id TEXT,
+			sender           FROZEN<"Participant">,
+			msg              TEXT,
+			site_id          TEXT,
+			updated_at       TIMESTAMP,
+			mentions         SET<FROZEN<"Participant">>,
 			PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
 		) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`,
 	}
@@ -184,6 +190,16 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 		assert.Equal(t, "Bob Chen", gotMentions[0].EngName)
 		assert.Equal(t, "u-bob", gotMentions[0].ID)
 	})
+
+	t.Run("messages_by_id room_id persisted", func(t *testing.T) {
+		var gotRoomID string
+		err := cassSession.Query(
+			`SELECT room_id FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-1", now,
+		).Scan(&gotRoomID)
+		require.NoError(t, err)
+		assert.Equal(t, "r-1", gotRoomID)
+	})
 }
 
 func TestCassandraStore_SaveThreadMessage(t *testing.T) {
@@ -214,14 +230,15 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 		}},
 	}
 
-	err := store.SaveThreadMessage(ctx, msg, sender, "site-a")
+	const threadRoomID = "tr-test-1"
+	err := store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID)
 	require.NoError(t, err)
 
 	t.Run("thread_messages_by_room mentions persisted", func(t *testing.T) {
 		var gotMentions []*cassParticipant
 		err := cassSession.Query(
 			`SELECT mentions FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
-			"r-1", "m-1", now, "m-2",
+			"r-1", threadRoomID, now, "m-2",
 		).Scan(&gotMentions)
 		require.NoError(t, err)
 		require.Len(t, gotMentions, 1)
@@ -241,6 +258,27 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 		assert.Equal(t, "bob", gotMentions[0].Account)
 		assert.Equal(t, "Bob Chen", gotMentions[0].EngName)
 		assert.Equal(t, "u-bob", gotMentions[0].ID)
+	})
+
+	t.Run("messages_by_id thread fields persisted", func(t *testing.T) {
+		var gotThreadRoomID, gotThreadParentID string
+		err := cassSession.Query(
+			`SELECT thread_room_id, thread_parent_id FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-2", now,
+		).Scan(&gotThreadRoomID, &gotThreadParentID)
+		require.NoError(t, err)
+		assert.Equal(t, threadRoomID, gotThreadRoomID)
+		assert.Equal(t, "m-1", gotThreadParentID)
+	})
+
+	t.Run("messages_by_id room_id persisted for thread message", func(t *testing.T) {
+		var gotRoomID string
+		err := cassSession.Query(
+			`SELECT room_id FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-2", now,
+		).Scan(&gotRoomID)
+		require.NoError(t, err)
+		assert.Equal(t, "r-1", gotRoomID)
 	})
 }
 
@@ -538,7 +576,7 @@ func TestThreadStoreMongo_GetThreadRoomByParentMessageID(t *testing.T) {
 	})
 }
 
-func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
+func TestThreadStoreMongo_InsertThreadSubscription(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
 	store := newThreadStoreMongo(db)
@@ -553,13 +591,12 @@ func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
 		UserID:          "u-1",
 		UserAccount:     "alice",
 		SiteID:          "site-a",
-		LastSeenAt:      now,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
 
-	t.Run("first upsert creates document", func(t *testing.T) {
-		err := store.UpsertThreadSubscription(ctx, sub)
+	t.Run("insert creates document with correct fields", func(t *testing.T) {
+		err := store.InsertThreadSubscription(ctx, sub)
 		require.NoError(t, err)
 
 		var got model.ThreadSubscription
@@ -570,36 +607,48 @@ func TestThreadStoreMongo_UpsertThreadSubscription(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "ts-1", got.ID)
 		assert.Equal(t, "alice", got.UserAccount)
+		assert.Nil(t, got.LastSeenAt, "lastSeenAt should be nil on insert")
 		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond))
 	})
 
-	t.Run("second upsert updates fields but preserves createdAt and ID", func(t *testing.T) {
-		later := now.Add(5 * time.Minute)
-		sub2 := &model.ThreadSubscription{
-			ID:              "ts-should-be-ignored",
-			ParentMessageID: "msg-parent",
-			RoomID:          "r-1",
-			ThreadRoomID:    "tr-1",
-			UserID:          "u-1",
-			UserAccount:     "alice",
-			SiteID:          "site-a",
-			LastSeenAt:      later,
-			CreatedAt:       later,
-			UpdatedAt:       later,
+	t.Run("duplicate insert returns error", func(t *testing.T) {
+		dup := &model.ThreadSubscription{
+			ID:           "ts-dup",
+			ThreadRoomID: "tr-1",
+			UserID:       "u-1",
 		}
-		err := store.UpsertThreadSubscription(ctx, sub2)
-		require.NoError(t, err)
+		err := store.InsertThreadSubscription(ctx, dup)
+		require.Error(t, err, "second insert with same (threadRoomId, userId) must fail")
+	})
+}
 
-		var got model.ThreadSubscription
-		err = db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
-			"threadRoomId": "tr-1",
-			"userId":       "u-1",
-		}).Decode(&got)
+func TestThreadStoreMongo_ThreadSubscriptionExists(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := newThreadStoreMongo(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	t.Run("returns false when subscription absent", func(t *testing.T) {
+		exists, err := store.ThreadSubscriptionExists(ctx, "tr-nonexistent", "u-1")
 		require.NoError(t, err)
-		assert.Equal(t, "ts-1", got.ID, "ID should not change on upsert")
-		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond), "createdAt should not change on upsert")
-		assert.Equal(t, now, got.LastSeenAt.UTC().Truncate(time.Millisecond), "lastSeenAt should not change on upsert")
-		assert.Equal(t, later, got.UpdatedAt.UTC().Truncate(time.Millisecond))
+		assert.False(t, exists)
+	})
+
+	t.Run("returns true after insertion", func(t *testing.T) {
+		sub := &model.ThreadSubscription{
+			ID:           "ts-exists",
+			ThreadRoomID: "tr-exists",
+			UserID:       "u-exists",
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		require.NoError(t, store.InsertThreadSubscription(ctx, sub))
+
+		exists, err := store.ThreadSubscriptionExists(ctx, "tr-exists", "u-exists")
+		require.NoError(t, err)
+		assert.True(t, exists)
 	})
 }
 
@@ -630,4 +679,111 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "msg-5", got.LastMsgID)
 	assert.Equal(t, later, got.LastMsgAt.UTC().Truncate(time.Millisecond))
+}
+
+func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession)
+	ctx := context.Background()
+
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyCreatedAt := parentCreatedAt.Add(5 * time.Minute)
+
+	parentSender := &cassParticipant{ID: "u-parent", Account: "alice", EngName: "Alice"}
+	parentMsg := &model.Message{
+		ID:        "tcount-parent",
+		RoomID:    "tcount-room",
+		UserID:    "u-parent",
+		CreatedAt: parentCreatedAt,
+		Content:   "parent message",
+	}
+	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
+
+	replySender := &cassParticipant{ID: "u-replier", Account: "bob", EngName: "Bob"}
+	replyMsg := &model.Message{
+		ID:                           "tcount-reply-1",
+		RoomID:                       "tcount-room",
+		UserID:                       "u-replier",
+		Content:                      "first reply",
+		CreatedAt:                    replyCreatedAt,
+		ThreadParentMessageID:        "tcount-parent",
+		ThreadParentMessageCreatedAt: &parentCreatedAt,
+	}
+	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-tcount-1"))
+
+	t.Run("tcount incremented to 1 in messages_by_id", func(t *testing.T) {
+		var tcount int
+		err := cassSession.Query(
+			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"tcount-parent", parentCreatedAt,
+		).Scan(&tcount)
+		require.NoError(t, err)
+		assert.Equal(t, 1, tcount)
+	})
+
+	t.Run("tcount incremented to 1 in messages_by_room", func(t *testing.T) {
+		var tcount int
+		err := cassSession.Query(
+			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			"tcount-room", parentCreatedAt, "tcount-parent",
+		).Scan(&tcount)
+		require.NoError(t, err)
+		assert.Equal(t, 1, tcount)
+	})
+
+	// A second reply must increment tcount to 2.
+	reply2CreatedAt := replyCreatedAt.Add(5 * time.Minute)
+	replyMsg2 := &model.Message{
+		ID:                           "tcount-reply-2",
+		RoomID:                       "tcount-room",
+		UserID:                       "u-replier",
+		Content:                      "second reply",
+		CreatedAt:                    reply2CreatedAt,
+		ThreadParentMessageID:        "tcount-parent",
+		ThreadParentMessageCreatedAt: &parentCreatedAt,
+	}
+	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg2, replySender, "site-a", "tr-tcount-1"))
+
+	t.Run("tcount incremented to 2 in messages_by_id after second reply", func(t *testing.T) {
+		var tcount int
+		err := cassSession.Query(
+			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"tcount-parent", parentCreatedAt,
+		).Scan(&tcount)
+		require.NoError(t, err)
+		assert.Equal(t, 2, tcount)
+	})
+
+	t.Run("tcount incremented to 2 in messages_by_room after second reply", func(t *testing.T) {
+		var tcount int
+		err := cassSession.Query(
+			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			"tcount-room", parentCreatedAt, "tcount-parent",
+		).Scan(&tcount)
+		require.NoError(t, err)
+		assert.Equal(t, 2, tcount)
+	})
+
+	t.Run("nil ThreadParentMessageCreatedAt skips tcount update without error", func(t *testing.T) {
+		noTsReply := &model.Message{
+			ID:                    "tcount-reply-nots",
+			RoomID:                "tcount-room",
+			UserID:                "u-replier",
+			Content:               "reply without parent ts",
+			CreatedAt:             reply2CreatedAt.Add(5 * time.Minute),
+			ThreadParentMessageID: "tcount-parent",
+			// ThreadParentMessageCreatedAt intentionally nil
+		}
+		err := store.SaveThreadMessage(ctx, noTsReply, replySender, "site-a", "tr-tcount-1")
+		assert.NoError(t, err)
+
+		// tcount must stay at 2 — nil timestamp skips the increment
+		var tcount int
+		err = cassSession.Query(
+			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"tcount-parent", parentCreatedAt,
+		).Scan(&tcount)
+		require.NoError(t, err)
+		assert.Equal(t, 2, tcount)
+	})
 }

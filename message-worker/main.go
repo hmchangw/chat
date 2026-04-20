@@ -29,6 +29,7 @@ type config struct {
 	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
 	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
 	MaxWorkers        int    `env:"MAX_WORKERS"        envDefault:"100"`
+	MaxRedeliver      int    `env:"MAX_REDELIVER"      envDefault:"5"`
 	MongoURI          string `env:"MONGO_URI,required"`
 	MongoDB           string `env:"MONGO_DB"           envDefault:"chat"`
 }
@@ -93,8 +94,9 @@ func main() {
 	}
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
-		Durable:   "message-worker",
-		AckPolicy: jetstream.AckExplicitPolicy,
+		Durable:    "message-worker",
+		AckPolicy:  jetstream.AckExplicitPolicy,
+		MaxDeliver: cfg.MaxRedeliver + 1, // initial delivery + MaxRedeliver retries
 	})
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)

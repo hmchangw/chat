@@ -74,24 +74,19 @@ func (s *threadStoreMongo) GetThreadRoomByParentMessageID(ctx context.Context, p
 	return &room, nil
 }
 
+func (s *threadStoreMongo) InsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
+	if _, err := s.threadSubscriptions.InsertOne(ctx, sub); err != nil {
+		return fmt.Errorf("insert thread subscription: %w", err)
+	}
+	return nil
+}
+
+// UpsertThreadSubscription inserts sub if no document exists for (threadRoomId, userId);
+// otherwise it is a no-op. $setOnInsert ensures existing subscriptions are never overwritten.
 func (s *threadStoreMongo) UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
 	filter := bson.M{"threadRoomId": sub.ThreadRoomID, "userId": sub.UserID}
-	update := bson.M{
-		"$set": bson.M{
-			"parentMessageId": sub.ParentMessageID,
-			"roomId":          sub.RoomID,
-			"userAccount":     sub.UserAccount,
-			"siteId":          sub.SiteID,
-			"updatedAt":       sub.UpdatedAt,
-		},
-		"$setOnInsert": bson.M{
-			"_id":        sub.ID,
-			"createdAt":  sub.CreatedAt,
-			"lastSeenAt": sub.LastSeenAt,
-		},
-	}
-	_, err := s.threadSubscriptions.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true))
-	if err != nil {
+	update := bson.M{"$setOnInsert": sub}
+	if _, err := s.threadSubscriptions.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
 		return fmt.Errorf("upsert thread subscription: %w", err)
 	}
 	return nil

@@ -72,17 +72,17 @@ func (mr *MockStoreMockRecorder) SaveMessage(ctx, msg, sender, siteID any) *gomo
 }
 
 // SaveThreadMessage mocks base method.
-func (m *MockStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+func (m *MockStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SaveThreadMessage", ctx, msg, sender, siteID)
+	ret := m.ctrl.Call(m, "SaveThreadMessage", ctx, msg, sender, siteID, threadRoomID)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // SaveThreadMessage indicates an expected call of SaveThreadMessage.
-func (mr *MockStoreMockRecorder) SaveThreadMessage(ctx, msg, sender, siteID any) *gomock.Call {
+func (mr *MockStoreMockRecorder) SaveThreadMessage(ctx, msg, sender, siteID, threadRoomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveThreadMessage", reflect.TypeOf((*MockStore)(nil).SaveThreadMessage), ctx, msg, sender, siteID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveThreadMessage", reflect.TypeOf((*MockStore)(nil).SaveThreadMessage), ctx, msg, sender, siteID, threadRoomID)
 }
 
 // MockThreadStore is a mock of ThreadStore interface.
@@ -150,6 +150,20 @@ func (m *MockThreadStore) UpdateThreadRoomLastMessage(ctx context.Context, threa
 func (mr *MockThreadStoreMockRecorder) UpdateThreadRoomLastMessage(ctx, threadRoomID, lastMsgID, lastMsgAt any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateThreadRoomLastMessage", reflect.TypeOf((*MockThreadStore)(nil).UpdateThreadRoomLastMessage), ctx, threadRoomID, lastMsgID, lastMsgAt)
+}
+
+// InsertThreadSubscription mocks base method.
+func (m *MockThreadStore) InsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InsertThreadSubscription", ctx, sub)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// InsertThreadSubscription indicates an expected call of InsertThreadSubscription.
+func (mr *MockThreadStoreMockRecorder) InsertThreadSubscription(ctx, sub any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertThreadSubscription", reflect.TypeOf((*MockThreadStore)(nil).InsertThreadSubscription), ctx, sub)
 }
 
 // UpsertThreadSubscription mocks base method.
