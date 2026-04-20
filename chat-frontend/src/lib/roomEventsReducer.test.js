@@ -87,3 +87,126 @@ describe('roomEventsReducer: rooms actions', () => {
     expect(next).toBe(initialState)
   })
 })
+
+function newMessageEvent(overrides = {}) {
+  return {
+    type: 'new_message',
+    roomId: 'a',
+    roomName: 'room-a',
+    roomType: 'group',
+    siteId: 'site-A',
+    userCount: 3,
+    lastMsgAt: '2026-04-17T12:00:00Z',
+    lastMsgId: 'm1',
+    mentionAll: false,
+    hasMention: false,
+    message: {
+      id: 'm1',
+      roomId: 'a',
+      content: 'hi',
+      createdAt: '2026-04-17T12:00:00Z',
+      sender: { account: 'bob', engName: 'Bob' },
+    },
+    timestamp: 1,
+    ...overrides,
+  }
+}
+
+describe('roomEventsReducer: MESSAGE_RECEIVED', () => {
+  it('appends a message and seeds roomState for an unknown room', () => {
+    const next = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    expect(next.roomState.a.messages).toHaveLength(1)
+    expect(next.roomState.a.messages[0].id).toBe('m1')
+    expect(next.roomState.a.unreadCount).toBe(1)
+    expect(next.roomState.a.lastMsgAt).toBe('2026-04-17T12:00:00Z')
+    expect(next.roomState.a.lastMsgId).toBe('m1')
+  })
+
+  it('deduplicates by message.id', () => {
+    const s1 = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    const s2 = roomEventsReducer(s1, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    expect(s2.roomState.a.messages).toHaveLength(1)
+    expect(s2.roomState.a.unreadCount).toBe(1)
+  })
+
+  it('does not increment unreadCount for the active room', () => {
+    const state = { ...initialState, activeRoomId: 'a' }
+    const next = roomEventsReducer(state, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    expect(next.roomState.a.unreadCount).toBe(0)
+  })
+
+  it('sets hasMention when event.hasMention is true and room is not active', () => {
+    const next = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent({ hasMention: true }),
+    })
+    expect(next.roomState.a.hasMention).toBe(true)
+    expect(next.roomState.a.mentionAll).toBe(false)
+  })
+
+  it('sets mentionAll when event.mentionAll is true and room is not active', () => {
+    const next = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent({ mentionAll: true }),
+    })
+    expect(next.roomState.a.mentionAll).toBe(true)
+  })
+
+  it('does not set mention flags for the active room', () => {
+    const state = { ...initialState, activeRoomId: 'a' }
+    const next = roomEventsReducer(state, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent({ hasMention: true, mentionAll: true }),
+    })
+    expect(next.roomState.a.hasMention).toBe(false)
+    expect(next.roomState.a.mentionAll).toBe(false)
+  })
+
+  it('updates matching summary lastMsgAt and resorts', () => {
+    const a = { id: 'a', name: 'a', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T08:00:00Z' }
+    const b = { id: 'b', name: 'b', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T09:00:00Z' }
+    const loaded = roomEventsReducer(initialState, { type: 'ROOMS_LOADED', rooms: [a, b] })
+    const next = roomEventsReducer(loaded, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent({ roomId: 'a', lastMsgAt: '2026-04-17T10:00:00Z' }),
+    })
+    expect(next.summaries.map((r) => r.id)).toEqual(['a', 'b'])
+    expect(next.summaries[0].lastMsgAt).toBe('2026-04-17T10:00:00Z')
+    expect(next.summaries[0].unreadCount).toBe(1)
+  })
+
+  it('caps the cached messages at MAX_CACHED, dropping oldest', async () => {
+    const { MAX_CACHED } = await import('./roomEventsReducer')
+    let state = initialState
+    for (let i = 0; i < MAX_CACHED + 5; i++) {
+      state = roomEventsReducer(state, {
+        type: 'MESSAGE_RECEIVED',
+        event: newMessageEvent({
+          message: {
+            id: `m${i}`,
+            roomId: 'a',
+            content: String(i),
+            createdAt: '2026-04-17T12:00:00Z',
+            sender: { account: 'bob', engName: 'Bob' },
+          },
+        }),
+      })
+    }
+    const msgs = state.roomState.a.messages
+    expect(msgs).toHaveLength(MAX_CACHED)
+    expect(msgs[0].id).toBe('m5')
+    expect(msgs[MAX_CACHED - 1].id).toBe(`m${MAX_CACHED + 4}`)
+  })
+})
