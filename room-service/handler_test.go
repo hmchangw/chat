@@ -1282,9 +1282,7 @@ func TestHandler_ListMembers(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			var decoded model.ListRoomMembersResponse
-			require.NoError(t, json.Unmarshal(resp, &decoded))
-			assert.Equal(t, tc.want.members, decoded.Members)
+			assert.Equal(t, tc.want.members, resp.Members)
 		})
 	}
 }
