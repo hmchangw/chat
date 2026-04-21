@@ -79,6 +79,9 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		if err != nil {
 			return fmt.Errorf("handle thread room and subscriptions: %w", err)
 		}
+		if err := h.markThreadMentions(ctx, &evt.Message, threadRoomID, evt.SiteID); err != nil {
+			return fmt.Errorf("mark thread mentions: %w", err)
+		}
 		if err := h.store.SaveThreadMessage(ctx, &evt.Message, sender, evt.SiteID, threadRoomID); err != nil {
 			return fmt.Errorf("save thread message: %w", err)
 		}
@@ -216,4 +219,25 @@ func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, user
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+}
+
+// markThreadMentions flips hasMention=true on the thread subscription of every
+// @account mentionee in msg (auto-creating the subscription if absent). The
+// sender is excluded, and @all is ignored at the thread level.
+func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, threadRoomID, siteID string) error {
+	for i := range msg.Mentions {
+		p := &msg.Mentions[i]
+		if p.Account == "all" {
+			continue
+		}
+		if p.UserID == msg.UserID {
+			continue
+		}
+		sub := h.buildThreadSubscription(msg, threadRoomID, p.UserID, p.Account, siteID, msg.CreatedAt)
+		sub.HasMention = true
+		if err := h.threadStore.MarkThreadSubscriptionMention(ctx, sub); err != nil {
+			return fmt.Errorf("mark thread subscription mention for user %s: %w", p.UserID, err)
+		}
+	}
+	return nil
 }
