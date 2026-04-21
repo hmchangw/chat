@@ -73,6 +73,21 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessageByID(ctx, messageID any) 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessageByID", reflect.TypeOf((*MockMessageRepository)(nil).GetMessageByID), ctx, messageID)
 }
 
+// GetThreadMessages mocks base method.
+func (m *MockMessageRepository) GetThreadMessages(ctx context.Context, roomID, threadRoomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetThreadMessages", ctx, roomID, threadRoomID, q)
+	ret0, _ := ret[0].(cassrepo.Page[models.Message])
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetThreadMessages indicates an expected call of GetThreadMessages.
+func (mr *MockMessageRepositoryMockRecorder) GetThreadMessages(ctx, roomID, threadRoomID, q any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetThreadMessages", reflect.TypeOf((*MockMessageRepository)(nil).GetThreadMessages), ctx, roomID, threadRoomID, q)
+}
+
 // GetMessagesAfter mocks base method.
 func (m *MockMessageRepository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
 	m.ctrl.T.Helper()

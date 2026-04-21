@@ -19,6 +19,7 @@ type MessageRepository interface {
 	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
+	GetThreadMessages(ctx context.Context, roomID, threadRoomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 }
 
 // SubscriptionRepository defines MongoDB-backed subscription lookups.
