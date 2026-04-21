@@ -419,7 +419,7 @@ const sub = subscribe(roomEvent(room.id), (evt) => {
 **Files:**
 - Modify: `history-service/README.md` (create if absent — short description is fine)
 
-- [ ] **Step 1: Add a brief note** that history-service now handles two write operations (`msg.edit`, `msg.delete`) in addition to its four reads. Document that it's still primarily a read service and that writes are small, synchronous, and fan out via `chat.room.{roomID}.event` for live UI updates.
+- [ ] **Step 1: Add a brief note** that history-service handles message read **and** write operations — four reads (`msg.history`, `msg.next`, `msg.surrounding`, `msg.get`) and two writes (`msg.edit`, `msg.delete`). Call out explicitly that it is no longer a read-only service. Writes are synchronous request/reply: the handler UPDATEs all denormalized Cassandra tables that may hold the row, then publishes a best-effort live event to `chat.room.{roomID}.event` for subscribed clients.
 
 - [ ] **Step 2: Document known limitations** in the same section:
   - Users not subscribed to the room at publish time see the update on next history fetch
