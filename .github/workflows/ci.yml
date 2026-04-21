@@ -1,0 +1,73 @@
+name: ci
+
+# Skip CI for docs-only changes. Note: if you later add required status
+# checks, switch to per-job `if:` conditionals since paths-ignore will
+# leave the checks in a "pending" state instead of passing them.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+
+# Cancel in-progress runs for the same branch when a new commit lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Bumped to 1.25.9 for the April 7, 2026 security release (10 CVEs:
+  # os symlink, html/template, crypto/x509, crypto/tls, etc.).
+  # go.mod still declares `go 1.25.8` — 1.25.9 satisfies that constraint;
+  # Dockerfiles get bumped separately.
+  GO_VERSION: "1.25.9"
+  # Pin golangci-lint to a known-good version so a new release can't break
+  # CI without a config update. Bump deliberately.
+  GOLANGCI_LINT_VERSION: "v2.11.4"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Unit tests (race detector)
+        run: make test
+
+  # Integration tests run the full testcontainers-go stack (Elasticsearch,
+  # NATS JetStream, MongoDB, Cassandra as applicable per service). Docker is
+  # pre-installed on ubuntu-latest runners. Bump the timeout if container
+  # image pulls are slow on cold cache.
+  test-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Integration tests (search-sync-worker)
+        run: make test-integration SERVICE=search-sync-worker

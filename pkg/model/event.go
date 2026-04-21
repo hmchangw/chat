@@ -39,6 +39,27 @@ type UpdateRoleRequest struct {
 	NewRole Role   `json:"newRole" bson:"newRole"`
 }
 
+// InboxMemberEvent is the payload of an OutboxEvent{Type: "member_added" |
+// "member_removed"} carried on the INBOX stream for local consumers like
+// search-sync-worker. One event represents a bulk add/remove of N Accounts
+// against a single room; downstream consumers fan out per-account.
+//
+// HistorySharedSince is a single event-level flag shared by all accounts in
+// the bulk: when non-zero, the room is history-restricted and consumers MUST
+// skip indexing the entire event (the search service handles restricted rooms
+// via DB+cache at query time). JoinedAt is only meaningful on add events and
+// omitted on removes.
+type InboxMemberEvent struct {
+	RoomID             string   `json:"roomId"`
+	RoomName           string   `json:"roomName"`
+	RoomType           RoomType `json:"roomType"`
+	SiteID             string   `json:"siteId"`
+	Accounts           []string `json:"accounts"`
+	HistorySharedSince int64    `json:"historySharedSince,omitempty"`
+	JoinedAt           int64    `json:"joinedAt,omitempty"`
+	Timestamp          int64    `json:"timestamp" bson:"timestamp"`
+}
+
 type InviteMemberRequest struct {
 	InviterID      string `json:"inviterId"`
 	InviteeID      string `json:"inviteeId"`
@@ -55,12 +76,21 @@ type NotificationEvent struct {
 	Timestamp int64   `json:"timestamp" bson:"timestamp"`
 }
 
+// OutboxEventType is the type tag on an OutboxEvent used to route it to the
+// correct handler on the destination site.
+type OutboxEventType = string
+
+const (
+	OutboxMemberAdded   OutboxEventType = "member_added"
+	OutboxMemberRemoved OutboxEventType = "member_removed"
+)
+
 type OutboxEvent struct {
-	Type       string `json:"type"` // "member_added", "room_sync"
-	SiteID     string `json:"siteId"`
-	DestSiteID string `json:"destSiteId"`
-	Payload    []byte `json:"payload"` // JSON-encoded inner event
-	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
+	Type       OutboxEventType `json:"type"`
+	SiteID     string          `json:"siteId"`
+	DestSiteID string          `json:"destSiteId"`
+	Payload    []byte          `json:"payload"` // JSON-encoded inner event
+	Timestamp  int64           `json:"timestamp" bson:"timestamp"`
 }
 
 type MemberAddEvent struct {

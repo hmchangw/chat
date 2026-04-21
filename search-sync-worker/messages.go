@@ -3,9 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
-	"strings"
 	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/searchengine"
@@ -21,12 +21,21 @@ func newMessageCollection(indexPrefix string) *messageCollection {
 	return &messageCollection{indexPrefix: indexPrefix}
 }
 
-func (c *messageCollection) StreamConfig(siteID string) stream.Config {
-	return stream.MessagesCanonical(siteID)
+func (c *messageCollection) StreamConfig(siteID string) jetstream.StreamConfig {
+	cfg := stream.MessagesCanonical(siteID)
+	return jetstream.StreamConfig{
+		Name:     cfg.Name,
+		Subjects: cfg.Subjects,
+	}
 }
 
 func (c *messageCollection) ConsumerName() string {
-	return "search-sync-worker"
+	return "message-sync"
+}
+
+func (c *messageCollection) FilterSubjects(_ string) []string {
+	// Stream has a single subject pattern — no extra filtering needed.
+	return nil
 }
 
 func (c *messageCollection) TemplateName() string {
@@ -37,21 +46,21 @@ func (c *messageCollection) TemplateBody() json.RawMessage {
 	return messageTemplateBody(c.indexPrefix)
 }
 
-func (c *messageCollection) BuildAction(data []byte) (searchengine.BulkAction, error) {
+func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
-		return searchengine.BulkAction{}, fmt.Errorf("unmarshal message event: %w", err)
+		return nil, fmt.Errorf("unmarshal message event: %w", err)
 	}
 	if evt.Message.ID == "" {
-		return searchengine.BulkAction{}, fmt.Errorf("build message action: missing message id")
+		return nil, fmt.Errorf("build message action: missing message id")
 	}
 	if evt.Message.CreatedAt.IsZero() {
-		return searchengine.BulkAction{}, fmt.Errorf("build message action: missing createdAt")
+		return nil, fmt.Errorf("build message action: missing createdAt")
 	}
 	if evt.Timestamp <= 0 {
-		return searchengine.BulkAction{}, fmt.Errorf("build message action: missing timestamp")
+		return nil, fmt.Errorf("build message action: missing timestamp")
 	}
-	return buildMessageAction(&evt, c.indexPrefix), nil
+	return []searchengine.BulkAction{buildMessageAction(&evt, c.indexPrefix)}, nil
 }
 
 // --- Message-specific internals ---
@@ -130,25 +139,7 @@ func buildDocument(evt *model.MessageEvent) json.RawMessage {
 // messageTemplateProperties generates ES mapping properties from
 // MessageSearchIndex struct tags. The `es` tag is the source of truth.
 func messageTemplateProperties() map[string]any {
-	props := make(map[string]any)
-	t := reflect.TypeOf(MessageSearchIndex{})
-	for i := range t.NumField() {
-		field := t.Field(i)
-		esTag := field.Tag.Get("es")
-		if esTag == "" || esTag == "-" {
-			continue
-		}
-		jsonTag := field.Tag.Get("json")
-		name, _, _ := strings.Cut(jsonTag, ",")
-
-		esType, analyzer, _ := strings.Cut(esTag, ",")
-		prop := map[string]any{"type": esType}
-		if analyzer != "" {
-			prop["analyzer"] = analyzer
-		}
-		props[name] = prop
-	}
-	return props
+	return esPropertiesFromStruct[MessageSearchIndex]()
 }
 
 func messageTemplateBody(prefix string) json.RawMessage {

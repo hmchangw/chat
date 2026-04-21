@@ -173,13 +173,14 @@ func preCreateIndex(t *testing.T, esURL, index string) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, "pre-create index %s: %s", index, body)
 }
 
-// testTemplateBody returns an index template with single-node-friendly settings
-// (1 shard, 0 replicas) so indices can be created in the test ES container.
-func testTemplateBody(prefix string) json.RawMessage {
-	body := messageTemplateBody(prefix)
+// overrideIndexSettings replaces `template.settings.index` on a marshaled ES
+// index template with single-node-friendly values (1 shard, 0 replicas, 1s
+// refresh) while leaving analysis + mappings intact. Shared by message,
+// spotlight, and user-room integration tests so a single ES test container
+// can host all three.
+func overrideIndexSettings(body json.RawMessage) json.RawMessage {
 	var tmpl map[string]any
 	_ = json.Unmarshal(body, &tmpl)
-
 	template := tmpl["template"].(map[string]any)
 	settings := template["settings"].(map[string]any)
 	settings["index"] = map[string]any{
@@ -227,7 +228,7 @@ func TestSearchSyncIntegration(t *testing.T) {
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
 	coll := newMessageCollection(prefix)
-	err = engine.UpsertTemplate(ctx, coll.TemplateName(), testTemplateBody(prefix))
+	err = engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(messageTemplateBody(prefix)))
 	require.NoError(t, err, "upsert template")
 
 	// Pre-create indices so shard allocation completes before bulk indexing.
@@ -410,7 +411,7 @@ func TestCustomAnalyzer(t *testing.T) {
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
 	coll := newMessageCollection(prefix)
-	err = engine.UpsertTemplate(ctx, coll.TemplateName(), testTemplateBody(prefix))
+	err = engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(messageTemplateBody(prefix)))
 	require.NoError(t, err, "upsert template")
 
 	preCreateIndex(t, esURL, prefix+"-2026-03")

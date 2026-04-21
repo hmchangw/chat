@@ -93,6 +93,44 @@ func Outbox(siteID, destSiteID, eventType string) string {
 	return fmt.Sprintf("outbox.%s.to.%s.%s", siteID, destSiteID, eventType)
 }
 
+// InboxMemberAdded is the local-publish subject for a same-site member_added
+// event. It lands in the local INBOX stream without the `aggregate` segment.
+func InboxMemberAdded(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.member_added", siteID)
+}
+
+// InboxMemberRemoved is the local-publish subject for a same-site
+// member_removed event. It lands in the local INBOX stream without the
+// `aggregate` segment.
+func InboxMemberRemoved(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.member_removed", siteID)
+}
+
+// InboxMemberAddedAggregate is the transformed subject for a federated
+// member_added event after INBOX SubjectTransform rewrites
+// `outbox.{src}.to.{siteID}.member_added` to this form.
+func InboxMemberAddedAggregate(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.aggregate.member_added", siteID)
+}
+
+// InboxMemberRemovedAggregate is the transformed subject for a federated
+// member_removed event.
+func InboxMemberRemovedAggregate(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.aggregate.member_removed", siteID)
+}
+
+// InboxMemberEventSubjects returns the subject filters a consumer should use
+// to receive both local and federated member_added/member_removed events for
+// the given site. Use with jetstream.ConsumerConfig.FilterSubjects (NATS 2.10+).
+func InboxMemberEventSubjects(siteID string) []string {
+	return []string{
+		InboxMemberAdded(siteID),
+		InboxMemberRemoved(siteID),
+		InboxMemberAddedAggregate(siteID),
+		InboxMemberRemovedAggregate(siteID),
+	}
+}
+
 func MsgCanonicalCreated(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.created", siteID)
 }
