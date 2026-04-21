@@ -997,6 +997,34 @@ func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
 	}
 }
 
+func TestOrgMemberJSON(t *testing.T) {
+	m := model.OrgMember{
+		ID:          "u-alice",
+		Account:     "alice",
+		EngName:     "Alice Wang",
+		ChineseName: "愛麗絲",
+		SiteID:      "site-a",
+	}
+	data, err := json.Marshal(&m)
+	require.NoError(t, err)
+	var dst model.OrgMember
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, m, dst)
+}
+
+func TestListOrgMembersResponseJSON(t *testing.T) {
+	resp := model.ListOrgMembersResponse{
+		Members: []model.OrgMember{
+			{ID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲", SiteID: "site-a"},
+		},
+	}
+	data, err := json.Marshal(&resp)
+	require.NoError(t, err)
+	var dst model.ListOrgMembersResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, resp, dst)
+}
+
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
 	t.Helper()

@@ -92,3 +92,19 @@ type ListRoomMembersRequest struct {
 type ListRoomMembersResponse struct {
 	Members []RoomMember `json:"members"`
 }
+
+// OrgMember is the wire projection returned by the list-org-members endpoint.
+// Only fields the UI actually renders are included — EmployeeID, SectID, and
+// SectName are intentionally omitted (redundant or irrelevant for the caller,
+// who already knows which orgId they asked about).
+type OrgMember struct {
+	ID          string `json:"id"          bson:"_id"`
+	Account     string `json:"account"     bson:"account"`
+	EngName     string `json:"engName"     bson:"engName"`
+	ChineseName string `json:"chineseName" bson:"chineseName"`
+	SiteID      string `json:"siteId"      bson:"siteId"`
+}
+
+type ListOrgMembersResponse struct {
+	Members []OrgMember `json:"members"`
+}
