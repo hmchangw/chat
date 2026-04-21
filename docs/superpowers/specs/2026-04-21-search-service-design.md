@@ -93,7 +93,7 @@ This spec covers the `search-service` itself. The `user-room` schema extension i
 2. **Miss:** ES `GET /user-room/_doc/{account}` → extract `restrictedRooms` map → Valkey `SET … TTL=5m`.
 3. Build query body:
    - `multi_match` on `content` (bool_prefix + AND).
-   - Basic filter: `range createdAt gte now-1y`.
+   - Basic filter: `range createdAt gte now-{SEARCH_RECENT_WINDOW}` (default 1y).
    - Room-access clause (`bool should`, `minimum_should_match: 1`):
      - Unrestricted: `terms` lookup on `roomId` via `{ "index": "user-room", "id": "{account}", "path": "rooms" }`.
      - Restricted: one `bool must` clause per entry in `restrictedRooms` — see "Query Construction" below.
@@ -155,7 +155,7 @@ Same as global, except the room-access clause partitions the requested `roomIds`
         }
       ],
       "filter": [
-        { "range": { "createdAt": { "gte": "now-1y" } } },
+        { "range": { "createdAt": { "gte": "now-{recentWindow}" } } },
         {
           "bool": {
             "should":               "{...room-access-clauses...}",
