@@ -50,8 +50,8 @@ func TestBuiltinPresets_RealisticShape(t *testing.T) {
 
 func TestBuildFixtures_DeterministicAcrossCalls(t *testing.T) {
 	p, _ := BuiltinPreset("small")
-	a := BuildFixtures(p, 42, "site-local")
-	b := BuildFixtures(p, 42, "site-local")
+	a := BuildFixtures(&p, 42, "site-local")
+	b := BuildFixtures(&p, 42, "site-local")
 	assert.Equal(t, a.Users, b.Users)
 	assert.Equal(t, a.Rooms, b.Rooms)
 	assert.Equal(t, a.Subscriptions, b.Subscriptions)
@@ -59,7 +59,7 @@ func TestBuildFixtures_DeterministicAcrossCalls(t *testing.T) {
 
 func TestBuildFixtures_SmallCountsAndShape(t *testing.T) {
 	p, _ := BuiltinPreset("small")
-	f := BuildFixtures(p, 42, "site-local")
+	f := BuildFixtures(&p, 42, "site-local")
 	assert.Len(t, f.Users, 10)
 	assert.Len(t, f.Rooms, 5)
 	// uniform: every user is in at least one room
@@ -77,7 +77,7 @@ func TestBuildFixtures_SmallCountsAndShape(t *testing.T) {
 
 func TestBuildFixtures_RealisticMixesGroupAndDM(t *testing.T) {
 	p, _ := BuiltinPreset("realistic")
-	f := BuildFixtures(p, 42, "site-local")
+	f := BuildFixtures(&p, 42, "site-local")
 	var groups, dms int
 	for _, r := range f.Rooms {
 		switch r.Type { //nolint:exhaustive

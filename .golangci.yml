@@ -19,9 +19,6 @@ linters:
       enabled-tags:
         - diagnostic
         - performance
-      settings:
-        hugeParam:
-          sizeThreshold: 128
   exclusions:
     presets:
       - std-error-handling

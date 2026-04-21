@@ -80,11 +80,7 @@ var (
 
 // BuildFixtures is a pure function of (preset, seed, siteID) producing the
 // full fixture set. Two calls with equal inputs produce equal outputs.
-func BuildFixtures(p Preset, seed int64, siteID string) Fixtures {
-	return buildFixtures(&p, seed, siteID)
-}
-
-func buildFixtures(p *Preset, seed int64, siteID string) Fixtures {
+func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 	r := rand.New(rand.NewSource(seed))
 	now := time.Unix(0, 0).UTC() // fixed so output is deterministic
 
