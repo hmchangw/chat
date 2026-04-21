@@ -556,3 +556,39 @@ body {
 .room-badge-mention-all {
   background: #ed4245;
 }
+
+/* Manage Members dialog */
+.manage-members-dialog {
+  width: 480px;
+}
+
+.manage-members-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid #3f4147;
+}
+
+.manage-members-tab {
+  background: transparent;
+  border: none;
+  color: #b5bac1;
+  padding: 0.5rem 0.75rem;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.manage-members-tab:hover {
+  color: #dbdee1;
+}
+
+.manage-members-tab-active {
+  color: #f2f3f5;
+  border-bottom-color: #5865f2;
+}
+
+.manage-members-footer {
+  margin-top: 0.75rem;
+}
