@@ -312,17 +312,37 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
 	}
 
-	// Cross-site outbox for federated users
-	if user.SiteID != h.siteID {
+	// Publish InboxMemberEvent for downstream search-sync indexing. Goes to
+	// local INBOX when the removed user is on this site, cross-site OUTBOX
+	// when federated. Remove events don't need RoomName/RoomType (search-
+	// sync keys deletes by {account}_{roomID}), so they're omitted to avoid
+	// an extra DB lookup.
+	inboxEvt := model.InboxMemberEvent{
+		RoomID:    req.RoomID,
+		SiteID:    h.siteID,
+		Accounts:  []string{req.Account},
+		Timestamp: now.UnixMilli(),
+	}
+	if user.SiteID == h.siteID {
 		outbox := model.OutboxEvent{
-			Type:       "member_removed",
+			Type:       model.OutboxMemberRemoved,
 			SiteID:     h.siteID,
-			DestSiteID: user.SiteID,
-			Payload:    memberEvtData,
+			DestSiteID: h.siteID,
+			Payload:    mustMarshal(inboxEvt),
 			Timestamp:  now.UnixMilli(),
 		}
-		outboxData, _ := json.Marshal(outbox)
-		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, "member_removed"), outboxData); err != nil {
+		if err := h.publish(ctx, subject.InboxMemberRemoved(h.siteID), mustMarshal(outbox)); err != nil {
+			slog.Error("inbox member_removed publish failed", "error", err, "roomID", req.RoomID)
+		}
+	} else {
+		outbox := model.OutboxEvent{
+			Type:       model.OutboxMemberRemoved,
+			SiteID:     h.siteID,
+			DestSiteID: user.SiteID,
+			Payload:    mustMarshal(inboxEvt),
+			Timestamp:  now.UnixMilli(),
+		}
+		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, "member_removed"), mustMarshal(outbox)); err != nil {
 			slog.Error("outbox publish failed", "error", err, "destSiteID", user.SiteID)
 		}
 	}
@@ -427,24 +447,50 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
 	}
 
-	// Cross-site outbox grouped by destination site
+	// Publish InboxMemberEvent for downstream search-sync indexing. Split
+	// by home site — local accounts go to local INBOX, remote accounts go
+	// to per-site OUTBOX. Like processRemoveIndividual, remove events omit
+	// RoomName/RoomType (not needed for spotlight deletes or user-room
+	// script-removes). OrgID is NOT carried on InboxMemberEvent — it's an
+	// inbox-worker concern for org-level cleanup, not a search-index one.
+	var localAccounts []string
 	siteAccounts := make(map[string][]string)
 	for _, m := range toRemove {
-		if m.SiteID != h.siteID {
+		if m.SiteID == h.siteID {
+			localAccounts = append(localAccounts, m.Account)
+		} else {
 			siteAccounts[m.SiteID] = append(siteAccounts[m.SiteID], m.Account)
 		}
 	}
-	for destSiteID, accounts := range siteAccounts {
-		evt := model.MemberRemoveEvent{
-			Type:      "member_removed",
+
+	if len(localAccounts) > 0 {
+		inboxEvt := model.InboxMemberEvent{
 			RoomID:    req.RoomID,
-			Accounts:  accounts,
 			SiteID:    h.siteID,
-			OrgID:     req.OrgID,
+			Accounts:  localAccounts,
 			Timestamp: now.UnixMilli(),
 		}
 		outbox := model.OutboxEvent{
-			Type:       "member_removed",
+			Type:       model.OutboxMemberRemoved,
+			SiteID:     h.siteID,
+			DestSiteID: h.siteID,
+			Payload:    mustMarshal(inboxEvt),
+			Timestamp:  now.UnixMilli(),
+		}
+		if err := h.publish(ctx, subject.InboxMemberRemoved(h.siteID), mustMarshal(outbox)); err != nil {
+			slog.Error("inbox member_removed publish failed", "error", err, "roomID", req.RoomID)
+		}
+	}
+
+	for destSiteID, accounts := range siteAccounts {
+		evt := model.InboxMemberEvent{
+			RoomID:    req.RoomID,
+			SiteID:    h.siteID,
+			Accounts:  accounts,
+			Timestamp: now.UnixMilli(),
+		}
+		outbox := model.OutboxEvent{
+			Type:       model.OutboxMemberRemoved,
 			SiteID:     h.siteID,
 			DestSiteID: destSiteID,
 			Payload:    mustMarshal(evt),
@@ -665,32 +711,64 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
 	}
 
-	// 10. Outbox for cross-site members — batched by destination site
+	// 10. Publish InboxMemberEvent to local INBOX (same-site accounts) and
+	//     OUTBOX (cross-site accounts). Split subscriptions by home site and
+	//     fan out: one INBOX publish for all local accounts, one OUTBOX
+	//     publish per remote destination site. InboxMemberEvent is a
+	//     superset of MemberAddEvent (adds RoomName + RoomType), so
+	//     inbox-worker on the destination site continues to unmarshal it
+	//     into MemberAddEvent and ignores the extra fields.
+	var localAccounts []string
 	remoteSiteMembers := make(map[string][]string)
 	for _, sub := range subs {
 		user, ok := userMap[sub.User.Account]
-		if !ok || user.SiteID == room.SiteID {
+		if !ok {
 			continue
 		}
-		remoteSiteMembers[user.SiteID] = append(remoteSiteMembers[user.SiteID], sub.User.Account)
+		if user.SiteID == room.SiteID {
+			localAccounts = append(localAccounts, sub.User.Account)
+		} else {
+			remoteSiteMembers[user.SiteID] = append(remoteSiteMembers[user.SiteID], sub.User.Account)
+		}
 	}
-	for destSiteID, accounts := range remoteSiteMembers {
-		siteEvt := model.MemberAddEvent{
-			Type:               "member_added",
-			RoomID:             req.RoomID,
-			Accounts:           accounts,
-			SiteID:             room.SiteID,
-			JoinedAt:           req.Timestamp,
-			HistorySharedSince: historySharedSince,
-			Timestamp:          now.UnixMilli(),
-		}
-		siteEvtData, _ := json.Marshal(siteEvt)
+
+	inboxEvt := model.InboxMemberEvent{
+		RoomID:             req.RoomID,
+		RoomName:           room.Name,
+		RoomType:           room.Type,
+		SiteID:             room.SiteID,
+		Accounts:           nil, // filled per publish below
+		HistorySharedSince: historySharedSince,
+		JoinedAt:           req.Timestamp,
+		Timestamp:          now.UnixMilli(),
+	}
+
+	if len(localAccounts) > 0 {
+		local := inboxEvt
+		local.Accounts = localAccounts
 		outbox := model.OutboxEvent{
-			Type: "member_added", SiteID: room.SiteID, DestSiteID: destSiteID,
-			Payload: siteEvtData, Timestamp: now.UnixMilli(),
+			Type:       model.OutboxMemberAdded,
+			SiteID:     room.SiteID,
+			DestSiteID: room.SiteID,
+			Payload:    mustMarshal(local),
+			Timestamp:  now.UnixMilli(),
 		}
-		outboxData, _ := json.Marshal(outbox)
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData); err != nil {
+		if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), mustMarshal(outbox)); err != nil {
+			slog.Error("inbox member_added publish failed", "error", err, "roomID", req.RoomID)
+		}
+	}
+
+	for destSiteID, accounts := range remoteSiteMembers {
+		remote := inboxEvt
+		remote.Accounts = accounts
+		outbox := model.OutboxEvent{
+			Type:       model.OutboxMemberAdded,
+			SiteID:     room.SiteID,
+			DestSiteID: destSiteID,
+			Payload:    mustMarshal(remote),
+			Timestamp:  now.UnixMilli(),
+		}
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), mustMarshal(outbox)); err != nil {
 			return fmt.Errorf("outbox publish to %s failed: %w", destSiteID, err)
 		}
 	}
