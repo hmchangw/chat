@@ -97,3 +97,48 @@ git commit -m "feat(pkg/subject): add MsgThread pattern and wildcard builders"
 ```
 
 ---
+
+## Task 2 — Request and response types
+
+**Files:**
+- Modify: `history-service/internal/models/message.go`
+
+These are plain data types with no logic. No test file needed — they're exercised via handler tests in Task 5. Add them first so later tasks can reference them.
+
+- [ ] **Step 1: Add the two types at the end of the file**
+
+Open `history-service/internal/models/message.go`. Append (after the existing `GetMessageByIDRequest` definition):
+
+```go
+// GetThreadMessagesRequest is the payload for loading replies in a thread.
+type GetThreadMessagesRequest struct {
+	ThreadMessageID string `json:"threadMessageId"` // parent message ID (old Meteor `tmid`)
+	Cursor          string `json:"cursor,omitempty"`
+	Limit           int    `json:"limit"`
+}
+
+// GetThreadMessagesResponse is the response for GetThreadMessages.
+type GetThreadMessagesResponse struct {
+	Messages   []Message `json:"messages"`
+	NextCursor string    `json:"nextCursor,omitempty"`
+	HasNext    bool      `json:"hasNext"`
+}
+```
+
+- [ ] **Step 2: Confirm the package still builds**
+
+```bash
+go build ./history-service/...
+```
+
+Expected: no output, exit 0.
+
+- [ ] **Step 3: Lint + commit**
+
+```bash
+make lint
+git add history-service/internal/models/message.go
+git commit -m "feat(history-service): add thread-messages request/response types"
+```
+
+---
