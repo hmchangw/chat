@@ -26,10 +26,26 @@
 - Push notifications on edit/delete
 - Frontend-side subscription to non-open rooms (liveness only applies to currently-open room; missed events are picked up on next history fetch)
 
+**Table membership (critical — Cassandra UPDATE is an upsert):**
+
+The four tables are populated differently. UPDATEs must be conditional on which tables actually hold the row, decided from the message's own metadata:
+
+| Table | PK | Who's in it | UPDATE when |
+|---|---|---|---|
+| `messages_by_id` | `(message_id, created_at)` | every message | always |
+| `messages_by_room` | `((room_id), created_at, message_id)` | top-level messages only | `msg.ThreadParentID == ""` |
+| `thread_messages_by_room` | `((room_id), thread_room_id, created_at, message_id)` | thread replies only | `msg.ThreadParentID != ""`, supply `msg.ThreadRoomID` |
+| `pinned_messages_by_room` | `((room_id), created_at=pinnedAt, message_id)` | empty today (no pin op) | `msg.PinnedAt != nil`, supply `msg.PinnedAt` |
+
+Verified by reading `message-worker/store_cassandra.go` — `SaveMessage` writes only to `messages_by_room` + `messages_by_id`; `SaveThreadMessage` writes only to `messages_by_id` + `thread_messages_by_room`.
+
+**Why this matters:** `UPDATE … WHERE <full PK>` against a missing row in Cassandra is NOT a no-op — it writes a phantom row containing just the updated columns. Blasting UPDATEs to every table would pollute them with junk.
+
 **Known eventual-consistency gaps (documented, not fixed):**
 - Multi-table fan-out partial failure: if one UPDATE succeeds and another fails, the room is temporarily inconsistent. Mitigation: idempotent UPDATEs + handler returns error → caller retries → convergence.
 - Thread parent snapshot drift: edited/deleted parent messages won't update the embedded `QuotedParentMessage` in child rows.
 - Missed live event: users not subscribed to the room subject at publish time see the change on next history fetch (Cassandra is authoritative).
+- `pinned_messages_by_room` branch is dead code today (no pin operation exists). Kept in the implementation so future pin code doesn't need to retrofit edit/delete to cover it.
 
 ---
 
@@ -122,49 +138,105 @@ func MsgDeletePattern(siteID string) string {
 - Modify: `history-service/internal/cassrepo/repository.go`
 - Test: `history-service/internal/cassrepo/integration_test.go`
 
+**Table membership (verified against `message-worker/store_cassandra.go`):**
+
+| Table | PK | Who's in it |
+|---|---|---|
+| `messages_by_id` | `(message_id, created_at)` | **every** message — always UPDATE |
+| `messages_by_room` | `((room_id), created_at, message_id)` | top-level messages only (not thread replies) |
+| `thread_messages_by_room` | `((room_id), thread_room_id, created_at, message_id)` | thread replies only; needs `thread_room_id` as PK component |
+| `pinned_messages_by_room` | `((room_id), created_at=pinnedAt, message_id)` | empty today (no pin operation). Kept correct for future. |
+
+**Cassandra gotcha:** `UPDATE … WHERE <full pk>` against a missing row is **not** a no-op — it writes a phantom row containing only the updated columns. So UPDATEs MUST be conditional on which tables actually hold the row, decided from the message's own metadata (`ThreadParentID`, `PinnedAt`).
+
+**Decision rule:**
+```
+Always                                         → UPDATE messages_by_id
+If msg.ThreadParentID == ""  (top-level)       → UPDATE messages_by_room
+If msg.ThreadParentID != ""  (thread reply)    → UPDATE thread_messages_by_room (uses msg.ThreadRoomID)
+If msg.PinnedAt != nil       (pinned)          → UPDATE pinned_messages_by_room (uses msg.PinnedAt as the table's created_at PK)
+```
+
 - [ ] **Step 1: Write failing integration tests (testcontainers)** covering:
-  - Edit updates `msg`, `edited_at`, `updated_at` in `messages_by_room` and `messages_by_id`
-  - Edit also updates `thread_messages_by_room` when the row exists there
-  - Edit also updates `pinned_messages_by_room` when the row exists there
-  - Edit on a non-existent row in a table is a safe no-op (UPDATE is idempotent in Cassandra)
-  - Delete sets `deleted = true` + `updated_at` across the same set of tables; `msg` content is preserved
-  - Running the same UPDATE twice produces identical state (idempotency)
+  - **Top-level edit** → `messages_by_room` and `messages_by_id` updated; `thread_messages_by_room` unchanged (assert row count == 0 there)
+  - **Thread reply edit** → `thread_messages_by_room` and `messages_by_id` updated with correct `thread_room_id` PK; `messages_by_room` unchanged (assert no phantom row at that `(room_id, created_at, message_id)` exists)
+  - **Top-level soft delete** → `deleted=true` in `messages_by_room` and `messages_by_id`; `msg` content preserved
+  - **Thread reply soft delete** → `deleted=true` in `thread_messages_by_room` and `messages_by_id`; no phantom in `messages_by_room`
+  - **Edit on pinned message** (manually seed a row in `pinned_messages_by_room`) → new `msg` in the pinned table too
+  - **Idempotency** — running the same UPDATE twice yields identical state (no duplicate rows, same column values)
 
 - [ ] **Step 2: Implement the two methods**
 
 ```go
-// UpdateMessageContent sets msg, edited_at, and updated_at across all tables
-// that may hold the row. UPDATEs are issued unconditionally — Cassandra treats
-// UPDATE against a missing PK as a no-op (actually creates a "row" with only
-// the updated columns set; safe here because all four tables share the PK and
-// the row exists in `messages_by_room` / `messages_by_id` by construction,
-// and `thread_messages_by_room` / `pinned_messages_by_room` rows only exist
-// when they should, so the "no-op" case leaves them absent or matching).
+// UpdateMessageContent sets msg, edited_at, and updated_at across the tables
+// that actually hold the row, determined from msg's own metadata. See decision
+// rule in the plan. Idempotent — safe to retry.
 func (r *Repository) UpdateMessageContent(
     ctx context.Context,
-    roomID, messageID string,
-    createdAt time.Time,
+    msg *models.Message,
     newMsg string,
     editedAt time.Time,
 ) error { ... }
 
-// SoftDeleteMessage sets deleted=true and updated_at across all tables that
-// hold the row. msg content is retained.
+// SoftDeleteMessage sets deleted=true and updated_at across the tables that
+// actually hold the row. msg content is retained. Idempotent.
 func (r *Repository) SoftDeleteMessage(
     ctx context.Context,
-    roomID, messageID string,
-    createdAt time.Time,
+    msg *models.Message,
     deletedAt time.Time,
 ) error { ... }
 ```
 
-Both methods UPDATE these tables in order:
-1. `messages_by_room` — PK `(room_id, created_at, message_id)`
-2. `messages_by_id` — PK `(message_id, created_at)`
-3. `thread_messages_by_room` — PK `(room_id, thread_room_id, created_at, message_id)` — only UPDATE when the message was threaded; for simplicity, always issue, treat as best-effort
-4. `pinned_messages_by_room` — PK `(room_id, created_at, message_id)` — only if pinned; for simplicity, always issue
+Implementation sketch (edit; delete mirrors the same branching):
 
-**On first error, return immediately.** Retries from the caller re-attempt the full set; idempotency guarantees convergence.
+```go
+// Always: messages_by_id
+if err := r.session.Query(
+    `UPDATE messages_by_id SET msg = ?, edited_at = ?, updated_at = ?
+     WHERE message_id = ? AND created_at = ?`,
+    newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
+).WithContext(ctx).Exec(); err != nil {
+    return fmt.Errorf("update messages_by_id: %w", err)
+}
+
+// Top-level vs thread reply — mutually exclusive
+if msg.ThreadParentID == "" {
+    if err := r.session.Query(
+        `UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ?
+         WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+        newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+    ).WithContext(ctx).Exec(); err != nil {
+        return fmt.Errorf("update messages_by_room: %w", err)
+    }
+} else {
+    if err := r.session.Query(
+        `UPDATE thread_messages_by_room SET msg = ?, edited_at = ?, updated_at = ?
+         WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+        newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
+    ).WithContext(ctx).Exec(); err != nil {
+        return fmt.Errorf("update thread_messages_by_room: %w", err)
+    }
+}
+
+// Pinned mirror — rare today (no pin op), but keep consistent
+if msg.PinnedAt != nil {
+    if err := r.session.Query(
+        `UPDATE pinned_messages_by_room SET msg = ?, edited_at = ?, updated_at = ?
+         WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+        newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
+    ).WithContext(ctx).Exec(); err != nil {
+        return fmt.Errorf("update pinned_messages_by_room: %w", err)
+    }
+}
+
+return nil
+```
+
+- [ ] **Step 3: Handler calls pass the full `*models.Message`**
+
+The handler already loads the message via `findMessage` (which reads `messages_by_id`, so `ThreadRoomID`, `ThreadParentID`, and `PinnedAt` are populated). Pass that `*models.Message` directly to the repo.
+
+- [ ] **Step 4: Run `make test-integration SERVICE=history-service`** — all table-targeting and "no phantom" assertions must pass.
 
 ---
 
@@ -297,9 +369,10 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, req models.EditMessa
         return nil, natsrouter.ErrBadRequest("newMsg exceeds maximum size")
     }
 
-    // Persist
+    // Persist — repo inspects msg.ThreadParentID / msg.ThreadRoomID / msg.PinnedAt
+    // to decide which tables to UPDATE. See decision rule in Task 3.
     editedAt := time.Now().UTC()
-    if err := s.messages.UpdateMessageContent(c, roomID, req.MessageID, msg.CreatedAt, req.NewMsg, editedAt); err != nil {
+    if err := s.messages.UpdateMessageContent(c, msg, req.NewMsg, editedAt); err != nil {
         slog.Error("edit: cassandra update", "error", err, "messageID", req.MessageID)
         return nil, natsrouter.ErrInternal("failed to edit message")
     }
