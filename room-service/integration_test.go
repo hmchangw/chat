@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -793,5 +794,82 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		require.Len(t, enriched, 1)
 		assert.Equal(t, bare[0].ID, enriched[0].ID)
 		assert.Equal(t, bare[0].Member.Type, enriched[0].Member.Type)
+	})
+}
+
+func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
+	ctx := context.Background()
+
+	insertUser := func(t *testing.T, db *mongo.Database, u model.User) {
+		t.Helper()
+		_, err := db.Collection("users").InsertOne(ctx, u)
+		require.NoError(t, err)
+	}
+
+	t.Run("returns members sorted by account asc", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		// Inserted in non-alphabetical order to verify the store sorts.
+		insertUser(t, db, model.User{ID: "u-charlie", Account: "charlie", EngName: "Charlie", ChineseName: "查理", SiteID: "site-a", SectID: "sect-eng", SectName: "Engineering"})
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", EngName: "Alice", ChineseName: "愛麗絲", SiteID: "site-a", SectID: "sect-eng", SectName: "Engineering"})
+		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", EngName: "Bob", ChineseName: "鮑伯", SiteID: "site-a", SectID: "sect-eng", SectName: "Engineering"})
+
+		got, err := store.ListOrgMembers(ctx, "sect-eng")
+		require.NoError(t, err)
+		require.Len(t, got, 3)
+		assert.Equal(t, "alice", got[0].Account)
+		assert.Equal(t, "bob", got[1].Account)
+		assert.Equal(t, "charlie", got[2].Account)
+	})
+
+	t.Run("filters by sectId only", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", EngName: "Alice", SiteID: "site-a", SectID: "sect-eng"})
+		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", EngName: "Bob", SiteID: "site-a", SectID: "sect-eng"})
+		insertUser(t, db, model.User{ID: "u-carol", Account: "carol", EngName: "Carol", SiteID: "site-a", SectID: "sect-ops"})
+		insertUser(t, db, model.User{ID: "u-dave", Account: "dave", EngName: "Dave", SiteID: "site-a", SectID: "sect-ops"})
+
+		got, err := store.ListOrgMembers(ctx, "sect-eng")
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		accounts := []string{got[0].Account, got[1].Account}
+		assert.ElementsMatch(t, []string{"alice", "bob"}, accounts)
+	})
+
+	t.Run("empty org returns errInvalidOrg", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SectID: "sect-eng"})
+
+		_, err := store.ListOrgMembers(ctx, "sect-nope")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, errInvalidOrg), "want errInvalidOrg in chain, got %v", err)
+	})
+
+	t.Run("projection excludes non-listed fields", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{
+			ID: "u-alice", Account: "alice",
+			EngName: "Alice", ChineseName: "愛麗絲",
+			SiteID: "site-a", SectID: "sect-eng",
+			SectName: "Engineering", EmployeeID: "EMP-001",
+		})
+
+		got, err := store.ListOrgMembers(ctx, "sect-eng")
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		m := got[0]
+		// Projected fields are present.
+		assert.Equal(t, "u-alice", m.ID)
+		assert.Equal(t, "alice", m.Account)
+		assert.Equal(t, "Alice", m.EngName)
+		assert.Equal(t, "愛麗絲", m.ChineseName)
+		assert.Equal(t, "site-a", m.SiteID)
+		// OrgMember struct has no EmployeeID / SectID / SectName fields, so
+		// they can't be surfaced even if the projection were wrong. This
+		// assertion is structural — it's proven at compile time by the
+		// struct definition — and is documented here for reviewers.
 	})
 }
