@@ -24,6 +24,43 @@ const messageByIDExtraColumns = ", pinned_at, pinned_by"
 const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 const messageByIDQuery = "SELECT " + baseColumns + messageByIDExtraColumns + " FROM messages_by_id"
 
+// threadMessageColumns lists the columns present in thread_messages_by_room.
+// This table has a strict subset of messages_by_room's columns — no tshow,
+// no tcount, no thread_parent_created_at, no pinned_* — so it needs its own
+// column list and scan destination.
+const threadMessageColumns = "room_id, thread_room_id, created_at, message_id, thread_parent_id, " +
+	"sender, target_user, msg, mentions, attachments, file, card, card_action, " +
+	"quoted_parent_message, visible_to, unread, reactions, deleted, " +
+	"type, sys_msg_data, site_id, edited_at, updated_at"
+
+const threadMessageQuery = "SELECT " + threadMessageColumns + " FROM thread_messages_by_room"
+
+// threadMessageScanDest returns Scan destination pointers for threadMessageColumns in order.
+func threadMessageScanDest(m *models.Message) []any {
+	return []any{
+		&m.RoomID, &m.ThreadRoomID, &m.CreatedAt, &m.MessageID, &m.ThreadParentID,
+		&m.Sender, &m.TargetUser, &m.Msg,
+		&m.Mentions, &m.Attachments, &m.File,
+		&m.Card, &m.CardAction,
+		&m.QuotedParentMessage,
+		&m.VisibleTo, &m.Unread, &m.Reactions,
+		&m.Deleted, &m.Type, &m.SysMsgData,
+		&m.SiteID, &m.EditedAt, &m.UpdatedAt,
+	}
+}
+
+func scanThreadMessages(iter *gocql.Iter) []models.Message {
+	messages := make([]models.Message, 0)
+	for {
+		var m models.Message
+		if !iter.Scan(threadMessageScanDest(&m)...) {
+			break
+		}
+		messages = append(messages, m)
+	}
+	return messages
+}
+
 // baseScanDest returns Scan destination pointers for the baseColumns in order.
 func baseScanDest(m *models.Message) []any {
 	return []any{
@@ -186,4 +223,36 @@ func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*mod
 		return nil, fmt.Errorf("querying message by id: %w", err)
 	}
 	return &m, nil
+}
+
+// GetThreadMessages returns a paginated set of thread replies for the given
+// (roomID, threadRoomID) partition-slice, newest-first.
+//
+// Partition key equality on room_id + first clustering key equality on
+// thread_room_id yields a single-slice seek with no ALLOW FILTERING.
+// Clustering ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)
+// means ORDER BY created_at DESC is the natural order within the slice.
+func (r *Repository) GetThreadMessages(ctx context.Context, roomID, threadRoomID string, q PageRequest) (Page[models.Message], error) {
+	var messages []models.Message
+
+	nextCursor, err := NewQueryBuilder(
+		r.session.Query(
+			threadMessageQuery+` WHERE room_id = ? AND thread_room_id = ? ORDER BY created_at DESC`,
+			roomID, threadRoomID,
+		).WithContext(ctx),
+	).
+		WithCursor(q.Cursor).
+		WithPageSize(q.PageSize).
+		Fetch(func(iter *gocql.Iter) {
+			messages = scanThreadMessages(iter)
+		})
+	if err != nil {
+		return Page[models.Message]{}, fmt.Errorf("querying thread messages: %w", err)
+	}
+
+	return Page[models.Message]{
+		Data:       messages,
+		NextCursor: nextCursor,
+		HasNext:    nextCursor != "",
+	}, nil
 }
