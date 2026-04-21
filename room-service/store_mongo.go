@@ -583,3 +583,32 @@ func (s *MongoStore) attachUserDisplayNames(ctx context.Context, roomID string, 
 	}
 	return nil
 }
+
+// ListOrgMembers returns all users whose sectId equals orgID, projected as
+// OrgMember rows sorted by account ascending. Returns errInvalidOrg when the
+// query matches no users.
+func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error) {
+	opts := options.Find().
+		SetSort(bson.D{{Key: "account", Value: 1}}).
+		SetProjection(bson.M{
+			"_id":         1,
+			"account":     1,
+			"engName":     1,
+			"chineseName": 1,
+			"siteId":      1,
+		})
+	cursor, err := s.users.Find(ctx, bson.M{"sectId": orgID}, opts)
+	if err != nil {
+		return nil, fmt.Errorf("find users for org %q: %w", orgID, err)
+	}
+	defer cursor.Close(ctx)
+
+	var members []model.OrgMember
+	if err := cursor.All(ctx, &members); err != nil {
+		return nil, fmt.Errorf("decode users for org %q: %w", orgID, err)
+	}
+	if len(members) == 0 {
+		return nil, errInvalidOrg
+	}
+	return members, nil
+}

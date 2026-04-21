@@ -43,4 +43,8 @@ type RoomStore interface {
 	// $lookup stages against users and subscriptions. When enrich=false,
 	// display fields are left zero.
 	ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error)
+	// ListOrgMembers returns all users whose sectId equals orgID, projected
+	// as OrgMember rows sorted by account ascending. Returns errInvalidOrg
+	// when no users match (treated as "orgId is not valid").
+	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
 }

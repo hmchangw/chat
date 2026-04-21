@@ -189,6 +189,21 @@ func (mr *MockRoomStoreMockRecorder) GetSubscriptionWithMembership(ctx, roomID, 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSubscriptionWithMembership", reflect.TypeOf((*MockRoomStore)(nil).GetSubscriptionWithMembership), ctx, roomID, account)
 }
 
+// ListOrgMembers mocks base method.
+func (m *MockRoomStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListOrgMembers", ctx, orgID)
+	ret0, _ := ret[0].([]model.OrgMember)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListOrgMembers indicates an expected call of ListOrgMembers.
+func (mr *MockRoomStoreMockRecorder) ListOrgMembers(ctx, orgID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListOrgMembers", reflect.TypeOf((*MockRoomStore)(nil).ListOrgMembers), ctx, orgID)
+}
+
 // ListRoomMembers mocks base method.
 func (m *MockRoomStore) ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error) {
 	m.ctrl.T.Helper()
