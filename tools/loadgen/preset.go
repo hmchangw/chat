@@ -81,6 +81,10 @@ var (
 // BuildFixtures is a pure function of (preset, seed, siteID) producing the
 // full fixture set. Two calls with equal inputs produce equal outputs.
 func BuildFixtures(p Preset, seed int64, siteID string) Fixtures {
+	return buildFixtures(&p, seed, siteID)
+}
+
+func buildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 	r := rand.New(rand.NewSource(seed))
 	now := time.Unix(0, 0).UTC() // fixed so output is deterministic
 
@@ -119,12 +123,12 @@ func BuildFixtures(p Preset, seed int64, siteID string) Fixtures {
 
 	var subs []model.Subscription
 	for i := range rooms {
-		members := pickMembers(r, p, &rooms[i], users)
+		members := pickMembers(r, p, i, p.Rooms, &rooms[i], users)
 		rooms[i].UserCount = len(members)
-		for _, u := range members {
+		for j := range members {
 			subs = append(subs, model.Subscription{
-				ID:       fmt.Sprintf("sub-%s-%s", rooms[i].ID, u.ID),
-				User:     model.SubscriptionUser{ID: u.ID, Account: u.Account},
+				ID:       fmt.Sprintf("sub-%s-%s", rooms[i].ID, members[j].ID),
+				User:     model.SubscriptionUser{ID: members[j].ID, Account: members[j].Account},
 				RoomID:   rooms[i].ID,
 				SiteID:   siteID,
 				Roles:    []model.Role{model.RoleMember},
@@ -135,7 +139,7 @@ func BuildFixtures(p Preset, seed int64, siteID string) Fixtures {
 	return Fixtures{Users: users, Rooms: rooms, Subscriptions: subs}
 }
 
-func pickMembers(r *rand.Rand, p Preset, room *model.Room, users []model.User) []model.User {
+func pickMembers(r *rand.Rand, p *Preset, roomIdx, totalRooms int, room *model.Room, users []model.User) []model.User {
 	if room.Type == model.RoomTypeDM {
 		// Two distinct users.
 		i := r.Intn(len(users))
@@ -155,27 +159,24 @@ func pickMembers(r *rand.Rand, p Preset, room *model.Room, users []model.User) [
 		return sampleWithoutReplacement(r, users, size)
 	default:
 		// Assign each user to exactly one room via round-robin so that every
-		// user appears in at least one room. The room index is derived from
-		// its ID so the assignment is deterministic.
-		var roomIdx int
-		fmt.Sscanf(room.ID, "room-%d", &roomIdx)
+		// user appears in at least one room.
 		var members []model.User
-		for i, u := range users {
-			if i%p.Rooms == roomIdx {
-				members = append(members, u)
+		for i := range users {
+			if i%totalRooms == roomIdx {
+				members = append(members, users[i])
 			}
 		}
 		if len(members) < 2 {
 			// Pad with random extras to ensure at least 2 members.
 			extra := sampleWithoutReplacement(r, users, 2)
 			seen := make(map[string]bool)
-			for _, m := range members {
-				seen[m.ID] = true
+			for i := range members {
+				seen[members[i].ID] = true
 			}
-			for _, m := range extra {
-				if !seen[m.ID] {
-					members = append(members, m)
-					seen[m.ID] = true
+			for i := range extra {
+				if !seen[extra[i].ID] {
+					members = append(members, extra[i])
+					seen[extra[i].ID] = true
 				}
 				if len(members) >= 2 {
 					break
