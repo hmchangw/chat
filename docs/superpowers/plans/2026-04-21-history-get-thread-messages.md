@@ -835,3 +835,131 @@ git commit -m "feat(history-service): add GetThreadMessages handler"
 ```
 
 ---
+
+## Task 6 — Register the handler
+
+**Files:**
+- Modify: `history-service/internal/service/service.go`
+
+One-line change to `RegisterHandlers`. Splitting it out from Task 5 keeps each commit's blast radius small and makes the registration an explicit, reviewable step.
+
+- [ ] **Step 1: Add the registration line**
+
+Open `history-service/internal/service/service.go`. In `RegisterHandlers` (currently lines 42–47), add a new line after the existing registrations:
+
+```go
+func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
+	natsrouter.Register(r, subject.MsgHistoryPattern(siteID), s.LoadHistory)
+	natsrouter.Register(r, subject.MsgNextPattern(siteID), s.LoadNextMessages)
+	natsrouter.Register(r, subject.MsgSurroundingPattern(siteID), s.LoadSurroundingMessages)
+	natsrouter.Register(r, subject.MsgGetPattern(siteID), s.GetMessageByID)
+	natsrouter.Register(r, subject.MsgThreadPattern(siteID), s.GetThreadMessages)
+}
+```
+
+- [ ] **Step 2: Build + run all unit tests**
+
+```bash
+go build ./history-service/...
+make test SERVICE=history-service
+```
+
+Expected: both succeed.
+
+- [ ] **Step 3: Lint + commit**
+
+```bash
+make lint
+git add history-service/internal/service/service.go
+git commit -m "feat(history-service): register GetThreadMessages NATS endpoint"
+```
+
+---
+
+## Task 7 — Final verification
+
+**Files:** none modified.
+
+End-to-end check across the whole repo before handing off.
+
+- [ ] **Step 1: Lint the whole repo**
+
+```bash
+make lint
+```
+
+Expected: no output, exit 0.
+
+- [ ] **Step 2: Run every unit test with race detector**
+
+```bash
+make test
+```
+
+Expected: all packages pass.
+
+- [ ] **Step 3: Run every integration test**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: all `cassrepo` integration tests pass, including the five new `TestRepository_GetThreadMessages_*` cases.
+
+- [ ] **Step 4: Verify build of the service binary**
+
+```bash
+make build SERVICE=history-service
+```
+
+Expected: `bin/history-service` produced.
+
+- [ ] **Step 5: Push the branch**
+
+```bash
+git push -u origin claude/plan-history-endpoint-8FXg5
+```
+
+No PR is created. Creating the PR is the user's call.
+
+---
+
+## Self-Review Notes
+
+Checked against `docs/superpowers/specs/2026-04-21-history-get-thread-messages-design.md`:
+
+**Spec coverage:**
+
+| Spec item | Implementing task |
+|-----------|-------------------|
+| NATS subject builders (`MsgThreadPattern` + `MsgThreadWildcard`) | Task 1 |
+| Request/response types | Task 2 |
+| Cassandra repo method targeting `thread_messages_by_room` with `(room_id, thread_room_id)` equality seek | Task 3 |
+| Dedicated `threadMessageColumns` + scan helper | Task 3 |
+| Integration tests: partition isolation by `room_id`, slice isolation by `thread_room_id`, DESC ordering, cursor pagination, empty thread | Task 3 |
+| `MessageRepository` interface extension + mock regeneration | Task 4 |
+| Handler reads only `account` from the subject (never `roomID`) | Task 5, enforced by `TestHistoryService_GetThreadMessages_UsesParentRoomNotSubject` |
+| Fetch parent before subscription check (short-circuit on 404) | Task 5, enforced by `TestHistoryService_GetThreadMessages_ParentNotFound` |
+| `historySharedSince` gating against parent's `CreatedAt` | Task 5, covered by `ParentBeforeAccessSince` + `NoHSS` |
+| Cursor pagination default/max/negative-limit handling | Task 5, covered by `DefaultLimit` / `LimitClampsToMax` / `NegativeLimit` |
+| Error matrix (bad request, not found, forbidden, internal) | Task 5, covered by the dedicated cases listed in the spec |
+| Handler registered on the router | Task 6 |
+
+**No-`"N/A"` promise:** every seeded `thread_room_id` in `seedThreadMessages` uses values `tr-1`/`tr-2`. No test fixture writes the literal `"N/A"` sentinel into the thread path. (Note: the pre-existing `TestRepository_FullRow_AllColumns` test keeps writing `"N/A"` to `messages_by_id.thread_room_id` — that's unrelated, exercises the full-column scan of `messages_by_id`, and is out of scope here.)
+
+**No other services touched:** no edits to `message-worker`, `message-gatekeeper`, `broadcast-worker`, `room-service`, `docker-local/**`, or any docs besides this plan and the linked spec.
+
+**No placeholders:** every step contains concrete code or exact commands. No "TBD", no "similar to", no "handle edge cases".
+
+**Type consistency:** `GetThreadMessagesRequest.ThreadMessageID` name used identically across models, tests, and handler. `ThreadRoomID` is the field name on `models.Message` (already defined in `pkg/model/cassandra/message.go` from prior work) — verified against Task 3's `threadMessageScanDest` binding.
+
+---
+
+## Execution Choice
+
+Plan complete and committed to `docs/superpowers/plans/2026-04-21-history-get-thread-messages.md`. Two execution options:
+
+**1. Subagent-Driven (recommended)** — fresh subagent per task, review between tasks, fast iteration.
+
+**2. Inline Execution** — execute tasks in this session using `executing-plans`, batch execution with checkpoints.
+
