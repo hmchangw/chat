@@ -438,3 +438,60 @@ git commit -m "feat(history-service): add GetThreadMessages cassandra repo metho
 ```
 
 ---
+
+## Task 4 — Extend `MessageRepository` interface and regenerate mocks
+
+**Files:**
+- Modify: `history-service/internal/service/service.go`
+- Regenerate: `history-service/internal/service/mocks/mock_repository.go`
+
+This task only adds the method signature to the consumer-side interface and regenerates the mock. It does **not** register the handler — that's Task 6, after the handler implementation has unit tests passing.
+
+- [ ] **Step 1: Add the method to the `MessageRepository` interface**
+
+Open `history-service/internal/service/service.go`. In the `MessageRepository` interface (currently lines 16–22), add a new line after `GetMessageByID`:
+
+```go
+type MessageRepository interface {
+	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
+	GetThreadMessages(ctx context.Context, roomID, threadRoomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+}
+```
+
+- [ ] **Step 2: Regenerate mocks**
+
+```bash
+make generate SERVICE=history-service
+```
+
+Expected: `history-service/internal/service/mocks/mock_repository.go` is updated with a new `GetThreadMessages` method on `MockMessageRepository` and its recorder.
+
+- [ ] **Step 3: Verify the package builds**
+
+```bash
+go build ./history-service/...
+```
+
+Expected: no output, exit 0. The real `cassrepo.Repository` (from Task 3) already satisfies the extended interface.
+
+- [ ] **Step 4: Verify existing unit tests still pass**
+
+```bash
+make test SERVICE=history-service
+```
+
+Expected: all pre-existing `service` unit tests still green. Nothing new exercises the interface yet.
+
+- [ ] **Step 5: Lint + commit**
+
+```bash
+make lint
+git add history-service/internal/service/service.go history-service/internal/service/mocks/mock_repository.go
+git commit -m "feat(history-service): extend MessageRepository with GetThreadMessages"
+```
+
+---
