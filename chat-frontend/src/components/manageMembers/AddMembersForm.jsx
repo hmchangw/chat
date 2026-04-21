@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../../context/NatsContext'
 import { memberAdd } from '../../lib/subjects'
 
@@ -18,6 +18,13 @@ export default function AddMembersForm({ room }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(false)
+  const successTimer = useRef(null)
+
+  useEffect(() => {
+    return () => {
+      if (successTimer.current) clearTimeout(successTimer.current)
+    }
+  }, [])
 
   const users = parseList(accounts)
   const orgList = parseList(orgs)
@@ -42,7 +49,8 @@ export default function AddMembersForm({ room }) {
       setOrgs('')
       setChannels('')
       setSuccess(true)
-      setTimeout(() => setSuccess(false), 3000)
+      if (successTimer.current) clearTimeout(successTimer.current)
+      successTimer.current = setTimeout(() => setSuccess(false), 3000)
     } catch (err) {
       setError(err.message)
     } finally {

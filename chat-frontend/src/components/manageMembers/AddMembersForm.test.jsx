@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import AddMembersForm from './AddMembersForm'
 
 vi.mock('../../context/NatsContext', () => ({
@@ -74,5 +74,19 @@ describe('AddMembersForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Add$/ }))
     expect(await screen.findByText('Accepted')).toBeInTheDocument()
     expect(accounts.value).toBe('')
+  })
+
+  it('auto-dismisses the success banner after 3 seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      setup()
+      fireEvent.change(screen.getByLabelText(/Accounts/i), { target: { value: 'bob' } })
+      fireEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+      expect(await screen.findByText('Accepted')).toBeInTheDocument()
+      vi.advanceTimersByTime(3000)
+      await waitFor(() => expect(screen.queryByText('Accepted')).not.toBeInTheDocument())
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
