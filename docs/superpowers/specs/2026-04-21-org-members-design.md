@@ -49,7 +49,7 @@ func OrgMembersWildcard() string {
 }
 ```
 
-Because the subject shape is unique in this namespace, a new lightweight parser `ParseOrgMembersSubject(subj) (orgID string, ok bool)` is added alongside the builders. It returns the `orgId` token (positional index 4) after validating the prefix/suffix.
+Because the subject shape is unique in this namespace, a new lightweight parser `ParseOrgMembersSubject(subj) (orgID string, ok bool)` is added alongside the builders. It returns the `orgId` token (positional index 5 — tokens are `[0]chat [1]user [2]{account} [3]request [4]orgs [5]{orgId} [6]members`) after validating the prefix/suffix.
 
 ## Data Models
 

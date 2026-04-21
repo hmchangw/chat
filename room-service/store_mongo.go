@@ -539,7 +539,7 @@ func (s *MongoStore) getRoomSubscriptions(ctx context.Context, roomID string, li
 
 	if enrich && len(members) > 0 {
 		if err := s.attachUserDisplayNames(ctx, roomID, members); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("attach user display names for %q: %w", roomID, err)
 		}
 	}
 	return members, nil

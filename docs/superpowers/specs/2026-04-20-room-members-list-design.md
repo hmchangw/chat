@@ -139,8 +139,9 @@ type RoomStore interface {
 
 ```go
 func (s *MongoStore) ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error) {
-    // 1. Existence probe — does room_members have any doc for this room?
-    err := s.roomMembers.FindOne(ctx, bson.M{"rid": roomID}).Err()
+    // 1. Existence probe — project only _id to keep the probe bounded.
+    err := s.roomMembers.FindOne(ctx, bson.M{"rid": roomID},
+        options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
     switch {
     case err == nil:
         return s.getRoomMembers(ctx, roomID, limit, offset, enrich)
@@ -172,10 +173,12 @@ pipeline := mongo.Pipeline{
         {Key: "_id", Value: 1}, // tiebreaker for stable pagination
     }}},
 }
-if offset != nil {
+if offset != nil && *offset > 0 {
     pipeline = append(pipeline, bson.D{{Key: "$skip", Value: int64(*offset)}})
 }
-if limit != nil {
+// Mongo rejects {$limit: 0}; guard against callers that bypass the handler's
+// > 0 check so the store is robust on its own.
+if limit != nil && *limit > 0 {
     pipeline = append(pipeline, bson.D{{Key: "$limit", Value: int64(*limit)}})
 }
 
@@ -206,10 +209,12 @@ This keeps persistence semantics strict (display fields never round-trip through
 
 ```go
 opts := options.Find().SetSort(bson.D{{Key: "joinedAt", Value: 1}, {Key: "_id", Value: 1}})
-if offset != nil {
+if offset != nil && *offset > 0 {
     opts.SetSkip(int64(*offset))
 }
-if limit != nil {
+// SetLimit(0) means "no limit" in the driver; only set when >0 so the
+// fallback matches the aggregation-path semantics.
+if limit != nil && *limit > 0 {
     opts.SetLimit(int64(*limit))
 }
 cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID}, opts)
