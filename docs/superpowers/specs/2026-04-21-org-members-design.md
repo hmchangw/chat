@@ -132,38 +132,36 @@ if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(), queue, h.natsListOr
 func (h *Handler) natsListOrgMembers(m otelnats.Msg) {
     resp, err := h.handleListOrgMembers(m.Context(), m.Msg.Subject)
     if err != nil {
-        slog.Error("list org members failed", "subject", m.Msg.Subject, "error", err)
+        slog.Error("list org members failed", "error", err)
         natsutil.ReplyError(m.Msg, sanitizeError(err))
         return
     }
-    if err := m.Msg.Respond(resp); err != nil {
-        slog.Error("failed to respond to list-org-members", "error", err)
-    }
+    natsutil.ReplyJSON(m.Msg, resp)
 }
 ```
 
-Subject logged as a structured field; no identifier interpolation in error messages (same pattern as the room-members handler after the CodeRabbit review).
+Raw NATS subject is never logged or echoed into error messages (it contains the requester account and orgId). `sanitizeError` carries any diagnostic detail for the client; the server-side `slog.Error` entry is generic. Success replies go through `natsutil.ReplyJSON` per the service convention.
 
 ### Business logic
 
 ```go
-func (h *Handler) handleListOrgMembers(ctx context.Context, subj string) ([]byte, error) {
+func (h *Handler) handleListOrgMembers(ctx context.Context, subj string) (model.ListOrgMembersResponse, error) {
     orgID, ok := subject.ParseOrgMembersSubject(subj)
     if !ok {
-        return nil, fmt.Errorf("invalid org-members subject")
+        return model.ListOrgMembersResponse{}, fmt.Errorf("invalid org-members subject")
     }
     members, err := h.store.ListOrgMembers(ctx, orgID)
     if err != nil {
         if errors.Is(err, errInvalidOrg) {
-            return nil, errInvalidOrg
+            return model.ListOrgMembersResponse{}, errInvalidOrg
         }
-        return nil, fmt.Errorf("get org members: %w", err)
+        return model.ListOrgMembersResponse{}, fmt.Errorf("get org members: %w", err)
     }
-    return json.Marshal(model.ListOrgMembersResponse{Members: members})
+    return model.ListOrgMembersResponse{Members: members}, nil
 }
 ```
 
-No auth check, consistent with `RoomsList` / `RoomsGet`. No pagination params.
+Returns the typed response; the outer `natsListOrgMembers` hands it to `natsutil.ReplyJSON` for serialization. No auth check, consistent with `RoomsList` / `RoomsGet`. No pagination params.
 
 ### Error sentinel (`helper.go`)
 
@@ -178,7 +176,7 @@ Added to the `sanitizeError` whitelist. Client sees the message verbatim. Since 
 1. Client sends `nc.Request(subject.OrgMembers(account, orgID), nil, timeout)`.
 2. NATS delivers to a `room-service` instance subscribed on `OrgMembersWildcard()` (queue group `room-service`).
 3. Handler parses `orgID` from the subject, calls `store.ListOrgMembers`.
-4. On success: `m.Msg.Respond(json(ListOrgMembersResponse{...}))`.
+4. On success: `natsutil.ReplyJSON(m.Msg, ListOrgMembersResponse{...})`.
 5. On `errInvalidOrg`: `natsutil.ReplyError(..., "invalid org")`.
 6. On any other error: `natsutil.ReplyError(..., "internal error")` via `sanitizeError` default.
 

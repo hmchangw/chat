@@ -490,9 +490,7 @@ func TestHandler_ListOrgMembers(t *testing.T) {
                 return
             }
             require.NoError(t, err)
-            var decoded model.ListOrgMembersResponse
-            require.NoError(t, json.Unmarshal(resp, &decoded))
-            assert.Equal(t, tc.want.members, decoded.Members)
+            assert.Equal(t, tc.want.members, resp.Members)
         })
     }
 }
@@ -521,32 +519,35 @@ Append these two methods to `room-service/handler.go` (near the other `nats*` / 
 func (h *Handler) natsListOrgMembers(m otelnats.Msg) {
     resp, err := h.handleListOrgMembers(m.Context(), m.Msg.Subject)
     if err != nil {
-        slog.Error("list org members failed", "subject", m.Msg.Subject, "error", err)
+        slog.Error("list org members failed", "error", err)
         natsutil.ReplyError(m.Msg, sanitizeError(err))
         return
     }
-    if err := m.Msg.Respond(resp); err != nil {
-        slog.Error("failed to respond to list-org-members", "error", err)
-    }
+    natsutil.ReplyJSON(m.Msg, resp)
 }
 
-func (h *Handler) handleListOrgMembers(ctx context.Context, subj string) ([]byte, error) {
+func (h *Handler) handleListOrgMembers(ctx context.Context, subj string) (model.ListOrgMembersResponse, error) {
     orgID, ok := subject.ParseOrgMembersSubject(subj)
     if !ok {
-        return nil, fmt.Errorf("invalid org-members subject")
+        return model.ListOrgMembersResponse{}, fmt.Errorf("invalid org-members subject")
     }
     members, err := h.store.ListOrgMembers(ctx, orgID)
     if err != nil {
         if errors.Is(err, errInvalidOrg) {
-            return nil, errInvalidOrg
+            return model.ListOrgMembersResponse{}, errInvalidOrg
         }
-        return nil, fmt.Errorf("get org members: %w", err)
+        return model.ListOrgMembersResponse{}, fmt.Errorf("get org members: %w", err)
     }
-    return json.Marshal(model.ListOrgMembersResponse{Members: members})
+    return model.ListOrgMembersResponse{Members: members}, nil
 }
 ```
 
-All imports needed (`context`, `encoding/json`, `errors`, `fmt`, `log/slog`, `otelnats`, `natsutil`, `subject`, `model`) are already imported in `handler.go` from the other handlers.
+Design notes:
+- Raw NATS subject is NOT logged (it contains requester account + orgId; CLAUDE.md §3 forbids interpolating identifiers into logs).
+- Success path uses `natsutil.ReplyJSON` per the service convention (`ReplyJSON` for success, `ReplyError` for errors).
+- `handleListOrgMembers` returns a typed response (not `[]byte`); serialization happens once in `natsutil.ReplyJSON`.
+
+Imports already present in `handler.go`: `context`, `errors`, `fmt`, `log/slog`, `otelnats`, `natsutil`, `subject`, `model`. `encoding/json` is no longer needed by this handler (the typed return path avoids manual marshaling).
 
 - [ ] **Step 2 — Run the new tests; verify all pass**
 
