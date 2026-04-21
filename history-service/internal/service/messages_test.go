@@ -720,3 +720,235 @@ func TestHistoryService_GetMessageByID_NotSubscribed(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not subscribed to room")
 }
+
+// --- GetThreadMessages ---
+
+// threadCtx builds a context that deliberately carries a DIFFERENT roomID
+// in the subject from the parent's actual room — proves the handler never
+// reads c.Param("roomID") and always uses parent.RoomID.
+func threadCtx() *natsrouter.Context {
+	return natsrouter.NewContext(map[string]string{"account": "u1", "roomID": "wrong-room-from-subject"})
+}
+
+func TestHistoryService_GetThreadMessages_Success(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parentCreatedAt := joinTime.Add(5 * time.Minute)
+	parent := &models.Message{
+		MessageID:    "m-parent",
+		RoomID:       "r1",
+		CreatedAt:    parentCreatedAt,
+		ThreadRoomID: "tr-1",
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	replies := []models.Message{
+		{MessageID: "reply-2", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: parentCreatedAt.Add(2 * time.Minute)},
+		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: parentCreatedAt.Add(1 * time.Minute)},
+	}
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any()).Return(makePage(replies, false), nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 2)
+	assert.Equal(t, "reply-2", resp.Messages[0].MessageID)
+	assert.False(t, resp.HasNext)
+	assert.Empty(t, resp.NextCursor)
+}
+
+func TestHistoryService_GetThreadMessages_HasNextAndCursor(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	replies := []models.Message{
+		{MessageID: "reply-2", RoomID: "r1", ThreadRoomID: "tr-1", CreatedAt: joinTime.Add(7 * time.Minute)},
+		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", CreatedAt: joinTime.Add(6 * time.Minute)},
+	}
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any()).Return(makePage(replies, true), nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	assert.True(t, resp.HasNext)
+	assert.NotEmpty(t, resp.NextCursor)
+}
+
+func TestHistoryService_GetThreadMessages_EmptyThreadMessageID(t *testing.T) {
+	svc, _, _ := newService(t)
+	c := threadCtx()
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "threadMessageId is required")
+}
+
+func TestHistoryService_GetThreadMessages_ParentNotFound(t *testing.T) {
+	svc, msgs, _ := newService(t)
+	c := threadCtx()
+
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-unknown").Return(nil, nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-unknown"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "message not found")
+}
+
+func TestHistoryService_GetThreadMessages_ParentLookupError(t *testing.T) {
+	svc, msgs, _ := newService(t)
+	c := threadCtx()
+
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(nil, fmt.Errorf("db down"))
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.Error(t, err)
+	assertInternalErr(t, err, "failed to retrieve message")
+}
+
+func TestHistoryService_GetThreadMessages_NotSubscribed(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, false, nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not subscribed to room")
+}
+
+func TestHistoryService_GetThreadMessages_SubscriptionStoreError(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, false, fmt.Errorf("db error"))
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.Error(t, err)
+	assertInternalErr(t, err, "unable to verify room access")
+}
+
+func TestHistoryService_GetThreadMessages_ParentBeforeAccessSince(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(-1 * time.Hour), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside access window")
+}
+
+func TestHistoryService_GetThreadMessages_NoHSS(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(-1 * time.Hour), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any()).Return(makePage(nil, false), nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Messages)
+}
+
+func TestHistoryService_GetThreadMessages_InvalidCursor(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{
+		ThreadMessageID: "m-parent",
+		Cursor:          "!!not-base64!!",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid pagination cursor")
+}
+
+func TestHistoryService_GetThreadMessages_RepoError(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any()).Return(cassrepo.Page[models.Message]{}, fmt.Errorf("db error"))
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.Error(t, err)
+	assertInternalErr(t, err, "failed to load thread messages")
+}
+
+func TestHistoryService_GetThreadMessages_DefaultLimit(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Cond(func(x any) bool {
+		pr, ok := x.(cassrepo.PageRequest)
+		return ok && pr.PageSize == 20
+	})).Return(makePage(nil, false), nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+}
+
+func TestHistoryService_GetThreadMessages_LimitClampsToMax(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Cond(func(x any) bool {
+		pr, ok := x.(cassrepo.PageRequest)
+		return ok && pr.PageSize == 100
+	})).Return(makePage(nil, false), nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent", Limit: 999})
+	require.NoError(t, err)
+}
+
+func TestHistoryService_GetThreadMessages_NegativeLimit(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Cond(func(x any) bool {
+		pr, ok := x.(cassrepo.PageRequest)
+		return ok && pr.PageSize == 20
+	})).Return(makePage(nil, false), nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent", Limit: -5})
+	require.NoError(t, err)
+}
+
+func TestHistoryService_GetThreadMessages_UsesParentRoomNotSubject(t *testing.T) {
+	svc, msgs, subs := newService(t)
+	c := threadCtx()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any()).Return(makePage(nil, false), nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+}

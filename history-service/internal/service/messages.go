@@ -197,3 +197,59 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 
 	return msg, nil
 }
+
+func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.GetThreadMessagesRequest) (*models.GetThreadMessagesResponse, error) {
+	account := c.Param("account")
+	// roomID is intentionally NOT read from the subject — it's derived from
+	// the parent message's own room_id. Forward-compatible with dropping
+	// {roomID} from the subject pattern.
+
+	if req.ThreadMessageID == "" {
+		return nil, natsrouter.ErrBadRequest("threadMessageId is required")
+	}
+
+	// Fetch before the subscription check so missing IDs short-circuit to
+	// 404 without a Mongo round trip.
+	parent, err := s.messages.GetMessageByID(c, req.ThreadMessageID)
+	if err != nil {
+		slog.Error("finding thread parent", "error", err, "messageID", req.ThreadMessageID)
+		return nil, natsrouter.ErrInternal("failed to retrieve message")
+	}
+	if parent == nil {
+		return nil, natsrouter.ErrNotFound("message not found")
+	}
+
+	roomID := parent.RoomID
+
+	accessSince, err := s.getAccessSince(c, account, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if accessSince != nil && parent.CreatedAt.Before(*accessSince) {
+		return nil, natsrouter.ErrForbidden("thread is outside access window")
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultPageSize
+	}
+	if limit > maxPageSize {
+		limit = maxPageSize
+	}
+	pageReq, err := parsePageRequest(req.Cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	page, err := s.messages.GetThreadMessages(c, roomID, parent.ThreadRoomID, pageReq)
+	if err != nil {
+		slog.Error("loading thread messages", "error", err, "roomID", roomID, "threadRoomID", parent.ThreadRoomID)
+		return nil, natsrouter.ErrInternal("failed to load thread messages")
+	}
+
+	return &models.GetThreadMessagesResponse{
+		Messages:   page.Data,
+		NextCursor: page.NextCursor,
+		HasNext:    page.HasNext,
+	}, nil
+}
