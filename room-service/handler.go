@@ -55,6 +55,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MemberListWildcard(h.siteID), queue, h.natsListMembers); err != nil {
 		return fmt.Errorf("subscribe member list: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(), queue, h.natsListOrgMembers); err != nil {
+		return fmt.Errorf("subscribe org members: %w", err)
+	}
 	return nil
 }
 
@@ -162,6 +165,31 @@ func (h *Handler) natsListMembers(m otelnats.Msg) {
 		return
 	}
 	natsutil.ReplyJSON(m.Msg, resp)
+}
+
+func (h *Handler) natsListOrgMembers(m otelnats.Msg) {
+	resp, err := h.handleListOrgMembers(m.Context(), m.Msg.Subject)
+	if err != nil {
+		slog.Error("list org members failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	natsutil.ReplyJSON(m.Msg, resp)
+}
+
+func (h *Handler) handleListOrgMembers(ctx context.Context, subj string) (model.ListOrgMembersResponse, error) {
+	orgID, ok := subject.ParseOrgMembersSubject(subj)
+	if !ok {
+		return model.ListOrgMembersResponse{}, fmt.Errorf("invalid org-members subject")
+	}
+	members, err := h.store.ListOrgMembers(ctx, orgID)
+	if err != nil {
+		if errors.Is(err, errInvalidOrg) {
+			return model.ListOrgMembersResponse{}, errInvalidOrg
+		}
+		return model.ListOrgMembersResponse{}, fmt.Errorf("get org members: %w", err)
+	}
+	return model.ListOrgMembersResponse{Members: members}, nil
 }
 
 func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byte) (model.ListRoomMembersResponse, error) {

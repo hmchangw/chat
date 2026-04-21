@@ -1286,3 +1286,81 @@ func TestHandler_ListMembers(t *testing.T) {
 		})
 	}
 }
+
+func TestHandler_ListOrgMembers(t *testing.T) {
+	const orgID = "sect-eng"
+	subj := subject.OrgMembers("alice", orgID)
+
+	members := []model.OrgMember{
+		{ID: "u-a", Account: "a", EngName: "A", ChineseName: "AA", SiteID: "site-a"},
+		{ID: "u-b", Account: "b", EngName: "B", ChineseName: "BB", SiteID: "site-a"},
+	}
+
+	type want struct {
+		errContains string
+		errIs       error
+		members     []model.OrgMember
+	}
+	tests := []struct {
+		name      string
+		subject   string
+		setupMock func(*MockRoomStore)
+		want      want
+	}{
+		{
+			name:    "happy path returns members",
+			subject: subj,
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().ListOrgMembers(gomock.Any(), orgID).Return(members, nil)
+			},
+			want: want{members: members},
+		},
+		{
+			name:      "invalid subject",
+			subject:   "chat.garbage",
+			setupMock: func(s *MockRoomStore) {},
+			want:      want{errContains: "invalid org-members subject"},
+		},
+		{
+			name:    "empty org returns errInvalidOrg",
+			subject: subj,
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().ListOrgMembers(gomock.Any(), orgID).Return(nil, errInvalidOrg)
+			},
+			want: want{errIs: errInvalidOrg},
+		},
+		{
+			name:    "store error is wrapped",
+			subject: subj,
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().ListOrgMembers(gomock.Any(), orgID).
+					Return(nil, fmt.Errorf("mongo exploded"))
+			},
+			want: want{errContains: "get org members"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			tc.setupMock(store)
+
+			h := &Handler{store: store, siteID: "site-a"}
+			resp, err := h.handleListOrgMembers(context.Background(), tc.subject)
+
+			if tc.want.errContains != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.want.errContains)
+				return
+			}
+			if tc.want.errIs != nil {
+				require.Error(t, err)
+				assert.True(t, errors.Is(err, tc.want.errIs), "error chain should contain %v, got %v", tc.want.errIs, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want.members, resp.Members)
+		})
+	}
+}
