@@ -1,5 +1,13 @@
 package main
 
+import (
+	"fmt"
+	"math/rand"
+	"time"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
 // Distribution names the shape of a per-preset random selection.
 type Distribution string
 
@@ -56,4 +64,136 @@ var builtinPresets = map[string]Preset{
 func BuiltinPreset(name string) (Preset, bool) {
 	p, ok := builtinPresets[name]
 	return p, ok
+}
+
+// Fixtures is the full seed data for a preset run.
+type Fixtures struct {
+	Users         []model.User
+	Rooms         []model.Room
+	Subscriptions []model.Subscription
+}
+
+var (
+	engNameBank     = []string{"Alice Wang", "Bob Chen", "Carol Lee", "Dave Liu", "Eve Zhang"}
+	chineseNameBank = []string{"愛麗絲", "鮑勃", "卡蘿", "戴夫", "伊芙"}
+)
+
+// BuildFixtures is a pure function of (preset, seed, siteID) producing the
+// full fixture set. Two calls with equal inputs produce equal outputs.
+func BuildFixtures(p Preset, seed int64, siteID string) Fixtures {
+	r := rand.New(rand.NewSource(seed))
+	now := time.Unix(0, 0).UTC() // fixed so output is deterministic
+
+	users := make([]model.User, p.Users)
+	for i := 0; i < p.Users; i++ {
+		users[i] = model.User{
+			ID:          fmt.Sprintf("u-%06d", i),
+			Account:     fmt.Sprintf("user-%d", i),
+			SiteID:      siteID,
+			EngName:     engNameBank[i%len(engNameBank)],
+			ChineseName: chineseNameBank[i%len(chineseNameBank)],
+		}
+	}
+
+	rooms := make([]model.Room, p.Rooms)
+	// realistic: last 10% of rooms are DMs
+	dmStart := p.Rooms
+	if p.RoomSizeDist == DistMixed {
+		dmStart = p.Rooms - p.Rooms/10
+	}
+	for i := 0; i < p.Rooms; i++ {
+		rtype := model.RoomTypeGroup
+		if i >= dmStart {
+			rtype = model.RoomTypeDM
+		}
+		rooms[i] = model.Room{
+			ID:        fmt.Sprintf("room-%06d", i),
+			Name:      fmt.Sprintf("room-%d", i),
+			Type:      rtype,
+			SiteID:    siteID,
+			UserCount: 0, // filled after membership
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+	}
+
+	var subs []model.Subscription
+	for i := range rooms {
+		members := pickMembers(r, p, &rooms[i], users)
+		rooms[i].UserCount = len(members)
+		for _, u := range members {
+			subs = append(subs, model.Subscription{
+				ID:       fmt.Sprintf("sub-%s-%s", rooms[i].ID, u.ID),
+				User:     model.SubscriptionUser{ID: u.ID, Account: u.Account},
+				RoomID:   rooms[i].ID,
+				SiteID:   siteID,
+				Roles:    []model.Role{model.RoleMember},
+				JoinedAt: now,
+			})
+		}
+	}
+	return Fixtures{Users: users, Rooms: rooms, Subscriptions: subs}
+}
+
+func pickMembers(r *rand.Rand, p Preset, room *model.Room, users []model.User) []model.User {
+	if room.Type == model.RoomTypeDM {
+		// Two distinct users.
+		i := r.Intn(len(users))
+		j := r.Intn(len(users) - 1)
+		if j >= i {
+			j++
+		}
+		return []model.User{users[i], users[j]}
+	}
+	switch p.RoomSizeDist {
+	case DistMixed:
+		// 10% of rooms get up to 500 members; rest get 2-20.
+		size := 2 + r.Intn(19)
+		if r.Intn(10) == 0 {
+			size = 2 + r.Intn(499)
+		}
+		return sampleWithoutReplacement(r, users, size)
+	default:
+		// Assign each user to exactly one room via round-robin so that every
+		// user appears in at least one room. The room index is derived from
+		// its ID so the assignment is deterministic.
+		var roomIdx int
+		fmt.Sscanf(room.ID, "room-%d", &roomIdx)
+		var members []model.User
+		for i, u := range users {
+			if i%p.Rooms == roomIdx {
+				members = append(members, u)
+			}
+		}
+		if len(members) < 2 {
+			// Pad with random extras to ensure at least 2 members.
+			extra := sampleWithoutReplacement(r, users, 2)
+			seen := make(map[string]bool)
+			for _, m := range members {
+				seen[m.ID] = true
+			}
+			for _, m := range extra {
+				if !seen[m.ID] {
+					members = append(members, m)
+					seen[m.ID] = true
+				}
+				if len(members) >= 2 {
+					break
+				}
+			}
+		}
+		return members
+	}
+}
+
+func sampleWithoutReplacement(r *rand.Rand, users []model.User, n int) []model.User {
+	if n > len(users) {
+		n = len(users)
+	}
+	idx := r.Perm(len(users))[:n]
+	out := make([]model.User, n)
+	for i, k := range idx {
+		out[i] = users[k]
+	}
+	return out
 }

@@ -47,3 +47,60 @@ func TestBuiltinPresets_RealisticShape(t *testing.T) {
 	assert.Greater(t, p.ThreadRate, 0.0)
 	assert.Greater(t, p.ContentBytes.Max, p.ContentBytes.Min)
 }
+
+func TestBuildFixtures_DeterministicAcrossCalls(t *testing.T) {
+	p, _ := BuiltinPreset("small")
+	a := BuildFixtures(p, 42, "site-local")
+	b := BuildFixtures(p, 42, "site-local")
+	assert.Equal(t, a.Users, b.Users)
+	assert.Equal(t, a.Rooms, b.Rooms)
+	assert.Equal(t, a.Subscriptions, b.Subscriptions)
+}
+
+func TestBuildFixtures_SmallCountsAndShape(t *testing.T) {
+	p, _ := BuiltinPreset("small")
+	f := BuildFixtures(p, 42, "site-local")
+	assert.Len(t, f.Users, 10)
+	assert.Len(t, f.Rooms, 5)
+	// uniform: every user is in at least one room
+	users := make(map[string]bool)
+	for _, s := range f.Subscriptions {
+		users[s.User.ID] = true
+		assert.Equal(t, "site-local", s.SiteID)
+	}
+	assert.Len(t, users, 10)
+	for _, r := range f.Rooms {
+		assert.Equal(t, "group", string(r.Type))
+		assert.Equal(t, "site-local", r.SiteID)
+	}
+}
+
+func TestBuildFixtures_RealisticMixesGroupAndDM(t *testing.T) {
+	p, _ := BuiltinPreset("realistic")
+	f := BuildFixtures(p, 42, "site-local")
+	var groups, dms int
+	for _, r := range f.Rooms {
+		switch r.Type {
+		case "group":
+			groups++
+		case "dm":
+			dms++
+		default:
+			// other room types (e.g. channel) are not counted
+		}
+	}
+	assert.Greater(t, groups, 0)
+	assert.Greater(t, dms, 0)
+	// DM rooms must have exactly 2 members
+	dmMembers := make(map[string]int)
+	for _, s := range f.Subscriptions {
+		for _, r := range f.Rooms {
+			if r.ID == s.RoomID && r.Type == "dm" {
+				dmMembers[r.ID]++
+			}
+		}
+	}
+	for id, n := range dmMembers {
+		assert.Equal(t, 2, n, "dm room %s must have 2 members", id)
+	}
+}
