@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../../context/NatsContext'
 import { memberRoleUpdate } from '../../lib/subjects'
+import { ROLE_OWNER, ROLE_MEMBER } from '../../lib/constants'
 
 export default function RoleUpdateForm({ room }) {
   const { user, request } = useNats()
   const [account, setAccount] = useState('')
-  const [newRole, setNewRole] = useState('owner')
+  const [newRole, setNewRole] = useState(ROLE_OWNER)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(false)
@@ -62,8 +63,8 @@ export default function RoleUpdateForm({ room }) {
         onChange={(e) => setNewRole(e.target.value)}
         disabled={loading}
       >
-        <option value="owner">Owner</option>
-        <option value="member">Member</option>
+        <option value={ROLE_OWNER}>Owner</option>
+        <option value={ROLE_MEMBER}>Member</option>
       </select>
 
       {error && <div className="dialog-error">{error}</div>}

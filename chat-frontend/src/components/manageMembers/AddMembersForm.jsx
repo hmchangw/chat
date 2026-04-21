@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../../context/NatsContext'
 import { memberAdd } from '../../lib/subjects'
 import { parseList } from '../../lib/parseList'
+import { HISTORY_MODE_ALL, HISTORY_MODE_NONE } from '../../lib/constants'
 
 export default function AddMembersForm({ room }) {
   const { user, request } = useNats()
@@ -37,7 +38,7 @@ export default function AddMembersForm({ room }) {
         users,
         orgs: orgList,
         channels: channelList,
-        history: { mode: shareHistory ? 'all' : 'none' },
+        history: { mode: shareHistory ? HISTORY_MODE_ALL : HISTORY_MODE_NONE },
       })
       setAccounts('')
       setOrgs('')
