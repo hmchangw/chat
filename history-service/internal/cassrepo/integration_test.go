@@ -465,10 +465,16 @@ func TestRepository_GetThreadMessages_IsolatesByRoomID(t *testing.T) {
 	pageA, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", q)
 	require.NoError(t, err)
 	assert.Len(t, pageA.Data, 2)
+	for _, m := range pageA.Data {
+		assert.Equal(t, "r-A", m.RoomID)
+	}
 
 	pageB, err := repo.GetThreadMessages(ctx, "r-B", "tr-1", q)
 	require.NoError(t, err)
 	assert.Len(t, pageB.Data, 4)
+	for _, m := range pageB.Data {
+		assert.Equal(t, "r-B", m.RoomID)
+	}
 }
 
 func TestRepository_GetThreadMessages_OrdersDescByCreatedAt(t *testing.T) {
@@ -521,6 +527,7 @@ func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 	assert.Len(t, page3.Data, 1)
 	assert.False(t, page3.HasNext)
 
+	// No overlap, no gaps.
 	seen := map[string]bool{}
 	for _, m := range page1.Data {
 		seen[m.MessageID] = true
@@ -531,8 +538,9 @@ func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 	}
 	for _, m := range page3.Data {
 		assert.False(t, seen[m.MessageID], "page3 overlaps earlier pages: %s", m.MessageID)
+		seen[m.MessageID] = true
 	}
-	assert.Len(t, seen, 6)
+	assert.Len(t, seen, 7)
 }
 
 func TestRepository_GetThreadMessages_EmptyWhenThreadUnknown(t *testing.T) {

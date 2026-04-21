@@ -226,12 +226,8 @@ func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*mod
 }
 
 // GetThreadMessages returns a paginated set of thread replies for the given
-// (roomID, threadRoomID) partition-slice, newest-first.
-//
-// Partition key equality on room_id + first clustering key equality on
-// thread_room_id yields a single-slice seek with no ALLOW FILTERING.
-// Clustering ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)
-// means ORDER BY created_at DESC is the natural order within the slice.
+// (roomID, threadRoomID), newest-first. Partition + first-clustering-key
+// equality makes this a single-slice seek — no ALLOW FILTERING.
 func (r *Repository) GetThreadMessages(ctx context.Context, roomID, threadRoomID string, q PageRequest) (Page[models.Message], error) {
 	var messages []models.Message
 
