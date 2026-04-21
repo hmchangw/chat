@@ -80,13 +80,11 @@ func TestBuildFixtures_RealisticMixesGroupAndDM(t *testing.T) {
 	f := BuildFixtures(p, 42, "site-local")
 	var groups, dms int
 	for _, r := range f.Rooms {
-		switch r.Type {
+		switch r.Type { //nolint:exhaustive
 		case "group":
 			groups++
 		case "dm":
 			dms++
-		default:
-			// other room types (e.g. channel) are not counted
 		}
 	}
 	assert.Greater(t, groups, 0)
