@@ -477,8 +477,10 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, req models.EditMessa
     }
 
     // Fan out (best-effort)
+    now := time.Now().UTC().UnixMilli()
     evt := models.MessageEditedEvent{
         Type: "message_edited",
+        Timestamp: now,
         RoomID: roomID,
         MessageID: req.MessageID,
         NewMsg: req.NewMsg,
@@ -517,11 +519,12 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, req models.EditMessa
 ```go
 type MessageEditedEvent struct {
     Type      string `json:"type"`      // "message_edited"
+    Timestamp int64  `json:"timestamp"` // UTC millis, event publish time (per CLAUDE.md)
     RoomID    string `json:"roomId"`
     MessageID string `json:"messageId"`
     NewMsg    string `json:"newMsg"`
     EditedBy  string `json:"editedBy"`  // actor account
-    EditedAt  int64  `json:"editedAt"`  // UTC millis
+    EditedAt  int64  `json:"editedAt"`  // UTC millis, domain time when edit occurred
 }
 ```
 
@@ -887,8 +890,10 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, req models.DeleteM
     }
 
     // Fan out (best-effort)
+    now := time.Now().UTC().UnixMilli()
     evt := models.MessageDeletedEvent{
         Type: "message_deleted",
+        Timestamp: now,
         RoomID: roomID,
         MessageID: req.MessageID,
         DeletedBy: account,
@@ -926,10 +931,11 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, req models.DeleteM
 ```go
 type MessageDeletedEvent struct {
     Type      string `json:"type"`      // "message_deleted"
+    Timestamp int64  `json:"timestamp"` // UTC millis, event publish time (per CLAUDE.md)
     RoomID    string `json:"roomId"`
     MessageID string `json:"messageId"`
     DeletedBy string `json:"deletedBy"`
-    DeletedAt int64  `json:"deletedAt"`  // UTC millis
+    DeletedAt int64  `json:"deletedAt"`  // UTC millis, domain time when delete occurred
 }
 ```
 
