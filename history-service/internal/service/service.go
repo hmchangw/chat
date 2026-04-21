@@ -45,4 +45,5 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MsgNextPattern(siteID), s.LoadNextMessages)
 	natsrouter.Register(r, subject.MsgSurroundingPattern(siteID), s.LoadSurroundingMessages)
 	natsrouter.Register(r, subject.MsgGetPattern(siteID), s.GetMessageByID)
+	natsrouter.Register(r, subject.MsgThreadPattern(siteID), s.GetThreadMessages)
 }
