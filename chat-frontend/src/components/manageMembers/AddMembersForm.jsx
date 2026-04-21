@@ -1,13 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../../context/NatsContext'
 import { memberAdd } from '../../lib/subjects'
-
-function parseList(input) {
-  return input
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-}
+import { parseList } from '../../lib/parseList'
 
 export default function AddMembersForm({ room }) {
   const { user, request } = useNats()
