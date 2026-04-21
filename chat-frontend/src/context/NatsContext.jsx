@@ -2,7 +2,7 @@ import { createContext, useContext, useRef, useState, useCallback } from 'react'
 import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
 
-const NatsContext = createContext(null)
+export const NatsContext = createContext(null)
 
 const sc = StringCodec()
 
