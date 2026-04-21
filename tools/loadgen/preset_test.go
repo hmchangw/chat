@@ -1,10 +1,13 @@
 package main
 
 import (
+	"math/rand"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func TestBuiltinPresets_ContainsAllFour(t *testing.T) {
@@ -101,4 +104,28 @@ func TestBuildFixtures_RealisticMixesGroupAndDM(t *testing.T) {
 	for id, n := range dmMembers {
 		assert.Equal(t, 2, n, "dm room %s must have 2 members", id)
 	}
+}
+
+func TestBuildFixtures_FewerUsersThanRooms_PadsToTwoMembers(t *testing.T) {
+	// Synthetic preset: 3 users, 5 rooms — round-robin alone leaves rooms 3
+	// and 4 with fewer than 2 members, exercising the padding branch.
+	p := &Preset{
+		Name: "tiny", Users: 3, Rooms: 5,
+		RoomSizeDist: DistUniform, SenderDist: DistUniform,
+		ContentBytes: Range{Min: 200, Max: 200},
+	}
+	f := BuildFixtures(p, 42, "site-local")
+	require.Len(t, f.Rooms, 5)
+	for i := range f.Rooms {
+		assert.GreaterOrEqual(t, f.Rooms[i].UserCount, 2,
+			"room %s must have at least 2 members after padding", f.Rooms[i].ID)
+	}
+}
+
+func TestSampleWithoutReplacement_CapsAtUserCount(t *testing.T) {
+	// Requesting more samples than users available silently caps at len(users).
+	r := rand.New(rand.NewSource(1))
+	users := []model.User{{ID: "u-0"}, {ID: "u-1"}}
+	out := sampleWithoutReplacement(r, users, 99)
+	assert.Len(t, out, 2)
 }
