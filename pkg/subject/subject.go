@@ -195,6 +195,32 @@ func MemberListWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.list", siteID)
 }
 
+// OrgMembers builds the subject for listing members of an org.
+func OrgMembers(account, orgID string) string {
+	return fmt.Sprintf("chat.user.%s.request.orgs.%s.members", account, orgID)
+}
+
+// OrgMembersWildcard is the subscription pattern for the list-org-members endpoint.
+func OrgMembersWildcard() string {
+	return "chat.user.*.request.orgs.*.members"
+}
+
+// ParseOrgMembersSubject returns the orgID from a subject matching the
+// pattern "chat.user.{account}.request.orgs.{orgId}.members".
+// Tokens (by strings.Split on "."): [0]chat [1]user [2]{account} [3]request
+// [4]orgs [5]{orgId} [6]members. orgID is at positional index 5.
+func ParseOrgMembersSubject(subj string) (orgID string, ok bool) {
+	parts := strings.Split(subj, ".")
+	if len(parts) != 7 {
+		return "", false
+	}
+	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" ||
+		parts[4] != "orgs" || parts[6] != "members" {
+		return "", false
+	}
+	return parts[5], true
+}
+
 func RoomCanonicalWildcard(siteID string) string {
 	return fmt.Sprintf("chat.room.canonical.%s.>", siteID)
 }
