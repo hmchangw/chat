@@ -32,6 +32,11 @@ describe('LeaveRoomButton', () => {
     expect(container.firstChild).toBeNull()
   })
 
+  it('renders nothing when room is null', () => {
+    const { container } = setup(null)
+    expect(container.firstChild).toBeNull()
+  })
+
   it('submits {roomId, account=self} after the user confirms', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { request } = setup(groupRoom)
@@ -57,6 +62,6 @@ describe('LeaveRoomButton', () => {
     setup(groupRoom, { request })
     fireEvent.click(screen.getByRole('button', { name: /Leave/i }))
     await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-    expect(alertSpy.mock.calls[0][0]).toMatch(/last owner/)
+    expect(alertSpy.mock.calls[0][0]).toMatch(/^Failed to leave:.*last owner/)
   })
 })
