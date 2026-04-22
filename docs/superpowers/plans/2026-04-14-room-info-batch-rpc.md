@@ -1,10 +1,20 @@
 # Room Info Batch RPC Implementation Plan
 
+> **Updated post-implementation (2026-04-22):** The following changes were made during implementation and are reflected in this plan:
+> - Subject changed to server-scoped: `chat.server.request.room.{siteID}.info.batch` (no user account token). `RoomsInfoBatch(siteID)` takes one param. `RoomsInfoBatchWildcard` renamed to `RoomsInfoBatchSubscribe`. `RoomsInfoBatchPattern` removed.
+> - `RoomInfo.LastMsgAt` now uses `omitempty` (0 = "no message", omitted from JSON). Added `LastMentionAllAt int64` field with `omitempty`.
+> - Handler uses `slog.Debug` (not `slog.Info`) for per-request logging to reduce production log volume.
+> - `MAX_BATCH_SIZE` default raised from 500 to 1000. Both Mongo and Valkey queries are chunked at `queryChunkSize=500` via `chunkedListRooms` and `chunkedGetKeys` helpers.
+> - `natsRoomsInfoBatch` uses `sanitizeError(err)` + `slog.Error` (not raw `err.Error()`).
+> - `room-service/store.go` defines a local `RoomKeyStore` interface with only `GetMany` (consumer-side pattern), not `roomkeystore.RoomKeyStore`.
+> - `valkeyStore` has `Close() error` method; `shutdown.Wait` includes a Valkey close hook via type assertion.
+> - `publishToStream` signature: `func(ctx context.Context, subj string, data []byte) error` (3 args, includes subject).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a NATS request/reply RPC on `room-service` that returns aggregated room info (Mongo `lastMsgAt`, name, siteId + Valkey `privateKey`) for a batch of room IDs, in a single request.
 
-**Architecture:** One handler on subject `chat.user.{account}.request.rooms.{siteID}.info.batch`. Validates → parallel fan-out to Mongo (one `find({_id: {$in: ids}})`) and Valkey (one pipelined `HGETALL` per room) via `errgroup` → merges by roomID preserving input order → JSON reply. Pipelining is added to `pkg/roomkeystore` as a new `GetMany` method.
+**Architecture:** One handler on subject `chat.server.request.room.{siteID}.info.batch` (server-scoped, no user account). Validates → parallel fan-out to Mongo (chunked `find({_id: {$in: ids}})` at 500) and Valkey (chunked pipelined `HGETALL` at 500) via `errgroup` → merges by roomID preserving input order → JSON reply. Pipelining is added to `pkg/roomkeystore` as a new `GetMany` method.
 
 **Tech Stack:** Go 1.25, NATS core request/reply, MongoDB (v2 driver), Valkey via `github.com/redis/go-redis/v9`, `golang.org/x/sync/errgroup`, `go.uber.org/mock`, `testify`, `testcontainers-go`.
 
@@ -16,8 +26,8 @@
 
 | Path | Disposition | Responsibility |
 |---|---|---|
-| `pkg/subject/subject.go` | Modify | Add `RoomsInfoBatch`, `RoomsInfoBatchWildcard`, `RoomsInfoBatchPattern` builders. |
-| `pkg/subject/subject_test.go` | Modify | Unit tests for the three new builders. |
+| `pkg/subject/subject.go` | Modify | Add `RoomsInfoBatch`, `RoomsInfoBatchSubscribe` builders (server-scoped, no pattern). |
+| `pkg/subject/subject_test.go` | Modify | Unit tests for the two new builders. |
 | `pkg/model/room.go` | Modify | Add `RoomsInfoBatchRequest`, `RoomInfo`, `RoomsInfoBatchResponse`. |
 | `pkg/model/model_test.go` | Modify | JSON roundtrip + omit-behavior tests for the new types. |
 | `pkg/roomkeystore/roomkeystore.go` | Modify | Add `GetMany` to `RoomKeyStore`; add `hgetallMany` to `hashCommander`; implement `GetMany` on `valkeyStore`. |
@@ -27,8 +37,9 @@
 | `room-service/store.go` | Modify | Add `ListRoomsByIDs` to `RoomStore` interface. |
 | `room-service/store_mongo.go` | Modify | Implement `ListRoomsByIDs` via `$in`. |
 | `room-service/mock_store_test.go` | Regenerate | `make generate SERVICE=room-service` after interface change. |
-| `room-service/mock_keystore_test.go` | Create | New mockgen output for `roomkeystore.RoomKeyStore`. |
-| `room-service/handler.go` | Modify | Inject `RoomKeyStore` + `maxBatchSize`; register new subscription; add `natsRoomsInfoBatch`, `handleRoomsInfoBatch`, `aggregateRoomInfo`. |
+| `room-service/store.go` | Modify | Define local `RoomKeyStore` interface with only `GetMany` (consumer-side). |
+| `room-service/mock_keystore_test.go` | Create | New mockgen output for local `RoomKeyStore`. |
+| `room-service/handler.go` | Modify | Inject `RoomKeyStore` (local) + `maxBatchSize`; register new subscription; add `natsRoomsInfoBatch` (with `sanitizeError`), `handleRoomsInfoBatch`, `aggregateRoomInfo`, `chunkedListRooms`, `chunkedGetKeys`. |
 | `room-service/handler_test.go` | Modify | Unit tests for the new handler paths with mocks. |
 | `room-service/main.go` | Modify | Add `MaxBatchSize` + Valkey config; wire `NewValkeyStore`; pass into `NewHandler`. |
 | `room-service/deploy/docker-compose.yml` | Modify | Add Valkey service; add Valkey env vars. |
@@ -38,7 +49,7 @@
 
 ## Tasks
 
-- Task 1: `pkg/subject` builders — add `RoomsInfoBatch`, `RoomsInfoBatchWildcard`, `RoomsInfoBatchPattern`.
+- Task 1: `pkg/subject` builders — add `RoomsInfoBatch`, `RoomsInfoBatchSubscribe` (server-scoped, no pattern).
 - Task 2: `pkg/model` types — add `RoomsInfoBatchRequest`, `RoomInfo`, `RoomsInfoBatchResponse`.
 - Task 3: `pkg/roomkeystore.GetMany` — extend interface, fake, and valkeyStore; unit tests.
 - Task 4: `pkg/roomkeystore.GetMany` — pipelined redis adapter implementation.
@@ -59,32 +70,20 @@
 - Modify: `pkg/subject/subject.go`
 - Test: `pkg/subject/subject_test.go`
 
-- [ ] **Step 1: Write failing tests for the three new builders**
+- [ ] **Step 1: Write failing tests for the two new builders**
 
 Append to `pkg/subject/subject_test.go` inside the existing `TestSubjectBuilders` slice:
 
 ```go
-{"RoomsInfoBatch", subject.RoomsInfoBatch("alice", "site-a"),
-    "chat.user.alice.request.rooms.site-a.info.batch"},
+{"RoomsInfoBatch", subject.RoomsInfoBatch("site-a"),
+    "chat.server.request.room.site-a.info.batch"},
 ```
 
-Append to the existing `TestWildcardPatterns` slice:
+Append to the existing `TestWildcardPatterns` slice (subscribe uses the same value as specific — no wildcard needed for server-scoped subjects):
 
 ```go
-{"RoomsInfoBatchWild", subject.RoomsInfoBatchWildcard("site-a"),
-    "chat.user.*.request.rooms.site-a.info.batch"},
-```
-
-Append a new test function at the end of the file:
-
-```go
-func TestRoomsInfoBatchPattern(t *testing.T) {
-    got := subject.RoomsInfoBatchPattern("site-a")
-    want := "chat.user.{account}.request.rooms.site-a.info.batch"
-    if got != want {
-        t.Errorf("got %q, want %q", got, want)
-    }
-}
+{"RoomsInfoBatchSubscribe", subject.RoomsInfoBatchSubscribe("site-a"),
+    "chat.server.request.room.site-a.info.batch"},
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -92,24 +91,20 @@ func TestRoomsInfoBatchPattern(t *testing.T) {
 Run: `make test SERVICE=pkg/subject`
 Expected: FAIL — `undefined: subject.RoomsInfoBatch`, etc.
 
-- [ ] **Step 3: Implement the three builders**
+- [ ] **Step 3: Implement the two builders**
 
-Append to `pkg/subject/subject.go` (after the existing `RoomsGet` builder section for specific builders, and alongside the wildcard section for the wildcard):
+Append to `pkg/subject/subject.go` (after the existing `RoomsGet` builder section):
 
 ```go
-// RoomsInfoBatch is the request/reply subject for batch room info lookups.
-func RoomsInfoBatch(account, siteID string) string {
-    return fmt.Sprintf("chat.user.%s.request.rooms.%s.info.batch", account, siteID)
+// RoomsInfoBatch is the request/reply subject for batch room info lookups (server-scoped).
+func RoomsInfoBatch(siteID string) string {
+    return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
 }
 
-// RoomsInfoBatchWildcard is the per-site subscription pattern for room-service.
-func RoomsInfoBatchWildcard(siteID string) string {
-    return fmt.Sprintf("chat.user.*.request.rooms.%s.info.batch", siteID)
-}
-
-// RoomsInfoBatchPattern is the natsrouter-style pattern with {account} placeholder.
-func RoomsInfoBatchPattern(siteID string) string {
-    return fmt.Sprintf("chat.user.{account}.request.rooms.%s.info.batch", siteID)
+// RoomsInfoBatchSubscribe is the per-site subscription subject for room-service.
+// Same value as RoomsInfoBatch — no wildcard needed for server-scoped subjects.
+func RoomsInfoBatchSubscribe(siteID string) string {
+    return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
 }
 ```
 
@@ -127,7 +122,7 @@ Expected: no warnings.
 
 ```bash
 git add pkg/subject/subject.go pkg/subject/subject_test.go
-git commit -m "feat(subject): add RoomsInfoBatch subject builders"
+git commit -m "feat(subject): add RoomsInfoBatch and RoomsInfoBatchSubscribe subject builders"
 ```
 
 ---
@@ -178,7 +173,7 @@ func TestRoomInfoJSON(t *testing.T) {
 		}
 	})
 
-	t.Run("found=false omits optional fields but keeps lastMsgAt", func(t *testing.T) {
+	t.Run("found=false omits optional fields including lastMsgAt", func(t *testing.T) {
 		src := model.RoomInfo{
 			RoomID: "r1",
 			Found:  false,
@@ -196,17 +191,13 @@ func TestRoomInfoJSON(t *testing.T) {
 		assert.True(t, foundPresent, "found must be present")
 		assert.Equal(t, false, foundVal)
 
-		lastMsgAtVal, lastMsgAtPresent := raw["lastMsgAt"]
-		assert.True(t, lastMsgAtPresent, "lastMsgAt must be present even when zero")
-		assert.Equal(t, float64(0), lastMsgAtVal)
-
-		for _, key := range []string{"siteId", "name", "privateKey", "keyVersion", "error"} {
+		for _, key := range []string{"siteId", "name", "lastMsgAt", "lastMentionAllAt", "privateKey", "keyVersion", "error"} {
 			_, present := raw[key]
 			assert.False(t, present, "%q should be omitted", key)
 		}
 	})
 
-	t.Run("found=true with nil PrivateKey omits privateKey but keeps lastMsgAt", func(t *testing.T) {
+	t.Run("found=true with nil PrivateKey omits privateKey and zero lastMsgAt", func(t *testing.T) {
 		src := model.RoomInfo{
 			RoomID:    "r1",
 			Found:     true,
@@ -220,9 +211,8 @@ func TestRoomInfoJSON(t *testing.T) {
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 
-		lastMsgAtVal, lastMsgAtPresent := raw["lastMsgAt"]
-		assert.True(t, lastMsgAtPresent, "lastMsgAt must be present even when zero")
-		assert.Equal(t, float64(0), lastMsgAtVal)
+		_, lastMsgAtPresent := raw["lastMsgAt"]
+		assert.False(t, lastMsgAtPresent, "lastMsgAt should be omitted when zero (omitempty)")
 
 		_, pkPresent := raw["privateKey"]
 		assert.False(t, pkPresent, "privateKey should be omitted when nil")
@@ -246,9 +236,8 @@ func TestRoomsInfoBatchResponseJSON(t *testing.T) {
 				KeyVersion: &kv,
 			},
 			{
-				RoomID:    "r2",
-				Found:     false,
-				LastMsgAt: 0,
+				RoomID: "r2",
+				Found:  false,
 			},
 		},
 	}
@@ -278,17 +267,19 @@ type RoomsInfoBatchRequest struct {
 }
 
 // RoomInfo is a single aggregated room record: Mongo metadata + Valkey key.
-// LastMsgAt has no omitempty — it is always emitted so callers can distinguish
-// "found, never messaged" (lastMsgAt: 0) from "not found" (found: false).
+// LastMsgAt and LastMentionAllAt use omitempty — 0 means "no message" / "no @all mention"
+// and is omitted from JSON. Callers distinguish "found, never messaged" (lastMsgAt absent,
+// found: true) from "not found" (found: false).
 type RoomInfo struct {
-	RoomID     string  `json:"roomId"`
-	Found      bool    `json:"found"`
-	SiteID     string  `json:"siteId,omitempty"`
-	Name       string  `json:"name,omitempty"`
-	LastMsgAt  int64   `json:"lastMsgAt"`
-	PrivateKey *string `json:"privateKey,omitempty"`
-	KeyVersion *int    `json:"keyVersion,omitempty"`
-	Error      string  `json:"error,omitempty"`
+	RoomID           string  `json:"roomId"`
+	Found            bool    `json:"found"`
+	SiteID           string  `json:"siteId,omitempty"`
+	Name             string  `json:"name,omitempty"`
+	LastMsgAt        int64   `json:"lastMsgAt,omitempty"`
+	LastMentionAllAt int64   `json:"lastMentionAllAt,omitempty"`
+	PrivateKey       *string `json:"privateKey,omitempty"`
+	KeyVersion       *int    `json:"keyVersion,omitempty"`
+	Error            string  `json:"error,omitempty"`
 }
 
 // RoomsInfoBatchResponse contains one entry per requested roomID, in input order.
@@ -871,10 +862,11 @@ import (
 	"context"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
 //go:generate mockgen -destination=mock_store_test.go -package=main . RoomStore
-//go:generate mockgen -destination=mock_keystore_test.go -package=main github.com/hmchangw/chat/pkg/roomkeystore RoomKeyStore
+//go:generate mockgen -destination=mock_keystore_test.go -package=main . RoomKeyStore
 
 type RoomStore interface {
 	CreateRoom(ctx context.Context, room *model.Room) error
@@ -884,6 +876,12 @@ type RoomStore interface {
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 }
+
+// RoomKeyStore is the consumer-side interface for room key operations.
+// Defined locally with only the method the handler needs (not roomkeystore.RoomKeyStore).
+type RoomKeyStore interface {
+	GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error)
+}
 ```
 
 - [ ] **Step 2: Regenerate mocks**
@@ -891,7 +889,7 @@ type RoomStore interface {
 Run: `make generate SERVICE=room-service`
 Expected:
 - `room-service/mock_store_test.go` rewritten — now includes `ListRoomsByIDs` method on `MockRoomStore` plus its recorder.
-- `room-service/mock_keystore_test.go` created — contains `MockRoomKeyStore` with methods `Set`, `Get`, `GetMany`, `GetByVersion`, `Rotate`, `Delete` and a `NewMockRoomKeyStore(ctrl)` constructor.
+- `room-service/mock_keystore_test.go` created — contains `MockRoomKeyStore` with only `GetMany` and a `NewMockRoomKeyStore(ctrl)` constructor.
 
 Verify both files exist and reference the right interfaces:
 
@@ -939,25 +937,24 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type Handler struct {
 	store           RoomStore
-	keyStore        roomkeystore.RoomKeyStore
+	keyStore        RoomKeyStore                                               // local consumer-side interface (not roomkeystore.RoomKeyStore)
 	siteID          string
 	maxRoomSize     int
 	maxBatchSize    int
-	publishToStream func(ctx context.Context, data []byte) error
+	publishToStream func(ctx context.Context, subj string, data []byte) error  // 3 args: ctx, subject, data
 }
 
 func NewHandler(
 	store RoomStore,
-	keyStore roomkeystore.RoomKeyStore,
+	keyStore RoomKeyStore,
 	siteID string,
 	maxRoomSize, maxBatchSize int,
-	publishToStream func(context.Context, []byte) error,
+	publishToStream func(ctx context.Context, subj string, data []byte) error,
 ) *Handler {
 	return &Handler{
 		store:           store,
@@ -981,7 +978,7 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
 		return err
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchWildcard(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
 		return err
 	}
 	return nil
@@ -1102,7 +1099,7 @@ func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([
 		return nil, fmt.Errorf("marshal invite request: %w", err)
 	}
 
-	if err := h.publishToStream(ctx, timestampedData); err != nil {
+	if err := h.publishToStream(ctx, subject.MemberInviteWildcard(h.siteID), timestampedData); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
@@ -1118,12 +1115,12 @@ func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
 
 - [ ] **Step 2: Minimal no-op patch to `main.go` so the package still builds**
 
-Edit `room-service/main.go`. Locate the `NewHandler` call and update it to pass `nil` for the key store and `500` for the batch-size cap (real Valkey wiring arrives in Task 10):
+Edit `room-service/main.go`. Locate the `NewHandler` call and update it to pass `nil` for the key store and `1000` for the batch-size cap (real Valkey wiring arrives in Task 10):
 
 ```go
 store := NewMongoStore(db)
-handler := NewHandler(store, nil, cfg.SiteID, cfg.MaxRoomSize, 500, func(ctx context.Context, data []byte) error {
-    _, err := js.Publish(ctx, subject.MemberInviteWildcard(cfg.SiteID), data)
+handler := NewHandler(store, nil, cfg.SiteID, cfg.MaxRoomSize, 1000, func(ctx context.Context, subj string, data []byte) error {
+    _, err := js.Publish(ctx, subj, data)
     return err
 })
 ```
@@ -1220,7 +1217,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 					t.Errorf("entry 1 = %+v", got.Rooms[1])
 				}
 				if got.Rooms[1].LastMsgAt != 0 {
-					t.Errorf("entry 1 LastMsgAt = %d, want 0", got.Rooms[1].LastMsgAt)
+					t.Errorf("entry 1 LastMsgAt = %d, want 0 (omitted via omitempty)", got.Rooms[1].LastMsgAt)
 				}
 				if got.Rooms[2].RoomID != "r3" || got.Rooms[2].KeyVersion == nil || *got.Rooms[2].KeyVersion != 2 {
 					t.Errorf("entry 2 = %+v", got.Rooms[2])
@@ -1253,8 +1250,8 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 				if got.Rooms[1].RoomID != "missing" || got.Rooms[1].Found || got.Rooms[1].LastMsgAt != 0 {
 					t.Errorf("entry 1 = %+v, want RoomID=missing Found=false LastMsgAt=0", got.Rooms[1])
 				}
-				if !strings.Contains(string(resp), `"lastMsgAt":0`) {
-					t.Errorf("expected lastMsgAt:0 present in payload, got %s", string(resp))
+				if strings.Contains(string(resp), `"lastMsgAt"`) {
+					t.Errorf("expected lastMsgAt omitted for zero values (omitempty), got %s", string(resp))
 				}
 			},
 		},
@@ -1378,7 +1375,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 				maxBatchSize: tc.maxBatchSize,
 			}
 
-			resp, err := h.handleRoomsInfoBatch(context.Background(), "tester", tc.payload)
+			resp, err := h.handleRoomsInfoBatch(context.Background(), tc.payload)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
@@ -1421,10 +1418,10 @@ Replace the placeholder `natsRoomsInfoBatch` at the bottom of `handler.go` with:
 
 ```go
 func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
-	account, _, _ := subject.ParseUserRoomSiteSubject(m.Msg.Subject) // best-effort; empty if parse fails
-	resp, err := h.handleRoomsInfoBatch(m.Context(), account, m.Msg.Data)
+	resp, err := h.handleRoomsInfoBatch(m.Context(), m.Msg.Data)
 	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
+		slog.Error("rooms info batch failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -1432,7 +1429,7 @@ func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
 	}
 }
 
-func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data []byte) ([]byte, error) {
+func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte, error) {
 	start := time.Now()
 	var req model.RoomsInfoBatchRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -1463,7 +1460,7 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		r, err := h.store.ListRoomsByIDs(gctx, req.RoomIDs)
+		r, err := chunkedListRooms(gctx, h.store, req.RoomIDs)
 		if err != nil {
 			return fmt.Errorf("list rooms by ids: %w", err)
 		}
@@ -1471,7 +1468,7 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data
 		return nil
 	})
 	g.Go(func() error {
-		k, err := h.keyStore.GetMany(gctx, req.RoomIDs)
+		k, err := chunkedGetKeys(gctx, h.keyStore, req.RoomIDs)
 		if err != nil {
 			return fmt.Errorf("get room keys: %w", err)
 		}
@@ -1494,8 +1491,7 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data
 			keyedCount++
 		}
 	}
-	slog.Info("rooms info batch handled",
-		"account", account,
+	slog.Debug("rooms info batch handled",
 		"site_id", h.siteID,
 		"batch_size", len(req.RoomIDs),
 		"found_count", foundCount,
@@ -1599,7 +1595,7 @@ type config struct {
 	MongoURI     string `env:"MONGO_URI"      envDefault:"mongodb://localhost:27017"`
 	MongoDB      string `env:"MONGO_DB"       envDefault:"chat"`
 	MaxRoomSize  int    `env:"MAX_ROOM_SIZE"  envDefault:"1000"`
-	MaxBatchSize int    `env:"MAX_BATCH_SIZE" envDefault:"500"`
+	MaxBatchSize int    `env:"MAX_BATCH_SIZE" envDefault:"1000"`
 
 	ValkeyAddr        string        `env:"VALKEY_ADDR,required"`
 	ValkeyPassword    string        `env:"VALKEY_PASSWORD" envDefault:""`
@@ -1660,8 +1656,8 @@ func main() {
 	}
 
 	store := NewMongoStore(db)
-	handler := NewHandler(store, keyStore, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, func(ctx context.Context, data []byte) error {
-		_, err := js.Publish(ctx, subject.MemberInviteWildcard(cfg.SiteID), data)
+	handler := NewHandler(store, keyStore, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, func(ctx context.Context, subj string, data []byte) error {
+		_, err := js.Publish(ctx, subj, data)
 		return err
 	})
 
@@ -1682,6 +1678,12 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+		func(ctx context.Context) error {
+			if c, ok := keyStore.(interface{ Close() error }); ok {
+				return c.Close()
+			}
+			return nil
+		},
 	)
 }
 ```
@@ -1762,7 +1764,7 @@ services:
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
       - MAX_ROOM_SIZE=1000
-      - MAX_BATCH_SIZE=500
+      - MAX_BATCH_SIZE=1000
       - VALKEY_ADDR=valkey:6379
       - VALKEY_KEY_GRACE_PERIOD=24h
     depends_on:
@@ -1967,7 +1969,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNC.Drain() })
 
-	handler := NewHandler(store, keyStore, "site-a", 1000, 500, func(context.Context, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, "site-a", 1000, 1000, func(_ context.Context, _ string, _ []byte) error { return nil })
 	require.NoError(t, handler.RegisterCRUD(otelNC))
 
 	nc, err := nats.Connect(natsURL)
@@ -1978,7 +1980,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
 
-	msg, err := nc.Request(subject.RoomsInfoBatch("tester", "site-a"), data, 3*time.Second)
+	msg, err := nc.Request(subject.RoomsInfoBatch("site-a"), data, 3*time.Second)
 	require.NoError(t, err)
 
 	var resp model.RoomsInfoBatchResponse

@@ -236,7 +236,7 @@ Inside `RegisterCRUD`:
 
 ```go
 if _, err := nc.QueueSubscribe(
-    subject.RoomsInfoBatchWildcard(h.siteID), queue, h.natsRoomsInfoBatch,
+    subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch,
 ); err != nil {
     return err
 }
@@ -266,7 +266,7 @@ type config struct {
     MongoURI     string `env:"MONGO_URI"      envDefault:"mongodb://localhost:27017"`
     MongoDB      string `env:"MONGO_DB"       envDefault:"chat"`
     MaxRoomSize  int    `env:"MAX_ROOM_SIZE"  envDefault:"1000"`
-    MaxBatchSize int    `env:"MAX_BATCH_SIZE" envDefault:"500"`
+    MaxBatchSize int    `env:"MAX_BATCH_SIZE" envDefault:"1000"`
 
     ValkeyAddr        string        `env:"VALKEY_ADDR,required"`
     ValkeyPassword    string        `env:"VALKEY_PASSWORD" envDefault:""`
@@ -296,9 +296,21 @@ Handler constructor takes the new `keyStore` and `MaxBatchSize`.
 
 ### 6.3 Shutdown
 
-No change. `roomkeystore` does not yet expose a close hook; process exit
-releases the redis client. If a close hook is added later, this spec's
-shutdown chain can be updated then.
+`valkeyStore` exposes a `Close() error` method. In `main.go`, `shutdown.Wait`
+includes a Valkey close hook via type assertion on the `RoomKeyStore`:
+
+```go
+shutdown.Wait(ctx, 25*time.Second,
+    func(ctx context.Context) error { return nc.Drain() },
+    func(ctx context.Context) error { return tracerShutdown(ctx) },
+    func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+    func(ctx context.Context) error {
+        if c, ok := keyStore.(interface{ Close() error }); ok {
+            return c.Close()
+        }
+        return nil
+    },
+)
 
 ### 6.4 docker-compose
 
@@ -320,9 +332,9 @@ green, refactor, commit.
 
 ### 7.1 `pkg/subject`
 
-Unit tests in `subject_test.go` for `RoomsInfoBatch`,
-`RoomsInfoBatchWildcard`, `RoomsInfoBatchPattern`. Assert exact string
-output; assert wildcard ≠ specific form.
+Unit tests in `subject_test.go` for `RoomsInfoBatch` and
+`RoomsInfoBatchSubscribe`. Assert exact string output; both return the
+same value (server-scoped, no wildcard needed).
 
 ### 7.2 `pkg/model` roundtrip
 
@@ -330,9 +342,10 @@ Add the three new types to the generic `roundTrip` helper in `model_test.go`.
 Dedicated tests for:
 
 - `PrivateKey=nil` → field omitted.
-- `LastMsgAt=0` → field present with value `0` (no `omitempty`).
-- `Found=false` → `siteId`, `name`, `privateKey`, `keyVersion`, `error` all
-  omitted; `lastMsgAt` present as `0`.
+- `LastMsgAt=0` → field omitted (`omitempty`; 0 = "no message").
+- `LastMentionAllAt=0` → field omitted (`omitempty`; 0 = "no @all mention").
+- `Found=false` → `siteId`, `name`, `lastMsgAt`, `lastMentionAllAt`,
+  `privateKey`, `keyVersion`, `error` all omitted.
 - Base64 roundtrip on a 32-byte private key.
 
 ### 7.3 `pkg/roomkeystore.GetMany` unit tests
@@ -392,7 +405,7 @@ Add `TestRoomsInfoBatchRPC` to `room-service/integration_test.go`:
 - Start the handler with real stores.
 - Seed 3 rooms in Mongo with differing `LastMsgAt`; seed 2 rooms' keys in
   Valkey.
-- Issue a NATS request on `chat.user.tester.request.rooms.<siteID>.info.batch`
+- Issue a NATS request on `chat.server.request.room.<siteID>.info.batch`
   with all 3 IDs + 1 missing ID.
 - Assert response has 4 entries, input order preserved, correct `Found`,
   `PrivateKey` present on 2, `PrivateKey` nil on 1, `Found=false` on the
@@ -413,8 +426,7 @@ Add `TestRoomsInfoBatchRPC` to `room-service/integration_test.go`:
   model; initial implementation fails the whole batch on backend errors).
 - Strict auth gating on this RPC beyond existing NATS trust (if stricter auth
   is needed, that's a separate project scoped with the auth-callout service).
-- Close-hook support in `pkg/roomkeystore` (revisit when the package adds
-  one).
+- ~~Close-hook support in `pkg/roomkeystore`~~ — implemented: `valkeyStore.Close()` is called via type assertion in `shutdown.Wait`.
 
 ## 9. Risks and mitigations
 
