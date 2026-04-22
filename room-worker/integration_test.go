@@ -63,7 +63,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test IncrementUserCount
-	if err := store.IncrementUserCount(ctx, "r1"); err != nil {
+	if err := store.IncrementUserCount(ctx, "r1", 1); err != nil {
 		t.Fatalf("IncrementUserCount: %v", err)
 	}
 	room, err := store.GetRoom(ctx, "r1")

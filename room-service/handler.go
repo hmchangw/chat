@@ -52,6 +52,12 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MemberAddWildcard(h.siteID), queue, h.natsAddMembers); err != nil {
 		return fmt.Errorf("subscribe member add: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.MemberListWildcard(h.siteID), queue, h.natsListMembers); err != nil {
+		return fmt.Errorf("subscribe member list: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(), queue, h.natsListOrgMembers); err != nil {
+		return fmt.Errorf("subscribe org members: %w", err)
+	}
 	return nil
 }
 
@@ -149,6 +155,75 @@ func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
 	if err := m.Msg.Respond(resp); err != nil {
 		slog.Error("failed to respond to message", "error", err)
 	}
+}
+
+func (h *Handler) natsListMembers(m otelnats.Msg) {
+	resp, err := h.handleListMembers(m.Context(), m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("list members failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	natsutil.ReplyJSON(m.Msg, resp)
+}
+
+func (h *Handler) natsListOrgMembers(m otelnats.Msg) {
+	resp, err := h.handleListOrgMembers(m.Context(), m.Msg.Subject)
+	if err != nil {
+		slog.Error("list org members failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	natsutil.ReplyJSON(m.Msg, resp)
+}
+
+func (h *Handler) handleListOrgMembers(ctx context.Context, subj string) (model.ListOrgMembersResponse, error) {
+	orgID, ok := subject.ParseOrgMembersSubject(subj)
+	if !ok {
+		return model.ListOrgMembersResponse{}, fmt.Errorf("invalid org-members subject")
+	}
+	members, err := h.store.ListOrgMembers(ctx, orgID)
+	if err != nil {
+		if errors.Is(err, errInvalidOrg) {
+			return model.ListOrgMembersResponse{}, errInvalidOrg
+		}
+		return model.ListOrgMembersResponse{}, fmt.Errorf("get org members: %w", err)
+	}
+	return model.ListOrgMembersResponse{Members: members}, nil
+}
+
+func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byte) (model.ListRoomMembersResponse, error) {
+	requesterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return model.ListRoomMembersResponse{}, fmt.Errorf("invalid list-members subject")
+	}
+
+	_, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
+	switch {
+	case errors.Is(err, model.ErrSubscriptionNotFound):
+		return model.ListRoomMembersResponse{}, errNotRoomMember
+	case err != nil:
+		return model.ListRoomMembersResponse{}, fmt.Errorf("check room membership: %w", err)
+	}
+
+	var req model.ListRoomMembersRequest
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &req); err != nil {
+			return model.ListRoomMembersResponse{}, fmt.Errorf("invalid request: %w", err)
+		}
+	}
+	if req.Limit != nil && *req.Limit <= 0 {
+		return model.ListRoomMembersResponse{}, fmt.Errorf("limit must be > 0")
+	}
+	if req.Offset != nil && *req.Offset < 0 {
+		return model.ListRoomMembersResponse{}, fmt.Errorf("offset must be >= 0")
+	}
+
+	members, err := h.store.ListRoomMembers(ctx, roomID, req.Limit, req.Offset, req.Enrich)
+	if err != nil {
+		return model.ListRoomMembersResponse{}, fmt.Errorf("get room members: %w", err)
+	}
+	return model.ListRoomMembersResponse{Members: members}, nil
 }
 
 func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []byte) ([]byte, error) {
@@ -456,7 +531,8 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 
 	// Build set of channels that have room_members
 	channelsWithMembers := make(map[string]struct{})
-	for _, rm := range roomMembers {
+	for i := range roomMembers {
+		rm := &roomMembers[i]
 		channelsWithMembers[rm.RoomID] = struct{}{}
 		switch rm.Member.Type {
 		case model.RoomMemberOrg:

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -892,6 +893,136 @@ func TestMemberAddEventJSON(t *testing.T) {
 	var dst model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Equal(t, src, dst)
+}
+
+func TestListRoomMembersRequestJSON(t *testing.T) {
+	t.Run("with limit and offset", func(t *testing.T) {
+		limit, offset := 10, 5
+		r := model.ListRoomMembersRequest{Limit: &limit, Offset: &offset}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		var dst model.ListRoomMembersRequest
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.Limit)
+		require.NotNil(t, dst.Offset)
+		assert.Equal(t, 10, *dst.Limit)
+		assert.Equal(t, 5, *dst.Offset)
+	})
+
+	t.Run("omitempty when nil", func(t *testing.T) {
+		r := model.ListRoomMembersRequest{}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		assert.Equal(t, "{}", string(data))
+	})
+
+	t.Run("with enrich true", func(t *testing.T) {
+		r := model.ListRoomMembersRequest{Enrich: true}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		assert.Equal(t, `{"enrich":true}`, string(data))
+
+		var dst model.ListRoomMembersRequest
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.True(t, dst.Enrich)
+	})
+}
+
+func TestListRoomMembersResponseJSON(t *testing.T) {
+	resp := model.ListRoomMembersResponse{
+		Members: []model.RoomMember{
+			{
+				ID:     "rm1",
+				RoomID: "r1",
+				Ts:     time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+				Member: model.RoomMemberEntry{ID: "alice", Type: model.RoomMemberIndividual, Account: "alice"},
+			},
+		},
+	}
+	data, err := json.Marshal(&resp)
+	require.NoError(t, err)
+	var dst model.ListRoomMembersResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, resp, dst)
+}
+
+func TestRoomMemberEntry_DisplayFields_JSON(t *testing.T) {
+	entry := model.RoomMemberEntry{
+		ID: "u1", Type: model.RoomMemberIndividual, Account: "alice",
+		EngName: "Alice Wang", ChineseName: "愛麗絲", IsOwner: true,
+	}
+	data, err := json.Marshal(&entry)
+	require.NoError(t, err)
+
+	// JSON carries all fields, including the display ones.
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "u1", got["id"])
+	assert.Equal(t, "individual", got["type"])
+	assert.Equal(t, "alice", got["account"])
+	assert.Equal(t, "Alice Wang", got["engName"])
+	assert.Equal(t, "愛麗絲", got["chineseName"])
+	assert.Equal(t, true, got["isOwner"])
+}
+
+func TestRoomMemberEntry_DisplayFields_OmittedWhenZero(t *testing.T) {
+	entry := model.RoomMemberEntry{
+		ID: "u1", Type: model.RoomMemberIndividual, Account: "alice",
+	}
+	data, err := json.Marshal(&entry)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(data, &got))
+	for _, k := range []string{"engName", "chineseName", "isOwner", "sectName", "memberCount"} {
+		_, present := got[k]
+		assert.False(t, present, "display field %q should be omitted when zero", k)
+	}
+}
+
+func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
+	entry := model.RoomMemberEntry{
+		ID: "org-1", Type: model.RoomMemberOrg,
+		SectName: "Engineering", MemberCount: 42,
+	}
+	data, err := bson.Marshal(&entry)
+	require.NoError(t, err)
+
+	var got bson.M
+	require.NoError(t, bson.Unmarshal(data, &got))
+	assert.Equal(t, "org-1", got["id"])
+	assert.Equal(t, "org", got["type"])
+	for _, k := range []string{"engName", "chineseName", "isOwner", "sectName", "memberCount"} {
+		_, present := got[k]
+		assert.False(t, present, "display field %q must not be persisted to BSON", k)
+	}
+}
+
+func TestOrgMemberJSON(t *testing.T) {
+	m := model.OrgMember{
+		ID:          "u-alice",
+		Account:     "alice",
+		EngName:     "Alice Wang",
+		ChineseName: "愛麗絲",
+		SiteID:      "site-a",
+	}
+	data, err := json.Marshal(&m)
+	require.NoError(t, err)
+	var dst model.OrgMember
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, m, dst)
+}
+
+func TestListOrgMembersResponseJSON(t *testing.T) {
+	resp := model.ListOrgMembersResponse{
+		Members: []model.OrgMember{
+			{ID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲", SiteID: "site-a"},
+		},
+	}
+	data, err := json.Marshal(&resp)
+	require.NoError(t, err)
+	var dst model.ListOrgMembersResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, resp, dst)
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.

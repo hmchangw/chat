@@ -17,6 +17,8 @@ var (
 	errCannotDemoteLast = errors.New("cannot demote the last owner")
 	errRoomTypeGuard    = errors.New("role update is only allowed in group rooms")
 	errTargetNotMember  = errors.New("target user is not a member of this room")
+	errNotRoomMember    = errors.New("only room members can list members")
+	errInvalidOrg       = errors.New("invalid org")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
@@ -62,7 +64,9 @@ func sanitizeError(err error) string {
 		errors.Is(err, errNotOwner),
 		errors.Is(err, errCannotDemoteLast),
 		errors.Is(err, errRoomTypeGuard),
-		errors.Is(err, errTargetNotMember):
+		errors.Is(err, errTargetNotMember),
+		errors.Is(err, errNotRoomMember),
+		errors.Is(err, errInvalidOrg):
 		return err.Error()
 	default:
 		msg := err.Error()

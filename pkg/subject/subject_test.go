@@ -68,6 +68,14 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.request.room.r1.site-a.member.add"},
 		{"MemberEvent", subject.MemberEvent("r1"),
 			"chat.room.r1.event.member"},
+		{"MemberList", subject.MemberList("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.member.list"},
+		{"MemberListWildcard", subject.MemberListWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.member.list"},
+		{"OrgMembers", subject.OrgMembers("alice", "sect-eng"),
+			"chat.user.alice.request.orgs.sect-eng.members"},
+		{"OrgMembersWildcard", subject.OrgMembersWildcard(),
+			"chat.user.*.request.orgs.*.members"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -184,6 +192,33 @@ func TestWildcardPatterns(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.got != tt.want {
 				t.Errorf("got %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseOrgMembersSubject(t *testing.T) {
+	tests := []struct {
+		name    string
+		subj    string
+		wantOrg string
+		wantOK  bool
+	}{
+		{"valid", "chat.user.alice.request.orgs.sect-eng.members", "sect-eng", true},
+		{"wrong prefix", "chat.user.alice.request.rooms.get.r1", "", false},
+		{"wrong suffix", "chat.user.alice.request.orgs.sect-eng.other", "", false},
+		{"too short", "chat.user.alice.request.orgs", "", false},
+		{"too long", "chat.user.alice.request.orgs.sect-eng.members.x", "", false},
+		{"empty", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := subject.ParseOrgMembersSubject(tt.subj)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got != tt.wantOrg {
+				t.Errorf("orgID = %q, want %q", got, tt.wantOrg)
 			}
 		})
 	}

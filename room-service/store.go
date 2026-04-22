@@ -38,4 +38,13 @@ type RoomStore interface {
 	GetRoomMembersByRooms(ctx context.Context, roomIDs []string) ([]model.RoomMember, error)
 	GetAccountsByRooms(ctx context.Context, roomIDs []string) ([]string, error)
 	ResolveAccounts(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error)
+	// ListRoomMembers returns the members of roomID. When enrich=true, the
+	// returned RoomMember.Member entries carry display fields populated via
+	// $lookup stages against users and subscriptions. When enrich=false,
+	// display fields are left zero.
+	ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error)
+	// ListOrgMembers returns all users whose sectId equals orgID, projected
+	// as OrgMember rows sorted by account ascending. Returns errInvalidOrg
+	// when no users match (treated as "orgId is not valid").
+	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
 }

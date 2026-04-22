@@ -42,6 +42,14 @@ type RoomMemberEntry struct {
 	ID      string         `json:"id"                bson:"id"`
 	Type    RoomMemberType `json:"type"              bson:"type"`
 	Account string         `json:"account,omitempty" bson:"account,omitempty"`
+
+	// Display fields — never persisted (bson:"-"); populated only when
+	// ListRoomMembers is called with enrich=true. Elided from JSON when zero.
+	EngName     string `json:"engName,omitempty"     bson:"-"`
+	ChineseName string `json:"chineseName,omitempty" bson:"-"`
+	IsOwner     bool   `json:"isOwner,omitempty"     bson:"-"`
+	SectName    string `json:"sectName,omitempty"    bson:"-"`
+	MemberCount int    `json:"memberCount,omitempty" bson:"-"`
 }
 
 type RemoveMemberRequest struct {
@@ -73,4 +81,30 @@ type MembersAdded struct {
 	Orgs            []string `json:"orgs"`
 	Channels        []string `json:"channels"`
 	AddedUsersCount int      `json:"addedUsersCount"`
+}
+
+type ListRoomMembersRequest struct {
+	Limit  *int `json:"limit,omitempty"`
+	Offset *int `json:"offset,omitempty"`
+	Enrich bool `json:"enrich,omitempty"`
+}
+
+type ListRoomMembersResponse struct {
+	Members []RoomMember `json:"members"`
+}
+
+// OrgMember is the wire projection returned by the list-org-members endpoint.
+// Only fields the UI actually renders are included — EmployeeID, SectID, and
+// SectName are intentionally omitted (redundant or irrelevant for the caller,
+// who already knows which orgId they asked about).
+type OrgMember struct {
+	ID          string `json:"id"          bson:"_id"`
+	Account     string `json:"account"     bson:"account"`
+	EngName     string `json:"engName"     bson:"engName"`
+	ChineseName string `json:"chineseName" bson:"chineseName"`
+	SiteID      string `json:"siteId"      bson:"siteId"`
+}
+
+type ListOrgMembersResponse struct {
+	Members []OrgMember `json:"members"`
 }
