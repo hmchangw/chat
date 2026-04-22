@@ -47,12 +47,12 @@ func (s *ConsumerSampler) Run(ctx context.Context) {
 func (s *ConsumerSampler) sampleOnce(ctx context.Context) {
 	cons, err := s.js.Consumer(ctx, s.stream, s.durable)
 	if err != nil {
-		slog.Debug("consumer lookup failed", "stream", s.stream, "durable", s.durable, "error", err)
+		slog.Warn("consumer lookup failed", "stream", s.stream, "durable", s.durable, "error", err)
 		return
 	}
 	info, err := cons.Info(ctx)
 	if err != nil {
-		slog.Debug("consumer info failed", "stream", s.stream, "durable", s.durable, "error", err)
+		slog.Warn("consumer info failed", "stream", s.stream, "durable", s.durable, "error", err)
 		return
 	}
 	pending := info.NumPending
@@ -84,6 +84,9 @@ func (s *ConsumerSampler) sampleOnce(ctx context.Context) {
 }
 
 // Snapshot returns a ConsumerStat from what has been observed so far.
+// Must only be called after Run has returned (i.e., after the context
+// passed to Run has been cancelled and its goroutine has exited);
+// concurrent calls to Snapshot while Run is still ticking are unsafe.
 func (s *ConsumerSampler) Snapshot() ConsumerStat {
 	return ConsumerStat{
 		Stream:         s.stream,

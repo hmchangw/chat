@@ -44,7 +44,8 @@ type ConsumerStat struct {
 	PeakPending    uint64
 	FinalPending   uint64
 	PeakAckPending uint64
-	Redelivered    uint64
+	// Redelivered is the final (at-shutdown) value of NumRedelivered, not a cumulative total.
+	Redelivered uint64
 }
 
 // Summary is the full end-of-run report.
