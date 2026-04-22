@@ -19,7 +19,7 @@ We've now decided to move restricted-room tracking into the user-room ES doc its
 2. Update painless scripts so `member_added` routes events into either `rooms[]` or `restrictedRooms{}` based on `HistorySharedSince`.
 3. Change `HistorySharedSince` on `InboxMemberEvent` and `MemberAddEvent` from `int64` to `*int64` with `omitempty`, ending the zero-vs-unset ambiguity.
 4. Keep the LWW guard via `roomTimestamps` working across both paths.
-5. Add a `tshow` boolean field to `pkg/model.Message` and propagate it to the message ES index, unlocking the restricted-user "also shown in channel" thread-reply visibility branch (Clause B1) that the companion search-service spec depends on.
+5. Add a `tshow` boolean field to `pkg/model.Message`, bind it in the `message-worker` Cassandra inserts (the column already exists in the DDL but was never written), and propagate it to the message ES index — unlocking the restricted-user "also shown in channel" thread-reply visibility branch (Clause B1) that the companion search-service spec depends on.
 
 ## Non-Goals
 
@@ -159,6 +159,47 @@ return MessageSearchIndex{
     TShow: evt.Message.TShow,
 }
 ```
+
+### `message-worker/store_cassandra.go` — bind `tshow` in inserts
+
+The `tshow` column already exists in the Cassandra DDL (`docker-local/cassandra/init/10-table-messages_by_room.cql`, `13-table-messages_by_id.cql`) and in the UDT/row struct (`pkg/model/cassandra/message.go`), but `message-worker` was not binding the column on insert, so the value was always persisted as NULL and read back as `false`. Fix all three INSERT statements to include `tshow`:
+
+**`SaveMessage`** — add `tshow` to both `messages_by_room` and `messages_by_id` inserts:
+
+```go
+// messages_by_room
+`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, tshow)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
+toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow,
+
+// messages_by_id
+`INSERT INTO messages_by_id (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, tshow)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt,
+toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow,
+```
+
+**`SaveThreadMessage`** — add `tshow` to the `messages_by_id` insert:
+
+```go
+`INSERT INTO messages_by_id
+ (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
+  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data, tshow)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt,
+toMentionSet(msg.Mentions),
+threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt,
+msg.Type, msg.SysMsgData, msg.TShow,
+```
+
+No DDL or UDT struct change needed — the column was already declared. This is a pure wiring fix.
+
+**Integration test coverage:**
+
+- `TestCassandraStore_SaveMessage_TShowPersisted` — insert a `Message{TShow: true}`, read back, assert the column is `true`.
+- `TestCassandraStore_SaveThreadMessage_TShowPersisted` — same for thread reply inserts into `messages_by_id`.
+- `TestCassandraStore_SaveMessage_TShowDefault` — insert a `Message{}` (TShow defaults to false), read back, assert false.
 
 ### user-room index template mapping delta
 
