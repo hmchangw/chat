@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -74,4 +75,52 @@ func TestCollector_WarmupDiscards(t *testing.T) {
 	c.DiscardBefore(warmupEnd)
 	require.Equal(t, 1, c.E1Count())
 	assert.Equal(t, []time.Duration{5 * time.Millisecond}, c.E1Samples())
+}
+
+func TestCollector_E2UnknownIgnored(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	c.RecordBroadcast("unknown", time.Unix(0, 0))
+	assert.Equal(t, 0, c.E2Count())
+}
+
+func TestCollector_SamplesReturnedSorted(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	now := time.Unix(0, 0)
+	// Publish three messages, record replies in a non-sorted order.
+	c.RecordPublish("r-1", "m-1", now)
+	c.RecordPublish("r-2", "m-2", now)
+	c.RecordPublish("r-3", "m-3", now)
+	c.RecordReply("r-1", now.Add(10*time.Millisecond))
+	c.RecordReply("r-2", now.Add(2*time.Millisecond))
+	c.RecordReply("r-3", now.Add(7*time.Millisecond))
+	assert.Equal(t, []time.Duration{
+		2 * time.Millisecond, 7 * time.Millisecond, 10 * time.Millisecond,
+	}, c.E1Samples())
+}
+
+func TestCollector_ConcurrentRecordAndSnapshot(t *testing.T) {
+	// Race-detector-friendly stress: one goroutine records publishes and
+	// replies; another polls E1Samples. Verifies that no data race occurs
+	// when snapshots are taken concurrently with mutations.
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	now := time.Unix(0, 0)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			rid := "r-" + strconv.Itoa(i)
+			mid := "m-" + strconv.Itoa(i)
+			c.RecordPublish(rid, mid, now)
+			c.RecordReply(rid, now.Add(time.Duration(i)*time.Microsecond))
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		_ = c.E1Samples()
+	}
+	<-done
+	require.GreaterOrEqual(t, c.E1Count(), 1)
 }

@@ -113,17 +113,21 @@ func (c *Collector) E2Count() int {
 
 // E1Samples returns a sorted copy of E1 latencies for tests/reporting.
 func (c *Collector) E1Samples() []time.Duration {
-	return c.snapshotLatencies(c.e1)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.snapshotLatenciesLocked(c.e1)
 }
 
 // E2Samples returns a sorted copy of E2 latencies for tests/reporting.
 func (c *Collector) E2Samples() []time.Duration {
-	return c.snapshotLatencies(c.e2)
-}
-
-func (c *Collector) snapshotLatencies(in []sample) []time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.snapshotLatenciesLocked(c.e2)
+}
+
+// snapshotLatenciesLocked copies and sorts latencies from in.
+// Callers must hold c.mu before calling this method.
+func (c *Collector) snapshotLatenciesLocked(in []sample) []time.Duration {
 	out := make([]time.Duration, len(in))
 	for i := range in {
 		out[i] = in[i].latency
