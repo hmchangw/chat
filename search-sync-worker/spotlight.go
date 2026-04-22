@@ -62,7 +62,11 @@ func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkActio
 	// contract. Spotlight keeps the MVP skip for restricted rooms — the
 	// user-room collection (not spotlight) carries restricted-room membership
 	// now that it has a `restrictedRooms{}` map on the ES doc.
-	if payload.HistorySharedSince != nil {
+	//
+	// Mirror user_room.go's `hss > 0` painless sentinel: a leaked `&0` (or
+	// non-positive) pointer is treated as unrestricted by both indices so
+	// they don't diverge on a publisher contract violation.
+	if payload.HistorySharedSince != nil && *payload.HistorySharedSince > 0 {
 		return nil, nil
 	}
 	if len(payload.Accounts) == 0 {

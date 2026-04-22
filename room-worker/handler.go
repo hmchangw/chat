@@ -622,10 +622,18 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)
 	// historySharedSincePtr is nil for unrestricted rooms — publishers MUST
 	// NOT emit &0, the painless sentinel `hss <= 0` treats that as unrestricted.
+	// If HistoryModeNone is set but Timestamp is missing, leave the pointer nil
+	// and log — an upstream bug we can't silently translate to `&0` because
+	// downstream user-room would then misroute the restricted room into rooms[].
 	var historySharedSincePtr *int64
 	if req.History.Mode == model.HistoryModeNone {
-		v := req.Timestamp
-		historySharedSincePtr = &v
+		if req.Timestamp > 0 {
+			v := req.Timestamp
+			historySharedSincePtr = &v
+		} else {
+			slog.Error("restricted history with missing timestamp, emitting nil",
+				"roomID", req.RoomID, "mode", req.History.Mode)
+		}
 	}
 	memberAddEvt := model.MemberAddEvent{
 		Type:               "member_added",
