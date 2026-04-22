@@ -28,9 +28,9 @@ func TestLastToken(t *testing.T) {
 
 func TestCounterValue(t *testing.T) {
 	m := NewMetrics()
-	m.Published.WithLabelValues("small").Inc()
-	m.Published.WithLabelValues("small").Inc()
-	m.Published.WithLabelValues("medium").Inc()
+	m.Published.WithLabelValues("small", "measured").Inc()
+	m.Published.WithLabelValues("small", "measured").Inc()
+	m.Published.WithLabelValues("medium", "measured").Inc()
 	assert.Equal(t, float64(3), counterValue(m, "loadgen_published_total"))
 	assert.Equal(t, float64(0), counterValue(m, "nonexistent_metric"))
 }
@@ -110,7 +110,7 @@ func TestNewNatsCorePublisher_FieldWiring(t *testing.T) {
 
 func TestMetricsHandler_ServesOpenMetrics(t *testing.T) {
 	m := NewMetrics()
-	m.Published.WithLabelValues("small").Inc()
+	m.Published.WithLabelValues("small", "measured").Inc()
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, req)

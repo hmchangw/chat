@@ -251,20 +251,21 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	publisher := newNatsCorePublisher(nc.NatsConn(), injectMode, js)
 
+	warmupDeadline := time.Now().Add(*warmup)
 	gen := NewGenerator(&GeneratorConfig{
-		Preset:    &p,
-		Fixtures:  fixtures,
-		SiteID:    cfg.SiteID,
-		Rate:      *rate,
-		Inject:    injectMode,
-		Publisher: publisher,
-		Metrics:   metrics,
-		Collector: collector,
+		Preset:         &p,
+		Fixtures:       fixtures,
+		SiteID:         cfg.SiteID,
+		Rate:           *rate,
+		Inject:         injectMode,
+		Publisher:      publisher,
+		Metrics:        metrics,
+		Collector:      collector,
+		WarmupDeadline: warmupDeadline,
 	}, *seed)
 
 	runCtx, cancelRun := context.WithTimeout(ctx, *duration)
 	defer cancelRun()
-	warmupDeadline := time.Now().Add(*warmup)
 	genErr := gen.Run(runCtx)
 	// Wait up to 2 seconds for trailing replies and broadcasts to arrive.
 	time.Sleep(2 * time.Second)
@@ -290,15 +291,18 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 	publishErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "", "")
 	gkErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "reason", "gatekeeper")
-	sent := int(gatheredCounterValue(mfs, "loadgen_published_total", "preset", p.Name))
+	sentWarmup := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "warmup"))
+	sentMeasured := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "measured"))
+	sent := sentWarmup + sentMeasured
 	measured := *duration - *warmup
 	actualRate := 0.0
 	if measured > 0 {
 		// In canonical mode, byReqID is never populated, so E1Count/missingReplies
-		// are both 0. Fall back to `sent` to compute the true publish rate.
+		// are both 0. Fall back to sentMeasured to compute the true publish rate
+		// for the measured window only.
 		switch injectMode {
 		case InjectCanonical:
-			actualRate = float64(sent) / measured.Seconds()
+			actualRate = float64(sentMeasured) / measured.Seconds()
 		default:
 			actualRate = float64(collector.E1Count()+missingReplies) / measured.Seconds()
 		}
@@ -314,6 +318,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		Warmup:            *warmup,
 		Inject:            *inject,
 		Sent:              sent,
+		SentMeasured:      sentMeasured,
 		PublishErrors:     int(publishErrs - gkErrs),
 		GatekeeperErrors:  int(gkErrs),
 		MissingReplies:    missingReplies,
@@ -335,7 +340,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 
 	totalErrs := summary.PublishErrors + summary.GatekeeperErrors + summary.MissingReplies + summary.MissingBroadcasts
-	return DetermineExitCode(summary.Sent, totalErrs)
+	return DetermineExitCode(summary.SentMeasured, totalErrs)
 }
 
 type natsCorePublisher struct {

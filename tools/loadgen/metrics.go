@@ -30,8 +30,8 @@ func NewMetrics() *Metrics {
 	m := &Metrics{
 		Registry: r,
 		Published: prometheus.NewCounterVec(
-			prometheus.CounterOpts{Name: "loadgen_published_total", Help: "Messages published."},
-			[]string{"preset"},
+			prometheus.CounterOpts{Name: "loadgen_published_total", Help: "Messages published by preset and phase (warmup|measured)."},
+			[]string{"preset", "phase"},
 		),
 		PublishErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Name: "loadgen_publish_errors_total", Help: "Publish-side errors."},

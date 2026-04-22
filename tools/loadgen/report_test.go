@@ -56,7 +56,7 @@ func TestPrintSummary_ContainsKeyFields(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"preset: medium", "seed: 42", "site: site-local",
-		"sent:", "25000", "inject: frontdoor",
+		"sent (total):", "sent (measured):", "25000", "inject: frontdoor",
 	} {
 		assert.True(t, strings.Contains(out, want), "summary missing %q; got:\n%s", want, out)
 	}

@@ -55,7 +55,8 @@ type Summary struct {
 	TargetRate           int
 	ActualRate           float64
 	Duration, Warmup     time.Duration
-	Sent                 int
+	Sent                 int // total across warmup + measured
+	SentMeasured         int // post-warmup only; the denominator for E1/E2 comparisons
 	PublishErrors        int
 	GatekeeperErrors     int
 	MissingReplies       int
@@ -75,7 +76,8 @@ func PrintSummary(w io.Writer, s *Summary) error {
 	fmt.Fprintf(w, "target rate: %d msg/s    actual rate: %.1f msg/s\n\n", s.TargetRate, s.ActualRate)
 
 	fmt.Fprintln(w, "publish results")
-	fmt.Fprintf(w, "  sent:             %d\n", s.Sent)
+	fmt.Fprintf(w, "  sent (total):     %d\n", s.Sent)
+	fmt.Fprintf(w, "  sent (measured):  %d   ← compared to E1/E2 counts below\n", s.SentMeasured)
 	fmt.Fprintf(w, "  publish errors:    %d\n", s.PublishErrors)
 	fmt.Fprintf(w, "  gatekeeper errors: %d\n", s.GatekeeperErrors)
 	fmt.Fprintf(w, "  missing replies:   %d\n", s.MissingReplies)

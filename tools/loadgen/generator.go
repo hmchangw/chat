@@ -31,14 +31,15 @@ type Publisher interface {
 // Preset is *Preset because the struct is large enough that gocritic's
 // hugeParam rule would flag the embedded value.
 type GeneratorConfig struct {
-	Preset    *Preset
-	Fixtures  Fixtures
-	SiteID    string
-	Rate      int
-	Inject    InjectMode
-	Publisher Publisher
-	Metrics   *Metrics
-	Collector *Collector
+	Preset         *Preset
+	Fixtures       Fixtures
+	SiteID         string
+	Rate           int
+	Inject         InjectMode
+	Publisher      Publisher
+	Metrics        *Metrics
+	Collector      *Collector
+	WarmupDeadline time.Time
 }
 
 // Generator is the open-loop publisher.
@@ -129,7 +130,11 @@ func (g *Generator) publishOne(ctx context.Context) {
 		g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "publish").Inc()
 		return
 	}
-	g.cfg.Metrics.Published.WithLabelValues(g.cfg.Preset.Name).Inc()
+	phase := "measured"
+	if publishTime.Before(g.cfg.WarmupDeadline) {
+		phase = "warmup"
+	}
+	g.cfg.Metrics.Published.WithLabelValues(g.cfg.Preset.Name, phase).Inc()
 }
 
 func (g *Generator) content() string {
