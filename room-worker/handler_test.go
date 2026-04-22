@@ -32,7 +32,8 @@ func TestHandler_ProcessInvite(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", UserCount: 2, SiteID: "site-a"}, nil)
+		Return(&model.Room{ID: "r1", Name: "general", UserCount: 2, SiteID: "site-a", Type: model.RoomTypeChannel}, nil).
+		Times(2)
 	store.EXPECT().
 		ListByRoom(gomock.Any(), "r1").
 		Return([]model.Subscription{
@@ -60,6 +61,7 @@ func TestHandler_ProcessInvite(t *testing.T) {
 	if createdSub.User.Account != "bob" {
 		t.Errorf("expected subscription account %q, got %q", "bob", createdSub.User.Account)
 	}
+	assert.Equal(t, model.RoomTypeChannel, createdSub.RoomType, "invitee sub should carry RoomType from the room")
 
 	// Verify notifications published (subscription update + room metadata for existing members)
 	if len(published) < 3 {
@@ -611,7 +613,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	}
 	h := NewHandler(store, "site-a", publish)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site-a"},
 		{ID: "u3", Account: "charlie", SiteID: "site-b"},
@@ -621,6 +623,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 			assert.Len(t, subs, 2)
 			for _, s := range subs {
 				assert.Equal(t, "site-a", s.SiteID)
+				assert.Equal(t, model.RoomTypeChannel, s.RoomType)
 				assert.Equal(t, []model.Role{model.RoleMember}, s.Roles)
 				require.NotNil(t, s.HistorySharedSince)
 				assert.Equal(t, s.JoinedAt, *s.HistorySharedSince)

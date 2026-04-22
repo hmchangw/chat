@@ -126,6 +126,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 		ID:                 uuid.New().String(),
 		User:               model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByAccount},
 		RoomID:             room.ID,
+		RoomType:           room.Type,
 		SiteID:             req.SiteID,
 		Roles:              []model.Role{model.RoleOwner},
 		HistorySharedSince: &now,

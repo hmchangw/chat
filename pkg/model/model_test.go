@@ -323,6 +323,7 @@ func TestSubscriptionJSON(t *testing.T) {
 		ID:                 "s1",
 		User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID:             "r1",
+		RoomType:           model.RoomTypeGroup,
 		SiteID:             "site-a",
 		Roles:              []model.Role{model.RoleOwner},
 		HistorySharedSince: &hss,
@@ -342,6 +343,23 @@ func TestSubscriptionJSON(t *testing.T) {
 	if !reflect.DeepEqual(s, dst) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
 	}
+}
+
+func TestSubscriptionJSON_RoomTypeOmittedWhenEmpty(t *testing.T) {
+	s := model.Subscription{
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		SiteID:   "site-a",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(&s)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, present := raw["roomType"]
+	assert.False(t, present, "roomType should be omitted when empty")
 }
 
 func TestRoomTypeValues(t *testing.T) {
@@ -885,6 +903,7 @@ func TestMemberAddEventJSON(t *testing.T) {
 	src := model.MemberAddEvent{
 		Type:               "member_added",
 		RoomID:             "r1",
+		RoomType:           model.RoomTypeGroup,
 		Accounts:           []string{"alice", "bob"},
 		SiteID:             "site-a",
 		JoinedAt:           1735689600000,

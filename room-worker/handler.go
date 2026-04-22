@@ -61,11 +61,20 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 
 	now := time.Now().UTC()
 
+	// Fetch room early so the new subscription can carry RoomType. The
+	// metadata-update block below re-reads the room so it sees the
+	// post-increment user count without a race against concurrent invites.
+	roomForType, err := h.store.GetRoom(ctx, req.RoomID)
+	if err != nil {
+		return fmt.Errorf("get room for invite: %w", err)
+	}
+
 	// Create subscription for invitee
 	sub := model.Subscription{
 		ID:                 uuid.New().String(),
 		User:               model.SubscriptionUser{ID: req.InviteeID, Account: req.InviteeAccount},
 		RoomID:             req.RoomID,
+		RoomType:           roomForType.Type,
 		SiteID:             req.SiteID,
 		Roles:              []model.Role{model.RoleMember},
 		HistorySharedSince: &now,
@@ -505,6 +514,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			ID:       uuid.New().String(),
 			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:   req.RoomID,
+			RoomType: room.Type,
 			SiteID:   room.SiteID,
 			Roles:    []model.Role{model.RoleMember},
 			JoinedAt: acceptedAt,
@@ -627,6 +637,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	memberAddEvt := model.MemberAddEvent{
 		Type:               "member_added",
 		RoomID:             req.RoomID,
+		RoomType:           room.Type,
 		Accounts:           actualAccounts,
 		SiteID:             room.SiteID,
 		JoinedAt:           req.Timestamp,
@@ -678,6 +689,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		siteEvt := model.MemberAddEvent{
 			Type:               "member_added",
 			RoomID:             req.RoomID,
+			RoomType:           room.Type,
 			Accounts:           accounts,
 			SiteID:             room.SiteID,
 			JoinedAt:           req.Timestamp,

@@ -169,6 +169,7 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	change := model.MemberAddEvent{
 		Type:               "member_added",
 		RoomID:             "room-1",
+		RoomType:           model.RoomTypeChannel,
 		Accounts:           []string{"bob"},
 		SiteID:             "site-b",
 		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
@@ -210,6 +211,9 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	}
 	if sub.RoomID != "room-1" {
 		t.Errorf("subscription RoomID = %q, want %q", sub.RoomID, "room-1")
+	}
+	if sub.RoomType != model.RoomTypeChannel {
+		t.Errorf("subscription RoomType = %q, want %q", sub.RoomType, model.RoomTypeChannel)
 	}
 	if sub.SiteID != "site-b" {
 		t.Errorf("subscription SiteID = %q, want %q", sub.SiteID, "site-b")

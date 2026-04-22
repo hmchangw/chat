@@ -44,6 +44,7 @@ func TestHandler_CreateRoom(t *testing.T) {
 	if capturedSub == nil || capturedSub.User.Account != "alice" {
 		t.Errorf("expected owner subscription with Account=alice, got %+v", capturedSub)
 	}
+	assert.Equal(t, model.RoomTypeGroup, capturedSub.RoomType, "owner sub should carry RoomType from the room")
 }
 
 func TestHandler_InviteOwner_Success(t *testing.T) {
