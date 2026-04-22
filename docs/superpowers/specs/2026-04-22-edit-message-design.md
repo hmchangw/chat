@@ -200,3 +200,85 @@ type MessageRepository interface {
 ```
 
 Mocks regenerated via `make generate`. This explicit interface-extension step addresses the missing task called out in PR #112 code review.
+
+---
+
+## 10. Testing Strategy
+
+**Unit tests** (`history-service/internal/service/messages_test.go`) — table-driven, covering:
+
+| Scenario | Expected outcome |
+|---|---|
+| Sender edits own message — happy path | `EditMessageResponse` returned; UPDATE called once with correct `*Message`; event published once to `chat.room.<roomID>.event` |
+| Non-subscriber caller | `ErrForbidden("not subscribed to room")`; message never loaded; no UPDATE; no publish |
+| Subscriber but not sender | `ErrForbidden("only the sender can edit")`; no UPDATE; no publish |
+| Message ID not found | `ErrNotFound`; no UPDATE; no publish |
+| Message found but wrong roomID | `ErrNotFound` (same error — no leak); no UPDATE; no publish |
+| `newMsg` empty after trim | `ErrBadRequest("newMsg must not be empty")`; no UPDATE; no publish |
+| `newMsg` > 20 KB | `ErrBadRequest("newMsg exceeds maximum size")`; no UPDATE; no publish |
+| Cassandra UPDATE error | `ErrInternal("failed to edit message")`; no publish |
+| Publisher returns error after successful UPDATE | success reply returned; warning logged |
+
+Mocks: `MessageRepository` (regenerated via `make generate`), `SubscriptionRepository` (unchanged), and an in-memory fake `EventPublisher` that captures published payloads for assertion.
+
+**Integration tests** (`history-service/internal/cassrepo/integration_test.go`, build tag `integration`) — use `testcontainers-go` Cassandra module:
+
+| Scenario | Assertion |
+|---|---|
+| Top-level message edit | `messages_by_id` and `messages_by_room` rows have new `msg` and `edited_at`; `thread_messages_by_room` row count == 0 (no phantom) |
+| Thread reply edit | `messages_by_id` and `thread_messages_by_room` rows updated with correct `thread_room_id` PK; no phantom in `messages_by_room` |
+| Edit on pinned message (seeded directly in `pinned_messages_by_room`) | new `msg` also propagated to the pinned mirror |
+| Idempotency | running the same UPDATE twice yields identical row state (except timestamps, which advance) |
+
+**Service-level integration test** (`history-service/internal/service/integration_test.go`, build tag `integration`) — wires the real repo, a recording `EventPublisher`, and asserts both Cassandra state and event publication in one flow.
+
+**Coverage expectations** (per CLAUDE.md): ≥ 80 % per package; ≥ 90 % for the handler and repo methods introduced by this spec. Every error path above must have a corresponding test case — no happy-path-only coverage.
+
+---
+
+## 11. Frontend Integration Contract
+
+This spec does **not** block the frontend; the JS change can ship in a separate PR. It documents only the contract.
+
+Backend emits to `chat.room.{roomID}.event` with:
+
+```json
+{
+    "type": "message_edited",
+    "timestamp": 1714000000000,
+    "roomId": "r1",
+    "messageId": "m-abc",
+    "newMsg": "corrected text",
+    "editedBy": "alice",
+    "editedAt": 1714000000000
+}
+```
+
+Expected `chat-frontend/src/components/MessageArea.jsx` behavior:
+
+1. Subscribe to `roomEvent(room.id)` (already present for `new_message`).
+2. Add a branch for `evt.type === 'message_edited'`: find the message by `evt.messageId` in local state; update `msg` to `evt.newMsg` and set `editedAt` to `evt.editedAt`.
+3. Render a small "(edited)" indicator next to the timestamp for any message with a non-null `editedAt`.
+
+Missed-event behavior: if the client was not subscribed at publish time, the edit is observed on the next history fetch — Cassandra is authoritative, and the `edited_at` column is persisted.
+
+---
+
+## 12. Out of Scope / Deferred
+
+- **Audit history / edit log** — `msg` is overwritten in place; no revision table. Adding an audit trail would require schema changes.
+- **Thread parent `QuotedParentMessage` snapshot update** — editing a message that is the parent of a thread does not update the embedded `QuotedParentMessage` in child rows' denormalized copies. Accepted eventual-consistency gap.
+- **Cross-site federation** — no outbox/inbox propagation. An edit on site A does not propagate to site B's Cassandra. Future PR.
+- **DM inbox reordering on edit** — intentionally not bumped. Editing should not move a thread to the top of the inbox.
+- **Push notifications on edit** — no re-notification.
+- **Delete operation** — covered by a separate spec.
+- **`MessageRepository` mock hand-edits** — mocks are regenerated via `make generate`; do not edit `mock_repository.go` manually.
+
+---
+
+## 13. Risks & Known Limitations
+
+- **Multi-table fan-out partial failure** — if `messages_by_id` UPDATE succeeds but `messages_by_room` UPDATE fails, the room is temporarily inconsistent. Caller retry converges the state because all UPDATEs are idempotent with respect to content.
+- **`pinned_messages_by_room` branch is dead code today** — no pin operation exists yet. The branch is kept so future pin code does not need to retrofit edit to cover it.
+- **Best-effort publish** — a publish failure after a successful UPDATE is logged but not retried. Clients will still see the edit on the next history fetch. Retrying publish in-handler would risk duplicate events.
+- **`historySharedSince` bound intentionally not enforced** — a user who leaves and rejoins can edit their own messages that predate their new join window. Documented as an intentional design choice, not a bug.
