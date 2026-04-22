@@ -82,3 +82,121 @@ Write-path semantics:
 
 - The write path is **best-effort multi-UPDATE, not atomic**. If one table UPDATE succeeds and a subsequent one fails, the caller receives `ErrInternal`. All UPDATEs are idempotent with respect to content — retries converge on consistent state. Timestamps (`edited_at`, `updated_at`) reflect the last successful write time and therefore change on each retry; they are not strictly idempotent.
 - Event publish failure after a successful set of UPDATEs is logged as a warning; the reply still indicates success. Clients that missed the live event will observe the edit on their next history fetch (Cassandra is authoritative).
+
+---
+
+## 6. Request, Response, and Event Types
+
+Declared in `history-service/internal/models/message.go`.
+
+```go
+type EditMessageRequest struct {
+    MessageID string `json:"messageId"`
+    NewMsg    string `json:"newMsg"`
+}
+
+type EditMessageResponse struct {
+    MessageID string `json:"messageId"`
+    EditedAt  int64  `json:"editedAt"` // UTC millis
+}
+
+type MessageEditedEvent struct {
+    Type      string `json:"type"`      // "message_edited"
+    Timestamp int64  `json:"timestamp"` // UTC millis, event publish time (per CLAUDE.md convention)
+    RoomID    string `json:"roomId"`
+    MessageID string `json:"messageId"`
+    NewMsg    string `json:"newMsg"`
+    EditedBy  string `json:"editedBy"`  // actor account (always == message.sender.account under sender-only auth)
+    EditedAt  int64  `json:"editedAt"`  // UTC millis, domain time when edit occurred
+}
+```
+
+`Timestamp` is the event-envelope time (required on every NATS event per CLAUDE.md); `EditedAt` is the domain time when the edit occurred. Both are populated from a single `time.Now().UTC()` captured in the handler immediately before the Cassandra UPDATE.
+
+---
+
+## 7. NATS Subject
+
+Request subject pattern added to `pkg/subject/subject.go`, mirroring the existing `MsgHistoryPattern` / `MsgGetPattern` style:
+
+```go
+func MsgEditPattern(siteID string) string {
+    return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.edit", siteID)
+}
+```
+
+Concrete example: `chat.user.alice.request.room.r1.site-a.msg.edit`.
+
+Event fan-out uses the existing `subject.RoomEvent(roomID)` → `chat.room.{roomID}.event`. No new event-subject builder is needed. This is the same subject group and DM rooms already use for `new_message` events, so the frontend's existing subscription path is reused with one additional `evt.type` branch.
+
+---
+
+## 8. Cassandra UPDATE Strategy
+
+Cassandra `UPDATE … WHERE <full PK>` against a missing row is **not** a no-op — it writes a phantom row containing only the updated columns. UPDATEs must therefore be conditional on which tables actually hold the row, decided from the hydrated `*models.Message`'s metadata.
+
+Table membership (verified against `message-worker/store_cassandra.go` — `SaveMessage` writes to `messages_by_room` + `messages_by_id`; `SaveThreadMessage` writes to `messages_by_id` + `thread_messages_by_room`):
+
+| Table | PK | Who's in it | UPDATE when |
+|---|---|---|---|
+| `messages_by_id` | `(message_id, created_at)` | every message | always |
+| `messages_by_room` | `((room_id), created_at, message_id)` | top-level messages only | `msg.ThreadParentID == ""` |
+| `thread_messages_by_room` | `((room_id), thread_room_id, created_at, message_id)` | thread replies only | `msg.ThreadParentID != ""`; supply `msg.ThreadRoomID` |
+| `pinned_messages_by_room` | `((room_id), created_at=pinnedAt, message_id)` | pinned messages only (no pin operation exists yet) | `msg.PinnedAt != nil`; supply `msg.PinnedAt` |
+
+**NULL handling (gocql):** `ThreadParentID` and `ThreadRoomID` are typed `string` (non-pointer) in `pkg/model/cassandra/message.go`, so gocql maps a NULL Cassandra column to Go zero value `""` during scan. The check `msg.ThreadParentID == ""` therefore matches both NULL and explicitly-empty-string cases. `PinnedAt` is typed `*time.Time` (pointer), so NULL maps to `nil`; the check `msg.PinnedAt != nil` handles both NULL and unset consistently. This mirrors the write-path branching in `message-worker/handler.go:75` (`if evt.Message.ThreadParentMessageID != ""`) so reads and writes agree.
+
+The SET clause on every applicable table is uniform: `SET msg = ?, edited_at = ?, updated_at = ?`. Only `msg` is editable; all other columns retain their existing values. No schema changes.
+
+---
+
+## 9. Shared Infrastructure Introduced by This Spec
+
+Edit is the first write operation in `history-service`. It introduces scaffolding that the delete operation (separate spec, deferred to a follow-up PR) will reuse.
+
+**9.1 `EventPublisher` interface** — declared in `history-service/internal/service/service.go`:
+
+```go
+type EventPublisher interface {
+    Publish(ctx context.Context, subject string, data []byte) error
+}
+```
+
+Injected into `HistoryService` via constructor. In `cmd/main.go`, a thin closure wraps the NATS core `nc.Publish`:
+
+```go
+pub := func(ctx context.Context, subject string, data []byte) error {
+    return nc.Publish(ctx, subject, data)
+}
+```
+
+Live events are core NATS (not JetStream), matching the existing room-event fan-out in `broadcast-worker`.
+
+**9.2 `canModify` authorization helper** — declared in `history-service/internal/service/utils.go`:
+
+```go
+func canModify(msg *models.Message, account string) bool {
+    return msg.Sender != nil && msg.Sender.Account == account
+}
+```
+
+A pure function: no context, no dependencies, no mocks. Reused unchanged by the delete handler.
+
+**9.3 `maxContentBytes` constant** — declared at the top of `history-service/internal/service/messages.go`:
+
+```go
+const maxContentBytes = 20 * 1024 // 20 KB, mirrors message-gatekeeper
+```
+
+Extraction into a shared `pkg/` helper is deferred — duplicating a single `const` is acceptable to keep this PR focused. Only edit uses this (delete has no content-size constraint).
+
+**9.4 `MessageRepository` interface extension** — declared in `history-service/internal/service/service.go`:
+
+```go
+type MessageRepository interface {
+    // ... existing methods ...
+    UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error
+}
+```
+
+Mocks regenerated via `make generate`. This explicit interface-extension step addresses the missing task called out in PR #112 code review.
