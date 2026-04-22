@@ -41,6 +41,8 @@ func TestMessageCollection_TemplateBody(t *testing.T) {
 	assert.Contains(t, props, "userAccount")
 	assert.Contains(t, props, "content")
 	assert.Contains(t, props, "createdAt")
+	assert.Contains(t, props, "tshow")
+	assert.Equal(t, "boolean", props["tshow"].(map[string]any)["type"])
 	assert.Equal(t, false, mappings["dynamic"])
 
 	settings := tmpl["settings"].(map[string]any)
@@ -191,6 +193,7 @@ func TestNewMessageSearchIndex(t *testing.T) {
 			Content: "hello", CreatedAt: ts,
 			ThreadParentMessageID:        "parent-1",
 			ThreadParentMessageCreatedAt: &parentTS,
+			TShow:                        true,
 		},
 		SiteID: "site-a",
 	}
@@ -205,6 +208,30 @@ func TestNewMessageSearchIndex(t *testing.T) {
 	assert.Equal(t, "parent-1", doc.ThreadParentID)
 	require.NotNil(t, doc.ThreadParentCreatedAt)
 	assert.Equal(t, parentTS, *doc.ThreadParentCreatedAt)
+	assert.True(t, doc.TShow)
+}
+
+// TestNewMessageSearchIndex_TShowOmittedWhenFalse verifies that a message with
+// the default TShow (false) marshals without a `tshow` key so unmarked thread
+// replies don't bloat the index and so range/term queries on `tshow` only
+// match explicitly-flagged docs.
+func TestNewMessageSearchIndex_TShowOmittedWhenFalse(t *testing.T) {
+	evt := &model.MessageEvent{
+		Message: model.Message{
+			ID: "msg-1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content: "hello", CreatedAt: time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
+		},
+		SiteID: "site-a",
+	}
+	doc := newMessageSearchIndex(evt)
+	assert.False(t, doc.TShow)
+
+	data, err := json.Marshal(doc)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, present := raw["tshow"]
+	assert.False(t, present, "tshow should be omitted when false")
 }
 
 func TestMessageCollection_BuildAction(t *testing.T) {

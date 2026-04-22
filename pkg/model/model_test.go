@@ -187,6 +187,39 @@ func TestMessageJSON(t *testing.T) {
 		_, hasSysMsgData := raw["sysMsgData"]
 		assert.False(t, hasSysMsgData, "sysMsgData should be omitted when nil")
 	})
+
+	t.Run("tshow round-trips when true", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:   "thread reply shown in main feed",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			TShow:     true,
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.Equal(t, true, raw["tshow"])
+
+		var dst model.Message
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.True(t, dst.TShow)
+	})
+
+	t.Run("tshow omitted on the wire when false", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:   "plain message",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["tshow"]
+		assert.False(t, present, "tshow should be omitted when false")
+	})
 }
 
 func TestSendMessageRequestJSON(t *testing.T) {
