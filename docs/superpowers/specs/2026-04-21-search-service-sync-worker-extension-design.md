@@ -19,12 +19,13 @@ We've now decided to move restricted-room tracking into the user-room ES doc its
 2. Update painless scripts so `member_added` routes events into either `rooms[]` or `restrictedRooms{}` based on `HistorySharedSince`.
 3. Change `HistorySharedSince` on `InboxMemberEvent` and `MemberAddEvent` from `int64` to `*int64` with `omitempty`, ending the zero-vs-unset ambiguity.
 4. Keep the LWW guard via `roomTimestamps` working across both paths.
+5. Add a `tshow` boolean field to `pkg/model.Message` and propagate it to the message ES index, unlocking the restricted-user "also shown in channel" thread-reply visibility branch (Clause B1) that the companion search-service spec depends on.
 
 ## Non-Goals
 
 - Indexing restricted rooms in the spotlight index.
 - Push-based cache invalidation when subscriptions change (covered in the companion search-service spec's follow-ups).
-- Changes to the `messages-*` index schema.
+- Changes to the `messages-*` index schema beyond adding `tshow`.
 
 ---
 
@@ -111,6 +112,51 @@ type userRoomUpsertDoc struct {
     RoomTimestamps  map[string]int64 `json:"roomTimestamps"`   // rid -> event ts (LWW guard)
     CreatedAt       string           `json:"createdAt"`
     UpdatedAt       string           `json:"updatedAt"`
+}
+```
+
+### `pkg/model.Message` — add `tshow` field
+
+```go
+// Before
+type Message struct {
+    // ...
+    ThreadParentMessageID        string     `json:"threadParentMessageId,omitempty"        bson:"threadParentMessageId,omitempty"`
+    ThreadParentMessageCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty" bson:"threadParentMessageCreatedAt,omitempty"`
+    // ...
+}
+
+// After
+type Message struct {
+    // ...
+    ThreadParentMessageID        string     `json:"threadParentMessageId,omitempty"        bson:"threadParentMessageId,omitempty"`
+    ThreadParentMessageCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty" bson:"threadParentMessageCreatedAt,omitempty"`
+    TShow                        bool       `json:"tshow,omitempty"                        bson:"tshow,omitempty"`
+    // ...
+}
+```
+
+`tshow = true` means the thread reply was explicitly "also shown in channel" by the author (Rocket.Chat-style UX toggle). Unset/false means a normal thread reply visible only inside the thread.
+
+### `search-sync-worker/messages.go` — add `tshow` to `MessageSearchIndex`
+
+```go
+type MessageSearchIndex struct {
+    // ...existing fields...
+    ThreadParentID        string     `json:"threadParentMessageId,omitempty"        es:"keyword"`
+    ThreadParentCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty" es:"date"`
+    TShow                 bool       `json:"tshow,omitempty"                        es:"boolean"`
+}
+```
+
+The `es:"boolean"` tag is picked up by `esPropertiesFromStruct` automatically — no manual template mapping edit required. `omitempty` keeps `tshow=false` docs out of the inverted index (saves storage on the common case).
+
+`newMessageSearchIndex` populates the field:
+
+```go
+return MessageSearchIndex{
+    // ...
+    TShow: evt.Message.TShow,
 }
 ```
 
@@ -271,6 +317,17 @@ The shared `parseMemberEvent` skip-precondition changes from `event.HistoryShare
 - `TestUserRoomSync_RemoveEvictsFromBoth` — remove with rid present in `restrictedRooms{}` (then in `rooms[]`) evicts correctly.
 - `TestUserRoomSync_LWWGuard_RestrictedPath` — stale add on restricted-current doc no-ops.
 - `TestUserRoomSync_LWWGuard_UnrestrictedPath` — existing test parameterized over both paths.
+
+### Message index tests (`messages_test.go`)
+
+- `TestBuildMessageAction_TShow_True` — event with `Message.TShow=true` indexes with `"tshow": true` in the doc body.
+- `TestBuildMessageAction_TShow_Omitted` — event with `Message.TShow=false` (default) produces a doc body that does NOT contain the `tshow` field (verifies `omitempty` behavior on the wire and in the index doc).
+- `TestMessageTemplateBody_TShowMapping` — asserts `messageTemplateBody` output contains `"tshow": {"type": "boolean"}` in properties (verifies `esPropertiesFromStruct` picked up the new `es:"boolean"` tag).
+
+### Model tests (`pkg/model/model_test.go`)
+
+- `TestMessage_RoundTrip_TShowTrue` — `Message{TShow: true}` marshals to `"tshow":true`, unmarshals back equal.
+- `TestMessage_RoundTrip_TShowDefault` — `Message{}` marshals without `tshow` key (omitempty), unmarshals back to `TShow=false`.
 
 ### Integration tests (`inbox_integration_test.go`)
 

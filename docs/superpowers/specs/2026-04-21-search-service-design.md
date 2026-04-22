@@ -35,7 +35,7 @@ This spec covers the `search-service` itself. The `user-room` schema extension i
 
 - Highlighting in search results (client does its own).
 - `scope=app` (bot DM) room search — deferred until `botDM` field is indexed.
-- Thread-reply "also shown in channel" (`tshow`) visibility — `tshow` not in the message index.
+(Previously listed `tshow` as a non-goal — now included via the companion sync-worker spec which adds the field to `pkg/model.Message` and the `MessageSearchIndex`.)
 - Sort by `ls` (last-seen), `_updatedAt`, `fname` on room search — fields not indexed.
 - `archived`, `hidden`, `prid`, `tcard`, `visibleTo` filters — fields not indexed.
 - Push invalidation of the restricted-rooms cache on subscription change — TTL-only invalidation for MVP.
@@ -180,15 +180,18 @@ Same as global, except the room-access clause partitions the requested `roomIds`
       { "term":  { "roomId": "{rid}" } },
       { "range": { "createdAt": { "gte": "{hssISO8601}" } } }
   ]}},
-  { "bool": { "must": [                            // Clause B-reduced (thread-reply path)
+  { "bool": { "must": [                            // Clause B (thread-reply path)
       { "term":   { "roomId": "{rid}" } },
       { "exists": { "field": "threadParentMessageId" } },
-      { "range":  { "threadParentMessageCreatedAt": { "gte": "{hssISO8601}" } } }
+      { "bool":   { "should": [                    // B1 OR B2
+          { "term":  { "tshow": true } },                                                // B1: "also shown in channel"
+          { "range": { "threadParentMessageCreatedAt": { "gte": "{hssISO8601}" } } }     // B2: parent after HSS
+      ], "minimum_should_match": 1 } }
   ]}}
 ]
 ```
 
-For each restricted room, emit **both** Clause A (parent/regular message after HSS) and Clause B-reduced (thread reply whose parent is after HSS). The B1 `tshow=true` branch is dropped — `tshow` is not indexed.
+For each restricted room, emit **both** Clause A (parent/regular message after HSS) and Clause B (thread reply via B1 `tshow=true` OR B2 parent-after-HSS). Full parity with the original Rocket.Chat semantic is preserved since the companion sync-worker spec indexes `tshow`.
 
 **Room-access clauses — scoped search (`req.roomIds != nil`):**
 
@@ -584,7 +587,6 @@ Using `testcontainers-go` (NATS, Elasticsearch, Valkey modules):
 | `attachment_text`, `card_data`, `msg` not in message index — only `content` searched | Messages with non-text content not discoverable | Extend `MessageSearchIndex` in search-sync-worker + message-worker event schema. |
 | `hidden` field not indexed | Hidden messages leak into results | Extend message index. |
 | `t=tcard` / `visibleTo` filter logic dropped | User-specific card visibility not enforced | Extend message index; restore filter. |
-| `tshow` field not indexed | Restricted users miss "also shown in channel" thread replies posted before their HSS | Extend message-gatekeeper + message index. |
 | `archived`, `prid`, `botDM` not indexed for room search | Archived/thread-sub/bot-DM rooms not filtered | Extend spotlight index + event payload. |
 | `fname`, `sidebarname` not in spotlight — multi-match on `roomName` only | Old display-name-aware search reduced | Extend spotlight index. |
 | `ls`, `_updatedAt`, `fname` sort not available | Room search sort is score+joinedAt only | Extend spotlight index + indexed fields. |
@@ -614,6 +616,6 @@ Backfill consideration: existing user-room docs lack `restrictedRooms`. Reindex 
 - **Why `messages-*,*:messages-*` and not just `*:messages-*`?** `*:` matches only remote-cluster aliases, not local. Local must be included explicitly. Without the local prefix, a user on site-a would miss their own site's messages.
 - **Why Valkey over in-memory cache?** Shared across replicas; survives pod restarts; 5-min TTL bounds staleness. The lazy-populate pattern is simple enough that in-memory was viable too, but Valkey is a small incremental ops cost for significant multi-replica correctness wins.
 - **Why offset+size pagination, not cursor?** Old HTTP APIs used offset+size; clients already built against it; score-sorted results don't cursor cleanly anyway.
-- **Why NOT index `tshow`/`hidden`/`archived`/etc. in this spec?** Each requires message-domain or room-domain event-shape changes that cascade through gatekeeper/worker/sync-worker. Keeping this spec focused on the service + minimal sync-worker extension.
+- **Why NOT index `hidden`/`archived`/etc. in this spec?** Each requires message-domain or room-domain event-shape changes that cascade through gatekeeper/worker/sync-worker. Keeping this spec focused on the service + minimal sync-worker extension. (`tshow` is an exception — it's brought forward in the companion sync-worker spec because it's a small targeted addition and it closes the restricted-user thread-reply parity gap.)
 - **Why drop highlighting?** Measurable ES query cost; clients typically do their own client-side highlighting anyway; can be added post-MVP with no API break.
 
