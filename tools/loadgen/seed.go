@@ -8,6 +8,20 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
+func insertDocs[T any](ctx context.Context, coll *mongo.Collection, items []T) error {
+	if len(items) == 0 {
+		return nil
+	}
+	docs := make([]interface{}, len(items))
+	for i := range items {
+		docs[i] = items[i]
+	}
+	if _, err := coll.InsertMany(ctx, docs); err != nil {
+		return fmt.Errorf("insert into %s: %w", coll.Name(), err)
+	}
+	return nil
+}
+
 // Seed drops and repopulates users/rooms/subscriptions in db from fixtures.
 // Idempotent: safe to rerun.
 func Seed(ctx context.Context, db *mongo.Database, f Fixtures) error {
@@ -21,33 +35,16 @@ func Seed(ctx context.Context, db *mongo.Database, f Fixtures) error {
 		return fmt.Errorf("drop subscriptions: %w", err)
 	}
 
-	if len(f.Users) > 0 {
-		docs := make([]interface{}, len(f.Users))
-		for i := range f.Users {
-			docs[i] = f.Users[i]
-		}
-		if _, err := db.Collection("users").InsertMany(ctx, docs); err != nil {
-			return fmt.Errorf("insert users: %w", err)
-		}
+	if err := insertDocs(ctx, db.Collection("users"), f.Users); err != nil {
+		return err
 	}
-	if len(f.Rooms) > 0 {
-		docs := make([]interface{}, len(f.Rooms))
-		for i := range f.Rooms {
-			docs[i] = f.Rooms[i]
-		}
-		if _, err := db.Collection("rooms").InsertMany(ctx, docs); err != nil {
-			return fmt.Errorf("insert rooms: %w", err)
-		}
+	if err := insertDocs(ctx, db.Collection("rooms"), f.Rooms); err != nil {
+		return err
 	}
-	if len(f.Subscriptions) > 0 {
-		docs := make([]interface{}, len(f.Subscriptions))
-		for i := range f.Subscriptions {
-			docs[i] = f.Subscriptions[i]
-		}
-		if _, err := db.Collection("subscriptions").InsertMany(ctx, docs); err != nil {
-			return fmt.Errorf("insert subscriptions: %w", err)
-		}
+	if err := insertDocs(ctx, db.Collection("subscriptions"), f.Subscriptions); err != nil {
+		return err
 	}
+
 	subsIdx := db.Collection("subscriptions")
 	if _, err := subsIdx.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "roomId", Value: 1}}},

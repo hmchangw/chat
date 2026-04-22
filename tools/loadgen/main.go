@@ -18,11 +18,13 @@ import (
 	"github.com/caarlos0/env/v11"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type config struct {
@@ -181,7 +183,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	collector := NewCollector(metrics, p.Name)
 
 	// E1 subscription: gatekeeper replies.
-	e1Sub, err := nc.NatsConn().Subscribe("chat.user.*.response.>", func(msg *nats.Msg) {
+	e1Sub, err := nc.NatsConn().Subscribe(subject.UserResponseWildcard(), func(msg *nats.Msg) {
 		reqID := lastToken(msg.Subject)
 		var payload struct {
 			Error string `json:"error"`
@@ -203,7 +205,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	defer func() { _ = e1Sub.Unsubscribe() }()
 
 	// E2 subscription: broadcast events.
-	e2Sub, err := nc.NatsConn().Subscribe("chat.room.*.event", func(msg *nats.Msg) {
+	e2Handler := func(msg *nats.Msg) {
 		var evt model.RoomEvent
 		if err := json.Unmarshal(msg.Data, &evt); err != nil {
 			return
@@ -212,7 +214,9 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			return
 		}
 		collector.RecordBroadcast(evt.Message.ID, time.Now())
-	})
+	}
+
+	e2Sub, err := nc.NatsConn().Subscribe(subject.RoomEventWildcard(), e2Handler)
 	if err != nil {
 		slog.Error("subscribe e2", "error", err)
 		return 1
@@ -220,19 +224,9 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	defer func() { _ = e2Sub.Unsubscribe() }()
 
 	// Broadcast-worker emits DM broadcasts on chat.user.{account}.event.room
-	// (see pkg/subject.UserRoomEvent) — a different pattern from the
-	// chat.room.{roomID}.event used for group rooms. Subscribe to both so E2
-	// correlation covers both room types.
-	e2DMSub, err := nc.NatsConn().Subscribe("chat.user.*.event.room", func(msg *nats.Msg) {
-		var evt model.RoomEvent
-		if err := json.Unmarshal(msg.Data, &evt); err != nil {
-			return
-		}
-		if evt.Message == nil || evt.Message.ID == "" {
-			return
-		}
-		collector.RecordBroadcast(evt.Message.ID, time.Now())
-	})
+	// (see pkg/subject.UserRoomEvent). Subscribe to both so E2 correlation
+	// covers both group and DM rooms.
+	e2DMSub, err := nc.NatsConn().Subscribe(subject.UserRoomEventWildcard(), e2Handler)
 	if err != nil {
 		slog.Error("subscribe e2 dm", "error", err)
 		return 1
@@ -242,12 +236,18 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	canonical := stream.MessagesCanonical(cfg.SiteID)
 	samplerCtx, cancelSamplers := context.WithCancel(ctx)
 	defer cancelSamplers()
-	mwSampler := NewConsumerSampler(js, canonical.Name, "message-worker", metrics, 1*time.Second)
-	bwSampler := NewConsumerSampler(js, canonical.Name, "broadcast-worker", metrics, 1*time.Second)
+	samplers := []*ConsumerSampler{
+		NewConsumerSampler(js, canonical.Name, "message-worker", metrics, 1*time.Second),
+		NewConsumerSampler(js, canonical.Name, "broadcast-worker", metrics, 1*time.Second),
+	}
 	var samplerWG sync.WaitGroup
-	samplerWG.Add(2)
-	go func() { defer samplerWG.Done(); mwSampler.Run(samplerCtx) }()
-	go func() { defer samplerWG.Done(); bwSampler.Run(samplerCtx) }()
+	for _, s := range samplers {
+		samplerWG.Add(1)
+		go func(s *ConsumerSampler) {
+			defer samplerWG.Done()
+			s.Run(samplerCtx)
+		}(s)
+	}
 
 	publisher := newNatsCorePublisher(nc.NatsConn(), injectMode, js)
 
@@ -283,9 +283,14 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		slog.Error("generator error", "error", genErr)
 	}
 
-	publishErrs := counterValue(metrics, "loadgen_publish_errors_total")
-	gkErrs := counterValueLabeled(metrics, "loadgen_publish_errors_total", "reason", "gatekeeper")
-	sent := int(counterValueLabeled(metrics, "loadgen_published_total", "preset", p.Name))
+	mfs, gerr := metrics.Registry.Gather()
+	if gerr != nil {
+		slog.Warn("metrics gather", "error", gerr)
+		mfs = nil
+	}
+	publishErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "", "")
+	gkErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "reason", "gatekeeper")
+	sent := int(gatheredCounterValue(mfs, "loadgen_published_total", "preset", p.Name))
 	measured := *duration - *warmup
 	actualRate := 0.0
 	if measured > 0 {
@@ -317,7 +322,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		E2:                ComputePercentiles(collector.E2Samples()),
 		E1Count:           collector.E1Count(),
 		E2Count:           collector.E2Count(),
-		Consumers:         []ConsumerStat{mwSampler.Snapshot(), bwSampler.Snapshot()},
+		Consumers:         []ConsumerStat{samplers[0].Snapshot(), samplers[1].Snapshot()},
 	}
 	if err := PrintSummary(os.Stdout, &summary); err != nil {
 		slog.Warn("print summary", "error", err)
@@ -380,34 +385,17 @@ func writeCSVFile(path string, c *Collector) error {
 	return WriteCSV(f, rows)
 }
 
-func counterValue(m *Metrics, name string) float64 {
-	metrics, err := m.Registry.Gather()
-	if err != nil {
-		return 0
-	}
+func gatheredCounterValue(mfs []*dto.MetricFamily, name string, labelName, labelValue string) float64 {
 	var total float64
-	for _, mf := range metrics {
+	for _, mf := range mfs {
 		if mf.GetName() != name {
 			continue
 		}
 		for _, metric := range mf.GetMetric() {
-			total += metric.GetCounter().GetValue()
-		}
-	}
-	return total
-}
-
-func counterValueLabeled(m *Metrics, name, labelName, labelValue string) float64 {
-	metrics, err := m.Registry.Gather()
-	if err != nil {
-		return 0
-	}
-	var total float64
-	for _, mf := range metrics {
-		if mf.GetName() != name {
-			continue
-		}
-		for _, metric := range mf.GetMetric() {
+			if labelName == "" {
+				total += metric.GetCounter().GetValue()
+				continue
+			}
 			for _, l := range metric.GetLabel() {
 				if l.GetName() == labelName && l.GetValue() == labelValue {
 					total += metric.GetCounter().GetValue()
@@ -416,4 +404,22 @@ func counterValueLabeled(m *Metrics, name, labelName, labelValue string) float64
 		}
 	}
 	return total
+}
+
+func counterValue(m *Metrics, name string) float64 {
+	mfs, err := m.Registry.Gather()
+	if err != nil {
+		slog.Warn("metrics gather", "error", err)
+		return 0
+	}
+	return gatheredCounterValue(mfs, name, "", "")
+}
+
+func counterValueLabeled(m *Metrics, name, labelName, labelValue string) float64 {
+	mfs, err := m.Registry.Gather()
+	if err != nil {
+		slog.Warn("metrics gather", "error", err)
+		return 0
+	}
+	return gatheredCounterValue(mfs, name, labelName, labelValue)
 }

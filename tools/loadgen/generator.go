@@ -43,13 +43,22 @@ type GeneratorConfig struct {
 
 // Generator is the open-loop publisher.
 type Generator struct {
-	cfg GeneratorConfig
-	rng *rand.Rand
+	cfg     GeneratorConfig
+	rng     *rand.Rand
+	maxBody string
 }
 
 // NewGenerator returns a Generator seeded from `seed`.
 func NewGenerator(cfg *GeneratorConfig, seed int64) *Generator {
-	return &Generator{cfg: *cfg, rng: rand.New(rand.NewSource(seed))}
+	max := cfg.Preset.ContentBytes.Max
+	if max <= 0 {
+		max = 1
+	}
+	return &Generator{
+		cfg:     *cfg,
+		rng:     rand.New(rand.NewSource(seed)),
+		maxBody: strings.Repeat("x", max),
+	}
 }
 
 // Run publishes at the configured rate until ctx is cancelled.
@@ -77,19 +86,17 @@ func (g *Generator) publishOne(ctx context.Context) {
 	if len(g.cfg.Fixtures.Subscriptions) == 0 {
 		return
 	}
-	// SenderDist (Zipf) is deferred: uniform subscription selection is used for
-	// all presets. Implementing Zipf would require rand.NewZipf keyed on the
-	// sender pool; the capacity signal does not depend on it.
 	subIdx := g.rng.Intn(len(g.cfg.Fixtures.Subscriptions))
 	sub := g.cfg.Fixtures.Subscriptions[subIdx]
 	content := g.content()
 	msgID := uuid.NewString()
-	reqID := uuid.NewString()
+	publishTime := time.Now()
 
 	var (
-		subj string
-		data []byte
-		err  error
+		subj  string
+		data  []byte
+		reqID string
+		err   error
 	)
 	switch g.cfg.Inject {
 	case InjectCanonical:
@@ -105,21 +112,17 @@ func (g *Generator) publishOne(ctx context.Context) {
 		}
 		data, err = json.Marshal(evt)
 		subj = subject.MsgCanonicalCreated(g.cfg.SiteID)
+		g.cfg.Collector.RecordPublishBroadcastOnly(msgID, publishTime)
 	default:
+		reqID = uuid.NewString()
 		req := model.SendMessageRequest{ID: msgID, Content: content, RequestID: reqID}
 		data, err = json.Marshal(req)
 		subj = subject.MsgSend(sub.User.Account, sub.RoomID, g.cfg.SiteID)
+		g.cfg.Collector.RecordPublish(reqID, msgID, publishTime)
 	}
 	if err != nil {
 		g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "marshal").Inc()
 		return
-	}
-	publishTime := time.Now()
-	switch g.cfg.Inject {
-	case InjectCanonical:
-		g.cfg.Collector.RecordPublishBroadcastOnly(msgID, publishTime)
-	default:
-		g.cfg.Collector.RecordPublish(reqID, msgID, publishTime)
 	}
 	if perr := g.cfg.Publisher.Publish(ctx, subj, data); perr != nil {
 		g.cfg.Collector.RecordPublishFailed(reqID, msgID)
@@ -138,14 +141,10 @@ func (g *Generator) content() string {
 	if size <= 0 {
 		size = 1
 	}
-	body := strings.Repeat("x", size)
+	body := g.maxBody[:size]
 	if g.cfg.Preset.MentionRate > 0 && g.rng.Float64() < g.cfg.Preset.MentionRate {
 		target := g.rng.Intn(g.cfg.Preset.Users)
 		body = fmt.Sprintf("@user-%d %s", target, body)
 	}
-	// ThreadRate handling is deferred: fabricating thread-parent fields that
-	// pass gatekeeper validation requires tracking previously-published
-	// messages, which is not needed for the capacity signal. The preset's
-	// ThreadRate is read but unused until thread workloads are exercised.
 	return body
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // setupNATS starts a JetStream-enabled NATS container via the generic
@@ -108,7 +109,7 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 
 	// Fake gatekeeper: frontdoor subject → publish MessageEvent to canonical.
 	gkSub, err := nc.Subscribe(
-		fmt.Sprintf("chat.user.*.room.*.%s.msg.send", siteID),
+		subject.MsgSendWildcard(siteID),
 		func(m *nats.Msg) {
 			var req model.SendMessageRequest
 			if err := json.Unmarshal(m.Data, &req); err != nil {
@@ -124,7 +125,7 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 				Timestamp: time.Now().UnixMilli(),
 			}
 			data, _ := json.Marshal(evt)
-			_, _ = js.Publish(ctx, fmt.Sprintf("chat.msg.canonical.%s.created", siteID), data)
+			_, _ = js.Publish(ctx, subject.MsgCanonicalCreated(siteID), data)
 		},
 	)
 	require.NoError(t, err)
@@ -132,7 +133,7 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 
 	// Fake broadcast-worker: canonical event → room event.
 	bwSub, err := nc.Subscribe(
-		fmt.Sprintf("chat.msg.canonical.%s.created", siteID),
+		subject.MsgCanonicalCreated(siteID),
 		func(m *nats.Msg) {
 			var evt model.MessageEvent
 			if err := json.Unmarshal(m.Data, &evt); err != nil {
