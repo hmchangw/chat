@@ -1575,8 +1575,9 @@ func TestHandler_handleRoomsInfoBatch_chunking(t *testing.T) {
 	chunk1 := ids[:500]
 	chunk2 := ids[500:]
 
-	store.EXPECT().ListRoomsByIDs(gomock.Any(), chunk1).Return(nil, nil)
-	store.EXPECT().ListRoomsByIDs(gomock.Any(), chunk2).Return(nil, nil)
+	// Mongo: single call with all IDs (no chunking)
+	store.EXPECT().ListRoomsByIDs(gomock.Any(), ids).Return(nil, nil)
+	// Valkey: chunked into 500 + 100
 	keyStore.EXPECT().GetMany(gomock.Any(), chunk1).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	keyStore.EXPECT().GetMany(gomock.Any(), chunk2).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 
