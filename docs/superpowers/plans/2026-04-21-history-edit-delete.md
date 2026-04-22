@@ -49,6 +49,8 @@ Verified by reading `message-worker/store_cassandra.go` — `SaveMessage` writes
 
 **Why this matters:** `UPDATE … WHERE <full PK>` against a missing row in Cassandra is NOT a no-op — it writes a phantom row containing just the updated columns. Blasting UPDATEs to every table would pollute them with junk.
 
+**NULL handling (gocql):** `ThreadParentID` and `ThreadRoomID` are typed `string` (non-pointer) in `pkg/model/cassandra/message.go`, so gocql maps a NULL Cassandra column to Go zero value `""` during scan. The check `msg.ThreadParentID == ""` therefore matches both cases — NULL in Cassandra, or explicitly empty string. This is consistent with the write path in `message-worker/handler.go:75` which also branches on `ThreadParentMessageID != ""`, so reads and writes agree. `PinnedAt` is typed `*time.Time` (pointer), so NULL maps to `nil` — the check `msg.PinnedAt != nil` handles both NULL and unset correctly.
+
 ---
 
 ## Known Eventual-Consistency Gaps (Documented, Not Fixed)
