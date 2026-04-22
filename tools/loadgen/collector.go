@@ -58,6 +58,14 @@ func (c *Collector) RecordReply(requestID string, at time.Time) {
 	c.m.E1Latency.WithLabelValues(c.preset).Observe(d.Seconds())
 }
 
+// RecordPublishBroadcastOnly stores only the message-ID correlation, for
+// injection modes that bypass the gatekeeper (no reply is expected).
+func (c *Collector) RecordPublishBroadcastOnly(messageID string, t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.byMsgID[messageID] = publishEntry{publishedAt: t}
+}
+
 // RecordPublishFailed removes entries previously stored by RecordPublish.
 // Use when the publish itself failed (message never reached NATS) so the
 // orphans do not inflate Finalize's missing-reply / missing-broadcast counts.

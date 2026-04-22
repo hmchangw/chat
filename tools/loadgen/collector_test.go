@@ -140,3 +140,31 @@ func TestCollector_RecordPublishFailedRemovesOrphans(t *testing.T) {
 	assert.Equal(t, 0, missingReplies)
 	assert.Equal(t, 0, missingBroadcasts)
 }
+
+func TestCollector_RecordPublishBroadcastOnly_IgnoredByE1(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	now := time.Unix(0, 0)
+	c.RecordPublishBroadcastOnly("m-1", now)
+	// A reply correlated by requestID should NOT find this message
+	// because we didn't populate byReqID.
+	c.RecordReply("some-req-id", now.Add(5*time.Millisecond))
+	assert.Equal(t, 0, c.E1Count())
+
+	// A broadcast matching the msg-id should be recorded.
+	c.RecordBroadcast("m-1", now.Add(8*time.Millisecond))
+	assert.Equal(t, 1, c.E2Count())
+}
+
+func TestCollector_RecordPublishBroadcastOnly_FinalizeNoMissingReplies(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	now := time.Unix(0, 0)
+	c.RecordPublishBroadcastOnly("m-1", now)
+	c.RecordPublishBroadcastOnly("m-2", now)
+	c.RecordBroadcast("m-1", now.Add(5*time.Millisecond))
+	// m-2 never gets a broadcast — that's the only missing event class.
+	missingReplies, missingBroadcasts := c.Finalize()
+	assert.Equal(t, 0, missingReplies, "canonical mode should never produce missing replies")
+	assert.Equal(t, 1, missingBroadcasts)
+}

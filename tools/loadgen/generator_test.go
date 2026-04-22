@@ -103,11 +103,12 @@ func TestGenerator_UsesCanonicalSubjectWhenInjectCanonical(t *testing.T) {
 	f := BuildFixtures(&p, 42, "site-local")
 	rp := &recordingPublisher{}
 	m := NewMetrics()
+	c := NewCollector(m, p.Name)
 	g := NewGenerator(&GeneratorConfig{
 		Preset: &p, Fixtures: f, SiteID: "site-local",
 		Rate: 100, Inject: InjectCanonical,
 		Publisher: rp, Metrics: m,
-		Collector: NewCollector(m, p.Name),
+		Collector: c,
 	}, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
@@ -117,6 +118,13 @@ func TestGenerator_UsesCanonicalSubjectWhenInjectCanonical(t *testing.T) {
 	for i := range calls {
 		assert.Contains(t, calls[i].subject, "chat.msg.canonical.site-local.created")
 	}
+
+	// In canonical mode, the Generator should NOT populate byReqID because
+	// canonical injection bypasses the gatekeeper (no reply is expected).
+	// Consequently Finalize should report zero missing replies even though
+	// no replies ever arrived.
+	missingReplies, _ := c.Finalize()
+	assert.Equal(t, 0, missingReplies)
 }
 
 func TestGenerator_IncrementsPublishedMetric(t *testing.T) {

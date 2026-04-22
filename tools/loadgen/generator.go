@@ -112,7 +112,12 @@ func (g *Generator) publishOne(ctx context.Context) {
 		return
 	}
 	publishTime := time.Now()
-	g.cfg.Collector.RecordPublish(reqID, msgID, publishTime)
+	switch g.cfg.Inject {
+	case InjectCanonical:
+		g.cfg.Collector.RecordPublishBroadcastOnly(msgID, publishTime)
+	default:
+		g.cfg.Collector.RecordPublish(reqID, msgID, publishTime)
+	}
 	if perr := g.cfg.Publisher.Publish(ctx, subj, data); perr != nil {
 		g.cfg.Collector.RecordPublishFailed(reqID, msgID)
 		g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "publish").Inc()
