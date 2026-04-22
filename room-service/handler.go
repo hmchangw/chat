@@ -632,7 +632,7 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte
 
 	infos, foundCount, keyedCount := h.aggregateRoomInfo(req.RoomIDs, rooms, keys)
 
-	slog.Info("rooms info batch handled",
+	slog.Debug("rooms info batch handled",
 		"site_id", h.siteID,
 		"batch_size", len(req.RoomIDs),
 		"found_count", foundCount,
