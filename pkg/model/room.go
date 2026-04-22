@@ -9,6 +9,7 @@ const (
 	RoomTypeChannel    RoomType = "channel"
 	RoomTypeDM         RoomType = "dm"
 	RoomTypeDiscussion RoomType = "discussion"
+	RoomTypeBotDM      RoomType = "botDM"
 )
 
 type Room struct {

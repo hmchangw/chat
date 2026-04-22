@@ -2,7 +2,7 @@
 
 ## Summary
 
-Add an optional `RoomType` field to `model.Subscription`, typed as the existing `model.RoomType` defined in `pkg/model/room.go` (`group` / `channel` / `dm` / `discussion`). The field is a denormalization of `Room.Type` onto each subscription document so consumers reading a user's subscriptions do not have to perform a secondary `Room` lookup.
+Add an optional `RoomType` field to `model.Subscription`, typed as the existing `model.RoomType` defined in `pkg/model/room.go` (`group` / `channel` / `dm` / `discussion` / `botDM`). The field is a denormalization of `Room.Type` onto each subscription document so consumers reading a user's subscriptions do not have to perform a secondary `Room` lookup.
 
 This spec covers the model struct change, accompanying model tests, and **populating `RoomType` at every site that creates or upserts a `Subscription`**. Backfill of pre-existing MongoDB documents is explicitly out of scope, and no consumer is changed to read `Subscription.RoomType` in this PR — those changes are deferred to follow-up PRs.
 
@@ -21,8 +21,8 @@ A single denormalized field on `Subscription` addresses all three use cases with
 **In scope**
 
 - Add a `RoomType` field (type: `model.RoomType`) to `model.Subscription` in `pkg/model/subscription.go`, with `json:"roomType,omitempty"` and `bson:"roomType,omitempty"` tags.
-- Add a new `RoomTypeDiscussion = "discussion"` constant to `model.RoomType`.
-- Extend `TestSubscriptionJSON` in `pkg/model/model_test.go` so its fixture covers the new field; add a test asserting `roomType` is omitted when empty; add `TestRoomTypeDiscussion`.
+- Add new `RoomTypeDiscussion = "discussion"` and `RoomTypeBotDM = "botDM"` constants to `model.RoomType`.
+- Extend `TestSubscriptionJSON` in `pkg/model/model_test.go` so its fixture covers the new field; add a test asserting `roomType` is omitted when empty; add `TestRoomTypeDiscussion` and `TestRoomTypeBotDM`.
 - Populate `Subscription.RoomType` at every write site in this PR:
   - `room-service/handler.go` — owner subscription on room creation (room already in scope).
   - `room-worker` `processAddMembers` — bulk subscription insert (room already fetched).

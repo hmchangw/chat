@@ -737,6 +737,10 @@ func TestRoomTypeDiscussion(t *testing.T) {
 	assert.Equal(t, model.RoomType("discussion"), model.RoomTypeDiscussion)
 }
 
+func TestRoomTypeBotDM(t *testing.T) {
+	assert.Equal(t, model.RoomType("botDM"), model.RoomTypeBotDM)
+}
+
 func TestRoom_RestrictedJSON(t *testing.T) {
 	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel, Restricted: true, SiteID: "site-a"}
 	data, err := json.Marshal(room)
