@@ -77,6 +77,9 @@ func (g *Generator) publishOne(ctx context.Context) {
 	if len(g.cfg.Fixtures.Subscriptions) == 0 {
 		return
 	}
+	// SenderDist (Zipf) is deferred: uniform subscription selection is used for
+	// all presets. Implementing Zipf would require rand.NewZipf keyed on the
+	// sender pool; the capacity signal does not depend on it.
 	subIdx := g.rng.Intn(len(g.cfg.Fixtures.Subscriptions))
 	sub := g.cfg.Fixtures.Subscriptions[subIdx]
 	content := g.content()

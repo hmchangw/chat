@@ -48,6 +48,12 @@ func main() {
 	// SIGINT / SIGTERM cancel the base context. Each subcommand treats ctx
 	// cancellation as "stop early but still run the end-of-run finalizers
 	// (print summary, drain NATS, disconnect Mongo)".
+	//
+	// This deviates from CLAUDE.md's "use pkg/shutdown.Wait" guidance: that
+	// helper blocks waiting for a signal and fires shutdown callbacks, which
+	// doesn't fit a time-bounded CLI where the primary termination trigger is
+	// the --duration timeout rather than an external signal. NotifyContext
+	// gives us the same cleanup guarantee via context cancellation propagation.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	code := dispatch(ctx, &cfg)
 	stop()
@@ -177,11 +183,14 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// E1 subscription: gatekeeper replies.
 	e1Sub, err := nc.NatsConn().Subscribe("chat.user.*.response.>", func(msg *nats.Msg) {
 		reqID := lastToken(msg.Subject)
-		// Non-empty "error" field counts as a gatekeeper error.
 		var payload struct {
 			Error string `json:"error"`
 		}
-		_ = json.Unmarshal(msg.Data, &payload)
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			// Malformed reply; count and drop per spec.
+			metrics.PublishErrors.WithLabelValues(p.Name, "bad_reply").Inc()
+			return
+		}
 		if payload.Error != "" {
 			metrics.PublishErrors.WithLabelValues(p.Name, "gatekeeper").Inc()
 		}
@@ -209,6 +218,26 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		return 1
 	}
 	defer func() { _ = e2Sub.Unsubscribe() }()
+
+	// Broadcast-worker emits DM broadcasts on chat.user.{account}.event.room
+	// (see pkg/subject.UserRoomEvent) — a different pattern from the
+	// chat.room.{roomID}.event used for group rooms. Subscribe to both so E2
+	// correlation covers both room types.
+	e2DMSub, err := nc.NatsConn().Subscribe("chat.user.*.event.room", func(msg *nats.Msg) {
+		var evt model.RoomEvent
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			return
+		}
+		if evt.Message == nil || evt.Message.ID == "" {
+			return
+		}
+		collector.RecordBroadcast(evt.Message.ID, time.Now())
+	})
+	if err != nil {
+		slog.Error("subscribe e2 dm", "error", err)
+		return 1
+	}
+	defer func() { _ = e2DMSub.Unsubscribe() }()
 
 	canonical := stream.MessagesCanonical(cfg.SiteID)
 	samplerCtx, cancelSamplers := context.WithCancel(ctx)
@@ -260,7 +289,14 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	measured := *duration - *warmup
 	actualRate := 0.0
 	if measured > 0 {
-		actualRate = float64(collector.E1Count()+missingReplies) / measured.Seconds()
+		// In canonical mode, byReqID is never populated, so E1Count/missingReplies
+		// are both 0. Fall back to `sent` to compute the true publish rate.
+		switch injectMode {
+		case InjectCanonical:
+			actualRate = float64(sent) / measured.Seconds()
+		default:
+			actualRate = float64(collector.E1Count()+missingReplies) / measured.Seconds()
+		}
 	}
 
 	summary := Summary{

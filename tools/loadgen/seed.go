@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
@@ -46,6 +47,14 @@ func Seed(ctx context.Context, db *mongo.Database, f Fixtures) error {
 		if _, err := db.Collection("subscriptions").InsertMany(ctx, docs); err != nil {
 			return fmt.Errorf("insert subscriptions: %w", err)
 		}
+	}
+	subsIdx := db.Collection("subscriptions")
+	if _, err := subsIdx.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "roomId", Value: 1}}},
+		{Keys: bson.D{{Key: "u.account", Value: 1}}},
+		{Keys: bson.D{{Key: "u.account", Value: 1}, {Key: "roomId", Value: 1}}},
+	}); err != nil {
+		return fmt.Errorf("create subscription indexes: %w", err)
 	}
 	return nil
 }
