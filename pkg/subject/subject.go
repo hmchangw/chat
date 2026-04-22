@@ -173,6 +173,11 @@ func RoomsGet(account, roomID string) string {
 	return fmt.Sprintf("chat.user.%s.request.rooms.get.%s", account, roomID)
 }
 
+// RoomsInfoBatch is the server-to-server request subject for batch room info lookups.
+func RoomsInfoBatch(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
+}
+
 // --- Wildcard patterns for subscriptions ---
 
 func MsgSendWildcard(siteID string) string {
@@ -247,6 +252,11 @@ func RoomsListWildcard() string {
 
 func RoomsGetWildcard() string {
 	return "chat.user.*.request.rooms.get.*"
+}
+
+// RoomsInfoBatchSubscribe is the per-site subscription subject for room-service.
+func RoomsInfoBatchSubscribe(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
 }
 
 // --- natsrouter patterns (use {param} placeholders for named extraction) ---

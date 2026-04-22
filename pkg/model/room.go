@@ -37,3 +37,26 @@ type CreateRoomRequest struct {
 type ListRoomsResponse struct {
 	Rooms []Room `json:"rooms"`
 }
+
+// RoomsInfoBatchRequest is the NATS request body for the batch room info RPC.
+type RoomsInfoBatchRequest struct {
+	RoomIDs []string `json:"roomIds"`
+}
+
+// RoomInfo is a single aggregated room record: Mongo metadata + Valkey key.
+type RoomInfo struct {
+	RoomID           string  `json:"roomId"`
+	Found            bool    `json:"found"`
+	SiteID           string  `json:"siteId,omitempty"`
+	Name             string  `json:"name,omitempty"`
+	LastMsgAt        int64   `json:"lastMsgAt,omitempty"`
+	LastMentionAllAt int64   `json:"lastMentionAllAt,omitempty"`
+	PrivateKey       *string `json:"privateKey,omitempty"`
+	KeyVersion       *int    `json:"keyVersion,omitempty"`
+	Error            string  `json:"error,omitempty"`
+}
+
+// RoomsInfoBatchResponse contains one entry per requested roomID, in input order.
+type RoomsInfoBatchResponse struct {
+	Rooms []RoomInfo `json:"rooms"`
+}

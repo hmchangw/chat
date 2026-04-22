@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,21 +12,27 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type Handler struct {
 	store           RoomStore
+	keyStore        RoomKeyStore
 	siteID          string
 	maxRoomSize     int
+	maxBatchSize    int
 	publishToStream func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, siteID string, maxRoomSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
-	return &Handler{store: store, siteID: siteID, maxRoomSize: maxRoomSize, publishToStream: publishToStream}
+func NewHandler(store RoomStore, keyStore RoomKeyStore, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
+	return &Handler{store: store, keyStore: keyStore, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
 }
 
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
@@ -38,6 +45,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 		return err
 	}
 	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
+		return err
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
 		return err
 	}
 	if _, err := nc.QueueSubscribe(subject.MemberInviteWildcard(h.siteID), queue, h.NatsHandleInvite); err != nil {
@@ -558,4 +568,136 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 	}
 
 	return orgIDs, accounts, nil
+}
+
+func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
+	resp, err := h.handleRoomsInfoBatch(m.Context(), m.Msg.Data)
+	if err != nil {
+		slog.Error("rooms info batch failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message", "error", err)
+	}
+}
+
+func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte, error) {
+	start := time.Now()
+	var req model.RoomsInfoBatchRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if len(req.RoomIDs) == 0 {
+		return nil, fmt.Errorf("roomIds must not be empty")
+	}
+	if len(req.RoomIDs) > h.maxBatchSize {
+		return nil, fmt.Errorf("batch size %d exceeds limit %d", len(req.RoomIDs), h.maxBatchSize)
+	}
+
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.Int("batch_size", len(req.RoomIDs)),
+			attribute.String("site_id", h.siteID),
+		)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var (
+		rooms []model.Room
+		keys  map[string]*roomkeystore.VersionedKeyPair
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		r, err := h.store.ListRoomsByIDs(gctx, req.RoomIDs)
+		if err != nil {
+			return fmt.Errorf("list rooms by ids: %w", err)
+		}
+		rooms = r
+		return nil
+	})
+	g.Go(func() error {
+		k, err := chunkedGetKeys(gctx, h.keyStore, req.RoomIDs)
+		if err != nil {
+			return fmt.Errorf("get room keys: %w", err)
+		}
+		keys = k
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	infos, foundCount, keyedCount := h.aggregateRoomInfo(req.RoomIDs, rooms, keys)
+
+	slog.Debug("rooms info batch handled",
+		"site_id", h.siteID,
+		"batch_size", len(req.RoomIDs),
+		"found_count", foundCount,
+		"keyed_count", keyedCount,
+		"latency_ms", time.Since(start).Milliseconds(),
+	)
+
+	return json.Marshal(model.RoomsInfoBatchResponse{Rooms: infos})
+}
+
+func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[string]*roomkeystore.VersionedKeyPair) ([]model.RoomInfo, int, int) {
+	byID := make(map[string]*model.Room, len(rooms))
+	for i := range rooms {
+		byID[rooms[i].ID] = &rooms[i]
+	}
+	out := make([]model.RoomInfo, len(ids))
+	var foundCount, keyedCount int
+	for i, id := range ids {
+		entry := model.RoomInfo{RoomID: id}
+		r, ok := byID[id]
+		if !ok {
+			out[i] = entry
+			continue
+		}
+		entry.Found = true
+		foundCount++
+		entry.SiteID = r.SiteID
+		entry.Name = r.Name
+		if !r.LastMsgAt.IsZero() {
+			entry.LastMsgAt = r.LastMsgAt.UTC().UnixMilli()
+		}
+		if !r.LastMentionAllAt.IsZero() {
+			entry.LastMentionAllAt = r.LastMentionAllAt.UTC().UnixMilli()
+		}
+		if kp, ok := keys[id]; ok && kp != nil {
+			enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
+			ver := kp.Version
+			entry.PrivateKey = &enc
+			entry.KeyVersion = &ver
+			keyedCount++
+		}
+		out[i] = entry
+	}
+	return out, foundCount, keyedCount
+}
+
+const queryChunkSize = 500
+
+func chunkedGetKeys(ctx context.Context, ks RoomKeyStore, ids []string) (map[string]*roomkeystore.VersionedKeyPair, error) {
+	if len(ids) <= queryChunkSize {
+		return ks.GetMany(ctx, ids)
+	}
+	merged := make(map[string]*roomkeystore.VersionedKeyPair, len(ids))
+	for i := 0; i < len(ids); i += queryChunkSize {
+		end := i + queryChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk, err := ks.GetMany(ctx, ids[i:end])
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range chunk {
+			merged[k] = v
+		}
+	}
+	return merged, nil
 }

@@ -194,6 +194,21 @@ func (s *MongoStore) CountMembersAndOwners(ctx context.Context, roomID string) (
 	return counts, nil
 }
 
+func (s *MongoStore) ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	cursor, err := s.rooms.Find(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return nil, fmt.Errorf("list rooms by ids: %w", err)
+	}
+	var rooms []model.Room
+	if err := cursor.All(ctx, &rooms); err != nil {
+		return nil, fmt.Errorf("list rooms by ids: decode: %w", err)
+	}
+	return rooms, nil
+}
+
 func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {
 	count, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID, "roles": model.RoleOwner})
 	if err != nil {
