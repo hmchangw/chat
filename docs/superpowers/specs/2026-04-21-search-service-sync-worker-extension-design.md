@@ -32,7 +32,7 @@ We've now decided to move restricted-room tracking into the user-room ES doc its
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| `HistorySharedSince` type | `*int64` with `omitempty` | Disambiguates "unrestricted" (nil) vs "restricted since epoch 0" (semantically nonsense but distinct). |
+| `HistorySharedSince` type | `*int64` with `omitempty` | Disambiguates "unrestricted" (nil) from "restricted from some timestamp" (non-nil) at the Go/wire layer. **Note:** this disambiguation is Go-layer only — the painless script boundary canonically treats any `hss <= 0` (including the nil-translated 0 and a hypothetical `&0`) as unrestricted. Publishers MUST NOT emit `HistorySharedSince = &0` for a genuinely restricted room; use nil for unrestricted, use a real past-millisecond timestamp for restricted. See "Behavioral Properties" below. |
 | user-room schema | Add `restrictedRooms map[rid]hss` alongside `rooms []string` | Mirrors the original Mongo user-room doc shape. |
 | ES field mapping | `"type": "flattened"` | Same approach as `roomTimestamps`; avoids mapping explosion from arbitrary rid keys. |
 | LWW guard | Unchanged — `roomTimestamps` keyed per-rid with event `Timestamp` | Same mechanism protects both paths. |
@@ -218,6 +218,8 @@ The `hss == 0 means unrestricted` sentinel is local to the Go↔painless boundar
 3. **Bulk events** — all `Accounts` in a single `InboxMemberEvent` share the same event-level HSS, so every account is routed to the same slot.
 
 4. **Cross-transition atomicity** — both maps + `roomTimestamps` are updated in one painless script execution, so a doc never appears in both `rooms[]` and `restrictedRooms{}` for the same rid.
+
+5. **Publisher contract for `HistorySharedSince`** — the Go `*int64` disambiguation is a source-of-truth layer, but the painless script only sees an `int64` parameter where `hss > 0` means restricted and `hss <= 0` means unrestricted. Concretely: `nil` → `hss = 0` (unrestricted), `&N` for `N > 0` → `hss = N` (restricted). **Publishers MUST emit nil for unrestricted rooms — never `&0` and never a non-positive timestamp**. A `&0` would be structurally non-nil but painless would treat it as unrestricted, creating a silent contract violation. Unit tests on the publisher side assert this (see Publisher Tests below).
 
 ---
 
