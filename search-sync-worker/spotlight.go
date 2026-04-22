@@ -44,9 +44,10 @@ func (c *spotlightCollection) TemplateBody() json.RawMessage {
 // event is redelivered, every action 409s uniformly and is treated as a
 // successful idempotent replay.
 //
-// Restricted rooms (HistorySharedSince != 0 on the event) short-circuit the
-// entire bulk and return an empty slice — the search service handles
-// restricted rooms via DB+cache at query time, so nothing needs to be indexed.
+// Restricted rooms (HistorySharedSince != nil on the event) short-circuit the
+// entire bulk and return an empty slice. The spotlight index keeps the MVP
+// skip for restricted rooms; user-room (not spotlight) stores restricted-room
+// membership on the per-user ES doc via `restrictedRooms{}`.
 func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	evt, payload, err := parseMemberEvent(data)
 	if err != nil {
@@ -58,8 +59,10 @@ func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkActio
 	// Event-level restricted-room short-circuit runs BEFORE account
 	// validation so restricted events with any payload shape (including an
 	// empty Accounts slice) are uniformly skipped per the InboxMemberEvent
-	// contract — no surprise error on an otherwise-valid "skip me" event.
-	if payload.HistorySharedSince != 0 {
+	// contract. Spotlight keeps the MVP skip for restricted rooms — the
+	// user-room collection (not spotlight) carries restricted-room membership
+	// now that it has a `restrictedRooms{}` map on the ES doc.
+	if payload.HistorySharedSince != nil {
 		return nil, nil
 	}
 	if len(payload.Accounts) == 0 {

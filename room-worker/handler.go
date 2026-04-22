@@ -620,9 +620,12 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 
 	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)
-	var historySharedSince int64
+	// historySharedSincePtr is nil for unrestricted rooms — publishers MUST
+	// NOT emit &0, the painless sentinel `hss <= 0` treats that as unrestricted.
+	var historySharedSincePtr *int64
 	if req.History.Mode == model.HistoryModeNone {
-		historySharedSince = req.Timestamp
+		v := req.Timestamp
+		historySharedSincePtr = &v
 	}
 	memberAddEvt := model.MemberAddEvent{
 		Type:               "member_added",
@@ -630,7 +633,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		Accounts:           actualAccounts,
 		SiteID:             room.SiteID,
 		JoinedAt:           req.Timestamp,
-		HistorySharedSince: historySharedSince,
+		HistorySharedSince: historySharedSincePtr,
 		Timestamp:          now.UnixMilli(),
 	}
 	memberAddData, _ := json.Marshal(memberAddEvt)
@@ -681,7 +684,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			Accounts:           accounts,
 			SiteID:             room.SiteID,
 			JoinedAt:           req.Timestamp,
-			HistorySharedSince: historySharedSince,
+			HistorySharedSince: historySharedSincePtr,
 			Timestamp:          now.UnixMilli(),
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)

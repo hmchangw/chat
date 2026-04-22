@@ -81,9 +81,9 @@ func (b *inboxMemberCollection) FilterSubjects(siteID string) []string {
 // InboxMemberEvent payload and validates the common preconditions shared by
 // all inbox-member collections.
 //
-// Callers are responsible for the event-level restricted-room short-circuit:
-// when payload.HistorySharedSince != 0 the entire event should be skipped
-// (the search service handles restricted rooms via DB+cache at query time).
+// Callers decide how to handle the event-level restricted-room flag:
+//   - spotlight keeps the MVP skip on `payload.HistorySharedSince != nil`
+//   - user-room routes the event into `restrictedRooms{}` on the doc
 func parseMemberEvent(data []byte) (*model.OutboxEvent, *model.InboxMemberEvent, error) {
 	var evt model.OutboxEvent
 	if err := json.Unmarshal(data, &evt); err != nil {

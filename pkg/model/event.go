@@ -44,18 +44,20 @@ type UpdateRoleRequest struct {
 // search-sync-worker. One event represents a bulk add/remove of N Accounts
 // against a single room; downstream consumers fan out per-account.
 //
-// HistorySharedSince is a single event-level flag shared by all accounts in
-// the bulk: when non-zero, the room is history-restricted and consumers MUST
-// skip indexing the entire event (the search service handles restricted rooms
-// via DB+cache at query time). JoinedAt is only meaningful on add events and
-// omitted on removes.
+// HistorySharedSince == nil means the entire bulk is unrestricted; non-nil
+// means all Accounts in the bulk are restricted from that timestamp. The
+// user-room collection routes these into restrictedRooms{}; the spotlight
+// collection skips non-nil events entirely for MVP. Publishers MUST emit nil
+// for unrestricted rooms — never &0 and never a non-positive timestamp — so
+// the Go↔painless boundary sentinel (hss <= 0 → unrestricted) stays sound.
+// JoinedAt is only meaningful on add events and omitted on removes.
 type InboxMemberEvent struct {
 	RoomID             string   `json:"roomId"`
 	RoomName           string   `json:"roomName"`
 	RoomType           RoomType `json:"roomType"`
 	SiteID             string   `json:"siteId"`
 	Accounts           []string `json:"accounts"`
-	HistorySharedSince int64    `json:"historySharedSince,omitempty"`
+	HistorySharedSince *int64   `json:"historySharedSince,omitempty"`
 	JoinedAt           int64    `json:"joinedAt,omitempty"`
 	Timestamp          int64    `json:"timestamp" bson:"timestamp"`
 }
@@ -99,7 +101,7 @@ type MemberAddEvent struct {
 	Accounts           []string `json:"accounts"           bson:"accounts"`
 	SiteID             string   `json:"siteId"             bson:"siteId"`
 	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
-	HistorySharedSince int64    `json:"historySharedSince" bson:"historySharedSince"`
+	HistorySharedSince *int64   `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
 	Timestamp          int64    `json:"timestamp"          bson:"timestamp"`
 }
 

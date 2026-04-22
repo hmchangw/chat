@@ -78,8 +78,8 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 
 	joinedAt := time.UnixMilli(event.JoinedAt).UTC()
 	var historySharedSince *time.Time
-	if event.HistorySharedSince > 0 {
-		t := time.UnixMilli(event.HistorySharedSince).UTC()
+	if event.HistorySharedSince != nil && *event.HistorySharedSince > 0 {
+		t := time.UnixMilli(*event.HistorySharedSince).UTC()
 		historySharedSince = &t
 	}
 

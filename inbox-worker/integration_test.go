@@ -71,10 +71,11 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	}
 
 	// Create outbox event for member_added
+	hssMillis := time.Now().UTC().UnixMilli()
 	change := model.MemberAddEvent{
 		Type: "member_added", RoomID: "r1", Accounts: []string{"u2"}, SiteID: "site-b",
 		JoinedAt:           time.Now().UTC().UnixMilli(),
-		HistorySharedSince: time.Now().UTC().UnixMilli(),
+		HistorySharedSince: &hssMillis,
 		Timestamp:          time.Now().UTC().UnixMilli(),
 	}
 	changeData, _ := json.Marshal(change)

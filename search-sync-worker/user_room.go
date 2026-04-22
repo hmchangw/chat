@@ -48,13 +48,33 @@ func (c *userRoomCollection) TemplateBody() json.RawMessage {
 // on (user, room) using `params.ts` (OutboxEvent.Timestamp in millis). Stale
 // events short-circuit via `ctx.op = 'none'` which tells ES to skip the write
 // entirely — no version bump, no disk I/O.
+//
+// addRoomScript additionally routes by `params.hss`:
+//   - hss > 0 → rid lives in `restrictedRooms{rid: hss}` and is removed from `rooms[]`
+//   - hss <= 0 → rid lives in `rooms[]` and is removed from `restrictedRooms{}`
+//
+// This makes admin-driven restriction transitions atomic inside a single
+// update: the rid always ends up in exactly one of the two slots.
+//
+// Painless lacks nullable primitives in script params, so the Go side passes
+// `hss = 0` for unrestricted and `hss = *event.HistorySharedSince` otherwise.
+// The Go↔painless contract: publishers MUST emit nil for unrestricted rooms
+// on the wire — a `&0` is treated as unrestricted by this script and would be
+// a silent contract violation.
 const (
 	addRoomScript = `if (ctx._source.roomTimestamps == null) { ctx._source.roomTimestamps = [:]; } ` +
 		`if (ctx._source.rooms == null) { ctx._source.rooms = []; } ` +
+		`if (ctx._source.restrictedRooms == null) { ctx._source.restrictedRooms = [:]; } ` +
 		`long stored = ctx._source.roomTimestamps.containsKey(params.rid) ` +
 		`? ((Number)ctx._source.roomTimestamps.get(params.rid)).longValue() : 0L; ` +
 		`if (params.ts > stored) { ` +
+		`if (params.hss > 0) { ` +
+		`ctx._source.restrictedRooms[params.rid] = params.hss; ` +
+		`ctx._source.rooms.removeIf(r -> r == params.rid); ` +
+		`} else { ` +
 		`if (!ctx._source.rooms.contains(params.rid)) { ctx._source.rooms.add(params.rid); } ` +
+		`ctx._source.restrictedRooms.remove(params.rid); ` +
+		`} ` +
 		`ctx._source.roomTimestamps.put(params.rid, params.ts); ` +
 		`ctx._source.updatedAt = params.now; ` +
 		`} else { ctx.op = 'none'; }`
@@ -66,6 +86,7 @@ const (
 		`if (ctx._source.rooms != null) { ` +
 		`int idx = ctx._source.rooms.indexOf(params.rid); ` +
 		`if (idx >= 0) { ctx._source.rooms.remove(idx); } } ` +
+		`if (ctx._source.restrictedRooms != null) { ctx._source.restrictedRooms.remove(params.rid); } ` +
 		`ctx._source.roomTimestamps.put(params.rid, params.ts); ` +
 		`} else { ctx.op = 'none'; }`
 )
@@ -75,10 +96,9 @@ const (
 // user-room doc updates from a single event (each account touches a
 // different user's doc, keyed by account).
 //
-// Restricted rooms (HistorySharedSince != 0 on the event) short-circuit the
-// entire bulk and return an empty slice — the search service handles
-// restricted rooms via DB+cache at query time, so nothing needs to be
-// indexed. The handler then acks the source message without touching ES.
+// Restricted rooms (HistorySharedSince != nil on the event) are routed into
+// `restrictedRooms{}` on the user-room doc — the search service reads both
+// `rooms[]` and `restrictedRooms{}` directly from ES at query time.
 func (c *userRoomCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	evt, payload, err := parseMemberEvent(data)
 	if err != nil {
@@ -87,19 +107,20 @@ func (c *userRoomCollection) BuildAction(data []byte) ([]searchengine.BulkAction
 	if payload.RoomID == "" {
 		return nil, fmt.Errorf("build user-room action: missing roomId")
 	}
-	// Event-level restricted-room short-circuit runs BEFORE account
-	// validation so restricted events with any payload shape (including an
-	// empty Accounts slice) are uniformly skipped per the InboxMemberEvent
-	// contract — no surprise error on an otherwise-valid "skip me" event.
-	if payload.HistorySharedSince != 0 {
-		return nil, nil
-	}
 	if len(payload.Accounts) == 0 {
 		return nil, fmt.Errorf("build user-room action: empty accounts")
 	}
 
 	ts := evt.Timestamp
 	roomID := payload.RoomID
+	// hss == 0 is the painless sentinel for "unrestricted" — painless has no
+	// nullable primitives in script params, so we translate *int64 here.
+	// Publishers MUST emit nil on the wire for unrestricted rooms; a &0 would
+	// leak through as unrestricted anyway and is treated as a contract bug.
+	var hss int64
+	if payload.HistorySharedSince != nil {
+		hss = *payload.HistorySharedSince
+	}
 	actions := make([]searchengine.BulkAction, 0, len(payload.Accounts))
 	for i, account := range payload.Accounts {
 		if account == "" {
@@ -108,7 +129,7 @@ func (c *userRoomCollection) BuildAction(data []byte) ([]searchengine.BulkAction
 
 		switch evt.Type {
 		case model.OutboxMemberAdded:
-			body, err := buildAddRoomUpdateBody(account, roomID, ts)
+			body, err := buildAddRoomUpdateBody(account, roomID, ts, hss)
 			if err != nil {
 				return nil, err
 			}
@@ -137,18 +158,41 @@ func (c *userRoomCollection) BuildAction(data []byte) ([]searchengine.BulkAction
 }
 
 // userRoomUpsertDoc is the full document inserted when the user has no prior
-// user-room entry (i.e., the first time a room is added for this user). The
-// `RoomTimestamps` map seeds the per-room timestamp guard.
+// user-room entry (i.e., the first time a room is added for this user).
+//
+// Rooms holds unrestricted room IDs; RestrictedRooms maps rid →
+// historySharedSince (millis) for rooms the user joined with a history
+// restriction. RoomTimestamps seeds the per-room LWW timestamp guard used
+// uniformly across both paths.
 type userRoomUpsertDoc struct {
-	UserAccount    string           `json:"userAccount"`
-	Rooms          []string         `json:"rooms"`
-	RoomTimestamps map[string]int64 `json:"roomTimestamps"`
-	CreatedAt      string           `json:"createdAt"`
-	UpdatedAt      string           `json:"updatedAt"`
+	UserAccount     string           `json:"userAccount"`
+	Rooms           []string         `json:"rooms"`
+	RestrictedRooms map[string]int64 `json:"restrictedRooms"`
+	RoomTimestamps  map[string]int64 `json:"roomTimestamps"`
+	CreatedAt       string           `json:"createdAt"`
+	UpdatedAt       string           `json:"updatedAt"`
 }
 
-func buildAddRoomUpdateBody(account, roomID string, ts int64) (json.RawMessage, error) {
+func buildAddRoomUpdateBody(account, roomID string, ts, hss int64) (json.RawMessage, error) {
 	now := time.UnixMilli(ts).UTC().Format(time.RFC3339Nano)
+
+	// Seed the upsert document so the first-insert shape matches the
+	// painless-updated shape: restricted rooms go straight into
+	// restrictedRooms{}, unrestricted rooms go straight into rooms[].
+	upsert := userRoomUpsertDoc{
+		UserAccount:     account,
+		Rooms:           []string{},
+		RestrictedRooms: map[string]int64{},
+		RoomTimestamps:  map[string]int64{roomID: ts},
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if hss > 0 {
+		upsert.RestrictedRooms[roomID] = hss
+	} else {
+		upsert.Rooms = []string{roomID}
+	}
+
 	body := map[string]any{
 		"script": map[string]any{
 			"source": addRoomScript,
@@ -156,16 +200,11 @@ func buildAddRoomUpdateBody(account, roomID string, ts int64) (json.RawMessage, 
 			"params": map[string]any{
 				"rid": roomID,
 				"ts":  ts,
+				"hss": hss,
 				"now": now,
 			},
 		},
-		"upsert": userRoomUpsertDoc{
-			UserAccount:    account,
-			Rooms:          []string{roomID},
-			RoomTimestamps: map[string]int64{roomID: ts},
-			CreatedAt:      now,
-			UpdatedAt:      now,
-		},
+		"upsert": upsert,
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -217,9 +256,14 @@ func userRoomTemplateBody(indexName string) json.RawMessage {
 							"keyword": map[string]any{"type": "keyword", "ignore_above": 256},
 						},
 					},
-					"roomTimestamps": map[string]any{"type": "flattened"},
-					"createdAt":      map[string]any{"type": "date"},
-					"updatedAt":      map[string]any{"type": "date"},
+					// restrictedRooms is a rid → historySharedSince (millis)
+					// map. `flattened` keeps the mapping stable regardless of
+					// how many restricted rids show up — same approach as
+					// roomTimestamps.
+					"restrictedRooms": map[string]any{"type": "flattened"},
+					"roomTimestamps":  map[string]any{"type": "flattened"},
+					"createdAt":       map[string]any{"type": "date"},
+					"updatedAt":       map[string]any{"type": "date"},
 				},
 			},
 		},

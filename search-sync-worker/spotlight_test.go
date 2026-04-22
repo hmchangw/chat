@@ -163,8 +163,9 @@ func TestSpotlightCollection_BuildAction_RestrictedRoomSkipped(t *testing.T) {
 	payload := baseInboxMemberEvent()
 	payload.Accounts = []string{"alice", "bob"}
 	// Event-level HistorySharedSince short-circuits the entire bulk —
-	// restricted rooms are handled by the search service via DB+cache.
-	payload.HistorySharedSince = 1735689500000
+	// spotlight keeps MVP skip for restricted rooms; user-room stores them.
+	hss := int64(1735689500000)
+	payload.HistorySharedSince = &hss
 
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
 

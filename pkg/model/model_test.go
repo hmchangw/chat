@@ -619,24 +619,30 @@ func TestInboxMemberEventJSON(t *testing.T) {
 	})
 
 	t.Run("add event, restricted room carries HistorySharedSince", func(t *testing.T) {
+		hss := int64(1735689500000)
 		src := model.InboxMemberEvent{
 			RoomID:             "r1",
 			RoomName:           "engineering",
 			RoomType:           model.RoomTypeGroup,
 			SiteID:             "site-a",
 			Accounts:           []string{"alice"},
-			HistorySharedSince: 1735689500000,
+			HistorySharedSince: &hss,
 			JoinedAt:           1735689600000,
 			Timestamp:          1735689600000,
 		}
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.EqualValues(t, hss, raw["historySharedSince"])
+
 		var dst model.InboxMemberEvent
 		require.NoError(t, json.Unmarshal(data, &dst))
-		assert.Equal(t, src, dst)
+		require.NotNil(t, dst.HistorySharedSince)
+		assert.Equal(t, hss, *dst.HistorySharedSince)
 	})
 
-	t.Run("remove event omits HistorySharedSince and JoinedAt when zero", func(t *testing.T) {
+	t.Run("remove event omits HistorySharedSince and JoinedAt when nil/zero", func(t *testing.T) {
 		src := model.InboxMemberEvent{
 			RoomID:    "r1",
 			RoomName:  "engineering",
@@ -650,9 +656,13 @@ func TestInboxMemberEventJSON(t *testing.T) {
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 		_, hasHSS := raw["historySharedSince"]
-		assert.False(t, hasHSS, "historySharedSince should be omitted when zero")
+		assert.False(t, hasHSS, "historySharedSince should be omitted when nil")
 		_, hasJoinedAt := raw["joinedAt"]
 		assert.False(t, hasJoinedAt, "joinedAt should be omitted when zero")
+
+		var dst model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Nil(t, dst.HistorySharedSince, "unrestricted event must decode HistorySharedSince as nil")
 	})
 }
 
@@ -879,20 +889,51 @@ func TestMembersAddedJSON(t *testing.T) {
 }
 
 func TestMemberAddEventJSON(t *testing.T) {
-	src := model.MemberAddEvent{
-		Type:               "member_added",
-		RoomID:             "r1",
-		Accounts:           []string{"alice", "bob"},
-		SiteID:             "site-a",
-		JoinedAt:           1735689600000,
-		HistorySharedSince: 1735689600000,
-		Timestamp:          1735689600000,
-	}
-	data, err := json.Marshal(src)
-	require.NoError(t, err)
-	var dst model.MemberAddEvent
-	require.NoError(t, json.Unmarshal(data, &dst))
-	assert.Equal(t, src, dst)
+	t.Run("restricted room round-trips HistorySharedSince pointer", func(t *testing.T) {
+		hss := int64(1735689600000)
+		src := model.MemberAddEvent{
+			Type:               "member_added",
+			RoomID:             "r1",
+			Accounts:           []string{"alice", "bob"},
+			SiteID:             "site-a",
+			JoinedAt:           1735689600000,
+			HistorySharedSince: &hss,
+			Timestamp:          1735689600000,
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.EqualValues(t, hss, raw["historySharedSince"])
+
+		var dst model.MemberAddEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.HistorySharedSince)
+		assert.Equal(t, hss, *dst.HistorySharedSince)
+	})
+
+	t.Run("unrestricted room omits historySharedSince on the wire", func(t *testing.T) {
+		src := model.MemberAddEvent{
+			Type:      "member_added",
+			RoomID:    "r1",
+			Accounts:  []string{"alice"},
+			SiteID:    "site-a",
+			JoinedAt:  1735689600000,
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasHSS := raw["historySharedSince"]
+		assert.False(t, hasHSS, "historySharedSince must be omitted when nil")
+
+		var dst model.MemberAddEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Nil(t, dst.HistorySharedSince)
+	})
 }
 
 func TestListRoomMembersRequestJSON(t *testing.T) {
