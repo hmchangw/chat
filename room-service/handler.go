@@ -47,7 +47,7 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
 		return err
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchWildcard(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
 		return err
 	}
 	if _, err := nc.QueueSubscribe(subject.MemberInviteWildcard(h.siteID), queue, h.NatsHandleInvite); err != nil {
@@ -571,12 +571,7 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 }
 
 func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
-	parts := strings.Split(m.Msg.Subject, ".")
-	var account string
-	if len(parts) > 2 {
-		account = parts[2]
-	}
-	resp, err := h.handleRoomsInfoBatch(m.Context(), account, m.Msg.Data)
+	resp, err := h.handleRoomsInfoBatch(m.Context(), m.Msg.Data)
 	if err != nil {
 		slog.Error("rooms info batch failed", "error", err)
 		natsutil.ReplyError(m.Msg, sanitizeError(err))
@@ -587,7 +582,7 @@ func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
 	}
 }
 
-func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data []byte) ([]byte, error) {
+func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte, error) {
 	start := time.Now()
 	var req model.RoomsInfoBatchRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -638,7 +633,6 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, account string, data
 	infos, foundCount, keyedCount := h.aggregateRoomInfo(req.RoomIDs, rooms, keys)
 
 	slog.Info("rooms info batch handled",
-		"account", account,
 		"site_id", h.siteID,
 		"batch_size", len(req.RoomIDs),
 		"found_count", foundCount,

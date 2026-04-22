@@ -1545,7 +1545,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 				maxBatchSize: 100,
 			}
 
-			resp, err := h.handleRoomsInfoBatch(context.Background(), "tester", tc.payload)
+			resp, err := h.handleRoomsInfoBatch(context.Background(), tc.payload)
 
 			if tc.wantErr != "" {
 				require.Error(t, err)

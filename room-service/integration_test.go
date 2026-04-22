@@ -1017,7 +1017,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
 
-	msg, err := nc.Request(subject.RoomsInfoBatch("tester", "site-a"), data, 3*time.Second)
+	msg, err := nc.Request(subject.RoomsInfoBatch("site-a"), data, 3*time.Second)
 	require.NoError(t, err)
 
 	var resp model.RoomsInfoBatchResponse
