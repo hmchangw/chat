@@ -7,9 +7,7 @@ import { completeSigninIfCallback, popSiteId } from './lib/oidc'
 
 function AppContent() {
   const { connected, connect } = useNats()
-  const [callbackState, setCallbackState] = useState(
-    AUTH_MODE === 'oidc' ? 'pending' : 'idle',
-  )
+  const [signinPending, setSigninPending] = useState(AUTH_MODE === 'oidc')
   const [callbackError, setCallbackError] = useState(null)
 
   useEffect(() => {
@@ -23,11 +21,11 @@ function AppContent() {
           const siteId = popSiteId() || import.meta.env.VITE_DEFAULT_SITE_ID || 'site-A'
           await connect({ ssoToken: user.id_token, siteId })
         }
-        setCallbackState('idle')
       } catch (err) {
         if (cancelled) return
         setCallbackError(err.message)
-        setCallbackState('idle')
+      } finally {
+        if (!cancelled) setSigninPending(false)
       }
     })()
     return () => {
@@ -35,7 +33,7 @@ function AppContent() {
     }
   }, [connect])
 
-  if (callbackState === 'pending') {
+  if (signinPending) {
     return <div className="login-page"><p>Signing in...</p></div>
   }
 
