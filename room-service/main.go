@@ -27,7 +27,7 @@ type config struct {
 	MongoURI          string        `env:"MONGO_URI"                 envDefault:"mongodb://localhost:27017"`
 	MongoDB           string        `env:"MONGO_DB"                  envDefault:"chat"`
 	MaxRoomSize       int           `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
-	MaxBatchSize      int           `env:"MAX_BATCH_SIZE"            envDefault:"500"`
+	MaxBatchSize      int           `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
 	ValkeyAddr        string        `env:"VALKEY_ADDR,required"`
 	ValkeyPassword    string        `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`

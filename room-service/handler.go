@@ -611,7 +611,7 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		r, err := h.store.ListRoomsByIDs(gctx, req.RoomIDs)
+		r, err := chunkedListRooms(gctx, h.store, req.RoomIDs)
 		if err != nil {
 			return fmt.Errorf("list rooms by ids: %w", err)
 		}
@@ -619,7 +619,7 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte
 		return nil
 	})
 	g.Go(func() error {
-		k, err := h.keyStore.GetMany(gctx, req.RoomIDs)
+		k, err := chunkedGetKeys(gctx, h.keyStore, req.RoomIDs)
 		if err != nil {
 			return fmt.Errorf("get room keys: %w", err)
 		}
@@ -677,4 +677,46 @@ func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[s
 		out[i] = entry
 	}
 	return out, foundCount, keyedCount
+}
+
+const queryChunkSize = 500
+
+func chunkedListRooms(ctx context.Context, store RoomStore, ids []string) ([]model.Room, error) {
+	if len(ids) <= queryChunkSize {
+		return store.ListRoomsByIDs(ctx, ids)
+	}
+	var all []model.Room
+	for i := 0; i < len(ids); i += queryChunkSize {
+		end := i + queryChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk, err := store.ListRoomsByIDs(ctx, ids[i:end])
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, chunk...)
+	}
+	return all, nil
+}
+
+func chunkedGetKeys(ctx context.Context, ks RoomKeyStore, ids []string) (map[string]*roomkeystore.VersionedKeyPair, error) {
+	if len(ids) <= queryChunkSize {
+		return ks.GetMany(ctx, ids)
+	}
+	merged := make(map[string]*roomkeystore.VersionedKeyPair, len(ids))
+	for i := 0; i < len(ids); i += queryChunkSize {
+		end := i + queryChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk, err := ks.GetMany(ctx, ids[i:end])
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range chunk {
+			merged[k] = v
+		}
+	}
+	return merged, nil
 }

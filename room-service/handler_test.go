@@ -1562,3 +1562,40 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 		})
 	}
 }
+
+func TestHandler_handleRoomsInfoBatch_chunking(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	ids := make([]string, 600)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("r%d", i)
+	}
+	chunk1 := ids[:500]
+	chunk2 := ids[500:]
+
+	store.EXPECT().ListRoomsByIDs(gomock.Any(), chunk1).Return(nil, nil)
+	store.EXPECT().ListRoomsByIDs(gomock.Any(), chunk2).Return(nil, nil)
+	keyStore.EXPECT().GetMany(gomock.Any(), chunk1).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+	keyStore.EXPECT().GetMany(gomock.Any(), chunk2).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+
+	h := &Handler{
+		store:        store,
+		keyStore:     keyStore,
+		siteID:       "site-a",
+		maxBatchSize: 1000,
+	}
+
+	payload := mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: ids})
+	resp, err := h.handleRoomsInfoBatch(context.Background(), payload)
+	require.NoError(t, err)
+
+	var batchResp model.RoomsInfoBatchResponse
+	require.NoError(t, json.Unmarshal(resp, &batchResp))
+	assert.Len(t, batchResp.Rooms, 600)
+	for i, ri := range batchResp.Rooms {
+		assert.Equal(t, fmt.Sprintf("r%d", i), ri.RoomID)
+		assert.False(t, ri.Found)
+	}
+}
