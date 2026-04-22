@@ -44,7 +44,28 @@ Design notes:
 
 ---
 
-## 4. Data Flow & Error Handling
+## 4. Message Hydration — Why the Request Only Needs `messageID`
+
+The `EditMessageRequest` carries only `MessageID` and `NewMsg`. All other PK components needed to target rows in `messages_by_room`, `thread_messages_by_room`, and `pinned_messages_by_room` (e.g. `room_id`, `created_at`, `thread_room_id`, `pinned_at`, and the discriminator `thread_parent_id`) are **not** supplied by the caller.
+
+Instead, the handler hydrates the full `*models.Message` up-front via the existing `GetMessageByID(ctx, messageID)` method. That method queries the `messages_by_id` lookup table, which by design stores every column — it serves as a universal metadata lookup. Its PK is `PRIMARY KEY (message_id, created_at)` with `message_id` as the partition key, so a single-column `WHERE message_id = ?` query returns the unique row.
+
+Once hydrated, the handler passes the full `*models.Message` to `UpdateMessageContent`. The repository reads `msg.RoomID`, `msg.CreatedAt`, `msg.ThreadParentID`, `msg.ThreadRoomID`, and `msg.PinnedAt` from that struct to construct each downstream table's `UPDATE … WHERE <full PK>` statement. The caller never needs to know or transmit those fields.
+
+| Column in `messages_by_id` | Used as PK component in |
+|---|---|
+| `message_id` | all 4 tables |
+| `created_at` | all 4 tables |
+| `room_id` | `messages_by_room`, `thread_messages_by_room`, `pinned_messages_by_room` |
+| `thread_parent_id` | *discriminator* — decides top-level vs thread reply |
+| `thread_room_id` | `thread_messages_by_room` |
+| `pinned_at` | `pinned_messages_by_room` (serves as the table's `created_at` PK column for pinned rows) |
+
+This pattern matches the existing `GetMessageByID` convention at `history-service/internal/cassrepo/repository.go:174-189` and requires no new lookup infrastructure.
+
+---
+
+## 5. Data Flow & Error Handling
 
 | Step | Success condition | Failure response |
 |------|-------------------|-----------------|
