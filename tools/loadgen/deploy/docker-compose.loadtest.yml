@@ -1,0 +1,128 @@
+name: loadgen
+
+services:
+  nats:
+    image: nats:2.11-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks: [loadtest]
+
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+    networks: [loadtest]
+
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      - CASSANDRA_CLUSTER_NAME=loadtest
+    ports:
+      - "9042:9042"
+    networks: [loadtest]
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -q '^UN'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        cqlsh cassandra -e "CREATE KEYSPACE IF NOT EXISTS chat WITH replication = {'class':'SimpleStrategy','replication_factor':1};"
+    networks: [loadtest]
+    restart: "no"
+
+  message-gatekeeper:
+    build:
+      context: ../../..
+      dockerfile: message-gatekeeper/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+    depends_on: [nats, mongodb]
+    networks: [loadtest]
+
+  message-worker:
+    build:
+      context: ../../..
+      dockerfile: message-worker/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - CASSANDRA_HOSTS=cassandra
+      - CASSANDRA_KEYSPACE=chat
+    depends_on:
+      nats:
+        condition: service_started
+      mongodb:
+        condition: service_started
+      cassandra-init:
+        condition: service_completed_successfully
+    networks: [loadtest]
+
+  broadcast-worker:
+    build:
+      context: ../../..
+      dockerfile: broadcast-worker/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+    depends_on: [nats, mongodb]
+    networks: [loadtest]
+
+  loadgen:
+    build:
+      context: ../../..
+      dockerfile: tools/loadgen/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - METRICS_ADDR=:9099
+    ports:
+      - "9099:9099"
+    depends_on: [nats, mongodb, message-gatekeeper, message-worker, broadcast-worker]
+    entrypoint: ["sleep", "infinity"]
+    networks: [loadtest]
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    profiles: [dashboards]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks: [loadtest]
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    profiles: [dashboards]
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks: [loadtest]
+
+networks:
+  loadtest:
