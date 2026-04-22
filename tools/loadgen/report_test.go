@@ -123,7 +123,7 @@ func TestWriteCSV_RowWriteError(t *testing.T) {
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
-		io.Copy(io.Discard, pr) //nolint:errcheck // test helper
+		_, _ = io.Copy(io.Discard, pr)
 	}()
 
 	rows := []CSVSample{
