@@ -1133,6 +1133,7 @@ func TestRoomsInfoBatchResponseJSON(t *testing.T) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
 	}
 }
+
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
 	t.Helper()
