@@ -21,24 +21,25 @@ lookups fanned out in parallel and Valkey pipelined for minimal latency.
 
 ### 2.1 Subject
 
-- **Request/reply subject:** `chat.user.{account}.request.rooms.{siteID}.info.batch`
-- **Server subscription (wildcard):** `chat.user.*.request.rooms.{siteID}.info.batch`
+- **Request/reply subject:** `chat.server.request.room.{siteID}.info.batch`
+- **Server subscription:** `chat.server.request.room.{siteID}.info.batch` (same as specific — no wildcard needed, server-to-server RPC with no user account in the subject)
 - **Queue group:** `room-service` (same as existing CRUD RPCs).
 - **Transport:** NATS request/reply (core, not JetStream).
 - **Auth:** Internal subject — no additional auth beyond the NATS connection,
   consistent with other room-service RPCs.
 
 The `{siteID}` token in the subject is the target site. A room-service
-instance only subscribes to its own site's wildcard. Cross-site fan-out is the
+instance only subscribes to its own site's subject. Cross-site fan-out is the
 caller's responsibility (one request per target site).
 
 New builders in `pkg/subject/subject.go`:
 
 ```go
-func RoomsInfoBatch(account, siteID string) string
-func RoomsInfoBatchWildcard(siteID string) string
-func RoomsInfoBatchPattern(siteID string) string // natsrouter-style, {account} placeholder
+func RoomsInfoBatch(siteID string) string           // one param, no account
+func RoomsInfoBatchSubscribe(siteID string) string   // same value as specific (no wildcard needed)
 ```
+
+`RoomsInfoBatchPattern` has been removed (no natsrouter placeholder needed for server-scoped subjects).
 
 ### 2.2 Request
 
@@ -65,14 +66,15 @@ in the server).
 ```go
 // RoomInfo is a single aggregated room record: Mongo metadata + Valkey key.
 type RoomInfo struct {
-    RoomID     string  `json:"roomId"`
-    Found      bool    `json:"found"`
-    SiteID     string  `json:"siteId,omitempty"`
-    Name       string  `json:"name,omitempty"`
-    LastMsgAt  int64   `json:"lastMsgAt"`             // UTC millis; 0 = never messaged or not found
-    PrivateKey *string `json:"privateKey,omitempty"`  // base64; nil = no current key
-    KeyVersion *int    `json:"keyVersion,omitempty"`  // nil iff PrivateKey is nil
-    Error      string  `json:"error,omitempty"`       // per-room failure (reserved)
+    RoomID           string  `json:"roomId"`
+    Found            bool    `json:"found"`
+    SiteID           string  `json:"siteId,omitempty"`
+    Name             string  `json:"name,omitempty"`
+    LastMsgAt        int64   `json:"lastMsgAt,omitempty"`           // UTC millis; 0 = "no message", omitted from JSON
+    LastMentionAllAt int64   `json:"lastMentionAllAt,omitempty"`    // UTC millis; 0 = "no @all mention", omitted from JSON
+    PrivateKey       *string `json:"privateKey,omitempty"`          // base64; nil = no current key
+    KeyVersion       *int    `json:"keyVersion,omitempty"`          // nil iff PrivateKey is nil
+    Error            string  `json:"error,omitempty"`               // per-room failure (reserved)
 }
 
 // RoomsInfoBatchResponse — one entry per requested roomID, input order preserved.
@@ -101,9 +103,10 @@ We deliberately fail loud on backend outages so callers can distinguish
 
 `model.Room.LastMsgAt` is `time.Time` in Mongo. On the wire it is converted to
 `UnixMilli()` per the codebase's "NATS wire structs use int64 millis"
-convention (commit `deffcfa`). Zero time → `0`, always emitted (no
-`omitempty`) so callers can distinguish "found, never messaged" (`lastMsgAt:
-0`) from "not found" (`found: false`) without ambiguity from a missing field.
+convention (commit `deffcfa`). Zero time → `0`, which is omitted from JSON
+via `omitempty` (0 means "no message"). Callers distinguish "found, never
+messaged" (`lastMsgAt` absent / `found: true`) from "not found" (`found:
+false`). `LastMentionAllAt` follows the same `omitempty` convention.
 
 ## 3. Architecture
 
@@ -111,12 +114,13 @@ convention (commit `deffcfa`). Zero time → `0`, always emitted (no
 
 | Layer | Change |
 |---|---|
-| `pkg/subject` | Add `RoomsInfoBatch`, `RoomsInfoBatchWildcard`, `RoomsInfoBatchPattern` builders. |
+| `pkg/subject` | Add `RoomsInfoBatch`, `RoomsInfoBatchSubscribe` builders (server-scoped, no wildcard/pattern). |
 | `pkg/model` | Add `RoomsInfoBatchRequest`, `RoomInfo`, `RoomsInfoBatchResponse` + roundtrip tests. |
 | `pkg/roomkeystore` | Add `GetMany(ctx, roomIDs) (map[string]*VersionedKeyPair, error)` to the `RoomKeyStore` interface and the Valkey adapter. |
 | `room-service/store.go` | Extend `RoomStore` with `ListRoomsByIDs(ctx, ids []string) ([]model.Room, error)`. |
 | `room-service/store_mongo.go` | Implement `ListRoomsByIDs` via `find({_id: {$in: ids}})`. |
-| `room-service/handler.go` | Add `handleRoomsInfoBatch`, `natsRoomsInfoBatch`, `aggregateRoomInfo`; inject `RoomKeyStore` + `maxBatchSize`. |
+| `room-service/store.go` | Define local `RoomKeyStore` interface with only `GetMany` (consumer-side). |
+| `room-service/handler.go` | Add `handleRoomsInfoBatch`, `natsRoomsInfoBatch`, `aggregateRoomInfo`; inject `RoomKeyStore` (local interface) + `maxBatchSize`. |
 | `room-service/main.go` | Wire Valkey (`roomkeystore.NewValkeyStore`); add `MAX_BATCH_SIZE`, `VALKEY_ADDR`, `VALKEY_PASSWORD`, `VALKEY_KEY_GRACE_PERIOD` config. |
 | `room-service/deploy/docker-compose.yml` | Add Valkey service for local dev. |
 | `room-service/mock_store_test.go` | Regenerate via `make generate SERVICE=room-service` (interface changed). |
@@ -135,28 +139,32 @@ untouched.
 ### 3.3 Request flow
 
 ```
-NATS request on chat.user.{acct}.request.rooms.{siteID}.info.batch
+NATS request on chat.server.request.room.{siteID}.info.batch
   → Handler.natsRoomsInfoBatch(m)
+      - Uses sanitizeError(err) + slog.Error (not raw err.Error()) for error replies
   → Handler.handleRoomsInfoBatch(ctx, data) -> []byte
       1. Unmarshal RoomsInfoBatchRequest. Validate non-empty, ≤ MAX_BATCH_SIZE.
       2. ctx, cancel = context.WithTimeout(ctx, 5s); defer cancel()
       3. Parallel fan-out (errgroup, 2 goroutines):
-           a. rooms = store.ListRoomsByIDs(ctx, ids)       // 1 Mongo round-trip
-           b. keys  = keyStore.GetMany(ctx, ids)            // 1 Valkey round-trip (pipelined)
+           a. rooms = chunkedListRooms(ctx, ids)   // ceil(N/500) Mongo round-trips (queryChunkSize=500)
+           b. keys  = chunkedGetKeys(ctx, ids)      // ceil(N/500) Valkey round-trips (queryChunkSize=500, pipelined)
          Either error aborts the batch with ReplyError.
       4. aggregateRoomInfo(ids, rooms, keys) → []RoomInfo (input order preserved).
       5. natsutil.ReplyJSON with RoomsInfoBatchResponse.
 ```
 
-**Total wire cost for N rooms:** 1 Mongo round-trip + 1 Valkey round-trip,
-regardless of N (bounded by `MAX_BATCH_SIZE`).
+Both `ListRoomsByIDs` (Mongo) and `GetMany` (Valkey pipeline) are chunked at
+`queryChunkSize=500` via `chunkedListRooms` and `chunkedGetKeys` helpers.
+
+**Total wire cost for N rooms:** ceil(N/500) Mongo round-trips + ceil(N/500)
+Valkey round-trips (still parallel between Mongo and Valkey).
 
 ### 3.4 Observability
 
 - OpenTelemetry span `rooms.info.batch` created automatically by
   `otelnats.QueueSubscribe`; add attributes `batch_size`, `site_id`.
-- `slog.Info` per request with `account`, `site_id`, `batch_size`,
-  `found_count`, `keyed_count`, `latency_ms`.
+- `slog.Debug` per request with `site_id`, `batch_size`,
+  `found_count`, `keyed_count`, `latency_ms` (Debug, not Info, to reduce production log volume).
 - **Key material is never logged**, at any level.
 
 ## 4. `pkg/roomkeystore.GetMany` details
@@ -203,21 +211,24 @@ errors (connection failure, protocol error) fail the whole batch.
 ```go
 type Handler struct {
     store           RoomStore
-    keyStore        roomkeystore.RoomKeyStore
+    keyStore        RoomKeyStore                                             // local consumer-side interface (not roomkeystore.RoomKeyStore)
     siteID          string
     maxRoomSize     int
     maxBatchSize    int
-    publishToStream func(ctx context.Context, data []byte) error
+    publishToStream func(ctx context.Context, subj string, data []byte) error  // 3 args: ctx, subject, data
 }
 
 func NewHandler(
     store RoomStore,
-    keyStore roomkeystore.RoomKeyStore,
+    keyStore RoomKeyStore,
     siteID string,
     maxRoomSize, maxBatchSize int,
-    publishToStream func(context.Context, []byte) error,
+    publishToStream func(ctx context.Context, subj string, data []byte) error,
 ) *Handler
 ```
+
+`RoomKeyStore` is a local interface defined in `room-service/store.go` with
+only the `GetMany` method the handler needs (consumer-side interface pattern).
 
 ### 5.2 Registration
 
