@@ -2,7 +2,7 @@
 
 ## Summary
 
-Add an optional `RoomType` field to `model.Subscription`, typed as the existing `model.RoomType` defined in `pkg/model/room.go` (`group` / `channel` / `dm`). The field is a denormalization of `Room.Type` onto each subscription document so consumers reading a user's subscriptions do not have to perform a secondary `Room` lookup.
+Add an optional `RoomType` field to `model.Subscription`, typed as the existing `model.RoomType` defined in `pkg/model/room.go` (`group` / `channel` / `dm` / `discussion`). The field is a denormalization of `Room.Type` onto each subscription document so consumers reading a user's subscriptions do not have to perform a secondary `Room` lookup.
 
 This spec covers only the model struct change and accompanying model tests. Population at subscription-creation time and backfill of existing documents are explicitly deferred to follow-up PRs.
 
@@ -55,7 +55,7 @@ type Subscription struct {
 
 ### Type choice
 
-The field uses the existing `model.RoomType` type (a defined string type in `pkg/model/room.go`), so valid values are constrained to the existing constants `RoomTypeGroup`, `RoomTypeChannel`, and `RoomTypeDM`. No new type is introduced.
+The field uses the existing `model.RoomType` type (a defined string type in `pkg/model/room.go`), so valid values are constrained to the existing constants `RoomTypeGroup`, `RoomTypeChannel`, `RoomTypeDM`, and `RoomTypeDiscussion`. No new type is introduced.
 
 ### `omitempty` rationale
 

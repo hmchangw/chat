@@ -5,9 +5,10 @@ import "time"
 type RoomType string
 
 const (
-	RoomTypeGroup   RoomType = "group"
-	RoomTypeChannel RoomType = "channel"
-	RoomTypeDM      RoomType = "dm"
+	RoomTypeGroup      RoomType = "group"
+	RoomTypeChannel    RoomType = "channel"
+	RoomTypeDM         RoomType = "dm"
+	RoomTypeDiscussion RoomType = "discussion"
 )
 
 type Room struct {
