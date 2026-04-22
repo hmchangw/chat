@@ -58,6 +58,16 @@ func (c *Collector) RecordReply(requestID string, at time.Time) {
 	c.m.E1Latency.WithLabelValues(c.preset).Observe(d.Seconds())
 }
 
+// RecordPublishFailed removes entries previously stored by RecordPublish.
+// Use when the publish itself failed (message never reached NATS) so the
+// orphans do not inflate Finalize's missing-reply / missing-broadcast counts.
+func (c *Collector) RecordPublishFailed(requestID, messageID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.byReqID, requestID)
+	delete(c.byMsgID, messageID)
+}
+
 // RecordBroadcast consumes one pending publish keyed by messageID.
 func (c *Collector) RecordBroadcast(messageID string, at time.Time) {
 	c.mu.Lock()

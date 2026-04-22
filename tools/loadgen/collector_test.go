@@ -124,3 +124,19 @@ func TestCollector_ConcurrentRecordAndSnapshot(t *testing.T) {
 	<-done
 	require.GreaterOrEqual(t, c.E1Count(), 1)
 }
+
+func TestCollector_RecordPublishFailedRemovesOrphans(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	now := time.Unix(0, 0)
+	c.RecordPublish("r-1", "m-1", now)
+	c.RecordPublish("r-2", "m-2", now)
+	// r-1 / m-1 get replied + broadcast; r-2 / m-2 "failed to publish" and get cleaned up.
+	c.RecordReply("r-1", now.Add(5*time.Millisecond))
+	c.RecordBroadcast("m-1", now.Add(8*time.Millisecond))
+	c.RecordPublishFailed("r-2", "m-2")
+
+	missingReplies, missingBroadcasts := c.Finalize()
+	assert.Equal(t, 0, missingReplies)
+	assert.Equal(t, 0, missingBroadcasts)
+}

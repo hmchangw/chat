@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +33,14 @@ func (r *recordingPublisher) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.calls)
+}
+
+func (r *recordingPublisher) snapshot() []publishCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]publishCall, len(r.calls))
+	copy(out, r.calls)
+	return out
 }
 
 type errorPublisher struct{}
@@ -83,10 +90,11 @@ func TestGenerator_UsesFrontdoorSubject(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 	_ = g.Run(ctx)
-	require.NotEmpty(t, rp.calls)
-	for i := range rp.calls {
-		assert.Contains(t, rp.calls[i].subject, ".msg.send")
-		assert.Contains(t, rp.calls[i].subject, "site-local")
+	calls := rp.snapshot()
+	require.NotEmpty(t, calls)
+	for i := range calls {
+		assert.Contains(t, calls[i].subject, ".msg.send")
+		assert.Contains(t, calls[i].subject, "site-local")
 	}
 }
 
@@ -104,9 +112,10 @@ func TestGenerator_UsesCanonicalSubjectWhenInjectCanonical(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 	_ = g.Run(ctx)
-	require.NotEmpty(t, rp.calls)
-	for i := range rp.calls {
-		assert.Contains(t, rp.calls[i].subject, "chat.msg.canonical.site-local.created")
+	calls := rp.snapshot()
+	require.NotEmpty(t, calls)
+	for i := range calls {
+		assert.Contains(t, calls[i].subject, "chat.msg.canonical.site-local.created")
 	}
 }
 
@@ -135,7 +144,7 @@ func TestGenerator_IncrementsPublishedMetric(t *testing.T) {
 			}
 		}
 	}
-	assert.Greater(t, atomic.LoadInt64(&got), int64(0))
+	assert.Greater(t, got, int64(0))
 }
 
 func TestGenerator_Run_ReturnsErrorForZeroRate(t *testing.T) {
@@ -159,11 +168,12 @@ func TestGenerator_PublishError_IncrementsErrorMetric(t *testing.T) {
 	f := BuildFixtures(&p, 42, "site-local")
 	ep := &errorPublisher{}
 	m := NewMetrics()
+	c := NewCollector(m, p.Name)
 	g := NewGenerator(&GeneratorConfig{
 		Preset: &p, Fixtures: f, SiteID: "site-local",
 		Rate: 100, Inject: InjectFrontdoor,
 		Publisher: ep, Metrics: m,
-		Collector: NewCollector(m, p.Name),
+		Collector: c,
 	}, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
@@ -180,6 +190,13 @@ func TestGenerator_PublishError_IncrementsErrorMetric(t *testing.T) {
 		}
 	}
 	assert.Greater(t, publishErrors, int64(0))
+
+	// Publish errors should have cleaned up the pending entries, so Finalize
+	// reports no "missing replies" or "missing broadcasts" attributable to
+	// publish-side failures.
+	missingReplies, missingBroadcasts := c.Finalize()
+	assert.Equal(t, 0, missingReplies)
+	assert.Equal(t, 0, missingBroadcasts)
 }
 
 func TestGenerator_Content_WithMentionRate(t *testing.T) {
@@ -197,11 +214,12 @@ func TestGenerator_Content_WithMentionRate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_ = g.Run(ctx)
-	require.NotEmpty(t, rp.calls)
+	calls := rp.snapshot()
+	require.NotEmpty(t, calls)
 	// With 10% mention rate and ~100 messages, at least one should contain "@user-".
 	foundMention := false
-	for i := range rp.calls {
-		if strings.Contains(string(rp.calls[i].data), "@user-") {
+	for i := range calls {
+		if strings.Contains(string(calls[i].data), "@user-") {
 			foundMention = true
 			break
 		}

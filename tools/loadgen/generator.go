@@ -79,7 +79,7 @@ func (g *Generator) publishOne(ctx context.Context) {
 	}
 	subIdx := g.rng.Intn(len(g.cfg.Fixtures.Subscriptions))
 	sub := g.cfg.Fixtures.Subscriptions[subIdx]
-	content := g.content(subIdx)
+	content := g.content()
 	msgID := uuid.NewString()
 	reqID := uuid.NewString()
 
@@ -114,13 +114,14 @@ func (g *Generator) publishOne(ctx context.Context) {
 	publishTime := time.Now()
 	g.cfg.Collector.RecordPublish(reqID, msgID, publishTime)
 	if perr := g.cfg.Publisher.Publish(ctx, subj, data); perr != nil {
+		g.cfg.Collector.RecordPublishFailed(reqID, msgID)
 		g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "publish").Inc()
 		return
 	}
 	g.cfg.Metrics.Published.WithLabelValues(g.cfg.Preset.Name).Inc()
 }
 
-func (g *Generator) content(_ int) string {
+func (g *Generator) content() string {
 	r := g.cfg.Preset.ContentBytes
 	size := r.Min
 	if r.Max > r.Min {
