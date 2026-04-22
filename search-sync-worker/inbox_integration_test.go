@@ -58,10 +58,7 @@ func buildInboxMemberEvent(
 	}
 }
 
-// hssPtr returns a *int64 for restricted-room integration tests. Always emit
-// nil for unrestricted rooms (never &0) so the Go↔painless sentinel stays
-// sound.
-func hssPtr(v int64) *int64 {
+func int64Ptr(v int64) *int64 {
 	return &v
 }
 
@@ -369,7 +366,7 @@ func TestUserRoomSync_Integration(t *testing.T) {
 	const restrictedHSS int64 = 1743984000000
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
-		buildInboxMemberEvent("r-restricted", "archives", siteID, []string{"alice"}, hssPtr(restrictedHSS), joinedAt, 1500))
+		buildInboxMemberEvent("r-restricted", "archives", siteID, []string{"alice"}, int64Ptr(restrictedHSS), joinedAt, 1500))
 
 	drainConsumer(t, ctx, cons, handler, 6)
 	refreshIndex(t, esURL, indexName)
@@ -475,7 +472,7 @@ func TestUserRoomSync_BulkInvite(t *testing.T) {
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
 		buildInboxMemberEvent("r-archives", "archives", siteID,
-			[]string{"heidi", "ivan", "judy"}, hssPtr(archivesHSS), joinedAt, 5100))
+			[]string{"heidi", "ivan", "judy"}, int64Ptr(archivesHSS), joinedAt, 5100))
 
 	drainConsumer(t, ctx, cons, handler, 2)
 	refreshIndex(t, esURL, indexName)
@@ -524,7 +521,7 @@ func TestUserRoomSync_BulkInvite(t *testing.T) {
 		publishInboxMemberEvent(t, ctx, js,
 			subject.InboxMemberRemoved(siteID), model.OutboxMemberRemoved,
 			buildInboxMemberEvent("r-archives", "archives", siteID,
-				[]string{"heidi", "ivan", "judy"}, hssPtr(archivesHSS), 0, 6100))
+				[]string{"heidi", "ivan", "judy"}, int64Ptr(archivesHSS), 0, 6100))
 		drainConsumer(t, ctx, cons, handler, 1)
 		refreshIndex(t, esURL, indexName)
 

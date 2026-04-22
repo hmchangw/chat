@@ -56,16 +56,9 @@ func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkActio
 	if payload.RoomID == "" {
 		return nil, fmt.Errorf("build spotlight action: missing roomId")
 	}
-	// Event-level restricted-room short-circuit runs BEFORE account
-	// validation so restricted events with any payload shape (including an
-	// empty Accounts slice) are uniformly skipped per the InboxMemberEvent
-	// contract. Spotlight keeps the MVP skip for restricted rooms — the
-	// user-room collection (not spotlight) carries restricted-room membership
-	// now that it has a `restrictedRooms{}` map on the ES doc.
-	//
-	// Mirror user_room.go's `hss > 0` painless sentinel: a leaked `&0` (or
-	// non-positive) pointer is treated as unrestricted by both indices so
-	// they don't diverge on a publisher contract violation.
+	// Spotlight skips restricted rooms (MVP); user-room stores them.
+	// Mirror user_room.go's `hss > 0` sentinel so a leaked &0 is treated as
+	// unrestricted by both indices.
 	if payload.HistorySharedSince != nil && *payload.HistorySharedSince > 0 {
 		return nil, nil
 	}

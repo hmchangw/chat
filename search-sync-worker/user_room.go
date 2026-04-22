@@ -113,10 +113,7 @@ func (c *userRoomCollection) BuildAction(data []byte) ([]searchengine.BulkAction
 
 	ts := evt.Timestamp
 	roomID := payload.RoomID
-	// hss == 0 is the painless sentinel for "unrestricted" — painless has no
-	// nullable primitives in script params, so we translate *int64 here.
-	// Publishers MUST emit nil on the wire for unrestricted rooms; a &0 would
-	// leak through as unrestricted anyway and is treated as a contract bug.
+	// Translate *int64 → painless-safe int64 (sentinel contract lives on addRoomScript).
 	var hss int64
 	if payload.HistorySharedSince != nil {
 		hss = *payload.HistorySharedSince
