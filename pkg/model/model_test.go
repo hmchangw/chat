@@ -1043,13 +1043,14 @@ func TestRoomInfoJSON(t *testing.T) {
 		pk := "dGVzdC1wcml2YXRlLWtleS1iYXNlNjQ="
 		kv := 7
 		src := model.RoomInfo{
-			RoomID:     "r1",
-			Found:      true,
-			SiteID:     "site-a",
-			Name:       "general",
-			LastMsgAt:  1735689600000,
-			PrivateKey: &pk,
-			KeyVersion: &kv,
+			RoomID:           "r1",
+			Found:            true,
+			SiteID:           "site-a",
+			Name:             "general",
+			LastMsgAt:        1735689600000,
+			LastMentionAllAt: 1735693200000,
+			PrivateKey:       &pk,
+			KeyVersion:       &kv,
 		}
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
@@ -1060,7 +1061,7 @@ func TestRoomInfoJSON(t *testing.T) {
 		}
 	})
 
-	t.Run("found=false omits optional fields but keeps lastMsgAt", func(t *testing.T) {
+	t.Run("found=false omits all optional fields", func(t *testing.T) {
 		src := model.RoomInfo{
 			RoomID: "r1",
 			Found:  false,
@@ -1078,23 +1079,18 @@ func TestRoomInfoJSON(t *testing.T) {
 		assert.True(t, foundPresent, "found must be present")
 		assert.Equal(t, false, foundVal)
 
-		lastMsgAtVal, lastMsgAtPresent := raw["lastMsgAt"]
-		assert.True(t, lastMsgAtPresent, "lastMsgAt must be present even when zero")
-		assert.Equal(t, float64(0), lastMsgAtVal)
-
-		for _, key := range []string{"siteId", "name", "privateKey", "keyVersion", "error"} {
+		for _, key := range []string{"siteId", "name", "lastMsgAt", "lastMentionAllAt", "privateKey", "keyVersion", "error"} {
 			_, present := raw[key]
 			assert.False(t, present, "%q should be omitted", key)
 		}
 	})
 
-	t.Run("found=true with nil PrivateKey omits privateKey but keeps lastMsgAt", func(t *testing.T) {
+	t.Run("found=true with nil PrivateKey omits zero-valued optional fields", func(t *testing.T) {
 		src := model.RoomInfo{
-			RoomID:    "r1",
-			Found:     true,
-			SiteID:    "site-a",
-			Name:      "general",
-			LastMsgAt: 0,
+			RoomID: "r1",
+			Found:  true,
+			SiteID: "site-a",
+			Name:   "general",
 		}
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
@@ -1102,14 +1098,10 @@ func TestRoomInfoJSON(t *testing.T) {
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 
-		lastMsgAtVal, lastMsgAtPresent := raw["lastMsgAt"]
-		assert.True(t, lastMsgAtPresent, "lastMsgAt must be present even when zero")
-		assert.Equal(t, float64(0), lastMsgAtVal)
-
-		_, pkPresent := raw["privateKey"]
-		assert.False(t, pkPresent, "privateKey should be omitted when nil")
-		_, kvPresent := raw["keyVersion"]
-		assert.False(t, kvPresent, "keyVersion should be omitted when nil")
+		for _, key := range []string{"lastMsgAt", "lastMentionAllAt", "privateKey", "keyVersion"} {
+			_, present := raw[key]
+			assert.False(t, present, "%q should be omitted when zero/nil", key)
+		}
 	})
 }
 
@@ -1128,9 +1120,8 @@ func TestRoomsInfoBatchResponseJSON(t *testing.T) {
 				KeyVersion: &kv,
 			},
 			{
-				RoomID:    "r2",
-				Found:     false,
-				LastMsgAt: 0,
+				RoomID: "r2",
+				Found:  false,
 			},
 		},
 	}

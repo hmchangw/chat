@@ -670,6 +670,9 @@ func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[s
 		if !r.LastMsgAt.IsZero() {
 			entry.LastMsgAt = r.LastMsgAt.UTC().UnixMilli()
 		}
+		if !r.LastMentionAllAt.IsZero() {
+			entry.LastMentionAllAt = r.LastMentionAllAt.UTC().UnixMilli()
+		}
 		if kp, ok := keys[id]; ok && kp != nil {
 			enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
 			ver := kp.Version
