@@ -83,6 +83,7 @@ type MessageSearchIndex struct {
 	CreatedAt             time.Time  `json:"createdAt"                       es:"date"`
 	ThreadParentID        string     `json:"threadParentMessageId,omitempty"        es:"keyword"`
 	ThreadParentCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty" es:"date"`
+	TShow                 bool       `json:"tshow,omitempty"                        es:"boolean"`
 }
 
 // newMessageSearchIndex maps a MessageEvent to a search index document.
@@ -97,6 +98,7 @@ func newMessageSearchIndex(evt *model.MessageEvent) MessageSearchIndex {
 		CreatedAt:             evt.Message.CreatedAt,
 		ThreadParentID:        evt.Message.ThreadParentMessageID,
 		ThreadParentCreatedAt: evt.Message.ThreadParentMessageCreatedAt,
+		TShow:                 evt.Message.TShow,
 	}
 }
 

@@ -53,12 +53,16 @@ func TestUserRoomCollection_TemplateBody(t *testing.T) {
 
 	assert.Contains(t, props, "userAccount")
 	assert.Contains(t, props, "rooms")
+	assert.Contains(t, props, "restrictedRooms")
 	assert.Contains(t, props, "roomTimestamps")
 	assert.Contains(t, props, "createdAt")
 	assert.Contains(t, props, "updatedAt")
 
 	rt := props["roomTimestamps"].(map[string]any)
 	assert.Equal(t, "flattened", rt["type"])
+
+	rr := props["restrictedRooms"].(map[string]any)
+	assert.Equal(t, "flattened", rr["type"])
 
 	rooms := props["rooms"].(map[string]any)
 	assert.Equal(t, "text", rooms["type"])
@@ -91,11 +95,15 @@ func TestUserRoomCollection_BuildAction_MemberAdded(t *testing.T) {
 	assert.Contains(t, src, "ctx._source.rooms.add")
 	assert.Contains(t, src, "ctx.op = 'none'")
 	assert.Contains(t, src, "roomTimestamps")
+	assert.Contains(t, src, "restrictedRooms")
 	assert.Contains(t, src, "params.ts")
+	assert.Contains(t, src, "params.hss")
 
 	params := script["params"].(map[string]any)
 	assert.Equal(t, "r-eng", params["rid"])
 	assert.Equal(t, float64(ts), params["ts"])
+	assert.Equal(t, float64(0), params["hss"],
+		"unrestricted event must translate to hss=0 on the painless boundary")
 	assert.NotEmpty(t, params["now"])
 
 	upsert, ok := body["upsert"].(map[string]any)
@@ -105,9 +113,52 @@ func TestUserRoomCollection_BuildAction_MemberAdded(t *testing.T) {
 	require.Len(t, rooms, 1)
 	assert.Equal(t, "r-eng", rooms[0])
 
+	// Unrestricted upsert seeds an empty restrictedRooms map so the shape is
+	// consistent with the script-updated shape.
+	restricted := upsert["restrictedRooms"].(map[string]any)
+	assert.Empty(t, restricted)
+
 	roomTimestamps := upsert["roomTimestamps"].(map[string]any)
 	assert.Equal(t, float64(ts), roomTimestamps["r-eng"])
 	assert.NotEmpty(t, upsert["createdAt"])
+}
+
+func TestUserRoomCollection_BuildAction_MemberAdded_Restricted(t *testing.T) {
+	coll := newUserRoomCollection("user-room-site-a")
+	payload := baseInboxMemberEvent()
+	const ts int64 = 1735689700000
+	const hssVal int64 = 1735689500000
+	hss := hssVal
+	payload.HistorySharedSince = &hss
+	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, ts)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	require.Len(t, actions, 1,
+		"restricted add must still produce an action — user-room now stores it")
+
+	action := actions[0]
+	require.NotNil(t, action.Doc)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(action.Doc, &body))
+
+	params := body["script"].(map[string]any)["params"].(map[string]any)
+	assert.Equal(t, float64(hssVal), params["hss"],
+		"restricted event must pass hss through to the painless params")
+
+	upsert := body["upsert"].(map[string]any)
+	rooms := upsert["rooms"].([]any)
+	assert.Empty(t, rooms,
+		"restricted upsert must NOT seed rooms[] with the rid")
+
+	restricted := upsert["restrictedRooms"].(map[string]any)
+	assert.Equal(t, float64(hssVal), restricted["r-eng"],
+		"restricted upsert must seed restrictedRooms[rid] with the HSS")
+
+	roomTimestamps := upsert["roomTimestamps"].(map[string]any)
+	assert.Equal(t, float64(ts), roomTimestamps["r-eng"],
+		"LWW timestamp guard applies to restricted path too")
 }
 
 func TestUserRoomCollection_BuildAction_MemberRemoved(t *testing.T) {
@@ -146,21 +197,56 @@ func TestUserRoomCollection_BuildAction_MemberRemoved(t *testing.T) {
 	assert.False(t, hasUpsert, "remove update body must not contain upsert")
 }
 
-// TestUserRoomCollection_BuildAction_RestrictedRoomSkipped verifies the
-// event-level restricted-room short-circuit: when HistorySharedSince is
-// non-zero on the event, every account in the bulk is skipped (no actions).
-// The search service handles restricted rooms via DB+cache at query time.
-func TestUserRoomCollection_BuildAction_RestrictedRoomSkipped(t *testing.T) {
+// TestUserRoomCollection_BuildAction_BulkMixed_AllRestricted verifies that a
+// restricted bulk fans out: every account in the bulk gets its own upsert
+// seeded with `restrictedRooms[rid] = hss` and an empty `rooms[]`. All
+// actions share the same HSS (event-level field).
+func TestUserRoomCollection_BuildAction_BulkMixed_AllRestricted(t *testing.T) {
 	coll := newUserRoomCollection("user-room-site-a")
 	payload := baseInboxMemberEvent()
-	payload.Accounts = []string{"alice", "bob"}
-	payload.HistorySharedSince = 1735689500000
+	payload.Accounts = []string{"alice", "bob", "carol"}
+	const hssVal int64 = 1735689500000
+	hss := hssVal
+	payload.HistorySharedSince = &hss
 
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
 
 	actions, err := coll.BuildAction(data)
 	require.NoError(t, err)
-	assert.Empty(t, actions, "restricted-room event should produce no actions")
+	require.Len(t, actions, 3, "restricted bulk must fan out per account")
+
+	for _, action := range actions {
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(action.Doc, &body))
+		params := body["script"].(map[string]any)["params"].(map[string]any)
+		assert.Equal(t, float64(hssVal), params["hss"])
+
+		upsert := body["upsert"].(map[string]any)
+		assert.Empty(t, upsert["rooms"].([]any))
+		restricted := upsert["restrictedRooms"].(map[string]any)
+		assert.Equal(t, float64(hssVal), restricted["r-eng"])
+	}
+}
+
+// TestUserRoomCollection_BuildAction_RemoveScriptEvictsBoth verifies the
+// remove body touches both rooms[] and restrictedRooms{} so a member_removed
+// event works regardless of which slot currently holds the rid.
+func TestUserRoomCollection_BuildAction_RemoveScriptEvictsBoth(t *testing.T) {
+	coll := newUserRoomCollection("user-room-site-a")
+	payload := baseInboxMemberEvent()
+	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 200)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(actions[0].Doc, &body))
+	src := body["script"].(map[string]any)["source"].(string)
+	assert.Contains(t, src, "ctx._source.rooms.remove",
+		"remove script must evict from rooms[]")
+	assert.Contains(t, src, "ctx._source.restrictedRooms.remove",
+		"remove script must evict from restrictedRooms{}")
 }
 
 // TestUserRoomCollection_BuildAction_BulkInvite verifies fan-out: one event

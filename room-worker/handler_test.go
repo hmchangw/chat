@@ -688,6 +688,120 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// findMemberAddEvent returns the decoded MemberAddEvent published locally on
+// RoomMemberEvent(roomID). Fails the test if no such publish occurred.
+func findMemberAddEvent(t *testing.T, published []publishedMsg, roomID string) (model.MemberAddEvent, []byte) {
+	t.Helper()
+	want := subject.RoomMemberEvent(roomID)
+	for _, p := range published {
+		if p.subj != want {
+			continue
+		}
+		var evt model.MemberAddEvent
+		require.NoError(t, json.Unmarshal(p.data, &evt))
+		return evt, p.data
+	}
+	t.Fatalf("no MemberAddEvent published to %s (got %d messages)", want, len(published))
+	return model.MemberAddEvent{}, nil
+}
+
+// TestHandler_ProcessAddMembers_RestrictedPropagatesPointer verifies that a
+// restricted room (HistoryModeNone) emits a MemberAddEvent whose
+// HistorySharedSince is a non-nil pointer equal to the request timestamp,
+// both for the same-site RoomMemberEvent publish and for the batched
+// cross-site outbox event.
+func TestHandler_ProcessAddMembers_RestrictedPropagatesPointer(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var published []publishedMsg
+	publish := func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}
+	h := NewHandler(store, "site-a", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site-a"},
+		{ID: "u3", Account: "charlie", SiteID: "site-b"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 2).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	const reqTS int64 = 1744300000000
+	req := model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob", "charlie"},
+		History:   model.HistoryConfig{Mode: model.HistoryModeNone},
+		Timestamp: reqTS,
+	}
+	reqData, _ := json.Marshal(req)
+	require.NoError(t, h.processAddMembers(context.Background(), reqData))
+
+	// Local RoomMemberEvent: HSS must be a non-nil pointer equal to request ts.
+	memberAddEvt, _ := findMemberAddEvent(t, published, "r1")
+	require.NotNil(t, memberAddEvt.HistorySharedSince,
+		"restricted room must publish non-nil HistorySharedSince")
+	assert.Equal(t, reqTS, *memberAddEvt.HistorySharedSince)
+
+	// Batched outbox to site-b: same HSS pointer on the payload.
+	var foundOutbox bool
+	for _, p := range published {
+		if !strings.Contains(p.subj, "outbox") {
+			continue
+		}
+		foundOutbox = true
+		var outboxEvt model.OutboxEvent
+		require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
+		var change model.MemberAddEvent
+		require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
+		require.NotNil(t, change.HistorySharedSince,
+			"outbox restricted payload must carry HistorySharedSince")
+		assert.Equal(t, reqTS, *change.HistorySharedSince)
+	}
+	assert.True(t, foundOutbox, "expected a batched outbox publish for site-b")
+}
+
+// TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire verifies that
+// an unrestricted room (HistoryModeAll) produces a MemberAddEvent whose JSON
+// wire form does NOT contain the "historySharedSince" key. This is the
+// documented publisher contract.
+func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var published []publishedMsg
+	publish := func(_ context.Context, subj string, data []byte) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}
+	h := NewHandler(store, "site-a", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site-a"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	req := model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"},
+		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	reqData, _ := json.Marshal(req)
+	require.NoError(t, h.processAddMembers(context.Background(), reqData))
+
+	evt, raw := findMemberAddEvent(t, published, "r1")
+	assert.Nil(t, evt.HistorySharedSince, "unrestricted event must decode HSS as nil")
+
+	var rawMap map[string]any
+	require.NoError(t, json.Unmarshal(raw, &rawMap))
+	_, present := rawMap["historySharedSince"]
+	assert.False(t, present, "unrestricted event must omit historySharedSince on the wire")
+}
+
 func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)

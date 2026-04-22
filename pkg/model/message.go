@@ -12,6 +12,7 @@ type Message struct {
 	CreatedAt                    time.Time     `json:"createdAt"                              bson:"createdAt"`
 	ThreadParentMessageID        string        `json:"threadParentMessageId,omitempty"        bson:"threadParentMessageId,omitempty"`
 	ThreadParentMessageCreatedAt *time.Time    `json:"threadParentMessageCreatedAt,omitempty" bson:"threadParentMessageCreatedAt,omitempty"`
+	TShow                        bool          `json:"tshow,omitempty"                        bson:"tshow,omitempty"`
 	Type                         string        `json:"type,omitempty"                         bson:"type,omitempty"`
 	SysMsgData                   []byte        `json:"sysMsgData,omitempty"                   bson:"sysMsgData,omitempty"`
 }

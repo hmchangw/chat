@@ -620,9 +620,19 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 
 	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)
-	var historySharedSince int64
+	// Never emit &0 — the painless sentinel `hss <= 0` would misroute the
+	// restricted room into `rooms[]`. If the upstream request is malformed
+	// (restricted mode but missing timestamp), leave the pointer nil + log —
+	// we can't silently translate to &0.
+	var historySharedSincePtr *int64
 	if req.History.Mode == model.HistoryModeNone {
-		historySharedSince = req.Timestamp
+		if req.Timestamp > 0 {
+			v := req.Timestamp
+			historySharedSincePtr = &v
+		} else {
+			slog.Error("restricted history with missing timestamp, emitting nil",
+				"roomID", req.RoomID, "mode", req.History.Mode)
+		}
 	}
 	memberAddEvt := model.MemberAddEvent{
 		Type:               "member_added",
@@ -630,7 +640,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		Accounts:           actualAccounts,
 		SiteID:             room.SiteID,
 		JoinedAt:           req.Timestamp,
-		HistorySharedSince: historySharedSince,
+		HistorySharedSince: historySharedSincePtr,
 		Timestamp:          now.UnixMilli(),
 	}
 	memberAddData, _ := json.Marshal(memberAddEvt)
@@ -681,7 +691,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			Accounts:           accounts,
 			SiteID:             room.SiteID,
 			JoinedAt:           req.Timestamp,
-			HistorySharedSince: historySharedSince,
+			HistorySharedSince: historySharedSincePtr,
 			Timestamp:          now.UnixMilli(),
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)

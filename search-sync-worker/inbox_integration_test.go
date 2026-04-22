@@ -36,13 +36,13 @@ func createInboxStream(t *testing.T, ctx context.Context, js jetstream.JetStream
 }
 
 // buildInboxMemberEvent constructs an InboxMemberEvent payload for tests.
-// `historySharedSince` of 0 means unrestricted; any non-zero value marks the
-// entire bulk as restricted and search-sync should skip the whole event.
+// `historySharedSince` is nil for unrestricted; non-nil marks the bulk as
+// restricted — user-room routes it into restrictedRooms{}, spotlight skips.
 // `joinedAt` is only meaningful on add events; pass 0 for removes.
 func buildInboxMemberEvent(
 	roomID, roomName, siteID string,
 	accounts []string,
-	historySharedSince int64,
+	historySharedSince *int64,
 	joinedAt int64,
 	timestamp int64,
 ) model.InboxMemberEvent {
@@ -56,6 +56,10 @@ func buildInboxMemberEvent(
 		JoinedAt:           joinedAt,
 		Timestamp:          timestamp,
 	}
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
 }
 
 // publishInboxMemberEvent wraps an InboxMemberEvent inside an OutboxEvent
@@ -175,25 +179,25 @@ func TestSpotlightSync_Integration(t *testing.T) {
 	// Local member_added: alice joins engineering
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
-		buildInboxMemberEvent("r-eng", "engineering", siteID, []string{"alice"}, 0, joinedAt, 1000),
+		buildInboxMemberEvent("r-eng", "engineering", siteID, []string{"alice"}, nil, joinedAt, 1000),
 	)
 
 	// Local member_added: alice joins platform
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
-		buildInboxMemberEvent("r-platform", "platform", siteID, []string{"alice"}, 0, joinedAt, 1100),
+		buildInboxMemberEvent("r-platform", "platform", siteID, []string{"alice"}, nil, joinedAt, 1100),
 	)
 
 	// Federated (aggregate) member_added: bob joins engineering via a cross-site event
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAddedAggregate(siteID), model.OutboxMemberAdded,
-		buildInboxMemberEvent("r-eng", "engineering", siteID, []string{"bob"}, 0, joinedAt, 1200),
+		buildInboxMemberEvent("r-eng", "engineering", siteID, []string{"bob"}, nil, joinedAt, 1200),
 	)
 
 	// Federated (aggregate) member_removed: alice leaves platform
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberRemovedAggregate(siteID), model.OutboxMemberRemoved,
-		buildInboxMemberEvent("r-platform", "platform", siteID, []string{"alice"}, 0, 0, 1300),
+		buildInboxMemberEvent("r-platform", "platform", siteID, []string{"alice"}, nil, 0, 1300),
 	)
 
 	drainConsumer(t, ctx, cons, handler, 4)
@@ -263,7 +267,7 @@ func TestSpotlightSync_BulkInvite(t *testing.T) {
 
 	// One bulk-invite event adds 3 users to r-platform at once.
 	payload := buildInboxMemberEvent("r-platform", "platform", siteID,
-		[]string{"dave", "erin", "frank"}, 0, joinedAt, 5000)
+		[]string{"dave", "erin", "frank"}, nil, joinedAt, 5000)
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded, payload)
 
@@ -292,7 +296,7 @@ func TestSpotlightSync_BulkInvite(t *testing.T) {
 	t.Run("bulk remove evicts all three docs", func(t *testing.T) {
 		// Same 3 accounts, now removed in one event.
 		remove := buildInboxMemberEvent("r-platform", "platform", siteID,
-			[]string{"dave", "erin", "frank"}, 0, 0, 6000)
+			[]string{"dave", "erin", "frank"}, nil, 0, 6000)
 		publishInboxMemberEvent(t, ctx, js,
 			subject.InboxMemberRemoved(siteID), model.OutboxMemberRemoved, remove)
 		drainConsumer(t, ctx, cons, handler, 1)
@@ -339,42 +343,42 @@ func TestUserRoomSync_Integration(t *testing.T) {
 	// alice joins 3 rooms via local events
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
-		buildInboxMemberEvent("r1", "general", siteID, []string{"alice"}, 0, joinedAt, 1000))
+		buildInboxMemberEvent("r1", "general", siteID, []string{"alice"}, nil, joinedAt, 1000))
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
-		buildInboxMemberEvent("r2", "random", siteID, []string{"alice"}, 0, joinedAt, 1100))
+		buildInboxMemberEvent("r2", "random", siteID, []string{"alice"}, nil, joinedAt, 1100))
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
-		buildInboxMemberEvent("r3", "eng", siteID, []string{"alice"}, 0, joinedAt, 1200))
+		buildInboxMemberEvent("r3", "eng", siteID, []string{"alice"}, nil, joinedAt, 1200))
 
 	// bob joins r1 via a federated (aggregate) event
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAddedAggregate(siteID), model.OutboxMemberAdded,
-		buildInboxMemberEvent("r1", "general", siteID, []string{"bob"}, 0, joinedAt, 1300))
+		buildInboxMemberEvent("r1", "general", siteID, []string{"bob"}, nil, joinedAt, 1300))
 
 	// alice leaves r2 via a local event
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberRemoved(siteID), model.OutboxMemberRemoved,
-		buildInboxMemberEvent("r2", "random", siteID, []string{"alice"}, 0, 0, 1400))
+		buildInboxMemberEvent("r2", "random", siteID, []string{"alice"}, nil, 0, 1400))
 
-	// alice joins a restricted room → whole event should be SKIPPED by user-
-	// room-sync (event-level HistorySharedSince != 0). The message still
-	// arrives at the consumer; the handler acks it without buffering.
+	// alice joins a restricted room. user-room now stores it in
+	// `restrictedRooms{}` instead of skipping.
+	const restrictedHSS int64 = 1743984000000
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
-		buildInboxMemberEvent("r-restricted", "archives", siteID, []string{"alice"}, 1743984000000, joinedAt, 1500))
+		buildInboxMemberEvent("r-restricted", "archives", siteID, []string{"alice"}, int64Ptr(restrictedHSS), joinedAt, 1500))
 
 	drainConsumer(t, ctx, cons, handler, 6)
 	refreshIndex(t, esURL, indexName)
 
 	// --- Verify ---
 
-	t.Run("alice rooms reflect adds and one remove", func(t *testing.T) {
+	t.Run("alice rooms reflect unrestricted adds and one remove", func(t *testing.T) {
 		doc := getDoc(t, esURL, indexName, "alice")
 		require.NotNil(t, doc, "alice user-room doc should exist")
 		rooms := toStringSlice(t, doc["rooms"])
 		assert.ElementsMatch(t, []string{"r1", "r3"}, rooms,
-			"alice should be in r1, r3 (r2 removed, r-restricted skipped)")
+			"alice rooms[] should hold unrestricted adds minus the remove")
 	})
 
 	t.Run("bob created via federated event", func(t *testing.T) {
@@ -384,7 +388,7 @@ func TestUserRoomSync_Integration(t *testing.T) {
 		assert.ElementsMatch(t, []string{"r1"}, rooms)
 	})
 
-	t.Run("roomTimestamps retained after remove", func(t *testing.T) {
+	t.Run("roomTimestamps retained after remove and for restricted", func(t *testing.T) {
 		doc := getDoc(t, esURL, indexName, "alice")
 		require.NotNil(t, doc)
 		rts, ok := doc["roomTimestamps"].(map[string]any)
@@ -398,16 +402,21 @@ func TestUserRoomSync_Integration(t *testing.T) {
 			"r2 timestamp should be bumped to the remove's event timestamp, not deleted")
 		assert.Equal(t, float64(1200), rts["r3"])
 
-		// Restricted room was never applied → no timestamp entry.
-		assert.NotContains(t, rts, "r-restricted")
+		// Restricted-room adds also stamp roomTimestamps so LWW guards both
+		// paths uniformly.
+		assert.Equal(t, float64(1500), rts["r-restricted"])
 	})
 
-	t.Run("restricted room not present in rooms array", func(t *testing.T) {
+	t.Run("restricted room lands in restrictedRooms map", func(t *testing.T) {
 		doc := getDoc(t, esURL, indexName, "alice")
 		require.NotNil(t, doc)
 		rooms := toStringSlice(t, doc["rooms"])
 		assert.NotContains(t, rooms, "r-restricted",
-			"restricted rooms are skipped by user-room-sync")
+			"restricted rooms must NOT appear in rooms[]")
+		restricted, ok := doc["restrictedRooms"].(map[string]any)
+		require.True(t, ok, "restrictedRooms should be a flattened map")
+		assert.EqualValues(t, restrictedHSS, restricted["r-restricted"],
+			"restrictedRooms[r-restricted] should equal the event HSS")
 	})
 
 	t.Run("createdAt and updatedAt stamped from upsert", func(t *testing.T) {
@@ -455,16 +464,15 @@ func TestUserRoomSync_BulkInvite(t *testing.T) {
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
 		buildInboxMemberEvent("r-platform", "platform", siteID,
-			[]string{"dave", "erin", "frank"}, 0, joinedAt, 5000))
+			[]string{"dave", "erin", "frank"}, nil, joinedAt, 5000))
 
-	// Restricted bulk: 3 users to r-archives with non-zero HistorySharedSince
-	// → whole event skipped, no docs written. The message still arrives at
-	// the consumer (it matches the FilterSubjects) so drainConsumer below
-	// counts it.
+	// Restricted bulk: 3 users to r-archives with non-nil HistorySharedSince.
+	// User-room now routes these into `restrictedRooms{}` instead of skipping.
+	const archivesHSS int64 = 1743984000000
 	publishInboxMemberEvent(t, ctx, js,
 		subject.InboxMemberAdded(siteID), model.OutboxMemberAdded,
 		buildInboxMemberEvent("r-archives", "archives", siteID,
-			[]string{"heidi", "ivan", "judy"}, 1743984000000, joinedAt, 5100))
+			[]string{"heidi", "ivan", "judy"}, int64Ptr(archivesHSS), joinedAt, 5100))
 
 	drainConsumer(t, ctx, cons, handler, 2)
 	refreshIndex(t, esURL, indexName)
@@ -475,13 +483,21 @@ func TestUserRoomSync_BulkInvite(t *testing.T) {
 			require.NotNil(t, doc, "%s should be upserted", account)
 			rooms := toStringSlice(t, doc["rooms"])
 			assert.ElementsMatch(t, []string{"r-platform"}, rooms)
+			assert.Empty(t, doc["restrictedRooms"],
+				"%s must not have any restricted rooms", account)
 		}
 	})
 
-	t.Run("restricted bulk writes no docs", func(t *testing.T) {
+	t.Run("restricted bulk routes all three users into restrictedRooms", func(t *testing.T) {
 		for _, account := range []string{"heidi", "ivan", "judy"} {
-			assert.Nil(t, getDoc(t, esURL, indexName, account),
-				"restricted %s must not be upserted", account)
+			doc := getDoc(t, esURL, indexName, account)
+			require.NotNil(t, doc, "restricted %s should still be upserted", account)
+			assert.Empty(t, toStringSlice(t, doc["rooms"]),
+				"%s rooms[] must not contain the restricted room", account)
+			restricted, ok := doc["restrictedRooms"].(map[string]any)
+			require.True(t, ok, "%s must have restrictedRooms map", account)
+			assert.EqualValues(t, archivesHSS, restricted["r-archives"],
+				"%s restrictedRooms[r-archives] should equal event HSS", account)
 		}
 	})
 
@@ -489,7 +505,7 @@ func TestUserRoomSync_BulkInvite(t *testing.T) {
 		publishInboxMemberEvent(t, ctx, js,
 			subject.InboxMemberRemoved(siteID), model.OutboxMemberRemoved,
 			buildInboxMemberEvent("r-platform", "platform", siteID,
-				[]string{"dave", "erin", "frank"}, 0, 0, 6000))
+				[]string{"dave", "erin", "frank"}, nil, 0, 6000))
 		drainConsumer(t, ctx, cons, handler, 1)
 		refreshIndex(t, esURL, indexName)
 
@@ -498,6 +514,24 @@ func TestUserRoomSync_BulkInvite(t *testing.T) {
 			require.NotNil(t, doc, "%s user doc should still exist (ghost)", account)
 			assert.Empty(t, toStringSlice(t, doc["rooms"]),
 				"%s rooms should be empty after bulk remove", account)
+		}
+	})
+
+	t.Run("bulk remove evicts rooms from restricted users", func(t *testing.T) {
+		publishInboxMemberEvent(t, ctx, js,
+			subject.InboxMemberRemoved(siteID), model.OutboxMemberRemoved,
+			buildInboxMemberEvent("r-archives", "archives", siteID,
+				[]string{"heidi", "ivan", "judy"}, int64Ptr(archivesHSS), 0, 6100))
+		drainConsumer(t, ctx, cons, handler, 1)
+		refreshIndex(t, esURL, indexName)
+
+		for _, account := range []string{"heidi", "ivan", "judy"} {
+			doc := getDoc(t, esURL, indexName, account)
+			require.NotNil(t, doc, "%s user doc should still exist (ghost)", account)
+			restricted, _ := doc["restrictedRooms"].(map[string]any)
+			_, stillHas := restricted["r-archives"]
+			assert.False(t, stillHas,
+				"%s restrictedRooms[r-archives] should be evicted after remove", account)
 		}
 	})
 }
@@ -547,7 +581,7 @@ func TestUserRoomSync_LWWGuard(t *testing.T) {
 			j = joinedAt
 		}
 		publishInboxMemberEvent(t, ctx, js, subj, eventType,
-			buildInboxMemberEvent(roomID, "room "+roomID, siteID, []string{"charlie"}, 0, j, ts))
+			buildInboxMemberEvent(roomID, "room "+roomID, siteID, []string{"charlie"}, nil, j, ts))
 	}
 
 	getCharlieState := func() ([]string, map[string]any) {
