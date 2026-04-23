@@ -1323,5 +1323,357 @@ git commit -m "test(history-service): add DeleteMessage error-path unit tests"
 
 ---
 
+## Phase 4 — Handler Registration and Service-Level Integration Tests
+
+Two tasks. Task 10 wires the handler to NATS. Task 11 adds service-level integration tests, including the critical parent-no-cascade verification.
+
+### Task 10 — Register `DeleteMessage` in `RegisterHandlers`
+
+**Files:**
+- Modify: `history-service/internal/service/service.go`
+
+**What this does:** Adds one `natsrouter.Register` line so the router dispatches `chat.user.{account}.request.room.{roomID}.{siteID}.msg.delete` requests to `s.DeleteMessage`.
+
+- [ ] **Step 1: Add the registration**
+
+Edit `history-service/internal/service/service.go`. Extend `RegisterHandlers` (which already lists the edit handler from the edit plan) with the new line:
+
+```go
+func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
+	natsrouter.Register(r, subject.MsgHistoryPattern(siteID), s.LoadHistory)
+	natsrouter.Register(r, subject.MsgNextPattern(siteID), s.LoadNextMessages)
+	natsrouter.Register(r, subject.MsgSurroundingPattern(siteID), s.LoadSurroundingMessages)
+	natsrouter.Register(r, subject.MsgGetPattern(siteID), s.GetMessageByID)
+	natsrouter.Register(r, subject.MsgEditPattern(siteID), s.EditMessage)
+	natsrouter.Register(r, subject.MsgDeletePattern(siteID), s.DeleteMessage)
+}
+```
+
+- [ ] **Step 2: Build and run all tests**
+
+```bash
+make build SERVICE=history-service
+make test SERVICE=history-service
+```
+
+Expected: build succeeds; all unit tests pass.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add history-service/internal/service/service.go
+git commit -m "feat(history-service): register DeleteMessage handler in RegisterHandlers"
+```
+
+---
+
+### Task 11 — Service-level integration tests (delete flow + parent-no-cascade)
+
+**Files:**
+- Modify: `history-service/internal/service/integration_test.go`
+
+**What this does:** Adds two integration tests to the file introduced by the edit plan. The first exercises the full delete flow end-to-end (real Cassandra via testcontainers + `recordingPublisher`). The second verifies the parent-thread-delete no-cascade behavior from spec §8.2 — when a thread parent is soft-deleted, its replies stay `deleted = false` and `tcount` on the parent is preserved.
+
+- [ ] **Step 1: Write the failing integration tests**
+
+Append to `history-service/internal/service/integration_test.go`:
+
+```go
+func TestDeleteMessage_Integration(t *testing.T) {
+	session := setupCassandra(t)
+	repo := cassrepo.NewRepository(session)
+	pub := &recordingPublisher{}
+	svc := service.New(repo, alwaysSubscribedRepo{}, pub)
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "r-del-integ"
+	msgID := "m-del-integ"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a top-level message directly via CQL.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "content", "", false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "content", "", false,
+	).Exec())
+
+	c := natsrouter.NewContext(map[string]string{"account": "alice", "roomID": roomID})
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: msgID})
+	require.NoError(t, err)
+	assert.Equal(t, msgID, resp.MessageID)
+	assert.NotZero(t, resp.DeletedAt)
+
+	// Cassandra: both tables flipped to deleted = true; msg content preserved.
+	var gotDeleted bool
+	var gotMsg string
+	require.NoError(t, session.Query(
+		`SELECT deleted, msg FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotDeleted, &gotMsg))
+	assert.True(t, gotDeleted)
+	assert.Equal(t, "content", gotMsg, "msg content must be retained on soft-delete")
+
+	require.NoError(t, session.Query(
+		`SELECT deleted, msg FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotDeleted, &gotMsg))
+	assert.True(t, gotDeleted)
+	assert.Equal(t, "content", gotMsg)
+
+	// Publisher: exactly one message_deleted event on the room subject.
+	pub.mu.Lock()
+	defer pub.mu.Unlock()
+	require.Len(t, pub.sent, 1)
+	assert.Equal(t, "chat.room."+roomID+".event", pub.sent[0].Subject)
+
+	var evt models.MessageDeletedEvent
+	require.NoError(t, json.Unmarshal(pub.sent[0].Data, &evt))
+	assert.Equal(t, "message_deleted", evt.Type)
+	assert.Equal(t, roomID, evt.RoomID)
+	assert.Equal(t, msgID, evt.MessageID)
+	assert.Equal(t, "alice", evt.DeletedBy)
+	assert.NotZero(t, evt.Timestamp)
+	assert.NotZero(t, evt.DeletedAt)
+}
+
+func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
+	session := setupCassandra(t)
+	repo := cassrepo.NewRepository(session)
+	pub := &recordingPublisher{}
+	svc := service.New(repo, alwaysSubscribedRepo{}, pub)
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "r-parent-cascade"
+	threadRoomID := "thread-parent-cascade"
+	parentID := "m-parent-casc"
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyID := "m-reply-survives"
+	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
+
+	// Parent top-level message with tcount = 1 reflecting the one existing reply.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		parentID, roomID, parentCreatedAt, sender, "parent question", "", 1, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, parentCreatedAt, parentID, sender, "parent question", "", 1, false,
+	).Exec())
+
+	// Reply authored by someone else — the cascade question is specifically
+	// about other users' content being preserved.
+	otherSender := models.Participant{ID: "u2", Account: "bob"}
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_parent_created_at, thread_room_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		replyID, roomID, replyCreatedAt, otherSender, "bob's reply", parentID, parentCreatedAt, threadRoomID, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, otherSender, "bob's reply", parentID, parentCreatedAt, false,
+	).Exec())
+
+	// Alice (the parent's sender) deletes the parent.
+	c := natsrouter.NewContext(map[string]string{"account": "alice", "roomID": roomID})
+	_, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: parentID})
+	require.NoError(t, err)
+
+	// Parent is soft-deleted.
+	var gotDeleted bool
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		parentID, parentCreatedAt,
+	).Scan(&gotDeleted))
+	assert.True(t, gotDeleted, "parent should be deleted")
+
+	// Reply is untouched — no cascade. Bob's content survives.
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		replyID, replyCreatedAt,
+	).Scan(&gotDeleted))
+	assert.False(t, gotDeleted, "thread reply must survive parent deletion (no cascade)")
+
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, threadRoomID, replyCreatedAt, replyID,
+	).Scan(&gotDeleted))
+	assert.False(t, gotDeleted, "thread_messages_by_room reply must survive parent deletion")
+
+	// Parent's tcount is preserved (no decrement on parent-delete; the parent
+	// doesn't have its own parent to decrement).
+	var gotTcount int
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, parentCreatedAt, parentID,
+	).Scan(&gotTcount))
+	assert.Equal(t, 1, gotTcount, "parent tcount should be unchanged (replies still exist and are counted)")
+}
+```
+
+- [ ] **Step 2: Run the integration tests**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: `PASS` for `TestDeleteMessage_Integration` and `TestDeleteMessage_ParentWithReplies_NoCascade`, alongside the edit tests from the edit plan and the repository-level tests from Phase 2 of this plan.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add history-service/internal/service/integration_test.go
+git commit -m "test(history-service): add DeleteMessage integration tests (happy path + parent no-cascade)"
+```
+
+---
+
+## Phase 5 — Frontend Integration (OPTIONAL — can ship as a separate PR)
+
+One task. Like the edit plan's Phase 6, this is optional and can be shipped with the backend PR or in a follow-up.
+
+### Task 12 — Handle `message_deleted` in `MessageArea.jsx`
+
+**Files:**
+- Modify: `chat-frontend/src/components/MessageArea.jsx`
+
+**What this does:** Extends the existing `roomEvent` subscription callback to match on `evt.type === 'message_deleted'`, setting the matched message's `deleted` flag in local state. Renders "[message deleted]" placeholder when `msg.deleted === true`.
+
+- [ ] **Step 1: Extend the subscription callback**
+
+Edit `chat-frontend/src/components/MessageArea.jsx`. The edit plan's Task 14 already added a `message_edited` branch. Extend that block to add the delete branch. Locate the subscription callback:
+
+```jsx
+    const sub = subscribe(roomEvent(room.id), (evt) => {
+      if (evt.type === 'new_message' && evt.message) {
+        setMessages((prev) => {
+          const id = messageId(evt.message)
+          if (prev.some((m) => messageId(m) === id)) return prev
+          return [...prev, evt.message]
+        })
+        return
+      }
+      if (evt.type === 'message_edited') {
+        setMessages((prev) =>
+          prev.map((m) =>
+            messageId(m) === evt.messageId
+              ? { ...m, msg: evt.newMsg, editedAt: evt.editedAt }
+              : m
+          )
+        )
+      }
+    })
+```
+
+Add the delete branch (as a third `if` before the closing `})`):
+
+```jsx
+      if (evt.type === 'message_deleted') {
+        setMessages((prev) =>
+          prev.map((m) =>
+            messageId(m) === evt.messageId ? { ...m, deleted: true } : m
+          )
+        )
+      }
+```
+
+- [ ] **Step 2: Render the deleted placeholder**
+
+Locate the message-content render (same block modified by the edit plan's Task 14):
+
+```jsx
+        {messages.map((msg) => (
+          <div key={messageId(msg)} className="message">
+            <span className="message-sender">{senderName(msg)}</span>
+            <span className="message-time">{formatTime(msg.createdAt)}</span>
+            {msg.editedAt && <span className="message-edited-tag">(edited)</span>}
+            <div className="message-content">{messageContent(msg)}</div>
+          </div>
+        ))}
+```
+
+Replace the `<div className="message-content">` element with a conditional that renders either the deleted placeholder or the real content:
+
+```jsx
+        {messages.map((msg) => (
+          <div key={messageId(msg)} className={`message ${msg.deleted ? 'message-deleted' : ''}`}>
+            <span className="message-sender">{senderName(msg)}</span>
+            <span className="message-time">{formatTime(msg.createdAt)}</span>
+            {msg.editedAt && !msg.deleted && <span className="message-edited-tag">(edited)</span>}
+            <div className="message-content">
+              {msg.deleted ? <em>[message deleted]</em> : messageContent(msg)}
+            </div>
+          </div>
+        ))}
+```
+
+- [ ] **Step 3: Manual test**
+
+```bash
+make dev
+```
+
+- Open two browser windows (Alice and Bob) on the same room.
+- Alice posts a message, then deletes it via the new UI or a direct NATS request to `chat.user.alice.request.room.{roomID}.{siteID}.msg.delete`.
+- Verify Bob's window renders "[message deleted]" in place of the original content.
+- Refresh Bob's page and verify the placeholder persists (Cassandra authoritative).
+- Repeat with a thread parent (Alice's) that has a reply (Bob's). Verify only the parent renders as tombstone; Bob's reply is still visible.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/components/MessageArea.jsx
+git commit -m "feat(chat-frontend): handle message_deleted event and render deleted placeholder"
+```
+
+---
+
+## Implementation Order
+
+Phases are strictly dependency-ordered. Run them in sequence:
+
+1. **Phase 1 — Contracts** (Tasks 1-2): types and subject pattern.
+2. **Phase 2 — Cassandra repository** (Tasks 3-7): interface + stub first, then three incremental branches (top-level → thread-reply → pinned), then the tcount decrement on top.
+3. **Phase 3 — Service handler** (Tasks 8-9): happy path + short-circuit first, then error paths.
+4. **Phase 4 — Wiring + E2E** (Tasks 10-11): expose the handler, then integration-test including parent-no-cascade.
+5. **Phase 5 — Frontend** (Task 12, optional): can ship in this PR or a follow-up.
+
+**Prerequisite:** The edit plan (`2026-04-22-history-edit-message.md`) must be merged before this plan starts. Section 9 (Reused Shared Infrastructure) lists exactly which artifacts come from the edit plan.
+
+## Quality Gates (per CLAUDE.md)
+
+- TDD — Red → Green → Refactor for every task. Never write implementation before its test exists.
+- `make lint` green before each commit.
+- `make test SERVICE=history-service` green (with `-race`) before each commit.
+- `make test-integration SERVICE=history-service` green before PR merge (Phase 2 Tasks 4-7 and Phase 4 Task 11 add integration tests).
+- Coverage ≥ 80% per package; target ≥ 90% for `DeleteMessage` and `SoftDeleteMessage`.
+- Pre-commit hook runs lint + tests — fix root causes, never `--no-verify`.
+
+## Risk Callouts (tie back to spec §13)
+
+- **Multi-table UPDATE partial failure**: idempotent retry converges on `deleted = true`. `updated_at` advances on retry.
+- **tcount drift on partial failure**: if `deleted = true` commits but the tcount decrement fails, caller retry short-circuits and tcount stays +1 from reality. Matches existing worker-side increment-drift semantics. Future reconciliation job could correct.
+- **Short-circuit on `msg.Deleted == true`**: prevents double-decrement on retry. Tradeoff: the handler can't recover from a "deleted=true but decrement never happened" partial-failure state through retry — this is documented and accepted.
+- **Parent-thread-delete no-cascade**: deliberate product decision to respect sender-only auth. Spec §8.2.
+- **`pinned_messages_by_room` branch is dead code today**: kept for correctness when a future pin operation ships.
+- **Best-effort publish**: publish failure is logged, not returned. Clients see the delete on next history fetch.
+- **MongoDB `rooms`/`threadRooms` not touched on delete**: inbox-sort position unchanged; "[message deleted]" shows as preview in the inbox for the current window. Consistent with edit behavior; documented.
+- **No persisted "who deleted" attribution**: acceptable under sender-only auth (`DeletedBy == Sender`). A future moderator-delete would need a `deleted_by` column.
+
+## Definition of Done
+
+Delete PR is ready to merge when:
+
+- [ ] All tasks in Phases 1-4 committed.
+- [ ] `make lint` green.
+- [ ] `make test SERVICE=history-service` green with `-race`.
+- [ ] `make test-integration SERVICE=history-service` green.
+- [ ] Coverage ≥ 80% per package, ≥ 90% on new handler + repo method.
+- [ ] Smoke-tested against `docker-local`: `nats req chat.user.alice.request.room.r1.site-a.msg.delete '{"messageId":"m-test"}'` returns a success reply; Cassandra row shows `deleted = true`; a subscriber on `chat.room.r1.event` sees the `message_deleted` event; a thread reply's parent shows decremented `tcount`.
+- [ ] Verified manually that deleting a thread parent leaves replies intact (no cascade).
+- [ ] (If Phase 5 is in-scope) frontend manually verified.
+
+
 
 
