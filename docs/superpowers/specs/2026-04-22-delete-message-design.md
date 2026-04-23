@@ -75,8 +75,9 @@ This pattern matches the existing `GetMessageByID` convention at `history-servic
 | Load message by ID | non-nil `*Message` returned | `ErrNotFound("message not found")` |
 | Room-ID match | `msg.RoomID == roomID` from subject | `ErrNotFound("message not found")` (same error — no leak) |
 | Sender check | `msg.Sender.Account == account` via `canModify` | `ErrForbidden("only the sender can delete")` |
-| Already-deleted short-circuit | if `msg.Deleted == true`, return the current state without issuing further UPDATEs or publishing | — (idempotent no-op success) |
-| Cassandra UPDATE | all applicable tables updated with `deleted = true, updated_at = ?` | `ErrInternal("failed to delete message")`; no event published |
+| Already-deleted short-circuit | if `msg.Deleted == true`, return the current state without issuing further UPDATEs, tcount decrement, or publishing | — (idempotent no-op success) |
+| Cassandra UPDATE | all applicable tables updated with `deleted = true, updated_at = ?` | `ErrInternal("failed to delete message")`; no tcount decrement; no event published |
+| `tcount` decrement (thread replies only) | parent's `tcount` decremented in `messages_by_id` and `messages_by_room` via LWT (see §8.1) | `ErrInternal("failed to decrement parent tcount")`; no event published. The `deleted = true` UPDATEs already committed in the previous step remain; tcount drift is possible on partial failure (see §13). |
 | Event publish | event delivered to `chat.room.{roomID}.event` | log warning; still reply success |
 
 Write-path semantics:
@@ -151,6 +152,46 @@ Table membership (verified against `message-worker/store_cassandra.go` — `Save
 
 The SET clause on every applicable table is uniform: `SET deleted = true, updated_at = ?`. The `msg` field is **not** touched — deleted messages retain their content in Cassandra, and the frontend is responsible for rendering a placeholder when `deleted == true`. No `deleted_at` or `deleted_by` columns are introduced; the `updated_at` column serves as the delete timestamp when `deleted == true`.
 
+### 8.1 Thread-reply delete — `tcount` decrement on parent
+
+When the deleted message is a thread reply (`msg.ThreadParentID != ""`), the **parent** message's `tcount` (thread reply count) must be decremented to keep the visible reply count accurate. This mirrors the existing increment logic added by `message-worker` at `message-worker/store_cassandra.go:146-205`.
+
+**Target tables.** The parent is by construction a top-level message (its own `ThreadParentID == ""`), so it lives in `messages_by_room` — never in `thread_messages_by_room`. `tcount` therefore needs to be decremented on two tables, matching the increment path:
+
+| Table | Decrement when deleting a thread reply |
+|---|---|
+| `messages_by_id` | always |
+| `messages_by_room` | always (parent is top-level) |
+| `thread_messages_by_room` | **never** (parent is not in this table) |
+| `pinned_messages_by_room` | **never** (unrelated to threading) |
+
+**Atomicity.** Use Cassandra lightweight transactions (LWT) with `IF tcount = ?`, identical to the increment pattern. Read the current value, compute `new = current - 1`, issue the CAS UPDATE; on CAS miss, re-read and retry. Clamp at zero defensively (`if new < 0 { new = 0 }`) to avoid negative counts from any prior drift.
+
+Pseudocode mirroring `message-worker/store_cassandra.go:163-202`:
+
+```go
+// messages_by_id
+query1 := `UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ? IF tcount = ?`
+// messages_by_room
+query2 := `UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF tcount = ?`
+```
+
+**PK values come from the hydrated child `*models.Message`:**
+
+- `parentID = msg.ThreadParentID` — the deleted child's `ThreadParentID` IS the parent's `message_id`
+- `parentCreatedAt = *msg.ThreadParentCreatedAt` — pointer field on the child struct (`*time.Time`); non-nil by construction for a thread reply (set by `message-worker` when the reply is persisted)
+- `parentRoomID = msg.RoomID` — thread replies share the parent's room ID
+
+No extra read is needed — all three values are already on the hydrated child struct via `GetMessageByID`.
+
+**When to decrement.** Only when `msg.ThreadParentID != ""`. Top-level deletes issue no tcount writes (they have no parent). Parent-message deletes (§12 "parent-thread-delete behavior") also issue no tcount writes — only the parent's `deleted = true` is set; its own `tcount` field remains, reflecting its replies which are intentionally preserved.
+
+**Order vs the `deleted = true` UPDATEs.** `deleted = true` is issued first across the applicable tables, then the tcount decrement is issued. Rationale: if the overall delete is going to fail, failing before the tcount decrement avoids a stray decrement that would orphan from a non-deleted message. On partial failure between the two phases, tcount can drift by one — documented in §13 as a known limitation consistent with the existing multi-table write model.
+
+**Interaction with the already-deleted short-circuit (§5).** The short-circuit returns before any UPDATE or decrement work, so a retry of a successfully-deleted message will never re-decrement tcount. This prevents the double-decrement bug that would otherwise occur on caller retry.
+
+**Semantics after this change.** `tcount` on a parent now represents the count of **non-deleted** replies (effectively "visible reply count"), not "total replies ever created". This is the intuitive product semantic — the number shown on the "N replies" indicator matches the number of replies a user can actually see.
+
 ---
 
 ## 9. Reused Shared Infrastructure
@@ -177,6 +218,8 @@ type MessageRepository interface {
 
 `make generate` regenerates `service/mocks/mock_repository.go` to include the new method. No other interfaces are touched. No `SubscriptionRepository` extension is needed because sender-only authorization does not require role lookup.
 
+`SoftDeleteMessage` encapsulates both phases of the Cassandra write: the `deleted = true` multi-table UPDATE (§8) followed by the conditional `tcount` decrement on the parent when the message is a thread reply (§8.1). This internal sequencing matches the existing worker pattern where `SaveThreadMessage` internally calls `incrementParentTcount` (`message-worker/store_cassandra.go:110-112`) — callers see a single method call, and the two-phase ordering plus failure semantics live inside the repo.
+
 ---
 
 ## 10. Testing Strategy
@@ -185,13 +228,15 @@ type MessageRepository interface {
 
 | Scenario | Expected outcome |
 |---|---|
-| Sender deletes own message — happy path | `DeleteMessageResponse` returned; `SoftDeleteMessage` called once with correct `*Message`; event published once |
-| Non-subscriber caller | `ErrForbidden("not subscribed to room")`; message never loaded; no UPDATE; no publish |
-| Subscriber but not sender | `ErrForbidden("only the sender can delete")`; no UPDATE; no publish |
+| Sender deletes own top-level message — happy path | `DeleteMessageResponse` returned; `SoftDeleteMessage` called once; no tcount decrement; event published once |
+| Sender deletes own thread reply — happy path | `DeleteMessageResponse` returned; `SoftDeleteMessage` called; parent's `tcount` decremented on `messages_by_id` and `messages_by_room`; event published once |
+| Non-subscriber caller | `ErrForbidden("not subscribed to room")`; message never loaded; no UPDATE; no tcount decrement; no publish |
+| Subscriber but not sender | `ErrForbidden("only the sender can delete")`; no UPDATE; no tcount decrement; no publish |
 | Message ID not found | `ErrNotFound`; no UPDATE; no publish |
 | Message found but wrong roomID | `ErrNotFound` (no leak); no UPDATE; no publish |
-| Already-deleted message | success reply with existing state; `SoftDeleteMessage` **not** called; no publish |
-| Cassandra UPDATE error | `ErrInternal("failed to delete message")`; no publish |
+| Already-deleted message (top-level or thread reply) | success reply with existing state; `SoftDeleteMessage` **not** called; no tcount decrement (prevents double-decrement on retry); no publish |
+| Cassandra UPDATE error (deleted=true phase) | `ErrInternal("failed to delete message")`; no tcount decrement; no publish |
+| Cassandra UPDATE error (tcount decrement phase) | `ErrInternal("failed to decrement parent tcount")`; no publish. `deleted = true` state already persisted; caller retry short-circuits, leaving a ±1 tcount drift (see §13) |
 | Publisher returns error after successful UPDATE | success reply returned; warning logged |
 
 Mocks: `MessageRepository` (regenerated with the new method), `SubscriptionRepository` (unchanged), in-memory fake `EventPublisher` that captures published payloads.
@@ -200,10 +245,12 @@ Mocks: `MessageRepository` (regenerated with the new method), `SubscriptionRepos
 
 | Scenario | Assertion |
 |---|---|
-| Top-level message delete | `messages_by_id` and `messages_by_room` rows have `deleted == true`; `msg` content preserved; `updated_at` advanced; `thread_messages_by_room` row count == 0 (no phantom) |
-| Thread reply delete | `messages_by_id` and `thread_messages_by_room` rows marked deleted with correct `thread_room_id` PK; no phantom in `messages_by_room` |
+| Top-level message delete | `messages_by_id` and `messages_by_room` rows have `deleted == true`; `msg` content preserved; `updated_at` advanced; `thread_messages_by_room` row count == 0 (no phantom); **parent tcount NOT touched** (there is no parent) |
+| Thread reply delete | `messages_by_id` and `thread_messages_by_room` rows marked deleted with correct `thread_room_id` PK; no phantom in `messages_by_room`; parent's `tcount` decremented by 1 in both `messages_by_id` and `messages_by_room` |
+| Thread reply delete with concurrent tcount mutation | LWT retry loop converges — even if another operation changes tcount between read and CAS, the decrement retries and eventually applies |
 | Delete on pinned message (seeded directly in `pinned_messages_by_room`) | `deleted == true` also propagated to the pinned mirror |
-| Idempotency | running the same `SoftDeleteMessage` twice yields identical row state (except `updated_at`, which advances); `deleted` column stays `true` |
+| Parent-message delete (thread parent with existing replies) | parent's `deleted == true` in `messages_by_id` and `messages_by_room`; parent's `tcount` unchanged; all thread replies remain with `deleted == false` (no cascade); no phantom row writes |
+| Idempotency of SoftDeleteMessage | running the same `SoftDeleteMessage` twice yields identical row state on `deleted`/`msg` columns; `updated_at` advances on each call; tcount decrements **only on the first call** (subsequent calls hit the short-circuit at handler level) |
 
 **Service-level integration test** (`history-service/internal/service/integration_test.go`, build tag `integration`) — wires the real repo, a recording `EventPublisher`, and asserts both Cassandra state and event publication in one flow.
 
@@ -254,6 +301,7 @@ Missed-event behavior: if the client was not subscribed at publish time, the del
 ## 13. Risks & Known Limitations
 
 - **Multi-table fan-out partial failure** — if `messages_by_id` UPDATE succeeds but `messages_by_room` UPDATE fails, the room is temporarily inconsistent. Caller retry converges the state because `deleted = true` is strictly idempotent.
+- **`tcount` drift on partial failure** — if the `deleted = true` UPDATE phase completes but the `tcount` decrement phase fails (or the handler crashes between the two), caller retry will short-circuit at the handler level (`msg.Deleted == true`) and will **not** re-attempt the decrement. The parent's `tcount` remains one higher than the actual visible-reply count. This is the same category of drift as the existing worker-side increment drift (no recovery mechanism today). Mitigation: LWT on decrement prevents the inverse bug (double-decrement). If drift becomes a product concern, a future reconciliation job can count `thread_messages_by_room` rows per parent and correct `tcount` authoritatively.
 - **`pinned_messages_by_room` branch is dead code today** — no pin operation exists yet. The branch is kept so future pin code does not need to retrofit delete to cover it.
 - **Best-effort publish** — a publish failure after a successful UPDATE is logged but not retried. Clients will still see the deletion on the next history fetch.
 - **No persisted "who deleted" attribution** — acceptable under sender-only authorization (actor always equals sender). If future scope introduces moderator-delete, a `deleted_by` column will be required.
