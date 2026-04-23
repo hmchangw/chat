@@ -49,8 +49,8 @@ type RoomInfo struct {
 	Found            bool    `json:"found"`
 	SiteID           string  `json:"siteId,omitempty"`
 	Name             string  `json:"name,omitempty"`
-	LastMsgAt        int64   `json:"lastMsgAt,omitempty"`
-	LastMentionAllAt int64   `json:"lastMentionAllAt,omitempty"`
+	LastMsgAt        *int64  `json:"lastMsgAt,omitempty"`
+	LastMentionAllAt *int64  `json:"lastMentionAllAt,omitempty"`
 	PrivateKey       *string `json:"privateKey,omitempty"`
 	KeyVersion       *int    `json:"keyVersion,omitempty"`
 	Error            string  `json:"error,omitempty"`

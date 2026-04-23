@@ -662,10 +662,12 @@ func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[s
 		entry.SiteID = r.SiteID
 		entry.Name = r.Name
 		if !r.LastMsgAt.IsZero() {
-			entry.LastMsgAt = r.LastMsgAt.UTC().UnixMilli()
+			ms := r.LastMsgAt.UTC().UnixMilli()
+			entry.LastMsgAt = &ms
 		}
 		if !r.LastMentionAllAt.IsZero() {
-			entry.LastMentionAllAt = r.LastMentionAllAt.UTC().UnixMilli()
+			ms := r.LastMentionAllAt.UTC().UnixMilli()
+			entry.LastMentionAllAt = &ms
 		}
 		if kp, ok := keys[id]; ok && kp != nil {
 			enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)

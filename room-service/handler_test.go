@@ -1430,7 +1430,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			},
 		},
 		{
-			name:    "missing room — Found=false, LastMsgAt=0",
+			name:    "missing room → Found=false, LastMsgAt=nil",
 			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r-missing"}}),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r-missing"}).Return([]model.Room{}, nil)
@@ -1442,7 +1442,8 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 				require.Len(t, resp.Rooms, 1)
 				assert.Equal(t, "r-missing", resp.Rooms[0].RoomID)
 				assert.False(t, resp.Rooms[0].Found)
-				assert.Equal(t, int64(0), resp.Rooms[0].LastMsgAt)
+				assert.Nil(t, resp.Rooms[0].LastMsgAt)
+				assert.Nil(t, resp.Rooms[0].LastMentionAllAt)
 			},
 		},
 		{
@@ -1520,7 +1521,8 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			},
 			assertResp: func(t *testing.T, resp model.RoomsInfoBatchResponse) {
 				require.Len(t, resp.Rooms, 1)
-				assert.Equal(t, now.UTC().UnixMilli(), resp.Rooms[0].LastMsgAt)
+				require.NotNil(t, resp.Rooms[0].LastMsgAt)
+				assert.Equal(t, now.UTC().UnixMilli(), *resp.Rooms[0].LastMsgAt)
 			},
 		},
 	}

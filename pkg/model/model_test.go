@@ -1152,13 +1152,15 @@ func TestRoomInfoJSON(t *testing.T) {
 	t.Run("happy path with all fields", func(t *testing.T) {
 		pk := "dGVzdC1wcml2YXRlLWtleS1iYXNlNjQ="
 		kv := 7
+		lastMsg := int64(1735689600000)
+		lastMention := int64(1735693200000)
 		src := model.RoomInfo{
 			RoomID:           "r1",
 			Found:            true,
 			SiteID:           "site-a",
 			Name:             "general",
-			LastMsgAt:        1735689600000,
-			LastMentionAllAt: 1735693200000,
+			LastMsgAt:        &lastMsg,
+			LastMentionAllAt: &lastMention,
 			PrivateKey:       &pk,
 			KeyVersion:       &kv,
 		}
@@ -1218,16 +1220,19 @@ func TestRoomInfoJSON(t *testing.T) {
 func TestRoomsInfoBatchResponseJSON(t *testing.T) {
 	pk := "dGVzdC1rZXk="
 	kv := 3
+	lastMsg := int64(1735689600000)
+	lastMention := int64(1735693200000)
 	src := model.RoomsInfoBatchResponse{
 		Rooms: []model.RoomInfo{
 			{
-				RoomID:     "r1",
-				Found:      true,
-				SiteID:     "site-a",
-				Name:       "general",
-				LastMsgAt:  1735689600000,
-				PrivateKey: &pk,
-				KeyVersion: &kv,
+				RoomID:           "r1",
+				Found:            true,
+				SiteID:           "site-a",
+				Name:             "general",
+				LastMsgAt:        &lastMsg,
+				LastMentionAllAt: &lastMention,
+				PrivateKey:       &pk,
+				KeyVersion:       &kv,
 			},
 			{
 				RoomID: "r2",

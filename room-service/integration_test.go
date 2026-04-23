@@ -1026,7 +1026,8 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 
 	assert.Equal(t, "r1", resp.Rooms[0].RoomID)
 	assert.True(t, resp.Rooms[0].Found)
-	assert.Equal(t, lastMsg.UnixMilli(), resp.Rooms[0].LastMsgAt)
+	require.NotNil(t, resp.Rooms[0].LastMsgAt)
+	assert.Equal(t, lastMsg.UnixMilli(), *resp.Rooms[0].LastMsgAt)
 	require.NotNil(t, resp.Rooms[0].PrivateKey)
 	assert.Equal(t, base64.StdEncoding.EncodeToString(privKey1), *resp.Rooms[0].PrivateKey)
 	require.NotNil(t, resp.Rooms[0].KeyVersion)
@@ -1034,7 +1035,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 
 	assert.Equal(t, "r2", resp.Rooms[1].RoomID)
 	assert.True(t, resp.Rooms[1].Found)
-	assert.Equal(t, int64(0), resp.Rooms[1].LastMsgAt)
+	assert.Nil(t, resp.Rooms[1].LastMsgAt)
 	require.NotNil(t, resp.Rooms[1].PrivateKey)
 	assert.Equal(t, base64.StdEncoding.EncodeToString(privKey2), *resp.Rooms[1].PrivateKey)
 
@@ -1045,7 +1046,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 
 	assert.Equal(t, "missing", resp.Rooms[3].RoomID)
 	assert.False(t, resp.Rooms[3].Found)
-	assert.Equal(t, int64(0), resp.Rooms[3].LastMsgAt)
+	assert.Nil(t, resp.Rooms[3].LastMsgAt)
 	assert.Nil(t, resp.Rooms[3].PrivateKey)
 	assert.Nil(t, resp.Rooms[3].KeyVersion)
 }
