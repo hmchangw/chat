@@ -162,18 +162,63 @@ func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte
 }
 ```
 
-- [ ] **Step 3: Build to verify compilation**
+- [ ] **Step 3: Regenerate mocks to include `MockEventPublisher`**
+
+```bash
+make generate SERVICE=history-service
+```
+
+Expected: `history-service/internal/service/mocks/mock_repository.go` is overwritten and now contains a `MockEventPublisher` type alongside the existing `MockMessageRepository` and `MockSubscriptionRepository`. The `//go:generate` directive added in Step 1 drives this.
+
+- [ ] **Step 4: Update the `newService` test helper to pass a mock publisher**
+
+Edit `history-service/internal/service/messages_test.go`. Find the existing helper (around line 30):
+
+```go
+func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository) {
+	ctrl := gomock.NewController(t)
+	msgs := mocks.NewMockMessageRepository(ctrl)
+	subs := mocks.NewMockSubscriptionRepository(ctrl)
+	return service.New(msgs, subs), msgs, subs
+}
+```
+
+Replace it with:
+
+```go
+func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockEventPublisher) {
+	ctrl := gomock.NewController(t)
+	msgs := mocks.NewMockMessageRepository(ctrl)
+	subs := mocks.NewMockSubscriptionRepository(ctrl)
+	pub := mocks.NewMockEventPublisher(ctrl)
+	return service.New(msgs, subs, pub), msgs, subs, pub
+}
+```
+
+Every existing call site for `newService` in `messages_test.go` currently destructures into `svc, msgs, subs`. Update each of those calls to destructure into `svc, msgs, subs, _` (the edit/delete tests will consume the publisher later; read-only tests ignore it). Do a find-and-replace:
+
+```bash
+grep -n "newService(t)" history-service/internal/service/messages_test.go
+```
+
+For each line matching `svc, msgs, subs := newService(t)`, change the left-hand side to `svc, msgs, subs, _ := newService(t)`. Some tests discard additional return values (e.g. `_, msgs, subs := newService(t)` becomes `_, msgs, subs, _ := newService(t)`). Keep the ordering consistent with the new helper signature.
+
+- [ ] **Step 5: Build and run tests to verify nothing is broken**
 
 ```bash
 make build SERVICE=history-service
+make test SERVICE=history-service
 ```
 
-Expected: binary built without errors. No runtime tests yet — the wiring is correct if and only if the program compiles.
+Expected: successful build and all existing tests (`TestHistoryService_LoadHistory_*`, `TestHistoryService_LoadNextMessages_*`, etc.) continue to pass. No behavior regression.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add history-service/internal/service/service.go history-service/cmd/main.go
+git add history-service/internal/service/service.go \
+	history-service/internal/service/mocks/mock_repository.go \
+	history-service/internal/service/messages_test.go \
+	history-service/cmd/main.go
 git commit -m "feat(history-service): add EventPublisher interface and wire in main.go"
 ```
 
