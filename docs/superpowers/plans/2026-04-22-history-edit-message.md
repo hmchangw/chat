@@ -327,3 +327,198 @@ git commit -m "feat(history-service): add maxContentBytes constant (20 KB)"
 ```
 
 ---
+
+## Phase 2 — Contracts (Types and NATS Subject)
+
+Two tasks that declare the over-the-wire shapes. These are pure data and pure strings — no behavior — so the tests are JSON round-trip and exact-string equality.
+
+### Task 4 — Add edit request, response, and event types
+
+**Files:**
+- Modify: `history-service/internal/models/message.go`
+- Create: `history-service/internal/models/message_test.go`
+
+**What this does:** Declares the three new structs the edit handler uses: `EditMessageRequest` (what the caller sends), `EditMessageResponse` (what we reply with), and `MessageEditedEvent` (what fans out to `chat.room.{roomID}.event`). JSON round-trip tests verify field names and tag stability.
+
+- [ ] **Step 1: Write the failing round-trip tests**
+
+Create `history-service/internal/models/message_test.go` with:
+
+```go
+package models
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestEditMessageRequest_JSON(t *testing.T) {
+	req := EditMessageRequest{
+		MessageID: "m-abc",
+		NewMsg:    "corrected text",
+	}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"messageId":"m-abc","newMsg":"corrected text"}`, string(data))
+
+	var decoded EditMessageRequest
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, req, decoded)
+}
+
+func TestEditMessageResponse_JSON(t *testing.T) {
+	resp := EditMessageResponse{
+		MessageID: "m-abc",
+		EditedAt:  1_714_000_000_000,
+	}
+	data, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"messageId":"m-abc","editedAt":1714000000000}`, string(data))
+
+	var decoded EditMessageResponse
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, resp, decoded)
+}
+
+func TestMessageEditedEvent_JSON(t *testing.T) {
+	evt := MessageEditedEvent{
+		Type:      "message_edited",
+		Timestamp: 1_714_000_000_000,
+		RoomID:    "r1",
+		MessageID: "m-abc",
+		NewMsg:    "corrected text",
+		EditedBy:  "alice",
+		EditedAt:  1_714_000_000_000,
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"type":"message_edited",
+		"timestamp":1714000000000,
+		"roomId":"r1",
+		"messageId":"m-abc",
+		"newMsg":"corrected text",
+		"editedBy":"alice",
+		"editedAt":1714000000000
+	}`, string(data))
+
+	var decoded MessageEditedEvent
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, evt, decoded)
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+```bash
+make test SERVICE=history-service
+```
+
+Expected: compilation errors — `undefined: EditMessageRequest`, `undefined: EditMessageResponse`, `undefined: MessageEditedEvent`.
+
+- [ ] **Step 3: Implement the types**
+
+Edit `history-service/internal/models/message.go`. Append the three new types below the existing `GetMessageByIDRequest` (after line 64):
+
+```go
+// EditMessageRequest is the payload for editing a message.
+type EditMessageRequest struct {
+	MessageID string `json:"messageId"`
+	NewMsg    string `json:"newMsg"`
+}
+
+// EditMessageResponse is the reply returned by the edit handler.
+type EditMessageResponse struct {
+	MessageID string `json:"messageId"`
+	EditedAt  int64  `json:"editedAt"` // UTC millis
+}
+
+// MessageEditedEvent is the live event published to chat.room.{roomID}.event
+// after a successful edit. Per CLAUDE.md, every NATS event carries a
+// Timestamp (event publish time). EditedAt is the domain time when the edit
+// occurred; both are populated from a single time.Now().UTC() in the handler.
+type MessageEditedEvent struct {
+	Type      string `json:"type"`      // always "message_edited"
+	Timestamp int64  `json:"timestamp"` // UTC millis, event publish time
+	RoomID    string `json:"roomId"`
+	MessageID string `json:"messageId"`
+	NewMsg    string `json:"newMsg"`
+	EditedBy  string `json:"editedBy"`  // actor account (always == message.sender.account under sender-only auth)
+	EditedAt  int64  `json:"editedAt"`  // UTC millis, domain time when edit occurred
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+```bash
+make test SERVICE=history-service
+```
+
+Expected: `PASS` for `TestEditMessageRequest_JSON`, `TestEditMessageResponse_JSON`, `TestMessageEditedEvent_JSON`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/models/message.go history-service/internal/models/message_test.go
+git commit -m "feat(history-service): add EditMessageRequest/Response and MessageEditedEvent types"
+```
+
+---
+
+### Task 5 — Add `MsgEditPattern` subject builder
+
+**Files:**
+- Modify: `pkg/subject/subject.go`
+- Modify: `pkg/subject/subject_test.go`
+
+**What this does:** Adds the natsrouter pattern `chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit` that the service registers. The `{account}` and `{roomID}` placeholders are extracted by natsrouter at dispatch time. Mirrors the existing `MsgGetPattern` / `MsgHistoryPattern` style.
+
+- [ ] **Step 1: Write the failing test**
+
+Edit `pkg/subject/subject_test.go`. Find the existing `TestSubjectBuilders` table-driven test (around line 9) and add a new case to the `tests` slice — insert near the other `MsgXxxPattern` entries:
+
+```go
+		{"MsgEditPattern", subject.MsgEditPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.edit"},
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+make test
+```
+
+Expected: compilation error — `undefined: subject.MsgEditPattern`.
+
+- [ ] **Step 3: Implement the builder**
+
+Edit `pkg/subject/subject.go`. Locate the existing natsrouter-pattern section (near `MsgGetPattern` around line 194) and add the new builder immediately after it:
+
+```go
+// MsgEditPattern is the natsrouter pattern for editing a message.
+// The {account} and {roomID} placeholders are extracted by natsrouter.
+func MsgEditPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.edit", siteID)
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+```bash
+make test
+```
+
+Expected: `PASS` for `TestSubjectBuilders/MsgEditPattern`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add pkg/subject/subject.go pkg/subject/subject_test.go
+git commit -m "feat(subject): add MsgEditPattern natsrouter builder"
+```
+
+---
+
