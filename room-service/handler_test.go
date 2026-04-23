@@ -1525,6 +1525,25 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 				assert.Equal(t, now.UTC().UnixMilli(), *resp.Rooms[0].LastMsgAt)
 			},
 		},
+		{
+			name:    "LastMsgAt zero-time in Mongo → nil in response",
+			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r-zero"}}),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r-zero"}).Return([]model.Room{
+					{ID: "r-zero", Name: "quiet", SiteID: "site-a"},
+				}, nil)
+			},
+			setupKeys: func(k *MockRoomKeyStore) {
+				k.EXPECT().GetMany(gomock.Any(), []string{"r-zero"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+			},
+			assertResp: func(t *testing.T, resp model.RoomsInfoBatchResponse) {
+				require.Len(t, resp.Rooms, 1)
+				assert.Equal(t, "r-zero", resp.Rooms[0].RoomID)
+				assert.True(t, resp.Rooms[0].Found)
+				assert.Nil(t, resp.Rooms[0].LastMsgAt, "zero-time Room.LastMsgAt must produce nil RoomInfo.LastMsgAt")
+				assert.Nil(t, resp.Rooms[0].LastMentionAllAt, "zero-time Room.LastMentionAllAt must produce nil RoomInfo.LastMentionAllAt")
+			},
+		},
 	}
 
 	for _, tc := range tests {
