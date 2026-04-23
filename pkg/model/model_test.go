@@ -1215,6 +1215,34 @@ func TestRoomInfoJSON(t *testing.T) {
 			assert.False(t, present, "%q should be omitted when zero/nil", key)
 		}
 	})
+
+	t.Run("nil LastMsgAt omitted; pointer to zero LastMentionAllAt emitted as 0", func(t *testing.T) {
+		zero := int64(0)
+		src := model.RoomInfo{
+			RoomID:           "r1",
+			Found:            true,
+			LastMsgAt:        nil,
+			LastMentionAllAt: &zero,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+
+		_, hasLastMsg := raw["lastMsgAt"]
+		assert.False(t, hasLastMsg, "nil LastMsgAt must be omitted from JSON")
+
+		lastMention, hasMention := raw["lastMentionAllAt"]
+		require.True(t, hasMention, "non-nil LastMentionAllAt must be present even when value is 0")
+		assert.Equal(t, float64(0), lastMention, "zero value must round-trip as JSON number 0")
+
+		var dst model.RoomInfo
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Nil(t, dst.LastMsgAt, "absent JSON field must unmarshal to nil pointer")
+		require.NotNil(t, dst.LastMentionAllAt)
+		assert.Equal(t, int64(0), *dst.LastMentionAllAt)
+	})
 }
 
 func TestRoomsInfoBatchResponseJSON(t *testing.T) {
