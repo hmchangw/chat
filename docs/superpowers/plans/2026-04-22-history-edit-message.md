@@ -522,3 +522,531 @@ git commit -m "feat(subject): add MsgEditPattern natsrouter builder"
 
 ---
 
+## Phase 3 — Cassandra Repository
+
+Four tasks. The repository method `UpdateMessageContent` is implemented incrementally — one table branch at a time, each with its own integration test. This keeps commits small and makes each branch's correctness independently verifiable.
+
+### Task 6 — Extend `MessageRepository` interface with `UpdateMessageContent` and regenerate mocks
+
+**Files:**
+- Modify: `history-service/internal/service/service.go`
+- Regenerate: `history-service/internal/service/mocks/mock_repository.go` (via `make generate`)
+
+**What this does:** Adds the `UpdateMessageContent` method to the repository interface so the handler can mock it in unit tests. The implementation lands in Tasks 7–9; this task only extends the interface contract and regenerates the mocks.
+
+- [ ] **Step 1: Add the method to the interface**
+
+Edit `history-service/internal/service/service.go`. Extend the `MessageRepository` interface (currently 5 methods, lines 15-22) with the new method:
+
+```go
+// MessageRepository defines Cassandra-backed message operations.
+type MessageRepository interface {
+	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
+	UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error
+}
+```
+
+- [ ] **Step 2: Regenerate mocks**
+
+```bash
+make generate SERVICE=history-service
+```
+
+Expected: `history-service/internal/service/mocks/mock_repository.go` is overwritten. The new file should contain a `MockMessageRepository.UpdateMessageContent` method.
+
+- [ ] **Step 3: Verify build**
+
+```bash
+make build SERVICE=history-service
+```
+
+Expected: the build fails in `cassrepo` because `UpdateMessageContent` is not yet implemented on the concrete `Repository` type. **This is expected.** The next task (Task 7) adds the implementation, restoring the build.
+
+To avoid leaving the tree in a broken state at commit time, add a temporary method stub in `history-service/internal/cassrepo/repository.go` at the end of the file:
+
+```go
+// UpdateMessageContent is implemented incrementally across Tasks 7-9 of the
+// edit plan. This stub keeps the interface contract compilable between tasks;
+// Task 7 replaces it with the top-level-message branch.
+func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	return fmt.Errorf("UpdateMessageContent not yet implemented")
+}
+```
+
+Add the `fmt` import if not already present.
+
+Re-run `make build SERVICE=history-service` — expected: successful build.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add history-service/internal/service/service.go \
+	history-service/internal/service/mocks/mock_repository.go \
+	history-service/internal/cassrepo/repository.go
+git commit -m "feat(history-service): extend MessageRepository with UpdateMessageContent (stub)"
+```
+
+---
+
+### Task 7 — Implement `UpdateMessageContent` top-level branch and integration test
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/repository.go`
+- Modify: `history-service/internal/cassrepo/integration_test.go`
+
+**What this does:** Replaces the stub with the two-table UPDATE path for top-level messages (`msg.ThreadParentID == ""`). Extends `setupCassandra` to create `thread_messages_by_room` and `pinned_messages_by_room` tables so later tests (and the no-phantom assertion in this task) can query them.
+
+- [ ] **Step 1: Extend `setupCassandra` to create the two additional tables**
+
+Edit `history-service/internal/cassrepo/integration_test.go`. After the `messages_by_id` `CREATE TABLE` block (ends around line 107) and **before** the `cluster.Keyspace = "chat_test"` line, insert:
+
+```go
+	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.thread_messages_by_room (
+		room_id TEXT,
+		thread_room_id TEXT,
+		created_at TIMESTAMP,
+		message_id TEXT,
+		sender FROZEN<"Participant">,
+		target_user FROZEN<"Participant">,
+		msg TEXT,
+		mentions SET<FROZEN<"Participant">>,
+		attachments LIST<BLOB>,
+		file FROZEN<"File">,
+		card FROZEN<"Card">,
+		card_action FROZEN<"CardAction">,
+		tshow BOOLEAN,
+		tcount INT,
+		thread_parent_id TEXT,
+		thread_parent_created_at TIMESTAMP,
+		quoted_parent_message FROZEN<"QuotedParentMessage">,
+		visible_to TEXT,
+		unread BOOLEAN,
+		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+		deleted BOOLEAN,
+		type TEXT,
+		sys_msg_data BLOB,
+		site_id TEXT,
+		edited_at TIMESTAMP,
+		updated_at TIMESTAMP,
+		PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
+	) WITH CLUSTERING ORDER BY (thread_room_id ASC, created_at DESC, message_id DESC)`).Exec())
+
+	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.pinned_messages_by_room (
+		room_id TEXT,
+		created_at TIMESTAMP,
+		message_id TEXT,
+		sender FROZEN<"Participant">,
+		msg TEXT,
+		file FROZEN<"File">,
+		card FROZEN<"Card">,
+		deleted BOOLEAN,
+		edited_at TIMESTAMP,
+		updated_at TIMESTAMP,
+		PRIMARY KEY ((room_id), created_at, message_id)
+	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`).Exec())
+```
+
+- [ ] **Step 2: Write the failing integration test**
+
+At the end of `history-service/internal/cassrepo/integration_test.go`, append:
+
+```go
+func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-top"
+	msgID := "m-top"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a top-level message in both tables (ThreadParentID == "").
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "original", "",
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "original", "",
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: "",
+	}
+	editedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.UpdateMessageContent(ctx, msg, "edited", editedAt))
+
+	// messages_by_id updated
+	var gotMsg, gotEditedAt any
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg)
+	assert.WithinDuration(t, editedAt, gotEditedAt.(time.Time), time.Second)
+
+	// messages_by_room updated
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg)
+
+	// thread_messages_by_room must NOT have a phantom row for this message
+	var threadCount int
+	require.NoError(t, session.Query(
+		`SELECT COUNT(*) FROM thread_messages_by_room WHERE room_id = ?`,
+		roomID,
+	).Scan(&threadCount))
+	assert.Equal(t, 0, threadCount, "top-level edit must not write to thread_messages_by_room")
+}
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: FAIL with the stub's error `UpdateMessageContent not yet implemented`.
+
+- [ ] **Step 4: Replace the stub with the top-level implementation**
+
+Edit `history-service/internal/cassrepo/repository.go`. Replace the stub added in Task 6 with:
+
+```go
+// UpdateMessageContent updates the msg, edited_at, and updated_at fields
+// across the Cassandra tables that actually hold the row, determined from
+// msg's own metadata. Top-level messages (msg.ThreadParentID == "") land in
+// messages_by_room; thread replies land in thread_messages_by_room; pinned
+// messages additionally land in pinned_messages_by_room. messages_by_id is
+// always updated. All UPDATEs use the full PK; none is a no-op against a
+// missing row — see spec doc for the Cassandra phantom-row rationale.
+// Idempotent with respect to msg content; timestamps advance per call.
+func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	// Always: messages_by_id
+	if err := r.session.Query(
+		`UPDATE messages_by_id SET msg = ?, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+		newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update messages_by_id: %w", err)
+	}
+
+	// Top-level only: messages_by_room
+	if msg.ThreadParentID == "" {
+		if err := r.session.Query(
+			`UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update messages_by_room: %w", err)
+		}
+	}
+
+	// Thread-reply and pinned branches are added in Tasks 8 and 9.
+	return nil
+}
+```
+
+- [ ] **Step 5: Run the test to verify it passes**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: `PASS` for `TestRepository_UpdateMessageContent_TopLevel`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add history-service/internal/cassrepo/repository.go history-service/internal/cassrepo/integration_test.go
+git commit -m "feat(history-service): UpdateMessageContent top-level branch with integration test"
+```
+
+---
+
+### Task 8 — Add thread-reply branch to `UpdateMessageContent` with integration test
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/repository.go`
+- Modify: `history-service/internal/cassrepo/integration_test.go`
+
+**What this does:** Extends `UpdateMessageContent` to cover thread replies (`msg.ThreadParentID != ""`), which live in `thread_messages_by_room` (using `thread_room_id` as a PK component) instead of `messages_by_room`. The integration test asserts both the thread-table update and the absence of any phantom row in `messages_by_room`.
+
+- [ ] **Step 1: Write the failing integration test**
+
+Append to `history-service/internal/cassrepo/integration_test.go`:
+
+```go
+func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-thread"
+	threadRoomID := "thread-1"
+	parentID := "m-parent"
+	msgID := "m-reply"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a thread reply in messages_by_id and thread_messages_by_room.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_room_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "original", parentID, threadRoomID,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, createdAt, msgID, sender, "original", parentID,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: parentID,
+		ThreadRoomID:   threadRoomID,
+	}
+	editedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.UpdateMessageContent(ctx, msg, "edited", editedAt))
+
+	// messages_by_id updated
+	var gotMsg string
+	require.NoError(t, session.Query(
+		`SELECT msg FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotMsg))
+	assert.Equal(t, "edited", gotMsg)
+
+	// thread_messages_by_room updated (verify with the full PK including thread_room_id)
+	require.NoError(t, session.Query(
+		`SELECT msg FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, threadRoomID, createdAt, msgID,
+	).Scan(&gotMsg))
+	assert.Equal(t, "edited", gotMsg)
+
+	// messages_by_room must NOT have a phantom row for this thread reply
+	var roomCount int
+	require.NoError(t, session.Query(
+		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&roomCount))
+	assert.Equal(t, 0, roomCount, "thread-reply edit must not write to messages_by_room")
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: FAIL — `TestRepository_UpdateMessageContent_ThreadReply` — the thread-reply branch is missing, so the SELECT from `thread_messages_by_room` returns the original `"original"` content.
+
+- [ ] **Step 3: Add the thread-reply branch**
+
+Edit `history-service/internal/cassrepo/repository.go`. Replace the body of `UpdateMessageContent` with the version below (top-level branch plus the new thread branch):
+
+```go
+func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	// Always: messages_by_id
+	if err := r.session.Query(
+		`UPDATE messages_by_id SET msg = ?, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+		newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update messages_by_id: %w", err)
+	}
+
+	// Top-level vs thread-reply: mutually exclusive.
+	if msg.ThreadParentID == "" {
+		if err := r.session.Query(
+			`UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update messages_by_room: %w", err)
+		}
+	} else {
+		if err := r.session.Query(
+			`UPDATE thread_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update thread_messages_by_room: %w", err)
+		}
+	}
+
+	// Pinned branch is added in Task 9.
+	return nil
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: `PASS` for both `TestRepository_UpdateMessageContent_TopLevel` and `TestRepository_UpdateMessageContent_ThreadReply`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/cassrepo/repository.go history-service/internal/cassrepo/integration_test.go
+git commit -m "feat(history-service): UpdateMessageContent thread-reply branch with integration test"
+```
+
+---
+
+### Task 9 — Add pinned branch to `UpdateMessageContent` with integration test
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/repository.go`
+- Modify: `history-service/internal/cassrepo/integration_test.go`
+
+**What this does:** Extends `UpdateMessageContent` to additionally update `pinned_messages_by_room` when `msg.PinnedAt != nil`. The pinned branch is *additive* (it does not replace the top-level or thread-reply branch); a pinned message is either top-level + pinned or thread-reply + pinned, but in both cases the pinned row must be kept in sync. No pin operation exists in the codebase today, so this branch is dead code in production but is required for future correctness.
+
+- [ ] **Step 1: Write the failing integration test**
+
+Append to `history-service/internal/cassrepo/integration_test.go`:
+
+```go
+func TestRepository_UpdateMessageContent_Pinned(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-pin"
+	msgID := "m-pin"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+	pinnedAt := createdAt.Add(10 * time.Second)
+
+	// Seed a top-level pinned message in all three tables.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, pinned_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "original", "", pinnedAt,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "original", "",
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO pinned_messages_by_room (room_id, created_at, message_id, sender, msg) VALUES (?, ?, ?, ?, ?)`,
+		roomID, pinnedAt, msgID, sender, "original",
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: "",
+		PinnedAt:       &pinnedAt,
+	}
+	editedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.UpdateMessageContent(ctx, msg, "edited", editedAt))
+
+	// All three affected tables updated
+	var gotMsg string
+
+	require.NoError(t, session.Query(
+		`SELECT msg FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotMsg))
+	assert.Equal(t, "edited", gotMsg, "messages_by_id should reflect the edit")
+
+	require.NoError(t, session.Query(
+		`SELECT msg FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotMsg))
+	assert.Equal(t, "edited", gotMsg, "messages_by_room should reflect the edit")
+
+	require.NoError(t, session.Query(
+		`SELECT msg FROM pinned_messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, pinnedAt, msgID,
+	).Scan(&gotMsg))
+	assert.Equal(t, "edited", gotMsg, "pinned_messages_by_room should reflect the edit")
+}
+```
+
+Note: the `pinned_messages_by_room` table uses `pinnedAt` as its `created_at` clustering column (per the schema in `docker-local/cassandra/init/12-table-pinned_messages_by_room.cql`), which is why the WHERE clause in the pinned UPDATE uses `msg.PinnedAt` as the value for that column.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: FAIL — `TestRepository_UpdateMessageContent_Pinned` — the pinned branch is missing, so the row in `pinned_messages_by_room` retains `"original"`.
+
+- [ ] **Step 3: Add the pinned branch**
+
+Edit `history-service/internal/cassrepo/repository.go`. Replace the body of `UpdateMessageContent` with the final three-branch version:
+
+```go
+func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	// Always: messages_by_id
+	if err := r.session.Query(
+		`UPDATE messages_by_id SET msg = ?, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+		newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update messages_by_id: %w", err)
+	}
+
+	// Top-level vs thread-reply: mutually exclusive.
+	if msg.ThreadParentID == "" {
+		if err := r.session.Query(
+			`UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update messages_by_room: %w", err)
+		}
+	} else {
+		if err := r.session.Query(
+			`UPDATE thread_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update thread_messages_by_room: %w", err)
+		}
+	}
+
+	// Pinned mirror — additive to either of the above.
+	if msg.PinnedAt != nil {
+		if err := r.session.Query(
+			`UPDATE pinned_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update pinned_messages_by_room: %w", err)
+		}
+	}
+
+	return nil
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: `PASS` for all three `TestRepository_UpdateMessageContent_*` tests (top-level, thread-reply, pinned).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/cassrepo/repository.go history-service/internal/cassrepo/integration_test.go
+git commit -m "feat(history-service): UpdateMessageContent pinned branch with integration test"
+```
+
+---
+
+
