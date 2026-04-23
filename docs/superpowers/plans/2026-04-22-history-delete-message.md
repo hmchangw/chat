@@ -218,3 +218,365 @@ git commit -m "feat(subject): add MsgDeletePattern natsrouter builder"
 ```
 
 ---
+
+## Phase 2 — Cassandra Repository
+
+Five tasks. `SoftDeleteMessage` is implemented incrementally across branches (top-level → thread-reply → pinned), then tcount decrement is added on top for thread replies. Each task ships with its own integration test.
+
+### Task 3 — Extend `MessageRepository` interface with `SoftDeleteMessage` and regenerate mocks
+
+**Files:**
+- Modify: `history-service/internal/service/service.go`
+- Modify: `history-service/internal/cassrepo/repository.go` (add stub)
+- Regenerate: `history-service/internal/service/mocks/mock_repository.go`
+
+**What this does:** Adds `SoftDeleteMessage` to the `MessageRepository` interface so the handler can mock it in unit tests. Adds a temporary stub in the concrete repo so the tree stays compilable between tasks. The real implementation lands in Tasks 4-7.
+
+- [ ] **Step 1: Add the method to the interface**
+
+Edit `history-service/internal/service/service.go`. Extend the existing `MessageRepository` interface (already has `UpdateMessageContent` from the edit plan) with the new method:
+
+```go
+type MessageRepository interface {
+	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
+	UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error
+	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error
+}
+```
+
+- [ ] **Step 2: Regenerate mocks**
+
+```bash
+make generate SERVICE=history-service
+```
+
+Expected: `history-service/internal/service/mocks/mock_repository.go` now contains a `MockMessageRepository.SoftDeleteMessage` method alongside the existing `UpdateMessageContent` mock.
+
+- [ ] **Step 3: Add a stub in the concrete repository**
+
+Edit `history-service/internal/cassrepo/repository.go`. Append at the end of the file:
+
+```go
+// SoftDeleteMessage is implemented incrementally across Tasks 4-7 of the
+// delete plan. This stub keeps the interface contract compilable between
+// tasks; Task 4 replaces it with the top-level-message branch.
+func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	return fmt.Errorf("SoftDeleteMessage not yet implemented")
+}
+```
+
+- [ ] **Step 4: Build to verify compilation**
+
+```bash
+make build SERVICE=history-service
+make test SERVICE=history-service
+```
+
+Expected: successful build; existing unit tests continue to pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/service/service.go \
+	history-service/internal/service/mocks/mock_repository.go \
+	history-service/internal/cassrepo/repository.go
+git commit -m "feat(history-service): extend MessageRepository with SoftDeleteMessage (stub)"
+```
+
+---
+
+### Task 4 — Implement `SoftDeleteMessage` top-level branch with integration test
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/repository.go`
+- Modify: `history-service/internal/cassrepo/integration_test.go`
+
+**What this does:** Replaces the stub with the two-table `deleted = true` UPDATE for top-level messages (`msg.ThreadParentID == ""`). The integration test asserts both tables are updated, `msg` content is preserved, and `thread_messages_by_room` stays phantom-free.
+
+- [ ] **Step 1: Write the failing integration test**
+
+Append to `history-service/internal/cassrepo/integration_test.go`:
+
+```go
+func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-del-top"
+	msgID := "m-del-top"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a top-level message in both tables.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "original", "", false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "original", "", false,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: "",
+	}
+	deletedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, deletedAt))
+
+	// messages_by_id: deleted = true, msg retained, updated_at advanced
+	var gotDeleted bool
+	var gotMsg string
+	var gotUpdatedAt time.Time
+	require.NoError(t, session.Query(
+		`SELECT deleted, msg, updated_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotDeleted, &gotMsg, &gotUpdatedAt))
+	assert.True(t, gotDeleted, "messages_by_id.deleted should be true")
+	assert.Equal(t, "original", gotMsg, "msg content must be preserved")
+	assert.WithinDuration(t, deletedAt, gotUpdatedAt, time.Second)
+
+	// messages_by_room: same assertions
+	require.NoError(t, session.Query(
+		`SELECT deleted, msg FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotDeleted, &gotMsg))
+	assert.True(t, gotDeleted)
+	assert.Equal(t, "original", gotMsg)
+
+	// thread_messages_by_room must have no phantom row
+	var threadCount int
+	require.NoError(t, session.Query(
+		`SELECT COUNT(*) FROM thread_messages_by_room WHERE room_id = ?`,
+		roomID,
+	).Scan(&threadCount))
+	assert.Equal(t, 0, threadCount, "top-level soft-delete must not write to thread_messages_by_room")
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: FAIL — the stub returns `SoftDeleteMessage not yet implemented`.
+
+- [ ] **Step 3: Replace the stub with the top-level implementation**
+
+Edit `history-service/internal/cassrepo/repository.go`. Replace the stub with:
+
+```go
+// SoftDeleteMessage marks the given message deleted across all applicable
+// Cassandra tables. For thread replies it also decrements the parent
+// message's tcount via lightweight transactions. See the delete spec for the
+// table-membership + tcount semantics.
+//
+// Order: (1) the `deleted = true` UPDATEs on all applicable tables, (2) the
+// tcount decrement on parent tables when the target is a thread reply. On
+// partial failure between the two phases, tcount can drift by one — this is
+// documented and matches the existing worker-side increment drift model.
+// Idempotent with respect to the `deleted` column; `updated_at` advances per
+// call.
+func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	// Always: messages_by_id
+	if err := r.session.Query(
+		`UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+		deletedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update messages_by_id: %w", err)
+	}
+
+	// Top-level only: messages_by_room
+	if msg.ThreadParentID == "" {
+		if err := r.session.Query(
+			`UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			deletedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update messages_by_room: %w", err)
+		}
+	}
+
+	// Thread-reply branch, pinned branch, and tcount decrement are added in Tasks 5-7.
+	return nil
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: `PASS` for `TestRepository_SoftDeleteMessage_TopLevel`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/cassrepo/repository.go history-service/internal/cassrepo/integration_test.go
+git commit -m "feat(history-service): SoftDeleteMessage top-level branch with integration test"
+```
+
+---
+
+### Task 5 — Add thread-reply branch to `SoftDeleteMessage` with integration test
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/repository.go`
+- Modify: `history-service/internal/cassrepo/integration_test.go`
+
+**What this does:** Extends `SoftDeleteMessage` to cover thread replies (`msg.ThreadParentID != ""`). The integration test asserts the thread-table update and absence of phantom row in `messages_by_room`. **tcount decrement is NOT added in this task** — that's Task 7 (kept separate because LWT machinery is its own topic).
+
+- [ ] **Step 1: Write the failing integration test**
+
+Append to `history-service/internal/cassrepo/integration_test.go`:
+
+```go
+func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-del-thread"
+	threadRoomID := "thread-del-1"
+	parentID := "m-del-parent"
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyID := "m-del-reply"
+	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
+
+	// Seed the parent (so the thread_parent_created_at reference is real).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, deleted, tcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		parentID, roomID, parentCreatedAt, sender, "parent", "", false, 1,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, deleted, tcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, parentCreatedAt, parentID, sender, "parent", "", false, 1,
+	).Exec())
+
+	// Seed the thread reply in messages_by_id and thread_messages_by_room.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_parent_created_at, thread_room_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		replyID, roomID, replyCreatedAt, sender, "reply", parentID, parentCreatedAt, threadRoomID, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID, parentCreatedAt, false,
+	).Exec())
+
+	parentCreatedAtPtr := parentCreatedAt
+	msg := &models.Message{
+		MessageID:             replyID,
+		RoomID:                roomID,
+		CreatedAt:             replyCreatedAt,
+		Sender:                sender,
+		ThreadParentID:        parentID,
+		ThreadParentCreatedAt: &parentCreatedAtPtr,
+		ThreadRoomID:          threadRoomID,
+	}
+	deletedAt := replyCreatedAt.Add(time.Minute)
+	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, deletedAt))
+
+	// messages_by_id: reply now deleted
+	var gotDeleted bool
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		replyID, replyCreatedAt,
+	).Scan(&gotDeleted))
+	assert.True(t, gotDeleted)
+
+	// thread_messages_by_room: reply now deleted (full PK including thread_room_id)
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, threadRoomID, replyCreatedAt, replyID,
+	).Scan(&gotDeleted))
+	assert.True(t, gotDeleted)
+
+	// messages_by_room must NOT have a phantom row for this thread reply
+	var roomCount int
+	require.NoError(t, session.Query(
+		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, replyCreatedAt, replyID,
+	).Scan(&roomCount))
+	assert.Equal(t, 0, roomCount, "thread-reply soft-delete must not write to messages_by_room")
+
+	// Parent's tcount should still be 1 — tcount decrement is added in Task 7.
+	var gotTcount int
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, parentCreatedAt, parentID,
+	).Scan(&gotTcount))
+	assert.Equal(t, 1, gotTcount, "tcount decrement is not yet implemented — expected unchanged")
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: FAIL — `TestRepository_SoftDeleteMessage_ThreadReply` — the thread-reply branch is missing, so `thread_messages_by_room` still holds `deleted = false`.
+
+- [ ] **Step 3: Add the thread-reply branch**
+
+Edit `history-service/internal/cassrepo/repository.go`. Replace the body of `SoftDeleteMessage` with the two-branch version:
+
+```go
+func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	// Always: messages_by_id
+	if err := r.session.Query(
+		`UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+		deletedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update messages_by_id: %w", err)
+	}
+
+	// Top-level vs thread-reply: mutually exclusive.
+	if msg.ThreadParentID == "" {
+		if err := r.session.Query(
+			`UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			deletedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update messages_by_room: %w", err)
+		}
+	} else {
+		if err := r.session.Query(
+			`UPDATE thread_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			deletedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update thread_messages_by_room: %w", err)
+		}
+	}
+
+	// Pinned branch and tcount decrement are added in Tasks 6-7.
+	return nil
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+```bash
+make test-integration SERVICE=history-service
+```
+
+Expected: `PASS` for both `TestRepository_SoftDeleteMessage_TopLevel` and `TestRepository_SoftDeleteMessage_ThreadReply`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/cassrepo/repository.go history-service/internal/cassrepo/integration_test.go
+git commit -m "feat(history-service): SoftDeleteMessage thread-reply branch with integration test"
+```
+
+---
+
