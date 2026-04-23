@@ -1094,4 +1094,387 @@ git commit -m "feat(history-service): UpdateMessageContent pinned branch with in
 
 ---
 
+## Phase 4 — Service Handler
+
+Two tasks. Task 10 lands the handler plus the happy-path unit test (minimum to prove the full flow). Task 11 covers every error path as a table-driven test, which is a big chunk on its own.
+
+### Task 10 — Implement `EditMessage` handler and happy-path unit test
+
+**Files:**
+- Modify: `history-service/internal/service/messages.go`
+- Modify: `history-service/internal/service/messages_test.go`
+
+**What this does:** Adds the `EditMessage` method on `HistoryService`. Flow: subscription check via `getAccessSince` → hydrate via `findMessage` (which already does the roomID match and ErrNotFound handling) → sender check via `canModify` → content validation → `UpdateMessageContent` → publish event (best-effort) → reply. The happy-path test verifies every mock is called with the right arguments, including the published event's payload shape.
+
+- [ ] **Step 1: Write the failing happy-path test**
+
+Append to `history-service/internal/service/messages_test.go`:
+
+```go
+// --- EditMessage ---
+
+func TestHistoryService_EditMessage_Success(t *testing.T) {
+	svc, msgs, subs, pub := newService(t)
+	c := testContext()
+
+	// Subscription check passes (accessSince nil means full history access, non-nil also fine)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	// Message lookup returns the user's own message in the expected room.
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	// UPDATE succeeds. The handler passes the hydrated *Message directly.
+	msgs.EXPECT().
+		UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).
+		Return(nil)
+
+	// Publish succeeds. Validate the payload.
+	pub.EXPECT().
+		Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).
+		DoAndReturn(func(_ context.Context, subj string, data []byte) error {
+			var evt models.MessageEditedEvent
+			require.NoError(t, json.Unmarshal(data, &evt))
+			assert.Equal(t, "message_edited", evt.Type)
+			assert.Equal(t, "r1", evt.RoomID)
+			assert.Equal(t, "m-abc", evt.MessageID)
+			assert.Equal(t, "new content", evt.NewMsg)
+			assert.Equal(t, "u1", evt.EditedBy)
+			assert.NotZero(t, evt.Timestamp)
+			assert.NotZero(t, evt.EditedAt)
+			return nil
+		})
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{
+		MessageID: "m-abc",
+		NewMsg:    "new content",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "m-abc", resp.MessageID)
+	assert.NotZero(t, resp.EditedAt)
+}
+```
+
+Add `context` and `encoding/json` to the test file's import block if not already present (they are needed for `DoAndReturn` and the event payload unmarshal).
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+make test SERVICE=history-service
+```
+
+Expected: compilation error — `undefined: svc.EditMessage`. The handler does not exist yet.
+
+- [ ] **Step 3: Implement the handler**
+
+Edit `history-service/internal/service/messages.go`. Add these imports to the existing import block:
+
+```go
+import (
+	"encoding/json"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/hmchangw/chat/history-service/internal/cassrepo"
+	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/subject"
+)
+```
+
+Then append the `EditMessage` method at the bottom of the file (after `GetMessageByID`):
+
+```go
+// EditMessage handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit.
+// Sender-only auth. Writes to all applicable Cassandra tables via
+// UpdateMessageContent, then publishes a best-effort MessageEditedEvent to
+// chat.room.{roomID}.event for live fan-out.
+func (s *HistoryService) EditMessage(c *natsrouter.Context, req models.EditMessageRequest) (*models.EditMessageResponse, error) {
+	account := c.Param("account")
+	roomID := c.Param("roomID")
+
+	// 1. Subscription gate — non-subscribers cannot probe messageID -> roomID mappings.
+	if _, err := s.getAccessSince(c, account, roomID); err != nil {
+		return nil, err
+	}
+
+	// 2. Hydrate. findMessage returns ErrNotFound for missing IDs and for
+	// messages that belong to a different room (same error, no leak).
+	msg, err := s.findMessage(c, roomID, req.MessageID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Sender gate.
+	if !canModify(msg, account) {
+		return nil, natsrouter.ErrForbidden("only the sender can edit")
+	}
+
+	// 4. Content validation.
+	if strings.TrimSpace(req.NewMsg) == "" {
+		return nil, natsrouter.ErrBadRequest("newMsg must not be empty")
+	}
+	if len(req.NewMsg) > maxContentBytes {
+		return nil, natsrouter.ErrBadRequest("newMsg exceeds maximum size")
+	}
+
+	// 5. Persist.
+	editedAt := time.Now().UTC()
+	if err := s.messages.UpdateMessageContent(c, msg, req.NewMsg, editedAt); err != nil {
+		slog.Error("edit: update content", "error", err, "messageID", req.MessageID)
+		return nil, natsrouter.ErrInternal("failed to edit message")
+	}
+
+	// 6. Publish live event (best-effort — publish failure is logged, not returned).
+	editedAtMs := editedAt.UnixMilli()
+	evt := models.MessageEditedEvent{
+		Type:      "message_edited",
+		Timestamp: editedAtMs,
+		RoomID:    roomID,
+		MessageID: req.MessageID,
+		NewMsg:    req.NewMsg,
+		EditedBy:  account,
+		EditedAt:  editedAtMs,
+	}
+	if payload, err := json.Marshal(evt); err == nil {
+		if pubErr := s.publisher.Publish(c, subject.RoomEvent(roomID), payload); pubErr != nil {
+			slog.Warn("edit: publish event failed", "error", pubErr, "messageID", req.MessageID)
+		}
+	} else {
+		slog.Warn("edit: marshal event failed", "error", err, "messageID", req.MessageID)
+	}
+
+	return &models.EditMessageResponse{
+		MessageID: req.MessageID,
+		EditedAt:  editedAtMs,
+	}, nil
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+```bash
+make test SERVICE=history-service
+```
+
+Expected: `PASS` for `TestHistoryService_EditMessage_Success`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/service/messages.go history-service/internal/service/messages_test.go
+git commit -m "feat(history-service): implement EditMessage handler with happy-path test"
+```
+
+---
+
+### Task 11 — Add error-path unit tests for `EditMessage`
+
+**Files:**
+- Modify: `history-service/internal/service/messages_test.go`
+
+**What this does:** Exercises every non-happy branch of the handler to lock behavior and make regressions loud. One test per scenario (not table-driven) because assertion shapes differ — some check the error code, some verify that certain mocks were **not** called, some verify the publish-warning-but-still-succeed path.
+
+- [ ] **Step 1: Write the failing error-path tests**
+
+Append to `history-service/internal/service/messages_test.go`:
+
+```go
+func TestHistoryService_EditMessage_NotSubscribed(t *testing.T) {
+	svc, _, subs, _ := newService(t)
+	c := testContext()
+
+	// Not subscribed — the helper returns ErrForbidden before we touch anything else.
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, false, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, "not subscribed to room", routeErr.Message)
+}
+
+func TestHistoryService_EditMessage_NotSender(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	// Message exists in the expected room but a different account is the sender.
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "someone-else"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, "only the sender can edit", routeErr.Message)
+}
+
+func TestHistoryService_EditMessage_NotFound(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "missing").Return(nil, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "missing", NewMsg: "x"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+}
+
+func TestHistoryService_EditMessage_WrongRoom(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	// Message exists but in a different room — findMessage returns ErrNotFound (no leak).
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "other-room",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+}
+
+func TestHistoryService_EditMessage_EmptyNewMsg(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "   "})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, "newMsg must not be empty", routeErr.Message)
+}
+
+func TestHistoryService_EditMessage_TooLarge(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	// 20 KB + 1 byte
+	oversize := strings.Repeat("a", 20*1024+1)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: oversize})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, "newMsg exceeds maximum size", routeErr.Message)
+}
+
+func TestHistoryService_EditMessage_UpdateFails(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().
+		UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).
+		Return(fmt.Errorf("cassandra timeout"))
+
+	// No publish should happen when the UPDATE fails. The mock publisher is
+	// not configured to expect any call; gomock will fail the test if Publish
+	// is invoked.
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "new content"})
+	assert.Nil(t, resp)
+	assertInternalErr(t, err, "failed to edit message")
+}
+
+func TestHistoryService_EditMessage_PublishFails(t *testing.T) {
+	svc, msgs, subs, pub := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).Return(nil)
+
+	// Publisher fails, but handler must still return success (best-effort fan-out).
+	pub.EXPECT().Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).Return(fmt.Errorf("nats disconnected"))
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "new content"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "m-abc", resp.MessageID)
+}
+```
+
+Add `strings` to the test file's import block if not already present.
+
+- [ ] **Step 2: Run the tests to verify they pass**
+
+```bash
+make test SERVICE=history-service
+```
+
+Expected: `PASS` for all eight `TestHistoryService_EditMessage_*` tests (the one from Task 10 plus the seven new error-path cases). No new production code is needed — these tests exercise branches already implemented in Task 10.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add history-service/internal/service/messages_test.go
+git commit -m "test(history-service): add EditMessage error-path unit tests"
+```
+
+---
+
+
 
