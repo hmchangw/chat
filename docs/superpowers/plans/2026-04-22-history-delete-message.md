@@ -988,4 +988,340 @@ git commit -m "feat(history-service): decrement parent tcount on thread-reply so
 
 ---
 
+## Phase 3 — Service Handler
+
+Two tasks. Task 8 lands the handler plus the happy-path and short-circuit unit tests. Task 9 covers every remaining error path.
+
+### Task 8 — Implement `DeleteMessage` handler, happy-path test, and already-deleted short-circuit test
+
+**Files:**
+- Modify: `history-service/internal/service/messages.go`
+- Modify: `history-service/internal/service/messages_test.go`
+
+**What this does:** Adds `DeleteMessage` on `HistoryService`. Flow: subscription check → hydrate → sender check → **short-circuit if already deleted** → `SoftDeleteMessage` → publish event (best-effort) → reply. Tests exercise the happy path (successful delete + event payload) and the short-circuit (no repo call, no publish, but success reply).
+
+- [ ] **Step 1: Write the failing happy-path test**
+
+Append to `history-service/internal/service/messages_test.go`:
+
+```go
+// --- DeleteMessage ---
+
+func TestHistoryService_DeleteMessage_Success(t *testing.T) {
+	svc, msgs, subs, pub := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+		Deleted:   false,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		Return(nil)
+
+	pub.EXPECT().
+		Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).
+		DoAndReturn(func(_ context.Context, subj string, data []byte) error {
+			var evt models.MessageDeletedEvent
+			require.NoError(t, json.Unmarshal(data, &evt))
+			assert.Equal(t, "message_deleted", evt.Type)
+			assert.Equal(t, "r1", evt.RoomID)
+			assert.Equal(t, "m-abc", evt.MessageID)
+			assert.Equal(t, "u1", evt.DeletedBy)
+			assert.NotZero(t, evt.Timestamp)
+			assert.NotZero(t, evt.DeletedAt)
+			return nil
+		})
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	require.NoError(t, err)
+	assert.Equal(t, "m-abc", resp.MessageID)
+	assert.NotZero(t, resp.DeletedAt)
+}
+
+func TestHistoryService_DeleteMessage_AlreadyDeleted_ShortCircuits(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	priorUpdatedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+		Deleted:   true,
+		UpdatedAt: &priorUpdatedAt,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	// No SoftDeleteMessage call expected. No Publish call expected. gomock will
+	// fail the test if either is invoked unexpectedly.
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	require.NoError(t, err)
+	assert.Equal(t, "m-abc", resp.MessageID)
+	assert.Equal(t, priorUpdatedAt.UnixMilli(), resp.DeletedAt, "short-circuit should echo the existing updated_at")
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+```bash
+make test SERVICE=history-service
+```
+
+Expected: compilation error — `undefined: svc.DeleteMessage`.
+
+- [ ] **Step 3: Implement the handler**
+
+Edit `history-service/internal/service/messages.go`. Append the `DeleteMessage` method at the bottom of the file (after `EditMessage`):
+
+```go
+// DeleteMessage handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.delete.
+// Sender-only auth. Soft-deletes (deleted = true, updated_at = ?) across all
+// applicable Cassandra tables via SoftDeleteMessage, including tcount
+// decrement on the parent for thread replies. On already-deleted messages the
+// handler short-circuits and returns success without repeating the UPDATEs or
+// publishing a duplicate event — this prevents tcount drift on caller retry.
+func (s *HistoryService) DeleteMessage(c *natsrouter.Context, req models.DeleteMessageRequest) (*models.DeleteMessageResponse, error) {
+	account := c.Param("account")
+	roomID := c.Param("roomID")
+
+	// 1. Subscription gate.
+	if _, err := s.getAccessSince(c, account, roomID); err != nil {
+		return nil, err
+	}
+
+	// 2. Hydrate. findMessage does the roomID-match check and ErrNotFound handling.
+	msg, err := s.findMessage(c, roomID, req.MessageID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Sender gate.
+	if !canModify(msg, account) {
+		return nil, natsrouter.ErrForbidden("only the sender can delete")
+	}
+
+	// 4. Already-deleted short-circuit. Echo the current updated_at as the
+	// DeletedAt. Prevents tcount double-decrement on caller retry and avoids
+	// duplicate message_deleted events.
+	if msg.Deleted {
+		var deletedAtMs int64
+		if msg.UpdatedAt != nil {
+			deletedAtMs = msg.UpdatedAt.UnixMilli()
+		}
+		return &models.DeleteMessageResponse{
+			MessageID: req.MessageID,
+			DeletedAt: deletedAtMs,
+		}, nil
+	}
+
+	// 5. Persist.
+	deletedAt := time.Now().UTC()
+	if err := s.messages.SoftDeleteMessage(c, msg, deletedAt); err != nil {
+		slog.Error("delete: soft-delete", "error", err, "messageID", req.MessageID)
+		return nil, natsrouter.ErrInternal("failed to delete message")
+	}
+
+	// 6. Publish live event (best-effort).
+	deletedAtMs := deletedAt.UnixMilli()
+	evt := models.MessageDeletedEvent{
+		Type:      "message_deleted",
+		Timestamp: deletedAtMs,
+		RoomID:    roomID,
+		MessageID: req.MessageID,
+		DeletedBy: account,
+		DeletedAt: deletedAtMs,
+	}
+	if payload, err := json.Marshal(evt); err == nil {
+		if pubErr := s.publisher.Publish(c, subject.RoomEvent(roomID), payload); pubErr != nil {
+			slog.Warn("delete: publish event failed", "error", pubErr, "messageID", req.MessageID)
+		}
+	} else {
+		slog.Warn("delete: marshal event failed", "error", err, "messageID", req.MessageID)
+	}
+
+	return &models.DeleteMessageResponse{
+		MessageID: req.MessageID,
+		DeletedAt: deletedAtMs,
+	}, nil
+}
+```
+
+No new imports are needed — `encoding/json`, `log/slog`, `time`, `natsrouter`, and `subject` are already imported by the edit handler.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+```bash
+make test SERVICE=history-service
+```
+
+Expected: `PASS` for `TestHistoryService_DeleteMessage_Success` and `TestHistoryService_DeleteMessage_AlreadyDeleted_ShortCircuits`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/service/messages.go history-service/internal/service/messages_test.go
+git commit -m "feat(history-service): implement DeleteMessage handler with short-circuit"
+```
+
+---
+
+### Task 9 — Add error-path unit tests for `DeleteMessage`
+
+**Files:**
+- Modify: `history-service/internal/service/messages_test.go`
+
+**What this does:** Exercises every non-happy branch of the delete handler: subscription failure, sender mismatch, message-not-found, wrong room, Cassandra UPDATE failure, publisher failure. One test per scenario to lock each error branch.
+
+- [ ] **Step 1: Write the failing error-path tests**
+
+Append to `history-service/internal/service/messages_test.go`:
+
+```go
+func TestHistoryService_DeleteMessage_NotSubscribed(t *testing.T) {
+	svc, _, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, false, nil)
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, "not subscribed to room", routeErr.Message)
+}
+
+func TestHistoryService_DeleteMessage_NotSender(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "someone-else"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, "only the sender can delete", routeErr.Message)
+}
+
+func TestHistoryService_DeleteMessage_NotFound(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "missing").Return(nil, nil)
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "missing"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+}
+
+func TestHistoryService_DeleteMessage_WrongRoom(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "other-room",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+}
+
+func TestHistoryService_DeleteMessage_SoftDeleteFails(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		Return(fmt.Errorf("cassandra timeout"))
+
+	// No Publish call expected when the UPDATE fails.
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	assert.Nil(t, resp)
+	assertInternalErr(t, err, "failed to delete message")
+}
+
+func TestHistoryService_DeleteMessage_PublishFails(t *testing.T) {
+	svc, msgs, subs, pub := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).Return(nil)
+
+	pub.EXPECT().Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).Return(fmt.Errorf("nats disconnected"))
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	require.NoError(t, err, "best-effort publish: failure is logged, not returned")
+	require.NotNil(t, resp)
+	assert.Equal(t, "m-abc", resp.MessageID)
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they pass**
+
+```bash
+make test SERVICE=history-service
+```
+
+Expected: `PASS` for all eight `TestHistoryService_DeleteMessage_*` tests. No new production code is needed — these tests exercise branches already implemented in Task 8.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add history-service/internal/service/messages_test.go
+git commit -m "test(history-service): add DeleteMessage error-path unit tests"
+```
+
+---
+
+
 
