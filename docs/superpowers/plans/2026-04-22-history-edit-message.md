@@ -1732,6 +1732,151 @@ git commit -m "test(history-service): add EditMessage service-level integration 
 
 ---
 
+## Phase 6 — Frontend Integration (OPTIONAL — can ship as a separate PR)
+
+One task. The spec explicitly notes that the frontend change does not block the backend PR. Ship it in the same PR if it's convenient; ship it separately if it would complicate review. The task is standalone either way.
+
+### Task 14 — Handle `message_edited` in `MessageArea.jsx`
+
+**Files:**
+- Modify: `chat-frontend/src/components/MessageArea.jsx`
+
+**What this does:** Extends the existing `roomEvent` subscription callback to match on `evt.type === 'message_edited'`, updating the matched message's `msg` and `editedAt` fields in local state. Adds an "(edited)" indicator next to the timestamp for any message with a non-null `editedAt`.
+
+- [ ] **Step 1: Extend the subscription callback**
+
+Edit `chat-frontend/src/components/MessageArea.jsx`. Locate the existing subscription block (lines 43-51 today):
+
+```jsx
+    const sub = subscribe(roomEvent(room.id), (evt) => {
+      if (evt.type === 'new_message' && evt.message) {
+        setMessages((prev) => {
+          const id = messageId(evt.message)
+          if (prev.some((m) => messageId(m) === id)) return prev
+          return [...prev, evt.message]
+        })
+      }
+    })
+```
+
+Replace with:
+
+```jsx
+    const sub = subscribe(roomEvent(room.id), (evt) => {
+      if (evt.type === 'new_message' && evt.message) {
+        setMessages((prev) => {
+          const id = messageId(evt.message)
+          if (prev.some((m) => messageId(m) === id)) return prev
+          return [...prev, evt.message]
+        })
+        return
+      }
+      if (evt.type === 'message_edited') {
+        setMessages((prev) =>
+          prev.map((m) =>
+            messageId(m) === evt.messageId
+              ? { ...m, msg: evt.newMsg, editedAt: evt.editedAt }
+              : m
+          )
+        )
+      }
+    })
+```
+
+- [ ] **Step 2: Render an "(edited)" indicator**
+
+Locate the message-list render block (around line 103-109):
+
+```jsx
+        {messages.map((msg) => (
+          <div key={messageId(msg)} className="message">
+            <span className="message-sender">{senderName(msg)}</span>
+            <span className="message-time">{formatTime(msg.createdAt)}</span>
+            <div className="message-content">{messageContent(msg)}</div>
+          </div>
+        ))}
+```
+
+Replace with:
+
+```jsx
+        {messages.map((msg) => (
+          <div key={messageId(msg)} className="message">
+            <span className="message-sender">{senderName(msg)}</span>
+            <span className="message-time">{formatTime(msg.createdAt)}</span>
+            {msg.editedAt && <span className="message-edited-tag">(edited)</span>}
+            <div className="message-content">{messageContent(msg)}</div>
+          </div>
+        ))}
+```
+
+- [ ] **Step 3: Manual test in a browser**
+
+Start the local stack and exercise the feature:
+
+```bash
+make dev  # or the project's equivalent local-dev target
+```
+
+- Open two browser windows (Alice and Bob) on the same room.
+- Alice posts a message.
+- Alice (via a second tab or the new edit UI, whichever ships first) sends a NATS request to `chat.user.alice.request.room.{roomID}.{siteID}.msg.edit` with `{messageId, newMsg: "fixed"}`.
+- Verify Bob's window updates the message content to "fixed" and shows "(edited)".
+- Refresh Bob's page and verify the edited message plus "(edited)" indicator both persist (Cassandra is authoritative).
+
+This manual test is the only UI validation in this plan — there is no frontend test harness in this codebase today.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/components/MessageArea.jsx
+git commit -m "feat(chat-frontend): handle message_edited event and render (edited) indicator"
+```
+
+---
+
+## Implementation Order
+
+The phases are strictly dependency-ordered — later tasks rely on earlier ones:
+
+1. **Phase 1 — Shared infrastructure** (Tasks 1-3): introduces the interface surface every downstream phase consumes.
+2. **Phase 2 — Contracts** (Tasks 4-5): types and subject pattern. No consumers yet, but the next phase's mocks and the handler reference them.
+3. **Phase 3 — Cassandra repository** (Tasks 6-9): interface extension first, then three incremental branches each with its own integration test.
+4. **Phase 4 — Service handler** (Tasks 10-11): happy path first (proves the flow), then error paths (locks every branch).
+5. **Phase 5 — Wiring + E2E** (Tasks 12-13): exposes the handler over NATS, then integration-tests it end-to-end against real Cassandra.
+6. **Phase 6 — Frontend** (Task 14, optional): can ship in this PR or a follow-up.
+
+## Quality Gates (per CLAUDE.md)
+
+- TDD — Red → Green → Refactor for every task. Never write implementation before its test exists.
+- `make lint` green before each commit.
+- `make test SERVICE=history-service` green (with `-race`) before each commit.
+- `make test-integration SERVICE=history-service` green before PR merge (Phase 3 and Phase 5 add integration tests; the rest are unit).
+- Coverage ≥ 80% per package; target ≥ 90% for `EditMessage` and `UpdateMessageContent`.
+- Pre-commit hook runs lint + tests — fix root causes, never `--no-verify`.
+
+## Risk Callouts (tie back to spec §13)
+
+- **Multi-table UPDATE partial failure**: idempotent retry converges.
+- **`pinned_messages_by_room` branch is dead code today**: no pin operation exists; the branch is kept for correctness when a future pin operation ships.
+- **Best-effort publish**: publish failure does not roll back the Cassandra UPDATE; clients see the edit on next history fetch.
+- **`historySharedSince` intentionally not enforced**: users who left and rejoined can edit their own pre-rejoin messages.
+- **No message cache invalidation needed**: no message cache exists in the codebase today (verified).
+- **MongoDB `rooms`/`threadRooms` not touched on edit**: inbox sort position unchanged, consistent with no-op-on-new-content behavior.
+
+## Definition of Done
+
+Edit PR is ready to merge when:
+
+- [ ] All tasks in Phases 1-5 committed.
+- [ ] `make lint` green.
+- [ ] `make test SERVICE=history-service` green with `-race`.
+- [ ] `make test-integration SERVICE=history-service` green.
+- [ ] Coverage ≥ 80% per package, ≥ 90% on new handler + repo method (verify with `go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out`).
+- [ ] Smoke-tested against `docker-local`: `nats req chat.user.alice.request.room.r1.site-a.msg.edit '{"messageId":"m-test","newMsg":"fixed"}'` returns a success reply; Cassandra row reflects the change; a subscriber on `chat.room.r1.event` sees the `message_edited` event.
+- [ ] (If Phase 6 is in-scope) frontend manually verified.
+
+
 
 
 
