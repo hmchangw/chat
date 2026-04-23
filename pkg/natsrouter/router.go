@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -84,16 +85,44 @@ func (r *Router) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	// Wait for each subscription's dispatch loop to fully exit BEFORE
+	// touching r.wg. sub.Drain() returns immediately after sending UNSUB;
+	// callbacks already dispatched still run afterwards. Calling wg.Wait()
+	// while those callbacks may still execute wg.Add(1) is "Add at zero
+	// after Wait" misuse and trips the race detector. IsValid() flips to
+	// false only when the dispatch goroutine has exited.
+	if err := waitSubsDrained(ctx, subs); err != nil {
+		errs = append(errs, err)
+		return errors.Join(errs...)
+	}
+
+	// Now no new wg.Add can happen — safe to Wait.
 	done := make(chan struct{})
 	go func() {
 		r.wg.Wait()
 		close(done)
 	}()
-
 	select {
 	case <-done:
 	case <-ctx.Done():
 		errs = append(errs, ctx.Err())
 	}
 	return errors.Join(errs...)
+}
+
+// waitSubsDrained polls each subscription until its dispatch loop has exited
+// (IsValid returns false) or ctx is cancelled. NATS exposes no per-subscription
+// "drain complete" signal, so polling is the documented pattern.
+func waitSubsDrained(ctx context.Context, subs []*nats.Subscription) error {
+	const pollInterval = 5 * time.Millisecond
+	for _, s := range subs {
+		for s.IsValid() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(pollInterval):
+			}
+		}
+	}
+	return nil
 }

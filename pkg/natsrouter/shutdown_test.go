@@ -171,6 +171,39 @@ func TestShutdown_ConcurrentRegistrationSafe(t *testing.T) {
 	require.NoError(t, r.Shutdown(ctx))
 }
 
+// TestShutdown_StressNoWaitGroupRace pummels the router with concurrent
+// requests, calls Shutdown mid-flight, and asserts the race detector finds
+// nothing. Catches "Add at zero after Wait" — the case where sub.Drain()
+// returns before all dispatched callbacks have run wg.Add(1).
+func TestShutdown_StressNoWaitGroupRace(t *testing.T) {
+	nc := startTestNATS(t)
+	r := New(nc, "stress-shutdown")
+
+	Register(r, "stress.{id}",
+		func(c *Context, req testReq) (*testResp, error) {
+			time.Sleep(time.Duration(1+req.Name[0]%5) * time.Millisecond)
+			return &testResp{}, nil
+		})
+
+	const inflight = 200
+	var clientWG sync.WaitGroup
+	clientWG.Add(inflight)
+	for i := 0; i < inflight; i++ {
+		go func(i int) {
+			defer clientWG.Done()
+			data, _ := json.Marshal(testReq{Name: string(rune('a' + i%26))})
+			_, _ = nc.Request(context.Background(), "stress.x", data, 5*time.Second)
+		}(i)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, r.Shutdown(ctx))
+	clientWG.Wait()
+}
+
 func subjectf(i int) string {
 	return "test.concurrent.reg." + string(rune('a'+i%26)) + "." + string(rune('0'+i/26))
 }
