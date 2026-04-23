@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type EventType string
 
@@ -142,7 +145,8 @@ type RoomEvent struct {
 
 	HasMention bool `json:"hasMention,omitempty"`
 
-	Message *ClientMessage `json:"message,omitempty"`
+	Message          *ClientMessage  `json:"message,omitempty"`
+	EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"`
 }
 
 type RoomKeyEvent struct {

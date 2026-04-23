@@ -17,6 +17,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -71,6 +72,14 @@ func seedUsers(t *testing.T, db *mongo.Database) {
 	require.NoError(t, err)
 }
 
+type fakeRoomKeyProvider struct {
+	pair *roomkeystore.VersionedKeyPair
+}
+
+func (f *fakeRoomKeyProvider) Get(_ context.Context, _ string) (*roomkeystore.VersionedKeyPair, error) {
+	return f.pair, nil
+}
+
 func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
@@ -89,7 +98,9 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, us, pub)
+	key := testRoomKey(t)
+	keyStore := &fakeRoomKeyProvider{pair: key}
+	handler := NewHandler(store, us, pub, keyStore)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -106,12 +117,11 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	require.Len(t, records, 1)
 	assert.Equal(t, subject.RoomEvent("r1"), records[0].subject)
 
-	var roomEvt model.RoomEvent
-	require.NoError(t, json.Unmarshal(records[0].data, &roomEvt))
+	roomEvt, msg := decryptClientMessage(t, records[0].data, key)
 	assert.Equal(t, "site-a", roomEvt.SiteID)
-	require.NotNil(t, roomEvt.Message)
-	require.NotNil(t, roomEvt.Message.Sender)
-	assert.Equal(t, "u1", roomEvt.Message.Sender.UserID)
+	require.NotNil(t, msg)
+	require.NotNil(t, msg.Sender)
+	assert.Equal(t, "u1", msg.Sender.UserID)
 
 	var room model.Room
 	require.NoError(t, db.Collection("rooms").FindOne(ctx, bson.M{"_id": "r1"}).Decode(&room))
@@ -132,7 +142,9 @@ func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, us, pub)
+	key := testRoomKey(t)
+	keyStore := &fakeRoomKeyProvider{pair: key}
+	handler := NewHandler(store, us, pub, keyStore)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -168,7 +180,9 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, us, pub)
+	key := testRoomKey(t)
+	keyStore := &fakeRoomKeyProvider{pair: key}
+	handler := NewHandler(store, us, pub, keyStore)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -182,8 +196,7 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	require.NoError(t, handler.HandleMessage(ctx, data))
 
 	records := pub.getRecords()
-	var roomEvt model.RoomEvent
-	require.NoError(t, json.Unmarshal(records[0].data, &roomEvt))
+	roomEvt, _ := decryptClientMessage(t, records[0].data, key)
 	require.Len(t, roomEvt.Mentions, 1)
 	assert.Equal(t, "bob", roomEvt.Mentions[0].Account)
 	assert.Equal(t, "鮑勃", roomEvt.Mentions[0].ChineseName)
@@ -217,7 +230,8 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
-	handler := NewHandler(store, us, pub)
+	keyStore := &fakeRoomKeyProvider{pair: nil}
+	handler := NewHandler(store, us, pub, keyStore)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{

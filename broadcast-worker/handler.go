@@ -3,19 +3,32 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomcrypto"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
+// errNoCurrentKey is returned when a room has no encryption key in Valkey.
+var errNoCurrentKey = errors.New("no current key")
+
 // Publisher abstracts NATS publishing so the handler is testable.
 type Publisher interface {
 	Publish(ctx context.Context, subject string, data []byte) error
+}
+
+// RoomKeyProvider fetches the current encryption key for a room.
+// Defined here (not imported from pkg/roomkeystore directly) to keep the
+// handler's dependency contract narrow — only Get is used.
+type RoomKeyProvider interface {
+	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
 }
 
 // Handler processes MESSAGES_CANONICAL messages and broadcasts room events.
@@ -23,10 +36,11 @@ type Handler struct {
 	store     Store
 	userStore userstore.UserStore
 	pub       Publisher
+	keyStore  RoomKeyProvider
 }
 
-func NewHandler(store Store, userStore userstore.UserStore, pub Publisher) *Handler {
-	return &Handler{store: store, userStore: userStore, pub: pub}
+func NewHandler(store Store, userStore userstore.UserStore, pub Publisher, keyStore RoomKeyProvider) *Handler {
+	return &Handler{store: store, userStore: userStore, pub: pub, keyStore: keyStore}
 }
 
 // HandleMessage processes a single MESSAGES_CANONICAL message payload.
@@ -88,10 +102,37 @@ func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clien
 		evt.Mentions = mentions
 	}
 
+	msgJSON, err := json.Marshal(clientMsg)
+	if err != nil {
+		return fmt.Errorf("marshal client message: %w", err)
+	}
+
+	key, err := h.keyStore.Get(ctx, room.ID)
+	if err != nil {
+		return fmt.Errorf("get room key for room %s: %w", room.ID, err)
+	}
+	if key == nil {
+		return fmt.Errorf("get room key for room %s: %w", room.ID, errNoCurrentKey)
+	}
+
+	encrypted, err := roomcrypto.Encode(string(msgJSON), key.KeyPair.PublicKey, key.Version)
+	if err != nil {
+		return fmt.Errorf("encrypt message for room %s: %w", room.ID, err)
+	}
+
+	encJSON, err := json.Marshal(encrypted)
+	if err != nil {
+		return fmt.Errorf("marshal encrypted message: %w", err)
+	}
+
+	evt.EncryptedMessage = json.RawMessage(encJSON)
+	evt.Message = nil
+
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal group room event: %w", err)
 	}
+
 	return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)
 }
 
