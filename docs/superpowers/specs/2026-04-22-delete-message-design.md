@@ -241,7 +241,7 @@ Missed-event behavior: if the client was not subscribed at publish time, the del
 ## 12. Out of Scope / Deferred
 
 - **Hard delete** — this spec is soft-delete only. `DELETE` statements against Cassandra are not used.
-- **Audit trail / "deleted at/by" persistence** — no new columns. `DeletedBy` travels only in the live event; after refresh, clients see `deleted == true` and `updated_at`, but not the actor name. Acceptable under sender-only authorization since `DeletedBy == Sender`.
+- **Audit trail / "deleted at/by" persistence** — no new columns. `DeletedBy` travels only in the live event; after refresh, clients see `deleted == true` and `updated_at`, but not the actor name. Acceptable under sender-only authorization since `DeletedBy == Sender`. This is an **intentional design decision, not an oversight**: the codebase has no existing audit pattern for messages, rooms, or subscriptions (verified by searching for `*_audit`, `*_history`, `revisions` tables and structs). Adding audit columns or a dedicated revisions table would require its own design covering retention, access control, and UI surface — all out of scope for this PR.
 - **Moderation by room owners** — explicitly excluded. A future "admin-delete" operation would require a separate authorization path and likely separate audit columns.
 - **Thread parent `QuotedParentMessage` snapshot update** — deleting a message that is the parent of a thread does not update the embedded `QuotedParentMessage` in child rows' denormalized copies. Accepted eventual-consistency gap.
 - **Cross-site federation** — no outbox/inbox propagation.

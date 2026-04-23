@@ -266,7 +266,7 @@ Missed-event behavior: if the client was not subscribed at publish time, the edi
 
 ## 12. Out of Scope / Deferred
 
-- **Audit history / edit log** — `msg` is overwritten in place; no revision table. Adding an audit trail would require schema changes.
+- **Audit history / edit log** — `msg` is overwritten in place; no revision table. This is an **intentional design decision, not an oversight**: the codebase has no existing audit pattern for messages, rooms, or subscriptions (verified by searching for `*_audit`, `*_history`, `revisions` tables and structs). Adopting one for messages would require its own dedicated design covering retention policy, access control, storage model, and UI surface area — all out of scope for this PR. Future work can introduce a `message_revisions_by_id` table if the product surfaces "view edit history".
 - **Thread parent `QuotedParentMessage` snapshot update** — editing a message that is the parent of a thread does not update the embedded `QuotedParentMessage` in child rows' denormalized copies. Accepted eventual-consistency gap.
 - **Cross-site federation** — no outbox/inbox propagation. An edit on site A does not propagate to site B's Cassandra. Future PR.
 - **DM inbox reordering on edit** — intentionally not bumped. Editing should not move a thread to the top of the inbox.
