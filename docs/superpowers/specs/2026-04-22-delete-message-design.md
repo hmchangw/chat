@@ -192,6 +192,22 @@ No extra read is needed — all three values are already on the hydrated child s
 
 **Semantics after this change.** `tcount` on a parent now represents the count of **non-deleted** replies (effectively "visible reply count"), not "total replies ever created". This is the intuitive product semantic — the number shown on the "N replies" indicator matches the number of replies a user can actually see.
 
+### 8.2 Parent-thread delete — no cascade
+
+When a deleted message is itself the **parent** of a thread (i.e., other messages reference it via their `ThreadParentID`), its thread replies are **not** automatically deleted. The parent becomes a tombstone; the replies remain visible.
+
+**Rationale.** Sender-only authorization (§3) means "only the sender can delete their own message". If parent-delete cascaded to the replies, the parent's sender would effectively be deleting content authored by other users, violating the policy for those replies. Each reply's sender retains sole authority over their own content. This also matches the behavior users expect from Slack, Discord, and similar platforms.
+
+**What this means for the handler.** The delete handler has no special case for parents. It executes the same flow regardless of whether the target message has replies underneath it:
+- `deleted = true, updated_at = ?` on the applicable tables (via §8 conditional strategy — parent lives in `messages_by_id` + `messages_by_room`, same as any top-level message).
+- **No tcount decrement** on the parent itself (per §8.1, tcount is decremented only when the *target* is a thread reply; parents have no parent of their own to decrement).
+- **No scan or write to `thread_messages_by_room`** — the reply rows are untouched.
+- The parent's existing `tcount` value is preserved — the reply count shown on the tombstone remains accurate (since replies are still visible).
+
+**Frontend expectation.** Clients render the tombstone ("[message deleted]") in place of the parent's content, but still expand the thread to show the surviving replies. The "N replies" indicator on the tombstone continues to reflect the actual number of visible replies.
+
+**New replies to a deleted parent.** Not blocked by this spec. A user in the thread can continue to add replies; `message-worker` will accept the new reply, increment the parent's `tcount`, and the thread stays active. Whether the UI offers a "reply" affordance on a tombstone is a separate frontend decision outside this spec.
+
 ---
 
 ## 9. Reused Shared Infrastructure
@@ -290,6 +306,7 @@ Missed-event behavior: if the client was not subscribed at publish time, the del
 - **Hard delete** — this spec is soft-delete only. `DELETE` statements against Cassandra are not used.
 - **Audit trail / "deleted at/by" persistence** — no new columns. `DeletedBy` travels only in the live event; after refresh, clients see `deleted == true` and `updated_at`, but not the actor name. Acceptable under sender-only authorization since `DeletedBy == Sender`. This is an **intentional design decision, not an oversight**: the codebase has no existing audit pattern for messages, rooms, or subscriptions (verified by searching for `*_audit`, `*_history`, `revisions` tables and structs). Adding audit columns or a dedicated revisions table would require its own design covering retention, access control, and UI surface — all out of scope for this PR.
 - **Moderation by room owners** — explicitly excluded. A future "admin-delete" operation would require a separate authorization path and likely separate audit columns.
+- **Cascade delete of thread replies** — explicitly **not implemented**. Deleting a thread parent leaves its replies intact (§8.2). Any future "delete entire thread" affordance would need its own design: it would have to either apply per-reply sender-only auth (so only replies the caller authored are removed) or introduce an elevated moderation path.
 - **Thread parent `QuotedParentMessage` snapshot update** — deleting a message that is the parent of a thread does not update the embedded `QuotedParentMessage` in child rows' denormalized copies. Accepted eventual-consistency gap.
 - **Cross-site federation** — no outbox/inbox propagation.
 - **DM inbox reordering on delete** — intentionally not bumped.
