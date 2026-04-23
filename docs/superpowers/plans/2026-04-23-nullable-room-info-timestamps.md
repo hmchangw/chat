@@ -174,16 +174,18 @@ func TestRoomsInfoBatchResponseJSON(t *testing.T) {
 	pk := "dGVzdC1rZXk="
 	kv := 3
 	lastMsg := int64(1735689600000)
+	lastMention := int64(1735693200000)
 	src := model.RoomsInfoBatchResponse{
 		Rooms: []model.RoomInfo{
 			{
-				RoomID:     "r1",
-				Found:      true,
-				SiteID:     "site-a",
-				Name:       "general",
-				LastMsgAt:  &lastMsg,
-				PrivateKey: &pk,
-				KeyVersion: &kv,
+				RoomID:           "r1",
+				Found:            true,
+				SiteID:           "site-a",
+				Name:             "general",
+				LastMsgAt:        &lastMsg,
+				LastMentionAllAt: &lastMention,
+				PrivateKey:       &pk,
+				KeyVersion:       &kv,
 			},
 			{
 				RoomID: "r2",
@@ -192,6 +194,8 @@ func TestRoomsInfoBatchResponseJSON(t *testing.T) {
 		},
 	}
 ```
+
+(The round-trip equality via `reflect.DeepEqual` still holds — `LastMentionAllAt` marshals/unmarshals through the same `*int64` + `omitempty` path as `LastMsgAt`.)
 
 - [ ] **Step 5: Fix the "missing room" assertion in `room-service/handler_test.go`**
 
