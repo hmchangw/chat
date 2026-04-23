@@ -58,6 +58,11 @@ func New(nc *nats.Conn, queue string) *Router
 
 // Append middleware to the router's chain. Runs for ALL routes.
 func (r *Router) Use(mw ...HandlerFunc)
+
+// Drain every registered route and wait for in-flight handlers to finish
+// or ctx to expire. Idempotent. Call before nc.Drain() if you need to stop
+// routing while keeping the NATS connection open.
+func (r *Router) Shutdown(ctx context.Context) error
 ```
 
 ### Registration Functions
