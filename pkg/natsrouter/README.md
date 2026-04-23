@@ -116,6 +116,10 @@ func (c *Context) ReplyJSON(v any)
 func (c *Context) ReplyError(msg string)
 func (c *Context) ReplyRouteError(e *RouteError)
 
+// Detach the context for use in goroutines / after the handler returns.
+// Returns a pool-safe deep copy with its own keys/params; Next() is a no-op.
+func (c *Context) Copy() *Context
+
 // The raw NATS message (for advanced use cases).
 c.Msg *nats.Msg
 
@@ -248,6 +252,27 @@ func (s *Service) GetRoom(c *natsrouter.Context, req GetRoomReq) (*Room, error) 
     return room, nil
 }
 ```
+
+### Using the Context in Goroutines
+
+The `*Context` is pooled — its underlying struct is reused across requests. **Never** hold a direct reference to `c` in a goroutine or after the handler returns; the pool will hand it to another request and your goroutine will race with the next handler's writes.
+
+For async work (metrics, deferred logging, fire-and-forget outbound events), call `c.Copy()`:
+
+```go
+func MetricsMiddleware() natsrouter.HandlerFunc {
+    return func(c *natsrouter.Context) {
+        start := time.Now()
+        c.Next()
+        cp := c.Copy() // detach from the pool before handing off
+        go func() {
+            emitMetric(cp.Msg.Subject, time.Since(start), cp.Param("account"))
+        }()
+    }
+}
+```
+
+The copy deep-copies `Keys` and `Params`, shares the read-only `Msg` pointer (don't `Respond` on it from a goroutine — publish instead), and is marked aborted so its middleware chain won't execute.
 
 ### Middleware Data Passing
 

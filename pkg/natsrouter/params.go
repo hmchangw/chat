@@ -18,6 +18,19 @@ func NewParams(values map[string]string) Params {
 	return Params{values: values}
 }
 
+// cloneParams returns Params whose underlying map is independent of p's.
+// Used by Context.Copy to detach the copy from the pooled original.
+func cloneParams(p Params) Params {
+	if p.values == nil {
+		return Params{}
+	}
+	values := make(map[string]string, len(p.values))
+	for k, v := range p.values {
+		values[k] = v
+	}
+	return Params{values: values}
+}
+
 // Get returns the value of a named param, or empty string if not found.
 func (p Params) Get(key string) string {
 	return p.values[key]
