@@ -81,12 +81,12 @@ func (f *fakeRoomKeyProvider) Get(_ context.Context, _ string) (*roomkeystore.Ve
 	return f.pair, nil
 }
 
-func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
+func TestBroadcastWorker_ChannelRoom_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
 
 	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
-		ID: "r1", Name: "general", Type: model.RoomTypeGroup, UserCount: 2, SiteID: "site-a",
+		ID: "r1", Name: "general", Type: model.RoomTypeChannel, UserCount: 2, SiteID: "site-a",
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
@@ -131,12 +131,12 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	assert.WithinDuration(t, msgTime, *room.LastMsgAt, time.Millisecond)
 }
 
-func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
+func TestBroadcastWorker_ChannelRoom_MentionAll_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
 
 	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
-		ID: "r2", Name: "announcements", Type: model.RoomTypeGroup, UserCount: 2, SiteID: "site-a",
+		ID: "r2", Name: "announcements", Type: model.RoomTypeChannel, UserCount: 2, SiteID: "site-a",
 	})
 	require.NoError(t, err)
 	seedUsers(t, db)
@@ -165,12 +165,12 @@ func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
 	assert.WithinDuration(t, msgTime, *room.LastMentionAllAt, time.Millisecond)
 }
 
-func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
+func TestBroadcastWorker_ChannelRoom_IndividualMention_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
 
 	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
-		ID: "r3", Name: "dev", Type: model.RoomTypeGroup, UserCount: 2, SiteID: "site-a",
+		ID: "r3", Name: "dev", Type: model.RoomTypeChannel, UserCount: 2, SiteID: "site-a",
 	})
 	require.NoError(t, err)
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{

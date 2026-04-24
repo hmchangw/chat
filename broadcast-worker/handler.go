@@ -85,8 +85,8 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	clientMsg := buildClientMessage(&msg, senderMap)
 
 	switch room.Type {
-	case model.RoomTypeGroup:
-		return h.publishGroupEvent(ctx, room, clientMsg, resolved.MentionAll, resolved.Participants)
+	case model.RoomTypeChannel:
+		return h.publishChannelEvent(ctx, room, clientMsg, resolved.MentionAll, resolved.Participants)
 	case model.RoomTypeDM:
 		return h.publishDMEvents(ctx, room, clientMsg, resolved.Accounts)
 	default:
@@ -95,7 +95,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 }
 
-func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionAll bool, mentions []model.Participant) error {
+func (h *Handler) publishChannelEvent(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionAll bool, mentions []model.Participant) error {
 	evt := buildRoomEvent(room, clientMsg)
 	evt.MentionAll = mentionAll
 	if len(mentions) > 0 {
@@ -130,7 +130,7 @@ func (h *Handler) publishGroupEvent(ctx context.Context, room *model.Room, clien
 
 	payload, err := json.Marshal(evt)
 	if err != nil {
-		return fmt.Errorf("marshal group room event: %w", err)
+		return fmt.Errorf("marshal channel event: %w", err)
 	}
 
 	return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)

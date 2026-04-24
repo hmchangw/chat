@@ -394,7 +394,7 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("get room: %w", err)
 	}
-	if room.Type != model.RoomTypeGroup {
+	if room.Type != model.RoomTypeChannel {
 		return nil, errRoomTypeGuard
 	}
 	requesterSub, err := h.store.GetSubscription(ctx, requester, roomID)

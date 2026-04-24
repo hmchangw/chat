@@ -117,7 +117,7 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
 
-	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeGroup, UserCount: 5}
+	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeChannel, UserCount: 5}
 	roomData, _ := json.Marshal(room)
 	evt := model.OutboxEvent{Type: "room_sync", Payload: roomData}
 	evtData, _ := json.Marshal(evt)

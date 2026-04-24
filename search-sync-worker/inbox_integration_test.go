@@ -49,7 +49,7 @@ func buildInboxMemberEvent(
 	return model.InboxMemberEvent{
 		RoomID:             roomID,
 		RoomName:           roomName,
-		RoomType:           model.RoomTypeGroup,
+		RoomType:           model.RoomTypeChannel,
 		SiteID:             siteID,
 		Accounts:           accounts,
 		HistorySharedSince: historySharedSince,
@@ -216,7 +216,7 @@ func TestSpotlightSync_Integration(t *testing.T) {
 		assert.Equal(t, "alice", doc["userAccount"])
 		assert.Equal(t, "r-eng", doc["roomId"])
 		assert.Equal(t, "engineering", doc["roomName"])
-		assert.Equal(t, "group", doc["roomType"])
+		assert.Equal(t, "channel", doc["roomType"])
 		assert.Equal(t, siteID, doc["siteId"])
 	})
 

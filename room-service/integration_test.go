@@ -90,7 +90,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	// Test CreateRoom and GetRoom
-	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup, SiteID: "site-a", CreatedBy: "u1", UserCount: 1}
+	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel, SiteID: "site-a", CreatedBy: "u1", UserCount: 1}
 	if err := store.CreateRoom(ctx, &room); err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test ListRooms
-	store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeGroup})
+	store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeChannel})
 	rooms, err := store.ListRooms(ctx)
 	if err != nil {
 		t.Fatalf("ListRooms: %v", err)
@@ -931,11 +931,11 @@ func TestMongoStore_ListRoomsByIDs(t *testing.T) {
 	t4 := now.Add(3 * time.Second)
 	t5 := now.Add(4 * time.Second)
 	seed := []model.Room{
-		{ID: "r1", Name: "one", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t1},
-		{ID: "r2", Name: "two", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t2},
-		{ID: "r3", Name: "three", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t3},
-		{ID: "r4", Name: "four", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t4},
-		{ID: "r5", Name: "five", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t5},
+		{ID: "r1", Name: "one", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t1},
+		{ID: "r2", Name: "two", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t2},
+		{ID: "r3", Name: "three", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t3},
+		{ID: "r4", Name: "four", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t4},
+		{ID: "r5", Name: "five", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t5},
 	}
 	for i := range seed {
 		if err := store.CreateRoom(ctx, &seed[i]); err != nil {
@@ -992,9 +992,9 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	lastMsg := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
 	earlier := lastMsg.Add(-time.Hour)
 	rooms := []model.Room{
-		{ID: "r1", Name: "room-1", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &lastMsg},
-		{ID: "r2", Name: "room-2", Type: model.RoomTypeGroup, SiteID: "site-a"},
-		{ID: "r3", Name: "room-3", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &earlier},
+		{ID: "r1", Name: "room-1", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &lastMsg},
+		{ID: "r2", Name: "room-2", Type: model.RoomTypeChannel, SiteID: "site-a"},
+		{ID: "r3", Name: "room-3", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &earlier},
 	}
 	for _, r := range rooms {
 		require.NoError(t, store.CreateRoom(ctx, &r))
