@@ -1,12 +1,15 @@
 package service
 
 import (
+	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 const (
@@ -197,4 +200,69 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 	}
 
 	return msg, nil
+}
+
+// EditMessage handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit.
+// Sender-only auth. Writes to all applicable Cassandra tables via
+// UpdateMessageContent, then publishes a best-effort MessageEditedEvent to
+// chat.room.{roomID}.event for live fan-out.
+func (s *HistoryService) EditMessage(c *natsrouter.Context, req models.EditMessageRequest) (*models.EditMessageResponse, error) {
+	account := c.Param("account")
+	roomID := c.Param("roomID")
+
+	// 1. Subscription gate — non-subscribers cannot probe messageID -> roomID mappings.
+	if _, err := s.getAccessSince(c, account, roomID); err != nil {
+		return nil, err
+	}
+
+	// 2. Hydrate. findMessage returns ErrNotFound for missing IDs and for
+	// messages that belong to a different room (same error, no leak).
+	msg, err := s.findMessage(c, roomID, req.MessageID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Sender gate.
+	if !canModify(msg, account) {
+		return nil, natsrouter.ErrForbidden("only the sender can edit")
+	}
+
+	// 4. Content validation.
+	if strings.TrimSpace(req.NewMsg) == "" {
+		return nil, natsrouter.ErrBadRequest("newMsg must not be empty")
+	}
+	if len(req.NewMsg) > maxContentBytes {
+		return nil, natsrouter.ErrBadRequest("newMsg exceeds maximum size")
+	}
+
+	// 5. Persist.
+	editedAt := time.Now().UTC()
+	if err := s.messages.UpdateMessageContent(c, msg, req.NewMsg, editedAt); err != nil {
+		slog.Error("edit: update content", "error", err, "messageID", req.MessageID)
+		return nil, natsrouter.ErrInternal("failed to edit message")
+	}
+
+	// 6. Publish live event (best-effort — publish failure is logged, not returned).
+	editedAtMs := editedAt.UnixMilli()
+	evt := models.MessageEditedEvent{
+		Type:      "message_edited",
+		Timestamp: editedAtMs,
+		RoomID:    roomID,
+		MessageID: req.MessageID,
+		NewMsg:    req.NewMsg,
+		EditedBy:  account,
+		EditedAt:  editedAtMs,
+	}
+	if payload, err := json.Marshal(evt); err == nil {
+		if pubErr := s.publisher.Publish(c, subject.RoomEvent(roomID), payload); pubErr != nil {
+			slog.Warn("edit: publish event failed", "error", pubErr, "messageID", req.MessageID)
+		}
+	} else {
+		slog.Warn("edit: marshal event failed", "error", err, "messageID", req.MessageID)
+	}
+
+	return &models.EditMessageResponse{
+		MessageID: req.MessageID,
+		EditedAt:  editedAtMs,
+	}, nil
 }
