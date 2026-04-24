@@ -49,24 +49,75 @@ func (c *CachedUserStore) FindUserByID(ctx context.Context, id string) (*model.U
 	return c.inner.FindUserByID(ctx, id)
 }
 
-// FindUsersByAccounts will be implemented in Task 2. The stub takes the
-// lock once so the mutex and LRU state are reachable by the linter during
-// the scaffolding phase.
+// FindUsersByAccounts returns users for the requested accounts, serving
+// cache hits without calling the inner store. Cache misses are forwarded
+// in a single batched inner call. Missing users are not cached as
+// negatives — an account the inner store didn't return is simply absent
+// and will be re-fetched next time.
 func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
-	c.mu.Lock()
-	_ = c.lru
-	_ = c.index
-	_ = c.now
-	c.mu.Unlock()
-	return c.inner.FindUsersByAccounts(ctx, accounts)
-}
+	if len(accounts) == 0 {
+		return nil, nil
+	}
 
-// Forward reference: userCacheEntry is declared in this file for the Task 2
-// cache implementation. Listing every field here keeps the linter from
-// flagging them as unused during the scaffolding phase. Remove when the
-// Task 2 implementation populates real entries.
-var _ = userCacheEntry{
-	account:  "",
-	user:     model.User{},
-	inserted: time.Time{},
+	now := c.now()
+
+	c.mu.Lock()
+	hits := make([]model.User, 0, len(accounts))
+	missing := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		elem, ok := c.index[account]
+		if !ok {
+			missing = append(missing, account)
+			continue
+		}
+		entry := elem.Value.(*userCacheEntry)
+		if now.Sub(entry.inserted) >= c.ttl {
+			// Stale; treat as miss. Drop entry now so a concurrent writer
+			// doesn't collide; the inner result (or its absence) will
+			// repopulate below.
+			c.lru.Remove(elem)
+			delete(c.index, account)
+			missing = append(missing, account)
+			continue
+		}
+		c.lru.MoveToFront(elem)
+		hits = append(hits, entry.user)
+	}
+	c.mu.Unlock()
+
+	if len(missing) == 0 {
+		return hits, nil
+	}
+
+	fresh, err := c.inner.FindUsersByAccounts(ctx, missing)
+	if err != nil {
+		// Return partial hits plus the error so callers can log and continue.
+		return hits, err
+	}
+
+	c.mu.Lock()
+	for i := range fresh {
+		u := fresh[i]
+		if existing, ok := c.index[u.Account]; ok {
+			// Concurrent race: another goroutine populated the same account.
+			// Refresh in place and move to front.
+			existing.Value = &userCacheEntry{account: u.Account, user: u, inserted: now}
+			c.lru.MoveToFront(existing)
+			continue
+		}
+		entry := &userCacheEntry{account: u.Account, user: u, inserted: now}
+		elem := c.lru.PushFront(entry)
+		c.index[u.Account] = elem
+		if c.lru.Len() > c.maxSize {
+			lruElem := c.lru.Back()
+			if lruElem != nil {
+				lruEntry := lruElem.Value.(*userCacheEntry)
+				c.lru.Remove(lruElem)
+				delete(c.index, lruEntry.account)
+			}
+		}
+	}
+	c.mu.Unlock()
+
+	return append(hits, fresh...), nil
 }
