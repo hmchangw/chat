@@ -1,5 +1,7 @@
 # Nullable RoomInfo Timestamps Implementation Plan
 
+> **Follow-up (2026-04-24):** This plan has been fully implemented (see commits `9f0efd6`, `bcfd6ce`, `f160c22` on branch `claude/nullable-room-timestamps-RQAqX`). A follow-up plan — `docs/superpowers/plans/2026-04-24-nullable-room-timestamps.md` — covers the matching change on `model.Room` (`LastMsgAt` / `LastMentionAllAt` → `*time.Time`). The "Do NOT touch `model.Room`" note in this plan's "Notes for the implementer" was correct at the time; it no longer reflects the current direction.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Change `model.RoomInfo.LastMsgAt` and `model.RoomInfo.LastMentionAllAt` from `int64` to `*int64` so the rooms-info batch RPC can unambiguously represent "no last message" (nil pointer → field absent from JSON) versus "present at epoch zero" (pointer to `0` → emitted).
