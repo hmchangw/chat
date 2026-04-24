@@ -1294,6 +1294,28 @@ func TestRoomsInfoBatchResponseJSON(t *testing.T) {
 	}
 }
 
+func TestChannelRefJSONBSON(t *testing.T) {
+	src := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
+
+	t.Run("json", func(t *testing.T) {
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		// Tag spelling matters — the wire contract with frontends uses camelCase.
+		assert.Equal(t, `{"roomId":"room-eng","siteId":"site-us"}`, string(data))
+		var dst model.ChannelRef
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+	})
+
+	t.Run("bson", func(t *testing.T) {
+		data, err := bson.Marshal(&src)
+		require.NoError(t, err)
+		var dst model.ChannelRef
+		require.NoError(t, bson.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+	})
+}
+
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T any](t *testing.T, src *T, dst *T) {
 	t.Helper()
