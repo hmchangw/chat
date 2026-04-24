@@ -875,18 +875,27 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 
 	// Target room on site-a
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
-	// Source channel on site-a with 2 individuals + 1 org (via room_members + subscriptions)
+	// Source channel on site-a: seed room_members explicitly so ListRoomMembers takes the room_members
+	// branch (not the subscriptions fallback); also seed users so ResolveAccounts can find them.
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
-	// Seed users so ResolveAccounts can find them.
 	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
 		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
 		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
+		model.User{ID: "u3", Account: "dave", SiteID: "site-a", SectID: "eng-org"},
 		model.User{ID: "req", Account: "alice", SiteID: "site-a"},
 	})
 	require.NoError(t, err)
+	// room_members: two individuals + one org — exercises both branches in the RoomMember switch.
+	_, err = db.Collection("room_members").InsertMany(ctx, []interface{}{
+		model.RoomMember{ID: "rm1", RoomID: "source", Ts: time.Now().UTC(), Member: model.RoomMemberEntry{ID: "u1", Type: model.RoomMemberIndividual, Account: "bob"}},
+		model.RoomMember{ID: "rm2", RoomID: "source", Ts: time.Now().UTC(), Member: model.RoomMemberEntry{ID: "u2", Type: model.RoomMemberIndividual, Account: "carol"}},
+		model.RoomMember{ID: "rm3", RoomID: "source", Ts: time.Now().UTC(), Member: model.RoomMemberEntry{ID: "eng-org", Type: model.RoomMemberOrg}},
+	})
+	require.NoError(t, err)
+	// Subscriptions: requester must be subscribed on both rooms; the source room's subscriptions
+	// collection stays in sync with room_members so existing-subscription filtering works downstream.
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
-	// Requester subscribed to both rooms
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s3", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s4", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
@@ -911,7 +920,8 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result, &status))
 	assert.Equal(t, "accepted", status["status"])
 
-	// Verify the canonical event was published with the expanded members
+	// Verify the canonical event was published with the expanded members.
+	// Source channel contributes: bob, carol (individuals) + eng-org (org → dave).
 	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
 	var normalized model.AddMembersRequest
 	require.NoError(t, json.Unmarshal(publishedData, &normalized))
@@ -919,7 +929,8 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	assert.Equal(t, "alice", normalized.RequesterAccount)
 	assert.Equal(t, "req", normalized.RequesterID)
 	assert.NotZero(t, normalized.Timestamp)
-	assert.ElementsMatch(t, []string{"bob", "carol"}, normalized.Users)
+	assert.ElementsMatch(t, []string{"eng-org"}, normalized.Orgs)
+	assert.ElementsMatch(t, []string{"bob", "carol", "dave"}, normalized.Users)
 }
 
 func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
