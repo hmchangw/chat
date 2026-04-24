@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -769,4 +770,175 @@ func TestHistoryService_EditMessage_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "m-abc", resp.MessageID)
 	assert.NotZero(t, resp.EditedAt)
+}
+
+func TestHistoryService_EditMessage_NotSubscribed(t *testing.T) {
+	svc, _, subs, _ := newService(t)
+	c := testContext()
+
+	// Not subscribed — the helper returns ErrForbidden before we touch anything else.
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, false, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, "not subscribed to room", routeErr.Message)
+}
+
+func TestHistoryService_EditMessage_NotSender(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	// Message exists in the expected room but a different account is the sender.
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "someone-else"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, "only the sender can edit", routeErr.Message)
+}
+
+func TestHistoryService_EditMessage_NotFound(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "missing").Return(nil, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "missing", NewMsg: "x"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+}
+
+func TestHistoryService_EditMessage_WrongRoom(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	// Message exists but in a different room — findMessage returns ErrNotFound (no leak).
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "other-room",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+}
+
+func TestHistoryService_EditMessage_EmptyNewMsg(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "   "})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, "newMsg must not be empty", routeErr.Message)
+}
+
+func TestHistoryService_EditMessage_TooLarge(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	// 20 KB + 1 byte
+	oversize := strings.Repeat("a", 20*1024+1)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: oversize})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, "newMsg exceeds maximum size", routeErr.Message)
+}
+
+func TestHistoryService_EditMessage_UpdateFails(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().
+		UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).
+		Return(fmt.Errorf("cassandra timeout"))
+
+	// No publish should happen when the UPDATE fails. The mock publisher is
+	// not configured to expect any call; gomock will fail the test if Publish
+	// is invoked.
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "new content"})
+	assert.Nil(t, resp)
+	assertInternalErr(t, err, "failed to edit message")
+}
+
+func TestHistoryService_EditMessage_PublishFails(t *testing.T) {
+	svc, msgs, subs, pub := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).Return(nil)
+
+	// Publisher fails, but handler must still return success (best-effort fan-out).
+	pub.EXPECT().Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).Return(fmt.Errorf("nats disconnected"))
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "new content"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "m-abc", resp.MessageID)
 }
