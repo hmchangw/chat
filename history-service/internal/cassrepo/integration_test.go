@@ -743,3 +743,61 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 	).Scan(&gotTcount))
 	assert.Equal(t, 1, gotTcount, "tcount decrement is not yet implemented — expected unchanged")
 }
+
+func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-del-pin"
+	msgID := "m-del-pin"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+	pinnedAt := createdAt.Add(10 * time.Second)
+
+	// Seed a top-level pinned message in all three tables.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, pinned_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "content", "", pinnedAt, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "content", "", false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO pinned_messages_by_room (room_id, created_at, message_id, sender, msg, deleted) VALUES (?, ?, ?, ?, ?, ?)`,
+		roomID, pinnedAt, msgID, sender, "content", false,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: "",
+		PinnedAt:       &pinnedAt,
+	}
+	deletedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, deletedAt))
+
+	// All three tables should reflect deleted = true
+	var gotDeleted bool
+
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotDeleted))
+	assert.True(t, gotDeleted, "messages_by_id should be deleted")
+
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotDeleted))
+	assert.True(t, gotDeleted, "messages_by_room should be deleted")
+
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM pinned_messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, pinnedAt, msgID,
+	).Scan(&gotDeleted))
+	assert.True(t, gotDeleted, "pinned_messages_by_room should be deleted")
+}
