@@ -5,14 +5,15 @@ import RoomList from '../components/RoomList'
 import MessageArea from '../components/MessageArea'
 import MessageInput from '../components/MessageInput'
 import CreateRoomDialog from '../components/CreateRoomDialog'
-import SearchDialog from '../components/SearchDialog'
+import GlobalSearchBar from '../components/GlobalSearchBar'
+import SearchResultsView from '../components/SearchResultsView'
 
 export default function ChatPage() {
   const { user, disconnect } = useNats()
   const { summaries, setActiveRoom } = useRoomSummaries()
   const [selectedRoom, setSelectedRoom] = useState(null)
   const [showCreateRoom, setShowCreateRoom] = useState(false)
-  const [showSearch, setShowSearch] = useState(false)
+  const [searchQuery, setSearchQuery] = useState(null)
 
   // Clear selection if the selected room disappears from summaries
   useEffect(() => {
@@ -38,12 +39,12 @@ export default function ChatPage() {
     <div className="chat-layout">
       <div className="chat-header">
         <span className="chat-header-title">Chat</span>
-        <button
-          className="chat-header-search"
-          onClick={() => setShowSearch(true)}
-        >
-          Search
-        </button>
+        <div className="chat-header-search-wrap">
+          <GlobalSearchBar
+            onSelectRoom={handleSelectFromSearch}
+            onSubmit={(q) => setSearchQuery(q)}
+          />
+        </div>
         <span className="chat-header-user">
           {user?.account} &middot; {user?.siteId}
         </span>
@@ -75,10 +76,10 @@ export default function ChatPage() {
           onCreated={(room) => handleSelectRoom(room)}
         />
       )}
-      {showSearch && (
-        <SearchDialog
-          currentRoom={selectedRoom}
-          onClose={() => setShowSearch(false)}
+      {searchQuery && (
+        <SearchResultsView
+          text={searchQuery}
+          onClose={() => setSearchQuery(null)}
           onSelectRoom={handleSelectFromSearch}
         />
       )}
