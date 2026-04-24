@@ -53,6 +53,15 @@ func Seed(ctx context.Context, db *mongo.Database, f Fixtures) error {
 	}); err != nil {
 		return fmt.Errorf("create subscription indexes: %w", err)
 	}
+
+	// broadcast-worker and message-gatekeeper look up users by account
+	// (not _id) during enrichment — index it to avoid a COLLSCAN per message.
+	usersIdx := db.Collection("users")
+	if _, err := usersIdx.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "account", Value: 1}}},
+	}); err != nil {
+		return fmt.Errorf("create user indexes: %w", err)
+	}
 	return nil
 }
 
