@@ -36,13 +36,14 @@ func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string
 		return nil, fmt.Errorf("marshal member.list body: %w", err)
 	}
 
-	// Zero-timeout misconfiguration would make context.WithTimeout expire immediately; fall through to the caller's ctx.
-	reqCtx := ctx
-	if c.timeout > 0 {
-		var cancel context.CancelFunc
-		reqCtx, cancel = context.WithTimeout(ctx, c.timeout)
-		defer cancel()
+	// Always bound remote calls — use the configured timeout, or fall back to 5s
+	// (matches envDefault) so a zero/negative misconfiguration can't leak indefinite blocks.
+	effectiveTimeout := c.timeout
+	if effectiveTimeout <= 0 {
+		effectiveTimeout = 5 * time.Second
 	}
+	reqCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
+	defer cancel()
 
 	out := &nats.Msg{
 		Subject: subject.MemberList(requester, ch.RoomID, ch.SiteID),

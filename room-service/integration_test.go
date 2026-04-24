@@ -1145,17 +1145,23 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Target on site-a, requester subscribed
+	// Target on site-a, requester subscribed.
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
 
-	// Member-list client connected to an existing NATS server, but NO site-b responder is registered.
-	// The member.list request will have no subscriber, so it'll time out.
+	// Register a site-b responder that sleeps past the client timeout, so we actually
+	// exercise the context.WithTimeout path (not NATS "no responders" fast-fail).
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
-	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
+	sub, err := nc.Subscribe(subject.MemberList("alice", "source", "site-b"), func(m *nats.Msg) {
+		time.Sleep(1 * time.Second)
+		_ = m.Respond([]byte(`{}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
+	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
 	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
@@ -1169,8 +1175,9 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expand channels")
 	assert.Contains(t, err.Error(), "remote list-members")
-	// Timeout is 200ms; total should finish within a reasonable window (allow up to 2s for container scheduling latency)
-	assert.Less(t, elapsed, 2*time.Second)
+	// Deadline must have actually fired — elapsed >= configured timeout, and well under the responder sleep.
+	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond)
+	assert.Less(t, elapsed, 900*time.Millisecond)
 }
 
 func TestRoomsInfoBatchRPC(t *testing.T) {

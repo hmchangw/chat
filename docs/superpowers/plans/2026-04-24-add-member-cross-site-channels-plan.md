@@ -37,6 +37,7 @@ Expected: each grep returns a line. If any return nothing, stop and rebase first
 ## File Structure
 
 **New files:**
+
 | Path | Responsibility |
 |---|---|
 | `room-service/memberlist_client.go` | `MemberListClient` interface + `natsMemberListClient` NATS implementation + `//go:generate` directive |
@@ -44,6 +45,7 @@ Expected: each grep returns a line. If any return nothing, stop and rebase first
 | `room-service/mock_memberlist_client_test.go` | Generated mock for `MemberListClient` (never edit by hand) |
 
 **Modified files:**
+
 | Path | Change |
 |---|---|
 | `pkg/natsutil/reply.go` | Add `TryParseError(data []byte) (model.ErrorResponse, bool)` |
