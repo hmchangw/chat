@@ -43,6 +43,31 @@ func TestRoomJSON(t *testing.T) {
 	roundTrip(t, &r, &model.Room{})
 }
 
+func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
+	r := model.Room{
+		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
+		CreatedBy: "u1", SiteID: "site-a", UserCount: 1,
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(&r)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	_, hasMsg := raw["lastMsgAt"]
+	assert.False(t, hasMsg, "nil LastMsgAt must be omitted from JSON")
+
+	_, hasMention := raw["lastMentionAllAt"]
+	assert.False(t, hasMention, "nil LastMentionAllAt must be omitted from JSON")
+
+	var dst model.Room
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Nil(t, dst.LastMsgAt, "absent JSON field must unmarshal to nil pointer")
+	assert.Nil(t, dst.LastMentionAllAt, "absent JSON field must unmarshal to nil pointer")
+}
+
 func TestThreadRoomJSON(t *testing.T) {
 	tr := model.ThreadRoom{
 		ID:              "tr-1",
