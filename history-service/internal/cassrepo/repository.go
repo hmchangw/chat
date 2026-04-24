@@ -235,9 +235,36 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 	return nil
 }
 
-// SoftDeleteMessage is implemented incrementally across Tasks 4-7 of the
-// delete plan. This stub keeps the interface contract compilable between
-// tasks; Task 4 replaces it with the top-level-message branch.
+// SoftDeleteMessage marks the given message deleted across all applicable
+// Cassandra tables. For thread replies it also decrements the parent
+// message's tcount via lightweight transactions. See the delete spec for the
+// table-membership + tcount semantics.
+//
+// Order: (1) the `deleted = true` UPDATEs on all applicable tables, (2) the
+// tcount decrement on parent tables when the target is a thread reply. On
+// partial failure between the two phases, tcount can drift by one — this is
+// documented and matches the existing worker-side increment drift model.
+// Idempotent with respect to the `deleted` column; `updated_at` advances per
+// call.
 func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
-	return fmt.Errorf("SoftDeleteMessage not yet implemented")
+	// Always: messages_by_id
+	if err := r.session.Query(
+		`UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+		deletedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update messages_by_id: %w", err)
+	}
+
+	// Top-level only: messages_by_room
+	if msg.ThreadParentID == "" {
+		if err := r.session.Query(
+			`UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			deletedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update messages_by_room: %w", err)
+		}
+	}
+
+	// Thread-reply branch, pinned branch, and tcount decrement are added in Tasks 5-7.
+	return nil
 }
