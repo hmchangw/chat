@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux; only served if PPROF_ADDR is set.
 	"os"
 	"os/signal"
 	"strings"
@@ -34,6 +35,8 @@ type config struct {
 	MongoURI      string `env:"MONGO_URI,required"`
 	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
 	MetricsAddr   string `env:"METRICS_ADDR"    envDefault:":9099"`
+	MaxInFlight   int    `env:"MAX_IN_FLIGHT"   envDefault:"200"`
+	PProfAddr     string `env:"PPROF_ADDR"      envDefault:""`
 }
 
 func main() {
@@ -179,6 +182,24 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		}
 	}()
 
+	// pprof lives on a separate port, opt-in via PPROF_ADDR. Off by default
+	// so the metrics endpoint (which Prometheus scrapes) doesn't
+	// inadvertently expose profiling.
+	var pprofSrv *http.Server
+	if cfg.PProfAddr != "" {
+		pprofSrv = &http.Server{
+			Addr:              cfg.PProfAddr,
+			Handler:           http.DefaultServeMux, // net/http/pprof registers on DefaultServeMux via side-effect import.
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			if err := pprofSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Warn("pprof server stopped", "error", err)
+			}
+		}()
+		slog.Info("pprof server listening", "addr", cfg.PProfAddr)
+	}
+
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
 	collector := NewCollector(metrics, p.Name)
 
@@ -262,6 +283,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		Metrics:        metrics,
 		Collector:      collector,
 		WarmupDeadline: warmupDeadline,
+		MaxInFlight:    cfg.MaxInFlight,
 	}, *seed)
 
 	runCtx, cancelRun := context.WithTimeout(ctx, *duration)
@@ -277,6 +299,9 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	shutCtx, cancelShut := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = metricsSrv.Shutdown(shutCtx)
+	if pprofSrv != nil {
+		_ = pprofSrv.Shutdown(shutCtx)
+	}
 	cancelShut()
 	_ = nc.Drain()
 

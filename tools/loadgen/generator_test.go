@@ -251,3 +251,88 @@ func TestGenerator_EmptySubscriptions_NoPublish(t *testing.T) {
 	_ = g.Run(ctx)
 	assert.Equal(t, 0, rp.count())
 }
+
+func TestGenerator_MaxInFlightZeroRunsSerially(t *testing.T) {
+	// MaxInFlight=0 preserves the legacy serial-on-ticker behavior.
+	p, _ := BuiltinPreset("small")
+	f := BuildFixtures(&p, 42, "site-local")
+	rp := &recordingPublisher{}
+	m := NewMetrics()
+	c := NewCollector(m, p.Name)
+	g := NewGenerator(&GeneratorConfig{
+		Preset: &p, Fixtures: f, SiteID: "site-local",
+		Rate: 200, Inject: InjectFrontdoor,
+		Publisher: rp, Metrics: m,
+		Collector:   c,
+		MaxInFlight: 0,
+	}, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	require.NoError(t, g.Run(ctx))
+
+	// Same tolerance as the default SendsExpectedCount test.
+	count := rp.count()
+	assert.GreaterOrEqual(t, count, 30)
+	assert.LessOrEqual(t, count, 70)
+}
+
+// blockingPublisher blocks every Publish call until unblock is closed.
+// Used to force worker-pool saturation.
+type blockingPublisher struct {
+	unblock chan struct{}
+	mu      sync.Mutex
+	count   int
+}
+
+func (b *blockingPublisher) Publish(ctx context.Context, _ string, _ []byte) error {
+	select {
+	case <-b.unblock:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	b.mu.Lock()
+	b.count++
+	b.mu.Unlock()
+	return nil
+}
+
+func TestGenerator_PoolSaturationCountedAsError(t *testing.T) {
+	// With MaxInFlight=1 and a publisher that never returns while the run is
+	// active, every tick after the first must see the pool saturated and
+	// increment loadgen_publish_errors_total{reason="saturated"}.
+	p, _ := BuiltinPreset("small")
+	f := BuildFixtures(&p, 42, "site-local")
+	bp := &blockingPublisher{unblock: make(chan struct{})}
+	m := NewMetrics()
+	c := NewCollector(m, p.Name)
+	g := NewGenerator(&GeneratorConfig{
+		Preset: &p, Fixtures: f, SiteID: "site-local",
+		Rate: 500, Inject: InjectFrontdoor,
+		Publisher: bp, Metrics: m,
+		Collector:   c,
+		MaxInFlight: 1,
+	}, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	_ = g.Run(ctx)
+	close(bp.unblock)
+
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+	var saturated float64
+	for _, mf := range mfs {
+		if mf.GetName() != "loadgen_publish_errors_total" {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			for _, l := range metric.GetLabel() {
+				if l.GetName() == "reason" && l.GetValue() == "saturated" {
+					saturated += metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	assert.Greater(t, saturated, float64(0), "expected saturated counter to increment under pool-full conditions")
+}

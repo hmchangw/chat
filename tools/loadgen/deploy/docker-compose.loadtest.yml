@@ -95,6 +95,13 @@ services:
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
       - METRICS_ADDR=:9099
+      # Worker-pool cap for concurrent publishes. Set to 0 to publish
+      # serially on the ticker goroutine (legacy behavior).
+      - MAX_IN_FLIGHT=200
+      # Enable pprof on a separate port by uncommenting and mapping
+      # the port. Off by default so the metrics endpoint doesn't expose
+      # profiling.
+      # - PPROF_ADDR=:6060
     ports:
       - "9099:9099"
     depends_on: [nats, mongodb, message-gatekeeper, message-worker, broadcast-worker]
