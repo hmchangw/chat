@@ -457,13 +457,14 @@ func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 	require.NoError(t, repo.UpdateMessageContent(ctx, msg, "edited", editedAt))
 
 	// messages_by_id updated
-	var gotMsg, gotEditedAt any
+	var gotMsg string
+	var gotEditedAt time.Time
 	require.NoError(t, session.Query(
 		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
 		msgID, createdAt,
 	).Scan(&gotMsg, &gotEditedAt))
 	assert.Equal(t, "edited", gotMsg)
-	assert.WithinDuration(t, editedAt, gotEditedAt.(time.Time), time.Second)
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
 
 	// messages_by_room updated
 	require.NoError(t, session.Query(
@@ -471,6 +472,7 @@ func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 		roomID, createdAt, msgID,
 	).Scan(&gotMsg, &gotEditedAt))
 	assert.Equal(t, "edited", gotMsg)
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
 
 	// thread_messages_by_room must NOT have a phantom row for this message
 	var threadCount int
