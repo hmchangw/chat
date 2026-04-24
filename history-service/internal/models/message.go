@@ -80,11 +80,11 @@ type EditMessageResponse struct {
 // Timestamp (event publish time). EditedAt is the domain time when the edit
 // occurred; both are populated from a single time.Now().UTC() in the handler.
 type MessageEditedEvent struct {
-	Type      string `json:"type"`      // always "message_edited"
-	Timestamp int64  `json:"timestamp"` // UTC millis, event publish time
-	RoomID    string `json:"roomId"`
-	MessageID string `json:"messageId"`
-	NewMsg    string `json:"newMsg"`
-	EditedBy  string `json:"editedBy"` // actor account (always == message.sender.account under sender-only auth)
-	EditedAt  int64  `json:"editedAt"` // UTC millis, domain time when edit occurred
+	Type      string `json:"type"      bson:"type"`      // always "message_edited"
+	Timestamp int64  `json:"timestamp" bson:"timestamp"` // UTC millis, event publish time
+	RoomID    string `json:"roomId"    bson:"roomId"`
+	MessageID string `json:"messageId" bson:"messageId"`
+	NewMsg    string `json:"newMsg"    bson:"newMsg"`
+	EditedBy  string `json:"editedBy"  bson:"editedBy"` // actor account (always == message.sender.account under sender-only auth)
+	EditedAt  int64  `json:"editedAt"  bson:"editedAt"` // UTC millis, domain time when edit occurred
 }
