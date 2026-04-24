@@ -1154,8 +1154,10 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
+	// Sleep just past the 200ms client timeout so the responder doesn't outlive the test
+	// and flag as a goroutine leak under -race/leak detectors.
 	sub, err := nc.Subscribe(subject.MemberList("alice", "source", "site-b"), func(m *nats.Msg) {
-		time.Sleep(1 * time.Second)
+		time.Sleep(400 * time.Millisecond)
 		_ = m.Respond([]byte(`{}`))
 	})
 	require.NoError(t, err)

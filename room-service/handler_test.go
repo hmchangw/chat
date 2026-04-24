@@ -999,7 +999,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "carol"}},
 		}, nil)
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		orgs, accs, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.NoError(t, err)
@@ -1019,7 +1019,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 			{Member: model.RoomMemberEntry{ID: "org2", Type: model.RoomMemberOrg}},
 		}, nil)
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		orgs, accs, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.NoError(t, err)
@@ -1039,7 +1039,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "bob"}},
 		}, nil)
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		orgs, accs, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.NoError(t, err)
@@ -1059,7 +1059,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "carol"}},
 		}, nil)
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		orgs, accs, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.NoError(t, err)
@@ -1083,7 +1083,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "remote-user"}},
 		}, nil)
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, accs, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{local, remote})
 
 		require.NoError(t, err)
@@ -1098,7 +1098,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-a"}
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "ch1").Return(nil, model.ErrSubscriptionNotFound)
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
@@ -1113,7 +1113,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-a"}
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "ch1").Return(nil, errors.New("mongo timeout"))
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
@@ -1129,7 +1129,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "ch1").Return(&model.Subscription{}, nil)
 		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", nil, nil, false).Return(nil, errors.New("mongo timeout"))
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
@@ -1144,7 +1144,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-eu"}
 		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch).Return(nil, errors.New("nats: timeout"))
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
@@ -1162,12 +1162,33 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		// the sentinel for both paths.
 		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch).Return(nil, errNotChannelMember)
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, errNotChannelMember))
 		assert.NotContains(t, err.Error(), "remote list-members")
+	})
+
+	t.Run("cross-site response over maxRoomSize is rejected", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockRoomStore(ctrl)
+		mc := NewMockMemberListClient(ctrl)
+
+		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-eu"}
+		// Remote returns more members than we'd accept for a room — reject before dedup/resolve
+		// so a malicious peer can't inflate downstream work.
+		oversized := make([]model.RoomMember, 6)
+		for i := range oversized {
+			oversized[i] = model.RoomMember{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "u"}}
+		}
+		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch).Return(oversized, nil)
+
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 5, memberListClient: mc}
+		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeds max")
 	})
 
 	t.Run("fail-fast ordering", func(t *testing.T) {
@@ -1180,7 +1201,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 
 		mc.EXPECT().ListMembers(gomock.Any(), "alice", ref1).Return(nil, errors.New("nats: timeout"))
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ref1, ref2})
 
 		require.Error(t, err)
@@ -1191,7 +1212,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		store := NewMockRoomStore(ctrl)
 		mc := NewMockMemberListClient(ctrl)
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		orgs, accs, err := h.expandChannelRefs(context.Background(), "alice", nil)
 
 		require.NoError(t, err)
@@ -1211,7 +1232,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "bob"}},
 		}, nil)
 
-		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, accs, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.NoError(t, err)
