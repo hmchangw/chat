@@ -272,6 +272,16 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		}
 	}
 
-	// Pinned branch and tcount decrement are added in Tasks 6-7.
+	// Pinned mirror — additive to either of the above.
+	if msg.PinnedAt != nil {
+		if err := r.session.Query(
+			`UPDATE pinned_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			deletedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update pinned_messages_by_room: %w", err)
+		}
+	}
+
+	// tcount decrement for thread replies is added in Task 7.
 	return nil
 }
