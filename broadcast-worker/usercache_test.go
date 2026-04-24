@@ -33,8 +33,13 @@ func newFakeUserStore(users ...model.User) *fakeUserStore {
 	return f
 }
 
-func (f *fakeUserStore) FindUserByID(_ context.Context, _ string) (*model.User, error) {
-	return nil, errors.New("unused in these tests")
+func (f *fakeUserStore) FindUserByID(_ context.Context, id string) (*model.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if u, ok := f.byAccount[id]; ok {
+		return &u, nil
+	}
+	return nil, errors.New("not found")
 }
 
 func (f *fakeUserStore) FindUsersByAccounts(_ context.Context, accounts []string) ([]model.User, error) {
@@ -258,4 +263,19 @@ func TestCachedUserStore_ConcurrentSafe(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+func TestCachedUserStore_FindUserByIDDelegates(t *testing.T) {
+	// Keyed on account in the fake; for this test reuse the account as the ID.
+	alice := model.User{ID: "alice", Account: "alice", EngName: "Alice"}
+	inner := newFakeUserStore(alice)
+	c := NewCachedUserStore(inner, 10, time.Minute)
+
+	u, err := c.FindUserByID(context.Background(), "alice")
+	require.NoError(t, err)
+	require.NotNil(t, u)
+	assert.Equal(t, "alice", u.Account)
+
+	_, err = c.FindUserByID(context.Background(), "ghost")
+	require.Error(t, err, "inner store's not-found error should propagate")
 }
