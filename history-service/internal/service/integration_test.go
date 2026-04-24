@@ -77,9 +77,22 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		PRIMARY KEY (message_id, created_at)
 	) WITH CLUSTERING ORDER BY (created_at DESC)`).Exec())
 
-	// thread_messages_by_room and pinned_messages_by_room aren't needed for the
-	// top-level edit flow exercised here; the cassrepo integration tests cover
-	// those branches directly. Keeping the setup minimal reduces container-start time.
+	// thread_messages_by_room — needed by TestDeleteMessage_ParentWithReplies_NoCascade
+	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.thread_messages_by_room (
+		room_id TEXT, thread_room_id TEXT, created_at TIMESTAMP, message_id TEXT,
+		sender FROZEN<"Participant">, target_user FROZEN<"Participant">, msg TEXT,
+		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
+		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
+		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT, unread BOOLEAN,
+		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
+		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
+		PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
+	) WITH CLUSTERING ORDER BY (thread_room_id ASC, created_at DESC, message_id DESC)`).Exec())
+
+	// pinned_messages_by_room isn't needed for the flows exercised here; the
+	// cassrepo integration tests cover that branch directly. Keeping the setup
+	// minimal reduces container-start time.
 
 	cluster.Keyspace = "chat_test"
 	ksSession, err := cluster.CreateSession()
@@ -175,4 +188,136 @@ func TestEditMessage_Integration(t *testing.T) {
 	assert.Equal(t, "alice", evt.EditedBy)
 	assert.NotZero(t, evt.Timestamp)
 	assert.NotZero(t, evt.EditedAt)
+}
+
+func TestDeleteMessage_Integration(t *testing.T) {
+	session := setupCassandra(t)
+	repo := cassrepo.NewRepository(session)
+	pub := &recordingPublisher{}
+	svc := service.New(repo, alwaysSubscribedRepo{}, pub)
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "r-del-integ"
+	msgID := "m-del-integ"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a top-level message directly via CQL.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "content", "", false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "content", "", false,
+	).Exec())
+
+	c := natsrouter.NewContext(map[string]string{"account": "alice", "roomID": roomID})
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: msgID})
+	require.NoError(t, err)
+	assert.Equal(t, msgID, resp.MessageID)
+	assert.NotZero(t, resp.DeletedAt)
+
+	// Cassandra: both tables flipped to deleted = true; msg content preserved.
+	var gotDeleted bool
+	var gotMsg string
+	require.NoError(t, session.Query(
+		`SELECT deleted, msg FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotDeleted, &gotMsg))
+	assert.True(t, gotDeleted)
+	assert.Equal(t, "content", gotMsg, "msg content must be retained on soft-delete")
+
+	require.NoError(t, session.Query(
+		`SELECT deleted, msg FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotDeleted, &gotMsg))
+	assert.True(t, gotDeleted)
+	assert.Equal(t, "content", gotMsg)
+
+	// Publisher: exactly one message_deleted event on the room subject.
+	pub.mu.Lock()
+	defer pub.mu.Unlock()
+	require.Len(t, pub.sent, 1)
+	assert.Equal(t, "chat.room."+roomID+".event", pub.sent[0].Subject)
+
+	var evt models.MessageDeletedEvent
+	require.NoError(t, json.Unmarshal(pub.sent[0].Data, &evt))
+	assert.Equal(t, "message_deleted", evt.Type)
+	assert.Equal(t, roomID, evt.RoomID)
+	assert.Equal(t, msgID, evt.MessageID)
+	assert.Equal(t, "alice", evt.DeletedBy)
+	assert.NotZero(t, evt.Timestamp)
+	assert.NotZero(t, evt.DeletedAt)
+}
+
+func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
+	session := setupCassandra(t)
+	repo := cassrepo.NewRepository(session)
+	pub := &recordingPublisher{}
+	svc := service.New(repo, alwaysSubscribedRepo{}, pub)
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "r-parent-cascade"
+	threadRoomID := "thread-parent-cascade"
+	parentID := "m-parent-casc"
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyID := "m-reply-survives"
+	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
+
+	// Parent top-level message with tcount = 1 reflecting the one existing reply.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		parentID, roomID, parentCreatedAt, sender, "parent question", "", 1, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, parentCreatedAt, parentID, sender, "parent question", "", 1, false,
+	).Exec())
+
+	// Reply authored by someone else — the cascade question is specifically
+	// about other users' content being preserved.
+	otherSender := models.Participant{ID: "u2", Account: "bob"}
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_parent_created_at, thread_room_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		replyID, roomID, replyCreatedAt, otherSender, "bob's reply", parentID, parentCreatedAt, threadRoomID, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, otherSender, "bob's reply", parentID, parentCreatedAt, false,
+	).Exec())
+
+	// Alice (the parent's sender) deletes the parent.
+	c := natsrouter.NewContext(map[string]string{"account": "alice", "roomID": roomID})
+	_, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: parentID})
+	require.NoError(t, err)
+
+	// Parent is soft-deleted.
+	var gotDeleted bool
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		parentID, parentCreatedAt,
+	).Scan(&gotDeleted))
+	assert.True(t, gotDeleted, "parent should be deleted")
+
+	// Reply is untouched — no cascade. Bob's content survives.
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		replyID, replyCreatedAt,
+	).Scan(&gotDeleted))
+	assert.False(t, gotDeleted, "thread reply must survive parent deletion (no cascade)")
+
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, threadRoomID, replyCreatedAt, replyID,
+	).Scan(&gotDeleted))
+	assert.False(t, gotDeleted, "thread_messages_by_room reply must survive parent deletion")
+
+	// Parent's tcount is preserved (no decrement on parent-delete; the parent
+	// doesn't have its own parent to decrement).
+	var gotTcount int
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, parentCreatedAt, parentID,
+	).Scan(&gotTcount))
+	assert.Equal(t, 1, gotTcount, "parent tcount should be unchanged (replies still exist and are counted)")
 }

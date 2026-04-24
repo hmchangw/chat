@@ -43,6 +43,34 @@ func messageByIDScanDest(m *models.Message) []any {
 	return append(baseScanDest(m), &m.PinnedAt, &m.PinnedBy)
 }
 
+// casMaxRetries mirrors the constant used by message-worker's tcount
+// increment. A conflict means another thread-reply increment or decrement
+// landed between our read and CAS; 16 retries are sufficient for realistic
+// bursts while bounding the loop.
+const casMaxRetries = 16
+
+// casDecrement atomically decrements a nullable INT counter toward zero
+// (clamping at zero). Mirrors the shape of message-worker's casIncrement at
+// message-worker/store_cassandra.go:127 but decrements instead of increments.
+func casDecrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
+	tcount := initial
+	for range maxRetries {
+		newVal := 0
+		if tcount != nil && *tcount > 0 {
+			newVal = *tcount - 1
+		}
+		applied, current, err := update(newVal, tcount)
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
+		tcount = current
+	}
+	return fmt.Errorf("cas decrement exceeded %d retries", maxRetries)
+}
+
 // Repository implements service.MessageRepository using Cassandra.
 type Repository struct {
 	session *gocql.Session
@@ -230,6 +258,120 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("update pinned_messages_by_room: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// SoftDeleteMessage marks the given message deleted across all applicable
+// Cassandra tables. For thread replies it also decrements the parent
+// message's tcount via lightweight transactions. See the delete spec for the
+// table-membership + tcount semantics.
+//
+// Order: (1) the `deleted = true` UPDATEs on all applicable tables, (2) the
+// tcount decrement on parent tables when the target is a thread reply. On
+// partial failure between the two phases, tcount can drift by one — this is
+// documented and matches the existing worker-side increment drift model.
+// Idempotent with respect to the `deleted` column; `updated_at` advances per
+// call.
+func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	// Always: messages_by_id
+	if err := r.session.Query(
+		`UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+		deletedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update messages_by_id: %w", err)
+	}
+
+	// Top-level vs thread-reply: mutually exclusive.
+	if msg.ThreadParentID == "" {
+		if err := r.session.Query(
+			`UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			deletedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update messages_by_room: %w", err)
+		}
+	} else {
+		if err := r.session.Query(
+			`UPDATE thread_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			deletedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update thread_messages_by_room: %w", err)
+		}
+	}
+
+	// Pinned mirror — additive to either of the above.
+	if msg.PinnedAt != nil {
+		if err := r.session.Query(
+			`UPDATE pinned_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			deletedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update pinned_messages_by_room: %w", err)
+		}
+	}
+
+	// tcount decrement on parent for thread-reply deletes.
+	if msg.ThreadParentID != "" {
+		if err := r.decrementParentTcount(ctx, msg); err != nil {
+			return fmt.Errorf("decrement parent tcount: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// decrementParentTcount decrements tcount on the parent message row in both
+// messages_by_id and messages_by_room using Cassandra Lightweight Transactions
+// (IF tcount = ?). Silently skips if ThreadParentCreatedAt is nil or if the
+// parent row is missing (ErrNotFound).
+func (r *Repository) decrementParentTcount(ctx context.Context, msg *models.Message) error {
+	if msg.ThreadParentCreatedAt == nil {
+		return nil
+	}
+	parentID := msg.ThreadParentID
+	parentCreatedAt := *msg.ThreadParentCreatedAt
+
+	// CAS decrement on messages_by_id.
+	var tcount *int
+	if err := r.session.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		parentID, parentCreatedAt,
+	).WithContext(ctx).Scan(&tcount); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("read tcount for parent %s in messages_by_id: %w", parentID, err)
+	}
+	if err := casDecrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
+		var current *int
+		applied, err := r.session.Query(
+			`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ? IF tcount = ?`,
+			newVal, parentID, parentCreatedAt, expected,
+		).WithContext(ctx).ScanCAS(&current)
+		return applied, current, err
+	}); err != nil {
+		return fmt.Errorf("cas tcount decrement in messages_by_id for parent %s: %w", parentID, err)
+	}
+
+	// CAS decrement on messages_by_room.
+	if err := r.session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		msg.RoomID, parentCreatedAt, parentID,
+	).WithContext(ctx).Scan(&tcount); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("read tcount for parent %s in messages_by_room: %w", parentID, err)
+	}
+	if err := casDecrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
+		var current *int
+		applied, err := r.session.Query(
+			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
+			newVal, msg.RoomID, parentCreatedAt, parentID, expected,
+		).WithContext(ctx).ScanCAS(&current)
+		return applied, current, err
+	}); err != nil {
+		return fmt.Errorf("cas tcount decrement in messages_by_room for parent %s: %w", parentID, err)
 	}
 
 	return nil
