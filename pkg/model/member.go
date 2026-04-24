@@ -20,6 +20,13 @@ type HistoryConfig struct {
 	Mode HistoryMode `json:"mode" bson:"mode"`
 }
 
+// ChannelRef identifies a source channel by room + its home site. Used by add-member
+// to expand cross-site source channels via the remote site's member.list endpoint.
+type ChannelRef struct {
+	RoomID string `json:"roomId" bson:"roomId"`
+	SiteID string `json:"siteId" bson:"siteId"`
+}
+
 type AddMembersRequest struct {
 	RoomID           string        `json:"roomId"           bson:"roomId"`
 	Users            []string      `json:"users"            bson:"users"`
