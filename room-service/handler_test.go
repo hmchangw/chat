@@ -1529,8 +1529,12 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			name:    "LastMsgAt zero-time in Mongo → nil in response",
 			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r-zero"}}),
 			setupStore: func(s *MockRoomStore) {
+				zero := time.Time{}
 				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r-zero"}).Return([]model.Room{
-					{ID: "r-zero", Name: "quiet", SiteID: "site-a"},
+					{
+						ID: "r-zero", Name: "quiet", SiteID: "site-a",
+						LastMsgAt: &zero, LastMentionAllAt: &zero,
+					},
 				}, nil)
 			},
 			setupKeys: func(k *MockRoomKeyStore) {
@@ -1540,8 +1544,8 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 				require.Len(t, resp.Rooms, 1)
 				assert.Equal(t, "r-zero", resp.Rooms[0].RoomID)
 				assert.True(t, resp.Rooms[0].Found)
-				assert.Nil(t, resp.Rooms[0].LastMsgAt, "zero-time Room.LastMsgAt must produce nil RoomInfo.LastMsgAt")
-				assert.Nil(t, resp.Rooms[0].LastMentionAllAt, "zero-time Room.LastMentionAllAt must produce nil RoomInfo.LastMentionAllAt")
+				assert.Nil(t, resp.Rooms[0].LastMsgAt, "non-nil zero-time Room.LastMsgAt must produce nil RoomInfo.LastMsgAt")
+				assert.Nil(t, resp.Rooms[0].LastMentionAllAt, "non-nil zero-time Room.LastMentionAllAt must produce nil RoomInfo.LastMentionAllAt")
 			},
 		},
 	}
