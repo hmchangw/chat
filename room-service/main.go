@@ -28,6 +28,7 @@ type config struct {
 	MongoDB           string        `env:"MONGO_DB"                  envDefault:"chat"`
 	MaxRoomSize       int           `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
 	MaxBatchSize      int           `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
+	MemberListTimeout time.Duration `env:"MEMBER_LIST_TIMEOUT"       envDefault:"5s"`
 	ValkeyAddr        string        `env:"VALKEY_ADDR,required"`
 	ValkeyPassword    string        `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
@@ -95,7 +96,8 @@ func main() {
 		os.Exit(1)
 	}
 	ensureCancel()
-	handler := NewHandler(store, keyStore, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, func(ctx context.Context, subj string, data []byte) error {
+	memberListClient := NewNATSMemberListClient(nc.NatsConn(), cfg.MemberListTimeout)
+	handler := NewHandler(store, keyStore, memberListClient, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, func(ctx context.Context, subj string, data []byte) error {
 		if _, err := js.Publish(ctx, subj, data); err != nil {
 			return fmt.Errorf("publish to %q: %w", subj, err)
 		}

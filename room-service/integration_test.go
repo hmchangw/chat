@@ -988,7 +988,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNC.Drain() })
 
-	handler := NewHandler(store, keyStore, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handler.RegisterCRUD(otelNC))
 	require.NoError(t, otelNC.NatsConn().Flush())
 

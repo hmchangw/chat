@@ -24,16 +24,17 @@ import (
 )
 
 type Handler struct {
-	store           RoomStore
-	keyStore        RoomKeyStore
-	siteID          string
-	maxRoomSize     int
-	maxBatchSize    int
-	publishToStream func(ctx context.Context, subj string, data []byte) error
+	store            RoomStore
+	keyStore         RoomKeyStore
+	memberListClient MemberListClient  // NEW FIELD
+	siteID           string
+	maxRoomSize      int
+	maxBatchSize     int
+	publishToStream  func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, keyStore RoomKeyStore, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
-	return &Handler{store: store, keyStore: keyStore, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
+func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
+	return &Handler{store: store, keyStore: keyStore, memberListClient: memberListClient, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
 }
 
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
