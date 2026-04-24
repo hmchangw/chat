@@ -25,8 +25,10 @@ type natsMemberListClient struct {
 	timeout time.Duration
 }
 
-// NewNATSMemberListClient creates a NATS-backed MemberListClient.
-func NewNATSMemberListClient(nc *nats.Conn, timeout time.Duration) MemberListClient {
+// NewNATSMemberListClient creates a NATS-backed MemberListClient. Returns the
+// concrete type so future struct-only methods don't require widening the
+// MemberListClient interface ("accept interfaces, return structs").
+func NewNATSMemberListClient(nc *nats.Conn, timeout time.Duration) *natsMemberListClient {
 	return &natsMemberListClient{nc: nc, timeout: timeout}
 }
 

@@ -201,5 +201,6 @@ func TestNATSMemberListClient_ContextCancellation(t *testing.T) {
 
 	_, err := client.ListMembers(ctx, "alice", ch)
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.Canceled), "expected context.Canceled, got %v", err)
 	assert.Contains(t, err.Error(), "member.list request to site-us")
 }

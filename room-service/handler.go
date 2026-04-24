@@ -497,6 +497,12 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 				}
 				return nil, nil, fmt.Errorf("remote list-members %s@%s: %w", ref.RoomID, ref.SiteID, err)
 			}
+			// Defense-in-depth: a malicious or misconfigured peer could return an
+			// arbitrarily large member list. Reject anything larger than our own
+			// maxRoomSize — the downstream capacity check would reject it anyway.
+			if len(members) > h.maxRoomSize {
+				return nil, nil, fmt.Errorf("remote list-members %s@%s: response size %d exceeds max %d", ref.RoomID, ref.SiteID, len(members), h.maxRoomSize)
+			}
 		}
 
 		for i := range members {
