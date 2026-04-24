@@ -214,8 +214,10 @@ func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string
     }
 
     // TryParseError distinguishes ReplyError bodies from success bodies that have no `error` field.
+    // The `remote member.list:` prefix is whitelisted by sanitizeError, so the remote site's
+    // user-safe message propagates verbatim to the caller.
     if errResp, ok := natsutil.TryParseError(reply.Data); ok {
-        return nil, fmt.Errorf("member.list on %s: %s", ch.SiteID, errResp.Error)
+        return nil, fmt.Errorf("remote member.list: %s", errResp.Error)
     }
 
     var resp model.ListRoomMembersResponse
@@ -232,6 +234,8 @@ func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string
 // TryParseError returns the ErrorResponse iff data decodes cleanly with a non-empty Error.
 func TryParseError(data []byte) (model.ErrorResponse, bool) {
     var r model.ErrorResponse
+    // false when Unmarshal fails (malformed/foreign body) OR when Error is empty (success body);
+    // true only when decode succeeds AND Error is non-empty (genuine ReplyError body).
     if err := json.Unmarshal(data, &r); err != nil || r.Error == "" {
         return model.ErrorResponse{}, false
     }
