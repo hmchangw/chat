@@ -116,8 +116,7 @@ func TestHandler_HandleMessage_GroupRoom(t *testing.T) {
 			keyStore := NewMockRoomKeyProvider(ctrl)
 			keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
 
-			store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
-			store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, tc.wantMentionAll).Return(nil)
+			store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, tc.wantMentionAll).Return(testGroupRoom, nil)
 
 			if tc.wantSetMentions != nil {
 				store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.InAnyOrder(tc.wantSetMentions)).Return(nil)
@@ -215,8 +214,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			}
 			data, _ := json.Marshal(evt)
 
-			store.EXPECT().GetRoom(gomock.Any(), "dm-1").Return(testDMRoom, nil)
-			store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
+			store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(testDMRoom, nil)
 			store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
 
 			if tc.wantSetMentions {
@@ -284,7 +282,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us := NewMockUserStore(ctrl)
 		pub := &mockPublisher{}
 
-		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(nil, errors.New("not found"))
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil, errors.New("not found"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		h := NewHandler(store, us, pub, keyStore)
@@ -299,8 +297,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us := NewMockUserStore(ctrl)
 		pub := &mockPublisher{}
 
-		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
-		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(errors.New("db error"))
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil, errors.New("db error"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		h := NewHandler(store, us, pub, keyStore)
@@ -315,9 +312,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us := NewMockUserStore(ctrl)
 		pub := &mockPublisher{}
 
-		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return(testUsers[:1], nil) // inside Resolve
-		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testGroupRoom, nil)
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.Any()).Return(errors.New("db error"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
@@ -338,8 +334,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 			ID: "room-1", Name: "general", Type: "unknown",
 			SiteID: "site-a", UserCount: 5,
 		}
-		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(unknownRoom, nil)
-		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(unknownRoom, nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil) // sender lookup
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
@@ -355,8 +350,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us := NewMockUserStore(ctrl)
 		pub := &mockPublisher{}
 
-		store.EXPECT().GetRoom(gomock.Any(), "dm-1").Return(testDMRoom, nil)
-		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(testDMRoom, nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil) // sender lookup
 		store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(nil, errors.New("db error"))
 
@@ -387,10 +381,9 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
 
-		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
-		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
-		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", []string{"sender"}).Return(nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil) // mention lookup
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testGroupRoom, nil)
+		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", []string{"sender"}).Return(nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil) // sender lookup
 
 		h := NewHandler(store, us, pub, keyStore)
@@ -415,8 +408,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
 
-		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
-		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testGroupRoom, nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, errors.New("db error")) // sender lookup
 
 		h := NewHandler(store, us, pub, keyStore)
@@ -455,8 +447,7 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	pub := &failingPublisher{failAfter: 0}
 
 	us := NewMockUserStore(ctrl)
-	store.EXPECT().GetRoom(gomock.Any(), "dm-1").Return(testDMRoom, nil)
-	store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
+	store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(testDMRoom, nil)
 	store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
 	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil) // sender lookup
 
@@ -488,8 +479,7 @@ func TestHandler_HandleMessage_GroupRoom_Encryption(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(nil, nil)
 
-		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
-		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testGroupRoom, nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
 
 		h := NewHandler(store, us, pub, keyStore)
@@ -508,8 +498,7 @@ func TestHandler_HandleMessage_GroupRoom_Encryption(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(nil, errors.New("valkey down"))
 
-		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
-		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testGroupRoom, nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
 
 		h := NewHandler(store, us, pub, keyStore)
@@ -530,8 +519,7 @@ func TestHandler_HandleMessage_GroupRoom_Encryption(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
 
-		store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(testGroupRoom, nil)
-		store.EXPECT().UpdateRoomOnNewMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testGroupRoom, nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{{ID: "u-sender", Account: "sender", EngName: "Sender Lin", ChineseName: "寄件者", SiteID: "site-a"}}, nil)
 
 		h := NewHandler(store, us, pub, keyStore)
