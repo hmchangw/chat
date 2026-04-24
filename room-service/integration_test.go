@@ -103,7 +103,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test ListRooms
-	store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeChannel})
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeChannel}))
 	rooms, err := store.ListRooms(ctx)
 	if err != nil {
 		t.Fatalf("ListRooms: %v", err)
@@ -892,7 +892,7 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		assert.True(t, errors.Is(err, errInvalidOrg), "want errInvalidOrg in chain, got %v", err)
 	})
 
-	t.Run("projection excludes non-listed fields", func(t *testing.T) {
+	t.Run("returns expected OrgMember shape", func(t *testing.T) {
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		insertUser(t, db, model.User{
@@ -906,16 +906,11 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		m := got[0]
-		// Projected fields are present.
 		assert.Equal(t, "u-alice", m.ID)
 		assert.Equal(t, "alice", m.Account)
 		assert.Equal(t, "Alice", m.EngName)
 		assert.Equal(t, "愛麗絲", m.ChineseName)
 		assert.Equal(t, "site-a", m.SiteID)
-		// OrgMember struct has no EmployeeID / SectID / SectName fields, so
-		// they can't be surfaced even if the projection were wrong. This
-		// assertion is structural — it's proven at compile time by the
-		// struct definition — and is documented here for reviewers.
 	})
 }
 
