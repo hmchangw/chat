@@ -60,6 +60,8 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.request.room.r1.site-a.member.add"},
 		{"MemberEvent", subject.MemberEvent("r1"),
 			"chat.room.r1.event.member"},
+		{"MsgEditPattern", subject.MsgEditPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.edit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
