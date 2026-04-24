@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/hmchangw/chat/pkg/idgen"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -123,7 +124,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 
 	now := time.Now().UTC()
 	room := model.Room{
-		ID:        uuid.New().String(),
+		ID:        idgen.GenerateID(),
 		Name:      req.Name,
 		Type:      req.Type,
 		CreatedBy: req.CreatedBy,
@@ -139,7 +140,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 
 	// Auto-create owner subscription
 	sub := model.Subscription{
-		ID:                 uuid.New().String(),
+		ID:                 idgen.GenerateID(),
 		User:               model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByAccount},
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,

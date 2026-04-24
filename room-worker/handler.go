@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/hmchangw/chat/pkg/idgen"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -63,7 +64,7 @@ func (h *Handler) processInvite(ctx context.Context, data []byte) error {
 
 	// Create subscription for invitee
 	sub := model.Subscription{
-		ID:                 uuid.New().String(),
+		ID:                 idgen.GenerateID(),
 		User:               model.SubscriptionUser{ID: req.InviteeID, Account: req.InviteeAccount},
 		RoomID:             req.RoomID,
 		SiteID:             req.SiteID,
@@ -296,7 +297,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		sysMsgData, _ = json.Marshal(model.MemberRemoved{User: &sysMsgUser, RemovedUsersCount: 1})
 	}
 	sysMsg := model.Message{
-		ID:         uuid.New().String(),
+		ID:         idgen.GenerateID(),
 		RoomID:     req.RoomID,
 		Type:       evtType,
 		SysMsgData: sysMsgData,
@@ -411,7 +412,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		RemovedUsersCount: len(toRemove),
 	})
 	sysMsg := model.Message{
-		ID:         uuid.New().String(),
+		ID:         idgen.GenerateID(),
 		RoomID:     req.RoomID,
 		Type:       "member_removed",
 		SysMsgData: sysMsgPayload,
@@ -502,7 +503,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			continue
 		}
 		sub := &model.Subscription{
-			ID:       uuid.New().String(),
+			ID:       idgen.GenerateID(),
 			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:   req.RoomID,
 			SiteID:   room.SiteID,
@@ -537,7 +538,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	if writeIndividuals {
 		for _, sub := range subs {
 			roomMembers = append(roomMembers, &model.RoomMember{
-				ID:     uuid.New().String(),
+				ID:     idgen.GenerateID(),
 				RoomID: req.RoomID,
 				Ts:     acceptedAt,
 				Member: model.RoomMemberEntry{
@@ -550,7 +551,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 	for _, org := range req.Orgs {
 		roomMembers = append(roomMembers, &model.RoomMember{
-			ID:     uuid.New().String(),
+			ID:     idgen.GenerateID(),
 			RoomID: req.RoomID,
 			Ts:     acceptedAt,
 			Member: model.RoomMemberEntry{
@@ -580,7 +581,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 				} else {
 					for i := range backfillUsers {
 						roomMembers = append(roomMembers, &model.RoomMember{
-							ID:     uuid.New().String(),
+							ID:     idgen.GenerateID(),
 							RoomID: req.RoomID,
 							Ts:     acceptedAt,
 							Member: model.RoomMemberEntry{
@@ -656,7 +657,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 	sysMsgData, _ := json.Marshal(membersAdded)
 	sysMsg := model.Message{
-		ID:          uuid.New().String(),
+		ID:          idgen.GenerateID(),
 		RoomID:      req.RoomID,
 		UserID:      req.RequesterID,
 		UserAccount: req.RequesterAccount,

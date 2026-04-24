@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/hmchangw/chat/pkg/idgen"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -92,7 +92,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 			continue
 		}
 		sub := &model.Subscription{
-			ID:                 uuid.New().String(),
+			ID:                 idgen.GenerateID(),
 			User:               model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:             event.RoomID,
 			SiteID:             event.SiteID,
