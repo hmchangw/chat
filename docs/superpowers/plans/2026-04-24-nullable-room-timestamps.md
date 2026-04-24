@@ -377,3 +377,108 @@ git push -u origin claude/nullable-room-timestamps-RQAqX
 Retry on network failure with exponential backoff (2s, 4s, 8s, 16s), up to 4 attempts.
 
 ---
+
+## Task 2: Add a `pkg/model` test that pins down nil-timestamp JSON omission on `Room`
+
+This test proves the new capability at the `model.Room` wire level: a `Room` with `LastMsgAt == nil` and `LastMentionAllAt == nil` marshals to JSON without either field. The struct change in Task 1 already enables this behavior — this task's test makes the guarantee explicit and future-proof against a regression that drops `,omitempty` from the tags.
+
+**Files:**
+- Modify: `pkg/model/model_test.go` (add `TestRoomJSON_NilTimestampsOmitted` immediately after `TestRoomJSON`)
+
+- [ ] **Step 1: Add the new test**
+
+Find `TestRoomJSON` in `pkg/model/model_test.go` (around lines 31–42 after Task 1's edits). Immediately after its closing `}`, add:
+
+```go
+func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
+	r := model.Room{
+		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
+		CreatedBy: "u1", SiteID: "site-a", UserCount: 1,
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(&r)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	_, hasMsg := raw["lastMsgAt"]
+	assert.False(t, hasMsg, "nil LastMsgAt must be omitted from JSON")
+
+	_, hasMention := raw["lastMentionAllAt"]
+	assert.False(t, hasMention, "nil LastMentionAllAt must be omitted from JSON")
+
+	var dst model.Room
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Nil(t, dst.LastMsgAt, "absent JSON field must unmarshal to nil pointer")
+	assert.Nil(t, dst.LastMentionAllAt, "absent JSON field must unmarshal to nil pointer")
+}
+```
+
+The `model.Room` literal deliberately omits both pointer fields; they default to nil, matching what `handleCreateRoom` produces today.
+
+- [ ] **Step 2: Run the unit test suite**
+
+Run: `make test`
+
+Expected: PASS across all packages. The new test passes immediately because Task 1 already implemented pointer-with-omitempty semantics — we're locking the behavior in, not driving new code.
+
+If the new test fails:
+- `lastMsgAt` / `lastMentionAllAt` appearing in the JSON → Task 1 Step 1 forgot `,omitempty` on one or both tags. Fix `pkg/model/room.go` and re-run.
+- Any other panic → stop and read the failure before guessing.
+
+- [ ] **Step 3: Run the linter**
+
+Run: `make lint`
+
+Expected: `0 issues.`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add pkg/model/model_test.go
+git commit -m "$(cat <<'EOF'
+test(model): assert nil Room timestamps are omitted from JSON
+
+Pin down the guarantee that a model.Room with nil LastMsgAt and nil
+LastMentionAllAt marshals without either key. Regression guard against
+accidentally dropping omitempty from the struct tags.
+
+https://claude.ai/code/session_01HsMbFL397VGMbojKDHZcZm
+EOF
+)"
+```
+
+- [ ] **Step 5: Push**
+
+```bash
+git push origin claude/nullable-room-timestamps-RQAqX
+```
+
+Retry on network failure with exponential backoff as in Task 1 Step 15.
+
+---
+
+## Final verification
+
+After both tasks are committed and pushed:
+
+- [ ] `make lint` — clean
+- [ ] `make test` — PASS
+- [ ] `make test-integration SERVICE=room-service` — PASS (requires Docker)
+- [ ] `make test-integration SERVICE=broadcast-worker` — PASS (requires Docker)
+- [ ] `git log --oneline -4` — top two commits are this plan's tasks, in order: `refactor(model): make Room timestamps nullable` → `test(model): assert nil Room timestamps are omitted from JSON`
+
+---
+
+## Notes for the implementer
+
+- **Do NOT** run raw `go test` / `go build`. CLAUDE.md §2 mandates `make` targets.
+- **Do NOT** `make generate`. No store interface changes; mocks are unaffected.
+- **Do NOT** edit any generated mock file.
+- **Do NOT** touch `model.ThreadRoom`, `model.RoomEvent` (`pkg/model/event.go:140`), `model.Subscription`, `broadcast-worker/store_mongo.go`, or `message-worker`. The spec's "Out of scope" section enumerates these explicitly.
+- **Do NOT** attempt a Mongo data migration. Pre-existing rooms with `lastMsgAt: ISODate("0001-01-01T00:00:00Z")` continue to work via the `.IsZero()` guard added in Task 1 Step 2.
+- **If the pre-commit hook fails**, per CLAUDE.md §5: fix the underlying issue and create a NEW commit; never `--amend` or `--no-verify`.
+- **If `make test-integration` fails because Docker isn't available locally**, record that fact and proceed with the commit — CI will run integration. Do not paper over a real test failure this way; the distinguishing signal is `rootless Docker not found` / `get provider` errors versus actual assertion failures.
+
