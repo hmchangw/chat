@@ -170,8 +170,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	}
 
 	if deleted > 0 {
-		if err := h.store.DecrementUserCount(ctx, req.RoomID, int(deleted)); err != nil {
-			return fmt.Errorf("decrement user count: %w", err)
+		if err := h.store.ReconcileUserCount(ctx, req.RoomID); err != nil {
+			return fmt.Errorf("reconcile user count: %w", err)
 		}
 	}
 
@@ -287,8 +287,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 
 	if deletedCount > 0 {
-		if err := h.store.DecrementUserCount(ctx, req.RoomID, int(deletedCount)); err != nil {
-			return fmt.Errorf("decrement user count: %w", err)
+		if err := h.store.ReconcileUserCount(ctx, req.RoomID); err != nil {
+			return fmt.Errorf("reconcile user count: %w", err)
 		}
 	}
 
@@ -527,9 +527,9 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 	}
 
-	// 6. Increment user count
-	if err := h.store.IncrementUserCount(ctx, req.RoomID, len(subs)); err != nil {
-		slog.Warn("increment user count failed", "error", err, "roomID", req.RoomID)
+	// 6. Reconcile user count (idempotent $set — converges under JetStream redelivery).
+	if err := h.store.ReconcileUserCount(ctx, req.RoomID); err != nil {
+		return fmt.Errorf("reconcile user count: %w", err)
 	}
 
 	for _, sub := range subs {

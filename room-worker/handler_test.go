@@ -308,8 +308,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 		Return(nil)
 	store.EXPECT().
-		DecrementUserCount(gomock.Any(), roomID, 1).
-		Return(nil)
+		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
@@ -482,8 +481,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u2").
 		Return(nil)
 	store.EXPECT().
-		DecrementUserCount(gomock.Any(), roomID, 1).
-		Return(nil)
+		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
@@ -540,7 +538,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 			}
 			return nil
 		})
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 2).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
@@ -588,7 +586,7 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 			assert.Nil(t, subs[0].HistorySharedSince, "HistorySharedSince should be nil for mode all")
 			return nil
 		})
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
@@ -640,7 +638,7 @@ func TestHandler_ProcessAddMembers_RestrictedPropagatesPointer(t *testing.T) {
 		{ID: "u3", Account: "charlie", SiteID: "site-b"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 2).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	const reqTS int64 = 1744300000000
@@ -696,7 +694,7 @@ func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) 
 		{ID: "u2", Account: "bob", SiteID: "site-a"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
@@ -727,7 +725,7 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 		{ID: "u2", Account: "bob", SiteID: "site-a"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
 	// With orgs: BulkCreateRoomMembers called once with individual "bob" + org "eng" + backfill "alice"
 	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, members []*model.RoomMember) error {
@@ -768,7 +766,7 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 			assert.Equal(t, "bob", subs[0].User.Account)
 			return nil
 		})
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
@@ -799,7 +797,7 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 		{ID: "u3", Account: "charlie", SiteID: "site-c"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 3).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
@@ -861,7 +859,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).
 		Return(nil)
 	store.EXPECT().
-		DecrementUserCount(gomock.Any(), roomID, 2). // carol + dave only
+		ReconcileUserCount(gomock.Any(), roomID).
 		Return(nil)
 
 	var published []publishedMsg
@@ -920,8 +918,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
 		Return(nil)
 	store.EXPECT().
-		DecrementUserCount(gomock.Any(), roomID, 1).
-		Return(nil)
+		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte) error {
@@ -1045,7 +1042,7 @@ func TestHandler_ProcessRemoveIndividual_DeleteSubscriptionError(t *testing.T) {
 	assert.Contains(t, err.Error(), "delete subscription")
 }
 
-func TestHandler_ProcessRemoveIndividual_DecrementUserCountError(t *testing.T) {
+func TestHandler_ProcessRemoveIndividual_ReconcileUserCountError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 	store.EXPECT().
@@ -1061,7 +1058,7 @@ func TestHandler_ProcessRemoveIndividual_DecrementUserCountError(t *testing.T) {
 		DeleteSubscription(gomock.Any(), "r1", "alice").
 		Return(int64(1), nil)
 	store.EXPECT().
-		DecrementUserCount(gomock.Any(), "r1", 1).
+		ReconcileUserCount(gomock.Any(), "r1").
 		Return(fmt.Errorf("write failed"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
@@ -1070,7 +1067,7 @@ func TestHandler_ProcessRemoveIndividual_DecrementUserCountError(t *testing.T) {
 
 	err := h.processRemoveMember(context.Background(), data)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decrement user count")
+	assert.Contains(t, err.Error(), "reconcile user count")
 }
 
 func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
@@ -1085,7 +1082,7 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 		{ID: "u2", Account: "bob", SiteID: "site-a"},
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().IncrementUserCount(gomock.Any(), "r1", 1).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(true, nil)
 	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, members []*model.RoomMember) error {
