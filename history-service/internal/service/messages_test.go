@@ -1007,3 +1007,122 @@ func TestHistoryService_DeleteMessage_AlreadyDeleted_ShortCircuits(t *testing.T)
 	assert.Equal(t, "m-abc", resp.MessageID)
 	assert.Equal(t, priorUpdatedAt.UnixMilli(), resp.DeletedAt, "short-circuit should echo the existing updated_at")
 }
+
+func TestHistoryService_DeleteMessage_NotSubscribed(t *testing.T) {
+	svc, _, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, false, nil)
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, "not subscribed to room", routeErr.Message)
+}
+
+func TestHistoryService_DeleteMessage_NotSender(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "someone-else"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, "only the sender can delete", routeErr.Message)
+}
+
+func TestHistoryService_DeleteMessage_NotFound(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "missing").Return(nil, nil)
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "missing"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+}
+
+func TestHistoryService_DeleteMessage_WrongRoom(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	// Message exists but in a different room — findMessage returns ErrNotFound (no leak).
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "other-room",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+}
+
+func TestHistoryService_DeleteMessage_SoftDeleteFails(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		Return(fmt.Errorf("cassandra timeout"))
+
+	// No Publish expected when the UPDATE fails.
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	assert.Nil(t, resp)
+	assertInternalErr(t, err, "failed to delete message")
+}
+
+func TestHistoryService_DeleteMessage_PublishFails(t *testing.T) {
+	svc, msgs, subs, pub := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).Return(nil)
+
+	pub.EXPECT().Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).Return(fmt.Errorf("nats disconnected"))
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	require.NoError(t, err, "best-effort publish: failure is logged, not returned")
+	require.NotNil(t, resp)
+	assert.Equal(t, "m-abc", resp.MessageID)
+}
