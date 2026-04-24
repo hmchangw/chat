@@ -942,3 +942,68 @@ func TestHistoryService_EditMessage_PublishFails(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, "m-abc", resp.MessageID)
 }
+
+// --- DeleteMessage ---
+
+func TestHistoryService_DeleteMessage_Success(t *testing.T) {
+	svc, msgs, subs, pub := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+		Deleted:   false,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		Return(nil)
+
+	pub.EXPECT().
+		Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).
+		DoAndReturn(func(_ context.Context, subj string, data []byte) error {
+			var evt models.MessageDeletedEvent
+			require.NoError(t, json.Unmarshal(data, &evt))
+			assert.Equal(t, "message_deleted", evt.Type)
+			assert.Equal(t, "r1", evt.RoomID)
+			assert.Equal(t, "m-abc", evt.MessageID)
+			assert.Equal(t, "u1", evt.DeletedBy)
+			assert.NotZero(t, evt.Timestamp)
+			assert.NotZero(t, evt.DeletedAt)
+			return nil
+		})
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	require.NoError(t, err)
+	assert.Equal(t, "m-abc", resp.MessageID)
+	assert.NotZero(t, resp.DeletedAt)
+}
+
+func TestHistoryService_DeleteMessage_AlreadyDeleted_ShortCircuits(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	priorUpdatedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+		Deleted:   true,
+		UpdatedAt: &priorUpdatedAt,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	// No SoftDeleteMessage call expected. No Publish call expected. gomock will
+	// fail the test if either is invoked unexpectedly.
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	require.NoError(t, err)
+	assert.Equal(t, "m-abc", resp.MessageID)
+	assert.Equal(t, priorUpdatedAt.UnixMilli(), resp.DeletedAt, "short-circuit should echo the existing updated_at")
+}
