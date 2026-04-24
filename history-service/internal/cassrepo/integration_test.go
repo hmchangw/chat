@@ -664,3 +664,82 @@ func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
 	).Scan(&threadCount))
 	assert.Equal(t, 0, threadCount, "top-level soft-delete must not write to thread_messages_by_room")
 }
+
+func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-del-thread"
+	threadRoomID := "thread-del-1"
+	parentID := "m-del-parent"
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyID := "m-del-reply"
+	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
+
+	// Seed the parent (so the thread_parent_created_at reference is real and
+	// Task 7's tcount decrement has a target row to work with later).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, deleted, tcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		parentID, roomID, parentCreatedAt, sender, "parent", "", false, 1,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, deleted, tcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, parentCreatedAt, parentID, sender, "parent", "", false, 1,
+	).Exec())
+
+	// Seed the thread reply in messages_by_id and thread_messages_by_room.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_parent_created_at, thread_room_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		replyID, roomID, replyCreatedAt, sender, "reply", parentID, parentCreatedAt, threadRoomID, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID, parentCreatedAt, false,
+	).Exec())
+
+	parentCreatedAtPtr := parentCreatedAt
+	msg := &models.Message{
+		MessageID:             replyID,
+		RoomID:                roomID,
+		CreatedAt:             replyCreatedAt,
+		Sender:                sender,
+		ThreadParentID:        parentID,
+		ThreadParentCreatedAt: &parentCreatedAtPtr,
+		ThreadRoomID:          threadRoomID,
+	}
+	deletedAt := replyCreatedAt.Add(time.Minute)
+	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, deletedAt))
+
+	// messages_by_id: reply now deleted
+	var gotDeleted bool
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		replyID, replyCreatedAt,
+	).Scan(&gotDeleted))
+	assert.True(t, gotDeleted)
+
+	// thread_messages_by_room: reply now deleted (full PK including thread_room_id)
+	require.NoError(t, session.Query(
+		`SELECT deleted FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, threadRoomID, replyCreatedAt, replyID,
+	).Scan(&gotDeleted))
+	assert.True(t, gotDeleted)
+
+	// messages_by_room must NOT have a phantom row for this thread reply
+	var roomCount int
+	require.NoError(t, session.Query(
+		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, replyCreatedAt, replyID,
+	).Scan(&roomCount))
+	assert.Equal(t, 0, roomCount, "thread-reply soft-delete must not write to messages_by_room")
+
+	// Parent's tcount should still be 1 — tcount decrement is added in Task 7.
+	var gotTcount int
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, parentCreatedAt, parentID,
+	).Scan(&gotTcount))
+	assert.Equal(t, 1, gotTcount, "tcount decrement is not yet implemented — expected unchanged")
+}
