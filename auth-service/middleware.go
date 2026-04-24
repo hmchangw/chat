@@ -5,7 +5,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+
+	"github.com/hmchangw/chat/pkg/idgen"
 )
 
 const requestIDHeader = "X-Request-ID"
@@ -16,7 +17,7 @@ func requestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.GetHeader(requestIDHeader)
 		if id == "" {
-			id = uuid.New().String()
+			id = idgen.GenerateID()
 		}
 		c.Set("request_id", id)
 		c.Header(requestIDHeader, id)

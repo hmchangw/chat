@@ -17,37 +17,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
-	t.Helper()
-	ctx := context.Background()
-	container, err := mongodb.Run(ctx, testimages.Mongo)
-	if err != nil {
-		t.Fatalf("start mongo: %v", err)
-	}
-	t.Cleanup(func() { container.Terminate(ctx) })
-
-	uri, err := container.ConnectionString(ctx)
-	if err != nil {
-		t.Fatalf("get mongo uri: %v", err)
-	}
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
-	if err != nil {
-		t.Fatalf("connect mongo: %v", err)
-	}
-	t.Cleanup(func() { client.Disconnect(ctx) })
-	return client.Database("chat_test")
+	return testutil.MongoDB(t, "room_service_test")
 }
 
 func setupValkey(t *testing.T) *roomkeystore.Config {
@@ -55,7 +36,7 @@ func setupValkey(t *testing.T) *roomkeystore.Config {
 	ctx := context.Background()
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
+			Image:        "valkey/valkey:8",
 			ExposedPorts: []string{"6379/tcp"},
 			WaitingFor:   wait.ForLog("Ready to accept connections"),
 		},
@@ -76,7 +57,7 @@ func setupValkey(t *testing.T) *roomkeystore.Config {
 func setupNATS(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
-	container, err := natsmod.Run(ctx, testimages.NATS)
+	container, err := natsmod.Run(ctx, "nats:2.11-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 	url, err := container.ConnectionString(ctx)
@@ -90,7 +71,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	// Test CreateRoom and GetRoom
-	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup, SiteID: "site-a", CreatedBy: "u1", UserCount: 1}
+	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel, SiteID: "site-a", CreatedBy: "u1", UserCount: 1}
 	if err := store.CreateRoom(ctx, &room); err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
@@ -103,7 +84,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test ListRooms
-	store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeGroup})
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeChannel}))
 	rooms, err := store.ListRooms(ctx)
 	if err != nil {
 		t.Fatalf("ListRooms: %v", err)
@@ -892,7 +873,7 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		assert.True(t, errors.Is(err, errInvalidOrg), "want errInvalidOrg in chain, got %v", err)
 	})
 
-	t.Run("projection excludes non-listed fields", func(t *testing.T) {
+	t.Run("returns expected OrgMember shape", func(t *testing.T) {
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		insertUser(t, db, model.User{
@@ -906,16 +887,11 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		m := got[0]
-		// Projected fields are present.
 		assert.Equal(t, "u-alice", m.ID)
 		assert.Equal(t, "alice", m.Account)
 		assert.Equal(t, "Alice", m.EngName)
 		assert.Equal(t, "愛麗絲", m.ChineseName)
 		assert.Equal(t, "site-a", m.SiteID)
-		// OrgMember struct has no EmployeeID / SectID / SectName fields, so
-		// they can't be surfaced even if the projection were wrong. This
-		// assertion is structural — it's proven at compile time by the
-		// struct definition — and is documented here for reviewers.
 	})
 }
 
@@ -931,11 +907,11 @@ func TestMongoStore_ListRoomsByIDs(t *testing.T) {
 	t4 := now.Add(3 * time.Second)
 	t5 := now.Add(4 * time.Second)
 	seed := []model.Room{
-		{ID: "r1", Name: "one", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t1},
-		{ID: "r2", Name: "two", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t2},
-		{ID: "r3", Name: "three", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t3},
-		{ID: "r4", Name: "four", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t4},
-		{ID: "r5", Name: "five", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t5},
+		{ID: "r1", Name: "one", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t1},
+		{ID: "r2", Name: "two", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t2},
+		{ID: "r3", Name: "three", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t3},
+		{ID: "r4", Name: "four", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t4},
+		{ID: "r5", Name: "five", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t5},
 	}
 	for i := range seed {
 		if err := store.CreateRoom(ctx, &seed[i]); err != nil {
@@ -992,9 +968,9 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	lastMsg := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
 	earlier := lastMsg.Add(-time.Hour)
 	rooms := []model.Room{
-		{ID: "r1", Name: "room-1", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &lastMsg},
-		{ID: "r2", Name: "room-2", Type: model.RoomTypeGroup, SiteID: "site-a"},
-		{ID: "r3", Name: "room-3", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &earlier},
+		{ID: "r1", Name: "room-1", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &lastMsg},
+		{ID: "r2", Name: "room-2", Type: model.RoomTypeChannel, SiteID: "site-a"},
+		{ID: "r3", Name: "room-3", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &earlier},
 	}
 	for _, r := range rooms {
 		require.NoError(t, store.CreateRoom(ctx, &r))

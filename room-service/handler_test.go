@@ -31,7 +31,7 @@ func TestHandler_CreateRoom(t *testing.T) {
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
-	req := model.CreateRoomRequest{Name: "general", Type: model.RoomTypeGroup, CreatedBy: "u1", CreatedByAccount: "alice", SiteID: "site-a"}
+	req := model.CreateRoomRequest{Name: "general", Type: model.RoomTypeChannel, CreatedBy: "u1", CreatedByAccount: "alice", SiteID: "site-a"}
 	data, _ := json.Marshal(req)
 
 	resp, err := h.handleCreateRoom(context.Background(), data)
@@ -49,112 +49,22 @@ func TestHandler_CreateRoom(t *testing.T) {
 	}
 }
 
-func TestHandler_InviteOwner_Success(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockRoomStore(ctrl)
-
-	store.EXPECT().
-		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
-	store.EXPECT().
-		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", UserCount: 1}, nil)
-
-	var jsPublished []byte
-	var jsSubject string
-	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(_ context.Context, subj string, data []byte) error {
-			jsSubject = subj
-			jsPublished = data
-			return nil
-		},
-	}
-
-	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", InviteeAccount: "bob", RoomID: "r1", SiteID: "site-a"}
-	data, _ := json.Marshal(req)
-	subj := subject.MemberInvite("alice", "r1", "site-a")
-
-	_, err := h.handleInvite(context.Background(), subj, data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if jsPublished == nil {
-		t.Error("expected event published to JetStream")
-	}
-	if jsSubject != subject.MemberInvite("alice", "r1", "site-a") {
-		t.Errorf("published subject = %q, want invite subject", jsSubject)
-	}
-
-	// Verify the published InviteMemberRequest has a Timestamp set
-	var publishedReq model.InviteMemberRequest
-	if err := json.Unmarshal(jsPublished, &publishedReq); err != nil {
-		t.Fatalf("unmarshal published request: %v", err)
-	}
-	if publishedReq.Timestamp <= 0 {
-		t.Error("expected Timestamp > 0 on published InviteMemberRequest")
-	}
-}
-
-func TestHandler_InviteMember_Rejected(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockRoomStore(ctrl)
-
-	store.EXPECT().
-		GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
-
-	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(_ context.Context, _ string, data []byte) error { return nil },
-	}
-
-	req := model.InviteMemberRequest{InviterID: "u2", InviteeID: "u3", InviteeAccount: "charlie", RoomID: "r1", SiteID: "site-a"}
-	data, _ := json.Marshal(req)
-	subj := subject.MemberInvite("bob", "r1", "site-a")
-
-	_, err := h.handleInvite(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for non-owner invite")
-	}
-}
-
-func TestHandler_InviteExceedsMaxSize(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockRoomStore(ctrl)
-
-	store.EXPECT().
-		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
-	store.EXPECT().
-		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", UserCount: 1000}, nil)
-
-	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(_ context.Context, _ string, data []byte) error { return nil },
-	}
-
-	req := model.InviteMemberRequest{InviterID: "u1", InviteeID: "u2", InviteeAccount: "bob", RoomID: "r1", SiteID: "site-a"}
-	data, _ := json.Marshal(req)
-	subj := subject.MemberInvite("alice", "r1", "site-a")
-
-	_, err := h.handleInvite(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for room at max size")
-	}
-}
-
 func TestHandler_UpdateRole_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup}, nil)
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
+		GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+			HasIndividualMembership: true,
+		}, nil)
 
 	var publishedData []byte
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
@@ -186,7 +96,7 @@ func TestHandler_UpdateRole_NonOwnerRejected(t *testing.T) {
 
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup}, nil)
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "bob", "r1").
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
@@ -228,7 +138,7 @@ func TestHandler_UpdateRole_DMRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for DM room role update")
 	}
-	if err.Error() != "role update is only allowed in group rooms" {
+	if err.Error() != "role update is only allowed in channel rooms" {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -260,13 +170,16 @@ func TestHandler_UpdateRole_AlreadyHasRole(t *testing.T) {
 
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup}, nil)
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+		GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}},
+			HasIndividualMembership: true,
+		}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ context.Context, _ string, data []byte) error { return nil },
@@ -285,19 +198,107 @@ func TestHandler_UpdateRole_AlreadyHasRole(t *testing.T) {
 	}
 }
 
+// Bug 5: an org-only subscriber must not be promotable to owner.
+// The system invariant is "owners must hold an individual membership source"
+// so that remove-member's dual-membership demote path (strip owner on
+// individual-leave) always lands on a non-owner state.
+func TestHandler_UpdateRole_PromoteOrgOnlyRejected(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	// Target is present in the room via an org entry only.
+	store.EXPECT().
+		GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription: &model.Subscription{
+				User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1",
+				Roles: []model.Role{model.RoleMember},
+			},
+			HasIndividualMembership: false,
+			HasOrgMembership:        true,
+		}, nil)
+
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("must not publish when promotion rejected")
+			return nil
+		},
+	}
+
+	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleOwner}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
+
+	_, err := h.handleUpdateRole(context.Background(), subj, data)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPromoteRequiresIndividual)
+}
+
+// Add-member only writes room_members docs for rooms that involve orgs.
+// In a room with no orgs, every subscriber is "individual" via their
+// subscription alone — GetSubscriptionWithMembership returns both flags
+// false. Those users must remain promotable.
+func TestHandler_UpdateRole_PromoteSubscriptionOnly_NoRoomMembers_Allowed(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	// No orgs in this room → no room_members docs for bob → both flags false.
+	store.EXPECT().
+		GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription: &model.Subscription{
+				User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1",
+				Roles: []model.Role{model.RoleMember},
+			},
+			HasIndividualMembership: false,
+			HasOrgMembership:        false,
+		}, nil)
+
+	var published []byte
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(_ context.Context, _ string, data []byte) error {
+			published = data
+			return nil
+		},
+	}
+
+	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleOwner}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
+
+	_, err := h.handleUpdateRole(context.Background(), subj, data)
+	require.NoError(t, err)
+	assert.NotNil(t, published, "promote must publish to ROOMS stream when target is a bare subscriber in a room with no orgs")
+}
+
 func TestHandler_UpdateRole_DemoteNonOwner(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup}, nil)
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
+		GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+			HasIndividualMembership: true,
+		}, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ context.Context, _ string, data []byte) error { return nil },
@@ -322,11 +323,16 @@ func TestHandler_UpdateRole_LastOwnerCannotDemote(t *testing.T) {
 
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeGroup}, nil)
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().
 		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil).
-		Times(2)
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().
+		GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}},
+			HasIndividualMembership: true,
+		}, nil)
 	store.EXPECT().
 		CountOwners(gomock.Any(), "r1").
 		Return(1, nil)
@@ -401,7 +407,7 @@ func TestHandler_UpdateRole_RoomIDMismatch(t *testing.T) {
 func TestHandler_UpdateRole_RequesterSubError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeGroup}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(nil, fmt.Errorf("db error"))
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
@@ -418,12 +424,12 @@ func TestHandler_UpdateRole_RequesterSubError(t *testing.T) {
 func TestHandler_UpdateRole_TargetSubError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeGroup}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
 		Roles: []model.Role{model.RoleMember, model.RoleOwner},
 	}, nil)
-	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").Return(nil, fmt.Errorf("db error"))
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").Return(nil, fmt.Errorf("db error"))
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
 	}
@@ -439,12 +445,16 @@ func TestHandler_UpdateRole_TargetSubError(t *testing.T) {
 func TestHandler_UpdateRole_CountOwnersError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeGroup}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	// Self-demotion triggers CountOwners
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
 		Roles: []model.Role{model.RoleMember, model.RoleOwner},
-	}, nil).Times(2) // requester + target (same user)
+	}, nil) // requester lookup
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").Return(&SubscriptionWithMembership{
+		Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}},
+		HasIndividualMembership: true,
+	}, nil) // target lookup (same user, self-demote)
 	store.EXPECT().CountOwners(gomock.Any(), "r1").Return(0, fmt.Errorf("db error"))
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
@@ -461,14 +471,14 @@ func TestHandler_UpdateRole_CountOwnersError(t *testing.T) {
 func TestHandler_UpdateRole_PublishError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeGroup}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
 		Roles: []model.Role{model.RoleMember, model.RoleOwner},
 	}, nil)
-	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").Return(&model.Subscription{
-		User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1",
-		Roles: []model.Role{model.RoleMember},
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").Return(&SubscriptionWithMembership{
+		Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+		HasIndividualMembership: true,
 	}, nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ context.Context, _ string, _ []byte) error { return fmt.Errorf("nats down") },

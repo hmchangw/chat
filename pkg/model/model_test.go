@@ -32,7 +32,7 @@ func TestRoomJSON(t *testing.T) {
 	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	lastMention := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	r := model.Room{
-		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
+		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
 		LastMsgAt:        &lastMsg,
 		LastMsgID:        "m1",
@@ -45,7 +45,7 @@ func TestRoomJSON(t *testing.T) {
 
 func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
 	r := model.Room{
-		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
+		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 1,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -406,8 +406,8 @@ func TestSubscriptionJSON(t *testing.T) {
 }
 
 func TestRoomTypeValues(t *testing.T) {
-	if model.RoomTypeGroup != "group" {
-		t.Errorf("RoomTypeGroup = %q", model.RoomTypeGroup)
+	if model.RoomTypeChannel != "channel" {
+		t.Errorf("RoomTypeChannel = %q", model.RoomTypeChannel)
 	}
 	if model.RoomTypeDM != "dm" {
 		t.Errorf("RoomTypeDM = %q", model.RoomTypeDM)
@@ -436,7 +436,7 @@ func TestRoomEventJSON(t *testing.T) {
 			RoomID:     "room-1",
 			Timestamp:  now.UnixMilli(),
 			RoomName:   "General",
-			RoomType:   model.RoomTypeGroup,
+			RoomType:   model.RoomTypeChannel,
 			SiteID:     "site-a",
 			UserCount:  5,
 			LastMsgAt:  now,
@@ -466,7 +466,7 @@ func TestRoomEventJSON(t *testing.T) {
 			RoomID:    "room-2",
 			Timestamp: now.UnixMilli(),
 			RoomName:  "Lobby",
-			RoomType:  model.RoomTypeGroup,
+			RoomType:  model.RoomTypeChannel,
 			SiteID:    "site-b",
 			UserCount: 3,
 			LastMsgAt: now,
@@ -503,7 +503,7 @@ func TestRoomEventJSON(t *testing.T) {
 			RoomID:           "room-3",
 			Timestamp:        now.UnixMilli(),
 			RoomName:         "Encrypted",
-			RoomType:         model.RoomTypeGroup,
+			RoomType:         model.RoomTypeChannel,
 			SiteID:           "site-c",
 			UserCount:        4,
 			LastMsgAt:        now,
@@ -640,7 +640,7 @@ func TestNotificationEventJSON(t *testing.T) {
 }
 
 func TestUpdateRoleRequestJSON(t *testing.T) {
-	src := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	src := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1735689600000}
 	roundTrip(t, &src, &model.UpdateRoleRequest{})
 }
 
@@ -667,18 +667,6 @@ func TestSubscriptionUpdateEventJSON(t *testing.T) {
 	}
 }
 
-func TestInviteMemberRequestJSON(t *testing.T) {
-	src := model.InviteMemberRequest{
-		InviterID:      "u1",
-		InviteeID:      "u2",
-		InviteeAccount: "bob",
-		RoomID:         "r1",
-		SiteID:         "site-a",
-		Timestamp:      1735689600000,
-	}
-	roundTrip(t, &src, &model.InviteMemberRequest{})
-}
-
 func TestOutboxEventJSON(t *testing.T) {
 	src := model.OutboxEvent{
 		Type:       "member_added",
@@ -701,7 +689,7 @@ func TestInboxMemberEventJSON(t *testing.T) {
 		src := model.InboxMemberEvent{
 			RoomID:    "r1",
 			RoomName:  "engineering",
-			RoomType:  model.RoomTypeGroup,
+			RoomType:  model.RoomTypeChannel,
 			SiteID:    "site-a",
 			Accounts:  []string{"alice", "bob"},
 			JoinedAt:  1735689600000,
@@ -719,7 +707,7 @@ func TestInboxMemberEventJSON(t *testing.T) {
 		src := model.InboxMemberEvent{
 			RoomID:             "r1",
 			RoomName:           "engineering",
-			RoomType:           model.RoomTypeGroup,
+			RoomType:           model.RoomTypeChannel,
 			SiteID:             "site-a",
 			Accounts:           []string{"alice"},
 			HistorySharedSince: &hss,
@@ -742,7 +730,7 @@ func TestInboxMemberEventJSON(t *testing.T) {
 		src := model.InboxMemberEvent{
 			RoomID:    "r1",
 			RoomName:  "engineering",
-			RoomType:  model.RoomTypeGroup,
+			RoomType:  model.RoomTypeChannel,
 			SiteID:    "site-a",
 			Accounts:  []string{"alice", "bob"},
 			Timestamp: 1735689600000,
@@ -777,16 +765,18 @@ func TestRoomMetadataUpdateEventJSON(t *testing.T) {
 func TestRemoveMemberRequestJSON(t *testing.T) {
 	t.Run("with account", func(t *testing.T) {
 		r := model.RemoveMemberRequest{
-			RoomID:  "r1",
-			Account: "alice",
+			RoomID:    "r1",
+			Account:   "alice",
+			Timestamp: 1735689600000,
 		}
 		roundTrip(t, &r, &model.RemoveMemberRequest{})
 	})
 
 	t.Run("with orgId", func(t *testing.T) {
 		r := model.RemoveMemberRequest{
-			RoomID: "r1",
-			OrgID:  "org-1",
+			RoomID:    "r1",
+			OrgID:     "org-1",
+			Timestamp: 1735689600000,
 		}
 		roundTrip(t, &r, &model.RemoveMemberRequest{})
 	})

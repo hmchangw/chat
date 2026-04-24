@@ -32,7 +32,11 @@ type SubscriptionStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
-	IncrementUserCount(ctx context.Context, roomID string, count int) error
+	// ReconcileUserCount sets rooms.userCount to the current subscription count
+	// in one atomic $set. Idempotent under JetStream redelivery — unlike $inc,
+	// repeated calls converge to the correct value even if an earlier write
+	// succeeded but the ack was lost.
+	ReconcileUserCount(ctx context.Context, roomID string) error
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	GetUser(ctx context.Context, account string) (*model.User, error)
@@ -47,7 +51,6 @@ type SubscriptionStore interface {
 	DeleteSubscription(ctx context.Context, roomID, account string) (int64, error)
 	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) (int64, error)
 	DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error
-	DecrementUserCount(ctx context.Context, roomID string, count int) error
 
 	// --- add-member flow ---
 	CreateRoomMember(ctx context.Context, member *model.RoomMember) error

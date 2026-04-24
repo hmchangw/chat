@@ -24,8 +24,6 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.event.room.update"},
 		{"UserMsgStream", subject.UserMsgStream("alice"),
 			"chat.user.alice.stream.msg"},
-		{"MemberInvite", subject.MemberInvite("alice", "r1", "site-a"),
-			"chat.user.alice.request.room.r1.site-a.member.invite"},
 		{"MemberRoleUpdate", subject.MemberRoleUpdate("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.member.role-update"},
 		{"RoomCanonical", subject.RoomCanonical("site-a", "invited"),
@@ -169,8 +167,6 @@ func TestWildcardPatterns(t *testing.T) {
 	}{
 		{"MsgSendWild", subject.MsgSendWildcard("site-a"),
 			"chat.user.*.room.*.site-a.msg.send"},
-		{"MemberInviteWild", subject.MemberInviteWildcard("site-a"),
-			"chat.user.*.request.room.*.site-a.member.invite"},
 		{"MemberRoleUpdateWild", subject.MemberRoleUpdateWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.member.role-update"},
 		{"RoomCanonicalWild", subject.RoomCanonicalWildcard("site-a"),

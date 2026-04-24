@@ -15,10 +15,15 @@ var (
 	errAlreadyOwner     = errors.New("user is already an owner")
 	errNotOwner         = errors.New("user is not an owner")
 	errCannotDemoteLast = errors.New("cannot demote the last owner")
-	errRoomTypeGuard    = errors.New("role update is only allowed in group rooms")
+	errRoomTypeGuard    = errors.New("role update is only allowed in channel rooms")
 	errTargetNotMember  = errors.New("target user is not a member of this room")
 	errNotRoomMember    = errors.New("only room members can list members")
 	errInvalidOrg       = errors.New("invalid org")
+	// Only subscribers with an individual membership source can hold the owner
+	// role. Remove-member's dual-membership path relies on this invariant:
+	// stripping the owner role during an individual-leave is only sound when
+	// the role can only be held alongside an individual entry.
+	errPromoteRequiresIndividual = errors.New("only individual members can be promoted to owner")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
@@ -66,7 +71,8 @@ func sanitizeError(err error) string {
 		errors.Is(err, errRoomTypeGuard),
 		errors.Is(err, errTargetNotMember),
 		errors.Is(err, errNotRoomMember),
-		errors.Is(err, errInvalidOrg):
+		errors.Is(err, errInvalidOrg),
+		errors.Is(err, errPromoteRequiresIndividual):
 		return err.Error()
 	default:
 		msg := err.Error()

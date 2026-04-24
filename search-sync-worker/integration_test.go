@@ -27,11 +27,28 @@ import (
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
-func setupElasticsearch(t *testing.T) string {
-	t.Helper()
+// Package-level singletons — one Elasticsearch + one NATS JetStream container
+// shared across all tests in this package. Tests isolate themselves via unique
+// index / stream names (already the case in this suite). On VFS storage,
+// spawning ES per-test is prohibitive — a 120s startup * 7 tests = 14min.
+var (
+	testESURL   string
+	testJS      jetstream.JetStream
+	testNATSCon *nats.Conn
+)
+
+func TestMain(m *testing.M) {
+	// Wrap the setup logic in an inner function so `defer` runs for every
+	// successfully-created resource before TestMain returns, regardless of
+	// which error branch we take. Keeps cleanup in one place instead of
+	// reinvented cascades at each error site.
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
 	ctx := context.Background()
 
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+	esContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        testimages.Elasticsearch,
 			ExposedPorts: []string{"9200/tcp"},
@@ -50,22 +67,28 @@ func setupElasticsearch(t *testing.T) string {
 		},
 		Started: true,
 	})
-	require.NoError(t, err, "start elasticsearch")
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start elasticsearch: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := esContainer.Terminate(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "terminate elasticsearch: %v\n", err)
+		}
+	}()
+	esHost, err := esContainer.Host(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get es host: %v\n", err)
+		return 1
+	}
+	esPort, err := esContainer.MappedPort(ctx, "9200")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get es port: %v\n", err)
+		return 1
+	}
+	testESURL = fmt.Sprintf("http://%s:%s", esHost, esPort.Port())
 
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "9200")
-	require.NoError(t, err)
-
-	return fmt.Sprintf("http://%s:%s", host, port.Port())
-}
-
-func setupNATSJetStream(t *testing.T) (jetstream.JetStream, *nats.Conn) {
-	t.Helper()
-	ctx := context.Background()
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+	natsContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        testimages.NATS,
 			ExposedPorts: []string{"4222/tcp"},
@@ -74,23 +97,61 @@ func setupNATSJetStream(t *testing.T) (jetstream.JetStream, *nats.Conn) {
 		},
 		Started: true,
 	})
-	require.NoError(t, err, "start nats")
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "4222")
-	require.NoError(t, err)
-
-	natsURL := fmt.Sprintf("nats://%s:%s", host, port.Port())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start nats: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := natsContainer.Terminate(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "terminate nats: %v\n", err)
+		}
+	}()
+	natsHost, err := natsContainer.Host(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get nats host: %v\n", err)
+		return 1
+	}
+	natsPort, err := natsContainer.MappedPort(ctx, "4222")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get nats port: %v\n", err)
+		return 1
+	}
+	natsURL := fmt.Sprintf("nats://%s:%s", natsHost, natsPort.Port())
 	nc, err := nats.Connect(natsURL)
-	require.NoError(t, err, "connect nats")
-	t.Cleanup(func() { nc.Close() })
-
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "connect nats: %v\n", err)
+		return 1
+	}
+	defer nc.Close()
 	js, err := jetstream.New(nc)
-	require.NoError(t, err, "init jetstream")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init jetstream: %v\n", err)
+		return 1
+	}
+	testJS = js
+	testNATSCon = nc
 
-	return js, nc
+	return m.Run()
+}
+
+// setupElasticsearch returns the shared ES URL. Tests must use unique index
+// names to stay isolated — the existing suite does.
+func setupElasticsearch(t *testing.T) string {
+	t.Helper()
+	if testESURL == "" {
+		t.Fatal("testESURL is empty — TestMain did not run")
+	}
+	return testESURL
+}
+
+// setupNATSJetStream returns the shared (JetStream, Conn). Tests must use
+// unique stream names to stay isolated — the existing suite does.
+func setupNATSJetStream(t *testing.T) (jetstream.JetStream, *nats.Conn) {
+	t.Helper()
+	if testJS == nil || testNATSCon == nil {
+		t.Fatal("testJS/testNATSCon is nil — TestMain did not run")
+	}
+	return testJS, testNATSCon
 }
 
 // loadTestEvents reads MessageEvent fixtures from testdata/events.json.

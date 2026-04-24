@@ -87,6 +87,14 @@ func main() {
 	}
 
 	store := NewMongoStore(db)
+	// Bounded timeout so a hung createIndexes surfaces at startup.
+	ensureCtx, ensureCancel := context.WithTimeout(ctx, 30*time.Second)
+	if err := store.EnsureIndexes(ensureCtx); err != nil {
+		ensureCancel()
+		slog.Error("ensure store indexes failed", "error", err)
+		os.Exit(1)
+	}
+	ensureCancel()
 	handler := NewHandler(store, keyStore, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, func(ctx context.Context, subj string, data []byte) error {
 		if _, err := js.Publish(ctx, subj, data); err != nil {
 			return fmt.Errorf("publish to %q: %w", subj, err)

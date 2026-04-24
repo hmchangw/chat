@@ -40,6 +40,8 @@ type UpdateRoleRequest struct {
 	RoomID  string `json:"roomId"  bson:"roomId"`
 	Account string `json:"account" bson:"account"`
 	NewRole Role   `json:"newRole" bson:"newRole"`
+	// Set by room-service at acceptance; stable seed for room-worker's Nats-Msg-Id.
+	Timestamp int64 `json:"timestamp" bson:"timestamp"`
 }
 
 // InboxMemberEvent is the payload of an OutboxEvent{Type: "member_added" |
@@ -63,15 +65,6 @@ type InboxMemberEvent struct {
 	HistorySharedSince *int64   `json:"historySharedSince,omitempty"`
 	JoinedAt           int64    `json:"joinedAt,omitempty"`
 	Timestamp          int64    `json:"timestamp" bson:"timestamp"`
-}
-
-type InviteMemberRequest struct {
-	InviterID      string `json:"inviterId"`
-	InviteeID      string `json:"inviteeId"`
-	InviteeAccount string `json:"inviteeAccount"`
-	RoomID         string `json:"roomId"`
-	SiteID         string `json:"siteId"`
-	Timestamp      int64  `json:"timestamp" bson:"timestamp"`
 }
 
 type NotificationEvent struct {

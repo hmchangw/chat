@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
-	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -49,9 +50,6 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	}
 	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
 		return err
-	}
-	if _, err := nc.QueueSubscribe(subject.MemberInviteWildcard(h.siteID), queue, h.NatsHandleInvite); err != nil {
-		return fmt.Errorf("subscribe member invite: %w", err)
 	}
 	if _, err := nc.QueueSubscribe(subject.MemberRoleUpdateWildcard(h.siteID), queue, h.natsUpdateRole); err != nil {
 		return fmt.Errorf("subscribe member role update: %w", err)
@@ -102,19 +100,6 @@ func (h *Handler) natsGetRoom(m otelnats.Msg) {
 	natsutil.ReplyJSON(m.Msg, room)
 }
 
-// NatsHandleInvite handles invite authorization requests.
-func (h *Handler) NatsHandleInvite(m otelnats.Msg) {
-	resp, err := h.handleInvite(m.Context(), m.Msg.Subject, m.Msg.Data)
-	if err != nil {
-		slog.Error("invite failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
-		return
-	}
-	if err := m.Msg.Respond(resp); err != nil {
-		slog.Error("failed to respond to message", "error", err)
-	}
-}
-
 func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, error) {
 	var req model.CreateRoomRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -123,7 +108,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 
 	now := time.Now().UTC()
 	room := model.Room{
-		ID:        uuid.New().String(),
+		ID:        idgen.GenerateID(),
 		Name:      req.Name,
 		Type:      req.Type,
 		CreatedBy: req.CreatedBy,
@@ -139,7 +124,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 
 	// Auto-create owner subscription
 	sub := model.Subscription{
-		ID:                 uuid.New().String(),
+		ID:                 idgen.GenerateID(),
 		User:               model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByAccount},
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,
@@ -259,10 +244,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	if req.Account != "" {
-		// Individual removal (self-leave or owner-removes-other). Validation runs
-		// cheapest-first: target membership → requester role (owner-removes only)
-		// → room counts. Each step short-circuits so we never run the more
-		// expensive count aggregation for requests that would fail early anyway.
+		// Individual removal: cheapest-first validation (target → requester → counts).
 		target, err := h.store.GetSubscriptionWithMembership(ctx, roomID, req.Account)
 		if err != nil {
 			return nil, fmt.Errorf("get target subscription: %w", err)
@@ -290,8 +272,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("last owner cannot leave the room")
 		}
 	} else {
-		// Owner-removes-org path: only the requester's owner role matters; the org
-		// member set is resolved downstream in room-worker.
+		// Owner-removes-org: only the requester's owner role matters here; org members resolved downstream.
 		sub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
 		if err != nil {
 			return nil, fmt.Errorf("get requester subscription: %w", err)
@@ -300,6 +281,9 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("only owners can remove members")
 		}
 	}
+
+	// Stable seed for room-worker's deterministic system-message IDs across JetStream redeliveries.
+	req.Timestamp = time.Now().UTC().UnixMilli()
 
 	// Publish to ROOMS stream for room-worker processing.
 	var err error
@@ -312,53 +296,6 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	return json.Marshal(map[string]string{"status": "accepted"})
-}
-
-func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([]byte, error) {
-	// Extract user account and roomID from the subject before unmarshalling for performance.
-	inviterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
-	if !ok {
-		return nil, fmt.Errorf("invalid invite subject: %s", subj)
-	}
-
-	// Verify inviter is owner (cheap DB lookup before expensive unmarshal)
-	sub, err := h.store.GetSubscription(ctx, inviterAccount, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("inviter not found: %w", err)
-	}
-	if !hasRole(sub.Roles, model.RoleOwner) {
-		return nil, fmt.Errorf("only owners can invite members")
-	}
-
-	// Check room size
-	room, err := h.store.GetRoom(ctx, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("room not found: %w", err)
-	}
-	if room.UserCount >= h.maxRoomSize {
-		return nil, fmt.Errorf("room is at maximum capacity (%d)", h.maxRoomSize)
-	}
-
-	// Only unmarshal after authorization checks pass
-	var req model.InviteMemberRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
-	// Set event timestamp
-	req.Timestamp = time.Now().UTC().UnixMilli()
-
-	timestampedData, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal invite request: %w", err)
-	}
-
-	// Publish to ROOMS stream for room-worker processing
-	if err := h.publishToStream(ctx, subject.MemberInvite(inviterAccount, roomID, h.siteID), timestampedData); err != nil {
-		return nil, fmt.Errorf("publish to stream: %w", err)
-	}
-
-	return json.Marshal(map[string]string{"status": "ok"})
 }
 
 func (h *Handler) natsUpdateRole(m otelnats.Msg) {
@@ -393,7 +330,7 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("get room: %w", err)
 	}
-	if room.Type != model.RoomTypeGroup {
+	if room.Type != model.RoomTypeChannel {
 		return nil, errRoomTypeGuard
 	}
 	requesterSub, err := h.store.GetSubscription(ctx, requester, roomID)
@@ -403,22 +340,26 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	if !hasRole(requesterSub.Roles, model.RoleOwner) {
 		return nil, errOnlyOwners
 	}
-	targetSub, err := h.store.GetSubscription(ctx, req.Account, roomID)
+	// Covers both role check and membership-source guard; missing sub → errTargetNotMember.
+	target, err := h.store.GetSubscriptionWithMembership(ctx, roomID, req.Account)
 	if err != nil {
-		if errors.Is(err, model.ErrSubscriptionNotFound) {
+		if errors.Is(err, model.ErrSubscriptionNotFound) || errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, errTargetNotMember
 		}
 		return nil, fmt.Errorf("get target subscription: %w", err)
 	}
 	// Promote: target must not already be owner. Demote: target must be owner.
-	if req.NewRole == model.RoleOwner && hasRole(targetSub.Roles, model.RoleOwner) {
+	if req.NewRole == model.RoleOwner && hasRole(target.Subscription.Roles, model.RoleOwner) {
 		return nil, errAlreadyOwner
 	}
-	if req.NewRole == model.RoleMember && !hasRole(targetSub.Roles, model.RoleOwner) {
+	if req.NewRole == model.RoleMember && !hasRole(target.Subscription.Roles, model.RoleOwner) {
 		return nil, errNotOwner
 	}
-	// Last-owner guard: only needed for self-demotion since rule #5 guarantees
-	// requester is an owner, so demoting another owner always leaves the requester as owner.
+	// Reject only provably org-only members; subscription-only members (both flags false) are promotable.
+	if req.NewRole == model.RoleOwner && target.HasOrgMembership && !target.HasIndividualMembership {
+		return nil, errPromoteRequiresIndividual
+	}
+	// Last-owner guard only needed on self-demotion; rule #5 ensures requester is an owner.
 	if req.NewRole == model.RoleMember && req.Account == requester {
 		count, err := h.store.CountOwners(ctx, roomID)
 		if err != nil {
@@ -428,6 +369,8 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 			return nil, errCannotDemoteLast
 		}
 	}
+	// Stable acceptance time → stable Nats-Msg-Id across redeliveries.
+	req.Timestamp = time.Now().UTC().UnixMilli()
 	data, err = json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal role update request: %w", err)

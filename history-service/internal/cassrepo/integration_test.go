@@ -11,58 +11,27 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go/modules/cassandra"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 func setupCassandra(t *testing.T) *gocql.Session {
 	t.Helper()
-	ctx := context.Background()
-	container, err := cassandra.Run(ctx, testimages.Cassandra)
-	require.NoError(t, err)
-	t.Cleanup(func() { container.Terminate(ctx) })
+	keyspace, adminSession, host := testutil.CassandraKeyspace(t, "history_service_test")
+	cql := func(format string) string { return fmt.Sprintf(format, keyspace) }
 
-	host, err := container.ConnectionHost(ctx)
-	require.NoError(t, err)
-
-	// gocql defaults to 600ms ConnectTimeout, which races the brief window
-	// between Cassandra accepting connections on 9042 and the CQL handler
-	// being ready. Match the prod cassutil settings.
-	cluster := gocql.NewCluster(host)
-	cluster.Consistency = gocql.One
-	cluster.Timeout = 10 * time.Second
-	cluster.ConnectTimeout = 10 * time.Second
-	// Cassandra inside Docker reports its rpc_address as the container's
-	// internal IP via system.local. Skip discovery so gocql sticks with
-	// the host:port we already obtained from the testcontainer.
-	cluster.DisableInitialHostLookup = true
-
-	var session *gocql.Session
-	for attempt := 0; attempt < 10; attempt++ {
-		session, err = cluster.CreateSession()
-		if err == nil {
-			break
-		}
-		time.Sleep(time.Duration(attempt+1) * time.Second)
-	}
-	require.NoError(t, err, "create cassandra session after retries")
-	t.Cleanup(func() { session.Close() })
-
-	require.NoError(t, session.Query(`CREATE KEYSPACE IF NOT EXISTS chat_test WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`).Exec())
-
-	for _, cql := range []string{
-		`CREATE TYPE IF NOT EXISTS chat_test."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT)`,
-		`CREATE TYPE IF NOT EXISTS chat_test."File" (id TEXT, name TEXT, type TEXT)`,
-		`CREATE TYPE IF NOT EXISTS chat_test."Card" (template TEXT, data BLOB)`,
-		`CREATE TYPE IF NOT EXISTS chat_test."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB)`,
-		`CREATE TYPE IF NOT EXISTS chat_test."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT)`,
+	for _, stmt := range []string{
+		cql(`CREATE TYPE IF NOT EXISTS %s."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s."File" (id TEXT, name TEXT, type TEXT)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s."Card" (template TEXT, data BLOB)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT)`),
 	} {
-		require.NoError(t, session.Query(cql).Exec())
+		require.NoError(t, adminSession.Query(stmt).Exec())
 	}
 
-	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.messages_by_room (
+	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.messages_by_room (
 		room_id TEXT,
 		created_at TIMESTAMP,
 		message_id TEXT,
@@ -90,9 +59,9 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		edited_at TIMESTAMP,
 		updated_at TIMESTAMP,
 		PRIMARY KEY ((room_id), created_at, message_id)
-	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`).Exec())
+	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`)).Exec())
 
-	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
+	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.messages_by_id (
 		message_id TEXT,
 		room_id TEXT,
 		thread_room_id TEXT,
@@ -122,9 +91,11 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		pinned_at TIMESTAMP,
 		pinned_by FROZEN<"Participant">,
 		PRIMARY KEY (message_id, created_at)
-	) WITH CLUSTERING ORDER BY (created_at DESC)`).Exec())
+	) WITH CLUSTERING ORDER BY (created_at DESC)`)).Exec())
 
-	cluster.Keyspace = "chat_test"
+	cluster := gocql.NewCluster(host)
+	cluster.Consistency = gocql.One
+	cluster.Keyspace = keyspace
 	ksSession, err := cluster.CreateSession()
 	require.NoError(t, err)
 	t.Cleanup(func() { ksSession.Close() })
