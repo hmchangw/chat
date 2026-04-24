@@ -20,6 +20,7 @@ type MessageRepository interface {
 	GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
 	UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error
+	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error
 }
 
 // SubscriptionRepository defines MongoDB-backed subscription lookups.

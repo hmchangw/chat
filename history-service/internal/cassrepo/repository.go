@@ -234,3 +234,10 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 
 	return nil
 }
+
+// SoftDeleteMessage is implemented incrementally across Tasks 4-7 of the
+// delete plan. This stub keeps the interface contract compilable between
+// tasks; Task 4 replaces it with the top-level-message branch.
+func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	return fmt.Errorf("SoftDeleteMessage not yet implemented")
+}

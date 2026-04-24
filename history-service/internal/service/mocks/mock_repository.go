@@ -118,6 +118,20 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessagesBetweenDesc(ctx, roomID,
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBetweenDesc", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBetweenDesc), ctx, roomID, since, before, q)
 }
 
+// SoftDeleteMessage mocks base method.
+func (m *MockMessageRepository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SoftDeleteMessage", ctx, msg, deletedAt)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SoftDeleteMessage indicates an expected call of SoftDeleteMessage.
+func (mr *MockMessageRepositoryMockRecorder) SoftDeleteMessage(ctx, msg, deletedAt any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SoftDeleteMessage", reflect.TypeOf((*MockMessageRepository)(nil).SoftDeleteMessage), ctx, msg, deletedAt)
+}
+
 // UpdateMessageContent mocks base method.
 func (m *MockMessageRepository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
 	m.ctrl.T.Helper()
