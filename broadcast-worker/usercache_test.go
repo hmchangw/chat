@@ -58,7 +58,7 @@ func (f *fakeUserStore) callCount() int {
 	return len(f.calls)
 }
 
-func (f *fakeUserStore) lastCall() []string { //nolint:unused
+func (f *fakeUserStore) lastCall() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.calls) == 0 {
@@ -76,4 +76,5 @@ func TestNewCachedUserStore_ConstructsEmpty(t *testing.T) {
 	require.NotNil(t, c)
 	// A fresh cache doesn't call inner until asked.
 	assert.Equal(t, 0, inner.callCount())
+	assert.Nil(t, inner.lastCall())
 }
