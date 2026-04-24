@@ -73,7 +73,6 @@ func (f *fakeUserStore) lastCall() []string {
 	return f.calls[len(f.calls)-1]
 }
 
-// sentinel to prove the returned type implements the userstore.UserStore interface.
 var _ userstore.UserStore = (*CachedUserStore)(nil)
 
 func TestNewCachedUserStore_ConstructsEmpty(t *testing.T) {

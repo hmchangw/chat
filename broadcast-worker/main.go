@@ -61,8 +61,7 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
-	var us userstore.UserStore
-	us = userstore.NewMongoStore(db.Collection("users"))
+	us := userstore.NewMongoStore(db.Collection("users"))
 	if cfg.UserCacheSize > 0 && cfg.UserCacheTTL > 0 {
 		us = NewCachedUserStore(us, cfg.UserCacheSize, cfg.UserCacheTTL)
 		slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)

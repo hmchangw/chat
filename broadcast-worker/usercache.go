@@ -32,8 +32,8 @@ type CachedUserStore struct {
 	now   func() time.Time
 }
 
-// NewCachedUserStore returns a cache wrapping inner. maxSize > 0 and ttl > 0
-// are required; the main.go wiring guards against zero values.
+// NewCachedUserStore returns a cache wrapping inner. maxSize and ttl must
+// both be positive.
 func NewCachedUserStore(inner userstore.UserStore, maxSize int, ttl time.Duration) *CachedUserStore {
 	return &CachedUserStore{
 		inner:   inner,
@@ -54,7 +54,9 @@ func (c *CachedUserStore) FindUserByID(ctx context.Context, id string) (*model.U
 // cache hits without calling the inner store. Cache misses are forwarded
 // in a single batched inner call. Missing users are not cached as
 // negatives — an account the inner store didn't return is simply absent
-// and will be re-fetched next time.
+// and will be re-fetched next time. When the inner store returns an
+// error, partial cache hits collected so far are returned alongside the
+// (wrapped) error so the caller can choose to log and continue.
 func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
 	if len(accounts) == 0 {
 		return nil, nil
@@ -81,7 +83,9 @@ func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []st
 			missing = append(missing, account)
 			continue
 		}
-		c.lru.MoveToFront(elem)
+		if elem != c.lru.Front() {
+			c.lru.MoveToFront(elem)
+		}
 		hits = append(hits, entry.user)
 	}
 	c.mu.Unlock()
@@ -92,33 +96,33 @@ func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []st
 
 	fresh, err := c.inner.FindUsersByAccounts(ctx, missing)
 	if err != nil {
-		// Return partial hits plus the wrapped error so callers can log and continue.
 		return hits, fmt.Errorf("cached find users by accounts: %w", err)
 	}
 
 	c.mu.Lock()
 	for i := range fresh {
-		u := fresh[i]
-		if existing, ok := c.index[u.Account]; ok {
-			// Concurrent race: another goroutine populated the same account.
-			// Refresh in place and move to front.
-			existing.Value = &userCacheEntry{account: u.Account, user: u, inserted: now}
-			c.lru.MoveToFront(existing)
-			continue
-		}
-		entry := &userCacheEntry{account: u.Account, user: u, inserted: now}
-		elem := c.lru.PushFront(entry)
-		c.index[u.Account] = elem
-		if c.lru.Len() > c.maxSize {
-			lruElem := c.lru.Back()
-			if lruElem != nil {
-				lruEntry := lruElem.Value.(*userCacheEntry)
-				c.lru.Remove(lruElem)
-				delete(c.index, lruEntry.account)
-			}
-		}
+		c.addLocked(&fresh[i], now)
 	}
 	c.mu.Unlock()
 
 	return append(hits, fresh...), nil
+}
+
+// addLocked inserts or refreshes a cache entry. The caller must hold c.mu.
+func (c *CachedUserStore) addLocked(u *model.User, now time.Time) {
+	if existing, ok := c.index[u.Account]; ok {
+		existing.Value = &userCacheEntry{account: u.Account, user: *u, inserted: now}
+		c.lru.MoveToFront(existing)
+		return
+	}
+	entry := &userCacheEntry{account: u.Account, user: *u, inserted: now}
+	elem := c.lru.PushFront(entry)
+	c.index[u.Account] = elem
+	if c.lru.Len() > c.maxSize {
+		if lruElem := c.lru.Back(); lruElem != nil {
+			lruEntry := lruElem.Value.(*userCacheEntry)
+			c.lru.Remove(lruElem)
+			delete(c.index, lruEntry.account)
+		}
+	}
 }
