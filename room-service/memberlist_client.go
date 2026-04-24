@@ -36,13 +36,8 @@ func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string
 		return nil, fmt.Errorf("marshal member.list body: %w", err)
 	}
 
-	// Always bound remote calls — use the configured timeout, or fall back to 5s
-	// (matches envDefault) so a zero/negative misconfiguration can't leak indefinite blocks.
-	effectiveTimeout := c.timeout
-	if effectiveTimeout <= 0 {
-		effectiveTimeout = 5 * time.Second
-	}
-	reqCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
+	// c.timeout is validated as > 0 at config-load time (see room-service/main.go).
+	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	out := &nats.Msg{

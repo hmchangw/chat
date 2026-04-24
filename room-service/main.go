@@ -42,6 +42,10 @@ func main() {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+	if cfg.MemberListTimeout <= 0 {
+		slog.Error("invalid MEMBER_LIST_TIMEOUT: must be > 0", "value", cfg.MemberListTimeout)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
