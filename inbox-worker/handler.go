@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/hmchangw/chat/pkg/idgen"
-
 	"github.com/hmchangw/chat/pkg/model"
 )
 

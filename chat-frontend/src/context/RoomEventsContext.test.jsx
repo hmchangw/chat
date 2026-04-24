@@ -131,7 +131,7 @@ describe('RoomEventsProvider subscriptions', () => {
 
   it('fetches rooms on mount and subscribes to user-scoped events', async () => {
     const rooms = [
-      { id: 'g1', name: 'group', type: 'group', siteId: 'site-A', userCount: 3, lastMsgAt: '2026-04-17T10:00:00Z' },
+      { id: 'g1', name: 'group', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: '2026-04-17T10:00:00Z' },
       { id: 'd1', name: 'dm',    type: 'dm',    siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T11:00:00Z' },
     ]
     const request = vi.fn().mockImplementation((subject) => {
@@ -181,11 +181,11 @@ describe('RoomEventsProvider subscriptions', () => {
     await waitFor(() => expect(screen.getByTestId('messages').textContent).toBe('mdm1'))
   })
 
-  it('opens a new group subscription when a group room is added', async () => {
+  it('opens a new channel subscription when a channel room is added', async () => {
     const request = vi.fn().mockImplementation((subject) => {
       if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms: [] })
       if (subject === 'chat.user.alice.request.rooms.get.g2') {
-        return Promise.resolve({ id: 'g2', name: 'new', type: 'group', siteId: 'site-A', userCount: 1, lastMsgAt: null })
+        return Promise.resolve({ id: 'g2', name: 'new', type: 'channel', siteId: 'site-A', userCount: 1, lastMsgAt: null })
       }
       throw new Error('unexpected request: ' + subject)
     })
@@ -212,7 +212,7 @@ describe('RoomEventsProvider subscriptions', () => {
   })
 
   it('drops state and unsubscribes on room removal', async () => {
-    const rooms = [{ id: 'g1', name: 'g', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
+    const rooms = [{ id: 'g1', name: 'g', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
     const request = vi.fn().mockResolvedValue({ rooms })
     const unsubs = []
     const handlers = new Map()
@@ -263,7 +263,7 @@ describe('RoomEventsProvider subscriptions', () => {
   })
 
   async function setupMentionScenario() {
-    const rooms = [{ id: 'g1', name: 'g', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
+    const rooms = [{ id: 'g1', name: 'g', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
     const request = vi.fn().mockResolvedValue({ rooms })
     const handlers = new Map()
     const subscribe = vi.fn().mockImplementation((subject, cb) => {
@@ -283,7 +283,7 @@ describe('RoomEventsProvider subscriptions', () => {
     return { handlers, captured }
   }
 
-  it('computes hasMention from mentions[] for group events', async () => {
+  it('computes hasMention from mentions[] for channel events', async () => {
     const { handlers, captured } = await setupMentionScenario()
     act(() => {
       handlers.get('chat.room.g1.event')({
@@ -301,7 +301,7 @@ describe('RoomEventsProvider subscriptions', () => {
     })
   })
 
-  it('does not set hasMention for group events that do not mention the user', async () => {
+  it('does not set hasMention for channel events that do not mention the user', async () => {
     const { handlers, captured } = await setupMentionScenario()
     act(() => {
       handlers.get('chat.room.g1.event')({

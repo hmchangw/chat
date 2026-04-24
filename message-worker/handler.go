@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/userstore"
@@ -103,7 +103,7 @@ func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *mod
 	now := msg.CreatedAt
 
 	threadRoom := model.ThreadRoom{
-		ID:              uuid.NewString(),
+		ID:              idgen.GenerateID(),
 		ParentMessageID: msg.ThreadParentMessageID,
 		RoomID:          msg.RoomID,
 		SiteID:          siteID,
@@ -208,7 +208,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 // updated by the message worker.
 func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, userID, userAccount, siteID string, now time.Time) *model.ThreadSubscription {
 	return &model.ThreadSubscription{
-		ID:              uuid.NewString(),
+		ID:              idgen.GenerateID(),
 		ParentMessageID: msg.ThreadParentMessageID,
 		RoomID:          msg.RoomID,
 		ThreadRoomID:    threadRoomID,

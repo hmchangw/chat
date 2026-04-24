@@ -27,7 +27,6 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomcrypto"
 	"github.com/hmchangw/chat/pkg/roomkeysender"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 const natsAlias = "nats-server"
@@ -62,7 +61,7 @@ websocket {
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.NATS,
+			Image:        "nats:2.11-alpine",
 			ExposedPorts: []string{"4222/tcp", "8080/tcp"},
 			Cmd:          []string{"--config", "/nats.conf"},
 			Files: []testcontainers.ContainerFile{
@@ -112,7 +111,7 @@ func setupNode(t *testing.T, nw *testcontainers.DockerNetwork) testcontainers.Co
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:      testimages.Node,
+			Image:      "node:20-alpine",
 			Cmd:        []string{"sh", "-c", "sleep 600"},
 			Networks:   []string{nw.Name},
 			WaitingFor: wait.ForExec([]string{"node", "--version"}).WithStartupTimeout(30 * time.Second),

@@ -9,29 +9,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
-	"github.com/hmchangw/chat/pkg/mongoutil"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 func setupMongo(t *testing.T) *mongo.Collection {
-	t.Helper()
-	ctx := context.Background()
-	container, err := mongodb.Run(ctx, testimages.Mongo)
-	require.NoError(t, err)
-	t.Cleanup(func() { container.Terminate(ctx) })
-
-	uri, err := container.ConnectionString(ctx)
-	require.NoError(t, err)
-
-	client, err := mongoutil.Connect(ctx, uri)
-	require.NoError(t, err)
-	t.Cleanup(func() { mongoutil.Disconnect(ctx, client) })
-
-	return client.Database("userstore_test").Collection("users")
+	return testutil.MongoDB(t, "userstore_test").Collection("users")
 }
 
 func TestMongoStore_FindUserByID(t *testing.T) {

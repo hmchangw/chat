@@ -30,7 +30,7 @@ describe('MessageArea', () => {
       historyError: null,
       loadHistory: vi.fn().mockResolvedValue(),
     })
-    render(<MessageArea room={{ id: 'r1', name: 'general', type: 'group', userCount: 2 }} />)
+    render(<MessageArea room={{ id: 'r1', name: 'general', type: 'channel', userCount: 2 }} />)
     expect(screen.getByText('hello')).toBeInTheDocument()
     expect(screen.getByText('Bob')).toBeInTheDocument()
   })
@@ -42,7 +42,7 @@ describe('MessageArea', () => {
       historyError: 'boom',
       loadHistory: vi.fn().mockResolvedValue(),
     })
-    render(<MessageArea room={{ id: 'r1', name: 'general', type: 'group', userCount: 2 }} />)
+    render(<MessageArea room={{ id: 'r1', name: 'general', type: 'channel', userCount: 2 }} />)
     expect(screen.getByText('boom')).toBeInTheDocument()
   })
 
@@ -51,7 +51,7 @@ describe('MessageArea', () => {
     useRoomEvents.mockReturnValue({
       messages: [], hasLoadedHistory: false, historyError: null, loadHistory,
     })
-    render(<MessageArea room={{ id: 'r1', name: 'general', type: 'group', userCount: 2 }} />)
+    render(<MessageArea room={{ id: 'r1', name: 'general', type: 'channel', userCount: 2 }} />)
     expect(loadHistory).toHaveBeenCalled()
   })
 })
