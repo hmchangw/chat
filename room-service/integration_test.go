@@ -1168,16 +1168,11 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
 
-	start := time.Now()
 	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
-	elapsed := time.Since(start)
-
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected deadline exceeded, got %v", err)
 	assert.Contains(t, err.Error(), "expand channels")
 	assert.Contains(t, err.Error(), "remote list-members")
-	// Deadline must have actually fired — elapsed >= configured timeout, and well under the responder sleep.
-	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond)
-	assert.Less(t, elapsed, 900*time.Millisecond)
 }
 
 func TestRoomsInfoBatchRPC(t *testing.T) {

@@ -126,7 +126,7 @@ func TestNATSMemberListClient_Timeout(t *testing.T) {
 	ch := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
 	requester := "alice"
 
-	// Responder sleeps longer than the client timeout so the context deadline fires first.
+	// Responder sleeps longer than the client timeout so the context deadline must fire first.
 	sub, err := nc.Subscribe(subject.MemberList(requester, ch.RoomID, ch.SiteID), func(m *nats.Msg) {
 		time.Sleep(500 * time.Millisecond)
 		_ = m.Respond([]byte(`{}`))
@@ -134,15 +134,10 @@ func TestNATSMemberListClient_Timeout(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	start := time.Now()
 	_, err = client.ListMembers(context.Background(), requester, ch)
-	elapsed := time.Since(start)
-
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected deadline exceeded, got %v", err)
 	assert.Contains(t, err.Error(), "member.list request to site-us")
-	// Verify the context.WithTimeout path fired — elapsed must be >= client timeout, and well under responder sleep.
-	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond)
-	assert.Less(t, elapsed, 400*time.Millisecond)
 }
 
 func TestNATSMemberListClient_BodyShape(t *testing.T) {
