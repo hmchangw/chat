@@ -62,6 +62,19 @@ func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []st
 		return nil, nil
 	}
 
+	// Dedupe the input so cache-hit and cache-miss paths produce identical
+	// results regardless of whether the caller passes duplicates.
+	seen := make(map[string]struct{}, len(accounts))
+	unique := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		unique = append(unique, a)
+	}
+	accounts = unique
+
 	now := c.now()
 
 	c.mu.Lock()

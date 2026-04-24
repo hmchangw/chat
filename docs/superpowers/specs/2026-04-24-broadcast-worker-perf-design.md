@@ -51,7 +51,7 @@ the common case at steady-state.
 
 ## Architecture
 
-```
+```text
                   broadcast-worker
       ┌─────────────────────────────────────────┐
       │  HandleMessage                           │
@@ -84,7 +84,7 @@ to 100% after warm-up.
 
 ## File layout
 
-```
+```text
 broadcast-worker/
 ├── handler.go              # modified: call FetchAndUpdateRoom instead of GetRoom+Update
 ├── handler_test.go         # modified: mock expectations updated

@@ -278,3 +278,22 @@ func TestCachedUserStore_FindUserByIDDelegates(t *testing.T) {
 	_, err = c.FindUserByID(context.Background(), "ghost")
 	require.Error(t, err, "inner store's not-found error should propagate")
 }
+
+func TestCachedUserStore_DedupesDuplicateAccounts(t *testing.T) {
+	alice := model.User{ID: "u1", Account: "alice"}
+	inner := newFakeUserStore(alice)
+	c := NewCachedUserStore(inner, 10, time.Minute)
+
+	// Cold cache: both duplicates would otherwise hit the inner store.
+	// After dedup, inner sees alice exactly once and the return has one user.
+	users, err := c.FindUsersByAccounts(context.Background(), []string{"alice", "alice"})
+	require.NoError(t, err)
+	assert.Len(t, users, 1)
+	assert.Equal(t, []string{"alice"}, inner.lastCall())
+
+	// Warm cache: still one user returned regardless of how many dupes are asked.
+	users2, err := c.FindUsersByAccounts(context.Background(), []string{"alice", "alice", "alice"})
+	require.NoError(t, err)
+	assert.Len(t, users2, 1)
+	assert.Equal(t, 1, inner.callCount(), "warm-cache dupe lookup must not call inner")
+}
