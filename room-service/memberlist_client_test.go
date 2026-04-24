@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -63,8 +64,10 @@ func TestNATSMemberListClient_RemoteError(t *testing.T) {
 	ch := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
 	requester := "alice"
 
+	// Generic remote error (not the "not a member" sentinel mapping) passes through
+	// verbatim behind the "remote member.list:" prefix whitelisted by sanitizeError.
 	sub, err := nc.Subscribe(subject.MemberList(requester, ch.RoomID, ch.SiteID), func(m *nats.Msg) {
-		data := natsutil.MarshalError("only room members can list members")
+		data := natsutil.MarshalError("room not found")
 		_ = m.Respond(data)
 	})
 	require.NoError(t, err)
@@ -73,7 +76,29 @@ func TestNATSMemberListClient_RemoteError(t *testing.T) {
 	_, err = client.ListMembers(context.Background(), requester, ch)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "remote member.list:")
-	assert.Contains(t, err.Error(), "only room members can list members")
+	assert.Contains(t, err.Error(), "room not found")
+	assert.False(t, errors.Is(err, errNotChannelMember), "generic remote errors must not masquerade as the sentinel")
+}
+
+func TestNATSMemberListClient_RemoteNotMember_MapsToSentinel(t *testing.T) {
+	nc := startInProcessNATS(t)
+	client := NewNATSMemberListClient(nc, 2*time.Second)
+
+	ch := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
+	requester := "alice"
+
+	// Remote site returns errNotRoomMember's exact message — must map to the local
+	// errNotChannelMember sentinel so cross-site and same-site behavior are uniform.
+	sub, err := nc.Subscribe(subject.MemberList(requester, ch.RoomID, ch.SiteID), func(m *nats.Msg) {
+		data := natsutil.MarshalError(errNotRoomMember.Error())
+		_ = m.Respond(data)
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	_, err = client.ListMembers(context.Background(), requester, ch)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errNotChannelMember))
 }
 
 func TestNATSMemberListClient_InvalidJSONReply(t *testing.T) {
