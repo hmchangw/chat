@@ -1,8 +1,44 @@
 name: ci
 
-# Skip CI for docs-only changes. Note: if you later add required status
-# checks, switch to per-job `if:` conditionals since paths-ignore will
-# leave the checks in a "pending" state instead of passing them.
+# CI topology:
+#
+#   prewarm
+#   ├─ checkout
+#   ├─ setup-go + explicit actions/cache save (primes ~/go/pkg/mod
+#   │  and ~/.cache/go-build so downstream jobs restore a fully
+#   │  populated cache with no additional downloads)
+#   └─ auto-discover + filter integration targets
+#
+#    ┌─────────┬──────────┬───────────────────────┐
+#    │  lint   │  test    │   test-integration    │   ← parallel,
+#    │ (always │ (always  │   (matrix, scoped)    │     needs: prewarm
+#    │  full   │  full    │                       │
+#    │  repo)  │  repo)   │                       │
+#    └─────────┴──────────┴───────────────────────┘
+#
+# Unit tests run `go test -race ./...` as a single job. The whole
+# repo is fast enough (~3 min) that per-service matrix orchestration
+# costs more than it saves. Integration tests DO fan out: each takes
+# minutes of testcontainers work, and only targets whose dir was
+# directly modified in the PR run.
+#
+# An integration target is any dir whose tree contains a
+# `//go:build integration` test file — either a top-level microservice
+# (e.g. `search-service`) or a pkg subdir (e.g. `pkg/roomcrypto`).
+# Targets are auto-discovered; new ones are picked up without a
+# workflow edit.
+#
+# Integration scoping rules:
+#   - push to main OR go.(mod|sum) changed → every target runs
+#     (regression safety net)
+#   - PR with a target dir file changed    → that target's integration
+#                                             runs
+#   - PR with only pkg/ (non-target) or
+#     service dir changes with no integration
+#     target touched                       → no integration runs; unit
+#                                             tests on the whole repo
+#                                             catch pkg-level regressions
+
 on:
   push:
     branches: [main]
@@ -14,7 +50,6 @@ on:
       - "docs/**"
       - "**.md"
 
-# Cancel in-progress runs for the same branch when a new commit lands.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -23,51 +58,239 @@ permissions:
   contents: read
 
 env:
-  # Bumped to 1.25.9 for the April 7, 2026 security release (10 CVEs:
-  # os symlink, html/template, crypto/x509, crypto/tls, etc.).
-  # go.mod still declares `go 1.25.8` — 1.25.9 satisfies that constraint;
-  # Dockerfiles get bumped separately.
+  # Bumped to 1.25.9 for the April 7, 2026 security release.
   GO_VERSION: "1.25.9"
-  # Pin golangci-lint to a known-good version so a new release can't break
-  # CI without a config update. Bump deliberately.
   GOLANGCI_LINT_VERSION: "v2.11.4"
 
 jobs:
+  prewarm:
+    runs-on: ubuntu-latest
+    outputs:
+      affected-integration: ${{ steps.changes.outputs.affected-integration }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history so `git diff` against the PR base can see the
+          # merge base.
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          # Disable setup-go's implicit post-step cache save — its
+          # timing races the `needs: prewarm` gate and downstream jobs
+          # sometimes restore an empty cache. Use explicit
+          # actions/cache save-as-a-step below instead.
+          cache: false
+
+      - name: Restore Go module cache
+        id: go-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('go.sum') }}
+
+      # On cache miss: `go mod download` pulls every module in go.sum
+      # (including test-only deps like testcontainers-go + moby/client);
+      # `go build ./...` seeds the compile cache with non-test-tag
+      # artifacts so downstream jobs skip a layer of recompilation too.
+      - name: Prime Go caches
+        if: steps.go-cache.outputs.cache-hit != 'true'
+        run: |
+          go mod download
+          go build ./...
+
+      - name: Save Go module cache
+        if: steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+
+      - name: Detect affected integration targets
+        id: changes
+        run: |
+          set -eu
+
+          # Auto-discover integration targets: any dir whose tree
+          # contains a `//go:build integration` test file. Two shapes:
+          # top-level microservice (e.g. `search-service`) or pkg
+          # subdir (e.g. `pkg/roomcrypto`). `make test-integration
+          # SERVICE=<path>` works for either via `go test ./$(SERVICE)/...`.
+          #
+          # Auto-discovery means a new service or pkg subdir with
+          # integration tests is picked up by CI automatically — no
+          # workflow edit required. The trade-off: integration tests
+          # that weren't previously run in CI will start running, which
+          # may surface pre-existing flakiness.
+          mapfile -t targets < <(
+            grep -rlE '^//go:build +integration' --include='*_test.go' . 2>/dev/null \
+              | sed 's|^\./||' \
+              | awk -F/ '{ if ($1=="pkg") print $1"/"$2; else print $1 }' \
+              | sort -u
+          )
+          echo "integration targets: ${targets[*]}"
+
+          # On push to main OR a go.(mod|sum) change: every target
+          # runs (safety net).
+          full_scope=false
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            full_scope=true
+            files=""
+          else
+            git fetch --quiet --depth=1 origin "$GITHUB_BASE_REF"
+            files="$(git diff --name-only "origin/$GITHUB_BASE_REF"...HEAD)"
+            echo "---changed files---"
+            echo "$files"
+            echo "-------------------"
+            if echo "$files" | grep -qE '^go\.(mod|sum)$'; then
+              full_scope=true
+            fi
+          fi
+
+          int_list=()
+          for tgt in "${targets[@]}"; do
+            if [ "$full_scope" = true ] || echo "$files" | grep -q "^${tgt}/"; then
+              int_list+=("$tgt")
+            fi
+          done
+
+          # Emit as JSON array of {path, slug} objects. `path` is the
+          # literal dir (e.g. `pkg/roomcrypto`); `slug` is the same
+          # with / → - so it's safe for log filenames and artifact
+          # names (artifact names can't contain /).
+          to_json() {
+            printf '['
+            local first=1
+            for x in "$@"; do
+              if [ -z "$first" ]; then printf ','; fi
+              local slug="${x//\//-}"
+              printf '{"path":"%s","slug":"%s"}' "$x" "$slug"
+              first=""
+            done
+            printf ']'
+          }
+          echo "affected-integration=$(to_json "${int_list[@]:-}")" >> "$GITHUB_OUTPUT"
+          echo "--- summary ---"
+          echo "full_scope:           $full_scope"
+          echo "affected integration: ${int_list[*]:-<none>}"
+
   lint:
+    needs: prewarm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          cache: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('go.sum') }}
       - uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
 
   test:
+    needs: prewarm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
-      - name: Unit tests (race detector)
+          cache: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('go.sum') }}
+      - name: Unit tests
         run: make test
 
-  # Integration tests run the full testcontainers-go stack (Elasticsearch,
-  # NATS JetStream, MongoDB, Cassandra as applicable per service). Docker is
-  # pre-installed on ubuntu-latest runners. Bump the timeout if container
-  # image pulls are slow on cold cache.
   test-integration:
+    needs: prewarm
+    if: needs.prewarm.outputs.affected-integration != '[]'
+    # Explicit name overrides GitHub's default, which would expand every key
+    # of the matrix object (path and slug) into the title and produce
+    # "test-integration (auth-service, auth-service)".
+    name: test-integration (${{ matrix.target.path }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each matrix row is { path: "search-service",
+        # slug: "search-service" } or { path: "pkg/roomcrypto",
+        # slug: "pkg-roomcrypto" }. path is passed to make; slug
+        # is used in filenames / artifact names (slash-safe).
+        target: ${{ fromJSON(needs.prewarm.outputs.affected-integration) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
-      - name: Integration tests (search-sync-worker)
-        run: make test-integration SERVICE=search-sync-worker
+          cache: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('go.sum') }}
+
+      # Explicit `set -o pipefail` so make's exit status (not tee's)
+      # drives the step outcome. Previously a pipefail gap let a
+      # failing integration test silently report green.
+      - name: Integration tests (${{ matrix.target.path }})
+        run: |
+          set -o pipefail
+          make test-integration SERVICE=${{ matrix.target.path }} 2>&1 \
+            | tee "/tmp/${{ matrix.target.slug }}-int.log"
+
+      - name: Upload integration log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-log-${{ matrix.target.slug }}
+          path: /tmp/${{ matrix.target.slug }}-int.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Write log to step summary
+        if: always()
+        run: |
+          f="/tmp/${{ matrix.target.slug }}-int.log"
+          [ -f "$f" ] || exit 0
+          {
+            echo "## ${{ matrix.target.path }} integration-test log"
+            echo ""
+            echo '<details><summary>Full log</summary>'
+            echo ''
+            echo '```'
+            tail -c 400000 "$f"
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # On failure, surface the last 60 KB of the log as a single
+      # annotation (64 KB cap per body). Captures full -race data-race
+      # blocks top-to-bottom for auth-less diagnosis.
+      - name: Surface failure tail
+        if: failure()
+        run: |
+          f="/tmp/${{ matrix.target.slug }}-int.log"
+          [ -f "$f" ] || exit 0
+          echo "::group::tail of $f"
+          tail -n 1000 "$f"
+          echo "::endgroup::"
+          body="$(tail -c 60000 "$f" | sed '/^$/d' \
+            | sed 's/::/\xE2\x80\xA7\xE2\x80\xA7/g' \
+            | awk 'BEGIN{ORS=""} {print $0"%0A"}')"
+          printf '::error file=%s::%s\n' "$(basename "$f")" "$body"

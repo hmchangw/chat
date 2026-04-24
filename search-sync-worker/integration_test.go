@@ -24,6 +24,7 @@ import (
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 func setupElasticsearch(t *testing.T) string {
@@ -32,7 +33,7 @@ func setupElasticsearch(t *testing.T) string {
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "elasticsearch:8.17.0",
+			Image:        testimages.Elasticsearch,
 			ExposedPorts: []string{"9200/tcp"},
 			Env: map[string]string{
 				"discovery.type":         "single-node",
@@ -66,7 +67,7 @@ func setupNATSJetStream(t *testing.T) (jetstream.JetStream, *nats.Conn) {
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "nats:2.11-alpine",
+			Image:        testimages.NATS,
 			ExposedPorts: []string{"4222/tcp"},
 			Cmd:          []string{"--jetstream"},
 			WaitingFor:   wait.ForLog("Server is ready").WithStartupTimeout(30 * time.Second),

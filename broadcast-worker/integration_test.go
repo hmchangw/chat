@@ -19,13 +19,14 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
 	t.Helper()
 	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:8")
+	container, err := mongodb.Run(ctx, testimages.Mongo)
 	if err != nil {
 		t.Fatalf("start mongo: %v", err)
 	}
@@ -203,7 +204,7 @@ func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
 	assert.Equal(t, "bob", roomEvt.Mentions[0].Account)
 	assert.Equal(t, "鮑勃", roomEvt.Mentions[0].ChineseName)
 	assert.Equal(t, "Bob Chen", roomEvt.Mentions[0].EngName)
-	assert.Empty(t, roomEvt.Mentions[0].UserID)
+	assert.Equal(t, "u-bob", roomEvt.Mentions[0].UserID)
 
 	var subBob model.Subscription
 	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"u.account": "bob", "roomId": "r3"}).Decode(&subBob))

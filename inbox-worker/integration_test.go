@@ -18,12 +18,13 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
 	t.Helper()
 	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:4.4.15")
+	container, err := mongodb.Run(ctx, testimages.Mongo)
 	if err != nil {
 		t.Fatalf("start mongo: %v", err)
 	}

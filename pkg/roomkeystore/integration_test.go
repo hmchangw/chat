@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 // setupValkey starts a valkey/valkey:8 container and returns a connected valkeyStore.
@@ -24,7 +26,7 @@ func setupValkey(t *testing.T, gracePeriod time.Duration) RoomKeyStore {
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "valkey/valkey:8",
+			Image:        testimages.Valkey,
 			ExposedPorts: []string{"6379/tcp"},
 			WaitingFor:   wait.ForLog("Ready to accept connections"),
 		},

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,24 +19,79 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 	"github.com/hmchangw/chat/pkg/userstore"
+)
+
+// One Cassandra container per test binary, shared across every test in the
+// package. Spinning up a fresh container per test was multiplying every
+// flake by 7+ and pushing total runtime past CI tolerances; tests use
+// different (room_id, created_at, message_id) keys so a shared keyspace is
+// safe.
+//
+// SHARED-SESSION INVARIANT: tests in this file MUST NOT call t.Parallel(),
+// and MUST NOT pin time-based clustering keys (created_at) to a constant —
+// the messages_by_id table partitions by message_id, so two tests writing
+// the same message_id with the same created_at would collide. Always use
+// time.Now() per test.
+var (
+	cassOnce       sync.Once
+	cassSharedSess *gocql.Session
+	cassSharedErr  error
 )
 
 func setupCassandra(t *testing.T) *gocql.Session {
 	t.Helper()
+	cassOnce.Do(initSharedCassandra)
+	require.NoError(t, cassSharedErr, "shared cassandra setup")
+	return cassSharedSess
+}
+
+func initSharedCassandra() {
 	ctx := context.Background()
-	container, err := cassandra.Run(ctx, "cassandra:5")
-	require.NoError(t, err)
-	t.Cleanup(func() { container.Terminate(ctx) })
+	container, err := cassandra.Run(ctx, testimages.Cassandra)
+	if err != nil {
+		cassSharedErr = err
+		return
+	}
+	// container is leaked for the test binary's lifetime — cleaned up when
+	// the test process exits, which is what we want since tests share it.
 
 	host, err := container.ConnectionHost(ctx)
-	require.NoError(t, err)
+	if err != nil {
+		cassSharedErr = err
+		return
+	}
 
+	// gocql defaults to 600ms ConnectTimeout, which races the brief window
+	// between Cassandra accepting connections on 9042 and the CQL handler
+	// being ready. Match the prod cassutil settings.
 	cluster := gocql.NewCluster(host)
 	cluster.Consistency = gocql.One
-	session, err := cluster.CreateSession()
-	require.NoError(t, err)
-	t.Cleanup(func() { session.Close() })
+	cluster.Timeout = 10 * time.Second
+	cluster.ConnectTimeout = 10 * time.Second
+	// Cassandra inside Docker reports its rpc_address as the container's
+	// internal IP via system.local. Without this, gocql discovers that IP
+	// after the initial handshake, retries against an unreachable address,
+	// and ultimately fails with "context canceled". Skip discovery and
+	// just use the host:port we already have.
+	cluster.DisableInitialHostLookup = true
+
+	// Retry CreateSession because the container's wait strategy returns when
+	// "bootstrapped=COMPLETED" on the local node, but external CQL listeners
+	// can still need a few more seconds to accept connections.
+	var session *gocql.Session
+	for attempt := 0; attempt < 30; attempt++ {
+		session, err = cluster.CreateSession()
+		if err == nil {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if err != nil {
+		cassSharedErr = err
+		return
+	}
 
 	stmts := []string{
 		`CREATE KEYSPACE IF NOT EXISTS chat_test WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`,
@@ -50,6 +106,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			updated_at    TIMESTAMP,
 			mentions      SET<FROZEN<"Participant">>,
 			tcount        INT,
+			tshow         BOOLEAN,
 			type          TEXT,
 			sys_msg_data  BLOB,
 			PRIMARY KEY ((room_id), created_at, message_id)
@@ -67,6 +124,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			thread_parent_id         TEXT,
 			thread_parent_created_at TIMESTAMP,
 			tcount                   INT,
+			tshow                    BOOLEAN,
 			type                     TEXT,
 			sys_msg_data             BLOB,
 			PRIMARY KEY (message_id, created_at)
@@ -82,26 +140,34 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			site_id          TEXT,
 			updated_at       TIMESTAMP,
 			mentions         SET<FROZEN<"Participant">>,
+			tshow            BOOLEAN,
 			type             TEXT,
 			sys_msg_data     BLOB,
 			PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
 		) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`,
 	}
 	for _, stmt := range stmts {
-		require.NoError(t, session.Query(stmt).Exec())
+		if err := session.Query(stmt).Exec(); err != nil {
+			session.Close()
+			cassSharedErr = err
+			return
+		}
 	}
+	session.Close()
 
 	cluster.Keyspace = "chat_test"
 	ksSession, err := cluster.CreateSession()
-	require.NoError(t, err)
-	t.Cleanup(func() { ksSession.Close() })
-	return ksSession
+	if err != nil {
+		cassSharedErr = err
+		return
+	}
+	cassSharedSess = ksSession
 }
 
 func setupMongo(t *testing.T) *mongo.Database {
 	t.Helper()
 	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:7")
+	container, err := mongodb.Run(ctx, testimages.Mongo)
 	require.NoError(t, err)
 	t.Cleanup(func() { container.Terminate(ctx) })
 
@@ -332,7 +398,7 @@ func TestHandler_Integration(t *testing.T) {
 	cassSession := setupCassandra(t)
 
 	// Start MongoDB
-	mongoContainer, err := mongodb.Run(ctx, "mongo:7")
+	mongoContainer, err := mongodb.Run(ctx, testimages.Mongo)
 	require.NoError(t, err)
 	t.Cleanup(func() { mongoContainer.Terminate(ctx) })
 

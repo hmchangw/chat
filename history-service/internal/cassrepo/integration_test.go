@@ -14,22 +14,40 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/cassandra"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 func setupCassandra(t *testing.T) *gocql.Session {
 	t.Helper()
 	ctx := context.Background()
-	container, err := cassandra.Run(ctx, "cassandra:5")
+	container, err := cassandra.Run(ctx, testimages.Cassandra)
 	require.NoError(t, err)
 	t.Cleanup(func() { container.Terminate(ctx) })
 
 	host, err := container.ConnectionHost(ctx)
 	require.NoError(t, err)
 
+	// gocql defaults to 600ms ConnectTimeout, which races the brief window
+	// between Cassandra accepting connections on 9042 and the CQL handler
+	// being ready. Match the prod cassutil settings.
 	cluster := gocql.NewCluster(host)
 	cluster.Consistency = gocql.One
-	session, err := cluster.CreateSession()
-	require.NoError(t, err)
+	cluster.Timeout = 10 * time.Second
+	cluster.ConnectTimeout = 10 * time.Second
+	// Cassandra inside Docker reports its rpc_address as the container's
+	// internal IP via system.local. Skip discovery so gocql sticks with
+	// the host:port we already obtained from the testcontainer.
+	cluster.DisableInitialHostLookup = true
+
+	var session *gocql.Session
+	for attempt := 0; attempt < 10; attempt++ {
+		session, err = cluster.CreateSession()
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Second)
+	}
+	require.NoError(t, err, "create cassandra session after retries")
 	t.Cleanup(func() { session.Close() })
 
 	require.NoError(t, session.Query(`CREATE KEYSPACE IF NOT EXISTS chat_test WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`).Exec())
