@@ -1151,6 +1151,25 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		assert.Contains(t, err.Error(), "remote list-members")
 	})
 
+	t.Run("cross-site not-a-member returns local sentinel unwrapped", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockRoomStore(ctrl)
+		mc := NewMockMemberListClient(ctrl)
+
+		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-eu"}
+		// Client already mapped the remote errNotRoomMember to errNotChannelMember; expandChannelRefs
+		// must pass it through unwrapped (parallel to the same-site branch) so errors.Is matches
+		// the sentinel for both paths.
+		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch).Return(nil, errNotChannelMember)
+
+		h := &Handler{store: store, siteID: "site-a", memberListClient: mc}
+		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
+
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, errNotChannelMember))
+		assert.NotContains(t, err.Error(), "remote list-members")
+	})
+
 	t.Run("fail-fast ordering", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockRoomStore(ctrl)

@@ -56,6 +56,13 @@ func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string
 	}
 
 	if errResp, ok := natsutil.TryParseError(reply.Data); ok {
+		// Map remote "not a member" to the local sentinel so callers can use
+		// errors.Is(err, errNotChannelMember) uniformly regardless of which site
+		// the source channel lives on. Other remote errors are passed through
+		// verbatim via the "remote member.list:" prefix that sanitizeError whitelists.
+		if errResp.Error == errNotRoomMember.Error() {
+			return nil, errNotChannelMember
+		}
 		return nil, fmt.Errorf("remote member.list: %s", errResp.Error)
 	}
 

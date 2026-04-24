@@ -490,6 +490,11 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 		} else {
 			members, err = h.memberListClient.ListMembers(ctx, requester, ref)
 			if err != nil {
+				// Pass the sentinel through unwrapped so same-site and cross-site "not a member"
+				// produce identical behavior — errors.Is(err, errNotChannelMember) matches both.
+				if errors.Is(err, errNotChannelMember) {
+					return nil, nil, errNotChannelMember
+				}
 				return nil, nil, fmt.Errorf("remote list-members %s@%s: %w", ref.RoomID, ref.SiteID, err)
 			}
 		}
