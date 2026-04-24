@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hmchangw/chat/pkg/idgen"
-
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -244,10 +244,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	if req.Account != "" {
-		// Individual removal (self-leave or owner-removes-other). Validation runs
-		// cheapest-first: target membership → requester role (owner-removes only)
-		// → room counts. Each step short-circuits so we never run the more
-		// expensive count aggregation for requests that would fail early anyway.
+		// Individual removal: cheapest-first validation (target → requester → counts).
 		target, err := h.store.GetSubscriptionWithMembership(ctx, roomID, req.Account)
 		if err != nil {
 			return nil, fmt.Errorf("get target subscription: %w", err)
@@ -275,8 +272,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("last owner cannot leave the room")
 		}
 	} else {
-		// Owner-removes-org path: only the requester's owner role matters; the org
-		// member set is resolved downstream in room-worker.
+		// Owner-removes-org: only the requester's owner role matters here; org members resolved downstream.
 		sub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
 		if err != nil {
 			return nil, fmt.Errorf("get requester subscription: %w", err)
@@ -285,6 +281,9 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("only owners can remove members")
 		}
 	}
+
+	// Stable seed for room-worker's deterministic system-message IDs across JetStream redeliveries.
+	req.Timestamp = time.Now().UTC().UnixMilli()
 
 	// Publish to ROOMS stream for room-worker processing.
 	var err error
@@ -341,22 +340,26 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	if !hasRole(requesterSub.Roles, model.RoleOwner) {
 		return nil, errOnlyOwners
 	}
-	targetSub, err := h.store.GetSubscription(ctx, req.Account, roomID)
+	// Covers both role check and membership-source guard; missing sub → errTargetNotMember.
+	target, err := h.store.GetSubscriptionWithMembership(ctx, roomID, req.Account)
 	if err != nil {
-		if errors.Is(err, model.ErrSubscriptionNotFound) {
+		if errors.Is(err, model.ErrSubscriptionNotFound) || errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, errTargetNotMember
 		}
 		return nil, fmt.Errorf("get target subscription: %w", err)
 	}
 	// Promote: target must not already be owner. Demote: target must be owner.
-	if req.NewRole == model.RoleOwner && hasRole(targetSub.Roles, model.RoleOwner) {
+	if req.NewRole == model.RoleOwner && hasRole(target.Subscription.Roles, model.RoleOwner) {
 		return nil, errAlreadyOwner
 	}
-	if req.NewRole == model.RoleMember && !hasRole(targetSub.Roles, model.RoleOwner) {
+	if req.NewRole == model.RoleMember && !hasRole(target.Subscription.Roles, model.RoleOwner) {
 		return nil, errNotOwner
 	}
-	// Last-owner guard: only needed for self-demotion since rule #5 guarantees
-	// requester is an owner, so demoting another owner always leaves the requester as owner.
+	// Reject only provably org-only members; subscription-only members (both flags false) are promotable.
+	if req.NewRole == model.RoleOwner && target.HasOrgMembership && !target.HasIndividualMembership {
+		return nil, errPromoteRequiresIndividual
+	}
+	// Last-owner guard only needed on self-demotion; rule #5 ensures requester is an owner.
 	if req.NewRole == model.RoleMember && req.Account == requester {
 		count, err := h.store.CountOwners(ctx, roomID)
 		if err != nil {
@@ -366,6 +369,8 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 			return nil, errCannotDemoteLast
 		}
 	}
+	// Stable acceptance time → stable Nats-Msg-Id across redeliveries.
+	req.Timestamp = time.Now().UTC().UnixMilli()
 	data, err = json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal role update request: %w", err)

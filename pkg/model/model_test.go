@@ -640,7 +640,7 @@ func TestNotificationEventJSON(t *testing.T) {
 }
 
 func TestUpdateRoleRequestJSON(t *testing.T) {
-	src := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	src := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1735689600000}
 	roundTrip(t, &src, &model.UpdateRoleRequest{})
 }
 
@@ -765,16 +765,18 @@ func TestRoomMetadataUpdateEventJSON(t *testing.T) {
 func TestRemoveMemberRequestJSON(t *testing.T) {
 	t.Run("with account", func(t *testing.T) {
 		r := model.RemoveMemberRequest{
-			RoomID:  "r1",
-			Account: "alice",
+			RoomID:    "r1",
+			Account:   "alice",
+			Timestamp: 1735689600000,
 		}
 		roundTrip(t, &r, &model.RemoveMemberRequest{})
 	})
 
 	t.Run("with orgId", func(t *testing.T) {
 		r := model.RemoveMemberRequest{
-			RoomID: "r1",
-			OrgID:  "org-1",
+			RoomID:    "r1",
+			OrgID:     "org-1",
+			Timestamp: 1735689600000,
 		}
 		roundTrip(t, &r, &model.RemoveMemberRequest{})
 	})

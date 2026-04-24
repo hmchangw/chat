@@ -57,6 +57,8 @@ type RemoveMemberRequest struct {
 	Requester string `json:"requester"          bson:"requester"`
 	Account   string `json:"account,omitempty"  bson:"account,omitempty"`
 	OrgID     string `json:"orgId,omitempty"    bson:"orgId,omitempty"`
+	// Set by room-service at acceptance; stable seed for Message.ID + Nats-Msg-Id.
+	Timestamp int64 `json:"timestamp" bson:"timestamp"`
 }
 
 type SysMsgUser struct {

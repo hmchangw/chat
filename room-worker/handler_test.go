@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -32,7 +33,7 @@ func TestHandler_ProcessRoleUpdate_Promote(t *testing.T) {
 		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-a"}, nil)
 
 	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}}
@@ -83,7 +84,7 @@ func TestHandler_ProcessRoleUpdate_Demote(t *testing.T) {
 		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-a"}, nil)
 
 	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}}
@@ -125,7 +126,7 @@ func TestHandler_ProcessRoleUpdate_CrossSite(t *testing.T) {
 		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-b"}, nil)
 
 	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}}
@@ -173,7 +174,7 @@ func TestHandler_ProcessRoleUpdate_CrossSite(t *testing.T) {
 func TestHandler_ProcessRoleUpdate_InvalidJSON(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
 	}}
@@ -189,7 +190,7 @@ func TestHandler_ProcessRoleUpdate_AddRoleError(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(fmt.Errorf("db error"))
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
 	}}
@@ -208,7 +209,7 @@ func TestHandler_ProcessRoleUpdate_RemoveRoleError(t *testing.T) {
 	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleMember).Return(nil)
 	store.EXPECT().RemoveRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(fmt.Errorf("db error"))
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
 	}}
@@ -227,7 +228,7 @@ func TestHandler_ProcessRoleUpdate_GetSubscriptionError(t *testing.T) {
 	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").Return(nil, fmt.Errorf("db error"))
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
 	}}
@@ -247,7 +248,7 @@ func TestHandler_ProcessRoleUpdate_PublishError(t *testing.T) {
 	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
 		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		return fmt.Errorf("nats down")
 	}}
 
@@ -262,7 +263,7 @@ func TestHandler_ProcessRoleUpdate_PublishError(t *testing.T) {
 func TestHandler_ProcessRoleUpdate_UnsupportedRole(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte) error {
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
 	}}
@@ -311,7 +312,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
 
 	var published []publishedMsg
-	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	})
@@ -378,7 +379,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
 		Return(nil)
 
 	var published []publishedMsg
-	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	})
@@ -432,7 +433,7 @@ func TestHandler_ProcessRemoveMember_DualMembership_OwnerDemoted(t *testing.T) {
 			)
 
 			var published []publishedMsg
-			h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+			h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 				published = append(published, publishedMsg{subj: subj, data: data})
 				return nil
 			})
@@ -484,7 +485,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
 
 	var published []publishedMsg
-	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	})
@@ -516,7 +517,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	var published []publishedMsg
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}
@@ -573,7 +574,7 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 
-	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
 	h := NewHandler(store, "site-a", publish)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
@@ -626,7 +627,7 @@ func TestHandler_ProcessAddMembers_RestrictedPropagatesPointer(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	var published []publishedMsg
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}
@@ -683,7 +684,7 @@ func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) 
 	store := NewMockSubscriptionStore(ctrl)
 
 	var published []publishedMsg
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}
@@ -717,7 +718,7 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 
-	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
 	h := NewHandler(store, "site-a", publish)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
@@ -753,7 +754,7 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 
-	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
 	h := NewHandler(store, "site-a", publish)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
@@ -784,7 +785,7 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	var published []publishedMsg
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}
@@ -859,11 +860,10 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).
 		Return(nil)
 	store.EXPECT().
-		ReconcileUserCount(gomock.Any(), roomID).
-		Return(nil)
+		ReconcileUserCount(gomock.Any(), roomID).Return(nil) // recount after removal
 
 	var published []publishedMsg
-	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte) error {
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	})
@@ -921,7 +921,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
 
 	var published []publishedMsg
-	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte) error {
+	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	})
@@ -946,7 +946,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 func TestHandler_ProcessRemoveMember_UnmarshalError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
 
 	err := h.processRemoveMember(context.Background(), []byte("{not json"))
 	require.Error(t, err)
@@ -960,7 +960,7 @@ func TestHandler_ProcessRemoveIndividual_GetUserError(t *testing.T) {
 		GetUserWithMembership(gomock.Any(), "r1", "alice").
 		Return(nil, fmt.Errorf("db down"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
 	data, _ := json.Marshal(req)
 
@@ -982,7 +982,7 @@ func TestHandler_ProcessRemoveIndividual_DeleteRoomMemberError(t *testing.T) {
 		DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u1").
 		Return(fmt.Errorf("write failed"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
 	data, _ := json.Marshal(req)
 
@@ -1008,7 +1008,7 @@ func TestHandler_ProcessRemoveIndividual_DualDemoteError(t *testing.T) {
 		RemoveRole(gomock.Any(), "alice", "r1", model.RoleOwner).
 		Return(fmt.Errorf("write failed"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
 	data, _ := json.Marshal(req)
 
@@ -1033,7 +1033,7 @@ func TestHandler_ProcessRemoveIndividual_DeleteSubscriptionError(t *testing.T) {
 		DeleteSubscription(gomock.Any(), "r1", "alice").
 		Return(int64(0), fmt.Errorf("write failed"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
 	data, _ := json.Marshal(req)
 
@@ -1061,7 +1061,7 @@ func TestHandler_ProcessRemoveIndividual_ReconcileUserCountError(t *testing.T) {
 		ReconcileUserCount(gomock.Any(), "r1").
 		Return(fmt.Errorf("write failed"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte) error { return nil })
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
 	data, _ := json.Marshal(req)
 
@@ -1074,7 +1074,7 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 
-	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
+	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
 	h := NewHandler(store, "site-a", publish)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
@@ -1101,4 +1101,100 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 
 	err := h.processAddMembers(context.Background(), reqData)
 	require.NoError(t, err)
+}
+
+// Message.ID and Nats-Msg-Id both come from idgen.DeriveID now — its
+// determinism tests live in pkg/idgen, but keep a smoke test here to catch
+// any regressions in the seed format used for JetStream dedup headers.
+func TestDedupID_StableAcrossCalls(t *testing.T) {
+	a := idgen.DeriveID("addmembers-msg:room-1:1")
+	b := idgen.DeriveID("addmembers-msg:room-1:1")
+	assert.Equal(t, a, b)
+	assert.NotEmpty(t, a)
+	// Different seeds must produce different IDs — otherwise JetStream
+	// dedup would collapse unrelated operations into a single published event.
+	c := idgen.DeriveID("addmembers-msg:room-1:2")
+	assert.NotEqual(t, a, c)
+}
+
+// Bug 4: outbox publish failure must propagate (NAK), not be swallowed.
+func TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID    = "room-1"
+		account   = "alice"
+		localSite = "site-a"
+		userSite  = "site-b"
+	)
+
+	store.EXPECT().
+		GetUserWithMembership(gomock.Any(), roomID, account).
+		Return(&UserWithMembership{
+			User:             model.User{ID: "u1", Account: account, SiteID: userSite},
+			HasOrgMembership: false,
+		}, nil)
+	store.EXPECT().
+		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
+		Return(nil)
+	store.EXPECT().
+		DeleteSubscription(gomock.Any(), roomID, account).
+		Return(int64(1), nil)
+	store.EXPECT().
+		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
+
+	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
+	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
+		if subj == outboxSubj {
+			return fmt.Errorf("outbox publish broken")
+		}
+		return nil
+	}
+	h := NewHandler(store, localSite, publish)
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
+	data, _ := json.Marshal(req)
+
+	err := h.processRemoveMember(context.Background(), data)
+	require.Error(t, err, "outbox failure must return error so JetStream NAKs and retries")
+	assert.Contains(t, err.Error(), "outbox")
+}
+
+func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID     = "room-1"
+		orgID      = "org-1"
+		requester  = "alice"
+		localSite  = "site-a"
+		remoteSite = "site-b"
+	)
+
+	orgMembers := []OrgMemberStatus{
+		{Account: "carol", SiteID: remoteSite, SectName: "Eng", HasIndividualMembership: false},
+	}
+
+	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, orgID).Return(orgMembers, nil)
+	store.EXPECT().DeleteSubscriptionsByAccounts(gomock.Any(), roomID, []string{"carol"}).Return(int64(1), nil)
+	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), roomID).Return(nil)
+
+	outboxSubj := subject.Outbox(localSite, remoteSite, "member_removed")
+	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
+		if subj == outboxSubj {
+			return fmt.Errorf("outbox publish broken")
+		}
+		return nil
+	}
+	h := NewHandler(store, localSite, publish)
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID}
+	data, _ := json.Marshal(req)
+
+	err := h.processRemoveMember(context.Background(), data)
+	require.Error(t, err, "outbox failure must return error so JetStream NAKs and retries")
+	assert.Contains(t, err.Error(), "outbox")
 }
