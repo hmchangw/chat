@@ -84,6 +84,8 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.{account}.request.search.messages"},
 		{"SearchRoomsPattern", subject.SearchRoomsPattern(),
 			"chat.user.{account}.request.search.rooms"},
+		{"MsgEditPattern", subject.MsgEditPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.edit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
