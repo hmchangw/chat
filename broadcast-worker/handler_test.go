@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -589,4 +590,23 @@ func TestBuildClientMessage(t *testing.T) {
 		assert.Equal(t, "alice", cm.Sender.ChineseName)
 		assert.Equal(t, "alice", cm.Sender.EngName)
 	})
+}
+
+func TestHandler_FetchAndUpdateRoom_Missing(t *testing.T) {
+	msgTime := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
+
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+
+	store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "ghost-room", "msg-1", msgTime, false).Return(nil, mongo.ErrNoDocuments)
+
+	keyStore := NewMockRoomKeyProvider(ctrl)
+	h := NewHandler(store, us, pub, keyStore)
+
+	err := h.HandleMessage(context.Background(), makeMessageEvent("ghost-room", "hello", msgTime))
+	require.Error(t, err)
+	require.ErrorIs(t, err, mongo.ErrNoDocuments)
+	assert.Empty(t, pub.records)
 }
