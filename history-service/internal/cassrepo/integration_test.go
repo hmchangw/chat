@@ -480,3 +480,63 @@ func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 	).Scan(&threadCount))
 	assert.Equal(t, 0, threadCount, "top-level edit must not write to thread_messages_by_room")
 }
+
+func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-thread"
+	threadRoomID := "thread-1"
+	parentID := "m-parent"
+	msgID := "m-reply"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a thread reply in messages_by_id and thread_messages_by_room.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_room_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "original", parentID, threadRoomID,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, createdAt, msgID, sender, "original", parentID,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: parentID,
+		ThreadRoomID:   threadRoomID,
+	}
+	editedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.UpdateMessageContent(ctx, msg, "edited", editedAt))
+
+	// messages_by_id updated
+	var gotMsg string
+	var gotEditedAt time.Time
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg)
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
+
+	// thread_messages_by_room updated (verify with the full PK including thread_room_id)
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, threadRoomID, createdAt, msgID,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg)
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
+
+	// messages_by_room must NOT have a phantom row for this thread reply
+	var roomCount int
+	require.NoError(t, session.Query(
+		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&roomCount))
+	assert.Equal(t, 0, roomCount, "thread-reply edit must not write to messages_by_room")
+}

@@ -205,7 +205,7 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 		return fmt.Errorf("update messages_by_id: %w", err)
 	}
 
-	// Top-level only: messages_by_room
+	// Top-level vs thread-reply: mutually exclusive.
 	if msg.ThreadParentID == "" {
 		if err := r.session.Query(
 			`UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
@@ -213,8 +213,15 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("update messages_by_room: %w", err)
 		}
+	} else {
+		if err := r.session.Query(
+			`UPDATE thread_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update thread_messages_by_room: %w", err)
+		}
 	}
 
-	// Thread-reply and pinned branches are added in Tasks 8 and 9.
+	// Pinned branch is added in Task 9.
 	return nil
 }
