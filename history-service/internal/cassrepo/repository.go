@@ -222,6 +222,15 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 		}
 	}
 
-	// Pinned branch is added in Task 9.
+	// Pinned mirror — additive to either of the above.
+	if msg.PinnedAt != nil {
+		if err := r.session.Query(
+			`UPDATE pinned_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update pinned_messages_by_room: %w", err)
+		}
+	}
+
 	return nil
 }
