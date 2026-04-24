@@ -115,21 +115,6 @@ func (mr *MockRoomStoreMockRecorder) CreateSubscription(ctx, sub any) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateSubscription", reflect.TypeOf((*MockRoomStore)(nil).CreateSubscription), ctx, sub)
 }
 
-// GetAccountsByRooms mocks base method.
-func (m *MockRoomStore) GetAccountsByRooms(ctx context.Context, roomIDs []string) ([]string, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetAccountsByRooms", ctx, roomIDs)
-	ret0, _ := ret[0].([]string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetAccountsByRooms indicates an expected call of GetAccountsByRooms.
-func (mr *MockRoomStoreMockRecorder) GetAccountsByRooms(ctx, roomIDs any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAccountsByRooms", reflect.TypeOf((*MockRoomStore)(nil).GetAccountsByRooms), ctx, roomIDs)
-}
-
 // GetRoom mocks base method.
 func (m *MockRoomStore) GetRoom(ctx context.Context, id string) (*model.Room, error) {
 	m.ctrl.T.Helper()
@@ -143,21 +128,6 @@ func (m *MockRoomStore) GetRoom(ctx context.Context, id string) (*model.Room, er
 func (mr *MockRoomStoreMockRecorder) GetRoom(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRoom", reflect.TypeOf((*MockRoomStore)(nil).GetRoom), ctx, id)
-}
-
-// GetRoomMembersByRooms mocks base method.
-func (m *MockRoomStore) GetRoomMembersByRooms(ctx context.Context, roomIDs []string) ([]model.RoomMember, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetRoomMembersByRooms", ctx, roomIDs)
-	ret0, _ := ret[0].([]model.RoomMember)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetRoomMembersByRooms indicates an expected call of GetRoomMembersByRooms.
-func (mr *MockRoomStoreMockRecorder) GetRoomMembersByRooms(ctx, roomIDs any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRoomMembersByRooms", reflect.TypeOf((*MockRoomStore)(nil).GetRoomMembersByRooms), ctx, roomIDs)
 }
 
 // GetSubscription mocks base method.
