@@ -159,3 +159,69 @@ func TestCachedUserStore_InnerErrorPropagated(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, innerErr, "inner error should be wrapped, not swallowed")
 }
+
+func TestCachedUserStore_TTLExpiredReFetches(t *testing.T) {
+	alice := model.User{ID: "u1", Account: "alice"}
+	inner := newFakeUserStore(alice)
+	c := NewCachedUserStore(inner, 10, 1*time.Second)
+
+	// Freeze "now" at a known value.
+	base := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return base }
+
+	_, err := c.FindUsersByAccounts(context.Background(), []string{"alice"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, inner.callCount())
+
+	// Advance past TTL.
+	c.now = func() time.Time { return base.Add(2 * time.Second) }
+
+	_, err = c.FindUsersByAccounts(context.Background(), []string{"alice"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, inner.callCount(), "stale entry should force re-fetch")
+}
+
+func TestCachedUserStore_LRUEvictionOnOverflow(t *testing.T) {
+	// maxSize=2: inserting 3 distinct accounts must evict the oldest.
+	a := model.User{ID: "u1", Account: "alice"}
+	b := model.User{ID: "u2", Account: "bob"}
+	c := model.User{ID: "u3", Account: "carol"}
+	inner := newFakeUserStore(a, b, c)
+	store := NewCachedUserStore(inner, 2, time.Minute)
+
+	ctx := context.Background()
+	_, _ = store.FindUsersByAccounts(ctx, []string{"alice"})
+	_, _ = store.FindUsersByAccounts(ctx, []string{"bob"})
+	_, _ = store.FindUsersByAccounts(ctx, []string{"carol"}) // should evict alice
+	// alice should now be a miss again.
+	_, _ = store.FindUsersByAccounts(ctx, []string{"alice"})
+
+	// Inner calls: alice, bob, carol, alice → 4 total
+	assert.Equal(t, 4, inner.callCount(), "alice must be re-fetched after eviction")
+}
+
+func TestCachedUserStore_AccessPromotesToMRU(t *testing.T) {
+	// maxSize=2: after priming alice + bob, accessing alice makes bob the
+	// LRU. Inserting carol should evict bob, not alice.
+	a := model.User{ID: "u1", Account: "alice"}
+	b := model.User{ID: "u2", Account: "bob"}
+	c := model.User{ID: "u3", Account: "carol"}
+	inner := newFakeUserStore(a, b, c)
+	store := NewCachedUserStore(inner, 2, time.Minute)
+
+	ctx := context.Background()
+	_, _ = store.FindUsersByAccounts(ctx, []string{"alice"})
+	_, _ = store.FindUsersByAccounts(ctx, []string{"bob"})
+	// Touch alice to mark MRU.
+	_, _ = store.FindUsersByAccounts(ctx, []string{"alice"})
+	// Insert carol: bob should be evicted.
+	_, _ = store.FindUsersByAccounts(ctx, []string{"carol"})
+
+	before := inner.callCount()
+	// alice is still cached.
+	_, _ = store.FindUsersByAccounts(ctx, []string{"alice"})
+	assert.Equal(t, before, inner.callCount(), "alice should still be cached")
+	// bob is not.
+	_, _ = store.FindUsersByAccounts(ctx, []string{"bob"})
+	assert.Equal(t, before+1, inner.callCount(), "bob should have been evicted")
+}
