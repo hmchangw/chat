@@ -150,11 +150,12 @@ func TestCachedUserStore_MissingUserNotCached(t *testing.T) {
 }
 
 func TestCachedUserStore_InnerErrorPropagated(t *testing.T) {
+	innerErr := errors.New("boom")
 	inner := newFakeUserStore()
-	inner.err = errors.New("boom")
+	inner.err = innerErr
 	c := NewCachedUserStore(inner, 10, time.Minute)
 
 	_, err := c.FindUsersByAccounts(context.Background(), []string{"alice"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "boom")
+	assert.ErrorIs(t, err, innerErr, "inner error should be wrapped, not swallowed")
 }

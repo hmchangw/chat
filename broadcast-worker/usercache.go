@@ -3,6 +3,7 @@ package main
 import (
 	"container/list"
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -91,8 +92,8 @@ func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []st
 
 	fresh, err := c.inner.FindUsersByAccounts(ctx, missing)
 	if err != nil {
-		// Return partial hits plus the error so callers can log and continue.
-		return hits, err
+		// Return partial hits plus the wrapped error so callers can log and continue.
+		return hits, fmt.Errorf("cached find users by accounts: %w", err)
 	}
 
 	c.mu.Lock()
