@@ -106,6 +106,50 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		PRIMARY KEY (message_id, created_at)
 	) WITH CLUSTERING ORDER BY (created_at DESC)`).Exec())
 
+	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.thread_messages_by_room (
+		room_id TEXT,
+		thread_room_id TEXT,
+		created_at TIMESTAMP,
+		message_id TEXT,
+		sender FROZEN<"Participant">,
+		target_user FROZEN<"Participant">,
+		msg TEXT,
+		mentions SET<FROZEN<"Participant">>,
+		attachments LIST<BLOB>,
+		file FROZEN<"File">,
+		card FROZEN<"Card">,
+		card_action FROZEN<"CardAction">,
+		tshow BOOLEAN,
+		tcount INT,
+		thread_parent_id TEXT,
+		thread_parent_created_at TIMESTAMP,
+		quoted_parent_message FROZEN<"QuotedParentMessage">,
+		visible_to TEXT,
+		unread BOOLEAN,
+		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+		deleted BOOLEAN,
+		type TEXT,
+		sys_msg_data BLOB,
+		site_id TEXT,
+		edited_at TIMESTAMP,
+		updated_at TIMESTAMP,
+		PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
+	) WITH CLUSTERING ORDER BY (thread_room_id ASC, created_at DESC, message_id DESC)`).Exec())
+
+	require.NoError(t, session.Query(`CREATE TABLE IF NOT EXISTS chat_test.pinned_messages_by_room (
+		room_id TEXT,
+		created_at TIMESTAMP,
+		message_id TEXT,
+		sender FROZEN<"Participant">,
+		msg TEXT,
+		file FROZEN<"File">,
+		card FROZEN<"Card">,
+		deleted BOOLEAN,
+		edited_at TIMESTAMP,
+		updated_at TIMESTAMP,
+		PRIMARY KEY ((room_id), created_at, message_id)
+	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`).Exec())
+
 	cluster.Keyspace = "chat_test"
 	ksSession, err := cluster.CreateSession()
 	require.NoError(t, err)
@@ -380,4 +424,183 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	require.NotNil(t, msg.PinnedBy)
 	assert.Equal(t, "u9", msg.PinnedBy.ID)
 	assert.Equal(t, "pinner", msg.PinnedBy.Account)
+}
+
+func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-top"
+	msgID := "m-top"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a top-level message in both tables (ThreadParentID == "").
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "original", "",
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "original", "",
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: "",
+	}
+	editedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.UpdateMessageContent(ctx, msg, "edited", editedAt))
+
+	// messages_by_id updated
+	var gotMsg string
+	var gotEditedAt time.Time
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg)
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
+
+	// messages_by_room updated
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg)
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
+
+	// thread_messages_by_room must NOT have a phantom row for this message
+	var threadCount int
+	require.NoError(t, session.Query(
+		`SELECT COUNT(*) FROM thread_messages_by_room WHERE room_id = ?`,
+		roomID,
+	).Scan(&threadCount))
+	assert.Equal(t, 0, threadCount, "top-level edit must not write to thread_messages_by_room")
+}
+
+func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-thread"
+	threadRoomID := "thread-1"
+	parentID := "m-parent"
+	msgID := "m-reply"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a thread reply in messages_by_id and thread_messages_by_room.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_room_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "original", parentID, threadRoomID,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, createdAt, msgID, sender, "original", parentID,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: parentID,
+		ThreadRoomID:   threadRoomID,
+	}
+	editedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.UpdateMessageContent(ctx, msg, "edited", editedAt))
+
+	// messages_by_id updated
+	var gotMsg string
+	var gotEditedAt time.Time
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg)
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
+
+	// thread_messages_by_room updated (verify with the full PK including thread_room_id)
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, threadRoomID, createdAt, msgID,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg)
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
+
+	// messages_by_room must NOT have a phantom row for this thread reply
+	var roomCount int
+	require.NoError(t, session.Query(
+		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&roomCount))
+	assert.Equal(t, 0, roomCount, "thread-reply edit must not write to messages_by_room")
+}
+
+func TestRepository_UpdateMessageContent_Pinned(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-pin"
+	msgID := "m-pin"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+	pinnedAt := createdAt.Add(10 * time.Second)
+
+	// Seed a top-level pinned message in all three tables.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, pinned_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "original", "", pinnedAt,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "original", "",
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO pinned_messages_by_room (room_id, created_at, message_id, sender, msg) VALUES (?, ?, ?, ?, ?)`,
+		roomID, pinnedAt, msgID, sender, "original",
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: "",
+		PinnedAt:       &pinnedAt,
+	}
+	editedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.UpdateMessageContent(ctx, msg, "edited", editedAt))
+
+	// All three affected tables updated
+	var gotMsg string
+	var gotEditedAt time.Time
+
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg, "messages_by_id should reflect the edit")
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
+
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg, "messages_by_room should reflect the edit")
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
+
+	require.NoError(t, session.Query(
+		`SELECT msg, edited_at FROM pinned_messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, pinnedAt, msgID,
+	).Scan(&gotMsg, &gotEditedAt))
+	assert.Equal(t, "edited", gotMsg, "pinned_messages_by_room should reflect the edit")
+	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
 }

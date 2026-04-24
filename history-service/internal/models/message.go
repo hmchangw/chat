@@ -62,3 +62,29 @@ type LoadSurroundingMessagesResponse struct {
 type GetMessageByIDRequest struct {
 	MessageID string `json:"messageId"`
 }
+
+// EditMessageRequest is the payload for editing a message.
+type EditMessageRequest struct {
+	MessageID string `json:"messageId"`
+	NewMsg    string `json:"newMsg"`
+}
+
+// EditMessageResponse is the reply returned by the edit handler.
+type EditMessageResponse struct {
+	MessageID string `json:"messageId"`
+	EditedAt  int64  `json:"editedAt"` // UTC millis
+}
+
+// MessageEditedEvent is the live event published to chat.room.{roomID}.event
+// after a successful edit. Per CLAUDE.md, every NATS event carries a
+// Timestamp (event publish time). EditedAt is the domain time when the edit
+// occurred; both are populated from a single time.Now().UTC() in the handler.
+type MessageEditedEvent struct {
+	Type      string `json:"type"      bson:"type"`      // always "message_edited"
+	Timestamp int64  `json:"timestamp" bson:"timestamp"` // UTC millis, event publish time
+	RoomID    string `json:"roomId"    bson:"roomId"`
+	MessageID string `json:"messageId" bson:"messageId"`
+	NewMsg    string `json:"newMsg"    bson:"newMsg"`
+	EditedBy  string `json:"editedBy"  bson:"editedBy"` // actor account (always == message.sender.account under sender-only auth)
+	EditedAt  int64  `json:"editedAt"  bson:"editedAt"` // UTC millis, domain time when edit occurred
+}

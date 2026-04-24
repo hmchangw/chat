@@ -187,3 +187,50 @@ func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*mod
 	}
 	return &m, nil
 }
+
+// UpdateMessageContent updates the msg, edited_at, and updated_at fields
+// across the Cassandra tables that actually hold the row, determined from
+// msg's own metadata. Top-level messages (msg.ThreadParentID == "") land in
+// messages_by_room; thread replies land in thread_messages_by_room; pinned
+// messages additionally land in pinned_messages_by_room. messages_by_id is
+// always updated. All UPDATEs use the full PK; none is a no-op against a
+// missing row — see spec doc for the Cassandra phantom-row rationale.
+// Idempotent with respect to msg content; timestamps advance per call.
+func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	// Always: messages_by_id
+	if err := r.session.Query(
+		`UPDATE messages_by_id SET msg = ?, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+		newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update messages_by_id: %w", err)
+	}
+
+	// Top-level vs thread-reply: mutually exclusive.
+	if msg.ThreadParentID == "" {
+		if err := r.session.Query(
+			`UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update messages_by_room: %w", err)
+		}
+	} else {
+		if err := r.session.Query(
+			`UPDATE thread_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update thread_messages_by_room: %w", err)
+		}
+	}
+
+	// Pinned mirror — additive to either of the above.
+	if msg.PinnedAt != nil {
+		if err := r.session.Query(
+			`UPDATE pinned_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update pinned_messages_by_room: %w", err)
+		}
+	}
+
+	return nil
+}

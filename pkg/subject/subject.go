@@ -195,6 +195,12 @@ func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
 }
 
+// MsgEditPattern is the natsrouter pattern for editing a message.
+// The {account} and {roomID} placeholders are extracted by natsrouter.
+func MsgEditPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.edit", siteID)
+}
+
 func MemberAdd(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.add", account, roomID, siteID)
 }
