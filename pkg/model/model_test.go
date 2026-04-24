@@ -861,7 +861,7 @@ func TestAddMembersRequestJSON(t *testing.T) {
 		RoomID:   "r1",
 		Users:    []string{"alice", "bob"},
 		Orgs:     []string{"engineering"},
-		Channels: []string{"general"},
+		Channels: []model.ChannelRef{{RoomID: "general", SiteID: "site-a"}},
 		History:  model.HistoryConfig{Mode: model.HistoryModeAll},
 	}
 	data, err := json.Marshal(req)
@@ -964,7 +964,7 @@ func TestMembersAddedJSON(t *testing.T) {
 	ma := model.MembersAdded{
 		Individuals:     []string{"alice", "bob"},
 		Orgs:            []string{"engineering"},
-		Channels:        []string{"general"},
+		Channels:        []model.ChannelRef{{RoomID: "general", SiteID: "site-a"}},
 		AddedUsersCount: 5,
 	}
 	data, err := json.Marshal(ma)
