@@ -15,12 +15,13 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
 	t.Helper()
 	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:8")
+	container, err := mongodb.Run(ctx, testimages.Mongo)
 	require.NoError(t, err)
 	t.Cleanup(func() { container.Terminate(ctx) })
 

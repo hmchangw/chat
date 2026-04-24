@@ -27,6 +27,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomcrypto"
 	"github.com/hmchangw/chat/pkg/roomkeysender"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 const natsAlias = "nats-server"
@@ -61,7 +62,7 @@ websocket {
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "nats:2-alpine",
+			Image:        testimages.NATS,
 			ExposedPorts: []string{"4222/tcp", "8080/tcp"},
 			Cmd:          []string{"--config", "/nats.conf"},
 			Files: []testcontainers.ContainerFile{
@@ -111,7 +112,7 @@ func setupNode(t *testing.T, nw *testcontainers.DockerNetwork) testcontainers.Co
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:      "node:20-alpine",
+			Image:      testimages.Node,
 			Cmd:        []string{"sh", "-c", "sleep 600"},
 			Networks:   []string{nw.Name},
 			WaitingFor: wait.ForExec([]string{"node", "--version"}).WithStartupTimeout(30 * time.Second),
@@ -136,10 +137,11 @@ func setupNode(t *testing.T, nw *testcontainers.DockerNetwork) testcontainers.Co
 	)
 	require.NoError(t, err, "copy ws-polyfill.cjs into container")
 
-	// Install tsx and nats (WebSocket client) only if not already present in the image.
+	// Install tsx, nats.ws (WebSocket NATS client), and websocket (W3C WebSocket
+	// polyfill referenced by ws-polyfill.cjs — Node 20 ships no native WebSocket).
 	exitCode, reader, err := container.Exec(ctx, []string{
 		"sh", "-c",
-		"command -v tsx >/dev/null 2>&1 || (npm install -g tsx --quiet 2>&1 && npm install -g nats.ws --quiet 2>&1)",
+		"command -v tsx >/dev/null 2>&1 || (npm install -g tsx --quiet 2>&1 && npm install -g nats.ws --quiet 2>&1 && npm install -g websocket --quiet 2>&1)",
 	})
 	require.NoError(t, err, "exec npm install")
 	out := readCombined(reader)
@@ -191,6 +193,7 @@ func TestRoomKeySender_TypeScriptClient_Unencrypted(t *testing.T) {
 
 	go func() {
 		exitCode, reader, err := nodeContainer.Exec(ctx, []string{
+			"env", "NODE_PATH=/usr/local/lib/node_modules",
 			"tsx", "--require", "/ws-polyfill.cjs", "/client.ts", wsURL, account, roomID,
 		})
 		stdout, combined := splitOutput(reader)
@@ -252,6 +255,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 
 	go func() {
 		exitCode, reader, err := nodeContainer.Exec(ctx, []string{
+			"env", "NODE_PATH=/usr/local/lib/node_modules",
 			"tsx", "--require", "/ws-polyfill.cjs", "/client.ts", wsURL, account, roomID,
 		})
 		stdout, combined := splitOutput(reader)

@@ -26,12 +26,13 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
 	t.Helper()
 	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:4.4.15")
+	container, err := mongodb.Run(ctx, testimages.Mongo)
 	if err != nil {
 		t.Fatalf("start mongo: %v", err)
 	}
@@ -54,7 +55,7 @@ func setupValkey(t *testing.T) *roomkeystore.Config {
 	ctx := context.Background()
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "valkey/valkey:8",
+			Image:        testimages.Valkey,
 			ExposedPorts: []string{"6379/tcp"},
 			WaitingFor:   wait.ForLog("Ready to accept connections"),
 		},
@@ -75,7 +76,7 @@ func setupValkey(t *testing.T) *roomkeystore.Config {
 func setupNATS(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
-	container, err := natsmod.Run(ctx, "nats:2.11-alpine")
+	container, err := natsmod.Run(ctx, testimages.NATS)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 	url, err := container.ConnectionString(ctx)
