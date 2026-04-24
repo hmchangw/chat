@@ -429,7 +429,7 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	}
 
 	// 5. Expand channels
-	channelOrgIDs, channelAccounts, err := h.expandChannels(ctx, req.Channels)
+	channelOrgIDs, channelAccounts, err := h.expandChannelRefs(ctx, requester, req.Channels)
 	if err != nil {
 		return nil, fmt.Errorf("expand channels: %w", err)
 	}
@@ -472,45 +472,38 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	return json.Marshal(map[string]string{"status": "accepted"})
 }
 
-func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgIDs, accounts []string, err error) {
-	if len(channelIDs) == 0 {
-		return nil, nil, nil
-	}
+func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs []model.ChannelRef) (orgIDs, accounts []string, err error) {
+	for _, ref := range refs {
+		var members []model.RoomMember
 
-	// Batch fetch room_members for all channels
-	roomMembers, err := h.store.GetRoomMembersByRooms(ctx, channelIDs)
-	if err != nil {
-		return nil, nil, fmt.Errorf("get room members: %w", err)
-	}
+		if ref.SiteID == h.siteID {
+			if _, err := h.store.GetSubscription(ctx, requester, ref.RoomID); err != nil {
+				if errors.Is(err, model.ErrSubscriptionNotFound) {
+					return nil, nil, errNotChannelMember
+				}
+				return nil, nil, fmt.Errorf("subscription check %s: %w", ref.RoomID, err)
+			}
+			members, err = h.store.ListRoomMembers(ctx, ref.RoomID, nil, nil, false)
+			if err != nil {
+				return nil, nil, fmt.Errorf("local list-members %s: %w", ref.RoomID, err)
+			}
+		} else {
+			members, err = h.memberListClient.ListMembers(ctx, requester, ref)
+			if err != nil {
+				return nil, nil, fmt.Errorf("remote list-members %s@%s: %w", ref.RoomID, ref.SiteID, err)
+			}
+		}
 
-	// Build set of channels that have room_members
-	channelsWithMembers := make(map[string]struct{})
-	for i := range roomMembers {
-		rm := &roomMembers[i]
-		channelsWithMembers[rm.RoomID] = struct{}{}
-		switch rm.Member.Type {
-		case model.RoomMemberOrg:
-			orgIDs = append(orgIDs, rm.Member.ID)
-		case model.RoomMemberIndividual:
-			accounts = append(accounts, rm.Member.Account)
+		for i := range members {
+			m := &members[i].Member
+			switch m.Type {
+			case model.RoomMemberOrg:
+				orgIDs = append(orgIDs, m.ID)
+			case model.RoomMemberIndividual:
+				accounts = append(accounts, m.Account)
+			}
 		}
 	}
-
-	// Channels without room_members — fallback to GetAccountsByRooms
-	var noMemberChannels []string
-	for _, chID := range channelIDs {
-		if _, ok := channelsWithMembers[chID]; !ok {
-			noMemberChannels = append(noMemberChannels, chID)
-		}
-	}
-	if len(noMemberChannels) > 0 {
-		fallbackAccounts, err := h.store.GetAccountsByRooms(ctx, noMemberChannels)
-		if err != nil {
-			return nil, nil, fmt.Errorf("get accounts by rooms: %w", err)
-		}
-		accounts = append(accounts, fallbackAccounts...)
-	}
-
 	return orgIDs, accounts, nil
 }
 

@@ -31,7 +31,7 @@ type AddMembersRequest struct {
 	RoomID           string        `json:"roomId"           bson:"roomId"`
 	Users            []string      `json:"users"            bson:"users"`
 	Orgs             []string      `json:"orgs"             bson:"orgs"`
-	Channels         []string      `json:"channels"         bson:"channels"`
+	Channels         []ChannelRef  `json:"channels"         bson:"channels"`
 	History          HistoryConfig `json:"history"          bson:"history"`
 	RequesterID      string        `json:"requesterId"      bson:"requesterId"`
 	RequesterAccount string        `json:"requesterAccount" bson:"requesterAccount"`
@@ -88,7 +88,7 @@ type MemberRemoved struct {
 type MembersAdded struct {
 	Individuals     []string `json:"individuals"`
 	Orgs            []string `json:"orgs"`
-	Channels        []string `json:"channels"`
+	Channels        []ChannelRef `json:"channels"`
 	AddedUsersCount int      `json:"addedUsersCount"`
 }
 
