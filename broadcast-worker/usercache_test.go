@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -224,4 +225,37 @@ func TestCachedUserStore_AccessPromotesToMRU(t *testing.T) {
 	// bob is not.
 	_, _ = store.FindUsersByAccounts(ctx, []string{"bob"})
 	assert.Equal(t, before+1, inner.callCount(), "bob should have been evicted")
+}
+
+func TestCachedUserStore_ConcurrentSafe(t *testing.T) {
+	// Many goroutines hit overlapping account sets. No race, no panic.
+	const (
+		goroutines = 32
+		iterations = 200
+		accounts   = 50
+	)
+	users := make([]model.User, accounts)
+	for i := range users {
+		users[i] = model.User{
+			ID:      "u-" + strconv.Itoa(i),
+			Account: "acct-" + strconv.Itoa(i),
+		}
+	}
+	inner := newFakeUserStore(users...)
+	store := NewCachedUserStore(inner, 32, time.Minute)
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(seed int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				idx := (seed*iterations + i) % accounts
+				_, err := store.FindUsersByAccounts(ctx, []string{"acct-" + strconv.Itoa(idx)})
+				require.NoError(t, err)
+			}
+		}(g)
+	}
+	wg.Wait()
 }
