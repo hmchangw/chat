@@ -1,6 +1,8 @@
 package service_test
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -720,4 +722,51 @@ func TestHistoryService_GetMessageByID_NotSubscribed(t *testing.T) {
 	_, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not subscribed to room")
+}
+
+// --- EditMessage ---
+
+func TestHistoryService_EditMessage_Success(t *testing.T) {
+	svc, msgs, subs, pub := newService(t)
+	c := testContext()
+
+	// Subscription check passes (accessSince nil means full history access, non-nil also fine)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	// Message lookup returns the user's own message in the expected room.
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	// UPDATE succeeds. The handler passes the hydrated *Message directly.
+	msgs.EXPECT().
+		UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).
+		Return(nil)
+
+	// Publish succeeds. Validate the payload.
+	pub.EXPECT().
+		Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).
+		DoAndReturn(func(_ context.Context, subj string, data []byte) error {
+			var evt models.MessageEditedEvent
+			require.NoError(t, json.Unmarshal(data, &evt))
+			assert.Equal(t, "message_edited", evt.Type)
+			assert.Equal(t, "r1", evt.RoomID)
+			assert.Equal(t, "m-abc", evt.MessageID)
+			assert.Equal(t, "new content", evt.NewMsg)
+			assert.Equal(t, "u1", evt.EditedBy)
+			assert.NotZero(t, evt.Timestamp)
+			assert.NotZero(t, evt.EditedAt)
+			return nil
+		})
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{
+		MessageID: "m-abc",
+		NewMsg:    "new content",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "m-abc", resp.MessageID)
+	assert.NotZero(t, resp.EditedAt)
 }
