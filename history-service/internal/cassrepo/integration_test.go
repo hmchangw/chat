@@ -735,13 +735,13 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 	).Scan(&roomCount))
 	assert.Equal(t, 0, roomCount, "thread-reply soft-delete must not write to messages_by_room")
 
-	// Parent's tcount should still be 1 — tcount decrement is added in Task 7.
+	// Parent's tcount should have been decremented from 1 to 0 — see Task 7.
 	var gotTcount int
 	require.NoError(t, session.Query(
 		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
 		roomID, parentCreatedAt, parentID,
 	).Scan(&gotTcount))
-	assert.Equal(t, 1, gotTcount, "tcount decrement is not yet implemented — expected unchanged")
+	assert.Equal(t, 0, gotTcount, "tcount should be decremented on thread-reply soft-delete")
 }
 
 func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
@@ -800,4 +800,102 @@ func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
 		roomID, pinnedAt, msgID,
 	).Scan(&gotDeleted))
 	assert.True(t, gotDeleted, "pinned_messages_by_room should be deleted")
+}
+
+func TestRepository_SoftDeleteMessage_DecrementsParentTcount(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-tcount"
+	threadRoomID := "thread-tcount"
+	parentID := "m-tcount-parent"
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyID := "m-tcount-reply"
+	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
+
+	// Parent has tcount = 3 (three replies, of which we're about to delete one).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		parentID, roomID, parentCreatedAt, sender, "parent", "", 3, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, parentCreatedAt, parentID, sender, "parent", "", 3, false,
+	).Exec())
+
+	// Seed the reply we're deleting.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_parent_created_at, thread_room_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		replyID, roomID, replyCreatedAt, sender, "reply", parentID, parentCreatedAt, threadRoomID, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID, parentCreatedAt, false,
+	).Exec())
+
+	parentCreatedAtPtr := parentCreatedAt
+	msg := &models.Message{
+		MessageID:             replyID,
+		RoomID:                roomID,
+		CreatedAt:             replyCreatedAt,
+		Sender:                sender,
+		ThreadParentID:        parentID,
+		ThreadParentCreatedAt: &parentCreatedAtPtr,
+		ThreadRoomID:          threadRoomID,
+	}
+	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, replyCreatedAt.Add(time.Minute)))
+
+	// Both tables' tcount should now be 2.
+	var gotTcount int
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		parentID, parentCreatedAt,
+	).Scan(&gotTcount))
+	assert.Equal(t, 2, gotTcount, "messages_by_id.tcount should decrement 3 -> 2")
+
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, parentCreatedAt, parentID,
+	).Scan(&gotTcount))
+	assert.Equal(t, 2, gotTcount, "messages_by_room.tcount should decrement 3 -> 2")
+}
+
+func TestRepository_SoftDeleteMessage_TopLevelDoesNotTouchTcount(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-tcount-top"
+	msgID := "m-tcount-top"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a top-level message with tcount=5 (pretend it has 5 thread replies).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "top", "", 5, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "top", "", 5, false,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: "",
+	}
+	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, createdAt.Add(time.Minute)))
+
+	// tcount stays at 5 — top-level delete does not cascade / decrement (spec §8.2).
+	var gotTcount int
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotTcount))
+	assert.Equal(t, 5, gotTcount, "top-level soft-delete must not touch tcount — replies are preserved (no cascade)")
 }
