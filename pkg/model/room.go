@@ -11,18 +11,18 @@ const (
 )
 
 type Room struct {
-	ID               string    `json:"id" bson:"_id"`
-	Name             string    `json:"name" bson:"name"`
-	Type             RoomType  `json:"type" bson:"type"`
-	CreatedBy        string    `json:"createdBy" bson:"createdBy"`
-	SiteID           string    `json:"siteId" bson:"siteId"`
-	UserCount        int       `json:"userCount" bson:"userCount"`
-	LastMsgAt        time.Time `json:"lastMsgAt" bson:"lastMsgAt"`
-	LastMsgID        string    `json:"lastMsgId" bson:"lastMsgId"`
-	LastMentionAllAt time.Time `json:"lastMentionAllAt" bson:"lastMentionAllAt"`
-	CreatedAt        time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt" bson:"updatedAt"`
-	Restricted       bool      `json:"restricted,omitempty" bson:"restricted,omitempty"`
+	ID               string     `json:"id" bson:"_id"`
+	Name             string     `json:"name" bson:"name"`
+	Type             RoomType   `json:"type" bson:"type"`
+	CreatedBy        string     `json:"createdBy" bson:"createdBy"`
+	SiteID           string     `json:"siteId" bson:"siteId"`
+	UserCount        int        `json:"userCount" bson:"userCount"`
+	LastMsgAt        *time.Time `json:"lastMsgAt,omitempty" bson:"lastMsgAt,omitempty"`
+	LastMsgID        string     `json:"lastMsgId" bson:"lastMsgId"`
+	LastMentionAllAt *time.Time `json:"lastMentionAllAt,omitempty" bson:"lastMentionAllAt,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt" bson:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt" bson:"updatedAt"`
+	Restricted       bool       `json:"restricted,omitempty" bson:"restricted,omitempty"`
 }
 
 type CreateRoomRequest struct {
@@ -49,8 +49,8 @@ type RoomInfo struct {
 	Found            bool    `json:"found"`
 	SiteID           string  `json:"siteId,omitempty"`
 	Name             string  `json:"name,omitempty"`
-	LastMsgAt        int64   `json:"lastMsgAt,omitempty"`
-	LastMentionAllAt int64   `json:"lastMentionAllAt,omitempty"`
+	LastMsgAt        *int64  `json:"lastMsgAt,omitempty"`
+	LastMentionAllAt *int64  `json:"lastMentionAllAt,omitempty"`
 	PrivateKey       *string `json:"privateKey,omitempty"`
 	KeyVersion       *int    `json:"keyVersion,omitempty"`
 	Error            string  `json:"error,omitempty"`

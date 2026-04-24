@@ -126,7 +126,8 @@ func TestBroadcastWorker_GroupRoom_Integration(t *testing.T) {
 	var room model.Room
 	require.NoError(t, db.Collection("rooms").FindOne(ctx, bson.M{"_id": "r1"}).Decode(&room))
 	assert.Equal(t, "m1", room.LastMsgID)
-	assert.WithinDuration(t, msgTime, room.LastMsgAt, time.Millisecond)
+	require.NotNil(t, room.LastMsgAt)
+	assert.WithinDuration(t, msgTime, *room.LastMsgAt, time.Millisecond)
 }
 
 func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
@@ -159,7 +160,8 @@ func TestBroadcastWorker_GroupRoom_MentionAll_Integration(t *testing.T) {
 
 	var room model.Room
 	require.NoError(t, db.Collection("rooms").FindOne(ctx, bson.M{"_id": "r2"}).Decode(&room))
-	assert.WithinDuration(t, msgTime, room.LastMentionAllAt, time.Millisecond)
+	require.NotNil(t, room.LastMentionAllAt)
+	assert.WithinDuration(t, msgTime, *room.LastMentionAllAt, time.Millisecond)
 }
 
 func TestBroadcastWorker_GroupRoom_IndividualMention_Integration(t *testing.T) {
@@ -268,5 +270,6 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	var room model.Room
 	require.NoError(t, db.Collection("rooms").FindOne(ctx, bson.M{"_id": "dm-1"}).Decode(&room))
 	assert.Equal(t, "m4", room.LastMsgID)
-	assert.WithinDuration(t, msgTime, room.LastMsgAt, time.Millisecond)
+	require.NotNil(t, room.LastMsgAt)
+	assert.WithinDuration(t, msgTime, *room.LastMsgAt, time.Millisecond)
 }

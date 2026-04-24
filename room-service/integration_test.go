@@ -924,12 +924,17 @@ func TestMongoStore_ListRoomsByIDs(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
+	t1 := now
+	t2 := now.Add(1 * time.Second)
+	t3 := now.Add(2 * time.Second)
+	t4 := now.Add(3 * time.Second)
+	t5 := now.Add(4 * time.Second)
 	seed := []model.Room{
-		{ID: "r1", Name: "one", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now},
-		{ID: "r2", Name: "two", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(1 * time.Second)},
-		{ID: "r3", Name: "three", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(2 * time.Second)},
-		{ID: "r4", Name: "four", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(3 * time.Second)},
-		{ID: "r5", Name: "five", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: now.Add(4 * time.Second)},
+		{ID: "r1", Name: "one", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t1},
+		{ID: "r2", Name: "two", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t2},
+		{ID: "r3", Name: "three", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t3},
+		{ID: "r4", Name: "four", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t4},
+		{ID: "r5", Name: "five", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &t5},
 	}
 	for i := range seed {
 		if err := store.CreateRoom(ctx, &seed[i]); err != nil {
@@ -955,8 +960,8 @@ func TestMongoStore_ListRoomsByIDs(t *testing.T) {
 				t.Errorf("expected roomID %q in result", id)
 				continue
 			}
-			if r.LastMsgAt.IsZero() {
-				t.Errorf("room %q: LastMsgAt is zero", id)
+			if r.LastMsgAt == nil || r.LastMsgAt.IsZero() {
+				t.Errorf("room %q: LastMsgAt is zero or nil", id)
 			}
 		}
 	})
@@ -984,10 +989,11 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	ctx := context.Background()
 
 	lastMsg := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	earlier := lastMsg.Add(-time.Hour)
 	rooms := []model.Room{
-		{ID: "r1", Name: "room-1", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: lastMsg},
+		{ID: "r1", Name: "room-1", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &lastMsg},
 		{ID: "r2", Name: "room-2", Type: model.RoomTypeGroup, SiteID: "site-a"},
-		{ID: "r3", Name: "room-3", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: lastMsg.Add(-time.Hour)},
+		{ID: "r3", Name: "room-3", Type: model.RoomTypeGroup, SiteID: "site-a", LastMsgAt: &earlier},
 	}
 	for _, r := range rooms {
 		require.NoError(t, store.CreateRoom(ctx, &r))
@@ -1026,7 +1032,8 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 
 	assert.Equal(t, "r1", resp.Rooms[0].RoomID)
 	assert.True(t, resp.Rooms[0].Found)
-	assert.Equal(t, lastMsg.UnixMilli(), resp.Rooms[0].LastMsgAt)
+	require.NotNil(t, resp.Rooms[0].LastMsgAt)
+	assert.Equal(t, lastMsg.UnixMilli(), *resp.Rooms[0].LastMsgAt)
 	require.NotNil(t, resp.Rooms[0].PrivateKey)
 	assert.Equal(t, base64.StdEncoding.EncodeToString(privKey1), *resp.Rooms[0].PrivateKey)
 	require.NotNil(t, resp.Rooms[0].KeyVersion)
@@ -1034,7 +1041,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 
 	assert.Equal(t, "r2", resp.Rooms[1].RoomID)
 	assert.True(t, resp.Rooms[1].Found)
-	assert.Equal(t, int64(0), resp.Rooms[1].LastMsgAt)
+	assert.Nil(t, resp.Rooms[1].LastMsgAt)
 	require.NotNil(t, resp.Rooms[1].PrivateKey)
 	assert.Equal(t, base64.StdEncoding.EncodeToString(privKey2), *resp.Rooms[1].PrivateKey)
 
@@ -1045,7 +1052,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 
 	assert.Equal(t, "missing", resp.Rooms[3].RoomID)
 	assert.False(t, resp.Rooms[3].Found)
-	assert.Equal(t, int64(0), resp.Rooms[3].LastMsgAt)
+	assert.Nil(t, resp.Rooms[3].LastMsgAt)
 	assert.Nil(t, resp.Rooms[3].PrivateKey)
 	assert.Nil(t, resp.Rooms[3].KeyVersion)
 }

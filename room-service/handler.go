@@ -661,11 +661,13 @@ func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[s
 		foundCount++
 		entry.SiteID = r.SiteID
 		entry.Name = r.Name
-		if !r.LastMsgAt.IsZero() {
-			entry.LastMsgAt = r.LastMsgAt.UTC().UnixMilli()
+		if r.LastMsgAt != nil && !r.LastMsgAt.IsZero() {
+			ms := r.LastMsgAt.UTC().UnixMilli()
+			entry.LastMsgAt = &ms
 		}
-		if !r.LastMentionAllAt.IsZero() {
-			entry.LastMentionAllAt = r.LastMentionAllAt.UTC().UnixMilli()
+		if r.LastMentionAllAt != nil && !r.LastMentionAllAt.IsZero() {
+			ms := r.LastMentionAllAt.UTC().UnixMilli()
+			entry.LastMentionAllAt = &ms
 		}
 		if kp, ok := keys[id]; ok && kp != nil {
 			enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
