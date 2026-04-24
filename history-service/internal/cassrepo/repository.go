@@ -255,7 +255,7 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		return fmt.Errorf("update messages_by_id: %w", err)
 	}
 
-	// Top-level only: messages_by_room
+	// Top-level vs thread-reply: mutually exclusive.
 	if msg.ThreadParentID == "" {
 		if err := r.session.Query(
 			`UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
@@ -263,8 +263,15 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("update messages_by_room: %w", err)
 		}
+	} else {
+		if err := r.session.Query(
+			`UPDATE thread_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			deletedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update thread_messages_by_room: %w", err)
+		}
 	}
 
-	// Thread-reply branch, pinned branch, and tcount decrement are added in Tasks 5-7.
+	// Pinned branch and tcount decrement are added in Tasks 6-7.
 	return nil
 }
