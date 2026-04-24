@@ -36,3 +36,11 @@ export function roomMetadataUpdate(account) {
 export function userRoomEvent(account) {
   return `chat.user.${account}.event.room`
 }
+
+export function searchMessages(account) {
+  return `chat.user.${account}.request.search.messages`
+}
+
+export function searchRooms(account) {
+  return `chat.user.${account}.request.search.rooms`
+}
