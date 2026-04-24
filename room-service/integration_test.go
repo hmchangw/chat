@@ -877,11 +877,18 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
 	// Source channel on site-a with 2 individuals + 1 org (via room_members + subscriptions)
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
+	// Seed users so ResolveAccounts can find them.
+	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
+		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
+		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
+		model.User{ID: "req", Account: "alice", SiteID: "site-a"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
 	// Requester subscribed to both rooms
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s3", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s4", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
 	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
 	var publishedSubj string
@@ -935,13 +942,21 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	// Seed users so ResolveAccounts can find them.
+	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
+		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
+		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
+		model.User{ID: "u3", Account: "dave", SiteID: "site-a"},
+		model.User{ID: "req", Account: "alice", SiteID: "site-a"},
+	})
+	require.NoError(t, err)
 	// Source only has subscriptions (no room_members rows) — ListRoomMembers falls back to subscriptions
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u3", Account: "dave"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s3", RoomID: "source", User: model.SubscriptionUser{ID: "u3", Account: "dave"}}))
 	// Requester in both
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s4", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s5", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
 	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
 	var publishedSubj string
@@ -1012,9 +1027,9 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	// Two Mongo DBs, two NATS containers, two room-service handler setups.
-	dbA := setupMongo(t)
-	dbB := setupMongo(t)
+	// Two Mongo DBs (distinct prefixes since setupMongo hashes by t.Name()), two NATS containers, two handler setups.
+	dbA := testutil.MongoDB(t, "room_service_test_a")
+	dbB := testutil.MongoDB(t, "room_service_test_b")
 	natsURLa := setupNATS(t)
 	natsURLb := setupNATS(t)
 	valCfg := setupValkey(t)
@@ -1034,15 +1049,27 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Site-A: target room; requester subscribed
+	// Site-A: target room; requester subscribed; user document needed for ResolveAccounts.
 	require.NoError(t, storeA.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
-	require.NoError(t, storeA.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	_, err = dbA.Collection("users").InsertMany(ctx, []interface{}{
+		model.User{ID: "req", Account: "alice", SiteID: "site-a"},
+		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
+		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, storeA.CreateSubscription(ctx, &model.Subscription{ID: "sa1", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
 
-	// Site-B: source channel with members; requester subscribed on site-b too
+	// Site-B: source channel with members; requester subscribed on site-b too.
 	require.NoError(t, storeB.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-b"}))
-	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
-	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
-	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+	_, err = dbB.Collection("users").InsertMany(ctx, []interface{}{
+		model.User{ID: "u1", Account: "bob", SiteID: "site-b"},
+		model.User{ID: "u2", Account: "carol", SiteID: "site-b"},
+		model.User{ID: "req", Account: "alice", SiteID: "site-b"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
+	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
+	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb3", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
 	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
 	handlerB := NewHandler(storeB, keyStore, nil, "site-b", 1000, 500, func(context.Context, string, []byte) error { return nil })
