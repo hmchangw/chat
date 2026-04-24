@@ -13,6 +13,7 @@ const (
 	defaultPageSize     = 20
 	surroundingPageSize = 50
 	maxPageSize         = 100
+	maxContentBytes     = 20 * 1024 // 20 KB; mirrors message-gatekeeper's content cap
 )
 
 func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
