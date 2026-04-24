@@ -1,5 +1,7 @@
 # Nullable `RoomInfo` timestamps — design
 
+> **Follow-up (2026-04-24):** The matching change on the Mongo domain type `model.Room` (`LastMsgAt` / `LastMentionAllAt` → `*time.Time`) is covered by a separate spec — `docs/superpowers/specs/2026-04-24-nullable-room-timestamps-design.md`. The "Out of scope" note below correctly reflected the boundary at the time this spec was implemented; it no longer reflects the current direction.
+
 ## Summary
 
 Change `LastMsgAt` and `LastMentionAllAt` on `model.RoomInfo` from `int64` to `*int64` so the RPC response can unambiguously represent "no last message" / "never mentioned everyone". Today those fields carry `0` in two unrelated situations — the room was never used, or the room was not found — which is ambiguous. After this change, absent-in-JSON (nil pointer + `omitempty`) means "no value", and a present number always carries a real millisecond timestamp.
