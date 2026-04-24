@@ -14,40 +14,57 @@ import (
 // Middleware calls c.Next() to continue the chain.
 type HandlerFunc func(c *Context)
 
-// Context carries request state through the middleware chain.
-// It implements context.Context so it can be passed directly to database calls.
-// Contexts are pooled — do not hold references to a Context after the handler returns.
+// Context carries request state through the middleware chain. It implements
+// context.Context and is safe to pass anywhere a context.Context is expected,
+// including consumers that retain it past the handler's return (net/http
+// keep-alive cancel watchers, background goroutines, deferred async work).
+//
+// Every field observable from a goroutine that outlives the handler — ctx,
+// Msg, Params, keys — lives on the Context header and is set once at acquire.
+// Only the middleware-chain bookkeeping (handlers, index) is pooled, and it's
+// not reachable via any exported accessor that an async goroutine would call,
+// so pool reuse cannot race any outside observer.
 type Context struct {
-	ctx      context.Context
-	Msg      *nats.Msg
-	Params   Params
-	keys     map[string]any
+	ctx    context.Context
+	Msg    *nats.Msg
+	Params Params
+	keys   map[string]any
+	mu     sync.RWMutex
+
+	chain *chainState
+}
+
+// chainState holds the per-request middleware-chain bookkeeping. It lives in
+// a sync.Pool; nothing inside it is exposed via methods an outside goroutine
+// would call (Next/Abort/IsAborted are handler-internal), so pool reuse is
+// race-free w.r.t. external observers of *Context.
+type chainState struct {
 	handlers []HandlerFunc
 	index    int
 }
 
-var ctxPool = sync.Pool{
-	New: func() any { return &Context{} },
+var chainPool = sync.Pool{
+	New: func() any { return &chainState{} },
 }
 
 func acquireContext(ctx context.Context, msg *nats.Msg, params Params, handlers []HandlerFunc) *Context {
-	c := ctxPool.Get().(*Context)
-	c.ctx = ctx
-	c.Msg = msg
-	c.Params = params
-	c.keys = nil // lazy init on first Set()
-	c.handlers = handlers
-	c.index = -1
-	return c
+	cs := chainPool.Get().(*chainState)
+	cs.handlers = handlers
+	cs.index = -1
+	return &Context{
+		ctx:    ctx,
+		Msg:    msg,
+		Params: params,
+		chain:  cs,
+	}
 }
 
 func releaseContext(c *Context) {
-	c.ctx = nil
-	c.Msg = nil
-	c.Params = Params{}
-	c.keys = nil
-	c.handlers = nil
-	ctxPool.Put(c)
+	c.chain.handlers = nil
+	c.chain.index = 0
+	chainPool.Put(c.chain)
+	// c itself is left to GC. External ctx consumers may still hold it;
+	// every field they can observe is stable from the moment of construction.
 }
 
 // NewContext creates a Context for testing handlers without a NATS connection.
@@ -55,11 +72,13 @@ func NewContext(params map[string]string) *Context {
 	return &Context{
 		ctx:    context.Background(),
 		Params: NewParams(params),
-		index:  -1,
+		chain:  &chainState{index: -1},
 	}
 }
 
-// context.Context implementation
+// context.Context implementation — every method reads a field that is set
+// once at acquire, so these are safe for any consumer (net/http transport
+// watchers, goroutines spawned by the handler) that outlives the request.
 func (c *Context) Deadline() (time.Time, bool) { return c.ctx.Deadline() }
 func (c *Context) Done() <-chan struct{}       { return c.ctx.Done() }
 func (c *Context) Err() error                  { return c.ctx.Err() }
@@ -67,33 +86,37 @@ func (c *Context) Value(key any) any           { return c.ctx.Value(key) }
 
 // Next executes the next handler in the chain.
 func (c *Context) Next() {
-	c.index++
-	for c.index < len(c.handlers) {
-		c.handlers[c.index](c)
-		c.index++
+	c.chain.index++
+	for c.chain.index < len(c.chain.handlers) {
+		c.chain.handlers[c.chain.index](c)
+		c.chain.index++
 	}
 }
 
 // Abort stops the middleware chain.
 func (c *Context) Abort() {
-	c.index = len(c.handlers)
+	c.chain.index = len(c.chain.handlers)
 }
 
 // IsAborted returns true if the chain was aborted.
 func (c *Context) IsAborted() bool {
-	return c.index >= len(c.handlers)
+	return c.chain.index >= len(c.chain.handlers)
 }
 
 // Set stores a key-value pair for downstream handlers.
 func (c *Context) Set(key string, value any) {
+	c.mu.Lock()
 	if c.keys == nil {
 		c.keys = make(map[string]any)
 	}
 	c.keys[key] = value
+	c.mu.Unlock()
 }
 
 // Get returns a value by key and whether it was found.
 func (c *Context) Get(key string) (any, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.keys == nil {
 		return nil, false
 	}

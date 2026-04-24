@@ -58,6 +58,11 @@ func New(nc *nats.Conn, queue string) *Router
 
 // Append middleware to the router's chain. Runs for ALL routes.
 func (r *Router) Use(mw ...HandlerFunc)
+
+// Drain every registered route and wait for in-flight handlers to finish
+// or ctx to expire. Idempotent. Call before nc.Drain() if you need to stop
+// routing while keeping the NATS connection open.
+func (r *Router) Shutdown(ctx context.Context) error
 ```
 
 ### Registration Functions
@@ -248,6 +253,24 @@ func (s *Service) GetRoom(c *natsrouter.Context, req GetRoomReq) (*Room, error) 
     return room, nil
 }
 ```
+
+### Using the Context in Goroutines
+
+Pass `c` (or any descendant `context.Context` derived via `context.WithTimeout` etc.) freely to anything that expects a `context.Context` — `http.NewRequestWithContext`, database drivers, async goroutines. The pool only recycles the middleware chain-state; every field you can observe on `*Context` (`ctx`, `Msg`, `Params`, `keys`) is set once at request entry, so a goroutine holding `c` after the handler returns cannot race pool reuse.
+
+```go
+func MetricsMiddleware() natsrouter.HandlerFunc {
+    return func(c *natsrouter.Context) {
+        start := time.Now()
+        c.Next()
+        go func() {
+            emitMetric(c.Msg.Subject, time.Since(start), c.Param("account"))
+        }()
+    }
+}
+```
+
+Rule of thumb: treat `*Context` exactly like a `*http.Request` — safe to pass to downstream ctx consumers, safe to capture in goroutines. Do not call `Respond` on `c.Msg` from a background goroutine once the handler has already replied; publish to a fresh subject instead.
 
 ### Middleware Data Passing
 
