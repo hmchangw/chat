@@ -10,7 +10,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageRepository,SubscriptionRepository
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageRepository,SubscriptionRepository,EventPublisher
 
 // MessageRepository defines Cassandra-backed message operations.
 type MessageRepository interface {
@@ -26,15 +26,23 @@ type SubscriptionRepository interface {
 	GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error)
 }
 
-// HistoryService handles message history queries. Transport-agnostic.
+// EventPublisher publishes live events to a NATS subject. Implemented by a
+// thin wrapper around *otelnats.Conn in main.go.
+type EventPublisher interface {
+	Publish(ctx context.Context, subject string, data []byte) error
+}
+
+// HistoryService handles message history queries and (starting with this PR) mutations.
+// Transport-agnostic.
 type HistoryService struct {
 	messages      MessageRepository
 	subscriptions SubscriptionRepository
+	publisher     EventPublisher
 }
 
-// New creates a HistoryService with the given repositories.
-func New(msgs MessageRepository, subs SubscriptionRepository) *HistoryService {
-	return &HistoryService{messages: msgs, subscriptions: subs}
+// New creates a HistoryService with the given repositories and event publisher.
+func New(msgs MessageRepository, subs SubscriptionRepository, pub EventPublisher) *HistoryService {
+	return &HistoryService{messages: msgs, subscriptions: subs, publisher: pub}
 }
 
 // RegisterHandlers wires all NATS endpoints for the history service.
