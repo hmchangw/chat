@@ -604,3 +604,63 @@ func TestRepository_UpdateMessageContent_Pinned(t *testing.T) {
 	assert.Equal(t, "edited", gotMsg, "pinned_messages_by_room should reflect the edit")
 	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
 }
+
+func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-del-top"
+	msgID := "m-del-top"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed a top-level message in both tables.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "original", "", false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "original", "", false,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		Sender:         sender,
+		ThreadParentID: "",
+	}
+	deletedAt := createdAt.Add(time.Minute)
+	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, deletedAt))
+
+	// messages_by_id: deleted = true, msg retained, updated_at advanced
+	var gotDeleted bool
+	var gotMsg string
+	var gotUpdatedAt time.Time
+	require.NoError(t, session.Query(
+		`SELECT deleted, msg, updated_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotDeleted, &gotMsg, &gotUpdatedAt))
+	assert.True(t, gotDeleted, "messages_by_id.deleted should be true")
+	assert.Equal(t, "original", gotMsg, "msg content must be preserved")
+	assert.WithinDuration(t, deletedAt, gotUpdatedAt, time.Second)
+
+	// messages_by_room: same assertions
+	require.NoError(t, session.Query(
+		`SELECT deleted, msg, updated_at FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotDeleted, &gotMsg, &gotUpdatedAt))
+	assert.True(t, gotDeleted)
+	assert.Equal(t, "original", gotMsg, "msg content must be preserved")
+	assert.WithinDuration(t, deletedAt, gotUpdatedAt, time.Second)
+
+	// thread_messages_by_room must have no phantom row
+	var threadCount int
+	require.NoError(t, session.Query(
+		`SELECT COUNT(*) FROM thread_messages_by_room WHERE room_id = ?`,
+		roomID,
+	).Scan(&threadCount))
+	assert.Equal(t, 0, threadCount, "top-level soft-delete must not write to thread_messages_by_room")
+}
