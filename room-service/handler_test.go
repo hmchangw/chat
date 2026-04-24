@@ -852,7 +852,6 @@ func TestHandler_RemoveMember_PublishError(t *testing.T) {
 
 // --- Add Members tests ---
 
-
 func TestHandler_AddMembers_DMRejected(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
@@ -930,7 +929,6 @@ func TestHandler_AddMembers_CapacityExceeded(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "maximum capacity")
 }
-
 
 func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {
 	ctrl := gomock.NewController(t)

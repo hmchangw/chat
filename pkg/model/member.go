@@ -86,10 +86,10 @@ type MemberRemoved struct {
 }
 
 type MembersAdded struct {
-	Individuals     []string `json:"individuals"`
-	Orgs            []string `json:"orgs"`
+	Individuals     []string     `json:"individuals"`
+	Orgs            []string     `json:"orgs"`
 	Channels        []ChannelRef `json:"channels"`
-	AddedUsersCount int      `json:"addedUsersCount"`
+	AddedUsersCount int          `json:"addedUsersCount"`
 }
 
 type ListRoomMembersRequest struct {

@@ -26,7 +26,7 @@ import (
 type Handler struct {
 	store            RoomStore
 	keyStore         RoomKeyStore
-	memberListClient MemberListClient  // NEW FIELD
+	memberListClient MemberListClient
 	siteID           string
 	maxRoomSize      int
 	maxBatchSize     int
@@ -477,11 +477,11 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 		var members []model.RoomMember
 
 		if ref.SiteID == h.siteID {
-			if _, err := h.store.GetSubscription(ctx, requester, ref.RoomID); err != nil {
-				if errors.Is(err, model.ErrSubscriptionNotFound) {
+			if _, subErr := h.store.GetSubscription(ctx, requester, ref.RoomID); subErr != nil {
+				if errors.Is(subErr, model.ErrSubscriptionNotFound) {
 					return nil, nil, errNotChannelMember
 				}
-				return nil, nil, fmt.Errorf("subscription check %s: %w", ref.RoomID, err)
+				return nil, nil, fmt.Errorf("subscription check %s: %w", ref.RoomID, subErr)
 			}
 			members, err = h.store.ListRoomMembers(ctx, ref.RoomID, nil, nil, false)
 			if err != nil {
