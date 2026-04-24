@@ -1007,6 +1007,132 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 	assert.True(t, errors.Is(err, errNotChannelMember))
 }
 
+func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	// Two Mongo DBs, two NATS containers, two room-service handler setups.
+	dbA := setupMongo(t)
+	dbB := setupMongo(t)
+	natsURLa := setupNATS(t)
+	natsURLb := setupNATS(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+
+	storeA := NewMongoStore(dbA)
+	storeB := NewMongoStore(dbB)
+
+	otelNCa, err := otelnats.Connect(natsURLa)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNCa.Drain() })
+	otelNCb, err := otelnats.Connect(natsURLb)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNCb.Drain() })
+
+	ctx := context.Background()
+
+	// Site-A: target room; requester subscribed
+	require.NoError(t, storeA.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	require.NoError(t, storeA.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+
+	// Site-B: source channel with members; requester subscribed on site-b too
+	require.NoError(t, storeB.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-b"}))
+	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
+	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
+	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+
+	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
+	handlerB := NewHandler(storeB, keyStore, nil, "site-b", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	require.NoError(t, handlerB.RegisterCRUD(otelNCb))
+	require.NoError(t, otelNCb.NatsConn().Flush())
+
+	// Site-A's cross-site client: connect a plain nats.Conn directly to site-B's server.
+	// In production NATS gateways handle this routing; for this test we bypass gateways
+	// and connect the client directly — the subject and request/reply wiring is the same.
+	ncBfromA, err := nats.Connect(natsURLb)
+	require.NoError(t, err)
+	t.Cleanup(func() { ncBfromA.Close() })
+	memberListClient := NewNATSMemberListClient(ncBfromA, 5*time.Second)
+
+	// Capture what site-A publishes to its canonical stream
+	var publishedSubj string
+	var publishedData []byte
+	publish := func(_ context.Context, subj string, data []byte) error {
+		publishedSubj = subj
+		publishedData = data
+		return nil
+	}
+	handlerA := NewHandler(storeA, keyStore, memberListClient, "site-a", 1000, 500, publish)
+
+	// Call add-members on site-A with a site-B source channel
+	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	result, err := handlerA.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	require.NoError(t, err)
+
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(result, &status))
+	assert.Equal(t, "accepted", status["status"])
+
+	// Verify the canonical event has site-B members (bob, carol) — requester alice is excluded because ResolveAccounts filters existing subs
+	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
+	var normalized model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(publishedData, &normalized))
+	assert.Equal(t, "target", normalized.RoomID)
+	assert.Contains(t, normalized.Users, "bob")
+	assert.Contains(t, normalized.Users, "carol")
+}
+
+func TestAddMembers_CrossSiteTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	db := setupMongo(t)
+	natsURL := setupNATS(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+	store := NewMongoStore(db)
+	otelNC, err := otelnats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNC.Drain() })
+
+	ctx := context.Background()
+
+	// Target on site-a, requester subscribed
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+
+	// Member-list client connected to an existing NATS server, but NO site-b responder is registered.
+	// The member.list request will have no subscriber, so it'll time out.
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Close() })
+	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
+
+	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+
+	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	start := time.Now()
+	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expand channels")
+	assert.Contains(t, err.Error(), "remote list-members")
+	// Timeout is 200ms; total should finish within a reasonable window (allow up to 2s for container scheduling latency)
+	assert.Less(t, elapsed, 2*time.Second)
+}
+
 func TestRoomsInfoBatchRPC(t *testing.T) {
 	db := setupMongo(t)
 	valCfg := setupValkey(t)
