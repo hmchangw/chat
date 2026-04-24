@@ -188,9 +188,33 @@ func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*mod
 	return &m, nil
 }
 
-// UpdateMessageContent is implemented incrementally across Tasks 7-9 of the
-// edit plan. This stub keeps the interface contract compilable between tasks;
-// Task 7 replaces it with the top-level-message branch.
+// UpdateMessageContent updates the msg, edited_at, and updated_at fields
+// across the Cassandra tables that actually hold the row, determined from
+// msg's own metadata. Top-level messages (msg.ThreadParentID == "") land in
+// messages_by_room; thread replies land in thread_messages_by_room; pinned
+// messages additionally land in pinned_messages_by_room. messages_by_id is
+// always updated. All UPDATEs use the full PK; none is a no-op against a
+// missing row — see spec doc for the Cassandra phantom-row rationale.
+// Idempotent with respect to msg content; timestamps advance per call.
 func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return fmt.Errorf("UpdateMessageContent not yet implemented")
+	// Always: messages_by_id
+	if err := r.session.Query(
+		`UPDATE messages_by_id SET msg = ?, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+		newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update messages_by_id: %w", err)
+	}
+
+	// Top-level only: messages_by_room
+	if msg.ThreadParentID == "" {
+		if err := r.session.Query(
+			`UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("update messages_by_room: %w", err)
+		}
+	}
+
+	// Thread-reply and pinned branches are added in Tasks 8 and 9.
+	return nil
 }
