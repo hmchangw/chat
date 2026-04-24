@@ -855,6 +855,126 @@ func TestMongoStore_ListRoomsByIDs(t *testing.T) {
 	})
 }
 
+func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	db := setupMongo(t)
+	natsURL := setupNATS(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+	store := NewMongoStore(db)
+	otelNC, err := otelnats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNC.Drain() })
+
+	ctx := context.Background()
+
+	// Target room on site-a
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	// Source channel on site-a with 2 individuals + 1 org (via room_members + subscriptions)
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
+	// Requester subscribed to both rooms
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+
+	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
+	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error {
+		return nil
+	})
+
+	req := model.AddMembersRequest{
+		Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}},
+	}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	result, err := handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	require.NoError(t, err)
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(result, &status))
+	assert.Equal(t, "accepted", status["status"])
+}
+
+func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	db := setupMongo(t)
+	natsURL := setupNATS(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+	store := NewMongoStore(db)
+	otelNC, err := otelnats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNC.Drain() })
+
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	// Source only has subscriptions (no room_members rows) — ListRoomMembers falls back to subscriptions
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "u3", Account: "dave"}}))
+	// Requester in both
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+
+	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
+	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+
+	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	result, err := handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	require.NoError(t, err)
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(result, &status))
+	assert.Equal(t, "accepted", status["status"])
+}
+
+func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	db := setupMongo(t)
+	natsURL := setupNATS(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+	store := NewMongoStore(db)
+	otelNC, err := otelnats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNC.Drain() })
+
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	// Requester subscribed to target but NOT source
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+
+	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
+	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+
+	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errNotChannelMember))
+}
+
 func TestRoomsInfoBatchRPC(t *testing.T) {
 	db := setupMongo(t)
 	valCfg := setupValkey(t)
