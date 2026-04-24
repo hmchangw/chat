@@ -1513,7 +1513,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			payload: mustJSON(t, model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}}),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1"}).Return([]model.Room{
-					{ID: "r1", Name: "general", SiteID: "site-a", LastMsgAt: now},
+					{ID: "r1", Name: "general", SiteID: "site-a", LastMsgAt: &now},
 				}, nil)
 			},
 			setupKeys: func(k *MockRoomKeyStore) {

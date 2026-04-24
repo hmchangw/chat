@@ -29,12 +29,14 @@ func TestUserJSON(t *testing.T) {
 }
 
 func TestRoomJSON(t *testing.T) {
+	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	lastMention := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
-		LastMsgAt:        time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		LastMsgAt:        &lastMsg,
 		LastMsgID:        "m1",
-		LastMentionAllAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		LastMentionAllAt: &lastMention,
 		CreatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
@@ -1278,7 +1280,7 @@ func TestRoomsInfoBatchResponseJSON(t *testing.T) {
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
-func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
+func roundTrip[T any](t *testing.T, src *T, dst *T) {
 	t.Helper()
 	data, err := json.Marshal(src)
 	if err != nil {
@@ -1287,7 +1289,7 @@ func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
 	if err := json.Unmarshal(data, dst); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if *dst != *src {
+	if !reflect.DeepEqual(*src, *dst) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", *dst, *src)
 	}
 }
