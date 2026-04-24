@@ -37,8 +37,6 @@ type RoomStore interface {
 	CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error)
 	CountOwners(ctx context.Context, roomID string) (int, error)
 	CountSubscriptions(ctx context.Context, roomID string) (int, error)
-	GetRoomMembersByRooms(ctx context.Context, roomIDs []string) ([]model.RoomMember, error)
-	GetAccountsByRooms(ctx context.Context, roomIDs []string) ([]string, error)
 	ResolveAccounts(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error)
 	// ListRoomMembers returns the members of roomID. When enrich=true, the
 	// returned RoomMember.Member entries carry display fields populated via

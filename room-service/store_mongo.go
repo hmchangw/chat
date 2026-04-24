@@ -256,45 +256,6 @@ func (s *MongoStore) CountSubscriptions(ctx context.Context, roomID string) (int
 	return int(count), nil
 }
 
-func (s *MongoStore) GetRoomMembersByRooms(ctx context.Context, roomIDs []string) ([]model.RoomMember, error) {
-	if len(roomIDs) == 0 {
-		return nil, nil
-	}
-	cursor, err := s.roomMembers.Find(ctx, bson.M{"rid": bson.M{"$in": roomIDs}})
-	if err != nil {
-		return nil, fmt.Errorf("find room members: %w", err)
-	}
-	var members []model.RoomMember
-	if err := cursor.All(ctx, &members); err != nil {
-		return nil, fmt.Errorf("decode room members: %w", err)
-	}
-	return members, nil
-}
-
-func (s *MongoStore) GetAccountsByRooms(ctx context.Context, roomIDs []string) ([]string, error) {
-	if len(roomIDs) == 0 {
-		return nil, nil
-	}
-	pipeline := bson.A{
-		bson.M{"$match": bson.M{"roomId": bson.M{"$in": roomIDs}}},
-		bson.M{"$group": bson.M{"_id": nil, "accounts": bson.M{"$addToSet": "$u.account"}}},
-	}
-	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("aggregate accounts by rooms: %w", err)
-	}
-	var results []struct {
-		Accounts []string `bson:"accounts"`
-	}
-	if err := cursor.All(ctx, &results); err != nil {
-		return nil, fmt.Errorf("decode accounts by rooms: %w", err)
-	}
-	if len(results) == 0 {
-		return nil, nil
-	}
-	return results[0].Accounts, nil
-}
-
 func (s *MongoStore) ResolveAccounts(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error) {
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return nil, nil
