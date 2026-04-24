@@ -57,10 +57,6 @@ func UserMsgStream(account string) string {
 	return fmt.Sprintf("chat.user.%s.stream.msg", account)
 }
 
-func MemberInvite(account, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", account, roomID, siteID)
-}
-
 func MemberRoleUpdate(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.role-update", account, roomID, siteID)
 }
@@ -182,10 +178,6 @@ func RoomsInfoBatch(siteID string) string {
 
 func MsgSendWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.room.*.%s.msg.send", siteID)
-}
-
-func MemberInviteWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.invite", siteID)
 }
 
 func MemberRoleUpdateWildcard(siteID string) string {

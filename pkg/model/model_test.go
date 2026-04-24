@@ -667,18 +667,6 @@ func TestSubscriptionUpdateEventJSON(t *testing.T) {
 	}
 }
 
-func TestInviteMemberRequestJSON(t *testing.T) {
-	src := model.InviteMemberRequest{
-		InviterID:      "u1",
-		InviteeID:      "u2",
-		InviteeAccount: "bob",
-		RoomID:         "r1",
-		SiteID:         "site-a",
-		Timestamp:      1735689600000,
-	}
-	roundTrip(t, &src, &model.InviteMemberRequest{})
-}
-
 func TestOutboxEventJSON(t *testing.T) {
 	src := model.OutboxEvent{
 		Type:       "member_added",

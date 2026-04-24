@@ -51,9 +51,6 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
 		return err
 	}
-	if _, err := nc.QueueSubscribe(subject.MemberInviteWildcard(h.siteID), queue, h.NatsHandleInvite); err != nil {
-		return fmt.Errorf("subscribe member invite: %w", err)
-	}
 	if _, err := nc.QueueSubscribe(subject.MemberRoleUpdateWildcard(h.siteID), queue, h.natsUpdateRole); err != nil {
 		return fmt.Errorf("subscribe member role update: %w", err)
 	}
@@ -101,19 +98,6 @@ func (h *Handler) natsGetRoom(m otelnats.Msg) {
 		return
 	}
 	natsutil.ReplyJSON(m.Msg, room)
-}
-
-// NatsHandleInvite handles invite authorization requests.
-func (h *Handler) NatsHandleInvite(m otelnats.Msg) {
-	resp, err := h.handleInvite(m.Context(), m.Msg.Subject, m.Msg.Data)
-	if err != nil {
-		slog.Error("invite failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
-		return
-	}
-	if err := m.Msg.Respond(resp); err != nil {
-		slog.Error("failed to respond to message", "error", err)
-	}
 }
 
 func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, error) {
@@ -313,53 +297,6 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	return json.Marshal(map[string]string{"status": "accepted"})
-}
-
-func (h *Handler) handleInvite(ctx context.Context, subj string, data []byte) ([]byte, error) {
-	// Extract user account and roomID from the subject before unmarshalling for performance.
-	inviterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
-	if !ok {
-		return nil, fmt.Errorf("invalid invite subject: %s", subj)
-	}
-
-	// Verify inviter is owner (cheap DB lookup before expensive unmarshal)
-	sub, err := h.store.GetSubscription(ctx, inviterAccount, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("inviter not found: %w", err)
-	}
-	if !hasRole(sub.Roles, model.RoleOwner) {
-		return nil, fmt.Errorf("only owners can invite members")
-	}
-
-	// Check room size
-	room, err := h.store.GetRoom(ctx, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("room not found: %w", err)
-	}
-	if room.UserCount >= h.maxRoomSize {
-		return nil, fmt.Errorf("room is at maximum capacity (%d)", h.maxRoomSize)
-	}
-
-	// Only unmarshal after authorization checks pass
-	var req model.InviteMemberRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
-	// Set event timestamp
-	req.Timestamp = time.Now().UTC().UnixMilli()
-
-	timestampedData, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal invite request: %w", err)
-	}
-
-	// Publish to ROOMS stream for room-worker processing
-	if err := h.publishToStream(ctx, subject.MemberInvite(inviterAccount, roomID, h.siteID), timestampedData); err != nil {
-		return nil, fmt.Errorf("publish to stream: %w", err)
-	}
-
-	return json.Marshal(map[string]string{"status": "ok"})
 }
 
 func (h *Handler) natsUpdateRole(m otelnats.Msg) {

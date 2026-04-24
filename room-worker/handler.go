@@ -31,8 +31,6 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	subj := msg.Subject()
 	var err error
 	switch {
-	case strings.HasSuffix(subj, ".member.invite"):
-		err = h.processInvite(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".member.role-update"):
 		err = h.processRoleUpdate(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".member.add"):
@@ -52,79 +50,6 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	if err := msg.Ack(); err != nil {
 		slog.Error("failed to ack message", "error", err)
 	}
-}
-
-func (h *Handler) processInvite(ctx context.Context, data []byte) error {
-	var req model.InviteMemberRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return err
-	}
-
-	now := time.Now().UTC()
-
-	// Create subscription for invitee
-	sub := model.Subscription{
-		ID:                 idgen.GenerateID(),
-		User:               model.SubscriptionUser{ID: req.InviteeID, Account: req.InviteeAccount},
-		RoomID:             req.RoomID,
-		SiteID:             req.SiteID,
-		Roles:              []model.Role{model.RoleMember},
-		HistorySharedSince: &now,
-		JoinedAt:           now,
-	}
-	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
-		return err
-	}
-
-	// Increment room user count
-	if err := h.store.IncrementUserCount(ctx, req.RoomID, 1); err != nil {
-		slog.Warn("increment user count failed", "error", err, "roomID", req.RoomID)
-	}
-
-	// If invitee is on different site, publish outbox event
-	if req.SiteID != h.siteID {
-		outbox := model.OutboxEvent{
-			Type:       "member_added",
-			SiteID:     h.siteID,
-			DestSiteID: req.SiteID,
-			Payload:    data,
-			Timestamp:  now.UnixMilli(),
-		}
-		outboxData, _ := json.Marshal(outbox)
-		outboxSubj := subject.Outbox(h.siteID, req.SiteID, "member_added")
-		if err := h.publish(ctx, outboxSubj, outboxData); err != nil {
-			slog.Error("outbox publish failed", "error", err)
-		}
-	}
-
-	// Notify invitee: subscription update
-	subEvt := model.SubscriptionUpdateEvent{UserID: req.InviteeID, Subscription: sub, Action: "added", Timestamp: now.UnixMilli()}
-	subEvtData, _ := json.Marshal(subEvt)
-	if err := h.publish(ctx, subject.SubscriptionUpdate(req.InviteeAccount), subEvtData); err != nil {
-		slog.Error("subscription update publish failed", "error", err)
-	}
-
-	// Notify all existing members: room metadata changed
-	room, err := h.store.GetRoom(ctx, req.RoomID)
-	if err == nil {
-		metaEvt := model.RoomMetadataUpdateEvent{
-			RoomID:    req.RoomID,
-			Name:      room.Name,
-			UserCount: room.UserCount,
-			UpdatedAt: now,
-			Timestamp: now.UnixMilli(),
-		}
-		metaData, _ := json.Marshal(metaEvt)
-
-		members, _ := h.store.ListByRoom(ctx, req.RoomID)
-		for i := range members {
-			if err := h.publish(ctx, subject.RoomMetadataChanged(members[i].User.Account), metaData); err != nil {
-				slog.Error("room metadata publish failed", "error", err, "account", members[i].User.Account)
-			}
-		}
-	}
-
-	return nil
 }
 
 func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
