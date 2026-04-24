@@ -884,9 +884,14 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
 	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error {
+	var publishedSubj string
+	var publishedData []byte
+	publish := func(_ context.Context, subj string, data []byte) error {
+		publishedSubj = subj
+		publishedData = data
 		return nil
-	})
+	}
+	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, publish)
 
 	req := model.AddMembersRequest{
 		Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}},
@@ -898,6 +903,16 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	var status map[string]string
 	require.NoError(t, json.Unmarshal(result, &status))
 	assert.Equal(t, "accepted", status["status"])
+
+	// Verify the canonical event was published with the expanded members
+	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
+	var normalized model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(publishedData, &normalized))
+	assert.Equal(t, "target", normalized.RoomID)
+	assert.Equal(t, "alice", normalized.RequesterAccount)
+	assert.Equal(t, "req", normalized.RequesterID)
+	assert.NotZero(t, normalized.Timestamp)
+	assert.ElementsMatch(t, []string{"bob", "carol"}, normalized.Users)
 }
 
 func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
@@ -929,7 +944,14 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
 	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	var publishedSubj string
+	var publishedData []byte
+	publish := func(_ context.Context, subj string, data []byte) error {
+		publishedSubj = subj
+		publishedData = data
+		return nil
+	}
+	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, publish)
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -939,6 +961,16 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	var status map[string]string
 	require.NoError(t, json.Unmarshal(result, &status))
 	assert.Equal(t, "accepted", status["status"])
+
+	// Verify the canonical event was published with the expanded members
+	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
+	var normalized model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(publishedData, &normalized))
+	assert.Equal(t, "target", normalized.RoomID)
+	assert.Equal(t, "alice", normalized.RequesterAccount)
+	assert.Equal(t, "req", normalized.RequesterID)
+	assert.NotZero(t, normalized.Timestamp)
+	assert.ElementsMatch(t, []string{"bob", "carol", "dave"}, normalized.Users)
 }
 
 func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
