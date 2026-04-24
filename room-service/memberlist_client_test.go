@@ -99,14 +99,25 @@ func TestNATSMemberListClient_Timeout(t *testing.T) {
 	client := NewNATSMemberListClient(nc, 100*time.Millisecond)
 
 	ch := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
+	requester := "alice"
+
+	// Responder sleeps longer than the client timeout so the context deadline fires first.
+	sub, err := nc.Subscribe(subject.MemberList(requester, ch.RoomID, ch.SiteID), func(m *nats.Msg) {
+		time.Sleep(500 * time.Millisecond)
+		_ = m.Respond([]byte(`{}`))
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
 
 	start := time.Now()
-	_, err := client.ListMembers(context.Background(), "alice", ch)
+	_, err = client.ListMembers(context.Background(), requester, ch)
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "member.list request to site-us")
-	assert.Less(t, elapsed, 500*time.Millisecond)
+	// Verify the context.WithTimeout path fired — elapsed must be >= client timeout, and well under responder sleep.
+	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond)
+	assert.Less(t, elapsed, 400*time.Millisecond)
 }
 
 func TestNATSMemberListClient_BodyShape(t *testing.T) {
@@ -116,9 +127,12 @@ func TestNATSMemberListClient_BodyShape(t *testing.T) {
 	ch := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
 	requester := "alice"
 
-	var received model.ListRoomMembersRequest
+	// Capture the parsed body via a buffered channel so -race sees a happens-before edge.
+	bodyCh := make(chan model.ListRoomMembersRequest, 1)
 	sub, err := nc.Subscribe(subject.MemberList(requester, ch.RoomID, ch.SiteID), func(m *nats.Msg) {
-		_ = json.Unmarshal(m.Data, &received)
+		var parsed model.ListRoomMembersRequest
+		_ = json.Unmarshal(m.Data, &parsed)
+		bodyCh <- parsed
 		resp := model.ListRoomMembersResponse{}
 		data, _ := json.Marshal(resp)
 		_ = m.Respond(data)
@@ -128,6 +142,7 @@ func TestNATSMemberListClient_BodyShape(t *testing.T) {
 
 	_, err = client.ListMembers(context.Background(), requester, ch)
 	require.NoError(t, err)
+	received := <-bodyCh
 	assert.Nil(t, received.Limit)
 	assert.Nil(t, received.Offset)
 	assert.False(t, received.Enrich)
@@ -141,9 +156,9 @@ func TestNATSMemberListClient_SubjectCorrectness(t *testing.T) {
 	requester := "alice"
 
 	expectedSubj := subject.MemberList(requester, ch.RoomID, ch.SiteID)
-	var gotSubj string
+	subjCh := make(chan string, 1)
 	sub, err := nc.Subscribe(expectedSubj, func(m *nats.Msg) {
-		gotSubj = m.Subject
+		subjCh <- m.Subject
 		data, _ := json.Marshal(model.ListRoomMembersResponse{})
 		_ = m.Respond(data)
 	})
@@ -152,7 +167,7 @@ func TestNATSMemberListClient_SubjectCorrectness(t *testing.T) {
 
 	_, err = client.ListMembers(context.Background(), requester, ch)
 	require.NoError(t, err)
-	assert.Equal(t, expectedSubj, gotSubj)
+	assert.Equal(t, expectedSubj, <-subjCh)
 }
 
 func TestNATSMemberListClient_ContextCancellation(t *testing.T) {

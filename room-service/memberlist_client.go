@@ -36,8 +36,13 @@ func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string
 		return nil, fmt.Errorf("marshal member.list body: %w", err)
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
+	// Zero-timeout misconfiguration would make context.WithTimeout expire immediately; fall through to the caller's ctx.
+	reqCtx := ctx
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
 
 	out := &nats.Msg{
 		Subject: subject.MemberList(requester, ch.RoomID, ch.SiteID),
