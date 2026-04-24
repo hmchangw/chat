@@ -88,3 +88,31 @@ type MessageEditedEvent struct {
 	EditedBy  string `json:"editedBy"  bson:"editedBy"` // actor account (always == message.sender.account under sender-only auth)
 	EditedAt  int64  `json:"editedAt"  bson:"editedAt"` // UTC millis, domain time when edit occurred
 }
+
+// DeleteMessageRequest is the payload for soft-deleting a message.
+type DeleteMessageRequest struct {
+	MessageID string `json:"messageId"`
+}
+
+// DeleteMessageResponse is the reply returned by the delete handler.
+// DeletedAt mirrors the updated_at value written to Cassandra (there is no
+// separate deleted_at column in the current schema).
+type DeleteMessageResponse struct {
+	MessageID string `json:"messageId"`
+	DeletedAt int64  `json:"deletedAt"` // UTC millis
+}
+
+// MessageDeletedEvent is the live event published to chat.room.{roomID}.event
+// after a successful soft delete. Per CLAUDE.md, every NATS event carries a
+// Timestamp (event publish time). DeletedAt is the domain time when the
+// delete occurred; both are populated from a single time.Now().UTC() in the
+// handler. DeletedBy equals the sender account under sender-only auth and is
+// included for client rendering convenience — it is not persisted to Cassandra.
+type MessageDeletedEvent struct {
+	Type      string `json:"type"      bson:"type"`
+	Timestamp int64  `json:"timestamp" bson:"timestamp"`
+	RoomID    string `json:"roomId"    bson:"roomId"`
+	MessageID string `json:"messageId" bson:"messageId"`
+	DeletedBy string `json:"deletedBy" bson:"deletedBy"`
+	DeletedAt int64  `json:"deletedAt" bson:"deletedAt"`
+}
