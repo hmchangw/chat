@@ -1085,6 +1085,8 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	assert.Equal(t, "target", normalized.RoomID)
 	assert.Contains(t, normalized.Users, "bob")
 	assert.Contains(t, normalized.Users, "carol")
+	// Requester is already subscribed to target, so ResolveAccounts filters her out.
+	assert.NotContains(t, normalized.Users, "alice")
 }
 
 func TestAddMembers_CrossSiteTimeout(t *testing.T) {
