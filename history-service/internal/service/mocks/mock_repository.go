@@ -118,6 +118,20 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessagesBetweenDesc(ctx, roomID,
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessagesBetweenDesc", reflect.TypeOf((*MockMessageRepository)(nil).GetMessagesBetweenDesc), ctx, roomID, since, before, q)
 }
 
+// UpdateMessageContent mocks base method.
+func (m *MockMessageRepository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateMessageContent", ctx, msg, newMsg, editedAt)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateMessageContent indicates an expected call of UpdateMessageContent.
+func (mr *MockMessageRepositoryMockRecorder) UpdateMessageContent(ctx, msg, newMsg, editedAt any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateMessageContent", reflect.TypeOf((*MockMessageRepository)(nil).UpdateMessageContent), ctx, msg, newMsg, editedAt)
+}
+
 // MockSubscriptionRepository is a mock of SubscriptionRepository interface.
 type MockSubscriptionRepository struct {
 	ctrl     *gomock.Controller
