@@ -187,3 +187,10 @@ func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*mod
 	}
 	return &m, nil
 }
+
+// UpdateMessageContent is implemented incrementally across Tasks 7-9 of the
+// edit plan. This stub keeps the interface contract compilable between tasks;
+// Task 7 replaces it with the top-level-message branch.
+func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	return fmt.Errorf("UpdateMessageContent not yet implemented")
+}
