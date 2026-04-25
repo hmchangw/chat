@@ -512,6 +512,16 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 				orgIDs = append(orgIDs, m.ID)
 			case model.RoomMemberIndividual:
 				accounts = append(accounts, m.Account)
+			default:
+				// Schema skew between sites — log so the issue is visible without
+				// breaking the request. Same-site (m.Type from our own Mongo) shouldn't
+				// hit this in practice; cross-site can if a peer adds new types.
+				slog.Warn("expandChannelRefs: skipping member with unknown type",
+					"roomId", ref.RoomID,
+					"siteId", ref.SiteID,
+					"memberType", m.Type,
+					"memberId", m.ID,
+				)
 			}
 		}
 	}
