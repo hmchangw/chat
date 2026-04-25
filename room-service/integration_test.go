@@ -1038,10 +1038,11 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	// Two Mongo DBs (distinct prefixes since setupMongo hashes by t.Name()), two NATS containers, two handler setups.
+	// Two Mongo DBs (distinct prefixes since setupMongo hashes by t.Name()).
+	// Only site-B needs a NATS server — site-A's handler talks straight to site-B
+	// via the cross-site MemberListClient and uses an in-memory publish closure.
 	dbA := testutil.MongoDB(t, "room_service_test_a")
 	dbB := testutil.MongoDB(t, "room_service_test_b")
-	natsURLa := setupNATS(t)
 	natsURLb := setupNATS(t)
 	valCfg := setupValkey(t)
 
@@ -1051,9 +1052,6 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	storeA := NewMongoStore(dbA)
 	storeB := NewMongoStore(dbB)
 
-	otelNCa, err := otelnats.Connect(natsURLa)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = otelNCa.Drain() })
 	otelNCb, err := otelnats.Connect(natsURLb)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNCb.Drain() })
