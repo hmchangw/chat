@@ -26,7 +26,7 @@ func RequestID() HandlerFunc {
 			reqID = idgen.GenerateID()
 		}
 		c.Set(requestIDKey, reqID)
-		c.SetContext(natsutil.WithRequestID(c, reqID))
+		c.SetContext(natsutil.WithRequestID(c.ctx, reqID))
 		c.Next()
 	}
 }

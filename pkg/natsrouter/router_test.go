@@ -576,7 +576,7 @@ func TestRequestIDMiddleware_StoresIDOnUnderlyingContext(t *testing.T) {
 	// natsutil.RequestIDFromContext(c) must equal c.Get("requestID") — the contract publish helpers rely on.
 	c := NewContext(nil)
 	c.Msg = &nats.Msg{Header: nats.Header{}}
-	c.Msg.Header.Set("X-Request-ID", "from-header")
+	c.Msg.Header.Set(natsutil.RequestIDHeader, "from-header")
 
 	called := false
 	chain := []HandlerFunc{
@@ -589,7 +589,7 @@ func TestRequestIDMiddleware_StoresIDOnUnderlyingContext(t *testing.T) {
 			assert.Equal(t, "from-header", fromCtx)
 		},
 	}
-	RunChain(c, chain)
+	runChain(c, chain)
 	assert.True(t, called, "downstream handler must run")
 }
 
@@ -598,12 +598,40 @@ func TestRequestIDMiddleware_GeneratesAndStoresOnContext_WhenHeaderMissing(t *te
 	c.Msg = &nats.Msg{Header: nats.Header{}}
 
 	var fromCtx string
+	var fromKeys string
 	chain := []HandlerFunc{
 		RequestID(),
 		func(c *Context) {
 			fromCtx = natsutil.RequestIDFromContext(c)
+			fromKeysAny, _ := c.Get("requestID")
+			fromKeys = fromKeysAny.(string)
 		},
 	}
-	RunChain(c, chain)
+	runChain(c, chain)
 	assert.NotEmpty(t, fromCtx, "RequestID middleware must mint and propagate to ctx when header is absent")
+	assert.Equal(t, fromCtx, fromKeys, "minted ID must be identical in ctx and keys map")
+}
+
+func TestRequestIDMiddleware_OtherCtxKeysStillReadable(t *testing.T) {
+	// Regression test: after RequestID() runs, c.Value(otherKey) must NOT hang.
+	// Bug history: an earlier version passed c (the *Context) as parent to
+	// WithRequestID, creating a circular ctx.parent → c → ctx.parent loop on
+	// any non-requestIDKey lookup. Fixed by passing c.ctx instead.
+	type otherKey int
+	const k otherKey = 0
+
+	parentCtx := context.WithValue(context.Background(), k, "parent-value")
+	c := NewContext(nil)
+	c.SetContext(parentCtx)
+	c.Msg = &nats.Msg{Header: nats.Header{}}
+
+	chain := []HandlerFunc{
+		RequestID(),
+		func(c *Context) {
+			// This lookup must complete in finite time — would infinite-loop with the bug.
+			got := c.Value(k)
+			assert.Equal(t, "parent-value", got, "non-requestIDKey lookup must still find values from the original parent ctx")
+		},
+	}
+	runChain(c, chain)
 }

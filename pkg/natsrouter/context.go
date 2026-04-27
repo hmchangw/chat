@@ -19,11 +19,10 @@ type HandlerFunc func(c *Context)
 // including consumers that retain it past the handler's return (net/http
 // keep-alive cancel watchers, background goroutines, deferred async work).
 //
-// Every field observable from a goroutine that outlives the handler — ctx,
-// Msg, Params, keys — lives on the Context header and is set once at acquire.
-// Only the middleware-chain bookkeeping (handlers, index) is pooled, and it's
-// not reachable via any exported accessor that an async goroutine would call,
-// so pool reuse cannot race any outside observer.
+// Most fields — Msg, Params, keys — are set once at acquire and then stable.
+// The underlying ctx field may be replaced by SetContext, but only under the
+// single-writer contract: middleware must call SetContext before c.Next(),
+// never concurrently with handler-spawned goroutines that read c.Value.
 type Context struct {
 	ctx    context.Context
 	Msg    *nats.Msg
@@ -64,11 +63,13 @@ func releaseContext(c *Context) {
 	c.chain.index = 0
 	chainPool.Put(c.chain)
 	// c itself is left to GC. External ctx consumers may still hold it;
-	// every field they can observe is stable from the moment of construction.
+	// every field they can observe is stable from the moment of construction
+	// (Msg, Params, keys); the underlying ctx may have been swapped by
+	// SetContext during the chain but is no longer mutated once handlers return.
 }
 
-// RunChain executes the handler chain against c; exposed primarily for tests.
-func RunChain(c *Context, handlers []HandlerFunc) {
+// runChain executes the handler chain against c; for tests in this package only.
+func runChain(c *Context, handlers []HandlerFunc) {
 	cs := chainPool.Get().(*chainState)
 	cs.handlers = handlers
 	cs.index = -1
@@ -86,9 +87,8 @@ func NewContext(params map[string]string) *Context {
 	}
 }
 
-// context.Context implementation — every method reads a field that is set
-// once at acquire, so these are safe for any consumer (net/http transport
-// watchers, goroutines spawned by the handler) that outlives the request.
+// context.Context implementation — delegates to c.ctx. Safe for async consumers
+// provided no middleware calls SetContext concurrently; see SetContext doc.
 func (c *Context) Deadline() (time.Time, bool) { return c.ctx.Deadline() }
 func (c *Context) Done() <-chan struct{}       { return c.ctx.Done() }
 func (c *Context) Err() error                  { return c.ctx.Err() }
