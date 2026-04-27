@@ -52,7 +52,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 		return nil, natsrouter.ErrInternal("failed to load message history")
 	}
 
-	s.redactUnavailableQuotes(c, page.Data, accessSince)
+	redactUnavailableQuotes(page.Data, accessSince)
 	return &models.LoadHistoryResponse{Messages: page.Data}, nil
 }
 
@@ -93,7 +93,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 		return nil, natsrouter.ErrInternal("failed to load messages")
 	}
 
-	s.redactUnavailableQuotes(c, page.Data, accessSince)
+	redactUnavailableQuotes(page.Data, accessSince)
 	return &models.LoadNextMessagesResponse{
 		Messages:   page.Data,
 		NextCursor: page.NextCursor,
@@ -169,7 +169,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	messages = append(messages, *centralMsg)
 	messages = append(messages, afterPage.Data...)
 
-	s.redactUnavailableQuotes(c, messages, accessSince)
+	redactUnavailableQuotes(messages, accessSince)
 	return &models.LoadSurroundingMessagesResponse{
 		Messages:   messages,
 		MoreBefore: beforePage.HasNext,
@@ -196,6 +196,6 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 	}
 
 	msgSlice := []models.Message{*msg}
-	s.redactUnavailableQuotes(c, msgSlice, accessSince)
+	redactUnavailableQuotes(msgSlice, accessSince)
 	return &msgSlice[0], nil
 }

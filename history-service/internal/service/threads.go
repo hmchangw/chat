@@ -77,7 +77,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, natsrouter.ErrInternal("failed to load thread messages")
 	}
 
-	s.redactUnavailableQuotes(c, page.Data, accessSince)
+	redactUnavailableQuotes(page.Data, accessSince)
 	return &models.GetThreadMessagesResponse{
 		Messages:   page.Data,
 		NextCursor: page.NextCursor,
@@ -163,6 +163,6 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 		parentMessages = append(parentMessages, msg)
 	}
 
-	s.redactUnavailableQuotes(c, parentMessages, accessSince)
+	redactUnavailableQuotes(parentMessages, accessSince)
 	return &models.GetThreadParentMessagesResponse{ParentMessages: parentMessages, Total: threadPage.Total}, nil
 }

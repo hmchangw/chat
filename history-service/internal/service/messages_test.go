@@ -27,6 +27,8 @@ func millis(t time.Time) *int64 {
 	return &ms
 }
 
+func ptrTime(t time.Time) *time.Time { return &t }
+
 func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockThreadRoomRepository) {
 	ctrl := gomock.NewController(t)
 	msgs := mocks.NewMockMessageRepository(ctrl)
@@ -866,8 +868,9 @@ func TestHistoryService_QuoteRedact_SingleMessage(t *testing.T) {
 // TShow redaction
 // ============================================================
 
-// tshow message with QuotedParentMessage whose thread parent pre-dates accessSince →
-// parent fetched from Cassandra, snapshot replaced with unavailable stub.
+// TShow message whose QuotedParentMessage.ThreadParentCreatedAt pre-dates accessSince →
+// snapshot replaced with unavailable stub. ThreadParentCreatedAt is embedded at write
+// time by message-worker; no Cassandra fetch needed.
 func TestHistoryService_TShow_ParentBeforeAccessSince(t *testing.T) {
 	svc, msgs, subs, _ := newService(t)
 	c := testContext()
@@ -875,23 +878,20 @@ func TestHistoryService_TShow_ParentBeforeAccessSince(t *testing.T) {
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
 
 	msg := models.Message{
-		MessageID:      "m1",
-		RoomID:         "r1",
-		CreatedAt:      joinTime.Add(time.Hour),
-		TShow:          true,
-		ThreadParentID: "p1",
+		MessageID: "m1",
+		RoomID:    "r1",
+		CreatedAt: joinTime.Add(time.Hour),
+		TShow:     true,
 		QuotedParentMessage: &models.QuotedParentMessage{
-			MessageID: "p1",
-			Msg:       "thread parent text",
-			CreatedAt: joinTime.Add(30 * time.Minute), // snapshot says within window
+			MessageID:             "p1",
+			Msg:                   "thread parent text",
+			CreatedAt:             joinTime.Add(30 * time.Minute),
+			ThreadParentID:        "p1",
+			ThreadParentCreatedAt: ptrTime(joinTime.Add(-2 * time.Hour)), // before accessSince → redact
 		},
 	}
 	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).
 		Return(makePage([]models.Message{msg}, false), nil)
-	// Actual Cassandra parent pre-dates accessSince — snapshot CreatedAt was wrong/stale.
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"p1"}).Return([]models.Message{
-		{MessageID: "p1", CreatedAt: joinTime.Add(-2 * time.Hour)},
-	}, nil)
 
 	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.NoError(t, err)
@@ -902,7 +902,8 @@ func TestHistoryService_TShow_ParentBeforeAccessSince(t *testing.T) {
 	assert.Empty(t, q.MessageID)
 }
 
-// tshow message whose Cassandra parent is within the access window → not redacted.
+// TShow message whose QuotedParentMessage.ThreadParentCreatedAt is within the access
+// window → not redacted.
 func TestHistoryService_TShow_ParentAfterAccessSince(t *testing.T) {
 	svc, msgs, subs, _ := newService(t)
 	c := testContext()
@@ -910,22 +911,20 @@ func TestHistoryService_TShow_ParentAfterAccessSince(t *testing.T) {
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
 
 	msg := models.Message{
-		MessageID:      "m1",
-		RoomID:         "r1",
-		CreatedAt:      joinTime.Add(time.Hour),
-		TShow:          true,
-		ThreadParentID: "p1",
+		MessageID: "m1",
+		RoomID:    "r1",
+		CreatedAt: joinTime.Add(time.Hour),
+		TShow:     true,
 		QuotedParentMessage: &models.QuotedParentMessage{
-			MessageID: "p1",
-			Msg:       "thread parent text",
-			CreatedAt: joinTime.Add(30 * time.Minute),
+			MessageID:             "p1",
+			Msg:                   "thread parent text",
+			CreatedAt:             joinTime.Add(30 * time.Minute),
+			ThreadParentID:        "p1",
+			ThreadParentCreatedAt: ptrTime(joinTime.Add(10 * time.Minute)), // within window → keep
 		},
 	}
 	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).
 		Return(makePage([]models.Message{msg}, false), nil)
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"p1"}).Return([]models.Message{
-		{MessageID: "p1", CreatedAt: joinTime.Add(10 * time.Minute)},
-	}, nil)
 
 	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.NoError(t, err)
@@ -935,7 +934,7 @@ func TestHistoryService_TShow_ParentAfterAccessSince(t *testing.T) {
 	assert.Equal(t, "thread parent text", q.Msg, "parent is accessible; snapshot must not be redacted")
 }
 
-// tshow message with no QuotedParentMessage → nothing to redact, no Cassandra fetch.
+// TShow message with no QuotedParentMessage → nothing to redact.
 func TestHistoryService_TShow_NoQuotedParentMessage(t *testing.T) {
 	svc, msgs, subs, _ := newService(t)
 	c := testContext()
@@ -943,16 +942,14 @@ func TestHistoryService_TShow_NoQuotedParentMessage(t *testing.T) {
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
 
 	msg := models.Message{
-		MessageID:      "m1",
-		RoomID:         "r1",
-		CreatedAt:      joinTime.Add(time.Hour),
-		TShow:          true,
-		ThreadParentID: "p1",
+		MessageID: "m1",
+		RoomID:    "r1",
+		CreatedAt: joinTime.Add(time.Hour),
+		TShow:     true,
 		// QuotedParentMessage intentionally nil
 	}
 	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).
 		Return(makePage([]models.Message{msg}, false), nil)
-	// GetMessagesByIDs must NOT be called — nothing to redact without a snapshot.
 
 	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.NoError(t, err)
@@ -960,34 +957,30 @@ func TestHistoryService_TShow_NoQuotedParentMessage(t *testing.T) {
 	assert.Nil(t, resp.Messages[0].QuotedParentMessage)
 }
 
-// Two tshow messages sharing the same parent → single deduplicated GetMessagesByIDs call.
-func TestHistoryService_TShow_DeduplicatesParentFetch(t *testing.T) {
+// Two TShow messages pointing to the same inaccessible thread parent → both redacted.
+func TestHistoryService_TShow_TwoMessagesWithSameParent_BothRedacted(t *testing.T) {
 	svc, msgs, subs, _ := newService(t)
 	c := testContext()
 
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
 
-	parentAt := joinTime.Add(-2 * time.Hour)
 	makeMsg := func(id string) models.Message {
 		return models.Message{
-			MessageID:      id,
-			RoomID:         "r1",
-			CreatedAt:      joinTime.Add(time.Hour),
-			TShow:          true,
-			ThreadParentID: "p1",
+			MessageID: id,
+			RoomID:    "r1",
+			CreatedAt: joinTime.Add(time.Hour),
+			TShow:     true,
 			QuotedParentMessage: &models.QuotedParentMessage{
-				MessageID: "p1",
-				Msg:       "shared parent",
-				CreatedAt: joinTime.Add(30 * time.Minute),
+				MessageID:             "p1",
+				Msg:                   "shared parent",
+				CreatedAt:             joinTime.Add(30 * time.Minute),
+				ThreadParentID:        "p1",
+				ThreadParentCreatedAt: ptrTime(joinTime.Add(-2 * time.Hour)), // before accessSince
 			},
 		}
 	}
 	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).
 		Return(makePage([]models.Message{makeMsg("m1"), makeMsg("m2")}, false), nil)
-	// Exactly one call regardless of how many messages share the parent.
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"p1"}).Return([]models.Message{
-		{MessageID: "p1", CreatedAt: parentAt},
-	}, nil)
 
 	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.NoError(t, err)
@@ -996,45 +989,33 @@ func TestHistoryService_TShow_DeduplicatesParentFetch(t *testing.T) {
 	assert.Equal(t, "This message is unavailable", resp.Messages[1].QuotedParentMessage.Msg)
 }
 
-// Cassandra fetch failure during tshow path → handler succeeds, tshow redaction skipped,
-// standard quote redaction still runs on other messages.
-func TestHistoryService_TShow_CassandraFetchFails_GracefulDegradation(t *testing.T) {
+// TShow message where ThreadParentCreatedAt is nil (message-worker didn't populate it) →
+// TShow path skipped; only standard CreatedAt check applies.
+func TestHistoryService_TShow_ThreadParentCreatedAtNil_NoTShowRedaction(t *testing.T) {
 	svc, msgs, subs, _ := newService(t)
 	c := testContext()
 
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
 
-	tshowMsg := models.Message{
-		MessageID:      "m1",
-		RoomID:         "r1",
-		CreatedAt:      joinTime.Add(time.Hour),
-		TShow:          true,
-		ThreadParentID: "p1",
-		QuotedParentMessage: &models.QuotedParentMessage{
-			MessageID: "p1",
-			Msg:       "parent text",
-			CreatedAt: joinTime.Add(30 * time.Minute), // within window — no standard redaction
-		},
-	}
-	standardMsg := models.Message{
-		MessageID: "m2",
+	msg := models.Message{
+		MessageID: "m1",
 		RoomID:    "r1",
-		CreatedAt: joinTime.Add(2 * time.Hour),
+		CreatedAt: joinTime.Add(time.Hour),
+		TShow:     true,
 		QuotedParentMessage: &models.QuotedParentMessage{
-			MessageID: "q2",
-			Msg:       "quoted text",
-			CreatedAt: joinTime.Add(-1 * time.Hour), // before window — standard redaction fires
+			MessageID:             "p1",
+			Msg:                   "parent text",
+			CreatedAt:             joinTime.Add(30 * time.Minute), // within window
+			ThreadParentID:        "p1",
+			ThreadParentCreatedAt: nil, // not set by message-worker
 		},
 	}
 	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).
-		Return(makePage([]models.Message{tshowMsg, standardMsg}, false), nil)
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("cassandra down"))
+		Return(makePage([]models.Message{msg}, false), nil)
 
 	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
-	require.NoError(t, err, "handler must not surface Cassandra fetch errors")
-	require.Len(t, resp.Messages, 2)
-	// tshow redaction skipped (fetch failed) — snapshot preserved as-is.
+	require.NoError(t, err)
+	require.Len(t, resp.Messages, 1)
+	// TShow path skipped (ThreadParentCreatedAt nil); standard check passes — not redacted.
 	assert.Equal(t, "parent text", resp.Messages[0].QuotedParentMessage.Msg)
-	// Standard redaction still fires on the second message.
-	assert.Equal(t, "This message is unavailable", resp.Messages[1].QuotedParentMessage.Msg)
 }
