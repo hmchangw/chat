@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -32,10 +33,10 @@ func (e *infraError) Unwrap() error {
 }
 
 // replyFunc is the function signature for publishing a reply to a NATS subject.
-type replyFunc func(ctx context.Context, subject string, data []byte) error
+type replyFunc func(ctx context.Context, msg *nats.Msg) error
 
 // publishFunc is the function signature for publishing to JetStream.
-type publishFunc func(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
+type publishFunc func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
 
 // Handler processes messages from the MESSAGES stream and validates them
 // before publishing to MESSAGES_CANONICAL.
@@ -99,7 +100,8 @@ func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte,
 		return
 	}
 	respSubj := subject.UserResponse(account, req.RequestID)
-	if err := h.reply(ctx, respSubj, replyData); err != nil {
+	replyMsg := natsutil.NewMsg(ctx, respSubj, replyData)
+	if err := h.reply(ctx, replyMsg); err != nil {
 		slog.Error("reply to client failed", "error", err, "subject", respSubj)
 	}
 }
@@ -176,7 +178,8 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	}
 
 	canonicalSubj := subject.MsgCanonicalCreated(siteID)
-	if _, err := h.publish(ctx, canonicalSubj, evtData, jetstream.WithMsgID(msg.ID)); err != nil {
+	canonicalMsg := natsutil.NewMsg(ctx, canonicalSubj, evtData)
+	if _, err := h.publish(ctx, canonicalMsg, jetstream.WithMsgID(msg.ID)); err != nil {
 		return nil, &infraError{cause: fmt.Errorf("publish to MESSAGES_CANONICAL: %w", err)}
 	}
 
