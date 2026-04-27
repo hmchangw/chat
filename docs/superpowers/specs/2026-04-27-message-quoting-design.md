@@ -9,18 +9,18 @@ Let a user reply to a chat message with a "quote" — the new message renders al
 
 ## Scope
 
-- Same-room quoting only. Enforced automatically by the room-scoped subject of the history-service RPC — no separate validation in gatekeeper.
-- Thread reply and quote are independent — a single message may carry both, neither, or only one.
-- MVP snapshot fields: `messageId`, `roomId`, `sender`, `createdAt`, `msg`, `mentions`, `messageLink`. `attachments` is out of scope for MVP.
+- Same conversation context only. Main-room messages can only quote main-room messages; messages inside thread `T` can only quote other messages in thread `T`. Quoting the thread's parent message from inside the thread is **not** allowed (strict rule). The room-scoping check from `history-service.findMessage` is necessary but no longer sufficient — gatekeeper additionally compares `parent.ThreadParentID` against the new message's `ThreadParentMessageID`.
+- Thread reply and quote are independent — a single message may carry both, neither, or only one (subject to the conversation-context rule above).
+- MVP snapshot fields: `messageId`, `roomId`, `sender`, `createdAt`, `msg`, `mentions`, `messageLink`, `threadParentId`, `threadParentCreatedAt`. `attachments` is out of scope for MVP.
 - Quoting a deleted parent is allowed. `history-service.GetMessageByID` does not filter on the `deleted` flag, so deleted parents return a normal snapshot. The snapshot is captured at quote time; the parent's later deletion does not invalidate it.
-- Soft-fail policy: any failure to resolve the parent (not found, RPC error, timeout, forbidden by access-window) drops the quote silently and lets the message ship without it. Failures are logged at WARN.
+- Soft-fail policy: any failure to resolve or accept the parent (not found, RPC error, timeout, forbidden by access-window, thread-context mismatch) drops the quote silently and lets the message ship without it. Failures are logged at WARN.
 
 ## Non-goals
 
 - No editing of the snapshot after the fact.
-- No cross-room or cross-site quoting.
+- No cross-room or cross-thread-room quoting.
 - No new feature flag — gated by clients sending the new request field.
-- No schema migration — Cassandra columns already exist.
+- No data migration. The two new UDT fields are added via `ALTER TYPE` (additive, online-safe, no row backfill needed). See the "Cassandra schema migration" section.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ The canonical event is the single source of truth. Once gatekeeper has built the
 
 - `history-service.GetMessageByID` already implements lookup, room match (via subject param), subscription check, and access-window enforcement. The access-window check is desirable for quoting — a user who can't see the parent shouldn't be able to surface its content in a quote.
 - Keeps gatekeeper's dependency surface unchanged (Mongo only). Cassandra reads stay owned by history-service.
-- Same-room enforcement comes for free: gatekeeper publishes on the subject containing the sender's own `roomID`, and `findMessage` (`history-service/internal/service/utils.go:59`) returns NotFound when the parent's `RoomID` doesn't match the subject's `roomID`. No additional check needed in gatekeeper.
+- Room-level scoping is enforced by `findMessage` (`history-service/internal/service/utils.go:59`) — same `roomID` between subject and parent. **Thread-level scoping is enforced by gatekeeper itself** after the RPC: it compares `parent.ThreadParentID` (returned in the `cassandra.Message` body) against `req.ThreadParentMessageID` and drops the quote on mismatch. Both checks are needed because thread replies share the room ID with their main-room parent, so a `roomID` match alone does not imply same-thread.
 - Trade-off accepted: synchronous NATS hop on every quoted send, bounded by a 2-second timeout. On timeout or any RPC error, soft-fail drops the quote.
 
 The user-scoped subject is published on by gatekeeper acting on behalf of the sender — the sender's `account` and `roomID` come from the inbound MESSAGES subject. natsrouter parses params from the subject regardless of publisher identity, and all auth checks pass because the sender genuinely is subscribed.
@@ -217,7 +217,8 @@ No conversion code — `evt.Message.QuotedParentMessage` is already the storage 
 |---|---|
 | Client sends invalid UUID for quotedParentMessageId | RPC returns NotFound → quote dropped, message ships |
 | Parent message not found in Cassandra | RPC returns NotFound → quote dropped, message ships |
-| Parent in a different room | RPC returns NotFound (room param in subject doesn't match) → quote dropped, message ships |
+| Parent in a different room (different `roomId`) | RPC returns NotFound (room param in subject doesn't match) → quote dropped, message ships |
+| Parent has a different thread context (`parent.ThreadParentID != req.ThreadParentMessageID`) | gatekeeper post-RPC check → quote dropped, message ships. Covers: main-room msg quoting a thread reply; thread-T msg quoting main; thread-T msg quoting thread-T'; thread-T msg quoting its own thread-parent main-room message. |
 | Parent has `deleted = true` | history-service returns the row (no deleted filter in `findMessage`) → snapshot embedded normally, quote ships |
 | Sender's `historySharedSince` is after parent's createdAt | RPC returns Forbidden → quote dropped, message ships |
 | history-service unreachable | NATS no-responder error → quote dropped, message ships |
@@ -226,30 +227,74 @@ No conversion code — `evt.Message.QuotedParentMessage` is already the storage 
 
 In every error case the user's message lands in the room — only the quote decoration is lost, and a WARN log is emitted for operational visibility.
 
+## Cassandra schema migration
+
+Two new fields are appended to the `QuotedParentMessage` UDT. UDT field additions in Cassandra are additive, online-safe, and require no row backfill — existing rows simply read back the new fields as NULL.
+
+### Updated UDT (single source of truth: `docs/cassandra_message_model.md`)
+
+```cql
+CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
+  message_id               TEXT,
+  room_id                  TEXT,
+  sender                   FROZEN<"Participant">,
+  created_at               TIMESTAMP,
+  msg                      TEXT,
+  mentions                 SET<FROZEN<"Participant">>,
+  attachments              LIST<BLOB>,
+  message_link             TEXT,
+  thread_parent_id         TEXT,        -- NEW
+  thread_parent_created_at TIMESTAMP    -- NEW
+);
+```
+
+### Production migration
+
+```cql
+ALTER TYPE chat."QuotedParentMessage" ADD thread_parent_id TEXT;
+ALTER TYPE chat."QuotedParentMessage" ADD thread_parent_created_at TIMESTAMP;
+```
+
+### Local-dev DDL
+
+`docker-local/cassandra/init/06-udt-quoted_parent_message.cql` is updated with the two new fields. The local stack typically runs the init scripts on a fresh keyspace, so `CREATE TYPE IF NOT EXISTS` simply produces the right shape from scratch. Long-lived dev databases need the same `ALTER TYPE` as prod.
+
+### Hand-rolled UDTs in tests
+
+`history-service/internal/cassrepo/integration_test.go:42` declares the same UDT inline for testcontainers; that statement is updated to keep the two test environments in sync.
+
+## Deploy order
+
+1. Run the two `ALTER TYPE` statements against each site's Cassandra keyspace.
+2. Deploy new `message-worker` (gocql binds the two new fields when present, writes NULL when nil — safe regardless of which gatekeeper version is producing events).
+3. Deploy new `message-gatekeeper` (starts populating the new snapshot fields and enforcing the thread-context rule).
+
 ## TDD ordering
 
 Per CLAUDE.md, every change lands as Red → Green → Refactor → Commit:
 
-1. `pkg/model` field additions + round-trip test.
-2. `pkg/subject.MsgGet` helper + test.
-3. `message-gatekeeper` `ParentMessageFetcher` interface + handler branch + mock + handler tests.
-4. `message-gatekeeper` `fetcher_history.go` + fetcher tests against in-process NATS.
-5. `message-gatekeeper` `main.go` wiring.
-6. `message-worker` INSERT extensions + handler test extensions.
-7. `message-worker` integration test for round-trip persistence.
+1. `cassandra.QuotedParentMessage` UDT — Go struct + tests + `cassandra_message_model.md` + local-dev DDL + history-service inline UDT.
+2. `pkg/model` field additions + round-trip test (uses the new UDT fields in fixtures).
+3. `pkg/subject.MsgGet` helper + test.
+4. `message-gatekeeper` `ParentMessageFetcher` interface + handler branch (incl. thread-context guard) + mock + handler tests.
+5. `message-gatekeeper` `fetcher_history.go` (projects the two new fields) + fetcher tests against in-process NATS.
+6. `message-gatekeeper` `main.go` wiring.
+7. `message-worker` INSERT extensions + handler test extensions.
+8. `message-worker` integration test for round-trip persistence (asserts new fields).
 
 ## Backward compatibility & rollout
 
 - All new fields are `omitempty` — old clients and old service binaries see no behavior change.
 - Old gatekeeper deployed against new model: just never sets the field; canonical event has nil snapshot; everything works.
 - Old message-worker deployed against new event: gocql binds nil UDT; INSERTs without the new column are still valid (Cassandra ignores unspecified columns). However, message-worker SHOULD be deployed before frontend starts sending quotes, so snapshots are persisted from day one.
-- No DB migration. No feature flag.
+- The two new UDT fields require an `ALTER TYPE` migration (additive, online-safe; see "Cassandra schema migration"). Run before deploying the new gatekeeper. Old binaries reading the type after the migration are unaffected — extra UDT fields are tolerated by gocql.
+- No feature flag.
 - One new env var on gatekeeper (`CHAT_BASE_URL`, defaults to `http://localhost:3000`).
 
 ## Observability
 
-One new log line: `slog.Warn("quoted parent unavailable, dropping quote", ...)`. No new metrics in MVP.
+Two new log lines, both at WARN:
+- `"quoted parent unavailable, dropping quote"` — fetcher returned an error (RPC failure, history-service error envelope, etc.).
+- `"quoted parent has different thread context, dropping quote"` — thread-context guard rejected the snapshot.
 
-## Open questions for implementation
-
-- Confirm gocql in this repo correctly marshals a nil `*cassandra.QuotedParentMessage` as a null UDT in INSERT bindings (expected behavior, but verify via the integration test).
+No new metrics in MVP.
