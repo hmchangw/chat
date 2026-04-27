@@ -12,7 +12,7 @@
 |---|---|---|
 | **Part 1: Foundation** | Extend `pkg/idgen` with new generators and validator. No call sites change. | `pkg/idgen/` |
 | **Part 2: Request-ID Propagation** | Add `pkg/natsutil` request-ID helpers; every outbound publish stamps `X-Request-ID`; every consumer extracts it into `context.Context`. Logging-only — no dedup changes. | `pkg/natsutil/`, `pkg/natsrouter/`, `auth-service/`, every service's `main.go` publish wrapper, every worker's JetStream consumer callback. |
-| **Part 3: ID Format Cutover** | Switch entity ID generation, channel/DM room logic, request ID format, message-gatekeeper validation. Move system message IDs to `GenerateMessageID()`; propagate via new `MessageID` field on cross-site events. Replace seed-derived outbox dedup with `requestID + ":" + destSiteID`. Delete `idgen.DeriveID`. | `room-service`, `room-worker`, `inbox-worker`, `message-worker`, `message-gatekeeper`, `pkg/model/`, `pkg/idgen/`, `auth-service/middleware.go`, `pkg/natsrouter/middleware.go`. |
+| **Part 3: ID Format Cutover** | Switch entity ID generation, channel/DM room logic, request ID format, message-gatekeeper validation. Mint system message IDs via `idgen.MessageIDFromRequestID(seed, suffix)` (deterministic from the propagated request ID, with a payload-derived fallback for partial-deployment safety). Replace seed-derived outbox dedup with `requestID + ":" + destSiteID`. Delete `idgen.DeriveID`. | `room-service`, `room-worker`, `inbox-worker`, `message-worker`, `message-gatekeeper`, `pkg/idgen/`, `auth-service/middleware.go`, `pkg/natsrouter/middleware.go`. |
 
 **ID format matrix (final state):**
 
@@ -24,12 +24,12 @@
 | Channel Room `_id` | base62 random | 17 | `idgen.GenerateID()` |
 | DM Room `_id` | sorted concat of two `user.ID` | ~34 | `idgen.BuildDMRoomID(a, b)` |
 | Message `_id` (user) | base62 random, **client-supplied** | 20 | client; validated via `idgen.IsValidMessageID` |
-| Message `_id` (system) | base62 random, originator-generated | 20 | `idgen.GenerateMessageID()` |
+| Message `_id` (system) | base62 deterministic from request ID + suffix | 20 | `idgen.MessageIDFromRequestID(seed, suffix)` |
 | Request ID (HTTP + NATS) | UUIDv7 hex, no hyphens | 32 | `idgen.GenerateUUIDv7()` (only at system entry points) |
 
 **`Nats-Msg-Id` rules (final state):**
-- Canonical message publishes (user + system + cross-site replica) → `WithMsgID(msg.ID)`.
-- Outbox publishes → `WithMsgID(requestID + ":" + destSiteID)`.
+- Canonical message publishes (user + system) → `WithMsgID(msg.ID)`. The receiving site's `inbox-worker` does not create a canonical replica; cross-site users see the message via the broadcast subject routed through the NATS supercluster, so no second canonical publish (and no `MessageID` field on cross-site events).
+- Outbox publishes → `WithMsgID(requestID + ":" + destSiteID)`, with a compact payload-derived seed fallback (`roomID:requesterAccount:Timestamp`) when no `X-Request-ID` is on ctx (partial-deployment safety).
 - Member events / broadcast (core NATS, no stream) → no dedup.
 
 ---
@@ -1802,7 +1802,7 @@ If steps 1-4 surfaced a service that wasn't wired up correctly, fix it in a smal
 - Modify: `pkg/natsrouter/middleware.go` — request ID minted via `idgen.GenerateUUIDv7`
 - Modify: `room-service/handler.go` — channel rooms via `idgen.GenerateID`, DMs via `idgen.BuildDMRoomID`; subscription via `idgen.GenerateUUIDv7`
 - Modify: `message-worker/handler.go` — `ThreadRoom` and `ThreadSubscription` IDs via `idgen.GenerateUUIDv7`
-- Modify: `room-worker/handler.go` — Subscription, RoomMember IDs via `idgen.GenerateUUIDv7`; system message IDs via `idgen.GenerateMessageID`; outbox publishes use `requestID + ":" + destSiteID` for `Nats-Msg-Id`; canonical system-message publishes use `msg.ID`
+- Modify: `room-worker/handler.go` — Subscription, RoomMember IDs via `idgen.GenerateUUIDv7`; system message IDs via `idgen.MessageIDFromRequestID(seed, suffix)` with payload-derived fallback (extracted via the new `messageDedupSeed` helper); outbox publishes use `requestID + ":" + destSiteID` for `Nats-Msg-Id` (extracted via `outboxDedupID` helper); canonical system-message publishes use `msg.ID`
 - Modify: `inbox-worker/handler.go` — Subscription IDs via `idgen.GenerateUUIDv7`
 - Modify: `message-gatekeeper/handler.go` — replace `uuid.Parse(req.ID)` with `idgen.IsValidMessageID(req.ID)`; drop `github.com/google/uuid` import
 - Modify: `pkg/idgen/idgen.go` — delete `DeriveID` (final step)
@@ -1815,7 +1815,7 @@ If steps 1-4 surfaced a service that wasn't wired up correctly, fix it in a smal
 - Task 3.2: `room-service` — channel/DM room ID branching + Subscription UUIDv7
 - Task 3.3: `message-worker` — ThreadRoom + ThreadSubscription UUIDv7
 - Task 3.4: `room-worker` — Subscription + RoomMember UUIDv7
-- Task 3.5: `room-worker` — system message ID via `GenerateMessageID`; canonical publishes use `msg.ID`; drop `sysMsgDedupID`
+- Task 3.5: `room-worker` — system message ID via `MessageIDFromRequestID(seed, suffix)`; canonical publishes use `msg.ID`; drop `sysMsgDedupID`
 - Task 3.6: `room-worker` — outbox `Nats-Msg-Id` is `requestID + ":" + destSiteID`; drop `*OutboxDedupID`
 - Task 3.7: `inbox-worker` — Subscription UUIDv7
 - Task 3.8: `message-gatekeeper` — validator swap; drop `google/uuid` import
