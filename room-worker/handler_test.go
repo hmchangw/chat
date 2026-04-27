@@ -310,6 +310,9 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -334,6 +337,16 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 
 	assert.True(t, subjSet[subject.SubscriptionUpdate(account)], "expected subscription update published")
 	assert.True(t, subjSet[subject.MemberEvent(roomID)], "expected member event published")
+
+	// Verify the RoomType is carried on the SubscriptionUpdateEvent payload
+	for _, p := range published {
+		if p.subj != subject.SubscriptionUpdate(account) {
+			continue
+		}
+		var evt model.SubscriptionUpdateEvent
+		require.NoError(t, json.Unmarshal(p.data, &evt))
+		assert.Equal(t, model.RoomTypeChannel, evt.Subscription.RoomType, "subscription update should carry RoomType")
+	}
 
 	// Verify timestamps on all events
 	for _, p := range published {
@@ -483,6 +496,9 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -533,6 +549,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 			assert.Len(t, subs, 2)
 			for _, s := range subs {
 				assert.Equal(t, "site-a", s.SiteID)
+				assert.Equal(t, model.RoomTypeChannel, s.RoomType)
 				assert.Equal(t, []model.Role{model.RoleMember}, s.Roles)
 				require.NotNil(t, s.HistorySharedSince)
 				assert.Equal(t, s.JoinedAt, *s.HistorySharedSince)
@@ -861,6 +878,9 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil) // recount after removal
+	store.EXPECT().
+		GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -919,6 +939,9 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -1143,6 +1166,9 @@ func TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates(t *testing.T) {
 		Return(int64(1), nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
@@ -1181,6 +1207,9 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	store.EXPECT().DeleteSubscriptionsByAccounts(gomock.Any(), roomID, []string{"carol"}).Return(int64(1), nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
 	store.EXPECT().ReconcileUserCount(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	outboxSubj := subject.Outbox(localSite, remoteSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {

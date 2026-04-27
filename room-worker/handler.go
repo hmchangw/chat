@@ -174,12 +174,22 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 
 	now := time.Now().UTC()
 
+	// Fetch the room so the removed-event payload carries RoomType.
+	// Non-fatal: on failure we proceed with an empty RoomType.
+	var roomType model.RoomType
+	if room, err := h.store.GetRoom(ctx, req.RoomID); err != nil {
+		slog.Warn("get room failed during remove-individual", "error", err, "roomID", req.RoomID)
+	} else if room != nil {
+		roomType = room.Type
+	}
+
 	// Subscription update event
 	subEvt := model.SubscriptionUpdateEvent{
 		UserID: user.ID,
 		Subscription: model.Subscription{
-			RoomID: req.RoomID,
-			User:   model.SubscriptionUser{ID: user.ID, Account: req.Account},
+			RoomID:   req.RoomID,
+			RoomType: roomType,
+			User:     model.SubscriptionUser{ID: user.ID, Account: req.Account},
 		},
 		Action:    "removed",
 		Timestamp: now.UnixMilli(),
@@ -289,6 +299,15 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 
 	now := time.Now().UTC()
 
+	// Fetch the room once so every per-account removed event carries RoomType.
+	// Non-fatal: on failure we proceed with an empty RoomType.
+	var roomType model.RoomType
+	if room, err := h.store.GetRoom(ctx, req.RoomID); err != nil {
+		slog.Warn("get room failed during remove-org", "error", err, "roomID", req.RoomID)
+	} else if room != nil {
+		roomType = room.Type
+	}
+
 	// Publish per-account subscription update and collect cross-site accounts
 	sectName := ""
 	for _, m := range toRemove {
@@ -297,8 +316,9 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		}
 		subEvt := model.SubscriptionUpdateEvent{
 			Subscription: model.Subscription{
-				RoomID: req.RoomID,
-				User:   model.SubscriptionUser{Account: m.Account},
+				RoomID:   req.RoomID,
+				RoomType: roomType,
+				User:     model.SubscriptionUser{Account: m.Account},
 			},
 			Action:    "removed",
 			Timestamp: now.UnixMilli(),
@@ -428,6 +448,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			ID:       idgen.GenerateID(),
 			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:   req.RoomID,
+			RoomType: model.RoomTypeChannel,
 			SiteID:   room.SiteID,
 			Roles:    []model.Role{model.RoleMember},
 			JoinedAt: acceptedAt,
