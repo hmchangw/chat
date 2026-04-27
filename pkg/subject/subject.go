@@ -252,15 +252,15 @@ func RoomsInfoBatchSubscribe(siteID string) string {
 }
 
 func UserResponseWildcard() string {
-        return "chat.user.*.response.>"
+	return "chat.user.*.response.>"
 }
 
 func RoomEventWildcard() string {
-        return "chat.room.*.event"
+	return "chat.room.*.event"
 }
 
 func UserRoomEventWildcard() string {
-        return "chat.user.*.event.room"
+	return "chat.user.*.event.room"
 }
 
 // --- natsrouter patterns (use {param} placeholders for named extraction) ---
