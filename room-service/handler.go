@@ -438,10 +438,10 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	allOrgs := dedup(append(req.Orgs, channelOrgIDs...))
 	allUsers := dedup(append(req.Users, channelAccounts...))
 
-	// 7. Resolve accounts (net new only)
-	newAccounts, err := h.store.ResolveAccounts(ctx, allOrgs, allUsers, roomID)
+	// 7. Count net-new members (count-only — actual list materialized in room-worker)
+	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, roomID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve accounts: %w", err)
+		return nil, fmt.Errorf("count new members: %w", err)
 	}
 
 	// 8. Capacity check
@@ -449,12 +449,13 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("count subscriptions: %w", err)
 	}
-	if currentCount+len(newAccounts) > h.maxRoomSize {
-		return nil, fmt.Errorf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, len(newAccounts), currentCount)
+	if currentCount+newCount > h.maxRoomSize {
+		return nil, fmt.Errorf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, newCount, currentCount)
 	}
 
-	// 9. Normalize and publish
-	req.Users = newAccounts
+	// 9. Normalize and publish — Users and Orgs ship as merged-but-unresolved.
+	// room-worker's ListNewMembers reproduces resolution at write time.
+	req.Users = allUsers
 	req.Orgs = allOrgs
 	req.RoomID = roomID
 	req.RequesterID = sub.User.ID

@@ -911,8 +911,8 @@ func TestHandler_AddMembers_CapacityExceeded(t *testing.T) {
 		GetRoom(gomock.Any(), "r1").
 		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().
-		ResolveAccounts(gomock.Any(), gomock.Any(), []string{"u1", "u2", "u3", "u4", "u5"}, "r1").
-		Return([]string{"u1", "u2", "u3", "u4", "u5"}, nil)
+		CountNewMembers(gomock.Any(), gomock.Any(), []string{"u1", "u2", "u3", "u4", "u5"}, "r1").
+		Return(5, nil)
 	store.EXPECT().
 		CountSubscriptions(gomock.Any(), "r1").
 		Return(8, nil)
@@ -943,8 +943,8 @@ func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Type: model.RoomTypeChannel, Restricted: true,
 	}, nil)
-	store.EXPECT().ResolveAccounts(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
-		Return([]string{"bob"}, nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return(1, nil)
 	store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(1, nil)
 
 	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"bob"}}
@@ -971,8 +971,8 @@ func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Type: model.RoomTypeChannel,
 	}, nil)
-	store.EXPECT().ResolveAccounts(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
-		Return(nil, nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return(0, nil)
 	store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 
 	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"alice"}}
