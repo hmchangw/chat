@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useNats } from '../context/NatsContext'
+import { AUTH_MODE } from '../lib/authMode'
+import { signinRedirect } from '../lib/oidc'
 
 export default function LoginPage() {
   const { connect, error: natsError } = useNats()
@@ -10,14 +12,13 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  const handleSubmit = async (e) => {
+  const handleDevSubmit = async (e) => {
     e.preventDefault()
     if (!account.trim()) return
-
     setLoading(true)
     setError(null)
     try {
-      await connect(account.trim(), siteId.trim())
+      await connect({ account: account.trim(), siteId: siteId.trim() })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -25,9 +26,48 @@ export default function LoginPage() {
     }
   }
 
+  const handleOidcSignin = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      await signinRedirect(siteId.trim())
+    } catch (err) {
+      setError(err.message)
+      setLoading(false)
+    }
+  }
+
+  if (AUTH_MODE === 'oidc') {
+    return (
+      <div className="login-page">
+        <form className="login-form" onSubmit={(e) => e.preventDefault()}>
+          <h1>Chat</h1>
+          <p className="login-subtitle">SSO Login</p>
+
+          <label htmlFor="siteId">Site ID</label>
+          <input
+            id="siteId"
+            type="text"
+            value={siteId}
+            onChange={(e) => setSiteId(e.target.value)}
+            disabled={loading}
+          />
+
+          <button type="button" onClick={handleOidcSignin} disabled={loading}>
+            {loading ? 'Redirecting...' : 'Login with SSO'}
+          </button>
+
+          {(error || natsError) && (
+            <div className="login-error">{error || natsError}</div>
+          )}
+        </form>
+      </div>
+    )
+  }
+
   return (
     <div className="login-page">
-      <form className="login-form" onSubmit={handleSubmit}>
+      <form className="login-form" onSubmit={handleDevSubmit}>
         <h1>Chat</h1>
         <p className="login-subtitle">Dev Mode Login</p>
 

@@ -1,6 +1,7 @@
 import { createContext, useContext, useRef, useState, useCallback } from 'react'
 import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
+import { buildAuthRequestBody } from '../lib/authRequestBody'
 
 const NatsContext = createContext(null)
 
@@ -15,21 +16,23 @@ export function NatsProvider({ children }) {
   const authUrl = import.meta.env.VITE_AUTH_URL || ''
   const natsUrl = import.meta.env.VITE_NATS_URL || 'ws://localhost:4223'
 
-  const connectToNats = useCallback(async (account, siteId) => {
+  const connectToNats = useCallback(async ({ account, ssoToken, siteId }) => {
     setError(null)
 
     const nkey = createUser()
     const natsPublicKey = nkey.getPublicKey()
 
+    const body = buildAuthRequestBody({ account, ssoToken, natsPublicKey })
+
     const authResp = await fetch(`${authUrl}/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account, natsPublicKey }),
+      body: JSON.stringify(body),
     })
 
     if (!authResp.ok) {
-      const body = await authResp.json().catch(() => ({}))
-      throw new Error(body.error || `Auth failed: ${authResp.status}`)
+      const errBody = await authResp.json().catch(() => ({}))
+      throw new Error(errBody.error || `Auth failed: ${authResp.status}`)
     }
 
     const { natsJwt, user: userInfo } = await authResp.json()
