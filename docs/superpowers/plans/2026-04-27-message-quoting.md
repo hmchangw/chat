@@ -952,3 +952,464 @@ not silently fall back to the default."
 ```
 
 ---
+
+## Task 6: Persist `quoted_parent_message` in message-worker INSERTs + handler test
+
+**Goal:** Extend `SaveMessage` and `SaveThreadMessage` in `message-worker/store_cassandra.go` to bind the `quoted_parent_message` UDT column. Verify via the handler test that a snapshot on the canonical event reaches the store unchanged.
+
+**Files:**
+- Modify: `message-worker/store_cassandra.go`
+- Modify: `message-worker/handler_test.go`
+
+- [ ] **Step 1: Write the failing handler test**
+
+Append the following test function to the bottom of `message-worker/handler_test.go`:
+
+```go
+func TestHandler_ProcessMessage_Quote(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	user := &model.User{
+		ID:          "u-1",
+		Account:     "alice",
+		SiteID:      "site-a",
+		EngName:     "Alice Wang",
+		ChineseName: "愛麗絲",
+	}
+	expectedSender := cassParticipant{
+		ID:          user.ID,
+		EngName:     user.EngName,
+		CompanyName: user.ChineseName,
+		Account:     "alice",
+	}
+
+	snapshot := &cassandra.QuotedParentMessage{
+		MessageID:   "parent-msg-uuid",
+		RoomID:      "r1",
+		Sender:      cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
+		CreatedAt:   time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC),
+		Msg:         "the original message",
+		MessageLink: "http://localhost:3000/r1/parent-msg-uuid",
+	}
+
+	quotedMsg := model.Message{
+		ID:                  "msg-quote-1",
+		RoomID:              "r1",
+		UserID:              "u-1",
+		UserAccount:         "alice",
+		Content:             "great point!",
+		CreatedAt:           now,
+		QuotedParentMessage: snapshot,
+	}
+	quotedEvt := model.MessageEvent{Message: quotedMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
+	quotedData, _ := json.Marshal(quotedEvt)
+
+	t.Run("quote snapshot reaches SaveMessage unchanged", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		userStore := NewMockUserStore(ctrl)
+		threadStore := NewMockThreadStore(ctrl)
+
+		userStore.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+		store.EXPECT().
+			SaveMessage(gomock.Any(), &quotedMsg, &expectedSender, "site-a").
+			DoAndReturn(func(_ context.Context, m *model.Message, _ *cassParticipant, _ string) error {
+				require.NotNil(t, m.QuotedParentMessage, "QuotedParentMessage must be forwarded")
+				assert.Equal(t, "parent-msg-uuid", m.QuotedParentMessage.MessageID)
+				assert.Equal(t, "the original message", m.QuotedParentMessage.Msg)
+				return nil
+			})
+
+		h := NewHandler(store, userStore, threadStore)
+		err := h.processMessage(context.Background(), quotedData)
+		require.NoError(t, err)
+	})
+}
+```
+
+Add the `cassandra` import to the existing `import` block at the top of `handler_test.go`:
+
+```go
+"github.com/hmchangw/chat/pkg/model/cassandra"
+```
+
+- [ ] **Step 2: Run the test to verify it passes already (compile-level)**
+
+Run: `make test SERVICE=message-worker`
+
+Expected: PASS — the new test passes today because the existing `SaveMessage` mock is invoked with whatever `*model.Message` the handler builds, and the handler does not strip `QuotedParentMessage`. (The pointer flows through.) **This test guards against future regressions** — make sure it actually runs and passes by inspecting the test name in the output.
+
+If for any reason the test fails at this point, stop and investigate before proceeding.
+
+- [ ] **Step 3: Write the failing intent for the store change**
+
+Open `message-worker/store_cassandra.go` and locate the `SaveMessage` function (currently at line 63). The two INSERT statements do NOT bind `quoted_parent_message`. We will extend both to bind `msg.QuotedParentMessage`. Without integration tests against a real Cassandra, the unit-test red phase here is effectively a code review check: confirm by reading the file that today's INSERTs omit the column.
+
+Run: `grep -n "quoted_parent_message" message-worker/store_cassandra.go`
+
+Expected: no output (column is not bound today).
+
+- [ ] **Step 4: Extend `SaveMessage` to bind `quoted_parent_message`**
+
+In `message-worker/store_cassandra.go`, replace the `SaveMessage` function (currently lines 63-81) with:
+
+```go
+// SaveMessage inserts msg into both messages_by_room and messages_by_id.
+// updated_at is set to msg.CreatedAt (equals created_at on first insert — not yet edited).
+// If either insert fails the error is returned immediately; JetStream will redeliver the message.
+func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+	if err := s.cassSession.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, tshow, quoted_parent_message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert messages_by_room %s: %w", msg.ID, err)
+	}
+
+	if err := s.cassSession.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, tshow, quoted_parent_message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
+	}
+
+	return nil
+}
+```
+
+- [ ] **Step 5: Extend `SaveThreadMessage` to bind `quoted_parent_message`**
+
+In `message-worker/store_cassandra.go`, replace the `SaveThreadMessage` function (currently lines 88-115) with:
+
+```go
+// SaveThreadMessage inserts a thread reply into messages_by_id and thread_messages_by_room,
+// then increments tcount on the parent message in both messages_by_id and messages_by_room.
+// threadRoomID is the ID of the ThreadRoom document that anchors this thread (created or
+// fetched by handleThreadRoomAndSubscriptions before this call).
+// If any operation fails the error is returned immediately; JetStream will redeliver the message.
+func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
+	if err := s.cassSession.Query(
+		`INSERT INTO messages_by_id
+		 (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
+		  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data, tshow, quoted_parent_message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
+	}
+
+	if err := s.cassSession.Query(
+		`INSERT INTO thread_messages_by_room
+		 (room_id, thread_room_id, created_at, message_id, thread_parent_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, threadRoomID, msg.CreatedAt, msg.ID, msg.ThreadParentMessageID,
+		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
+	}
+
+	if err := s.incrementParentTcount(ctx, msg); err != nil {
+		return err
+	}
+
+	return nil
+}
+```
+
+- [ ] **Step 6: Verify the unit tests still pass**
+
+Run: `make test SERVICE=message-worker`
+
+Expected: PASS — including the new `TestHandler_ProcessMessage_Quote` and all existing tests.
+
+- [ ] **Step 7: Run lint**
+
+Run: `make lint`
+
+Expected: PASS.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add message-worker/store_cassandra.go message-worker/handler_test.go
+git commit -m "feat(message-worker): persist quoted_parent_message UDT on insert
+
+Extends SaveMessage and SaveThreadMessage to bind msg.QuotedParentMessage
+into the existing quoted_parent_message column on messages_by_room,
+messages_by_id, and thread_messages_by_room. gocql marshals nil as a null
+UDT, so messages without a quote write null and existing behavior is
+preserved. Adds a handler test that asserts the snapshot reaches the
+store unchanged from the canonical event."
+```
+
+---
+
+## Task 7: Integration test — round-trip `quoted_parent_message` through Cassandra
+
+**Goal:** Prove via testcontainers that a populated `*cassandra.QuotedParentMessage` written by `SaveMessage` (and `SaveThreadMessage`) reads back intact from Cassandra. Also verifies the open question from the spec — that gocql marshals a nil pointer as a null UDT.
+
+**Files:**
+- Modify: `message-worker/integration_test.go`
+
+- [ ] **Step 1: Extend the test schema in `setupCassandra` to include the UDT and column**
+
+Open `message-worker/integration_test.go` and locate the `stmts` slice inside `setupCassandra` (currently starting at line 40).
+
+Insert the following CREATE TYPE statement just after the `Participant` UDT statement (currently at line 42), as the next element of `stmts`:
+
+```go
+		`CREATE TYPE IF NOT EXISTS chat_test."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT)`,
+```
+
+Then add `quoted_parent_message FROZEN<"QuotedParentMessage">,` as a new column inside each of the three table definitions (`messages_by_room`, `messages_by_id`, `thread_messages_by_room`). Insert it right after the `sys_msg_data BLOB,` line in each table.
+
+For example, the `messages_by_room` table (currently lines 43-56) should become:
+
+```go
+		`CREATE TABLE IF NOT EXISTS chat_test.messages_by_room (
+			room_id               TEXT,
+			created_at            TIMESTAMP,
+			message_id            TEXT,
+			sender                FROZEN<"Participant">,
+			msg                   TEXT,
+			site_id               TEXT,
+			updated_at            TIMESTAMP,
+			mentions              SET<FROZEN<"Participant">>,
+			tcount                INT,
+			type                  TEXT,
+			sys_msg_data          BLOB,
+			quoted_parent_message FROZEN<"QuotedParentMessage">,
+			PRIMARY KEY ((room_id), created_at, message_id)
+		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`,
+```
+
+Apply the same `quoted_parent_message FROZEN<"QuotedParentMessage">,` addition (placed after `sys_msg_data BLOB,`) to `messages_by_id` and `thread_messages_by_room`.
+
+- [ ] **Step 2: Add a new round-trip test for `SaveMessage` with a populated snapshot**
+
+Append the following test function to the bottom of `message-worker/integration_test.go`:
+
+```go
+func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	parentCreatedAt := now.Add(-time.Hour).Truncate(time.Millisecond)
+
+	sender := &cassParticipant{
+		ID: "u-1", EngName: "Alice Wang", CompanyName: "愛麗絲", Account: "alice",
+	}
+	snapshot := &cassandra.QuotedParentMessage{
+		MessageID: "parent-msg-uuid",
+		RoomID:    "r-1",
+		Sender:    cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
+		CreatedAt: parentCreatedAt,
+		Msg:       "the original message",
+		Mentions: []cassandra.Participant{
+			{ID: "u-carol", Account: "carol", EngName: "Carol Lee"},
+		},
+		MessageLink: "http://localhost:3000/r-1/parent-msg-uuid",
+	}
+	msg := &model.Message{
+		ID:                  "m-quote-1",
+		RoomID:              "r-1",
+		UserID:              "u-1",
+		UserAccount:         "alice",
+		Content:             "great point!",
+		CreatedAt:           now,
+		QuotedParentMessage: snapshot,
+	}
+
+	require.NoError(t, store.SaveMessage(ctx, msg, sender, "site-a"))
+
+	t.Run("messages_by_room round-trips QuotedParentMessage", func(t *testing.T) {
+		var got cassandra.QuotedParentMessage
+		err := cassSession.Query(
+			`SELECT quoted_parent_message FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			"r-1", now, "m-quote-1",
+		).Scan(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "parent-msg-uuid", got.MessageID)
+		assert.Equal(t, "r-1", got.RoomID)
+		assert.Equal(t, "the original message", got.Msg)
+		assert.Equal(t, "bob", got.Sender.Account)
+		assert.Equal(t, "Bob Chen", got.Sender.EngName)
+		assert.Equal(t, parentCreatedAt, got.CreatedAt.UTC().Truncate(time.Millisecond))
+		assert.Equal(t, "http://localhost:3000/r-1/parent-msg-uuid", got.MessageLink)
+		require.Len(t, got.Mentions, 1)
+		assert.Equal(t, "carol", got.Mentions[0].Account)
+	})
+
+	t.Run("messages_by_id round-trips QuotedParentMessage", func(t *testing.T) {
+		var got cassandra.QuotedParentMessage
+		err := cassSession.Query(
+			`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-quote-1", now,
+		).Scan(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "parent-msg-uuid", got.MessageID)
+		assert.Equal(t, "the original message", got.Msg)
+	})
+}
+
+func TestCassandraStore_SaveMessage_NilQuotedParent(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sender := &cassParticipant{ID: "u-1", Account: "alice"}
+	msg := &model.Message{
+		ID:          "m-no-quote",
+		RoomID:      "r-1",
+		UserID:      "u-1",
+		UserAccount: "alice",
+		Content:     "plain message",
+		CreatedAt:   now,
+		// QuotedParentMessage intentionally nil — verifies gocql marshals nil
+		// pointer as a null UDT (the open question from the spec).
+	}
+
+	require.NoError(t, store.SaveMessage(ctx, msg, sender, "site-a"))
+
+	var got *cassandra.QuotedParentMessage
+	err := cassSession.Query(
+		`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		"m-no-quote", now,
+	).Scan(&got)
+	require.NoError(t, err)
+	assert.Nil(t, got, "nil pointer must round-trip as null UDT")
+}
+
+func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	parentCreatedAt := now.Add(-time.Hour).Truncate(time.Millisecond)
+
+	sender := &cassParticipant{ID: "u-1", Account: "alice"}
+	snapshot := &cassandra.QuotedParentMessage{
+		MessageID: "parent-msg-uuid",
+		RoomID:    "r-1",
+		Sender:    cassandra.Participant{ID: "u-bob", Account: "bob"},
+		CreatedAt: parentCreatedAt,
+		Msg:       "original",
+	}
+	msg := &model.Message{
+		ID:                    "m-thread-quote",
+		RoomID:                "r-1",
+		UserID:                "u-1",
+		UserAccount:           "alice",
+		Content:               "thread reply with quote",
+		CreatedAt:             now,
+		ThreadParentMessageID: "thread-parent-uuid",
+		QuotedParentMessage:   snapshot,
+	}
+
+	const threadRoomID = "tr-quote-1"
+	require.NoError(t, store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID))
+
+	t.Run("thread_messages_by_room round-trips QuotedParentMessage", func(t *testing.T) {
+		var got cassandra.QuotedParentMessage
+		err := cassSession.Query(
+			`SELECT quoted_parent_message FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			"r-1", threadRoomID, now, "m-thread-quote",
+		).Scan(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "parent-msg-uuid", got.MessageID)
+		assert.Equal(t, "original", got.Msg)
+	})
+
+	t.Run("messages_by_id round-trips QuotedParentMessage for thread message", func(t *testing.T) {
+		var got cassandra.QuotedParentMessage
+		err := cassSession.Query(
+			`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"m-thread-quote", now,
+		).Scan(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "parent-msg-uuid", got.MessageID)
+	})
+}
+```
+
+Add the `cassandra` import to the existing `import` block at the top of `integration_test.go`:
+
+```go
+"github.com/hmchangw/chat/pkg/model/cassandra"
+```
+
+(There is already a `"github.com/testcontainers/testcontainers-go/modules/cassandra"` import — this is a different package. The Go compiler will complain about the import name clash. To resolve, alias the testcontainers import: change the existing line `"github.com/testcontainers/testcontainers-go/modules/cassandra"` to `tccassandra "github.com/testcontainers/testcontainers-go/modules/cassandra"`, and update the single call site `cassandra.Run(ctx, "cassandra:5")` in `setupCassandra` to `tccassandra.Run(ctx, "cassandra:5")`.)
+
+- [ ] **Step 2.5: Apply the import alias rename**
+
+In `message-worker/integration_test.go`:
+
+- Replace the existing import line `"github.com/testcontainers/testcontainers-go/modules/cassandra"` with `tccassandra "github.com/testcontainers/testcontainers-go/modules/cassandra"`.
+- Add `"github.com/hmchangw/chat/pkg/model/cassandra"` to the same import block.
+- Replace `container, err := cassandra.Run(ctx, "cassandra:5")` (the only usage in `setupCassandra`, currently at line 27) with `container, err := tccassandra.Run(ctx, "cassandra:5")`.
+
+- [ ] **Step 3: Run integration tests**
+
+Run: `make test-integration SERVICE=message-worker`
+
+Expected: PASS. New test functions:
+- `TestCassandraStore_SaveMessage_WithQuotedParent` — confirms `messages_by_room` and `messages_by_id` round-trip the snapshot.
+- `TestCassandraStore_SaveMessage_NilQuotedParent` — confirms nil pointer round-trips as null UDT (resolves the open question).
+- `TestCassandraStore_SaveThreadMessage_WithQuotedParent` — confirms thread tables round-trip the snapshot.
+- All existing integration tests continue to pass.
+
+Note: integration tests require Docker. If Docker is unavailable, document the failure and ensure the change is verified before merge.
+
+- [ ] **Step 4: Run unit tests + lint as final guardrails**
+
+Run: `make test && make lint`
+
+Expected: both PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add message-worker/integration_test.go
+git commit -m "test(message-worker): integration tests for quoted_parent_message UDT
+
+Extends the testcontainers schema with the QuotedParentMessage UDT and
+the quoted_parent_message column on messages_by_room, messages_by_id,
+and thread_messages_by_room. Adds three new round-trip tests:
+
+- SaveMessage with populated snapshot reads back intact from both
+  messages_by_room and messages_by_id.
+- SaveMessage with nil snapshot writes a null UDT (resolves the open
+  question from the spec — gocql does marshal a nil pointer as null).
+- SaveThreadMessage with populated snapshot persists to both
+  thread_messages_by_room and messages_by_id.
+
+The existing testcontainers cassandra import is aliased to tccassandra
+to avoid colliding with pkg/model/cassandra."
+```
+
+---
+
+## Done — feature complete
+
+After Task 7 commits, every spec requirement is implemented and tested:
+
+| Spec requirement | Task |
+|---|---|
+| `QuotedParentMessageID` on `SendMessageRequest` | Task 1 |
+| `QuotedParentMessage` on `Message` (uses `cassandra.QuotedParentMessage`) | Task 1 |
+| `subject.MsgGet` concrete-subject helper | Task 2 |
+| `ParentMessageFetcher` interface, soft-fail handler branch | Task 3 |
+| `historyParentFetcher` implementation incl. `messageLink` | Task 4 |
+| `CHAT_BASE_URL` env var, default `http://localhost:3000` | Task 5 |
+| `quoted_parent_message` persisted in `messages_by_room` / `messages_by_id` (regular + thread) and `thread_messages_by_room` | Task 6 |
+| Integration round-trip + nil-UDT verification (resolves open question) | Task 7 |
+
+**Out of scope (deferred):**
+- `attachments` field on the snapshot.
+- `notification-worker` updates beyond the automatic snapshot propagation it gets via `Message`.
+- Cassandra schema migration — the column exists in all four production tables already.
