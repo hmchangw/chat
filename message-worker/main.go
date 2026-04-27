@@ -67,7 +67,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	cassSession, err := cassutil.Connect(strings.Split(cfg.CassandraHosts, ","), cfg.CassandraKeyspace, cfg.CassandraUsername, cfg.CassandraPassword)
+	cassSession, err := cassutil.Connect(
+		strings.Split(cfg.CassandraHosts, ","),
+		cfg.CassandraKeyspace,
+		cfg.CassandraUsername,
+		cfg.CassandraPassword,
+	)
 	if err != nil {
 		slog.Error("cassandra connect failed", "error", err)
 		os.Exit(1)

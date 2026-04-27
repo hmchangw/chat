@@ -142,7 +142,7 @@ cassutil.Connect(strings.Split(cfg.Cassandra.Hosts, ","), cfg.Cassandra.Keyspace
     cfg.Cassandra.Username, cfg.Cassandra.Password)
 ```
 
-Total: 9 callsite updates (8 Mongo + 2 Cassandra; `tools/loadgen` has 2 Mongo callsites).
+Total: 12 callsite updates (10 Mongo + 2 Cassandra). The 10 Mongo callsites are one each in the 8 services plus 2 in `tools/loadgen`. The 2 Cassandra callsites are in `message-worker` and `history-service`.
 
 ## Testing
 
@@ -156,7 +156,7 @@ Extract a pure helper:
 func buildClientOptions(uri, username, password string) *options.ClientOptions
 ```
 
-`Connect` calls this helper. New `mongoutil_test.go` table-driven test covers:
+`Connect` calls this helper. New `pkg/mongoutil/mongo_test.go` table-driven test covers:
 - empty username and empty password → no `Auth` set
 - empty username, non-empty password → no `Auth` set
 - non-empty username, empty password → no `Auth` set
@@ -172,7 +172,7 @@ Extract a pure helper:
 func buildCluster(hosts []string, keyspace, username, password string) *gocql.ClusterConfig
 ```
 
-`Connect` calls this helper. New `cassutil_test.go` table-driven test covers the same four credential combinations and asserts on `cluster.Authenticator` (nil vs `gocql.PasswordAuthenticator`).
+`Connect` calls this helper. New `pkg/cassutil/cass_test.go` table-driven test covers the same four credential combinations and asserts on `cluster.Authenticator` (nil vs `gocql.PasswordAuthenticator`).
 
 ### Existing tests
 
