@@ -126,6 +126,14 @@ func TestSanitizeError_RemoteMemberListPrefix(t *testing.T) {
 	assert.Equal(t, "remote member.list: only room members can list members", sanitizeError(remote))
 }
 
+func TestSanitizeError_RemoteMemberListWithContext(t *testing.T) {
+	// Error from cross-site RPC includes site context; preserve user-safe message.
+	remote := errors.New("expand channels: remote member.list: room not found")
+	msg := sanitizeError(remote)
+	assert.Contains(t, msg, "remote member.list:")
+	assert.Contains(t, msg, "room not found")
+}
+
 func TestSanitizeError_TransportFailureStillOpaque(t *testing.T) {
 	// Generic transport failure from the client — no user-safe substring — must still be "internal error".
 	assert.Equal(t, "internal error", sanitizeError(errors.New("member.list request to site-eu: nats: timeout")))
