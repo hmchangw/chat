@@ -34,6 +34,8 @@ type config struct {
 	SiteID        string `env:"SITE_ID"         envDefault:"site-local"`
 	MongoURI      string `env:"MONGO_URI,required"`
 	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername string `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword string `env:"MONGO_PASSWORD"  envDefault:""`
 	MetricsAddr   string `env:"METRICS_ADDR"    envDefault:":9099"`
 	MaxInFlight   int    `env:"MAX_IN_FLIGHT"   envDefault:"200"`
 	PProfAddr     string `env:"PPROF_ADDR"      envDefault:""`
@@ -93,7 +95,7 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
 		return 2
 	}
-	client, err := mongoutil.Connect(ctx, cfg.MongoURI)
+	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		slog.Error("mongo connect", "error", err)
 		return 1
@@ -114,7 +116,7 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 }
 
 func runTeardown(ctx context.Context, cfg *config) int {
-	client, err := mongoutil.Connect(ctx, cfg.MongoURI)
+	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		slog.Error("mongo connect", "error", err)
 		return 1

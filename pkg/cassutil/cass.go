@@ -8,11 +8,8 @@ import (
 	"github.com/gocql/gocql"
 )
 
-func Connect(hosts []string, keyspace string) (*gocql.Session, error) {
-	cluster := gocql.NewCluster(hosts...)
-	cluster.Keyspace = keyspace
-	cluster.Consistency = gocql.LocalQuorum
-	cluster.Timeout = 10 * time.Second
+func Connect(hosts []string, keyspace, username, password string) (*gocql.Session, error) {
+	cluster := buildCluster(hosts, keyspace, username, password)
 
 	session, err := cluster.CreateSession()
 	if err != nil {
@@ -24,4 +21,18 @@ func Connect(hosts []string, keyspace string) (*gocql.Session, error) {
 
 func Close(session *gocql.Session) {
 	session.Close()
+}
+
+func buildCluster(hosts []string, keyspace, username, password string) *gocql.ClusterConfig {
+	cluster := gocql.NewCluster(hosts...)
+	cluster.Keyspace = keyspace
+	cluster.Consistency = gocql.LocalQuorum
+	cluster.Timeout = 10 * time.Second
+	if username != "" && password != "" {
+		cluster.Authenticator = gocql.PasswordAuthenticator{
+			Username: username,
+			Password: password,
+		}
+	}
+	return cluster
 }

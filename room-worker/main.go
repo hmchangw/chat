@@ -26,6 +26,8 @@ type config struct {
 	SiteID        string `env:"SITE_ID"         envDefault:"site-local"`
 	MongoURI      string `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
 	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername string `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword string `env:"MONGO_PASSWORD"  envDefault:""`
 	MaxWorkers    int    `env:"MAX_WORKERS"     envDefault:"100"`
 }
 
@@ -57,7 +59,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
+	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		slog.Error("mongo connect failed", "error", err)
 		os.Exit(1)

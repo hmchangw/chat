@@ -29,10 +29,14 @@ type config struct {
 	SiteID            string `env:"SITE_ID,required"`
 	CassandraHosts    string `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
 	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
+	CassandraUsername string `env:"CASSANDRA_USERNAME" envDefault:""`
+	CassandraPassword string `env:"CASSANDRA_PASSWORD" envDefault:""`
 	MaxWorkers        int    `env:"MAX_WORKERS"        envDefault:"100"`
 	MaxRedeliver      int    `env:"MAX_REDELIVER"      envDefault:"5"`
 	MongoURI          string `env:"MONGO_URI,required"`
 	MongoDB           string `env:"MONGO_DB"           envDefault:"chat"`
+	MongoUsername     string `env:"MONGO_USERNAME"     envDefault:""`
+	MongoPassword     string `env:"MONGO_PASSWORD"     envDefault:""`
 }
 
 func main() {
@@ -63,13 +67,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	cassSession, err := cassutil.Connect(strings.Split(cfg.CassandraHosts, ","), cfg.CassandraKeyspace)
+	cassSession, err := cassutil.Connect(strings.Split(cfg.CassandraHosts, ","), cfg.CassandraKeyspace, cfg.CassandraUsername, cfg.CassandraPassword)
 	if err != nil {
 		slog.Error("cassandra connect failed", "error", err)
 		os.Exit(1)
 	}
 
-	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI)
+	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		slog.Error("mongodb connect failed", "error", err)
 		os.Exit(1)
