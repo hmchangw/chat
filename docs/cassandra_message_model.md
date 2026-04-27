@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   tshow BOOLEAN, // means from thread [also send to channel]
   tcount INT, // message reply thread count
   thread_parent_id TEXT,
-  thread_parent_created_at TIMESTAMP, // for FE to query thread parent message 
+  thread_parent_created_at TIMESTAMP, // for FE to query thread parent message when also sent to channel (tshow=true)
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
   unread BOOLEAN,
