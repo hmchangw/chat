@@ -7,20 +7,19 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-const requestIDHeader = "X-Request-ID"
-
-// requestIDMiddleware assigns a unique request ID to each request.
-// Uses the incoming X-Request-ID header if present, otherwise generates one.
+// requestIDMiddleware extracts X-Request-ID (or mints via idgen) and stores it on Gin keys, c.Request.Context() via natsutil, and the response header.
 func requestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id := c.GetHeader(requestIDHeader)
+		id := c.GetHeader(natsutil.RequestIDHeader)
 		if id == "" {
 			id = idgen.GenerateID()
 		}
 		c.Set("request_id", id)
-		c.Header(requestIDHeader, id)
+		c.Request = c.Request.WithContext(natsutil.WithRequestID(c.Request.Context(), id))
+		c.Header(natsutil.RequestIDHeader, id)
 		c.Next()
 	}
 }
