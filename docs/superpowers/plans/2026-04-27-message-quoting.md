@@ -502,13 +502,42 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 		Roles:  []model.Role{model.RoleMember},
 	}
 
-	parentSnapshot := &cassandra.QuotedParentMessage{
+	threadID := "thread-parent-uuid"
+	threadParentTS := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+
+	// mainRoomSnapshot represents a parent that lives in the main room
+	// (not inside any thread): ThreadParentID == "".
+	mainRoomSnapshot := &cassandra.QuotedParentMessage{
 		MessageID:   parentMessageID,
 		RoomID:      validRoomID,
 		Sender:      cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
 		CreatedAt:   time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
 		Msg:         "the original message",
 		MessageLink: "http://localhost:3000/" + validRoomID + "/" + parentMessageID,
+	}
+
+	// inThreadSnapshot represents a parent that is itself a reply inside thread T.
+	inThreadSnapshot := &cassandra.QuotedParentMessage{
+		MessageID:             parentMessageID,
+		RoomID:                validRoomID,
+		Sender:                cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
+		CreatedAt:             time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
+		Msg:                   "a reply inside thread T",
+		MessageLink:           "http://localhost:3000/" + validRoomID + "/" + parentMessageID,
+		ThreadParentID:        threadID,
+		ThreadParentCreatedAt: &threadParentTS,
+	}
+
+	// inDifferentThreadSnapshot is in thread T'.
+	inDifferentThreadSnapshot := &cassandra.QuotedParentMessage{
+		MessageID:             parentMessageID,
+		RoomID:                validRoomID,
+		Sender:                cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
+		CreatedAt:             time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
+		Msg:                   "a reply inside thread T'",
+		MessageLink:           "http://localhost:3000/" + validRoomID + "/" + parentMessageID,
+		ThreadParentID:        "different-thread-uuid",
+		ThreadParentCreatedAt: &threadParentTS,
 	}
 
 	tests := []struct {
@@ -521,7 +550,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 		assertMessage func(t *testing.T, msg model.Message)
 	}{
 		{
-			name: "happy path — fetcher returns snapshot, snapshot embedded on event",
+			name: "main-room msg quoting main-room parent — snapshot embedded",
 			buildData: func() []byte {
 				req := model.SendMessageRequest{
 					ID:                    validID,
@@ -537,7 +566,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
 					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, parentMessageID).
-					Return(parentSnapshot, nil)
+					Return(mainRoomSnapshot, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
@@ -548,7 +577,8 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 				assert.Equal(t, parentMessageID, msg.QuotedParentMessage.MessageID)
 				assert.Equal(t, "the original message", msg.QuotedParentMessage.Msg)
 				assert.Equal(t, "bob", msg.QuotedParentMessage.Sender.Account)
-				assert.Equal(t, parentSnapshot.MessageLink, msg.QuotedParentMessage.MessageLink)
+				assert.Equal(t, mainRoomSnapshot.MessageLink, msg.QuotedParentMessage.MessageLink)
+				assert.Empty(t, msg.QuotedParentMessage.ThreadParentID)
 			},
 		},
 		{
@@ -580,12 +610,11 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 		},
 		{
-			name: "thread + quote both set — both fields propagate",
+			name: "thread T msg quoting another reply in thread T — snapshot embedded",
 			buildData: func() []byte {
-				parentMillis := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC).UnixMilli()
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":"thread-parent-uuid","threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
-					validID, validContent, parentMillis, parentMessageID,
+					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
+					validID, validContent, threadID, threadParentTS.UnixMilli(), parentMessageID,
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -594,17 +623,95 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
 					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, parentMessageID).
-					Return(parentSnapshot, nil)
+					Return(inThreadSnapshot, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
 				return makePublishFunc(&published, nil), &published
 			},
 			assertMessage: func(t *testing.T, msg model.Message) {
-				assert.Equal(t, "thread-parent-uuid", msg.ThreadParentMessageID)
-				require.NotNil(t, msg.ThreadParentMessageCreatedAt)
+				assert.Equal(t, threadID, msg.ThreadParentMessageID)
 				require.NotNil(t, msg.QuotedParentMessage)
 				assert.Equal(t, parentMessageID, msg.QuotedParentMessage.MessageID)
+				assert.Equal(t, threadID, msg.QuotedParentMessage.ThreadParentID)
+			},
+		},
+		{
+			name: "main-room msg quoting a thread reply — quote dropped (cross-thread)",
+			buildData: func() []byte {
+				req := model.SendMessageRequest{
+					ID:                    validID,
+					Content:               validContent,
+					QuotedParentMessageID: parentMessageID,
+				}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+			},
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().
+					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, parentMessageID).
+					Return(inThreadSnapshot, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			assertMessage: func(t *testing.T, msg model.Message) {
+				assert.Nil(t, msg.QuotedParentMessage, "thread-context mismatch must drop the quote")
+				assert.Equal(t, validContent, msg.Content)
+			},
+		},
+		{
+			name: "thread T msg quoting main-room parent — quote dropped (strict)",
+			buildData: func() []byte {
+				return []byte(fmt.Sprintf(
+					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
+					validID, validContent, threadID, threadParentTS.UnixMilli(), parentMessageID,
+				))
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+			},
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().
+					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, parentMessageID).
+					Return(mainRoomSnapshot, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			assertMessage: func(t *testing.T, msg model.Message) {
+				assert.Equal(t, threadID, msg.ThreadParentMessageID)
+				assert.Nil(t, msg.QuotedParentMessage, "thread-T cannot quote main-room parent under strict rule")
+			},
+		},
+		{
+			name: "thread T msg quoting reply in different thread T' — quote dropped",
+			buildData: func() []byte {
+				return []byte(fmt.Sprintf(
+					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
+					validID, validContent, threadID, threadParentTS.UnixMilli(), parentMessageID,
+				))
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+			},
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().
+					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, parentMessageID).
+					Return(inDifferentThreadSnapshot, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			assertMessage: func(t *testing.T, msg model.Message) {
+				assert.Equal(t, threadID, msg.ThreadParentMessageID)
+				assert.Nil(t, msg.QuotedParentMessage, "different thread context must drop the quote")
 			},
 		},
 		{
@@ -740,12 +847,21 @@ Replace it with:
 	var quotedSnapshot *cassandra.QuotedParentMessage
 	if req.QuotedParentMessageID != "" {
 		snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, req.QuotedParentMessageID)
-		if err != nil {
+		switch {
+		case err != nil:
 			slog.Warn("quoted parent unavailable, dropping quote",
 				"quotedParentMessageId", req.QuotedParentMessageID,
 				"roomId", roomID,
 				"error", err)
-		} else {
+		case snap.ThreadParentID != req.ThreadParentMessageID:
+			// Strict same-conversation-context rule: main↔main, threadT↔threadT.
+			// Anything else (cross-thread, main↔thread, thread↔main) drops the quote.
+			slog.Warn("quoted parent has different thread context, dropping quote",
+				"quotedParentMessageId", req.QuotedParentMessageID,
+				"roomId", roomID,
+				"newMessageThread", req.ThreadParentMessageID,
+				"parentThread", snap.ThreadParentID)
+		default:
 			quotedSnapshot = snap
 		}
 	}
