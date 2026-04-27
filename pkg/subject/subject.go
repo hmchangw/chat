@@ -255,6 +255,18 @@ func RoomsInfoBatchSubscribe(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
 }
 
+func UserResponseWildcard() string {
+	return "chat.user.*.response.>"
+}
+
+func RoomEventWildcard() string {
+	return "chat.room.*.event"
+}
+
+func UserRoomEventWildcard() string {
+	return "chat.user.*.event.room"
+}
+
 // --- natsrouter patterns (use {param} placeholders for named extraction) ---
 
 func MsgHistoryPattern(siteID string) string {

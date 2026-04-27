@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNats } from '../context/NatsContext'
 import { roomsCreate } from '../lib/subjects'
+import { parseList } from '../lib/parseList'
 
 export default function CreateRoomDialog({ onClose, onCreated }) {
   const { user, request } = useNats()
@@ -20,10 +21,7 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
     const account = user.account
     const siteId = user.siteId
 
-    const memberList = members
-      .split(',')
-      .map((m) => m.trim())
-      .filter(Boolean)
+    const memberList = parseList(members)
 
     try {
       const room = await request(roomsCreate(account), {

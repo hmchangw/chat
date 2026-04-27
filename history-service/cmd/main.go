@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
@@ -42,13 +41,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	mongoClient, err := mongoutil.Connect(ctx, cfg.Mongo.URI)
+	mongoClient, err := mongoutil.Connect(ctx, cfg.Mongo.URI, cfg.Mongo.Username, cfg.Mongo.Password)
 	if err != nil {
 		slog.Error("mongo connect failed", "error", err)
 		os.Exit(1)
 	}
 
-	cassSession, err := cassutil.Connect(strings.Split(cfg.Cassandra.Hosts, ","), cfg.Cassandra.Keyspace)
+	cassSession, err := cassutil.Connect(
+		cfg.Cassandra.Hosts,
+		cfg.Cassandra.Keyspace,
+		cfg.Cassandra.Username,
+		cfg.Cassandra.Password,
+	)
 	if err != nil {
 		slog.Error("cassandra connect failed", "error", err)
 		os.Exit(1)
