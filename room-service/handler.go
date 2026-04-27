@@ -126,6 +126,9 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 			return nil, fmt.Errorf("DM requires exactly one other member, got %d", len(req.Members))
 		}
 		roomID = idgen.BuildDMRoomID(req.CreatedBy, req.Members[0])
+		// TODO(idgen-rework follow-up): persist a second Subscription for req.Members[0] so DMs are two-sided.
+		// DMs have no add-member/role-update flow, so the recipient is currently un-enrolled.
+		// Needs the recipient's Account (store lookup or extend CreateRoomRequest with MembersAccount). Also bump Room.UserCount to 2.
 	default:
 		return nil, fmt.Errorf("unsupported room type %q", req.Type)
 	}
