@@ -277,6 +277,14 @@ func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
 }
 
+// MsgGet returns the concrete subject for issuing a GetMessageByID request to
+// history-service on behalf of a given user/room. Pair with MsgGetPattern,
+// which is the natsrouter pattern used by history-service to register the
+// handler.
+func MsgGet(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", account, roomID, siteID)
+}
+
 func MemberAdd(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.add", account, roomID, siteID)
 }
