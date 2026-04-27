@@ -44,15 +44,22 @@ type CardAction struct {
 }
 
 // QuotedParentMessage maps to the Cassandra "QuotedParentMessage" UDT.
+//
+// ThreadParentID and ThreadParentCreatedAt capture the parent message's
+// thread context (when the parent was itself a thread reply). Used by
+// gatekeeper to enforce same-thread-context quoting and by clients to
+// render thread-aware quote previews.
 type QuotedParentMessage struct {
-	MessageID   string        `json:"messageId"             cql:"message_id"`
-	RoomID      string        `json:"roomId"                cql:"room_id"`
-	Sender      Participant   `json:"sender"                cql:"sender"`
-	CreatedAt   time.Time     `json:"createdAt"             cql:"created_at"`
-	Msg         string        `json:"msg,omitempty"         cql:"msg"`
-	Mentions    []Participant `json:"mentions,omitempty"    cql:"mentions"`
-	Attachments [][]byte      `json:"attachments,omitempty" cql:"attachments"`
-	MessageLink string        `json:"messageLink,omitempty" cql:"message_link"`
+	MessageID             string        `json:"messageId"                       cql:"message_id"`
+	RoomID                string        `json:"roomId"                          cql:"room_id"`
+	Sender                Participant   `json:"sender"                          cql:"sender"`
+	CreatedAt             time.Time     `json:"createdAt"                       cql:"created_at"`
+	Msg                   string        `json:"msg,omitempty"                   cql:"msg"`
+	Mentions              []Participant `json:"mentions,omitempty"              cql:"mentions"`
+	Attachments           [][]byte      `json:"attachments,omitempty"           cql:"attachments"`
+	MessageLink           string        `json:"messageLink,omitempty"           cql:"message_link"`
+	ThreadParentID        string        `json:"threadParentId,omitempty"        cql:"thread_parent_id"`
+	ThreadParentCreatedAt *time.Time    `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 }
 
 // Message represents a message row in the Cassandra message tables (messages_by_room, messages_by_id).
