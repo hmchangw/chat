@@ -15,6 +15,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 type testReq struct {
@@ -560,4 +561,49 @@ func TestRegister_ErrInternal(t *testing.T) {
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
 	assert.Equal(t, "failed to load data", result.Message)
 	assert.Equal(t, "internal", result.Code)
+}
+
+func TestContext_SetContext_Propagates(t *testing.T) {
+	c := NewContext(nil)
+	type k int
+	const myKey k = 0
+	newCtx := context.WithValue(c, myKey, "value-from-set")
+	c.SetContext(newCtx)
+	assert.Equal(t, "value-from-set", c.Value(myKey))
+}
+
+func TestRequestIDMiddleware_StoresIDOnUnderlyingContext(t *testing.T) {
+	// natsutil.RequestIDFromContext(c) must equal c.Get("requestID") — the contract publish helpers rely on.
+	c := NewContext(nil)
+	c.Msg = &nats.Msg{Header: nats.Header{}}
+	c.Msg.Header.Set("X-Request-ID", "from-header")
+
+	called := false
+	chain := []HandlerFunc{
+		RequestID(),
+		func(c *Context) {
+			called = true
+			fromKeys, _ := c.Get("requestID")
+			fromCtx := natsutil.RequestIDFromContext(c)
+			assert.Equal(t, "from-header", fromKeys)
+			assert.Equal(t, "from-header", fromCtx)
+		},
+	}
+	RunChain(c, chain)
+	assert.True(t, called, "downstream handler must run")
+}
+
+func TestRequestIDMiddleware_GeneratesAndStoresOnContext_WhenHeaderMissing(t *testing.T) {
+	c := NewContext(nil)
+	c.Msg = &nats.Msg{Header: nats.Header{}}
+
+	var fromCtx string
+	chain := []HandlerFunc{
+		RequestID(),
+		func(c *Context) {
+			fromCtx = natsutil.RequestIDFromContext(c)
+		},
+	}
+	RunChain(c, chain)
+	assert.NotEmpty(t, fromCtx, "RequestID middleware must mint and propagate to ctx when header is absent")
 }
