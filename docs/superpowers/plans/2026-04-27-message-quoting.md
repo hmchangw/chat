@@ -964,17 +964,20 @@ func TestHistoryParentFetcher_FetchQuotedParent(t *testing.T) {
 		baseURL   = "http://localhost:3000"
 	)
 	parentCreatedAt := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	threadParentCreatedAt := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
 
-	t.Run("happy path — returns projected snapshot with messageLink", func(t *testing.T) {
+	t.Run("happy path — returns projected snapshot with thread context and messageLink", func(t *testing.T) {
 		nc := startTestNATS(t)
 
 		parent := cassandra.Message{
-			MessageID: messageID,
-			RoomID:    roomID,
-			Sender:    cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
-			CreatedAt: parentCreatedAt,
-			Msg:       "the original message",
-			Mentions:  []cassandra.Participant{{ID: "u-carol", Account: "carol", EngName: "Carol Lee"}},
+			MessageID:             messageID,
+			RoomID:                roomID,
+			Sender:                cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
+			CreatedAt:             parentCreatedAt,
+			Msg:                   "a reply inside thread T",
+			Mentions:              []cassandra.Participant{{ID: "u-carol", Account: "carol", EngName: "Carol Lee"}},
+			ThreadParentID:        "thread-parent-uuid",
+			ThreadParentCreatedAt: &threadParentCreatedAt,
 		}
 
 		// Stand up a stub responder on the exact subject the fetcher should publish on.
@@ -990,12 +993,15 @@ func TestHistoryParentFetcher_FetchQuotedParent(t *testing.T) {
 		require.NotNil(t, got)
 		assert.Equal(t, messageID, got.MessageID)
 		assert.Equal(t, roomID, got.RoomID)
-		assert.Equal(t, "the original message", got.Msg)
+		assert.Equal(t, "a reply inside thread T", got.Msg)
 		assert.Equal(t, "bob", got.Sender.Account)
 		assert.Equal(t, parentCreatedAt, got.CreatedAt.UTC())
 		require.Len(t, got.Mentions, 1)
 		assert.Equal(t, "carol", got.Mentions[0].Account)
 		assert.Equal(t, baseURL+"/"+roomID+"/"+messageID, got.MessageLink)
+		assert.Equal(t, "thread-parent-uuid", got.ThreadParentID)
+		require.NotNil(t, got.ThreadParentCreatedAt)
+		assert.Equal(t, threadParentCreatedAt, got.ThreadParentCreatedAt.UTC())
 	})
 
 	t.Run("history returns natsrouter error envelope — returns error", func(t *testing.T) {
@@ -1111,13 +1117,15 @@ func (f *historyParentFetcher) FetchQuotedParent(
 	}
 
 	return &cassandra.QuotedParentMessage{
-		MessageID:   parent.MessageID,
-		RoomID:      parent.RoomID,
-		Sender:      parent.Sender,
-		CreatedAt:   parent.CreatedAt,
-		Msg:         parent.Msg,
-		Mentions:    parent.Mentions,
-		MessageLink: fmt.Sprintf("%s/%s/%s", f.chatBaseURL, parent.RoomID, parent.MessageID),
+		MessageID:             parent.MessageID,
+		RoomID:                parent.RoomID,
+		Sender:                parent.Sender,
+		CreatedAt:             parent.CreatedAt,
+		Msg:                   parent.Msg,
+		Mentions:              parent.Mentions,
+		MessageLink:           fmt.Sprintf("%s/%s/%s", f.chatBaseURL, parent.RoomID, parent.MessageID),
+		ThreadParentID:        parent.ThreadParentID,
+		ThreadParentCreatedAt: parent.ThreadParentCreatedAt,
 	}, nil
 }
 ```
@@ -1455,7 +1463,7 @@ Open `message-worker/integration_test.go` and locate the `stmts` slice inside `s
 Insert the following CREATE TYPE statement just after the `Participant` UDT statement (currently at line 42), as the next element of `stmts`:
 
 ```go
-		`CREATE TYPE IF NOT EXISTS chat_test."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT)`,
+		`CREATE TYPE IF NOT EXISTS chat_test."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP)`,
 ```
 
 Then add `quoted_parent_message FROZEN<"QuotedParentMessage">,` as a new column inside each of the three table definitions (`messages_by_room`, `messages_by_id`, `thread_messages_by_room`). Insert it right after the `sys_msg_data BLOB,` line in each table.
@@ -1494,6 +1502,7 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	parentCreatedAt := now.Add(-time.Hour).Truncate(time.Millisecond)
+	threadParentCreatedAt := now.Add(-2 * time.Hour).Truncate(time.Millisecond)
 
 	sender := &cassParticipant{
 		ID: "u-1", EngName: "Alice Wang", CompanyName: "愛麗絲", Account: "alice",
@@ -1507,7 +1516,9 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 		Mentions: []cassandra.Participant{
 			{ID: "u-carol", Account: "carol", EngName: "Carol Lee"},
 		},
-		MessageLink: "http://localhost:3000/r-1/parent-msg-uuid",
+		MessageLink:           "http://localhost:3000/r-1/parent-msg-uuid",
+		ThreadParentID:        "thread-parent-uuid",
+		ThreadParentCreatedAt: &threadParentCreatedAt,
 	}
 	msg := &model.Message{
 		ID:                  "m-quote-1",
@@ -1521,7 +1532,7 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 
 	require.NoError(t, store.SaveMessage(ctx, msg, sender, "site-a"))
 
-	t.Run("messages_by_room round-trips QuotedParentMessage", func(t *testing.T) {
+	t.Run("messages_by_room round-trips QuotedParentMessage including thread context", func(t *testing.T) {
 		var got cassandra.QuotedParentMessage
 		err := cassSession.Query(
 			`SELECT quoted_parent_message FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
@@ -1537,9 +1548,12 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 		assert.Equal(t, "http://localhost:3000/r-1/parent-msg-uuid", got.MessageLink)
 		require.Len(t, got.Mentions, 1)
 		assert.Equal(t, "carol", got.Mentions[0].Account)
+		assert.Equal(t, "thread-parent-uuid", got.ThreadParentID)
+		require.NotNil(t, got.ThreadParentCreatedAt)
+		assert.Equal(t, threadParentCreatedAt, got.ThreadParentCreatedAt.UTC().Truncate(time.Millisecond))
 	})
 
-	t.Run("messages_by_id round-trips QuotedParentMessage", func(t *testing.T) {
+	t.Run("messages_by_id round-trips QuotedParentMessage including thread context", func(t *testing.T) {
 		var got cassandra.QuotedParentMessage
 		err := cassSession.Query(
 			`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
@@ -1548,6 +1562,9 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "parent-msg-uuid", got.MessageID)
 		assert.Equal(t, "the original message", got.Msg)
+		assert.Equal(t, "thread-parent-uuid", got.ThreadParentID)
+		require.NotNil(t, got.ThreadParentCreatedAt)
+		assert.Equal(t, threadParentCreatedAt, got.ThreadParentCreatedAt.UTC().Truncate(time.Millisecond))
 	})
 }
 
@@ -1696,14 +1713,17 @@ After Task 7 commits, every spec requirement is implemented and tested:
 
 | Spec requirement | Task |
 |---|---|
+| `QuotedParentMessage` UDT gains `thread_parent_id` + `thread_parent_created_at` (Go struct, single-source-of-truth doc, local-dev DDL, history-service inline UDT) | Task 0 |
 | `QuotedParentMessageID` on `SendMessageRequest` | Task 1 |
 | `QuotedParentMessage` on `Message` (uses `cassandra.QuotedParentMessage`) | Task 1 |
 | `subject.MsgGet` concrete-subject helper | Task 2 |
-| `ParentMessageFetcher` interface, soft-fail handler branch | Task 3 |
-| `historyParentFetcher` implementation incl. `messageLink` | Task 4 |
+| `ParentMessageFetcher` interface, soft-fail handler branch, **thread-context guard** (drops cross-thread-room quotes) | Task 3 |
+| `historyParentFetcher` implementation incl. `messageLink` and thread-context projection | Task 4 |
 | `CHAT_BASE_URL` env var, default `http://localhost:3000` | Task 5 |
 | `quoted_parent_message` persisted in `messages_by_room` / `messages_by_id` (regular + thread) and `thread_messages_by_room` | Task 6 |
-| Integration round-trip + nil-UDT verification (resolves open question) | Task 7 |
+| Integration round-trip incl. thread-context fields + nil-UDT verification | Task 7 |
+
+**Production rollout reminder:** Run the two `ALTER TYPE` statements (see spec §"Cassandra schema migration") against each site's keyspace **before** deploying the new gatekeeper. Old binaries reading post-migration UDTs are unaffected (gocql tolerates extra UDT fields).
 
 **Out of scope (deferred):**
 - `attachments` field on the snapshot.
