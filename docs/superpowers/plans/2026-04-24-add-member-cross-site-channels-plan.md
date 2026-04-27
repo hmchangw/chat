@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let add-member resolve source channels that live on a remote site by calling the remote site's `member.list` endpoint, while same-site channels continue to resolve locally through the same `ListRoomMembers` surface.
+**Goal:** Let add-member resolve source channels that live on a remote site by calling the remote site's `member.list` endpoint, while same-site channels continue to resolve locally through the same `ListRoomMembers` surface. Additionally (Phase 2), move org→user resolution from room-service's reply path to room-worker's write path via a shared MongoDB aggregation pipeline (`pkg/pipelines/member.go`).
 
 **Architecture:** `AddMembersRequest.Channels` and `MembersAdded.Channels` change from `[]string` to `[]ChannelRef{RoomID, SiteID}`. A new `MemberListClient` interface (NATS-backed implementation) handles cross-site fan-out; same-site refs hit the local store after a subscription check. `handleAddMembers` gains a `expandChannelRefs` step that fail-fasts on any error before any state mutation. A new `natsutil.TryParseError` helper distinguishes error replies from success replies so the client can't silently decode an error body into an empty-members success.
+
+In Phase 2, `room-service.ResolveAccounts` is replaced with `CountNewMembers` (count-only) for capacity validation; the canonical event ships unresolved `Users` and `Orgs`, and `room-worker.processAddMembers` calls `ListNewMembers` to materialize the actual list of accounts to add. Both methods delegate to the same shared `pkg/pipelines/member.go GetNewMembersPipeline` — the only difference is the terminal stage (`$count` for room-service, `$group + $addToSet` for room-worker).
 
 **Tech Stack:** Go 1.25 • NATS core request/reply (`nats.go`) • MongoDB driver v2 • `go.uber.org/mock` • `stretchr/testify` • `testcontainers-go` • `caarlos0/env`.
 
@@ -63,7 +65,31 @@ Expected: each grep returns a line. If any return nothing, stop and rebase first
 | `room-service/integration_test.go` | Remove obsolete cases (`TestMongoStore_GetRoomMembersByRooms_Integration`, `TestMongoStore_GetAccountsByRooms_Integration`); add 5 new end-to-end cases (see Tasks 8–9) |
 | `room-worker/handler_test.go` | Update `AddMembersRequest` fixtures to `[]ChannelRef` (compile fix only — no logic change) |
 
-No changes to: `pkg/subject/subject.go`, `inbox-worker`, `message-worker`, `broadcast-worker`, or the canonical event schema.
+**Phase 2 — new files:**
+
+| Path | Responsibility |
+|---|---|
+| `pkg/pipelines/member.go` | `GetNewMembersPipeline(orgIDs, directAccounts, roomID) bson.A` — shared aggregation stages: `$match` (org/account filter + bot exclusion), `$lookup` (subscriptions for roomID), `$match` (existingSub empty). Callers append the terminal stage. |
+| `pkg/pipelines/member_test.go` | Pure-BSON unit tests asserting stage shape; no Mongo dependency. |
+
+**Phase 2 — modified files:**
+
+| Path | Change |
+|---|---|
+| `room-service/store.go` | Remove `ResolveAccounts`; add `CountNewMembers(ctx, orgIDs, directAccounts []string, roomID string) (int, error)`. |
+| `room-service/store_mongo.go` | Remove the old `ResolveAccounts` method body; add `CountNewMembers` (delegates to `pipelines.GetNewMembersPipeline` + `$count`). |
+| `room-service/handler.go` | Step 7 now calls `CountNewMembers` and uses the count for capacity. Canonical event ships `req.Users = mergedUsers` and `req.Orgs = mergedOrgs` (unresolved); `req.Channels` preserved unchanged. |
+| `room-service/handler_test.go` | Replace `ResolveAccounts(...).Return(list)` mocks with `CountNewMembers(...).Return(count, nil)`; canonical-event assertions updated to expect unresolved (merged) `Users` and `Orgs`. |
+| `room-service/integration_test.go` | Remove `TestMongoStore_ResolveAccounts_Integration`; add a `TestMongoStore_CountNewMembers_Integration` covering basic count, dedupe, bot exclusion, and already-subscribed exclusion. |
+| `room-service/mock_store_test.go` | Regenerated. |
+| `room-worker/store.go` | Add `ListNewMembers(ctx, orgIDs, directAccounts []string, roomID string) ([]string, error)` to `SubscriptionStore`. |
+| `room-worker/store_mongo.go` | Add `ListNewMembers` (delegates to `pipelines.GetNewMembersPipeline` + `$group { _id: nil, accounts: $addToSet $account }`). |
+| `room-worker/handler.go` | `processAddMembers` calls `ListNewMembers(req.Orgs, req.Users, req.RoomID)` first; uses the returned accounts as input to the existing `FindUsersByAccounts` flow. |
+| `room-worker/handler_test.go` | Update existing `TestHandler_ProcessAddMembers*` cases to mock `ListNewMembers` returning the expected resolved-accounts slice. |
+| `room-worker/integration_test.go` | Add a `TestMongoStore_ListNewMembers_Integration` parallel to the room-service one. |
+| `room-worker/mock_store_test.go` | Regenerated. |
+
+No changes to: `pkg/subject/subject.go`, `inbox-worker`, `message-worker`, `broadcast-worker`, or the canonical event JSON schema (only the *meaning* of `Users` shifts — from "fully resolved" to "merged but unresolved").
 
 ---
 
@@ -80,6 +106,17 @@ Bottom-up so each task leaves `make test` green and commit-worthy:
 7. **Remove `GetRoomMembersByRooms` and `GetAccountsByRooms`** — now that nothing calls them, delete + regenerate mocks + drop obsolete unit/integration tests.
 8. **Integration tests 1–3** — single-site scenarios (same-site `room_members` path, same-site subscriptions fallback, requester-not-subscribed rejection).
 9. **Integration tests 4–5** — two-site scenarios (two-site end-to-end, cross-site timeout).
+
+**Phase 2 — Org Resolution Refactor (Tasks 10–15):**
+
+Bottom-up so the pipeline package lands with no consumers, then each service consumes it independently, then the dead code is removed last:
+
+10. **`pkg/pipelines/member.go`** — leaf package with `GetNewMembersPipeline`. Pure BSON; tests assert stage shape. No consumers yet.
+11. **room-worker `ListNewMembers` store method** — wires the pipeline + `$group/$addToSet` into the worker's `SubscriptionStore`. Method exists but isn't called yet.
+12. **room-worker `processAddMembers` switch** — handler now calls `ListNewMembers` first. Tests updated to mock the new call. At this point room-service still ships resolved `Users`; running the pipeline on already-resolved input returns the same set, so behavior is unchanged (capacity drift bounded by ~zero — old RS already filtered).
+13. **room-service `CountNewMembers` store method** — wires the pipeline + `$count` into room-service's `RoomStore`. Method exists but isn't called yet.
+14. **room-service `handleAddMembers` switch** — replace `ResolveAccounts` call with `CountNewMembers` and ship unresolved (merged) `Users`/`Orgs` in the canonical event. Tests updated. Room-worker (already on `ListNewMembers` from Task 12) handles the unresolved shape correctly.
+15. **Remove `ResolveAccounts`** — store interface, store_mongo implementation, integration test for it, and any lingering mock setups. Now dead.
 
 ---
 
@@ -1670,7 +1707,819 @@ git commit -m "test(room-service): add integration tests 4-5 (two-site end-to-en
 
 ---
 
+# Phase 2: Org Resolution Refactor
+
+The remaining tasks (10–15) move org→user resolution from room-service's reply path to room-worker's write path, via a shared MongoDB pipeline. Phase 2 is broken into four parts:
+
+- **Part 6: Shared Pipeline Package** — Task 10 (`pkg/pipelines/member.go`)
+- **Part 7: Room-Worker Changes** — Tasks 11–12 (`ListNewMembers` + `processAddMembers` switch)
+- **Part 8: Room-Service Changes** — Tasks 13–14 (`CountNewMembers` + `handleAddMembers` switch)
+- **Part 9: Cleanup** — Task 15 (delete `ResolveAccounts`)
+
+Order matters across services: Task 12 (RW handler switch) lands before Task 14 (RS handler switch) so the worker can already call `ListNewMembers` by the time the service starts shipping unresolved `Users`/`Orgs`.
+
+---
+
+## Part 6: Shared Pipeline Package
+
+### Task 10: `pkg/pipelines/member.go` — `GetNewMembersPipeline`
+
+**Files:**
+- Create: `pkg/pipelines/member.go`
+- Test: `pkg/pipelines/member_test.go`
+
+Why first in Phase 2: pure leaf — no consumers yet. Both `room-service.CountNewMembers` and `room-worker.ListNewMembers` will call it in later tasks. The function returns the three common stages; callers append the terminal stage that differs per service.
+
+- [ ] **Step 10.1: Create the failing test file**
+
+Create `pkg/pipelines/member_test.go`:
+
+```go
+package pipelines_test
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/hmchangw/chat/pkg/pipelines"
+)
+
+func TestGetNewMembersPipeline(t *testing.T) {
+	t.Run("returns three stages", func(t *testing.T) {
+		stages := pipelines.GetNewMembersPipeline([]string{"org1"}, []string{"alice"}, "room1")
+		require.Len(t, stages, 3, "pipeline must have exactly 3 stages; callers append the terminal stage")
+	})
+
+	t.Run("stage 1 is $match with $or covering both inputs", func(t *testing.T) {
+		stages := pipelines.GetNewMembersPipeline([]string{"org1", "org2"}, []string{"alice"}, "room1")
+		match := stages[0].(bson.M)["$match"].(bson.M)
+
+		orA, ok := match["$or"].(bson.A)
+		require.True(t, ok)
+		assert.Len(t, orA, 2, "$or has one branch per non-empty input list")
+	})
+
+	t.Run("stage 1 includes bot exclusion regex", func(t *testing.T) {
+		stages := pipelines.GetNewMembersPipeline([]string{"org1"}, nil, "room1")
+		match := stages[0].(bson.M)["$match"].(bson.M)
+
+		accountFilter, ok := match["account"].(bson.M)
+		require.True(t, ok, "stage 1 must filter the account field")
+
+		not, ok := accountFilter["$not"].(bson.Regex)
+		require.True(t, ok, "bot exclusion uses $not + Regex")
+		assert.Equal(t, `(\.bot$|^p_)`, not.Pattern)
+	})
+
+	t.Run("orgIDs only — $or has one branch", func(t *testing.T) {
+		stages := pipelines.GetNewMembersPipeline([]string{"org1"}, nil, "room1")
+		orA := stages[0].(bson.M)["$match"].(bson.M)["$or"].(bson.A)
+		assert.Len(t, orA, 1)
+	})
+
+	t.Run("directAccounts only — $or has one branch", func(t *testing.T) {
+		stages := pipelines.GetNewMembersPipeline(nil, []string{"alice"}, "room1")
+		orA := stages[0].(bson.M)["$match"].(bson.M)["$or"].(bson.A)
+		assert.Len(t, orA, 1)
+	})
+
+	t.Run("stage 2 is $lookup against subscriptions for roomID", func(t *testing.T) {
+		stages := pipelines.GetNewMembersPipeline([]string{"org1"}, nil, "room1")
+		lookup := stages[1].(bson.M)["$lookup"].(bson.M)
+
+		assert.Equal(t, "subscriptions", lookup["from"])
+		assert.Equal(t, "existingSub", lookup["as"])
+	})
+
+	t.Run("stage 3 keeps users with empty existingSub", func(t *testing.T) {
+		stages := pipelines.GetNewMembersPipeline([]string{"org1"}, nil, "room1")
+		match := stages[2].(bson.M)["$match"].(bson.M)
+
+		existingSub := match["existingSub"].(bson.M)
+		eqA := existingSub["$eq"].(bson.A)
+		assert.Len(t, eqA, 0, "compare against the empty array literal")
+	})
+}
+```
+
+- [ ] **Step 10.2: Run the test to verify it fails**
+
+```bash
+go test ./pkg/pipelines/... -v
+```
+
+Expected: build error — `package pipelines: cannot find package` (the package directory doesn't exist yet).
+
+- [ ] **Step 10.3: Create `pkg/pipelines/member.go`**
+
+```go
+// Package pipelines holds shared MongoDB aggregation pipelines used by more
+// than one service. Putting them here lets each service append its own
+// terminal stage (e.g. $count vs. $group) without duplicating the leading
+// stages.
+package pipelines
+
+import "go.mongodb.org/mongo-driver/v2/bson"
+
+// GetNewMembersPipeline returns the common stages for finding the unique,
+// non-bot, not-already-subscribed users that an add-members request would
+// add to roomID, given org IDs and direct account names.
+//
+// Pipeline target: the users collection.
+//
+// Stages:
+//  1. $match: account in directAccounts OR sectId in orgIDs, AND account
+//     does not match the bot regex (`.bot$|^p_`).
+//  2. $lookup: existing subscription documents for (account, roomID), with
+//     a $limit:1 sub-pipeline so we only need a yes/no answer.
+//  3. $match: keep only users where existingSub is the empty array (i.e.,
+//     no subscription exists for that account in roomID).
+//
+// Callers MUST append a terminal stage that fits their need:
+//   - room-service: bson.M{"$count": "n"}                                (capacity check)
+//   - room-worker:  bson.M{"$group": {"_id": nil, "accounts": {"$addToSet": "$account"}}}
+func GetNewMembersPipeline(orgIDs, directAccounts []string, roomID string) bson.A {
+	orFilter := bson.A{}
+	if len(orgIDs) > 0 {
+		orFilter = append(orFilter, bson.M{"sectId": bson.M{"$in": orgIDs}})
+	}
+	if len(directAccounts) > 0 {
+		orFilter = append(orFilter, bson.M{"account": bson.M{"$in": directAccounts}})
+	}
+
+	return bson.A{
+		bson.M{"$match": bson.M{
+			"$or":     orFilter,
+			"account": bson.M{"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""}},
+		}},
+		bson.M{"$lookup": bson.M{
+			"from": "subscriptions",
+			"let":  bson.M{"userAccount": "$account"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$roomId", roomID}},
+					bson.M{"$eq": bson.A{"$u.account", "$$userAccount"}},
+				}}}},
+				bson.M{"$limit": 1},
+			},
+			"as": "existingSub",
+		}},
+		bson.M{"$match": bson.M{"existingSub": bson.M{"$eq": bson.A{}}}},
+	}
+}
+```
+
+- [ ] **Step 10.4: Run the test to verify it passes**
+
+```bash
+go test ./pkg/pipelines/... -v
+```
+
+Expected: all subtests under `TestGetNewMembersPipeline` PASS.
+
+- [ ] **Step 10.5: Run lint**
+
+```bash
+make lint
+```
+
+Expected: 0 issues.
+
+- [ ] **Step 10.6: Commit**
+
+```bash
+git add pkg/pipelines/member.go pkg/pipelines/member_test.go
+git commit -m "feat(pipelines): add GetNewMembersPipeline for shared add-member aggregation"
+```
+
+---
+
+## Part 7: Room-Worker Changes
+
+### Task 11: Add `ListNewMembers` to room-worker store
+
+**Files:**
+- Modify: `room-worker/store.go` (interface)
+- Modify: `room-worker/store_mongo.go` (implementation)
+- Modify: `room-worker/integration_test.go` (integration test)
+- Generate: `room-worker/mock_store_test.go` (regenerate)
+
+Why next: standalone method on the worker's store. Adds a new `RoomStore` capability (production code doesn't yet call it). Lands behind an interface change so subsequent commits can wire it in.
+
+- [ ] **Step 11.1: Write the failing integration test**
+
+Append to `room-worker/integration_test.go` (after the last existing test, before the closing of any wrapping block):
+
+```go
+func TestMongoStore_ListNewMembers_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Seed users
+	users := []interface{}{
+		model.User{ID: "u1", Account: "alice", SectID: "org1"},
+		model.User{ID: "u2", Account: "bob", SectID: "org1"},
+		model.User{ID: "u3", Account: "carol", SectID: "org2"},
+		model.User{ID: "u4", Account: "dave"},
+		model.User{ID: "u5", Account: "helper.bot", SectID: "org1"}, // bot — must be excluded
+	}
+	_, err := db.Collection("users").InsertMany(ctx, users)
+	require.NoError(t, err)
+
+	// Seed an existing subscription for alice in r1 — alice must be excluded.
+	_, err = db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+		ID:     "s1",
+		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1",
+	})
+	require.NoError(t, err)
+
+	t.Run("merges org members and direct accounts, excludes already-subscribed and bots", func(t *testing.T) {
+		got, err := store.ListNewMembers(ctx, []string{"org1"}, []string{"carol", "dave"}, "r1")
+		require.NoError(t, err)
+		// alice already subscribed (excluded), helper.bot a bot (excluded).
+		assert.ElementsMatch(t, []string{"bob", "carol", "dave"}, got)
+	})
+
+	t.Run("empty inputs return nil", func(t *testing.T) {
+		got, err := store.ListNewMembers(ctx, nil, nil, "r1")
+		require.NoError(t, err)
+		assert.Nil(t, got)
+	})
+
+	t.Run("orgIDs only", func(t *testing.T) {
+		got, err := store.ListNewMembers(ctx, []string{"org2"}, nil, "r1")
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"carol"}, got)
+	})
+
+	t.Run("directAccounts only", func(t *testing.T) {
+		got, err := store.ListNewMembers(ctx, nil, []string{"dave"}, "r1")
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"dave"}, got)
+	})
+}
+```
+
+If `room-worker/integration_test.go` doesn't already import `model` or `assert`/`require`, the existing tests in the file already do — no new imports needed.
+
+- [ ] **Step 11.2: Run the test to verify it fails**
+
+```bash
+make test-integration SERVICE=room-worker
+```
+
+Expected: build error — `store.ListNewMembers undefined (type *MongoStore has no field or method ListNewMembers)`.
+
+- [ ] **Step 11.3: Add `ListNewMembers` to the `SubscriptionStore` interface**
+
+In `room-worker/store.go`, add the method under the `// --- add-member flow ---` block:
+
+```go
+	// ListNewMembers returns the unique, non-bot accounts that would be added
+	// to roomID for a given (orgIDs, directAccounts) tuple — i.e. the union
+	// minus already-subscribed accounts. Used by processAddMembers to expand
+	// the room-service-supplied (orgs, users) into the actual write list.
+	// Delegates to pkg/pipelines.GetNewMembersPipeline + a $group/$addToSet
+	// terminal stage.
+	ListNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error)
+```
+
+- [ ] **Step 11.4: Add `ListNewMembers` implementation in `room-worker/store_mongo.go`**
+
+Append at the end of the file:
+
+```go
+func (s *MongoStore) ListNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error) {
+	if len(orgIDs) == 0 && len(directAccounts) == 0 {
+		return nil, nil
+	}
+
+	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID)
+	pipeline = append(pipeline, bson.M{
+		"$group": bson.M{"_id": nil, "accounts": bson.M{"$addToSet": "$account"}},
+	})
+
+	cursor, err := s.users.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("list new members: %w", err)
+	}
+	var results []struct {
+		Accounts []string `bson:"accounts"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("decode list new members: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return results[0].Accounts, nil
+}
+```
+
+If the import block doesn't already include `pkg/pipelines` or `bson`, add:
+
+```go
+import (
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/hmchangw/chat/pkg/pipelines"
+)
+```
+
+- [ ] **Step 11.5: Regenerate the mock**
+
+```bash
+make generate SERVICE=room-worker
+```
+
+Expected: `room-worker/mock_store_test.go` is regenerated and now contains `ListNewMembers`.
+
+- [ ] **Step 11.6: Run the integration test to verify it passes**
+
+```bash
+make test-integration SERVICE=room-worker
+```
+
+Expected: `TestMongoStore_ListNewMembers_Integration` and all four subtests PASS.
+
+- [ ] **Step 11.7: Run unit tests to confirm nothing else broke**
+
+```bash
+make test SERVICE=room-worker
+```
+
+Expected: all existing tests still PASS (mock interface widened but no test asserts on it yet).
+
+- [ ] **Step 11.8: Commit**
+
+```bash
+git add room-worker/store.go room-worker/store_mongo.go room-worker/integration_test.go room-worker/mock_store_test.go
+git commit -m "feat(room-worker): add ListNewMembers using shared pipeline"
+```
+
+---
+
+### Task 12: Switch `processAddMembers` to use `ListNewMembers`
+
+**Files:**
+- Modify: `room-worker/handler.go` (call `ListNewMembers` first)
+- Modify: `room-worker/handler_test.go` (update mocks for every `processAddMembers` test)
+
+Why now: Task 11 added the method but nothing called it. After this task, the worker resolves orgs at write time. Room-service still ships resolved `Users` (Task 14 will change that), but feeding already-resolved accounts into `ListNewMembers` returns the same set (the pipeline filters already-subscribed users; old room-service has already done that filter, so the second pass is a no-op).
+
+- [ ] **Step 12.1: Update each `processAddMembers` test to expect `ListNewMembers`**
+
+In `room-worker/handler_test.go`, every test that exercises `processAddMembers` currently sets up `FindUsersByAccounts` mock with the request's `Users` slice. Add a `ListNewMembers` expectation immediately before each `FindUsersByAccounts`. The slice passed into `FindUsersByAccounts` becomes the slice returned from `ListNewMembers`.
+
+Example pattern (apply to every `processAddMembers` test in the file):
+
+```go
+// before
+store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
+    {ID: "u2", Account: "bob", SiteID: "site-a"},
+    {ID: "u3", Account: "charlie", SiteID: "site-b"},
+}, nil)
+
+// after
+store.EXPECT().ListNewMembers(gomock.Any(), req.Orgs, req.Users, req.RoomID).
+    Return([]string{"bob", "charlie"}, nil)
+store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
+    {ID: "u2", Account: "bob", SiteID: "site-a"},
+    {ID: "u3", Account: "charlie", SiteID: "site-b"},
+}, nil)
+```
+
+If a test's `req.Orgs` is nil or empty and `req.Users` is also empty (a test exercising the no-input path), expect `ListNewMembers(..., nil)` returning `nil, nil`. The handler must short-circuit and `FindUsersByAccounts` must NOT be called in that case (verify by removing the `FindUsersByAccounts` expectation for that sub-test).
+
+Find every test to update with:
+
+```bash
+grep -n "FindUsersByAccounts" room-worker/handler_test.go
+```
+
+For each line, add the `ListNewMembers` expectation directly above it. Keep the request fixture's `Users` field unchanged so the expected `ListNewMembers` `directAccounts` argument matches.
+
+- [ ] **Step 12.2: Run the tests to verify they fail**
+
+```bash
+make test SERVICE=room-worker
+```
+
+Expected: existing `TestHandler_ProcessAddMembers*` tests FAIL with `Unexpected call to *MockSubscriptionStore.ListNewMembers` (or similar) because the handler doesn't call it yet.
+
+- [ ] **Step 12.3: Update `processAddMembers` to call `ListNewMembers` first**
+
+In `room-worker/handler.go`, replace the start of `processAddMembers` (everything from the `accounts := req.Users` line up to and including the `userMap := ...` block) with:
+
+```go
+	// Resolve orgs and direct users into the actual write list at write time.
+	// This reflects current org membership (rather than the at-accept-time
+	// snapshot) and lets room-service ship merged-but-unresolved Users/Orgs.
+	accounts, err := h.store.ListNewMembers(ctx, req.Orgs, req.Users, req.RoomID)
+	if err != nil {
+		return fmt.Errorf("list new members: %w", err)
+	}
+	if len(accounts) == 0 {
+		// Nothing to add (capacity check in room-service already gated this;
+		// reaching zero here only happens when org churn or a duplicate event
+		// makes everything already-subscribed). Skip the write path.
+		return nil
+	}
+
+	users, err := h.store.FindUsersByAccounts(ctx, accounts)
+	if err != nil {
+		return fmt.Errorf("find users by accounts: %w", err)
+	}
+	userMap := make(map[string]model.User, len(users))
+	for i := range users {
+		userMap[users[i].Account] = users[i]
+	}
+```
+
+Leave the rest of `processAddMembers` unchanged — the loop already iterates over `accounts` and skips any account whose user record isn't found.
+
+- [ ] **Step 12.4: Run the tests to verify they pass**
+
+```bash
+make test SERVICE=room-worker
+```
+
+Expected: all `TestHandler_ProcessAddMembers*` tests PASS.
+
+- [ ] **Step 12.5: Run integration tests to confirm end-to-end still works**
+
+```bash
+make test-integration SERVICE=room-worker
+```
+
+Expected: PASS (room-worker integration tests don't exercise the new path end-to-end yet — they're store-only — so they pass unchanged).
+
+- [ ] **Step 12.6: Run lint**
+
+```bash
+make lint
+```
+
+Expected: 0 issues.
+
+- [ ] **Step 12.7: Commit**
+
+```bash
+git add room-worker/handler.go room-worker/handler_test.go
+git commit -m "feat(room-worker): resolve orgs at write time via ListNewMembers"
+```
+
+---
+
+## Part 8: Room-Service Changes
+
+### Task 13: Add `CountNewMembers` to room-service store
+
+**Files:**
+- Modify: `room-service/store.go` (add to `RoomStore` interface; keep `ResolveAccounts` for now — Task 15 removes it)
+- Modify: `room-service/store_mongo.go` (add `CountNewMembers` implementation)
+- Modify: `room-service/integration_test.go` (add `TestMongoStore_CountNewMembers_Integration`)
+- Generate: `room-service/mock_store_test.go` (regenerate)
+
+Why next: standalone method, mirrors Task 11's pattern but with `$count` as the terminal stage. After this commit, both `ResolveAccounts` (legacy) and `CountNewMembers` (new) coexist on the interface — Task 14 swaps the call site, Task 15 deletes the legacy.
+
+- [ ] **Step 13.1: Write the failing integration test**
+
+Append to `room-service/integration_test.go`:
+
+```go
+func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	users := []interface{}{
+		model.User{ID: "u1", Account: "alice", SectID: "org1"},
+		model.User{ID: "u2", Account: "bob", SectID: "org1"},
+		model.User{ID: "u3", Account: "carol", SectID: "org2"},
+		model.User{ID: "u4", Account: "dave"},
+		model.User{ID: "u5", Account: "helper.bot", SectID: "org1"}, // bot — must be excluded
+	}
+	_, err := db.Collection("users").InsertMany(ctx, users)
+	require.NoError(t, err)
+
+	// alice already subscribed to r1 → must be excluded.
+	_, err = db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
+		ID:     "s1",
+		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1",
+	})
+	require.NoError(t, err)
+
+	t.Run("counts net-new members across orgs and direct accounts", func(t *testing.T) {
+		got, err := store.CountNewMembers(ctx, []string{"org1"}, []string{"carol", "dave"}, "r1")
+		require.NoError(t, err)
+		// Expected: bob (org1), carol, dave. alice excluded (subscribed), helper.bot excluded (bot).
+		assert.Equal(t, 3, got)
+	})
+
+	t.Run("empty inputs return 0", func(t *testing.T) {
+		got, err := store.CountNewMembers(ctx, nil, nil, "r1")
+		require.NoError(t, err)
+		assert.Equal(t, 0, got)
+	})
+
+	t.Run("everyone already subscribed returns 0", func(t *testing.T) {
+		got, err := store.CountNewMembers(ctx, nil, []string{"alice"}, "r1")
+		require.NoError(t, err)
+		assert.Equal(t, 0, got)
+	})
+}
+```
+
+- [ ] **Step 13.2: Run the test to verify it fails**
+
+```bash
+make test-integration SERVICE=room-service
+```
+
+Expected: build error — `store.CountNewMembers undefined`.
+
+- [ ] **Step 13.3: Add `CountNewMembers` to the `RoomStore` interface**
+
+In `room-service/store.go`, add the method to the `RoomStore` interface (keep `ResolveAccounts` for now):
+
+```go
+	// CountNewMembers returns the number of unique, non-bot, not-already-subscribed
+	// users that an add-members request would add to roomID. Used in handleAddMembers
+	// for the capacity gate without materializing the full account list (room-worker
+	// re-runs the same pipeline at write time via ListNewMembers).
+	CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error)
+```
+
+- [ ] **Step 13.4: Add `CountNewMembers` implementation in `room-service/store_mongo.go`**
+
+Append at the end of the file:
+
+```go
+func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error) {
+	if len(orgIDs) == 0 && len(directAccounts) == 0 {
+		return 0, nil
+	}
+
+	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID)
+	pipeline = append(pipeline, bson.M{"$count": "n"})
+
+	cursor, err := s.users.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, fmt.Errorf("count new members: %w", err)
+	}
+	var results []struct {
+		N int `bson:"n"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return 0, fmt.Errorf("decode count new members: %w", err)
+	}
+	if len(results) == 0 {
+		return 0, nil
+	}
+	return results[0].N, nil
+}
+```
+
+If the import block doesn't already include `pkg/pipelines`, add `"github.com/hmchangw/chat/pkg/pipelines"` to it.
+
+- [ ] **Step 13.5: Regenerate the mock**
+
+```bash
+make generate SERVICE=room-service
+```
+
+Expected: `room-service/mock_store_test.go` regenerated with `CountNewMembers`.
+
+- [ ] **Step 13.6: Run integration tests to verify they pass**
+
+```bash
+make test-integration SERVICE=room-service
+```
+
+Expected: `TestMongoStore_CountNewMembers_Integration` and its three subtests PASS. Existing tests still PASS.
+
+- [ ] **Step 13.7: Run unit tests**
+
+```bash
+make test SERVICE=room-service
+```
+
+Expected: all PASS (no test asserts on the new method yet).
+
+- [ ] **Step 13.8: Commit**
+
+```bash
+git add room-service/store.go room-service/store_mongo.go room-service/integration_test.go room-service/mock_store_test.go
+git commit -m "feat(room-service): add CountNewMembers using shared pipeline"
+```
+
+---
+
+### Task 14: Switch `handleAddMembers` to `CountNewMembers` + ship unresolved members
+
+**Files:**
+- Modify: `room-service/handler.go` (Step 7 swap; canonical event ships merged unresolved values)
+- Modify: `room-service/handler_test.go` (replace `ResolveAccounts` mocks; update canonical-event assertions)
+
+Why now: room-worker (after Task 12) already calls `ListNewMembers` at write time, so it can correctly handle either resolved or unresolved `Users`. Switching room-service is now safe.
+
+- [ ] **Step 14.1: Update each `handleAddMembers` test to mock `CountNewMembers` and assert on unresolved canonical event**
+
+In `room-service/handler_test.go`, every `TestHandler_AddMembers*` test that mocks `ResolveAccounts` must change. The pattern is:
+
+```go
+// before
+store.EXPECT().ResolveAccounts(gomock.Any(), gomock.Any(), []string{"u1", "u2", "u3", "u4", "u5"}, "r1").
+    Return([]string{"u1", "u2", "u3"}, nil)
+store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(0, nil)
+// (later) assert published payload's Users == ["u1", "u2", "u3"] (resolved)
+
+// after
+store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), []string{"u1", "u2", "u3", "u4", "u5"}, "r1").
+    Return(3, nil)
+store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(0, nil)
+// (later) assert published payload's Users == ["u1", "u2", "u3", "u4", "u5"] (merged, NOT filtered)
+```
+
+Find every `ResolveAccounts` setup with:
+
+```bash
+grep -n "ResolveAccounts" room-service/handler_test.go
+```
+
+For each:
+- Replace `ResolveAccounts(...).Return(<list>, nil)` with `CountNewMembers(...).Return(<len(list)>, nil)`.
+- Find the corresponding canonical-event assertion (look for `json.Unmarshal(publishedData, &payload)` then assertions on `payload.Users`). Update those to expect the **merged input slice** (the third arg passed in the original `ResolveAccounts` mock), not the **filtered list** (the original return value).
+- Update assertions on `payload.Orgs` to expect the merged orgs (still `allOrgs`, no behavioral change there).
+
+For tests where the capacity-exceeded path matters (`TestHandler_AddMembers_CapacityExceeded`), change `Return(<list>, nil)` to `Return(<count>, nil)` where `<count> = len(list)` and verify the capacity error fires when `currentCount + count > maxRoomSize`.
+
+For `TestHandler_AddMembers_EmptyAfterResolve`, the semantics shift: `CountNewMembers` returning 0 still means "no net-new members", but the canonical event now ships the (possibly non-empty) merged inputs unchanged. Update the test to expect zero subscriptions added (room-worker would no-op via the early return added in Task 12) but the canonical event still publishes — or, if the existing handler short-circuits on count==0, keep that behavior; the test should assert what the handler actually does today and not couple to room-worker's later behavior.
+
+- [ ] **Step 14.2: Run the tests to verify they fail**
+
+```bash
+make test SERVICE=room-service
+```
+
+Expected: `TestHandler_AddMembers*` FAIL — either with "Unexpected call to CountNewMembers" (if the test expects it but the handler still calls ResolveAccounts) or with assertion failures on the canonical-event payload.
+
+- [ ] **Step 14.3: Update `handleAddMembers` to use `CountNewMembers` and ship unresolved members**
+
+In `room-service/handler.go`, replace steps 7–9 with:
+
+```go
+	// 7. Count net-new members (count-only — actual list materialized in room-worker)
+	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("count new members: %w", err)
+	}
+
+	// 8. Capacity check
+	currentCount, err := h.store.CountSubscriptions(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("count subscriptions: %w", err)
+	}
+	if currentCount+newCount > h.maxRoomSize {
+		return nil, fmt.Errorf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, newCount, currentCount)
+	}
+
+	// 9. Normalize and publish — Users and Orgs ship as merged-but-unresolved.
+	// room-worker's ListNewMembers reproduces resolution at write time.
+	req.Users = allUsers
+	req.Orgs = allOrgs
+	req.RoomID = roomID
+	req.RequesterID = sub.User.ID
+	req.RequesterAccount = sub.User.Account
+	req.Timestamp = time.Now().UTC().UnixMilli()
+	normalized, err := json.Marshal(req)
+```
+
+Leave the rest of `handleAddMembers` (the publish + reply) unchanged.
+
+- [ ] **Step 14.4: Run the tests to verify they pass**
+
+```bash
+make test SERVICE=room-service
+```
+
+Expected: all `TestHandler_AddMembers*` PASS.
+
+- [ ] **Step 14.5: Run integration tests to confirm**
+
+```bash
+make test-integration SERVICE=room-service
+```
+
+Expected: PASS — same-site / cross-site channel expansion paths are unaffected; the only behavioral change is the canonical event content, which the integration tests don't assert on directly.
+
+- [ ] **Step 14.6: Run lint**
+
+```bash
+make lint
+```
+
+Expected: 0 issues.
+
+- [ ] **Step 14.7: Commit**
+
+```bash
+git add room-service/handler.go room-service/handler_test.go
+git commit -m "feat(room-service): use CountNewMembers + ship unresolved members"
+```
+
+---
+
+## Part 9: Room-Service Cleanup
+
+### Task 15: Remove `ResolveAccounts` from room-service
+
+**Files:**
+- Modify: `room-service/handler.go` (delete the method)
+- Modify: `room-service/store.go` (remove from interface)
+- Modify: `room-service/handler_test.go` (remove tests)
+
+Why last: After Task 14, `handleAddMembers` no longer calls `ResolveAccounts`. The method is dead code. Removing it simplifies the store interface and reduces test complexity. This is a pure cleanup — no production behavior change.
+
+- [ ] **Step 15.1: Identify all `ResolveAccounts` references**
+
+Search the codebase for `ResolveAccounts`:
+
+```bash
+grep -rn "ResolveAccounts" room-service/
+```
+
+Expected occurrences:
+1. Interface method signature in `room-service/store.go`
+2. Mock expectation setup in `room-service/handler_test.go` (removed in Task 14, so may not exist)
+3. Function implementation in `room-service/store_mongo.go`
+
+- [ ] **Step 15.2: Delete `ResolveAccounts` from `room-service/store.go`**
+
+Find and remove the method signature from the store interface. It should look like:
+
+```go
+ResolveAccounts(ctx context.Context, accounts []string) ([]model.User, error)
+```
+
+- [ ] **Step 15.3: Delete `ResolveAccounts` implementation from `room-service/store_mongo.go`**
+
+Find and delete the entire `func (s *MongoStore) ResolveAccounts(...)` function. It previously performed the org→user lookup that is now done by room-worker's `ListNewMembers`.
+
+- [ ] **Step 15.4: Remove `TestHandler_ResolveAccounts*` tests from `room-service/handler_test.go`**
+
+Search for test functions that test the `ResolveAccounts` path (e.g., `TestHandler_ResolveAccounts_*` or tests that set up the mock with `store.EXPECT().ResolveAccounts`). Delete those test functions entirely.
+
+- [ ] **Step 15.5: Regenerate the mock**
+
+```bash
+make generate SERVICE=room-service
+```
+
+Expected: `room-service/mock_store_test.go` is regenerated without the `ResolveAccounts` method.
+
+- [ ] **Step 15.6: Run unit tests to verify**
+
+```bash
+make test SERVICE=room-service
+```
+
+Expected: all `TestHandler_*` tests PASS.
+
+- [ ] **Step 15.7: Run integration tests to confirm**
+
+```bash
+make test-integration SERVICE=room-service
+```
+
+Expected: PASS (no behavioral change to add-member flow; all state/store operations remain).
+
+- [ ] **Step 15.8: Run lint**
+
+```bash
+make lint
+```
+
+Expected: 0 issues.
+
+- [ ] **Step 15.9: Commit**
+
+```bash
+git add room-service/store.go room-service/store_mongo.go room-service/handler_test.go room-service/mock_store_test.go
+git commit -m "refactor(room-service): remove dead ResolveAccounts method"
+```
+
+---
+
 ## Self-Review & Execution Handoff
+
+### Phase 1 Tasks (1–9) — Channel-Based Add-Member
 
 Before handing off to subagent or inline execution, verify:
 
@@ -1695,5 +2544,46 @@ Before handing off to subagent or inline execution, verify:
 ✅ **TDD flow**: Each task follows Red → Green → Commit (write tests first, verify failure, implement, verify pass, commit).
 
 ✅ **Dependency order**: Leaf packages (natsutil, model) → client → handler struct → big type swap → cleanup → integration tests.
+
+---
+
+### Phase 2 Tasks (10–15) — Org Resolution Refactor
+
+Before executing Phase 2, verify:
+
+✅ **Spec coverage**:
+- [x] Shared MongoDB pipeline `GetNewMembersPipeline` (Task 10)
+- [x] Pipeline stages: `$match` (org/account filter + bot exclusion), `$lookup` (subscriptions), `$match` (non-subscribed) (Task 10)
+- [x] Terminal stage pattern: `$count` for room-service, `$group/$addToSet` for room-worker (Tasks 10–14)
+- [x] Room-worker resolves orgs at write time via `ListNewMembers` (Task 11–12)
+- [x] Room-service validates capacity using `CountNewMembers` (Task 13–14)
+- [x] Canonical event carries merged-but-unresolved `Users` and `Orgs` (Task 14)
+- [x] `ResolveAccounts` method removed from room-service (Task 15)
+
+✅ **Implementation order**:
+1. Shared pipeline (`pkg/pipelines/member.go`) — no dependencies (Task 10)
+2. Room-worker wiring (`room-worker/store.go` interface, implementation, tests) (Task 11)
+3. Room-worker handler changes (inject `ListNewMembers` call, update all test mocks) (Task 12)
+4. Room-service wiring (`room-service/store.go` interface, implementation, tests) (Task 13)
+5. Room-service handler changes (use `CountNewMembers`, ship unresolved) (Task 14)
+6. Cleanup: remove dead `ResolveAccounts` method (Task 15)
+
+✅ **No placeholders**: All code blocks are complete, including full test implementations and mock updates.
+
+✅ **Commit granularity**: Six commits, one per logical chunk:
+- Task 10: `feat(pipelines): add GetNewMembersPipeline for shared add-member aggregation`
+- Task 11: `feat(room-worker): add ListNewMembers using shared pipeline`
+- Task 12: `feat(room-worker): switch processAddMembers to use ListNewMembers`
+- Task 13: `feat(room-service): add CountNewMembers using shared pipeline`
+- Task 14: `feat(room-service): use CountNewMembers + ship unresolved members`
+- Task 15: `refactor(room-service): remove dead ResolveAccounts method`
+
+✅ **TDD flow**: Each task follows Red → Green → Commit (write failing tests, implement, verify pass, commit).
+
+✅ **Semantics**:
+- Org IDs + direct account names merge at request validation time (room-service).
+- Expansion (org→user) happens at write time (room-worker), not at request-acceptance time.
+- Canonical events carry unresolved `Users` and `Orgs` — room-worker reproduces the expansion deterministically.
+- Wire format unchanged; semantics shifted.
 
 ---
