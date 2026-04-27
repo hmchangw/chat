@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux; only served if PPROF_ADDR is set.
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -184,12 +184,20 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	// pprof lives on a separate port, opt-in via PPROF_ADDR. Off by default
 	// so the metrics endpoint (which Prometheus scrapes) doesn't
-	// inadvertently expose profiling.
+	// inadvertently expose profiling. Handlers are registered on a dedicated
+	// mux rather than http.DefaultServeMux to avoid leaking debug endpoints
+	// onto any other server that happens to use the default mux.
 	var pprofSrv *http.Server
 	if cfg.PProfAddr != "" {
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		pprofSrv = &http.Server{
 			Addr:              cfg.PProfAddr,
-			Handler:           http.DefaultServeMux, // net/http/pprof registers on DefaultServeMux via side-effect import.
+			Handler:           pprofMux,
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {
