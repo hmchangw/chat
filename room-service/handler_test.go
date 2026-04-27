@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -1634,4 +1636,40 @@ func TestHandler_handleRoomsInfoBatch_chunking(t *testing.T) {
 		assert.Equal(t, fmt.Sprintf("r%d", i), ri.RoomID)
 		assert.False(t, ri.Found)
 	}
+}
+
+func TestHandler_HandleUpdateRole_PropagatesRequestID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	store.EXPECT().
+		GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+			HasIndividualMembership: true,
+		}, nil)
+
+	var capturedHeader nats.Header
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(ctx context.Context, _ string, _ []byte) error {
+			capturedHeader = natsutil.HeaderForContext(ctx)
+			return nil
+		},
+	}
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-room-svc-test")
+	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleOwner}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
+
+	_, err := h.handleUpdateRole(ctx, subj, data)
+	require.NoError(t, err)
+	require.NotNil(t, capturedHeader, "publish wrapper must build header from ctx")
+	assert.Equal(t, "req-room-svc-test", capturedHeader.Get(natsutil.RequestIDHeader))
 }

@@ -36,6 +36,11 @@ func NewHandler(store RoomStore, keyStore RoomKeyStore, siteID string, maxRoomSi
 	return &Handler{store: store, keyStore: keyStore, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
 }
 
+// wrappedCtx returns m.Context() augmented with X-Request-ID from the inbound msg header; entry ctx for every nats* handler.
+func wrappedCtx(m otelnats.Msg) context.Context {
+	return natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
+}
+
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
 func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	const queue = "room-service"
@@ -70,7 +75,8 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 }
 
 func (h *Handler) natsCreateRoom(m otelnats.Msg) {
-	resp, err := h.handleCreateRoom(m.Context(), m.Msg.Data)
+	ctx := wrappedCtx(m)
+	resp, err := h.handleCreateRoom(ctx, m.Msg.Data)
 	if err != nil {
 		natsutil.ReplyError(m.Msg, err.Error())
 		return
@@ -81,7 +87,8 @@ func (h *Handler) natsCreateRoom(m otelnats.Msg) {
 }
 
 func (h *Handler) natsListRooms(m otelnats.Msg) {
-	rooms, err := h.store.ListRooms(m.Context())
+	ctx := wrappedCtx(m)
+	rooms, err := h.store.ListRooms(ctx)
 	if err != nil {
 		natsutil.ReplyError(m.Msg, err.Error())
 		return
@@ -90,9 +97,10 @@ func (h *Handler) natsListRooms(m otelnats.Msg) {
 }
 
 func (h *Handler) natsGetRoom(m otelnats.Msg) {
+	ctx := wrappedCtx(m)
 	parts := strings.Split(m.Msg.Subject, ".")
 	roomID := parts[len(parts)-1]
-	room, err := h.store.GetRoom(m.Context(), roomID)
+	room, err := h.store.GetRoom(ctx, roomID)
 	if err != nil {
 		natsutil.ReplyError(m.Msg, err.Error())
 		return
@@ -141,7 +149,8 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 
 // NatsHandleRemoveMember handles remove-member authorization requests.
 func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
-	resp, err := h.handleRemoveMember(m.Context(), m.Msg.Subject, m.Msg.Data)
+	ctx := wrappedCtx(m)
+	resp, err := h.handleRemoveMember(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		slog.Error("remove member failed", "error", err)
 		natsutil.ReplyError(m.Msg, sanitizeError(err))
@@ -153,7 +162,8 @@ func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
 }
 
 func (h *Handler) natsListMembers(m otelnats.Msg) {
-	resp, err := h.handleListMembers(m.Context(), m.Msg.Subject, m.Msg.Data)
+	ctx := wrappedCtx(m)
+	resp, err := h.handleListMembers(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		slog.Error("list members failed", "error", err)
 		natsutil.ReplyError(m.Msg, sanitizeError(err))
@@ -163,7 +173,8 @@ func (h *Handler) natsListMembers(m otelnats.Msg) {
 }
 
 func (h *Handler) natsListOrgMembers(m otelnats.Msg) {
-	resp, err := h.handleListOrgMembers(m.Context(), m.Msg.Subject)
+	ctx := wrappedCtx(m)
+	resp, err := h.handleListOrgMembers(ctx, m.Msg.Subject)
 	if err != nil {
 		slog.Error("list org members failed", "error", err)
 		natsutil.ReplyError(m.Msg, sanitizeError(err))
@@ -299,7 +310,8 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 }
 
 func (h *Handler) natsUpdateRole(m otelnats.Msg) {
-	resp, err := h.handleUpdateRole(m.Context(), m.Msg.Subject, m.Msg.Data)
+	ctx := wrappedCtx(m)
+	resp, err := h.handleUpdateRole(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		slog.Error("update role failed", "error", err)
 		natsutil.ReplyError(m.Msg, sanitizeError(err))
@@ -382,7 +394,8 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 }
 
 func (h *Handler) natsAddMembers(m otelnats.Msg) {
-	resp, err := h.handleAddMembers(m.Context(), m.Msg.Subject, m.Msg.Data)
+	ctx := wrappedCtx(m)
+	resp, err := h.handleAddMembers(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		slog.Error("add-members failed", "error", err)
 		natsutil.ReplyError(m.Msg, sanitizeError(err))
@@ -514,7 +527,8 @@ func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgI
 }
 
 func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
-	resp, err := h.handleRoomsInfoBatch(m.Context(), m.Msg.Data)
+	ctx := wrappedCtx(m)
+	resp, err := h.handleRoomsInfoBatch(ctx, m.Msg.Data)
 	if err != nil {
 		slog.Error("rooms info batch failed", "error", err)
 		natsutil.ReplyError(m.Msg, sanitizeError(err))
