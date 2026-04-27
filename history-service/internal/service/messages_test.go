@@ -1251,7 +1251,7 @@ func TestHistoryService_QuoteRedact_BeforeAccessSince(t *testing.T) {
 	require.Len(t, resp.Messages, 1)
 	q := resp.Messages[0].QuotedParentMessage
 	require.NotNil(t, q)
-	assert.Equal(t, "This message is unavailable", q.Msg)
+	assert.Equal(t, service.UnavailableQuoteMsg, q.Msg)
 	assert.Empty(t, q.MessageID)
 }
 
@@ -1334,7 +1334,7 @@ func TestHistoryService_QuoteRedact_SingleMessage(t *testing.T) {
 	resp, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
 	require.NoError(t, err)
 	require.NotNil(t, resp.QuotedParentMessage)
-	assert.Equal(t, "This message is unavailable", resp.QuotedParentMessage.Msg)
+	assert.Equal(t, service.UnavailableQuoteMsg, resp.QuotedParentMessage.Msg)
 	assert.Empty(t, resp.QuotedParentMessage.MessageID)
 }
 
@@ -1372,7 +1372,7 @@ func TestHistoryService_TShow_ParentBeforeAccessSince(t *testing.T) {
 	require.Len(t, resp.Messages, 1)
 	q := resp.Messages[0].QuotedParentMessage
 	require.NotNil(t, q)
-	assert.Equal(t, "This message is unavailable", q.Msg)
+	assert.Equal(t, service.UnavailableQuoteMsg, q.Msg)
 	assert.Empty(t, q.MessageID)
 }
 
@@ -1459,8 +1459,8 @@ func TestHistoryService_TShow_TwoMessagesWithSameParent_BothRedacted(t *testing.
 	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.Messages, 2)
-	assert.Equal(t, "This message is unavailable", resp.Messages[0].QuotedParentMessage.Msg)
-	assert.Equal(t, "This message is unavailable", resp.Messages[1].QuotedParentMessage.Msg)
+	assert.Equal(t, service.UnavailableQuoteMsg, resp.Messages[0].QuotedParentMessage.Msg)
+	assert.Equal(t, service.UnavailableQuoteMsg, resp.Messages[1].QuotedParentMessage.Msg)
 }
 
 // TShow message where ThreadParentCreatedAt is nil (message-worker didn't populate it) →

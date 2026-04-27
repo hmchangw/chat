@@ -14,7 +14,7 @@ The `GetThreadsList` endpoint was specified and partially implemented per `2026-
 
 ### In scope
 
-- Remove `Subscription.ThreadUnread` from `pkg/model/subscription.go` and from `SubscriptionRepository.GetSubscriptionForThreads`.
+- Remove `Subscription.ThreadUnread` from `pkg/model/subscription.go` and from `SubscriptionRepository.GetHistorySharedSince`.
 - Replace the `ThreadParentMessage` response with plain `[]Message`; remove the envelope type.
 - Replace the current `GetUnreadThreadRooms(ctx, roomID, parentIDs, ...)` signature with `GetUnreadThreadRooms(ctx, roomID, account, accessSince, ...)` implemented as a MongoDB aggregation pipeline.
 - Introduce a pipeline abstraction in `mongorepo`: `Aggregate`, `AggregatePaged` (via `$facet`), and a `pipelines.go` file for pipeline builder functions.
@@ -355,17 +355,18 @@ No more `filter := bson.M{...}`, no more `opts := append(...)`. The pipeline-bui
 
 ## 6. Repository Interface & Index Updates
 
-### 6.1 `SubscriptionRepository.GetSubscriptionForThreads`
+### 6.1 `SubscriptionRepository.GetHistorySharedSince`
 
 ```go
-// Before
-GetSubscriptionForThreads(ctx, account, roomID string) (*time.Time, []string, bool, error)
+// Before (GetSubscriptionForThreads — name and signature)
+GetSubscriptionForThreads(ctx context.Context, account, roomID string) (*time.Time, []string, bool, error)
 
-// After
-GetSubscriptionForThreads(ctx, account, roomID string) (*time.Time, bool, error)
+// Shipped (renamed + return slice dropped)
+GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error)
 ```
 
-- Returned slice is removed (it was `Subscription.ThreadUnread`).
+- Returned `[]string` slice (`Subscription.ThreadUnread`) removed.
+- Method renamed from `GetSubscriptionForThreads` to `GetHistorySharedSince` to reflect its actual purpose.
 - Projection in the mongo implementation drops `threadUnread: 1`, keeps `historySharedSince: 1`.
 - Service layer call site drops the `threadUnread` variable.
 
@@ -402,14 +403,14 @@ Note: the unread aggregation references `threadSubscriptions` by collection name
 
 `GetThreadParentMessages` (`threads.go`):
 
-- Replace `accessSince, threadUnread, subscribed, err := s.subscriptions.GetSubscriptionForThreads(...)` with the three-return form (`accessSince, subscribed, err`).
-- In the `ThreadFilterUnread` switch case, call `s.threadRooms.GetUnreadThreadRooms(c, roomID, account, accessSince, pageReq)`.
-- Replace the `threadPage.HasMore` read with `threadPage.Total`; propagate to `GetThreadParentMessagesResponse.Total`.
-- Remove any `len(threadUnread) == 0` early-return — the new query handles "no subscriptions" naturally (aggregation returns zero rows + `Total: 0`).
+- `accessSince, threadUnread, subscribed, err := s.subscriptions.GetSubscriptionForThreads(...)` was replaced with `accessSince, subscribed, err := s.subscriptions.GetHistorySharedSince(...)`.
+- The `ThreadFilterUnread` switch case calls `s.threadRooms.GetUnreadThreadRooms(c, roomID, account, accessSince, pageReq)`.
+- `threadPage.HasMore` was replaced with `threadPage.Total`, propagated to `GetThreadParentMessagesResponse.Total`.
+- `len(threadUnread) == 0` early-return was removed — the aggregation handles "no subscriptions" naturally (returns zero rows + `Total: 0`).
 
 ### 6.5 Mocks
 
-Regenerated via `make generate SERVICE=history-service`. Both mock interfaces (`SubscriptionRepository`, `ThreadRoomRepository`) pick up the signature changes. `history-service/internal/service/threads_test.go` updates every `GetSubscriptionForThreads` return to drop the slice, and every `GetUnreadThreadRooms` expectation to pass `account` instead of `parentIDs`.
+Regenerated via `make generate SERVICE=history-service`. Both mock interfaces (`SubscriptionRepository`, `ThreadRoomRepository`) pick up the signature changes. `history-service/internal/service/threads_test.go` was updated to drop the `threadUnread` slice from every `GetHistorySharedSince` return, and to pass `account` instead of `parentIDs` in every `GetUnreadThreadRooms` expectation.
 
 ### 6.6 Index strategy (unchanged from prior spec)
 

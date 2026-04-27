@@ -85,6 +85,19 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	}, nil
 }
 
+// validateThreadFilter normalises and validates the thread filter value.
+// An empty filter is treated as "all" so clients can omit the field.
+func validateThreadFilter(filter models.ThreadFilter) (models.ThreadFilter, error) {
+	switch filter {
+	case "", models.ThreadFilterAll:
+		return models.ThreadFilterAll, nil
+	case models.ThreadFilterFollowing, models.ThreadFilterUnread:
+		return filter, nil
+	default:
+		return "", natsrouter.ErrBadRequest(fmt.Sprintf("invalid thread filter: %q", filter))
+	}
+}
+
 // GetThreadParentMessages returns a paginated list of thread parent messages for a room.
 // NATS subject: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread.parent
 func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req models.GetThreadParentMessagesRequest) (*models.GetThreadParentMessagesResponse, error) {
@@ -96,10 +109,9 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 		return nil, err
 	}
 
-	// Treat empty filter as "all" so clients can omit the field.
-	filter := req.Filter
-	if filter == "" {
-		filter = models.ThreadFilterAll
+	filter, err := validateThreadFilter(req.Filter)
+	if err != nil {
+		return nil, err
 	}
 
 	pageReq := mongorepo.NewOffsetPageRequest(req.Offset, req.Limit)
@@ -112,8 +124,6 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 		threadPage, err = s.threadRooms.GetFollowingThreadRooms(c, roomID, account, accessSince, pageReq)
 	case models.ThreadFilterUnread:
 		threadPage, err = s.threadRooms.GetUnreadThreadRooms(c, roomID, account, accessSince, pageReq)
-	default:
-		return nil, natsrouter.ErrBadRequest(fmt.Sprintf("invalid thread filter: %q", filter))
 	}
 	if err != nil {
 		slog.Error("loading thread rooms from MongoDB", "error", err, "roomID", roomID, "filter", filter)
