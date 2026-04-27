@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/pipelines"
 )
 
 type MongoStore struct {
@@ -319,6 +320,32 @@ func (s *MongoStore) ResolveAccounts(ctx context.Context, orgIDs, directAccounts
 		return nil, nil
 	}
 	return results[0].Accounts, nil
+}
+
+func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error) {
+	if len(orgIDs) == 0 && len(directAccounts) == 0 {
+		return 0, nil
+	}
+
+	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID)
+	pipeline = append(pipeline, bson.M{
+		"$count": "n",
+	})
+
+	cursor, err := s.users.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, fmt.Errorf("count new members: %w", err)
+	}
+	var results []struct {
+		Count int `bson:"n"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return 0, fmt.Errorf("decode count new members: %w", err)
+	}
+	if len(results) == 0 {
+		return 0, nil
+	}
+	return results[0].Count, nil
 }
 
 // ListRoomMembers returns the members of a room. It prefers the room_members
