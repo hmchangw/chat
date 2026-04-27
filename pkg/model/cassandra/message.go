@@ -55,34 +55,42 @@ type QuotedParentMessage struct {
 	MessageLink string        `json:"messageLink,omitempty" cql:"message_link"`
 }
 
-// Message represents a message row in the Cassandra message tables (messages_by_room, messages_by_id).
+// Message represents a message row in the Cassandra message tables
+// (messages_by_room, messages_by_id, thread_messages_by_room).
+//
+// Note: the top-level cql tags are documentation-only. Actual row mapping in
+// cassrepo is driven by the hard-coded baseColumns/threadMessageColumns strings
+// and positional Scan into baseScanDest — gocql reflection never touches this
+// struct directly. The cql tags on the embedded UDT types (Participant, File,
+// Card, CardAction, QuotedParentMessage) are functional, as gocql uses
+// reflection-based marshaling for UDTs.
 type Message struct {
-	RoomID                string                   `json:"roomId"`
-	CreatedAt             time.Time                `json:"createdAt"`
-	MessageID             string                   `json:"messageId"`
-	Sender                Participant              `json:"sender"`
-	TargetUser            *Participant             `json:"targetUser,omitempty"`
-	Msg                   string                   `json:"msg"`
-	Mentions              []Participant            `json:"mentions,omitempty"`
-	Attachments           [][]byte                 `json:"attachments,omitempty"`
-	File                  *File                    `json:"file,omitempty"`
-	Card                  *Card                    `json:"card,omitempty"`
-	CardAction            *CardAction              `json:"cardAction,omitempty"`
-	TShow                 bool                     `json:"tshow,omitempty"`
-	TCount                int                      `json:"tcount,omitempty"`
-	ThreadParentID        string                   `json:"threadParentId,omitempty"`
-	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty"`
-	QuotedParentMessage   *QuotedParentMessage     `json:"quotedParentMessage,omitempty"`
-	VisibleTo             string                   `json:"visibleTo,omitempty"`
-	Unread                bool                     `json:"unread,omitempty"`
-	Reactions             map[string][]Participant `json:"reactions,omitempty"`
-	Deleted               bool                     `json:"deleted,omitempty"`
-	Type                  string                   `json:"type,omitempty"`
-	SysMsgData            []byte                   `json:"sysMsgData,omitempty"`
-	SiteID                string                   `json:"siteId,omitempty"`
-	EditedAt              *time.Time               `json:"editedAt,omitempty"`
-	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"`
-	ThreadRoomID          string                   `json:"threadRoomId,omitempty"`
-	PinnedAt              *time.Time               `json:"pinnedAt,omitempty"`
-	PinnedBy              *Participant             `json:"pinnedBy,omitempty"`
+	RoomID                string                   `json:"roomId"                         cql:"room_id"`
+	CreatedAt             time.Time                `json:"createdAt"                      cql:"created_at"`
+	MessageID             string                   `json:"messageId"                      cql:"message_id"`
+	Sender                Participant              `json:"sender"                         cql:"sender"`
+	TargetUser            *Participant             `json:"targetUser,omitempty"           cql:"target_user"`
+	Msg                   string                   `json:"msg"                            cql:"msg"`
+	Mentions              []Participant            `json:"mentions,omitempty"             cql:"mentions"`
+	Attachments           [][]byte                 `json:"attachments,omitempty"          cql:"attachments"`
+	File                  *File                    `json:"file,omitempty"                 cql:"file"`
+	Card                  *Card                    `json:"card,omitempty"                 cql:"card"`
+	CardAction            *CardAction              `json:"cardAction,omitempty"           cql:"card_action"`
+	TShow                 bool                     `json:"tshow,omitempty"                cql:"tshow"`
+	TCount                int                      `json:"tcount,omitempty"               cql:"tcount"`
+	ThreadParentID        string                   `json:"threadParentId,omitempty"       cql:"thread_parent_id"`
+	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
+	QuotedParentMessage   *QuotedParentMessage     `json:"quotedParentMessage,omitempty"  cql:"quoted_parent_message"`
+	VisibleTo             string                   `json:"visibleTo,omitempty"            cql:"visible_to"`
+	Unread                bool                     `json:"unread,omitempty"               cql:"unread"`
+	Reactions             map[string][]Participant `json:"reactions,omitempty"            cql:"reactions"`
+	Deleted               bool                     `json:"deleted,omitempty"              cql:"deleted"`
+	Type                  string                   `json:"type,omitempty"                 cql:"type"`
+	SysMsgData            []byte                   `json:"sysMsgData,omitempty"           cql:"sys_msg_data"`
+	SiteID                string                   `json:"siteId,omitempty"               cql:"site_id"`
+	EditedAt              *time.Time               `json:"editedAt,omitempty"             cql:"edited_at"`
+	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"            cql:"updated_at"`
+	ThreadRoomID          string                   `json:"threadRoomId,omitempty"         cql:"thread_room_id"`
+	PinnedAt              *time.Time               `json:"pinnedAt,omitempty"             cql:"pinned_at"`
+	PinnedBy              *Participant             `json:"pinnedBy,omitempty"             cql:"pinned_by"`
 }

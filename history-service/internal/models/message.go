@@ -87,3 +87,17 @@ type DeleteMessageResponse struct {
 	MessageID string `json:"messageId"`
 	DeletedAt int64  `json:"deletedAt"` // UTC millis
 }
+
+// GetThreadMessagesRequest is the payload for loading replies in a thread.
+type GetThreadMessagesRequest struct {
+	ThreadMessageID string `json:"threadMessageId"` // parent message ID (old Meteor `tmid`)
+	Cursor          string `json:"cursor,omitempty"`
+	Limit           int    `json:"limit"`
+}
+
+// GetThreadMessagesResponse is the response for GetThreadMessages.
+type GetThreadMessagesResponse struct {
+	Messages   []Message `json:"messages"`
+	NextCursor string    `json:"nextCursor,omitempty"`
+	HasNext    bool      `json:"hasNext"`
+}
