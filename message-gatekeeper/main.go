@@ -82,7 +82,7 @@ func main() {
 		}
 		return nil
 	}
-	handler := NewHandler(store, pub, reply, cfg.SiteID)
+	handler := NewHandler(store, pub, reply, cfg.SiteID, nil)
 
 	if err := bootstrapStreams(ctx, js, cfg.SiteID, cfg.Bootstrap.Enabled); err != nil {
 		slog.Error("bootstrap streams failed", "error", err)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -41,15 +42,16 @@ type publishFunc func(ctx context.Context, msg *nats.Msg, opts ...jetstream.Publ
 // Handler processes messages from the MESSAGES stream and validates them
 // before publishing to MESSAGES_CANONICAL.
 type Handler struct {
-	store   Store
-	publish publishFunc
-	reply   replyFunc
-	siteID  string
+	store         Store
+	publish       publishFunc
+	reply         replyFunc
+	siteID        string
+	parentFetcher ParentMessageFetcher
 }
 
 // NewHandler constructs a new Handler with the given dependencies.
-func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string) *Handler {
-	return &Handler{store: store, publish: publish, reply: reply, siteID: siteID}
+func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string, parentFetcher ParentMessageFetcher) *Handler {
+	return &Handler{store: store, publish: publish, reply: reply, siteID: siteID, parentFetcher: parentFetcher}
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
@@ -163,6 +165,28 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		threadParentCreatedAt = &t
 	}
 
+	var quotedSnapshot *cassandra.QuotedParentMessage
+	if req.QuotedParentMessageID != "" {
+		snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, req.QuotedParentMessageID)
+		switch {
+		case err != nil:
+			slog.Warn("quoted parent unavailable, dropping quote",
+				"quotedParentMessageId", req.QuotedParentMessageID,
+				"roomId", roomID,
+				"error", err)
+		case snap.ThreadParentID != req.ThreadParentMessageID:
+			// Strict same-conversation-context rule: main↔main, threadT↔threadT.
+			// Anything else (cross-thread, main↔thread, thread↔main) drops the quote.
+			slog.Warn("quoted parent has different thread context, dropping quote",
+				"quotedParentMessageId", req.QuotedParentMessageID,
+				"roomId", roomID,
+				"newMessageThread", req.ThreadParentMessageID,
+				"parentThread", snap.ThreadParentID)
+		default:
+			quotedSnapshot = snap
+		}
+	}
+
 	msg := model.Message{
 		ID:                           req.ID,
 		RoomID:                       roomID,
@@ -172,6 +196,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		CreatedAt:                    now,
 		ThreadParentMessageID:        req.ThreadParentMessageID,
 		ThreadParentMessageCreatedAt: threadParentCreatedAt,
+		QuotedParentMessage:          quotedSnapshot,
 	}
 
 	// Publish MessageEvent to MESSAGES_CANONICAL
