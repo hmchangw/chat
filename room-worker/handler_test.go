@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -1145,19 +1144,6 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 
 	err := h.processAddMembers(context.Background(), reqData)
 	require.NoError(t, err)
-}
-
-// Message.ID comes from idgen.DeriveID — its determinism tests live in pkg/idgen,
-// but keep a smoke test here to catch any regressions in the seed format used for JetStream system message dedup.
-func TestDedupID_StableAcrossCalls(t *testing.T) {
-	a := idgen.DeriveID("addmembers-msg:room-1:1")
-	b := idgen.DeriveID("addmembers-msg:room-1:1")
-	assert.Equal(t, a, b)
-	assert.NotEmpty(t, a)
-	// Different seeds must produce different IDs — otherwise JetStream
-	// dedup would collapse unrelated operations into a single published event.
-	c := idgen.DeriveID("addmembers-msg:room-1:2")
-	assert.NotEqual(t, a, c)
 }
 
 // Bug 4: outbox publish failure must propagate (NAK), not be swallowed.

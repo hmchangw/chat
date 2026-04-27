@@ -43,27 +43,6 @@ func TestGenerateID_Unique(t *testing.T) {
 	}
 }
 
-func TestDeriveID_StableAcrossCalls(t *testing.T) {
-	seed := "addmembers:room-1:1735689600000"
-	a := idgen.DeriveID(seed)
-	b := idgen.DeriveID(seed)
-	assert.Equal(t, a, b, "same seed must yield same ID")
-	assert.Len(t, a, 17)
-	assert.True(t, isBase62(a))
-}
-
-func TestDeriveID_DifferentSeedsDifferentIDs(t *testing.T) {
-	a := idgen.DeriveID("addmembers:room-1:1")
-	b := idgen.DeriveID("addmembers:room-1:2")
-	assert.NotEqual(t, a, b)
-}
-
-func TestDeriveID_EmptySeed(t *testing.T) {
-	id := idgen.DeriveID("")
-	assert.Len(t, id, 17)
-	assert.True(t, isBase62(id))
-}
-
 func TestGenerateMessageID_LengthAndAlphabet(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		id := idgen.GenerateMessageID()

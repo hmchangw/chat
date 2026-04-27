@@ -8,10 +8,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -121,9 +121,9 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		return nil, fmt.Errorf("unmarshal send message request: %w", err)
 	}
 
-	// Validate ID is a valid UUID
-	if _, err := uuid.Parse(req.ID); err != nil {
-		return nil, fmt.Errorf("invalid message ID %q: %w", req.ID, err)
+	// Validate ID is a valid 20-char base62 message ID
+	if !idgen.IsValidMessageID(req.ID) {
+		return nil, fmt.Errorf("invalid message ID %q: must be a 20-char base62 string", req.ID)
 	}
 
 	// Validate content is non-empty

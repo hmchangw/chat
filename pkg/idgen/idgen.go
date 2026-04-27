@@ -65,12 +65,6 @@ func GenerateID() string {
 	return generateBase62(idLength)
 }
 
-// DeriveID returns a deterministic 17-char base62 ID from seed (SHA-256 → 128-bit → base62).
-func DeriveID(seed string) string {
-	h := sha256.Sum256([]byte(seed))
-	return encodeBase62(new(big.Int).SetBytes(h[:16]), idLength)
-}
-
 // GenerateMessageID returns a fresh random 20-char base62 identifier (Message.ID and Nats-Msg-Id).
 func GenerateMessageID() string {
 	return generateBase62(messageIDLength)

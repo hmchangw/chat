@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -39,7 +39,7 @@ type publishedMsg struct {
 }
 
 func TestHandler_ProcessMessage(t *testing.T) {
-	validID := uuid.New().String()
+	validID := idgen.GenerateMessageID()
 	validContent := "hello world"
 	validSiteID := "site-a"
 	validRoomID := "room-1"
@@ -366,7 +366,7 @@ func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing
 	h := NewHandler(store, pub, reply, "site1")
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-mg-test-id")
-	req := model.SendMessageRequest{ID: uuid.New().String(), Content: "hello"}
+	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello"}
 	data, _ := json.Marshal(req)
 
 	_, err := h.processMessage(ctx, "alice", "room-1", "site1", data)
