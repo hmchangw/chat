@@ -12,6 +12,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
+	"github.com/hmchangw/chat/history-service/internal/service"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
@@ -487,7 +488,7 @@ func TestHistoryService_GetThreadMessages_RedactsQuoteBeforeAccessSince(t *testi
 	require.Len(t, resp.Messages, 1)
 	q := resp.Messages[0].QuotedParentMessage
 	require.NotNil(t, q)
-	assert.Equal(t, "This message is unavailable", q.Msg)
+	assert.Equal(t, service.UnavailableQuoteMsg, q.Msg)
 	assert.Empty(t, q.MessageID)
 }
 
@@ -543,7 +544,7 @@ func TestHistoryService_GetThreadParentMessages_RedactsQuoteBeforeAccessSince(t 
 	require.Len(t, resp.ParentMessages, 1)
 	q := resp.ParentMessages[0].QuotedParentMessage
 	require.NotNil(t, q)
-	assert.Equal(t, "This message is unavailable", q.Msg)
+	assert.Equal(t, service.UnavailableQuoteMsg, q.Msg)
 	assert.Empty(t, q.MessageID)
 }
 

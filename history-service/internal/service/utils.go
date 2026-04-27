@@ -57,7 +57,10 @@ func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID stri
 	return msg, nil
 }
 
-const unavailableQuoteMsg = "This message is unavailable"
+// UnavailableQuoteMsg is the stub text written into QuotedParentMessage.Msg when the
+// quoted message falls outside the caller's access window. Exported so callers can
+// distinguish the stub from real message content.
+const UnavailableQuoteMsg = "This message is unavailable"
 
 // redactUnavailableQuotes replaces quoted-message previews that fall outside
 // the caller's access window with a stub. For TShow messages, the thread parent's
@@ -77,7 +80,7 @@ func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
 			q.ThreadParentCreatedAt != nil &&
 			q.ThreadParentCreatedAt.Before(*accessSince)
 		if q.CreatedAt.Before(*accessSince) || tshowParentInaccessible {
-			msgs[i].QuotedParentMessage = &models.QuotedParentMessage{Msg: unavailableQuoteMsg}
+			msgs[i].QuotedParentMessage = &models.QuotedParentMessage{Msg: UnavailableQuoteMsg}
 		}
 	}
 }
