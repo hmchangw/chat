@@ -852,3 +852,103 @@ natsrouter error envelope (returns error) from a real Message reply
 ```
 
 ---
+
+## Task 5: Wire fetcher into `main.go`, add `CHAT_BASE_URL` config
+
+**Goal:** Add the new env var, construct the fetcher with the existing NATS connection, and pass it to `NewHandler`. Update the local docker-compose so the dev stack runs with the new variable.
+
+**Files:**
+- Modify: `message-gatekeeper/main.go`
+- Modify: `message-gatekeeper/deploy/docker-compose.yml`
+
+- [ ] **Step 1: Add the config field to `message-gatekeeper/main.go`**
+
+Replace the entire `config` struct (lines 23-30) with:
+
+```go
+type config struct {
+	NatsURL       string `env:"NATS_URL,required"`
+	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID        string `env:"SITE_ID,required"`
+	MongoURI      string `env:"MONGO_URI,required"`
+	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
+	MaxWorkers    int    `env:"MAX_WORKERS"     envDefault:"100"`
+	ChatBaseURL   string `env:"CHAT_BASE_URL"   envDefault:"http://localhost:3000"`
+}
+```
+
+- [ ] **Step 2: Construct the fetcher and pass it to `NewHandler`**
+
+Find this block (around line 67-74):
+
+```go
+	store := NewMongoStore(db)
+	pub := func(ctx context.Context, subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		return js.Publish(ctx, subj, data, opts...)
+	}
+	reply := func(ctx context.Context, subj string, data []byte) error {
+		return nc.Publish(ctx, subj, data)
+	}
+	handler := NewHandler(store, pub, reply, cfg.SiteID)
+```
+
+Replace it with:
+
+```go
+	store := NewMongoStore(db)
+	pub := func(ctx context.Context, subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		return js.Publish(ctx, subj, data, opts...)
+	}
+	reply := func(ctx context.Context, subj string, data []byte) error {
+		return nc.Publish(ctx, subj, data)
+	}
+	parentFetcher := newHistoryParentFetcher(nc, cfg.ChatBaseURL)
+	handler := NewHandler(store, pub, reply, cfg.SiteID, parentFetcher)
+```
+
+- [ ] **Step 3: Update `message-gatekeeper/deploy/docker-compose.yml`**
+
+Replace the `environment` block (under the `message-gatekeeper` service) with:
+
+```yaml
+    environment:
+      - NATS_URL=nats://nats:4222
+      - NATS_CREDS_FILE=/etc/nats/backend.creds
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - CHAT_BASE_URL=http://localhost:3000
+```
+
+- [ ] **Step 4: Verify the binary still builds**
+
+Run: `make build SERVICE=message-gatekeeper`
+
+Expected: a binary at `bin/message-gatekeeper`. No compile errors.
+
+- [ ] **Step 5: Run the full unit test suite**
+
+Run: `make test`
+
+Expected: PASS. (`main.go` is exercised at compile time only — no dedicated unit test.)
+
+- [ ] **Step 6: Run lint**
+
+Run: `make lint`
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add message-gatekeeper/main.go message-gatekeeper/deploy/docker-compose.yml
+git commit -m "feat(gatekeeper): wire history-parent fetcher + CHAT_BASE_URL config
+
+Adds CHAT_BASE_URL env var (defaults to http://localhost:3000 to match
+the chat-frontend dev port) and constructs historyParentFetcher with the
+existing NATS connection, passing it into NewHandler. The local docker
+compose file picks up the new variable explicitly so the dev stack does
+not silently fall back to the default."
+```
+
+---
