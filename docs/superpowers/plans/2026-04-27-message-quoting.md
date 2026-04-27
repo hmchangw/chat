@@ -12,6 +12,180 @@
 
 ---
 
+## Task 0: Extend `cassandra.QuotedParentMessage` UDT with thread fields
+
+**Goal:** Add `thread_parent_id` and `thread_parent_created_at` to the `QuotedParentMessage` UDT — Go struct, single-source-of-truth doc, local-dev DDL, and the hand-rolled UDT in history-service's testcontainers helper. Cover the new fields in the existing `cassandra` package round-trip tests. Lands first because every later task references the new fields in fixtures or projections.
+
+**Files:**
+- Modify: `pkg/model/cassandra/message.go`
+- Modify: `pkg/model/cassandra/message_test.go`
+- Modify: `docs/cassandra_message_model.md`
+- Modify: `docker-local/cassandra/init/06-udt-quoted_parent_message.cql`
+- Modify: `history-service/internal/cassrepo/integration_test.go`
+
+- [ ] **Step 1: Extend `TestQuotedParentMessage_JSON` to populate and assert the new fields**
+
+In `pkg/model/cassandra/message_test.go`, replace `TestQuotedParentMessage_JSON` (currently at line 79) with:
+
+```go
+func TestQuotedParentMessage_JSON(t *testing.T) {
+	threadParent := time.Date(2026, 1, 14, 9, 0, 0, 0, time.UTC)
+	q := QuotedParentMessage{
+		MessageID:             "m1",
+		RoomID:                "r1",
+		Sender:                Participant{ID: "u1", Account: "alice"},
+		CreatedAt:             time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC),
+		Msg:                   "original message",
+		Mentions:              []Participant{{ID: "u2", Account: "bob"}},
+		Attachments:           [][]byte{[]byte("file1")},
+		MessageLink:           "https://chat.example.com/r1/m1",
+		ThreadParentID:        "thread-parent-uuid",
+		ThreadParentCreatedAt: &threadParent,
+	}
+	got := roundTrip(t, q)
+	assert.Equal(t, "thread-parent-uuid", got.ThreadParentID)
+	require.NotNil(t, got.ThreadParentCreatedAt)
+	assert.Equal(t, threadParent, *got.ThreadParentCreatedAt)
+}
+```
+
+Also update `TestQuotedParentMessage_JSON_Minimal` (currently at line 93) to assert the new fields are zero/nil when omitted:
+
+```go
+func TestQuotedParentMessage_JSON_Minimal(t *testing.T) {
+	q := QuotedParentMessage{
+		MessageID: "m1",
+		RoomID:    "r1",
+		Sender:    Participant{ID: "u1"},
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	got := roundTrip(t, q)
+	assert.Empty(t, got.Msg)
+	assert.Nil(t, got.Mentions)
+	assert.Nil(t, got.Attachments)
+	assert.Empty(t, got.MessageLink)
+	assert.Empty(t, got.ThreadParentID)
+	assert.Nil(t, got.ThreadParentCreatedAt)
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `make test SERVICE=pkg/model/cassandra`
+
+Expected: FAIL — `QuotedParentMessage` has no field `ThreadParentID` or `ThreadParentCreatedAt`. Compilation error.
+
+- [ ] **Step 3: Add the two fields to the Go struct**
+
+In `pkg/model/cassandra/message.go`, replace the `QuotedParentMessage` struct (currently lines 46-56) with:
+
+```go
+// QuotedParentMessage maps to the Cassandra "QuotedParentMessage" UDT.
+//
+// ThreadParentID and ThreadParentCreatedAt capture the parent message's
+// thread context (when the parent was itself a thread reply). Used by
+// gatekeeper to enforce same-thread-context quoting and by clients to
+// render thread-aware quote previews.
+type QuotedParentMessage struct {
+	MessageID             string        `json:"messageId"                       cql:"message_id"`
+	RoomID                string        `json:"roomId"                          cql:"room_id"`
+	Sender                Participant   `json:"sender"                          cql:"sender"`
+	CreatedAt             time.Time     `json:"createdAt"                       cql:"created_at"`
+	Msg                   string        `json:"msg,omitempty"                   cql:"msg"`
+	Mentions              []Participant `json:"mentions,omitempty"              cql:"mentions"`
+	Attachments           [][]byte      `json:"attachments,omitempty"           cql:"attachments"`
+	MessageLink           string        `json:"messageLink,omitempty"           cql:"message_link"`
+	ThreadParentID        string        `json:"threadParentId,omitempty"        cql:"thread_parent_id"`
+	ThreadParentCreatedAt *time.Time    `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `make test SERVICE=pkg/model/cassandra`
+
+Expected: PASS — both extended tests, plus `TestMessage_JSON` and `TestMessage_JSON_Minimal` (which embed a `QuotedParentMessage`).
+
+- [ ] **Step 5: Update single-source-of-truth doc**
+
+In `docs/cassandra_message_model.md`, replace the existing `QuotedParentMessage` UDT block (lines 46-56) with:
+
+```cql
+CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
+  message_id               TEXT,
+  room_id                  TEXT,
+  sender                   FROZEN<"Participant">,
+  created_at               TIMESTAMP,
+  msg                      TEXT,
+  mentions                 SET<FROZEN<"Participant">>,
+  attachments              LIST<BLOB>,
+  message_link             TEXT,
+  thread_parent_id         TEXT,
+  thread_parent_created_at TIMESTAMP
+);
+```
+
+- [ ] **Step 6: Update local-dev DDL**
+
+Replace `docker-local/cassandra/init/06-udt-quoted_parent_message.cql` with:
+
+```cql
+CREATE TYPE IF NOT EXISTS chat."QuotedParentMessage" (
+  message_id               TEXT,
+  room_id                  TEXT,
+  sender                   FROZEN<"Participant">,
+  created_at               TIMESTAMP,
+  msg                      TEXT,
+  mentions                 SET<FROZEN<"Participant">>,
+  attachments              LIST<BLOB>,
+  message_link             TEXT,
+  thread_parent_id         TEXT,
+  thread_parent_created_at TIMESTAMP
+);
+```
+
+- [ ] **Step 7: Sync the hand-rolled UDT in history-service's testcontainers helper**
+
+In `history-service/internal/cassrepo/integration_test.go`, locate the `CREATE TYPE IF NOT EXISTS chat_test."QuotedParentMessage"` statement (currently at line 42) and replace it with:
+
+```go
+		`CREATE TYPE IF NOT EXISTS chat_test."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP)`,
+```
+
+- [ ] **Step 8: Run the full unit test suite to confirm nothing else broke**
+
+Run: `make test`
+
+Expected: PASS — appending fields to the struct (with `omitempty`) is non-breaking. No other packages should regress.
+
+- [ ] **Step 9: Run lint**
+
+Run: `make lint`
+
+Expected: PASS.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add pkg/model/cassandra/message.go pkg/model/cassandra/message_test.go docs/cassandra_message_model.md docker-local/cassandra/init/06-udt-quoted_parent_message.cql history-service/internal/cassrepo/integration_test.go
+git commit -m "feat(cassandra): add thread-context fields to QuotedParentMessage UDT
+
+Adds thread_parent_id and thread_parent_created_at to the
+QuotedParentMessage UDT — Go struct, single-source-of-truth doc, and the
+local-dev DDL. Also syncs the hand-rolled UDT statement in
+history-service's testcontainers integration test.
+
+These fields capture the parent message's thread context (set when the
+parent is itself a thread reply). Used by message-gatekeeper to enforce
+same-thread-context quoting and by clients to render thread-aware quote
+previews.
+
+Production environments require a separate ALTER TYPE migration before
+deploying the new gatekeeper — see the design spec for the runbook."
+```
+
+---
+
 ## Task 1: Add quote fields to wire model
 
 **Goal:** Extend `model.SendMessageRequest` with the new client-supplied field, and `model.Message` with the snapshot field. Verify JSON round-trip.
@@ -62,6 +236,7 @@ func TestSendMessageRequest_QuotedParentMessageID_JSON(t *testing.T) {
 
 func TestMessage_QuotedParentMessage_JSON(t *testing.T) {
 	parentTS := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+	threadParentTS := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	t.Run("populated snapshot round-trips", func(t *testing.T) {
@@ -77,10 +252,12 @@ func TestMessage_QuotedParentMessage_JSON(t *testing.T) {
 					EngName: "Bob Chen",
 					Account: "bob",
 				},
-				CreatedAt:   parentTS,
-				Msg:         "the original message",
-				Mentions:    []cassandra.Participant{{ID: "u-carol", Account: "carol", EngName: "Carol Lee"}},
-				MessageLink: "http://localhost:3000/r1/parent-msg-uuid",
+				CreatedAt:             parentTS,
+				Msg:                   "the original message",
+				Mentions:              []cassandra.Participant{{ID: "u-carol", Account: "carol", EngName: "Carol Lee"}},
+				MessageLink:           "http://localhost:3000/r1/parent-msg-uuid",
+				ThreadParentID:        "thread-parent-uuid",
+				ThreadParentCreatedAt: &threadParentTS,
 			},
 		}
 		data, err := json.Marshal(&m)
@@ -98,6 +275,9 @@ func TestMessage_QuotedParentMessage_JSON(t *testing.T) {
 		assert.Equal(t, "http://localhost:3000/r1/parent-msg-uuid", dst.QuotedParentMessage.MessageLink)
 		require.Len(t, dst.QuotedParentMessage.Mentions, 1)
 		assert.Equal(t, "carol", dst.QuotedParentMessage.Mentions[0].Account)
+		assert.Equal(t, "thread-parent-uuid", dst.QuotedParentMessage.ThreadParentID)
+		require.NotNil(t, dst.QuotedParentMessage.ThreadParentCreatedAt)
+		assert.Equal(t, threadParentTS, dst.QuotedParentMessage.ThreadParentCreatedAt.UTC())
 	})
 
 	t.Run("quotedParentMessage omitted when nil", func(t *testing.T) {
