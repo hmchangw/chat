@@ -218,7 +218,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
-				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", now).Return(nil)
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", "alice", now).Return(nil)
 				// SaveThreadMessage receives the resolved threadRoomID.
 				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", "tr-1").Return(nil)
 			},
@@ -236,7 +236,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
-				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", now).Return(nil)
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", "alice", now).Return(nil)
 				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", "tr-1").
 					Return(errors.New("cassandra: write timeout"))
 			},
@@ -459,6 +459,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 						assert.Equal(t, "r1", room.RoomID)
 						assert.Equal(t, "site-a", room.SiteID)
 						assert.Equal(t, "msg-reply", room.LastMsgID)
+						assert.Equal(t, []string{"replier"}, room.ReplyAccounts)
 						return nil
 					})
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
@@ -578,7 +579,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 						assert.Nil(t, sub.LastSeenAt, "replier's LastSeenAt should be nil on init")
 						return nil
 					})
-				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).
 					Return(nil)
 			},
 		},
@@ -606,7 +607,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 						assert.Equal(t, "u-parent", sub.UserID)
 						return nil
 					})
-				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "parent-user", now).
 					Return(nil)
 			},
 		},
@@ -626,7 +627,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 						assert.Equal(t, "u-replier", sub.UserID)
 						return nil
 					})
-				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).
 					Return(nil)
 			},
 		},
@@ -702,7 +703,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					Return(parentSender, nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
-				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).
 					Return(errors.New("mongo: write error"))
 			},
 			wantErr: true,
@@ -716,6 +717,138 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					Return(errors.New("mongo: connection refused"))
 			},
 			wantErr: true,
+		},
+		{
+			name: "first reply — stamps thread_room_id on parent when parentCreatedAt known",
+			msg: &model.Message{
+				ID:                           "msg-reply",
+				RoomID:                       "r1",
+				UserID:                       "u-replier",
+				UserAccount:                  "replier",
+				CreatedAt:                    now,
+				ThreadParentMessageID:        "msg-parent",
+				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+			},
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				var capturedRoomID string
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, room *model.ThreadRoom) error {
+						capturedRoomID = room.ID
+						return nil
+					})
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(parentSender, nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().UpdateParentMessageThreadRoomID(
+					gomock.Any(), "msg-parent", "r1",
+					gomock.Cond(func(x any) bool { t, ok := x.(time.Time); return ok && !t.IsZero() }),
+					gomock.Cond(func(x any) bool { s, ok := x.(string); return ok && s == capturedRoomID }),
+				).Return(nil)
+			},
+		},
+		{
+			name: "first reply — UpdateParentMessageThreadRoomID fails — returns error",
+			msg: &model.Message{
+				ID:                           "msg-reply",
+				RoomID:                       "r1",
+				UserID:                       "u-replier",
+				UserAccount:                  "replier",
+				CreatedAt:                    now,
+				ThreadParentMessageID:        "msg-parent",
+				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+			},
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(parentSender, nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().UpdateParentMessageThreadRoomID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(errors.New("cassandra: write timeout"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "subsequent reply — stamps thread_room_id on parent when parentCreatedAt known",
+			msg: &model.Message{
+				ID:                           "msg-reply",
+				RoomID:                       "r1",
+				UserID:                       "u-replier",
+				UserAccount:                  "replier",
+				CreatedAt:                    now,
+				ThreadParentMessageID:        "msg-parent",
+				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+			},
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+					Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").Return(parentSender, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).Return(nil)
+				store.EXPECT().UpdateParentMessageThreadRoomID(
+					gomock.Any(), "msg-parent", "r1",
+					gomock.Cond(func(x any) bool { t, ok := x.(time.Time); return ok && !t.IsZero() }),
+					"tr-existing",
+				).Return(nil)
+			},
+		},
+		{
+			name: "subsequent reply — UpdateParentMessageThreadRoomID fails — returns error",
+			msg: &model.Message{
+				ID:                           "msg-reply",
+				RoomID:                       "r1",
+				UserID:                       "u-replier",
+				UserAccount:                  "replier",
+				CreatedAt:                    now,
+				ThreadParentMessageID:        "msg-parent",
+				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+			},
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+					Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").Return(parentSender, nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).Return(nil)
+				store.EXPECT().UpdateParentMessageThreadRoomID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(errors.New("cassandra: write timeout"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "subsequent reply — parent not found but parentCreatedAt known — skips UpdateParentMessageThreadRoomID",
+			msg: &model.Message{
+				ID:                           "msg-reply",
+				RoomID:                       "r1",
+				UserID:                       "u-replier",
+				UserAccount:                  "replier",
+				CreatedAt:                    now,
+				ThreadParentMessageID:        "msg-parent",
+				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+			},
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+					Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(nil, fmt.Errorf("wrap: %w", errMessageNotFound))
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "u-replier", sub.UserID)
+						return nil
+					})
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).Return(nil)
+				// UpdateParentMessageThreadRoomID must NOT be called — parent doesn't exist
+			},
 		},
 	}
 
