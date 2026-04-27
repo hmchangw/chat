@@ -3,17 +3,21 @@ package config
 import "github.com/caarlos0/env/v11"
 
 // CassandraConfig holds Cassandra connection settings.
-// Env vars: CASSANDRA_HOSTS, CASSANDRA_KEYSPACE
+// Env vars: CASSANDRA_HOSTS, CASSANDRA_KEYSPACE, CASSANDRA_USERNAME, CASSANDRA_PASSWORD
 type CassandraConfig struct {
 	Hosts    string `env:"HOSTS"    required:"true"`
 	Keyspace string `env:"KEYSPACE" envDefault:"chat"`
+	Username string `env:"USERNAME" envDefault:""`
+	Password string `env:"PASSWORD" envDefault:""`
 }
 
 // MongoConfig holds MongoDB connection settings.
-// Env vars: MONGO_URI, MONGO_DB
+// Env vars: MONGO_URI, MONGO_DB, MONGO_USERNAME, MONGO_PASSWORD
 type MongoConfig struct {
-	URI string `env:"URI" required:"true"`
-	DB  string `env:"DB"  envDefault:"chat"`
+	URI      string `env:"URI"      required:"true"`
+	DB       string `env:"DB"       envDefault:"chat"`
+	Username string `env:"USERNAME" envDefault:""`
+	Password string `env:"PASSWORD" envDefault:""`
 }
 
 // NATSConfig holds NATS connection settings.
