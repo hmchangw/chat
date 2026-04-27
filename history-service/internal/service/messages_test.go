@@ -51,6 +51,22 @@ func assertForbiddenErr(t *testing.T, err error, wantMsg string) {
 	assert.Equal(t, wantMsg, routeErr.Message)
 }
 
+func assertBadRequestErr(t *testing.T, err error, wantMsg string) {
+	t.Helper()
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, wantMsg, routeErr.Message)
+}
+
+func assertNotFoundErr(t *testing.T, err error, wantMsg string) {
+	t.Helper()
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, wantMsg, routeErr.Message)
+}
+
 func makePage(msgs []models.Message, hasNext bool) cassrepo.Page[models.Message] {
 	nextCursor := ""
 	if hasNext {

@@ -87,7 +87,7 @@ func TestHistoryService_GetThreadMessages_EmptyThreadMessageID(t *testing.T) {
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "threadMessageId is required")
+	assertBadRequestErr(t, err, "threadMessageId is required")
 }
 
 func TestHistoryService_GetThreadMessages_ParentNotFound(t *testing.T) {
@@ -99,7 +99,7 @@ func TestHistoryService_GetThreadMessages_ParentNotFound(t *testing.T) {
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-unknown"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "message not found")
+	assertNotFoundErr(t, err, "message not found")
 }
 
 func TestHistoryService_GetThreadMessages_ParentLookupError(t *testing.T) {
@@ -122,7 +122,7 @@ func TestHistoryService_GetThreadMessages_NotSubscribed(t *testing.T) {
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not subscribed to room")
+	assertForbiddenErr(t, err, "not subscribed to room")
 }
 
 func TestHistoryService_GetThreadMessages_SubscriptionStoreError(t *testing.T) {
@@ -146,7 +146,7 @@ func TestHistoryService_GetThreadMessages_ParentBeforeAccessSince(t *testing.T) 
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "outside access window")
+	assertForbiddenErr(t, err, "thread is outside access window")
 }
 
 func TestHistoryService_GetThreadMessages_NoHSS(t *testing.T) {
@@ -191,7 +191,7 @@ func TestHistoryService_GetThreadMessages_InvalidCursor(t *testing.T) {
 		Cursor:          "!!not-base64!!",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid pagination cursor")
+	assertBadRequestErr(t, err, "invalid pagination cursor")
 }
 
 func TestHistoryService_GetThreadMessages_RepoError(t *testing.T) {
@@ -276,7 +276,7 @@ func TestHistoryService_GetThreadMessages_ReplyIDParentBeforeAccessSince(t *test
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "reply-1"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "outside access window")
+	assertForbiddenErr(t, err, "thread is outside access window")
 }
 
 func TestHistoryService_GetThreadMessages_ReplyOfReplyReturnsError(t *testing.T) {

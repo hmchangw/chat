@@ -80,11 +80,7 @@ func TestThreadRoomJSON(t *testing.T) {
 		CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 	}
-	data, err := json.Marshal(&tr)
-	require.NoError(t, err)
-	var got model.ThreadRoom
-	require.NoError(t, json.Unmarshal(data, &got))
-	assert.Equal(t, tr, got)
+	roundTrip(t, &tr, &model.ThreadRoom{})
 }
 
 func TestThreadSubscriptionJSON(t *testing.T) {

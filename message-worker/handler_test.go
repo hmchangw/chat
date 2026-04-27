@@ -17,6 +17,8 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+func ptrTime(t time.Time) *time.Time { return &t }
+
 func TestHandler_ProcessMessage(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	user := &model.User{
@@ -727,7 +729,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				UserAccount:                  "replier",
 				CreatedAt:                    now,
 				ThreadParentMessageID:        "msg-parent",
-				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+				ThreadParentMessageCreatedAt: ptrTime(now.Add(-5 * time.Minute)),
 			},
 			siteID: "site-a",
 			setupMocks: func(store *MockStore, ts *MockThreadStore) {
@@ -757,7 +759,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				UserAccount:                  "replier",
 				CreatedAt:                    now,
 				ThreadParentMessageID:        "msg-parent",
-				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+				ThreadParentMessageCreatedAt: ptrTime(now.Add(-5 * time.Minute)),
 			},
 			siteID: "site-a",
 			setupMocks: func(store *MockStore, ts *MockThreadStore) {
@@ -780,7 +782,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				UserAccount:                  "replier",
 				CreatedAt:                    now,
 				ThreadParentMessageID:        "msg-parent",
-				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+				ThreadParentMessageCreatedAt: ptrTime(now.Add(-5 * time.Minute)),
 			},
 			siteID: "site-a",
 			setupMocks: func(store *MockStore, ts *MockThreadStore) {
@@ -807,7 +809,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				UserAccount:                  "replier",
 				CreatedAt:                    now,
 				ThreadParentMessageID:        "msg-parent",
-				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+				ThreadParentMessageCreatedAt: ptrTime(now.Add(-5 * time.Minute)),
 			},
 			siteID: "site-a",
 			setupMocks: func(store *MockStore, ts *MockThreadStore) {
@@ -832,7 +834,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				UserAccount:                  "replier",
 				CreatedAt:                    now,
 				ThreadParentMessageID:        "msg-parent",
-				ThreadParentMessageCreatedAt: func() *time.Time { t := now.Add(-5 * time.Minute); return &t }(),
+				ThreadParentMessageCreatedAt: ptrTime(now.Add(-5 * time.Minute)),
 			},
 			siteID: "site-a",
 			setupMocks: func(store *MockStore, ts *MockThreadStore) {
