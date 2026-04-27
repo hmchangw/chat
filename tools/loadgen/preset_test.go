@@ -73,24 +73,24 @@ func TestBuildFixtures_SmallCountsAndShape(t *testing.T) {
 	}
 	assert.Len(t, users, 10)
 	for _, r := range f.Rooms {
-		assert.Equal(t, "group", string(r.Type))
+		assert.Equal(t, "channel", string(r.Type))
 		assert.Equal(t, "site-local", r.SiteID)
 	}
 }
 
-func TestBuildFixtures_RealisticMixesGroupAndDM(t *testing.T) {
+func TestBuildFixtures_RealisticMixesChannelAndDM(t *testing.T) {
 	p, _ := BuiltinPreset("realistic")
 	f := BuildFixtures(&p, 42, "site-local")
-	var groups, dms int
+	var channels, dms int
 	for _, r := range f.Rooms {
 		switch r.Type { //nolint:exhaustive
-		case "group":
-			groups++
+		case "channel":
+			channels++
 		case "dm":
 			dms++
 		}
 	}
-	assert.Greater(t, groups, 0)
+	assert.Greater(t, channels, 0)
 	assert.Greater(t, dms, 0)
 	// DM rooms must have exactly 2 members
 	dmMembers := make(map[string]int)

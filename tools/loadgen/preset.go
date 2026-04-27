@@ -102,7 +102,7 @@ func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 		dmStart = p.Rooms - p.Rooms/10
 	}
 	for i := 0; i < p.Rooms; i++ {
-		rtype := model.RoomTypeGroup
+		rtype := model.RoomTypeChannel
 		if i >= dmStart {
 			rtype = model.RoomTypeDM
 		}
