@@ -5,30 +5,49 @@ import RoomList from '../components/RoomList'
 import MessageArea from '../components/MessageArea'
 import MessageInput from '../components/MessageInput'
 import CreateRoomDialog from '../components/CreateRoomDialog'
+import ManageMembersDialog from '../components/ManageMembersDialog'
+import LeaveRoomButton from '../components/LeaveRoomButton'
 
 export default function ChatPage() {
   const { user, disconnect } = useNats()
   const { summaries, setActiveRoom } = useRoomSummaries()
   const [selectedRoom, setSelectedRoom] = useState(null)
   const [showCreateRoom, setShowCreateRoom] = useState(false)
+  const [showMembers, setShowMembers] = useState(false)
 
-  // Clear selection if the selected room disappears from summaries
+  // Clear selection and any open member dialog if the selected room disappears from summaries
   useEffect(() => {
     if (selectedRoom && !summaries.some((r) => r.id === selectedRoom.id)) {
       setSelectedRoom(null)
       setActiveRoom(null)
+      setShowMembers(false)
     }
   }, [summaries, selectedRoom, setActiveRoom])
 
   const handleSelectRoom = (room) => {
     setSelectedRoom(room)
     setActiveRoom(room?.id ?? null)
+    setShowMembers(false)
   }
+
+  const isGroup = selectedRoom?.type === 'group'
 
   return (
     <div className="chat-layout">
       <div className="chat-header">
         <span className="chat-header-title">Chat</span>
+        {isGroup && (
+          <>
+            <button
+              type="button"
+              className="chat-header-logout"
+              onClick={() => setShowMembers(true)}
+            >
+              Members
+            </button>
+            <LeaveRoomButton room={selectedRoom} />
+          </>
+        )}
         <span className="chat-header-user">
           {user?.account} &middot; {user?.siteId}
         </span>
@@ -58,6 +77,12 @@ export default function ChatPage() {
         <CreateRoomDialog
           onClose={() => setShowCreateRoom(false)}
           onCreated={(room) => handleSelectRoom(room)}
+        />
+      )}
+      {showMembers && selectedRoom && (
+        <ManageMembersDialog
+          room={selectedRoom}
+          onClose={() => setShowMembers(false)}
         />
       )}
     </div>
