@@ -221,7 +221,11 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Driver: `go.mongodb.org/mongo-driver/v2`
 - Use `mongoutil.Connect` from `pkg/mongoutil`
 - Collections: lowercase plural of the domain entity (e.g., `rooms`, `subscriptions`, `messages`)
-- Primary keys: application-generated UUIDs via `github.com/google/uuid`, mapped to `bson:"_id"`
+- Primary keys: application-generated via `pkg/idgen`, mapped to `bson:"_id"`. Format depends on the entity:
+  - **Subscriptions, RoomMembers, ThreadRooms, ThreadSubscriptions**: UUIDv7 hex without hyphens (32 chars) via `idgen.GenerateUUIDv7()` — time-ordered for B-tree locality on high-write collections
+  - **Channel Rooms**: 17-char base62 via `idgen.GenerateID()` — short, human-friendly
+  - **DM Rooms**: sorted concat of two `user.ID` strings (~34 chars) via `idgen.BuildDMRoomID(a, b)` — deterministic, no separate dedup needed
+  - **Messages**: 20-char base62 via `idgen.GenerateMessageID()` (or client-supplied for user messages, validated by `idgen.IsValidMessageID`)
 - Check `mongo.ErrNoDocuments` explicitly when a missing record is expected
 - Create indexes in the store constructor or a dedicated `EnsureIndexes` method at startup
 
