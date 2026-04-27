@@ -40,6 +40,16 @@ func outboxDedupID(ctx context.Context, destSiteID, payloadSeed string) string {
 	return base + ":" + destSiteID
 }
 
+// messageDedupSeed returns the X-Request-ID from ctx, or payloadSeed when absent (partial-deployment safety, with a warn log).
+func messageDedupSeed(ctx context.Context, handler, roomID, payloadSeed string) string {
+	if seed := natsutil.RequestIDFromContext(ctx); seed != "" {
+		return seed
+	}
+	slog.Warn("missing X-Request-ID; falling back to payload-derived seed",
+		"handler", handler, "roomID", roomID)
+	return payloadSeed
+}
+
 // historySharedSincePtr returns &timestamp when mode is "none" with a positive timestamp; nil otherwise.
 func historySharedSincePtr(mode model.HistoryMode, timestamp int64, roomID string) *int64 {
 	if mode != model.HistoryModeNone {
@@ -263,12 +273,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	} else {
 		sysMsgData, _ = json.Marshal(model.MemberRemoved{User: &sysMsgUser, RemovedUsersCount: 1})
 	}
-	seed := natsutil.RequestIDFromContext(ctx)
-	if seed == "" {
-		slog.Warn("missing X-Request-ID; falling back to payload-derived seed",
-			"handler", "processRemoveIndividual", "roomID", req.RoomID)
-		seed = fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp)
-	}
+	seed := messageDedupSeed(ctx, "processRemoveIndividual", req.RoomID,
+		fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp))
 	sysMsg := model.Message{
 		ID:         idgen.MessageIDFromRequestID(seed, "rmindiv"),
 		RoomID:     req.RoomID,
@@ -383,12 +389,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		SectName:          sectName,
 		RemovedUsersCount: len(toRemove),
 	})
-	seed := natsutil.RequestIDFromContext(ctx)
-	if seed == "" {
-		slog.Warn("missing X-Request-ID; falling back to payload-derived seed",
-			"handler", "processRemoveOrg", "roomID", req.RoomID)
-		seed = fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)
-	}
+	seed := messageDedupSeed(ctx, "processRemoveOrg", req.RoomID,
+		fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp))
 	sysMsg := model.Message{
 		ID:         idgen.MessageIDFromRequestID(seed, "rmorg"),
 		RoomID:     req.RoomID,
@@ -634,12 +636,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		AddedUsersCount: len(subs),
 	}
 	sysMsgData, _ := json.Marshal(membersAdded)
-	seed := natsutil.RequestIDFromContext(ctx)
-	if seed == "" {
-		slog.Warn("missing X-Request-ID; falling back to payload-derived seed",
-			"handler", "processAddMembers", "roomID", req.RoomID)
-		seed = fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
-	}
+	seed := messageDedupSeed(ctx, "processAddMembers", req.RoomID,
+		fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp))
 	sysMsg := model.Message{
 		ID:          idgen.MessageIDFromRequestID(seed, "addmembers"),
 		RoomID:      req.RoomID,
