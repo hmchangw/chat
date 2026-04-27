@@ -76,6 +76,7 @@ func TestThreadRoomJSON(t *testing.T) {
 		SiteID:          "site-a",
 		LastMsgAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		LastMsgID:       "msg-2",
+		ReplyAccounts:   []string{"alice", "bob"},
 		CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 	}

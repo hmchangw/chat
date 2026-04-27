@@ -659,11 +659,11 @@ func TestThreadStoreMongo_InsertThreadSubscription(t *testing.T) {
 		var got model.ThreadSubscription
 		err = db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
 			"threadRoomId": "tr-1",
-			"userId":       "u-1",
+			"userAccount":  "alice",
 		}).Decode(&got)
 		require.NoError(t, err)
 		assert.Equal(t, "ts-1", got.ID)
-		assert.Equal(t, "alice", got.UserAccount)
+		assert.Equal(t, "u-1", got.UserID)
 		assert.Nil(t, got.LastSeenAt, "lastSeenAt should be nil on insert")
 		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond))
 	})
@@ -673,9 +673,10 @@ func TestThreadStoreMongo_InsertThreadSubscription(t *testing.T) {
 			ID:           "ts-dup",
 			ThreadRoomID: "tr-1",
 			UserID:       "u-1",
+			UserAccount:  "alice",
 		}
 		err := store.InsertThreadSubscription(ctx, dup)
-		require.Error(t, err, "second insert with same (threadRoomId, userId) must fail")
+		require.Error(t, err, "second insert with same (threadRoomId, userAccount) must fail")
 	})
 }
 
@@ -804,13 +805,14 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 	require.NoError(t, store.CreateThreadRoom(ctx, room))
 
 	later := now.Add(10 * time.Minute)
-	err := store.UpdateThreadRoomLastMessage(ctx, "tr-update", "msg-5", later)
+	err := store.UpdateThreadRoomLastMessage(ctx, "tr-update", "msg-5", "bob", later)
 	require.NoError(t, err)
 
 	got, err := store.GetThreadRoomByParentMessageID(ctx, "msg-parent-update")
 	require.NoError(t, err)
 	assert.Equal(t, "msg-5", got.LastMsgID)
 	assert.Equal(t, later, got.LastMsgAt.UTC().Truncate(time.Millisecond))
+	assert.Contains(t, got.ReplyAccounts, "bob", "replier account should be added to ReplyAccounts")
 }
 
 func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
