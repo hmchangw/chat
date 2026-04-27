@@ -47,108 +47,66 @@ func scanWith(iter *gocql.Iter, dest func(*models.Message) []any) []models.Messa
 
 func scanMessages(iter *gocql.Iter) []models.Message { return scanWith(iter, baseScanDest) }
 
-// GetMessagesBefore returns messages strictly before `before`, newest-first.
-func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q PageRequest) (Page[models.Message], error) {
+func (r *Repository) fetchMessagesPage(q *gocql.Query, pageReq PageRequest, errMsg string) (Page[models.Message], error) {
 	var messages []models.Message
-
-	nextCursor, err := NewQueryBuilder(
-		r.session.Query(
-			messageByRoomQuery+` WHERE room_id = ? AND created_at < ? ORDER BY created_at DESC`,
-			roomID, before,
-		).WithContext(ctx),
-	).
-		WithCursor(q.Cursor).
-		WithPageSize(q.PageSize).
+	nextCursor, err := NewQueryBuilder(q).
+		WithCursor(pageReq.Cursor).
+		WithPageSize(pageReq.PageSize).
 		Fetch(func(iter *gocql.Iter) {
 			messages = scanMessages(iter)
 		})
 	if err != nil {
-		return Page[models.Message]{}, fmt.Errorf("querying messages before: %w", err)
+		return Page[models.Message]{}, fmt.Errorf("%s: %w", errMsg, err)
 	}
-
 	return Page[models.Message]{
 		Data:       messages,
 		NextCursor: nextCursor,
 		HasNext:    nextCursor != "",
 	}, nil
+}
+
+// GetMessagesBefore returns messages strictly before `before`, newest-first.
+func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q PageRequest) (Page[models.Message], error) {
+	return r.fetchMessagesPage(
+		r.session.Query(
+			messageByRoomQuery+` WHERE room_id = ? AND created_at < ? ORDER BY created_at DESC`,
+			roomID, before,
+		).WithContext(ctx),
+		q, "querying messages before",
+	)
 }
 
 // GetMessagesBetweenDesc returns messages between `since` and `before`, newest-first.
 // Used when a historySharedSince lower bound must be enforced.
 func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q PageRequest) (Page[models.Message], error) {
-	var messages []models.Message
-
-	nextCursor, err := NewQueryBuilder(
+	return r.fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? AND created_at < ? ORDER BY created_at DESC`,
 			roomID, since, before,
 		).WithContext(ctx),
-	).
-		WithCursor(q.Cursor).
-		WithPageSize(q.PageSize).
-		Fetch(func(iter *gocql.Iter) {
-			messages = scanMessages(iter)
-		})
-	if err != nil {
-		return Page[models.Message]{}, fmt.Errorf("querying messages between desc: %w", err)
-	}
-
-	return Page[models.Message]{
-		Data:       messages,
-		NextCursor: nextCursor,
-		HasNext:    nextCursor != "",
-	}, nil
+		q, "querying messages between desc",
+	)
 }
 
 // GetMessagesAfter returns messages strictly after `after`, oldest-first.
 func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q PageRequest) (Page[models.Message], error) {
-	var messages []models.Message
-
-	nextCursor, err := NewQueryBuilder(
+	return r.fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? ORDER BY created_at ASC`,
 			roomID, after,
 		).WithContext(ctx),
-	).
-		WithCursor(q.Cursor).
-		WithPageSize(q.PageSize).
-		Fetch(func(iter *gocql.Iter) {
-			messages = scanMessages(iter)
-		})
-	if err != nil {
-		return Page[models.Message]{}, fmt.Errorf("querying messages after: %w", err)
-	}
-
-	return Page[models.Message]{
-		Data:       messages,
-		NextCursor: nextCursor,
-		HasNext:    nextCursor != "",
-	}, nil
+		q, "querying messages after",
+	)
 }
 
 // GetAllMessagesAsc returns all messages in the room, oldest-first.
 // Used when there is no lower-bound access restriction.
 func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q PageRequest) (Page[models.Message], error) {
-	var messages []models.Message
-
-	nextCursor, err := NewQueryBuilder(
+	return r.fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? ORDER BY created_at ASC`,
 			roomID,
 		).WithContext(ctx),
-	).
-		WithCursor(q.Cursor).
-		WithPageSize(q.PageSize).
-		Fetch(func(iter *gocql.Iter) {
-			messages = scanMessages(iter)
-		})
-	if err != nil {
-		return Page[models.Message]{}, fmt.Errorf("querying all messages asc: %w", err)
-	}
-
-	return Page[models.Message]{
-		Data:       messages,
-		NextCursor: nextCursor,
-		HasNext:    nextCursor != "",
-	}, nil
+		q, "querying all messages asc",
+	)
 }
