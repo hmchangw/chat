@@ -9,10 +9,11 @@ Let a user reply to a chat message with a "quote" — the new message renders al
 
 ## Scope
 
-- Same-room quoting only.
+- Same-room quoting only. Enforced automatically by the room-scoped subject of the history-service RPC — no separate validation in gatekeeper.
 - Thread reply and quote are independent — a single message may carry both, neither, or only one.
-- MVP snapshot fields: `messageId`, `roomId`, `sender`, `createdAt`, `msg`, `mentions`. `attachments` and `messageLink` are out of scope for MVP.
-- Soft-fail policy: any failure to resolve the parent (not found, deleted, RPC error, timeout) drops the quote silently and lets the message ship without it. Failures are logged at WARN.
+- MVP snapshot fields: `messageId`, `roomId`, `sender`, `createdAt`, `msg`, `mentions`, `messageLink`. `attachments` is out of scope for MVP.
+- Quoting a deleted parent is allowed. `history-service.GetMessageByID` does not filter on the `deleted` flag, so deleted parents return a normal snapshot. The snapshot is captured at quote time; the parent's later deletion does not invalidate it.
+- Soft-fail policy: any failure to resolve the parent (not found, RPC error, timeout, forbidden by access-window) drops the quote silently and lets the message ship without it. Failures are logged at WARN.
 
 ## Non-goals
 
@@ -52,6 +53,7 @@ The canonical event is the single source of truth. Once gatekeeper has built the
 
 - `history-service.GetMessageByID` already implements lookup, room match (via subject param), subscription check, and access-window enforcement. The access-window check is desirable for quoting — a user who can't see the parent shouldn't be able to surface its content in a quote.
 - Keeps gatekeeper's dependency surface unchanged (Mongo only). Cassandra reads stay owned by history-service.
+- Same-room enforcement comes for free: gatekeeper publishes on the subject containing the sender's own `roomID`, and `findMessage` (`history-service/internal/service/utils.go:59`) returns NotFound when the parent's `RoomID` doesn't match the subject's `roomID`. No additional check needed in gatekeeper.
 - Trade-off accepted: synchronous NATS hop on every quoted send, bounded by a 2-second timeout. On timeout or any RPC error, soft-fail drops the quote.
 
 The user-scoped subject is published on by gatekeeper acting on behalf of the sender — the sender's `account` and `roomID` come from the inbound MESSAGES subject. natsrouter parses params from the subject regardless of publisher identity, and all auth checks pass because the sender genuinely is subscribed.
@@ -126,9 +128,11 @@ Implements `ParentMessageFetcher`:
 2. Marshal the request as `{"messageId": "..."}` (a small local struct in gatekeeper, mirroring `history-service/internal/models.GetMessageByIDRequest`; we duplicate the wire shape rather than cross-import a service-internal package).
 3. `nc.Request(subj, data, 2*time.Second)`.
 4. Decode the natsrouter response envelope:
-   - Success → `*cassandra.Message` body. Project to `*cassandra.QuotedParentMessage` by copying `MessageID`, `RoomID`, `Sender`, `CreatedAt`, `Msg`, `Mentions`. Leave `Attachments` and `MessageLink` zero.
+   - Success → `*cassandra.Message` body. Project to `*cassandra.QuotedParentMessage` by copying `MessageID`, `RoomID`, `Sender`, `CreatedAt`, `Msg`, `Mentions`, and computing `MessageLink` (see below). Leave `Attachments` zero.
    - Error envelope (NotFound, Forbidden, Internal) → return wrapped error.
 5. NATS error (no responder, timeout) → return wrapped error.
+
+`MessageLink` is built server-side as `fmt.Sprintf("%s/%s/%s", chatBaseURL, parent.RoomID, parent.MessageID)` using a new `CHAT_BASE_URL` env var (see config). The fetcher receives `chatBaseURL` via constructor injection so unit tests can supply any value.
 
 The 2-second timeout is the standard NATS Go client default and is hardcoded inline at the single call site. No env var is added — promote to config later if ops needs to tune it.
 
@@ -160,7 +164,15 @@ No UUID validation on `QuotedParentMessageID` — if the client sends garbage, t
 
 ### `main.go` — wiring
 
-Construct the fetcher with the existing `nc *nats.Conn` and pass it to `NewHandler`. No new dependencies, no new config.
+Add one new config field:
+
+```go
+ChatBaseURL string `env:"CHAT_BASE_URL" envDefault:"http://localhost:3000"`
+```
+
+Default matches the chat-frontend dev port (`chat-frontend/vite.config.js:7`). Production overrides via env var.
+
+Construct the fetcher with the existing `nc *nats.Conn` plus `cfg.ChatBaseURL`, and pass it to `NewHandler`. No new infrastructure dependencies.
 
 ### Tests (`message-gatekeeper/handler_test.go` + `fetcher_history_test.go`)
 
@@ -171,7 +183,7 @@ Handler table-driven cases via `MockParentMessageFetcher`:
 - Thread + quote both set → both fields propagate.
 
 Fetcher tests against an in-process NATS server:
-- History responds with success → returns projected snapshot.
+- History responds with success → returns projected snapshot, including `MessageLink` built from the injected `chatBaseURL`.
 - History responds with error envelope → returns error.
 - No responder / timeout → returns error.
 
@@ -206,13 +218,13 @@ No conversion code — `evt.Message.QuotedParentMessage` is already the storage 
 | Client sends invalid UUID for quotedParentMessageId | RPC returns NotFound → quote dropped, message ships |
 | Parent message not found in Cassandra | RPC returns NotFound → quote dropped, message ships |
 | Parent in a different room | RPC returns NotFound (room param in subject doesn't match) → quote dropped, message ships |
-| Parent has `deleted = true` | history-service may return the row or NotFound (verify during impl); either way, quote dropped on error path or honored on success path |
+| Parent has `deleted = true` | history-service returns the row (no deleted filter in `findMessage`) → snapshot embedded normally, quote ships |
 | Sender's `historySharedSince` is after parent's createdAt | RPC returns Forbidden → quote dropped, message ships |
 | history-service unreachable | NATS no-responder error → quote dropped, message ships |
 | history-service slow (>2s) | NATS timeout → quote dropped, message ships |
 | Any other error | Wrapped error returned → quote dropped, message ships |
 
-In every case the user's message lands in the room — only the quote decoration is lost, and a WARN log is emitted for operational visibility.
+In every error case the user's message lands in the room — only the quote decoration is lost, and a WARN log is emitted for operational visibility.
 
 ## TDD ordering
 
@@ -231,7 +243,8 @@ Per CLAUDE.md, every change lands as Red → Green → Refactor → Commit:
 - All new fields are `omitempty` — old clients and old service binaries see no behavior change.
 - Old gatekeeper deployed against new model: just never sets the field; canonical event has nil snapshot; everything works.
 - Old message-worker deployed against new event: gocql binds nil UDT; INSERTs without the new column are still valid (Cassandra ignores unspecified columns). However, message-worker SHOULD be deployed before frontend starts sending quotes, so snapshots are persisted from day one.
-- No DB migration. No new env vars. No feature flag.
+- No DB migration. No feature flag.
+- One new env var on gatekeeper (`CHAT_BASE_URL`, defaults to `http://localhost:3000`).
 
 ## Observability
 
@@ -239,5 +252,4 @@ One new log line: `slog.Warn("quoted parent unavailable, dropping quote", ...)`.
 
 ## Open questions for implementation
 
-- Confirm history-service's behavior when the parent has `deleted = true` — does `findMessage` return it or treat it as not-found? Adjust the soft-fail table once verified.
-- Confirm gocql version in the repo correctly marshals a nil `*cassandra.QuotedParentMessage` as a null UDT in INSERT bindings (expected behavior, but verify via the integration test).
+- Confirm gocql in this repo correctly marshals a nil `*cassandra.QuotedParentMessage` as a null UDT in INSERT bindings (expected behavior, but verify via the integration test).
