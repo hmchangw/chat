@@ -23,28 +23,39 @@ type bootstrapConfig struct {
 	Enabled bool `env:"STREAMS" envDefault:"false"`
 }
 
-// streamCreator is the minimal JetStream surface bootstrapStreams depends on.
-// Kept service-local so we don't pollute pkg/ with a one-method type and so
+// streamManager is the minimal JetStream surface bootstrapStreams depends on.
+// Kept service-local so we don't pollute pkg/ with a multi-method type and so
 // tests can inject a fake without mockgen.
-type streamCreator interface {
+type streamManager interface {
 	CreateOrUpdateStream(ctx context.Context, cfg jetstream.StreamConfig) (oteljetstream.Stream, error)
+	Stream(ctx context.Context, name string) (oteljetstream.Stream, error)
 }
 
-// bootstrapStreams creates the JetStream streams this service consumes from.
-// No-op when enabled is false (the production path) — streams are owned by
-// ops/IaC. In dev/integration the local docker-compose sets
-// BOOTSTRAP_STREAMS=true so a developer can stand the service up in isolation
-// against a fresh NATS instance.
-func bootstrapStreams(ctx context.Context, js streamCreator, siteID string, enabled bool) error {
-	if !enabled {
+// bootstrapStreams handles the JetStream ROOMS stream this service uses. When
+// enabled (dev/integration), it creates the stream via CreateOrUpdateStream.
+// When disabled (production), it verifies the stream exists via Stream() and
+// returns an error if it doesn't — fail-fast so a misprovisioned deploy
+// surfaces at startup rather than at first publish.
+//
+// Ownership rule: this helper sets only the stream schema (Name + Subjects)
+// from pkg/stream.Rooms. Federation config belongs to ops/IaC and is layered
+// on in production. App code never sets it.
+func bootstrapStreams(ctx context.Context, js streamManager, siteID string, enabled bool) error {
+	roomsCfg := stream.Rooms(siteID)
+	if enabled {
+		if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+			Name:     roomsCfg.Name,
+			Subjects: roomsCfg.Subjects,
+		}); err != nil {
+			return fmt.Errorf("create ROOMS stream: %w", err)
+		}
 		return nil
 	}
-	roomsCfg := stream.Rooms(siteID)
-	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     roomsCfg.Name,
-		Subjects: roomsCfg.Subjects,
-	}); err != nil {
-		return fmt.Errorf("create ROOMS stream: %w", err)
+	// Production path: verify the stream exists. Fail fast if it doesn't —
+	// ops/IaC owns provisioning, and a missing stream means the deploy is
+	// broken before the first publish or consume.
+	if _, err := js.Stream(ctx, roomsCfg.Name); err != nil {
+		return fmt.Errorf("verify ROOMS stream: %w", err)
 	}
 	return nil
 }

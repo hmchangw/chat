@@ -23,33 +23,40 @@ type bootstrapConfig struct {
 	Enabled bool `env:"STREAMS" envDefault:"false"`
 }
 
-// streamCreator is the minimal JetStream surface bootstrapStreams depends on.
-// Kept service-local so we don't pollute pkg/ with a one-method type and so
+// streamManager is the minimal JetStream surface bootstrapStreams depends on.
+// Kept service-local so we don't pollute pkg/ with a multi-method type and so
 // tests can inject a fake without mockgen.
-type streamCreator interface {
+type streamManager interface {
 	CreateOrUpdateStream(ctx context.Context, cfg jetstream.StreamConfig) (oteljetstream.Stream, error)
+	Stream(ctx context.Context, name string) (oteljetstream.Stream, error)
 }
 
-// bootstrapStreams creates the JetStream INBOX stream this service consumes
-// from. No-op when enabled is false (the production path) — streams are owned
-// by ops/IaC there. In dev/integration the local docker-compose sets
-// BOOTSTRAP_STREAMS=true so a developer can stand the service up in isolation
-// against a fresh NATS instance.
+// bootstrapStreams handles the JetStream INBOX stream this service uses. When
+// enabled (dev/integration), it creates the stream via CreateOrUpdateStream.
+// When disabled (production), it verifies the stream exists via Stream() and
+// returns an error if it doesn't — fail-fast so a misprovisioned deploy
+// surfaces at startup rather than at first publish.
 //
 // Ownership rule: this helper sets only the stream schema (Name + Subjects)
 // from pkg/stream.Inbox. Federation config (Sources + SubjectTransforms for
 // cross-site OUTBOX→INBOX sourcing) belongs to ops/IaC and is layered on in
 // production. App code never sets it.
-func bootstrapStreams(ctx context.Context, js streamCreator, siteID string, enabled bool) error {
-	if !enabled {
+func bootstrapStreams(ctx context.Context, js streamManager, siteID string, enabled bool) error {
+	inboxCfg := stream.Inbox(siteID)
+	if enabled {
+		if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+			Name:     inboxCfg.Name,
+			Subjects: inboxCfg.Subjects,
+		}); err != nil {
+			return fmt.Errorf("create INBOX stream: %w", err)
+		}
 		return nil
 	}
-	inboxCfg := stream.Inbox(siteID)
-	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     inboxCfg.Name,
-		Subjects: inboxCfg.Subjects,
-	}); err != nil {
-		return fmt.Errorf("create INBOX stream: %w", err)
+	// Production path: verify the stream exists. Fail fast if it doesn't —
+	// ops/IaC owns provisioning, and a missing stream means the deploy is
+	// broken before the first publish or consume.
+	if _, err := js.Stream(ctx, inboxCfg.Name); err != nil {
+		return fmt.Errorf("verify INBOX stream: %w", err)
 	}
 	return nil
 }
