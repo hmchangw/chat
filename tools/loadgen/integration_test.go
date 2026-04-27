@@ -95,7 +95,7 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 	}
 
 	// Connect Mongo and seed fixtures.
-	client, err := mongoutil.Connect(ctx, mongoURI)
+	client, err := mongoutil.Connect(ctx, mongoURI, "", "")
 	require.NoError(t, err)
 	defer mongoutil.Disconnect(ctx, client)
 	db := client.Database("chat")
