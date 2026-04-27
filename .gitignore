@@ -40,6 +40,9 @@ bin/
 # Superpowers brainstorming artifacts
 .superpowers/
 
+# Git worktrees (local development, isolated branches)
+.worktrees/
+
 # Frontend
 node_modules/
 chat-frontend/dist/
