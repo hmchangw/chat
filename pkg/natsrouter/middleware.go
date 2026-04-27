@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/hmchangw/chat/pkg/idgen"
 )
 
 // Middleware is a handler that participates in the middleware chain.
@@ -17,7 +17,7 @@ const requestIDKey = "requestID"
 // RequestID returns middleware that generates or extracts a correlation ID
 // for each request and stores it in the context via c.Set("requestID", id).
 // If the incoming NATS message has an "X-Request-ID" header, that value is used;
-// otherwise a new UUID is generated.
+// otherwise a new ID is generated via idgen.
 func RequestID() HandlerFunc {
 	return func(c *Context) {
 		reqID := ""
@@ -25,7 +25,7 @@ func RequestID() HandlerFunc {
 			reqID = c.Msg.Header.Get("X-Request-ID")
 		}
 		if reqID == "" {
-			reqID = uuid.New().String()
+			reqID = idgen.GenerateID()
 		}
 		c.Set(requestIDKey, reqID)
 		c.Next()

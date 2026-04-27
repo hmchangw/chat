@@ -1,0 +1,172 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/searchengine"
+)
+
+// spotlightCollection implements Collection for spotlight room-typeahead
+// search. Documents are per (user, room) pair — one doc for every account
+// that holds a subscription to a given room — so the search service can
+// filter by userAccount and match on roomName. Doc IDs are synthesized as
+// `{account}_{roomID}` since the INBOX payload doesn't carry subscription IDs.
+type spotlightCollection struct {
+	inboxMemberCollection
+	indexName string
+}
+
+func newSpotlightCollection(indexName string) *spotlightCollection {
+	return &spotlightCollection{indexName: indexName}
+}
+
+func (c *spotlightCollection) ConsumerName() string {
+	return "spotlight-sync"
+}
+
+func (c *spotlightCollection) TemplateName() string {
+	return "spotlight_template"
+}
+
+func (c *spotlightCollection) TemplateBody() json.RawMessage {
+	return spotlightTemplateBody(c.indexName)
+}
+
+// BuildAction fans a member_added / member_removed event out into one ES
+// action per account in the payload. Bulk invites produce N spotlight docs
+// from a single event; single-user invites produce one.
+//
+// All actions in the returned slice carry the same external Version
+// (evt.Timestamp) because they all represent the same logical event — if the
+// event is redelivered, every action 409s uniformly and is treated as a
+// successful idempotent replay.
+//
+// Restricted rooms (HistorySharedSince != nil on the event) short-circuit the
+// entire bulk and return an empty slice. The spotlight index keeps the MVP
+// skip for restricted rooms; user-room (not spotlight) stores restricted-room
+// membership on the per-user ES doc via `restrictedRooms{}`.
+func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
+	evt, payload, err := parseMemberEvent(data)
+	if err != nil {
+		return nil, err
+	}
+	if payload.RoomID == "" {
+		return nil, fmt.Errorf("build spotlight action: missing roomId")
+	}
+	// Spotlight skips restricted rooms (MVP); user-room stores them.
+	// Mirror user_room.go's `hss > 0` sentinel so a leaked &0 is treated as
+	// unrestricted by both indices.
+	if payload.HistorySharedSince != nil && *payload.HistorySharedSince > 0 {
+		return nil, nil
+	}
+	if len(payload.Accounts) == 0 {
+		return nil, fmt.Errorf("build spotlight action: empty accounts")
+	}
+
+	actions := make([]searchengine.BulkAction, 0, len(payload.Accounts))
+	for i, account := range payload.Accounts {
+		if account == "" {
+			return nil, fmt.Errorf("build spotlight action: empty account at index %d", i)
+		}
+		docID := fmt.Sprintf("%s_%s", account, payload.RoomID)
+
+		switch evt.Type {
+		case model.OutboxMemberAdded:
+			doc := newSpotlightSearchIndex(account, payload)
+			body, err := json.Marshal(doc)
+			if err != nil {
+				return nil, fmt.Errorf("marshal spotlight doc: %w", err)
+			}
+			actions = append(actions, searchengine.BulkAction{
+				Action:  searchengine.ActionIndex,
+				Index:   c.indexName,
+				DocID:   docID,
+				Version: evt.Timestamp,
+				Doc:     body,
+			})
+		case model.OutboxMemberRemoved:
+			actions = append(actions, searchengine.BulkAction{
+				Action:  searchengine.ActionDelete,
+				Index:   c.indexName,
+				DocID:   docID,
+				Version: evt.Timestamp,
+			})
+		default:
+			return nil, fmt.Errorf("build spotlight action: unsupported event type %q", evt.Type)
+		}
+	}
+	return actions, nil
+}
+
+// SpotlightSearchIndex defines the Elasticsearch document structure for the
+// spotlight index. One doc per (user, room) pair.
+type SpotlightSearchIndex struct {
+	UserAccount string    `json:"userAccount" es:"keyword"`
+	RoomID      string    `json:"roomId"      es:"keyword"`
+	RoomName    string    `json:"roomName"    es:"search_as_you_type,custom_analyzer"`
+	RoomType    string    `json:"roomType"    es:"keyword"`
+	SiteID      string    `json:"siteId"      es:"keyword"`
+	JoinedAt    time.Time `json:"joinedAt"    es:"date"`
+}
+
+func newSpotlightSearchIndex(account string, evt *model.InboxMemberEvent) SpotlightSearchIndex {
+	var joinedAt time.Time
+	if evt.JoinedAt > 0 {
+		joinedAt = time.UnixMilli(evt.JoinedAt).UTC()
+	}
+	return SpotlightSearchIndex{
+		UserAccount: account,
+		RoomID:      evt.RoomID,
+		RoomName:    evt.RoomName,
+		RoomType:    string(evt.RoomType),
+		SiteID:      evt.SiteID,
+		JoinedAt:    joinedAt,
+	}
+}
+
+// spotlightTemplateBody builds the ES index template for the spotlight
+// collection. The `index_patterns` field is set to the exact configured
+// index name so a custom SPOTLIGHT_INDEX value still receives the correct
+// mapping (no broad wildcard that might catch unrelated indices).
+func spotlightTemplateBody(indexName string) json.RawMessage {
+	tmpl := map[string]any{
+		"index_patterns": []string{indexName},
+		"template": map[string]any{
+			"settings": map[string]any{
+				"index": map[string]any{
+					"number_of_shards":   3,
+					"number_of_replicas": 1,
+				},
+				"analysis": map[string]any{
+					"analyzer": map[string]any{
+						"custom_analyzer": map[string]any{
+							"type":      "custom",
+							"tokenizer": "custom_tokenizer",
+							"filter":    []string{"lowercase"},
+						},
+					},
+					"tokenizer": map[string]any{
+						// Whitespace tokenizer only supports max_token_length
+						// (default 255). `token_chars` is valid on ngram /
+						// edge_ngram tokenizers, not whitespace — sending it
+						// here would reject the UpsertTemplate request.
+						"custom_tokenizer": map[string]any{
+							"type": "whitespace",
+						},
+					},
+				},
+			},
+			"mappings": map[string]any{
+				"dynamic":    false,
+				"properties": esPropertiesFromStruct[SpotlightSearchIndex](),
+			},
+		},
+	}
+	// tmpl is built entirely from map/slice/string/int literals that are
+	// always JSON-marshalable, so the error cannot occur in practice.
+	data, _ := json.Marshal(tmpl)
+	return data
+}

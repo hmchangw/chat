@@ -72,8 +72,17 @@ func main() {
 	}
 
 	store := NewMongoStore(mongoClient.Database(cfg.MongoDB))
-	handler := NewHandler(store, cfg.SiteID, func(ctx context.Context, subj string, data []byte) error {
-		return nc.Publish(ctx, subj, data)
+	handler := NewHandler(store, cfg.SiteID, func(ctx context.Context, subj string, data []byte, msgID string) error {
+		if msgID == "" {
+			// Ephemeral client-delivery subjects (subscription updates, member
+			// events) — core NATS fan-out, not persisted.
+			return nc.Publish(ctx, subj, data)
+		}
+		// JetStream-backed subjects (MESSAGES_CANONICAL, OUTBOX) — block on
+		// PubAck so stream-accept failures surface as errors and trigger NAK.
+		// Server honors Nats-Msg-Id for stream-level dedup within the window.
+		_, err := js.Publish(ctx, subj, data, jetstream.WithMsgID(msgID))
+		return err
 	})
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, jetstream.ConsumerConfig{

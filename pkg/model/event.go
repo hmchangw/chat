@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type EventType string
 
@@ -37,15 +40,31 @@ type UpdateRoleRequest struct {
 	RoomID  string `json:"roomId"  bson:"roomId"`
 	Account string `json:"account" bson:"account"`
 	NewRole Role   `json:"newRole" bson:"newRole"`
+	// Set by room-service at acceptance; stable seed for room-worker's Nats-Msg-Id.
+	Timestamp int64 `json:"timestamp" bson:"timestamp"`
 }
 
-type InviteMemberRequest struct {
-	InviterID      string `json:"inviterId"`
-	InviteeID      string `json:"inviteeId"`
-	InviteeAccount string `json:"inviteeAccount"`
-	RoomID         string `json:"roomId"`
-	SiteID         string `json:"siteId"`
-	Timestamp      int64  `json:"timestamp" bson:"timestamp"`
+// InboxMemberEvent is the payload of an OutboxEvent{Type: "member_added" |
+// "member_removed"} carried on the INBOX stream for local consumers like
+// search-sync-worker. One event represents a bulk add/remove of N Accounts
+// against a single room; downstream consumers fan out per-account.
+//
+// HistorySharedSince == nil means the entire bulk is unrestricted; non-nil
+// means all Accounts in the bulk are restricted from that timestamp. The
+// user-room collection routes these into restrictedRooms{}; the spotlight
+// collection skips non-nil events entirely for MVP. Publishers MUST emit nil
+// for unrestricted rooms — never &0 and never a non-positive timestamp — so
+// the Go↔painless boundary sentinel (hss <= 0 → unrestricted) stays sound.
+// JoinedAt is only meaningful on add events and omitted on removes.
+type InboxMemberEvent struct {
+	RoomID             string   `json:"roomId"`
+	RoomName           string   `json:"roomName"`
+	RoomType           RoomType `json:"roomType"`
+	SiteID             string   `json:"siteId"`
+	Accounts           []string `json:"accounts"`
+	HistorySharedSince *int64   `json:"historySharedSince,omitempty"`
+	JoinedAt           int64    `json:"joinedAt,omitempty"`
+	Timestamp          int64    `json:"timestamp" bson:"timestamp"`
 }
 
 type NotificationEvent struct {
@@ -55,12 +74,21 @@ type NotificationEvent struct {
 	Timestamp int64   `json:"timestamp" bson:"timestamp"`
 }
 
+// OutboxEventType is the type tag on an OutboxEvent used to route it to the
+// correct handler on the destination site.
+type OutboxEventType = string
+
+const (
+	OutboxMemberAdded   OutboxEventType = "member_added"
+	OutboxMemberRemoved OutboxEventType = "member_removed"
+)
+
 type OutboxEvent struct {
-	Type       string `json:"type"` // "member_added", "room_sync"
-	SiteID     string `json:"siteId"`
-	DestSiteID string `json:"destSiteId"`
-	Payload    []byte `json:"payload"` // JSON-encoded inner event
-	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
+	Type       OutboxEventType `json:"type"`
+	SiteID     string          `json:"siteId"`
+	DestSiteID string          `json:"destSiteId"`
+	Payload    []byte          `json:"payload"` // JSON-encoded inner event
+	Timestamp  int64           `json:"timestamp" bson:"timestamp"`
 }
 
 type MemberAddEvent struct {
@@ -69,7 +97,7 @@ type MemberAddEvent struct {
 	Accounts           []string `json:"accounts"           bson:"accounts"`
 	SiteID             string   `json:"siteId"             bson:"siteId"`
 	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
-	HistorySharedSince int64    `json:"historySharedSince" bson:"historySharedSince"`
+	HistorySharedSince *int64   `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
 	Timestamp          int64    `json:"timestamp"          bson:"timestamp"`
 }
 
@@ -110,7 +138,8 @@ type RoomEvent struct {
 
 	HasMention bool `json:"hasMention,omitempty"`
 
-	Message *ClientMessage `json:"message,omitempty"`
+	Message          *ClientMessage  `json:"message,omitempty"`
+	EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"`
 }
 
 type RoomKeyEvent struct {

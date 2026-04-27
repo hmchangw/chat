@@ -12,7 +12,7 @@ function summary(id, overrides = {}) {
   return {
     id,
     name: id,
-    type: 'group',
+    type: 'channel',
     siteId: 'site-A',
     userCount: 2,
     lastMsgAt: '2026-04-17T10:00:00Z',

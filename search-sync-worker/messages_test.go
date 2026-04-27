@@ -41,6 +41,8 @@ func TestMessageCollection_TemplateBody(t *testing.T) {
 	assert.Contains(t, props, "userAccount")
 	assert.Contains(t, props, "content")
 	assert.Contains(t, props, "createdAt")
+	assert.Contains(t, props, "tshow")
+	assert.Equal(t, "boolean", props["tshow"].(map[string]any)["type"])
 	assert.Equal(t, false, mappings["dynamic"])
 
 	settings := tmpl["settings"].(map[string]any)
@@ -57,7 +59,7 @@ func TestMessageCollection_StreamConfig(t *testing.T) {
 
 func TestMessageCollection_ConsumerName(t *testing.T) {
 	coll := newMessageCollection("msgs-v1")
-	assert.Equal(t, "search-sync-worker", coll.ConsumerName())
+	assert.Equal(t, "message-sync", coll.ConsumerName())
 }
 
 func TestIndexName(t *testing.T) {
@@ -191,6 +193,7 @@ func TestNewMessageSearchIndex(t *testing.T) {
 			Content: "hello", CreatedAt: ts,
 			ThreadParentMessageID:        "parent-1",
 			ThreadParentMessageCreatedAt: &parentTS,
+			TShow:                        true,
 		},
 		SiteID: "site-a",
 	}
@@ -205,6 +208,30 @@ func TestNewMessageSearchIndex(t *testing.T) {
 	assert.Equal(t, "parent-1", doc.ThreadParentID)
 	require.NotNil(t, doc.ThreadParentCreatedAt)
 	assert.Equal(t, parentTS, *doc.ThreadParentCreatedAt)
+	assert.True(t, doc.TShow)
+}
+
+// TestNewMessageSearchIndex_TShowOmittedWhenFalse verifies that a message with
+// the default TShow (false) marshals without a `tshow` key so unmarked thread
+// replies don't bloat the index and so range/term queries on `tshow` only
+// match explicitly-flagged docs.
+func TestNewMessageSearchIndex_TShowOmittedWhenFalse(t *testing.T) {
+	evt := &model.MessageEvent{
+		Message: model.Message{
+			ID: "msg-1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content: "hello", CreatedAt: time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
+		},
+		SiteID: "site-a",
+	}
+	doc := newMessageSearchIndex(evt)
+	assert.False(t, doc.TShow)
+
+	data, err := json.Marshal(doc)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, present := raw["tshow"]
+	assert.False(t, present, "tshow should be omitted when false")
 }
 
 func TestMessageCollection_BuildAction(t *testing.T) {
@@ -219,11 +246,12 @@ func TestMessageCollection_BuildAction(t *testing.T) {
 	}
 	data, _ := json.Marshal(evt)
 
-	action, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(data)
 	require.NoError(t, err)
-	assert.Equal(t, searchengine.ActionIndex, action.Action)
-	assert.Equal(t, "msgs-v1-2026-01", action.Index)
-	assert.Equal(t, "m1", action.DocID)
+	require.Len(t, actions, 1)
+	assert.Equal(t, searchengine.ActionIndex, actions[0].Action)
+	assert.Equal(t, "msgs-v1-2026-01", actions[0].Index)
+	assert.Equal(t, "m1", actions[0].DocID)
 
 	t.Run("malformed JSON returns error", func(t *testing.T) {
 		_, err := coll.BuildAction([]byte("{invalid"))

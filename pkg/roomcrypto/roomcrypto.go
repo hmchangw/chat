@@ -18,6 +18,8 @@ import (
 // Note: this struct intentionally deviates from the project convention of including bson tags.
 // It is a serialisation-only type sent to clients over JSON; it is never written to MongoDB.
 type EncryptedMessage struct {
+	// key version used to encrypt; matches roomkeystore VersionedKeyPair.Version
+	Version            int    `json:"version"`
 	EphemeralPublicKey []byte `json:"ephemeralPublicKey"` // 65 bytes, uncompressed P-256 point
 	Nonce              []byte `json:"nonce"`              // 12 bytes, AES-GCM nonce
 	Ciphertext         []byte `json:"ciphertext"`         // encrypted content + 16-byte AES-GCM tag
@@ -25,13 +27,15 @@ type EncryptedMessage struct {
 
 // Encode encrypts content using the room's P-256 public key.
 // roomPublicKey is the uncompressed point (65 bytes) as stored in MongoDB.
-func Encode(content string, roomPublicKey []byte) (*EncryptedMessage, error) {
-	return encode(content, roomPublicKey, rand.Reader)
+// version is stamped into the returned EncryptedMessage so receivers can
+// pick the correct private key for decryption.
+func Encode(content string, roomPublicKey []byte, version int) (*EncryptedMessage, error) {
+	return encode(content, roomPublicKey, version, rand.Reader)
 }
 
 // encode is the internal implementation that accepts an io.Reader for randomness,
 // enabling error path testing without changing the public API.
-func encode(content string, roomPublicKey []byte, randReader io.Reader) (*EncryptedMessage, error) {
+func encode(content string, roomPublicKey []byte, version int, randReader io.Reader) (*EncryptedMessage, error) {
 	// Step 1: parse and validate the room public key
 	roomPubKey, err := ecdh.P256().NewPublicKey(roomPublicKey)
 	if err != nil {
@@ -83,6 +87,7 @@ func encode(content string, roomPublicKey []byte, randReader io.Reader) (*Encryp
 	ciphertext := gcm.Seal(nil, nonce, []byte(content), nil)
 
 	return &EncryptedMessage{
+		Version:            version,
 		EphemeralPublicKey: ephemeralPrivKey.PublicKey().Bytes(),
 		Nonce:              nonce,
 		Ciphertext:         ciphertext,

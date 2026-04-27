@@ -166,13 +166,14 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
+	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
 		Type:               "member_added",
 		RoomID:             "room-1",
 		Accounts:           []string{"bob"},
 		SiteID:             "site-b",
 		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
-		HistorySharedSince: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+		HistorySharedSince: &hssMillis,
 		Timestamp:          time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 	}
 	changeData, err := json.Marshal(change)
@@ -240,6 +241,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 
 	joinedAt := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
+	hssMillis := historyShared.UnixMilli()
 
 	change := model.MemberAddEvent{
 		Type:               "member_added",
@@ -247,7 +249,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 		Accounts:           []string{"carol"},
 		SiteID:             "site-b",
 		JoinedAt:           joinedAt.UnixMilli(),
-		HistorySharedSince: historyShared.UnixMilli(),
+		HistorySharedSince: &hssMillis,
 		Timestamp:          joinedAt.UnixMilli(),
 	}
 	changeData, _ := json.Marshal(change)
@@ -290,7 +292,7 @@ func TestHandleEvent_RoomSync(t *testing.T) {
 	room := model.Room{
 		ID:        "room-1",
 		Name:      "general",
-		Type:      model.RoomTypeGroup,
+		Type:      model.RoomTypeChannel,
 		CreatedBy: "alice",
 		SiteID:    "site-b",
 		UserCount: 5,
@@ -352,7 +354,7 @@ func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 	// Insert initial room
 	room1 := model.Room{
 		ID: "room-1", Name: "old-name", SiteID: "site-b",
-		Type: model.RoomTypeGroup, CreatedBy: "alice", UserCount: 2,
+		Type: model.RoomTypeChannel, CreatedBy: "alice", UserCount: 2,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
@@ -366,7 +368,7 @@ func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 	// Update same room with new name
 	room2 := model.Room{
 		ID: "room-1", Name: "new-name", SiteID: "site-b",
-		Type: model.RoomTypeGroup, CreatedBy: "alice", UserCount: 10,
+		Type: model.RoomTypeChannel, CreatedBy: "alice", UserCount: 10,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
 	}
@@ -467,13 +469,14 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 	pub := &mockPublisher{}
 	h := NewHandler(store, pub)
 
+	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
 		Type:               "member_added",
 		RoomID:             "room-1",
 		Accounts:           []string{"account-bob"},
 		SiteID:             "site-b",
 		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
-		HistorySharedSince: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+		HistorySharedSince: &hssMillis,
 		Timestamp:          time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 	}
 	changeData, err := json.Marshal(change)
@@ -529,6 +532,7 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 
 	joinedAt := time.Date(2026, 4, 5, 10, 30, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	hssMillis := historyShared.UnixMilli()
 
 	change := model.MemberAddEvent{
 		Type:               "member_added",
@@ -536,7 +540,7 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 		Accounts:           []string{"alice", "bob"},
 		SiteID:             "site-b",
 		JoinedAt:           joinedAt.UnixMilli(),
-		HistorySharedSince: historyShared.UnixMilli(),
+		HistorySharedSince: &hssMillis,
 		Timestamp:          joinedAt.UnixMilli(),
 	}
 	changeData, _ := json.Marshal(change)
@@ -609,13 +613,13 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 	h := NewHandler(store, pub)
 
 	change := model.MemberAddEvent{
-		Type:               "member_added",
-		RoomID:             "room-1",
-		Accounts:           []string{"dave"},
-		SiteID:             "site-b",
-		JoinedAt:           time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
-		HistorySharedSince: 0, // means "all history"
-		Timestamp:          time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+		Type:     "member_added",
+		RoomID:   "room-1",
+		Accounts: []string{"dave"},
+		SiteID:   "site-b",
+		JoinedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+		// HistorySharedSince nil → "all history"
+		Timestamp: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
 	}
 	changeData, _ := json.Marshal(change)
 

@@ -72,6 +72,20 @@ func (a *httpAdapter) Bulk(ctx context.Context, actions []BulkAction) ([]BulkRes
 			line, _ := json.Marshal(map[string]bulkActionMeta{"delete": meta})
 			buf.Write(line)
 			buf.WriteByte('\n')
+		case ActionUpdate:
+			// ES 8.x / OpenSearch 2.x bulk _update DOES accept version +
+			// version_type=external. We intentionally omit them because
+			// user-room scripted updates already enforce ordering via the
+			// painless LWW guard (`params.ts > stored` against the stored
+			// roomTimestamps), so layering external versioning on top would
+			// be redundant and complicate 409-handling semantics. Omit Version
+			// even when the caller sets it.
+			updateMeta := bulkActionMeta{Index: action.Index, ID: action.DocID}
+			line, _ := json.Marshal(map[string]bulkActionMeta{"update": updateMeta})
+			buf.Write(line)
+			buf.WriteByte('\n')
+			buf.Write(action.Doc)
+			buf.WriteByte('\n')
 		}
 	}
 
@@ -101,8 +115,9 @@ func (a *httpAdapter) Bulk(ctx context.Context, actions []BulkAction) ([]BulkRes
 	for i, item := range bulkResp.Items {
 		for _, detail := range item {
 			results[i] = BulkResult{
-				Status: detail.Status,
-				Error:  detail.Error.Reason,
+				Status:    detail.Status,
+				ErrorType: detail.Error.Type,
+				Error:     detail.Error.Reason,
 			}
 		}
 	}

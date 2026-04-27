@@ -92,6 +92,35 @@ func (s *threadStoreMongo) UpsertThreadSubscription(ctx context.Context, sub *mo
 	return nil
 }
 
+// MarkThreadSubscriptionMention sets hasMention=true on the (threadRoomID,userID)
+// subscription, creating it from sub when absent. Fields in $setOnInsert apply only
+// on insert; hasMention and updatedAt live in $set so both new and existing rows
+// end up with hasMention=true and a fresh updatedAt.
+func (s *threadStoreMongo) MarkThreadSubscriptionMention(ctx context.Context, sub *model.ThreadSubscription) error {
+	filter := bson.M{"threadRoomId": sub.ThreadRoomID, "userId": sub.UserID}
+	update := bson.M{
+		"$setOnInsert": bson.M{
+			"_id":             sub.ID,
+			"parentMessageId": sub.ParentMessageID,
+			"roomId":          sub.RoomID,
+			"threadRoomId":    sub.ThreadRoomID,
+			"userId":          sub.UserID,
+			"userAccount":     sub.UserAccount,
+			"siteId":          sub.SiteID,
+			"lastSeenAt":      sub.LastSeenAt,
+			"createdAt":       sub.CreatedAt,
+		},
+		"$set": bson.M{
+			"hasMention": true,
+			"updatedAt":  sub.UpdatedAt,
+		},
+	}
+	if _, err := s.threadSubscriptions.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
+		return fmt.Errorf("mark thread subscription mention: %w", err)
+	}
+	return nil
+}
+
 func (s *threadStoreMongo) UpdateThreadRoomLastMessage(ctx context.Context, threadRoomID string, lastMsgID string, lastMsgAt time.Time) error {
 	_, err := s.threadRooms.UpdateOne(ctx, bson.M{"_id": threadRoomID}, bson.M{
 		"$set": bson.M{

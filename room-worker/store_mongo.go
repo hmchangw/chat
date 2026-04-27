@@ -45,9 +45,20 @@ func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Sub
 	return subs, nil
 }
 
-func (s *MongoStore) IncrementUserCount(ctx context.Context, roomID string, count int) error {
-	_, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$inc": bson.M{"userCount": count}})
-	return err
+// ReconcileUserCount sets rooms.userCount to the current subscription count.
+// Using $set (not $inc) makes the write idempotent under JetStream
+// redelivery: running this after any add/remove converges to the correct
+// value, even if an earlier delivery already performed the underlying
+// subscription changes and we're seeing a retry.
+func (s *MongoStore) ReconcileUserCount(ctx context.Context, roomID string) error {
+	count, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID})
+	if err != nil {
+		return fmt.Errorf("count subscriptions for room %q: %w", roomID, err)
+	}
+	if _, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$set": bson.M{"userCount": count}}); err != nil {
+		return fmt.Errorf("reconcile userCount for room %q: %w", roomID, err)
+	}
+	return nil
 }
 
 func (s *MongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
@@ -218,14 +229,6 @@ func (s *MongoStore) DeleteRoomMember(ctx context.Context, roomID string, member
 	_, err := s.roomMembers.DeleteOne(ctx, bson.M{"rid": roomID, "member.type": memberType, "member.id": memberID})
 	if err != nil {
 		return fmt.Errorf("delete room member: %w", err)
-	}
-	return nil
-}
-
-func (s *MongoStore) DecrementUserCount(ctx context.Context, roomID string, count int) error {
-	_, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$inc": bson.M{"userCount": -count}})
-	if err != nil {
-		return fmt.Errorf("decrement user count for room %q: %w", roomID, err)
 	}
 	return nil
 }

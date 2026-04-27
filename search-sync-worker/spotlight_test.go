@@ -1,0 +1,278 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/searchengine"
+)
+
+func makeInboxMemberEvent(t *testing.T, typ string, payload *model.InboxMemberEvent, ts int64) []byte {
+	t.Helper()
+	payloadData, err := json.Marshal(payload)
+	require.NoError(t, err)
+	evt := model.OutboxEvent{
+		Type:       typ,
+		SiteID:     "site-a",
+		DestSiteID: "site-a",
+		Payload:    payloadData,
+		Timestamp:  ts,
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	return data
+}
+
+// baseInboxMemberEvent builds a single-account event for the common unit-test
+// case. Bulk-invite test cases supply their own Accounts slice.
+func baseInboxMemberEvent() *model.InboxMemberEvent {
+	const joinedAt int64 = 1735689600000
+	return &model.InboxMemberEvent{
+		RoomID:    "r-eng",
+		RoomName:  "engineering",
+		RoomType:  model.RoomTypeChannel,
+		SiteID:    "site-a",
+		Accounts:  []string{"alice"},
+		JoinedAt:  joinedAt,
+		Timestamp: joinedAt,
+	}
+}
+
+func TestSpotlightCollection_Metadata(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+
+	assert.Equal(t, "spotlight-sync", coll.ConsumerName())
+	assert.Equal(t, "spotlight_template", coll.TemplateName())
+
+	cfg := coll.StreamConfig("site-a")
+	assert.Equal(t, "INBOX_site-a", cfg.Name)
+	assert.Equal(t, []string{
+		"chat.inbox.site-a.*",
+		"chat.inbox.site-a.aggregate.>",
+	}, cfg.Subjects)
+	assert.Empty(t, cfg.Sources)
+
+	filters := coll.FilterSubjects("site-a")
+	assert.ElementsMatch(t, []string{
+		"chat.inbox.site-a.member_added",
+		"chat.inbox.site-a.member_removed",
+		"chat.inbox.site-a.aggregate.member_added",
+		"chat.inbox.site-a.aggregate.member_removed",
+	}, filters)
+}
+
+func TestSpotlightCollection_TemplateBody(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	body := coll.TemplateBody()
+	require.NotNil(t, body)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+
+	patterns, ok := parsed["index_patterns"].([]any)
+	require.True(t, ok)
+	assert.Equal(t, "spotlight-site-a-v1-chat", patterns[0])
+
+	tmpl := parsed["template"].(map[string]any)
+	mappings := tmpl["mappings"].(map[string]any)
+	props := mappings["properties"].(map[string]any)
+	assert.Contains(t, props, "userAccount")
+	assert.Contains(t, props, "roomId")
+	assert.Contains(t, props, "roomName")
+	assert.Contains(t, props, "joinedAt")
+	assert.Equal(t, false, mappings["dynamic"])
+
+	roomName := props["roomName"].(map[string]any)
+	assert.Equal(t, "search_as_you_type", roomName["type"])
+	assert.Equal(t, "custom_analyzer", roomName["analyzer"])
+}
+
+func TestSpotlightTemplateProperties_MatchesStruct(t *testing.T) {
+	props := esPropertiesFromStruct[SpotlightSearchIndex]()
+
+	typ := reflect.TypeOf(SpotlightSearchIndex{})
+	esFieldCount := 0
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		esTag := field.Tag.Get("es")
+		if esTag == "" || esTag == "-" {
+			continue
+		}
+		esFieldCount++
+		jsonTag := field.Tag.Get("json")
+		name, _, _ := strings.Cut(jsonTag, ",")
+		_, ok := props[name]
+		assert.True(t, ok, "template missing property for field %s (json %s)", field.Name, name)
+	}
+	assert.Equal(t, esFieldCount, len(props))
+}
+
+func TestSpotlightCollection_BuildAction_MemberAdded(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	payload := baseInboxMemberEvent()
+	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 1000)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+
+	action := actions[0]
+	assert.Equal(t, searchengine.ActionIndex, action.Action)
+	assert.Equal(t, "spotlight-site-a-v1-chat", action.Index)
+	// DocID is synthesized as {account}_{roomID} since the new payload shape
+	// doesn't carry subscription IDs.
+	assert.Equal(t, "alice_r-eng", action.DocID)
+	assert.Equal(t, int64(1000), action.Version)
+	require.NotNil(t, action.Doc)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(action.Doc, &doc))
+	assert.Equal(t, "alice", doc["userAccount"])
+	assert.Equal(t, "r-eng", doc["roomId"])
+	assert.Equal(t, "engineering", doc["roomName"])
+	assert.Equal(t, "channel", doc["roomType"])
+	assert.Equal(t, "site-a", doc["siteId"])
+}
+
+func TestSpotlightCollection_BuildAction_MemberRemoved(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	payload := baseInboxMemberEvent()
+	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 2000)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+
+	action := actions[0]
+	assert.Equal(t, searchengine.ActionDelete, action.Action)
+	assert.Equal(t, "spotlight-site-a-v1-chat", action.Index)
+	assert.Equal(t, "alice_r-eng", action.DocID)
+	assert.Equal(t, int64(2000), action.Version)
+	assert.Nil(t, action.Doc)
+}
+
+func TestSpotlightCollection_BuildAction_RestrictedRoomSkipped(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	payload := baseInboxMemberEvent()
+	payload.Accounts = []string{"alice", "bob"}
+	// Event-level HistorySharedSince short-circuits the entire bulk —
+	// spotlight keeps MVP skip for restricted rooms; user-room stores them.
+	hss := int64(1735689500000)
+	payload.HistorySharedSince = &hss
+
+	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	assert.Empty(t, actions, "restricted-room event should produce no actions")
+}
+
+func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+
+	t.Run("malformed outbox event", func(t *testing.T) {
+		_, err := coll.BuildAction([]byte("{invalid"))
+		assert.Error(t, err)
+	})
+
+	t.Run("malformed payload", func(t *testing.T) {
+		evt := model.OutboxEvent{
+			Type:      model.OutboxMemberAdded,
+			Payload:   []byte("not json"),
+			Timestamp: 100,
+		}
+		data, _ := json.Marshal(evt)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("empty accounts", func(t *testing.T) {
+		payload := baseInboxMemberEvent()
+		payload.Accounts = nil
+		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("empty account in list", func(t *testing.T) {
+		payload := baseInboxMemberEvent()
+		payload.Accounts = []string{"alice", ""}
+		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("missing roomId", func(t *testing.T) {
+		payload := baseInboxMemberEvent()
+		payload.RoomID = ""
+		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("missing timestamp", func(t *testing.T) {
+		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, baseInboxMemberEvent(), 0)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("unsupported event type", func(t *testing.T) {
+		data := makeInboxMemberEvent(t, "room_created", baseInboxMemberEvent(), 100)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+}
+
+// TestSpotlightCollection_BuildAction_BulkInvite verifies fan-out: a single
+// event carrying N accounts produces N index actions, all sharing the same
+// external Version (event timestamp).
+func TestSpotlightCollection_BuildAction_BulkInvite(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	payload := baseInboxMemberEvent()
+	payload.Accounts = []string{"alice", "bob", "carol"}
+	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 12345)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	require.Len(t, actions, 3, "3 accounts should fan out to 3 actions")
+
+	seenDocIDs := make(map[string]bool)
+	for _, action := range actions {
+		assert.Equal(t, searchengine.ActionIndex, action.Action)
+		assert.Equal(t, "spotlight-site-a-v1-chat", action.Index)
+		assert.Equal(t, int64(12345), action.Version,
+			"all fan-out actions share the source event's timestamp as their external version")
+		require.NotNil(t, action.Doc)
+		seenDocIDs[action.DocID] = true
+	}
+	for _, account := range payload.Accounts {
+		assert.True(t, seenDocIDs[fmt.Sprintf("%s_%s", account, payload.RoomID)],
+			"expected DocID for %s", account)
+	}
+}
+
+// TestSpotlightCollection_BuildAction_BulkRemove verifies fan-out on remove:
+// N accounts → N delete actions.
+func TestSpotlightCollection_BuildAction_BulkRemove(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	payload := baseInboxMemberEvent()
+	payload.Accounts = []string{"alice", "bob"}
+	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 67890)
+
+	actions, err := coll.BuildAction(data)
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+
+	for _, action := range actions {
+		assert.Equal(t, searchengine.ActionDelete, action.Action)
+		assert.Equal(t, int64(67890), action.Version)
+		assert.Nil(t, action.Doc)
+	}
+}

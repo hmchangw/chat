@@ -18,21 +18,38 @@ type ActionType string
 const (
 	ActionIndex  ActionType = "index"
 	ActionDelete ActionType = "delete"
+	ActionUpdate ActionType = "update"
 )
 
 // BulkAction represents a single action in a bulk request.
+//
+// For ActionUpdate, Doc contains the full ES update body (doc / script /
+// upsert) and Version is ignored. The _update operation is read-modify-write
+// on the ES side and does not accept `version`/`version_type=external`; that
+// parameter pair is only valid for `index` (full-document replacement).
 type BulkAction struct {
 	Action  ActionType
 	Index   string
 	DocID   string
-	Version int64           // used as ES external version
-	Doc     json.RawMessage // nil for delete actions
+	Version int64           // used as ES external version (ignored for ActionUpdate)
+	Doc     json.RawMessage // index: full doc; update: update body; delete: nil
 }
 
 // BulkResult represents the result of a single bulk action item.
+//
+// ErrorType is the ES error type string (e.g., `document_missing_exception`,
+// `index_not_found_exception`, `version_conflict_engine_exception`) when the
+// item failed with an error block. Empty on 2xx success and on delete-404
+// responses (delete of a missing doc sets `result:"not_found"` without an
+// error block).
+//
+// Callers that need to classify 4xx outcomes (e.g., deciding whether a 404
+// is a benign "doc already absent" or a fatal "index missing") should match
+// on ErrorType rather than parsing the human-readable Error string.
 type BulkResult struct {
-	Status int
-	Error  string
+	Status    int
+	ErrorType string
+	Error     string
 }
 
 // SearchEngine defines domain operations for search indexing.

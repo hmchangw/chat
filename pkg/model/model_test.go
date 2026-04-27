@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -28,16 +29,43 @@ func TestUserJSON(t *testing.T) {
 }
 
 func TestRoomJSON(t *testing.T) {
+	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	lastMention := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	r := model.Room{
-		ID: "r1", Name: "general", Type: model.RoomTypeGroup,
+		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
-		LastMsgAt:        time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		LastMsgAt:        &lastMsg,
 		LastMsgID:        "m1",
-		LastMentionAllAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		LastMentionAllAt: &lastMention,
 		CreatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	roundTrip(t, &r, &model.Room{})
+}
+
+func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
+	r := model.Room{
+		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
+		CreatedBy: "u1", SiteID: "site-a", UserCount: 1,
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(&r)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	_, hasMsg := raw["lastMsgAt"]
+	assert.False(t, hasMsg, "nil LastMsgAt must be omitted from JSON")
+
+	_, hasMention := raw["lastMentionAllAt"]
+	assert.False(t, hasMention, "nil LastMentionAllAt must be omitted from JSON")
+
+	var dst model.Room
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Nil(t, dst.LastMsgAt, "absent JSON field must unmarshal to nil pointer")
+	assert.Nil(t, dst.LastMentionAllAt, "absent JSON field must unmarshal to nil pointer")
 }
 
 func TestThreadRoomJSON(t *testing.T) {
@@ -64,6 +92,7 @@ func TestThreadSubscriptionJSON(t *testing.T) {
 		UserAccount:     "alice",
 		SiteID:          "site-a",
 		LastSeenAt:      nil,
+		HasMention:      true,
 		CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 	}
@@ -184,6 +213,39 @@ func TestMessageJSON(t *testing.T) {
 		assert.False(t, hasType, "type should be omitted when empty")
 		_, hasSysMsgData := raw["sysMsgData"]
 		assert.False(t, hasSysMsgData, "sysMsgData should be omitted when nil")
+	})
+
+	t.Run("tshow round-trips when true", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:   "thread reply shown in main feed",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			TShow:     true,
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.Equal(t, true, raw["tshow"])
+
+		var dst model.Message
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.True(t, dst.TShow)
+	})
+
+	t.Run("tshow omitted on the wire when false", func(t *testing.T) {
+		m := model.Message{
+			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content:   "plain message",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		}
+		data, err := json.Marshal(&m)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["tshow"]
+		assert.False(t, present, "tshow should be omitted when false")
 	})
 }
 
@@ -344,8 +406,8 @@ func TestSubscriptionJSON(t *testing.T) {
 }
 
 func TestRoomTypeValues(t *testing.T) {
-	if model.RoomTypeGroup != "group" {
-		t.Errorf("RoomTypeGroup = %q", model.RoomTypeGroup)
+	if model.RoomTypeChannel != "channel" {
+		t.Errorf("RoomTypeChannel = %q", model.RoomTypeChannel)
 	}
 	if model.RoomTypeDM != "dm" {
 		t.Errorf("RoomTypeDM = %q", model.RoomTypeDM)
@@ -374,7 +436,7 @@ func TestRoomEventJSON(t *testing.T) {
 			RoomID:     "room-1",
 			Timestamp:  now.UnixMilli(),
 			RoomName:   "General",
-			RoomType:   model.RoomTypeGroup,
+			RoomType:   model.RoomTypeChannel,
 			SiteID:     "site-a",
 			UserCount:  5,
 			LastMsgAt:  now,
@@ -404,7 +466,7 @@ func TestRoomEventJSON(t *testing.T) {
 			RoomID:    "room-2",
 			Timestamp: now.UnixMilli(),
 			RoomName:  "Lobby",
-			RoomType:  model.RoomTypeGroup,
+			RoomType:  model.RoomTypeChannel,
 			SiteID:    "site-b",
 			UserCount: 3,
 			LastMsgAt: now,
@@ -420,12 +482,48 @@ func TestRoomEventJSON(t *testing.T) {
 		if err := json.Unmarshal(data, &raw); err != nil {
 			t.Fatalf("unmarshal raw: %v", err)
 		}
-		for _, key := range []string{"mentions", "mentionAll", "hasMention", "message"} {
+		for _, key := range []string{"mentions", "mentionAll", "hasMention", "message", "encryptedMessage"} {
 			if _, ok := raw[key]; ok {
 				t.Errorf("expected %q to be omitted from JSON", key)
 			}
 		}
 
+		var dst model.RoomEvent
+		if err := json.Unmarshal(data, &dst); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !reflect.DeepEqual(src, dst) {
+			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+		}
+	})
+
+	t.Run("encrypted message populated with nil plaintext message", func(t *testing.T) {
+		src := model.RoomEvent{
+			Type:             model.RoomEventNewMessage,
+			RoomID:           "room-3",
+			Timestamp:        now.UnixMilli(),
+			RoomName:         "Encrypted",
+			RoomType:         model.RoomTypeChannel,
+			SiteID:           "site-c",
+			UserCount:        4,
+			LastMsgAt:        now,
+			LastMsgID:        "msg-3",
+			EncryptedMessage: json.RawMessage(`{"version":3,"ephemeralPublicKey":"AQID","nonce":"BAUG","ciphertext":"BwgJ"}`),
+		}
+		data, err := json.Marshal(src)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("unmarshal raw: %v", err)
+		}
+		if _, ok := raw["encryptedMessage"]; !ok {
+			t.Error("expected encryptedMessage to be present in JSON")
+		}
+		if _, ok := raw["message"]; ok {
+			t.Error("expected message to be omitted when nil")
+		}
 		var dst model.RoomEvent
 		if err := json.Unmarshal(data, &dst); err != nil {
 			t.Fatalf("unmarshal: %v", err)
@@ -542,7 +640,7 @@ func TestNotificationEventJSON(t *testing.T) {
 }
 
 func TestUpdateRoleRequestJSON(t *testing.T) {
-	src := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	src := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1735689600000}
 	roundTrip(t, &src, &model.UpdateRoleRequest{})
 }
 
@@ -569,18 +667,6 @@ func TestSubscriptionUpdateEventJSON(t *testing.T) {
 	}
 }
 
-func TestInviteMemberRequestJSON(t *testing.T) {
-	src := model.InviteMemberRequest{
-		InviterID:      "u1",
-		InviteeID:      "u2",
-		InviteeAccount: "bob",
-		RoomID:         "r1",
-		SiteID:         "site-a",
-		Timestamp:      1735689600000,
-	}
-	roundTrip(t, &src, &model.InviteMemberRequest{})
-}
-
 func TestOutboxEventJSON(t *testing.T) {
 	src := model.OutboxEvent{
 		Type:       "member_added",
@@ -598,6 +684,72 @@ func TestOutboxEventJSON(t *testing.T) {
 	}
 }
 
+func TestInboxMemberEventJSON(t *testing.T) {
+	t.Run("add event, unrestricted room", func(t *testing.T) {
+		src := model.InboxMemberEvent{
+			RoomID:    "r1",
+			RoomName:  "engineering",
+			RoomType:  model.RoomTypeChannel,
+			SiteID:    "site-a",
+			Accounts:  []string{"alice", "bob"},
+			JoinedAt:  1735689600000,
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var dst model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, src, dst)
+	})
+
+	t.Run("add event, restricted room carries HistorySharedSince", func(t *testing.T) {
+		hss := int64(1735689500000)
+		src := model.InboxMemberEvent{
+			RoomID:             "r1",
+			RoomName:           "engineering",
+			RoomType:           model.RoomTypeChannel,
+			SiteID:             "site-a",
+			Accounts:           []string{"alice"},
+			HistorySharedSince: &hss,
+			JoinedAt:           1735689600000,
+			Timestamp:          1735689600000,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.EqualValues(t, hss, raw["historySharedSince"])
+
+		var dst model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.HistorySharedSince)
+		assert.Equal(t, hss, *dst.HistorySharedSince)
+	})
+
+	t.Run("remove event omits HistorySharedSince and JoinedAt when nil/zero", func(t *testing.T) {
+		src := model.InboxMemberEvent{
+			RoomID:    "r1",
+			RoomName:  "engineering",
+			RoomType:  model.RoomTypeChannel,
+			SiteID:    "site-a",
+			Accounts:  []string{"alice", "bob"},
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasHSS := raw["historySharedSince"]
+		assert.False(t, hasHSS, "historySharedSince should be omitted when nil")
+		_, hasJoinedAt := raw["joinedAt"]
+		assert.False(t, hasJoinedAt, "joinedAt should be omitted when zero")
+
+		var dst model.InboxMemberEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Nil(t, dst.HistorySharedSince, "unrestricted event must decode HistorySharedSince as nil")
+	})
+}
+
 func TestRoomMetadataUpdateEventJSON(t *testing.T) {
 	src := model.RoomMetadataUpdateEvent{
 		RoomID:        "r1",
@@ -613,16 +765,18 @@ func TestRoomMetadataUpdateEventJSON(t *testing.T) {
 func TestRemoveMemberRequestJSON(t *testing.T) {
 	t.Run("with account", func(t *testing.T) {
 		r := model.RemoveMemberRequest{
-			RoomID:  "r1",
-			Account: "alice",
+			RoomID:    "r1",
+			Account:   "alice",
+			Timestamp: 1735689600000,
 		}
 		roundTrip(t, &r, &model.RemoveMemberRequest{})
 	})
 
 	t.Run("with orgId", func(t *testing.T) {
 		r := model.RemoveMemberRequest{
-			RoomID: "r1",
-			OrgID:  "org-1",
+			RoomID:    "r1",
+			OrgID:     "org-1",
+			Timestamp: 1735689600000,
 		}
 		roundTrip(t, &r, &model.RemoveMemberRequest{})
 	})
@@ -821,24 +975,327 @@ func TestMembersAddedJSON(t *testing.T) {
 }
 
 func TestMemberAddEventJSON(t *testing.T) {
-	src := model.MemberAddEvent{
-		Type:               "member_added",
-		RoomID:             "r1",
-		Accounts:           []string{"alice", "bob"},
-		SiteID:             "site-a",
-		JoinedAt:           1735689600000,
-		HistorySharedSince: 1735689600000,
-		Timestamp:          1735689600000,
+	t.Run("restricted room round-trips HistorySharedSince pointer", func(t *testing.T) {
+		hss := int64(1735689600000)
+		src := model.MemberAddEvent{
+			Type:               "member_added",
+			RoomID:             "r1",
+			Accounts:           []string{"alice", "bob"},
+			SiteID:             "site-a",
+			JoinedAt:           1735689600000,
+			HistorySharedSince: &hss,
+			Timestamp:          1735689600000,
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.EqualValues(t, hss, raw["historySharedSince"])
+
+		var dst model.MemberAddEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.HistorySharedSince)
+		assert.Equal(t, hss, *dst.HistorySharedSince)
+	})
+
+	t.Run("unrestricted room omits historySharedSince on the wire", func(t *testing.T) {
+		src := model.MemberAddEvent{
+			Type:      "member_added",
+			RoomID:    "r1",
+			Accounts:  []string{"alice"},
+			SiteID:    "site-a",
+			JoinedAt:  1735689600000,
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasHSS := raw["historySharedSince"]
+		assert.False(t, hasHSS, "historySharedSince must be omitted when nil")
+
+		var dst model.MemberAddEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Nil(t, dst.HistorySharedSince)
+	})
+}
+
+func TestListRoomMembersRequestJSON(t *testing.T) {
+	t.Run("with limit and offset", func(t *testing.T) {
+		limit, offset := 10, 5
+		r := model.ListRoomMembersRequest{Limit: &limit, Offset: &offset}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		var dst model.ListRoomMembersRequest
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.Limit)
+		require.NotNil(t, dst.Offset)
+		assert.Equal(t, 10, *dst.Limit)
+		assert.Equal(t, 5, *dst.Offset)
+	})
+
+	t.Run("omitempty when nil", func(t *testing.T) {
+		r := model.ListRoomMembersRequest{}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		assert.Equal(t, "{}", string(data))
+	})
+
+	t.Run("with enrich true", func(t *testing.T) {
+		r := model.ListRoomMembersRequest{Enrich: true}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		assert.Equal(t, `{"enrich":true}`, string(data))
+
+		var dst model.ListRoomMembersRequest
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.True(t, dst.Enrich)
+	})
+}
+
+func TestListRoomMembersResponseJSON(t *testing.T) {
+	resp := model.ListRoomMembersResponse{
+		Members: []model.RoomMember{
+			{
+				ID:     "rm1",
+				RoomID: "r1",
+				Ts:     time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+				Member: model.RoomMemberEntry{ID: "alice", Type: model.RoomMemberIndividual, Account: "alice"},
+			},
+		},
 	}
-	data, err := json.Marshal(src)
+	data, err := json.Marshal(&resp)
 	require.NoError(t, err)
-	var dst model.MemberAddEvent
+	var dst model.ListRoomMembersResponse
 	require.NoError(t, json.Unmarshal(data, &dst))
-	assert.Equal(t, src, dst)
+	assert.Equal(t, resp, dst)
+}
+
+func TestRoomMemberEntry_DisplayFields_JSON(t *testing.T) {
+	entry := model.RoomMemberEntry{
+		ID: "u1", Type: model.RoomMemberIndividual, Account: "alice",
+		EngName: "Alice Wang", ChineseName: "愛麗絲", IsOwner: true,
+	}
+	data, err := json.Marshal(&entry)
+	require.NoError(t, err)
+
+	// JSON carries all fields, including the display ones.
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "u1", got["id"])
+	assert.Equal(t, "individual", got["type"])
+	assert.Equal(t, "alice", got["account"])
+	assert.Equal(t, "Alice Wang", got["engName"])
+	assert.Equal(t, "愛麗絲", got["chineseName"])
+	assert.Equal(t, true, got["isOwner"])
+}
+
+func TestRoomMemberEntry_DisplayFields_OmittedWhenZero(t *testing.T) {
+	entry := model.RoomMemberEntry{
+		ID: "u1", Type: model.RoomMemberIndividual, Account: "alice",
+	}
+	data, err := json.Marshal(&entry)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(data, &got))
+	for _, k := range []string{"engName", "chineseName", "isOwner", "sectName", "memberCount"} {
+		_, present := got[k]
+		assert.False(t, present, "display field %q should be omitted when zero", k)
+	}
+}
+
+func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
+	entry := model.RoomMemberEntry{
+		ID: "org-1", Type: model.RoomMemberOrg,
+		SectName: "Engineering", MemberCount: 42,
+	}
+	data, err := bson.Marshal(&entry)
+	require.NoError(t, err)
+
+	var got bson.M
+	require.NoError(t, bson.Unmarshal(data, &got))
+	assert.Equal(t, "org-1", got["id"])
+	assert.Equal(t, "org", got["type"])
+	for _, k := range []string{"engName", "chineseName", "isOwner", "sectName", "memberCount"} {
+		_, present := got[k]
+		assert.False(t, present, "display field %q must not be persisted to BSON", k)
+	}
+}
+
+func TestOrgMemberJSON(t *testing.T) {
+	m := model.OrgMember{
+		ID:          "u-alice",
+		Account:     "alice",
+		EngName:     "Alice Wang",
+		ChineseName: "愛麗絲",
+		SiteID:      "site-a",
+	}
+	data, err := json.Marshal(&m)
+	require.NoError(t, err)
+	var dst model.OrgMember
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, m, dst)
+}
+
+func TestListOrgMembersResponseJSON(t *testing.T) {
+	resp := model.ListOrgMembersResponse{
+		Members: []model.OrgMember{
+			{ID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲", SiteID: "site-a"},
+		},
+	}
+	data, err := json.Marshal(&resp)
+	require.NoError(t, err)
+	var dst model.ListOrgMembersResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, resp, dst)
+}
+
+func TestRoomsInfoBatchRequestJSON(t *testing.T) {
+	src := model.RoomsInfoBatchRequest{
+		RoomIDs: []string{"r1", "r2", "r3"},
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.RoomsInfoBatchRequest
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
+
+func TestRoomInfoJSON(t *testing.T) {
+	t.Run("happy path with all fields", func(t *testing.T) {
+		pk := "dGVzdC1wcml2YXRlLWtleS1iYXNlNjQ="
+		kv := 7
+		lastMsg := int64(1735689600000)
+		lastMention := int64(1735693200000)
+		src := model.RoomInfo{
+			RoomID:           "r1",
+			Found:            true,
+			SiteID:           "site-a",
+			Name:             "general",
+			LastMsgAt:        &lastMsg,
+			LastMentionAllAt: &lastMention,
+			PrivateKey:       &pk,
+			KeyVersion:       &kv,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var dst model.RoomInfo
+		require.NoError(t, json.Unmarshal(data, &dst))
+		if !reflect.DeepEqual(src, dst) {
+			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+		}
+	})
+
+	t.Run("found=false omits all optional fields", func(t *testing.T) {
+		src := model.RoomInfo{
+			RoomID: "r1",
+			Found:  false,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+
+		assert.Contains(t, raw, "roomId")
+		assert.Equal(t, "r1", raw["roomId"])
+
+		foundVal, foundPresent := raw["found"]
+		assert.True(t, foundPresent, "found must be present")
+		assert.Equal(t, false, foundVal)
+
+		for _, key := range []string{"siteId", "name", "lastMsgAt", "lastMentionAllAt", "privateKey", "keyVersion", "error"} {
+			_, present := raw[key]
+			assert.False(t, present, "%q should be omitted", key)
+		}
+	})
+
+	t.Run("found=true with nil PrivateKey omits zero-valued optional fields", func(t *testing.T) {
+		src := model.RoomInfo{
+			RoomID: "r1",
+			Found:  true,
+			SiteID: "site-a",
+			Name:   "general",
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+
+		for _, key := range []string{"lastMsgAt", "lastMentionAllAt", "privateKey", "keyVersion"} {
+			_, present := raw[key]
+			assert.False(t, present, "%q should be omitted when zero/nil", key)
+		}
+	})
+
+	t.Run("nil LastMsgAt omitted; pointer to zero LastMentionAllAt emitted as 0", func(t *testing.T) {
+		zero := int64(0)
+		src := model.RoomInfo{
+			RoomID:           "r1",
+			Found:            true,
+			LastMsgAt:        nil,
+			LastMentionAllAt: &zero,
+		}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+
+		_, hasLastMsg := raw["lastMsgAt"]
+		assert.False(t, hasLastMsg, "nil LastMsgAt must be omitted from JSON")
+
+		lastMention, hasMention := raw["lastMentionAllAt"]
+		require.True(t, hasMention, "non-nil LastMentionAllAt must be present even when value is 0")
+		assert.Equal(t, float64(0), lastMention, "zero value must round-trip as JSON number 0")
+
+		var dst model.RoomInfo
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Nil(t, dst.LastMsgAt, "absent JSON field must unmarshal to nil pointer")
+		require.NotNil(t, dst.LastMentionAllAt)
+		assert.Equal(t, int64(0), *dst.LastMentionAllAt)
+	})
+}
+
+func TestRoomsInfoBatchResponseJSON(t *testing.T) {
+	pk := "dGVzdC1rZXk="
+	kv := 3
+	lastMsg := int64(1735689600000)
+	lastMention := int64(1735693200000)
+	src := model.RoomsInfoBatchResponse{
+		Rooms: []model.RoomInfo{
+			{
+				RoomID:           "r1",
+				Found:            true,
+				SiteID:           "site-a",
+				Name:             "general",
+				LastMsgAt:        &lastMsg,
+				LastMentionAllAt: &lastMention,
+				PrivateKey:       &pk,
+				KeyVersion:       &kv,
+			},
+			{
+				RoomID: "r2",
+				Found:  false,
+			},
+		},
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.RoomsInfoBatchResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
-func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
+func roundTrip[T any](t *testing.T, src *T, dst *T) {
 	t.Helper()
 	data, err := json.Marshal(src)
 	if err != nil {
@@ -847,7 +1304,7 @@ func roundTrip[T comparable](t *testing.T, src *T, dst *T) {
 	if err := json.Unmarshal(data, dst); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if *dst != *src {
+	if !reflect.DeepEqual(*src, *dst) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", *dst, *src)
 	}
 }

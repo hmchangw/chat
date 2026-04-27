@@ -5,7 +5,7 @@ function room(id, overrides = {}) {
   return {
     id,
     name: `room-${id}`,
-    type: 'group',
+    type: 'channel',
     siteId: 'site-A',
     userCount: 2,
     lastMsgAt: '2026-04-17T10:00:00Z',
@@ -25,7 +25,7 @@ describe('roomEventsReducer: rooms actions', () => {
     expect(next.summaries[0]).toMatchObject({
       id: 'b',
       name: 'room-b',
-      type: 'group',
+      type: 'channel',
       unreadCount: 0,
       hasMention: false,
       mentionAll: false,
@@ -93,7 +93,7 @@ function newMessageEvent(overrides = {}) {
     type: 'new_message',
     roomId: 'a',
     roomName: 'room-a',
-    roomType: 'group',
+    roomType: 'channel',
     siteId: 'site-A',
     userCount: 3,
     lastMsgAt: '2026-04-17T12:00:00Z',
@@ -175,8 +175,8 @@ describe('roomEventsReducer: MESSAGE_RECEIVED', () => {
   })
 
   it('updates matching summary lastMsgAt and resorts', () => {
-    const a = { id: 'a', name: 'a', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T08:00:00Z' }
-    const b = { id: 'b', name: 'b', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T09:00:00Z' }
+    const a = { id: 'a', name: 'a', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T08:00:00Z' }
+    const b = { id: 'b', name: 'b', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T09:00:00Z' }
     const loaded = roomEventsReducer(initialState, { type: 'ROOMS_LOADED', rooms: [a, b] })
     const next = roomEventsReducer(loaded, {
       type: 'MESSAGE_RECEIVED',
@@ -274,7 +274,7 @@ describe('roomEventsReducer: history and active room', () => {
   it('SET_ACTIVE_ROOM clears the matching summary flags', () => {
     const loaded = roomEventsReducer(initialState, {
       type: 'ROOMS_LOADED',
-      rooms: [{ id: 'a', name: 'a', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T10:00:00Z' }],
+      rooms: [{ id: 'a', name: 'a', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T10:00:00Z' }],
     })
     const withMsg = roomEventsReducer(loaded, {
       type: 'MESSAGE_RECEIVED',
@@ -296,7 +296,7 @@ describe('roomEventsReducer: history and active room', () => {
   it('RESET returns the initial state', () => {
     const s1 = roomEventsReducer(initialState, {
       type: 'ROOMS_LOADED',
-      rooms: [{ id: 'a', name: 'a', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null }],
+      rooms: [{ id: 'a', name: 'a', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: null }],
     })
     const next = roomEventsReducer(s1, { type: 'RESET' })
     expect(next).toEqual(initialState)

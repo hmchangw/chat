@@ -20,7 +20,7 @@ export function RoomEventsProvider({ children }) {
   const stateRef = useRef(state)
   stateRef.current = state
 
-  const groupSubs = useRef(new Map())
+  const channelSubs = useRef(new Map())
   const cancelledRef = useRef(false)
   const generationRef = useRef(0)
 
@@ -40,8 +40,8 @@ export function RoomEventsProvider({ children }) {
       }
     })
 
-    const openGroupSub = (roomId) => {
-      if (groupSubs.current.has(roomId)) return
+    const openChannelSub = (roomId) => {
+      if (channelSubs.current.has(roomId)) return
       const sub = subscribe(roomEvent(roomId), (evt) => {
         if (evt?.type === 'new_message') {
           const hasMention = (evt.mentions ?? []).some(
@@ -50,14 +50,14 @@ export function RoomEventsProvider({ children }) {
           safeDispatch({ type: 'MESSAGE_RECEIVED', event: { ...evt, hasMention } })
         }
       })
-      groupSubs.current.set(roomId, sub)
+      channelSubs.current.set(roomId, sub)
     }
 
-    const closeGroupSub = (roomId) => {
-      const sub = groupSubs.current.get(roomId)
+    const closeChannelSub = (roomId) => {
+      const sub = channelSubs.current.get(roomId)
       if (sub) {
         sub.unsubscribe()
-        groupSubs.current.delete(roomId)
+        channelSubs.current.delete(roomId)
       }
     }
 
@@ -68,13 +68,13 @@ export function RoomEventsProvider({ children }) {
           .then((room) => {
             if (cancelledRef.current || !room) return
             safeDispatch({ type: 'ROOM_ADDED', room })
-            if (room.type === 'group') openGroupSub(room.id)
+            if (room.type === 'channel') openChannelSub(room.id)
           })
           .catch(() => {})
       } else if (evt.action === 'removed') {
         const roomId = evt.subscription?.roomId
         if (!roomId) return
-        closeGroupSub(roomId)
+        closeChannelSub(roomId)
         safeDispatch({ type: 'ROOM_REMOVED', roomId })
       }
     })
@@ -95,7 +95,7 @@ export function RoomEventsProvider({ children }) {
         const rooms = resp.rooms ?? []
         safeDispatch({ type: 'ROOMS_LOADED', rooms })
         for (const r of rooms) {
-          if (r.type === 'group') openGroupSub(r.id)
+          if (r.type === 'channel') openChannelSub(r.id)
         }
       })
       .catch((err) => {
@@ -107,8 +107,8 @@ export function RoomEventsProvider({ children }) {
       dmSub.unsubscribe()
       subUpdate.unsubscribe()
       metaUpdate.unsubscribe()
-      for (const sub of groupSubs.current.values()) sub.unsubscribe()
-      groupSubs.current.clear()
+      for (const sub of channelSubs.current.values()) sub.unsubscribe()
+      channelSubs.current.clear()
       dispatch({ type: 'RESET' })   // RESET runs even when cancelled — it's the cleanup itself
     }
   }, [user, subscribe, request])

@@ -12,32 +12,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
-	t.Helper()
-	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:4.4.15")
-	if err != nil {
-		t.Fatalf("start mongo: %v", err)
-	}
-	t.Cleanup(func() { container.Terminate(ctx) })
-	uri, err := container.ConnectionString(ctx)
-	if err != nil {
-		t.Fatalf("get mongo uri: %v", err)
-	}
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
-	if err != nil {
-		t.Fatalf("connect mongo: %v", err)
-	}
-	t.Cleanup(func() { client.Disconnect(ctx) })
-	return client.Database("chat_test")
+	return testutil.MongoDB(t, "inbox_worker_test")
 }
 
 type recordingPublisher struct {
@@ -71,11 +54,12 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	}
 
 	// Create outbox event for member_added
+	hssMillis := time.Now().UTC().UnixMilli()
 	change := model.MemberAddEvent{
 		Type: "member_added", RoomID: "r1", Accounts: []string{"u2"}, SiteID: "site-b",
-		JoinedAt: time.Now().UTC().UnixMilli(),
-		HistorySharedSince: time.Now().UTC().UnixMilli(),
-		Timestamp: time.Now().UTC().UnixMilli(),
+		JoinedAt:           time.Now().UTC().UnixMilli(),
+		HistorySharedSince: &hssMillis,
+		Timestamp:          time.Now().UTC().UnixMilli(),
 	}
 	changeData, _ := json.Marshal(change)
 	evt := model.OutboxEvent{Type: "member_added", SiteID: "site-a", DestSiteID: "site-b", Payload: changeData}
@@ -95,9 +79,11 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		t.Errorf("Roles = %v, want [member]", sub.Roles)
 	}
 
-	// Verify notification was published
-	if len(pub.subjects) != 1 {
-		t.Fatalf("got %d publishes, want 1", len(pub.subjects))
+	// handleMemberAdded does not publish SubscriptionUpdateEvent — room-worker
+	// publishes on the user's subject and the NATS supercluster routes it to
+	// the user's home site.
+	if len(pub.subjects) != 0 {
+		t.Fatalf("got %d publishes, want 0", len(pub.subjects))
 	}
 }
 
@@ -113,7 +99,7 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 	pub := &recordingPublisher{}
 	handler := NewHandler(store, pub)
 
-	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeGroup, UserCount: 5}
+	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeChannel, UserCount: 5}
 	roomData, _ := json.Marshal(room)
 	evt := model.OutboxEvent{Type: "room_sync", Payload: roomData}
 	evtData, _ := json.Marshal(evt)

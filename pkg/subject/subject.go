@@ -57,16 +57,16 @@ func UserMsgStream(account string) string {
 	return fmt.Sprintf("chat.user.%s.stream.msg", account)
 }
 
-func MemberInvite(account, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", account, roomID, siteID)
-}
-
 func MemberRoleUpdate(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.role-update", account, roomID, siteID)
 }
 
 func MemberRemove(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.remove", account, roomID, siteID)
+}
+
+func MemberList(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.list", account, roomID, siteID)
 }
 
 func MemberEvent(roomID string) string {
@@ -91,6 +91,44 @@ func Notification(account string) string {
 
 func Outbox(siteID, destSiteID, eventType string) string {
 	return fmt.Sprintf("outbox.%s.to.%s.%s", siteID, destSiteID, eventType)
+}
+
+// InboxMemberAdded is the local-publish subject for a same-site member_added
+// event. It lands in the local INBOX stream without the `aggregate` segment.
+func InboxMemberAdded(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.member_added", siteID)
+}
+
+// InboxMemberRemoved is the local-publish subject for a same-site
+// member_removed event. It lands in the local INBOX stream without the
+// `aggregate` segment.
+func InboxMemberRemoved(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.member_removed", siteID)
+}
+
+// InboxMemberAddedAggregate is the transformed subject for a federated
+// member_added event after INBOX SubjectTransform rewrites
+// `outbox.{src}.to.{siteID}.member_added` to this form.
+func InboxMemberAddedAggregate(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.aggregate.member_added", siteID)
+}
+
+// InboxMemberRemovedAggregate is the transformed subject for a federated
+// member_removed event.
+func InboxMemberRemovedAggregate(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.aggregate.member_removed", siteID)
+}
+
+// InboxMemberEventSubjects returns the subject filters a consumer should use
+// to receive both local and federated member_added/member_removed events for
+// the given site. Use with jetstream.ConsumerConfig.FilterSubjects (NATS 2.10+).
+func InboxMemberEventSubjects(siteID string) []string {
+	return []string{
+		InboxMemberAdded(siteID),
+		InboxMemberRemoved(siteID),
+		InboxMemberAddedAggregate(siteID),
+		InboxMemberRemovedAggregate(siteID),
+	}
 }
 
 func MsgCanonicalCreated(siteID string) string {
@@ -131,14 +169,15 @@ func RoomsGet(account, roomID string) string {
 	return fmt.Sprintf("chat.user.%s.request.rooms.get.%s", account, roomID)
 }
 
+// RoomsInfoBatch is the server-to-server request subject for batch room info lookups.
+func RoomsInfoBatch(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
+}
+
 // --- Wildcard patterns for subscriptions ---
 
 func MsgSendWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.room.*.%s.msg.send", siteID)
-}
-
-func MemberInviteWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.invite", siteID)
 }
 
 func MemberRoleUpdateWildcard(siteID string) string {
@@ -147,6 +186,36 @@ func MemberRoleUpdateWildcard(siteID string) string {
 
 func MemberRemoveWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.remove", siteID)
+}
+
+func MemberListWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.list", siteID)
+}
+
+// OrgMembers builds the subject for listing members of an org.
+func OrgMembers(account, orgID string) string {
+	return fmt.Sprintf("chat.user.%s.request.orgs.%s.members", account, orgID)
+}
+
+// OrgMembersWildcard is the subscription pattern for the list-org-members endpoint.
+func OrgMembersWildcard() string {
+	return "chat.user.*.request.orgs.*.members"
+}
+
+// ParseOrgMembersSubject returns the orgID from a subject matching the
+// pattern "chat.user.{account}.request.orgs.{orgId}.members".
+// Tokens (by strings.Split on "."): [0]chat [1]user [2]{account} [3]request
+// [4]orgs [5]{orgId} [6]members. orgID is at positional index 5.
+func ParseOrgMembersSubject(subj string) (orgID string, ok bool) {
+	parts := strings.Split(subj, ".")
+	if len(parts) != 7 {
+		return "", false
+	}
+	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" ||
+		parts[4] != "orgs" || parts[6] != "members" {
+		return "", false
+	}
+	return parts[5], true
 }
 
 func RoomCanonicalWildcard(siteID string) string {
@@ -177,16 +246,9 @@ func RoomsGetWildcard() string {
 	return "chat.user.*.request.rooms.get.*"
 }
 
-func UserResponseWildcard() string {
-	return "chat.user.*.response.>"
-}
-
-func RoomEventWildcard() string {
-	return "chat.room.*.event"
-}
-
-func UserRoomEventWildcard() string {
-	return "chat.user.*.event.room"
+// RoomsInfoBatchSubscribe is the per-site subscription subject for room-service.
+func RoomsInfoBatchSubscribe(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
 }
 
 // --- natsrouter patterns (use {param} placeholders for named extraction) ---

@@ -9,20 +9,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
+// PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
+type PublishFunc func(ctx context.Context, subj string, data []byte, msgID string) error
+
 type Handler struct {
 	store   SubscriptionStore
 	siteID  string
-	publish func(ctx context.Context, subj string, data []byte) error
+	publish PublishFunc
 }
 
-func NewHandler(store SubscriptionStore, siteID string, publish func(context.Context, string, []byte) error) *Handler {
+func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc) *Handler {
 	return &Handler{store: store, siteID: siteID, publish: publish}
 }
 
@@ -30,8 +33,6 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	subj := msg.Subject()
 	var err error
 	switch {
-	case strings.HasSuffix(subj, ".member.invite"):
-		err = h.processInvite(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".member.role-update"):
 		err = h.processRoleUpdate(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".member.add"):
@@ -51,79 +52,6 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	if err := msg.Ack(); err != nil {
 		slog.Error("failed to ack message", "error", err)
 	}
-}
-
-func (h *Handler) processInvite(ctx context.Context, data []byte) error {
-	var req model.InviteMemberRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return err
-	}
-
-	now := time.Now().UTC()
-
-	// Create subscription for invitee
-	sub := model.Subscription{
-		ID:                 uuid.New().String(),
-		User:               model.SubscriptionUser{ID: req.InviteeID, Account: req.InviteeAccount},
-		RoomID:             req.RoomID,
-		SiteID:             req.SiteID,
-		Roles:              []model.Role{model.RoleMember},
-		HistorySharedSince: &now,
-		JoinedAt:           now,
-	}
-	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
-		return err
-	}
-
-	// Increment room user count
-	if err := h.store.IncrementUserCount(ctx, req.RoomID, 1); err != nil {
-		slog.Warn("increment user count failed", "error", err, "roomID", req.RoomID)
-	}
-
-	// If invitee is on different site, publish outbox event
-	if req.SiteID != h.siteID {
-		outbox := model.OutboxEvent{
-			Type:       "member_added",
-			SiteID:     h.siteID,
-			DestSiteID: req.SiteID,
-			Payload:    data,
-			Timestamp:  now.UnixMilli(),
-		}
-		outboxData, _ := json.Marshal(outbox)
-		outboxSubj := subject.Outbox(h.siteID, req.SiteID, "member_added")
-		if err := h.publish(ctx, outboxSubj, outboxData); err != nil {
-			slog.Error("outbox publish failed", "error", err)
-		}
-	}
-
-	// Notify invitee: subscription update
-	subEvt := model.SubscriptionUpdateEvent{UserID: req.InviteeID, Subscription: sub, Action: "added", Timestamp: now.UnixMilli()}
-	subEvtData, _ := json.Marshal(subEvt)
-	if err := h.publish(ctx, subject.SubscriptionUpdate(req.InviteeAccount), subEvtData); err != nil {
-		slog.Error("subscription update publish failed", "error", err)
-	}
-
-	// Notify all existing members: room metadata changed
-	room, err := h.store.GetRoom(ctx, req.RoomID)
-	if err == nil {
-		metaEvt := model.RoomMetadataUpdateEvent{
-			RoomID:    req.RoomID,
-			Name:      room.Name,
-			UserCount: room.UserCount,
-			UpdatedAt: now,
-			Timestamp: now.UnixMilli(),
-		}
-		metaData, _ := json.Marshal(metaEvt)
-
-		members, _ := h.store.ListByRoom(ctx, req.RoomID)
-		for i := range members {
-			if err := h.publish(ctx, subject.RoomMetadataChanged(members[i].User.Account), metaData); err != nil {
-				slog.Error("room metadata publish failed", "error", err, "account", members[i].User.Account)
-			}
-		}
-	}
-
-	return nil
 }
 
 func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
@@ -167,7 +95,7 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 	if err != nil {
 		return fmt.Errorf("marshal subscription update event: %w", err)
 	}
-	if err := h.publish(ctx, subject.SubscriptionUpdate(updatedSub.User.Account), subEvtData); err != nil {
+	if err := h.publish(ctx, subject.SubscriptionUpdate(updatedSub.User.Account), subEvtData, ""); err != nil {
 		return fmt.Errorf("publish subscription update: %w", err)
 	}
 
@@ -191,7 +119,9 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 			return fmt.Errorf("marshal outbox event: %w", err)
 		}
 		outboxSubj := subject.Outbox(h.siteID, user.SiteID, "role_updated")
-		if err := h.publish(ctx, outboxSubj, outboxData); err != nil {
+		// req.Timestamp is the stable acceptance time — keeps Nats-Msg-Id identical on redelivery.
+		dedupID := idgen.DeriveID(fmt.Sprintf("roleupd-outbox:%s:%s:%s:%d", req.RoomID, req.Account, req.NewRole, req.Timestamp))
+		if err := h.publish(ctx, outboxSubj, outboxData, dedupID); err != nil {
 			return fmt.Errorf("publish outbox: %w", err)
 		}
 	}
@@ -223,10 +153,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("delete room member (individual): %w", err)
 	}
 
-	// Dual-membership: the user stays via the org source. Strip the owner
-	// role if present — org members cannot be owners. Room-service's
-	// last-owner guard has already ensured at least one owner remains after
-	// this demotion. No subscription delete, no userCount change, no events.
+	// Dual-membership: user stays via org source; strip owner role (org members can't be owners).
 	if user.HasOrgMembership {
 		if slices.Contains(user.Roles, model.RoleOwner) {
 			if err := h.store.RemoveRole(ctx, req.Account, req.RoomID, model.RoleOwner); err != nil {
@@ -236,17 +163,13 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return nil
 	}
 
-	// Individual-only: full removal — delete the subscription, decrement
-	// userCount, and publish leave/removed events.
-	deleted, err := h.store.DeleteSubscription(ctx, req.RoomID, req.Account)
-	if err != nil {
+	// Individual-only: delete sub, reconcile userCount, publish leave/removed events.
+	if _, err := h.store.DeleteSubscription(ctx, req.RoomID, req.Account); err != nil {
 		return fmt.Errorf("delete subscription: %w", err)
 	}
 
-	if deleted > 0 {
-		if err := h.store.DecrementUserCount(ctx, req.RoomID, int(deleted)); err != nil {
-			return fmt.Errorf("decrement user count: %w", err)
-		}
+	if err := h.store.ReconcileUserCount(ctx, req.RoomID); err != nil {
+		return fmt.Errorf("reconcile user count: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -262,7 +185,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		Timestamp: now.UnixMilli(),
 	}
 	subEvtData, _ := json.Marshal(subEvt)
-	if err := h.publish(ctx, subject.SubscriptionUpdate(req.Account), subEvtData); err != nil {
+	if err := h.publish(ctx, subject.SubscriptionUpdate(req.Account), subEvtData, ""); err != nil {
 		slog.Error("subscription update publish failed", "error", err, "account", req.Account)
 	}
 
@@ -279,7 +202,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		Timestamp: now.UnixMilli(),
 	}
 	memberEvtData, _ := json.Marshal(memberEvt)
-	if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData); err != nil {
+	if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData, ""); err != nil {
 		slog.Error("member event publish failed", "error", err, "roomID", req.RoomID)
 	}
 
@@ -296,7 +219,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		sysMsgData, _ = json.Marshal(model.MemberRemoved{User: &sysMsgUser, RemovedUsersCount: 1})
 	}
 	sysMsg := model.Message{
-		ID:         uuid.New().String(),
+		ID:         idgen.DeriveID(fmt.Sprintf("rmindiv:%s:%s:%d", req.RoomID, req.Account, req.Timestamp)),
 		RoomID:     req.RoomID,
 		Type:       evtType,
 		SysMsgData: sysMsgData,
@@ -308,8 +231,9 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		Timestamp: now.UnixMilli(),
 	}
 	msgEvtData, _ := json.Marshal(msgEvt)
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData); err != nil {
-		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
+	sysMsgDedupID := idgen.DeriveID(fmt.Sprintf("rmindiv-msg:%s:%s:%d", req.RoomID, req.Account, req.Timestamp))
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsgDedupID); err != nil {
+		return fmt.Errorf("publish individual removal system message: %w", err)
 	}
 
 	// Cross-site outbox for federated users
@@ -322,8 +246,9 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 			Timestamp:  now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, "member_removed"), outboxData); err != nil {
-			slog.Error("outbox publish failed", "error", err, "destSiteID", user.SiteID)
+		outboxDedupID := idgen.DeriveID(fmt.Sprintf("rmindiv-outbox:%s:%s:%s:%d", req.RoomID, req.Account, user.SiteID, req.Timestamp))
+		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, "member_removed"), outboxData, outboxDedupID); err != nil {
+			return fmt.Errorf("outbox publish to %s: %w", user.SiteID, err)
 		}
 	}
 
@@ -348,10 +273,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		accounts[i] = m.Account
 	}
 
-	var deletedCount int64
 	if len(accounts) > 0 {
-		deletedCount, err = h.store.DeleteSubscriptionsByAccounts(ctx, req.RoomID, accounts)
-		if err != nil {
+		if _, err := h.store.DeleteSubscriptionsByAccounts(ctx, req.RoomID, accounts); err != nil {
 			return fmt.Errorf("delete subscriptions by accounts: %w", err)
 		}
 	}
@@ -360,10 +283,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		return fmt.Errorf("delete room member (org): %w", err)
 	}
 
-	if deletedCount > 0 {
-		if err := h.store.DecrementUserCount(ctx, req.RoomID, int(deletedCount)); err != nil {
-			return fmt.Errorf("decrement user count: %w", err)
-		}
+	if err := h.store.ReconcileUserCount(ctx, req.RoomID); err != nil {
+		return fmt.Errorf("reconcile user count: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -383,7 +304,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 			Timestamp: now.UnixMilli(),
 		}
 		subEvtData, _ := json.Marshal(subEvt)
-		if err := h.publish(ctx, subject.SubscriptionUpdate(m.Account), subEvtData); err != nil {
+		if err := h.publish(ctx, subject.SubscriptionUpdate(m.Account), subEvtData, ""); err != nil {
 			slog.Error("subscription update publish failed", "error", err, "account", m.Account)
 		}
 	}
@@ -399,7 +320,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 			Timestamp: now.UnixMilli(),
 		}
 		memberEvtData, _ := json.Marshal(memberEvt)
-		if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData); err != nil {
+		if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData, ""); err != nil {
 			slog.Error("member event publish failed", "error", err, "roomID", req.RoomID)
 		}
 	}
@@ -411,7 +332,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		RemovedUsersCount: len(toRemove),
 	})
 	sysMsg := model.Message{
-		ID:         uuid.New().String(),
+		ID:         idgen.DeriveID(fmt.Sprintf("rmorg:%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)),
 		RoomID:     req.RoomID,
 		Type:       "member_removed",
 		SysMsgData: sysMsgPayload,
@@ -423,8 +344,9 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		Timestamp: now.UnixMilli(),
 	}
 	msgEvtData, _ := json.Marshal(msgEvt)
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData); err != nil {
-		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
+	sysMsgDedupID := idgen.DeriveID(fmt.Sprintf("rmorg-msg:%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp))
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsgDedupID); err != nil {
+		return fmt.Errorf("publish org removal system message: %w", err)
 	}
 
 	// Cross-site outbox grouped by destination site
@@ -451,8 +373,9 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 			Timestamp:  now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		if err := h.publish(ctx, subject.Outbox(h.siteID, destSiteID, "member_removed"), outboxData); err != nil {
-			slog.Error("outbox publish failed", "error", err, "destSiteID", destSiteID)
+		outboxDedupID := idgen.DeriveID(fmt.Sprintf("rmorg-outbox:%s:%s:%s:%d", req.RoomID, req.OrgID, destSiteID, req.Timestamp))
+		if err := h.publish(ctx, subject.Outbox(h.siteID, destSiteID, "member_removed"), outboxData, outboxDedupID); err != nil {
+			return fmt.Errorf("outbox publish to %s: %w", destSiteID, err)
 		}
 	}
 
@@ -502,7 +425,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			continue
 		}
 		sub := &model.Subscription{
-			ID:       uuid.New().String(),
+			ID:       idgen.GenerateID(),
 			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:   req.RoomID,
 			SiteID:   room.SiteID,
@@ -537,7 +460,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	if writeIndividuals {
 		for _, sub := range subs {
 			roomMembers = append(roomMembers, &model.RoomMember{
-				ID:     uuid.New().String(),
+				ID:     idgen.GenerateID(),
 				RoomID: req.RoomID,
 				Ts:     acceptedAt,
 				Member: model.RoomMemberEntry{
@@ -550,7 +473,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 	for _, org := range req.Orgs {
 		roomMembers = append(roomMembers, &model.RoomMember{
-			ID:     uuid.New().String(),
+			ID:     idgen.GenerateID(),
 			RoomID: req.RoomID,
 			Ts:     acceptedAt,
 			Member: model.RoomMemberEntry{
@@ -580,7 +503,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 				} else {
 					for i := range backfillUsers {
 						roomMembers = append(roomMembers, &model.RoomMember{
-							ID:     uuid.New().String(),
+							ID:     idgen.GenerateID(),
 							RoomID: req.RoomID,
 							Ts:     acceptedAt,
 							Member: model.RoomMemberEntry{
@@ -597,13 +520,15 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 
 	if len(roomMembers) > 0 {
 		if err := h.store.BulkCreateRoomMembers(ctx, roomMembers); err != nil {
-			slog.Error("bulk create room members failed", "error", err, "roomID", req.RoomID)
+			return fmt.Errorf("bulk create room members (room %s): %w", req.RoomID, err)
 		}
 	}
 
-	// 6. Increment user count
-	if err := h.store.IncrementUserCount(ctx, req.RoomID, len(subs)); err != nil {
-		slog.Warn("increment user count failed", "error", err, "roomID", req.RoomID)
+	// 6. Reconcile userCount. Idempotent $set converges to the correct value
+	// even under JetStream redelivery; an upstream log-and-continue would
+	// leave the counter drifted forever, so we propagate the error.
+	if err := h.store.ReconcileUserCount(ctx, req.RoomID); err != nil {
+		return fmt.Errorf("reconcile user count: %w", err)
 	}
 
 	for _, sub := range subs {
@@ -614,15 +539,25 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			Timestamp:    now.UnixMilli(),
 		}
 		subEvtData, _ := json.Marshal(subEvt)
-		if err := h.publish(ctx, subject.SubscriptionUpdate(sub.User.Account), subEvtData); err != nil {
+		if err := h.publish(ctx, subject.SubscriptionUpdate(sub.User.Account), subEvtData, ""); err != nil {
 			slog.Error("subscription update publish failed", "error", err, "account", sub.User.Account)
 		}
 	}
 
 	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)
-	var historySharedSince int64
+	// Never emit &0 — the painless sentinel `hss <= 0` would misroute the
+	// restricted room into `rooms[]`. If the upstream request is malformed
+	// (restricted mode but missing timestamp), leave the pointer nil + log —
+	// we can't silently translate to &0.
+	var historySharedSincePtr *int64
 	if req.History.Mode == model.HistoryModeNone {
-		historySharedSince = req.Timestamp
+		if req.Timestamp > 0 {
+			v := req.Timestamp
+			historySharedSincePtr = &v
+		} else {
+			slog.Error("restricted history with missing timestamp, emitting nil",
+				"roomID", req.RoomID, "mode", req.History.Mode)
+		}
 	}
 	memberAddEvt := model.MemberAddEvent{
 		Type:               "member_added",
@@ -630,11 +565,11 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		Accounts:           actualAccounts,
 		SiteID:             room.SiteID,
 		JoinedAt:           req.Timestamp,
-		HistorySharedSince: historySharedSince,
+		HistorySharedSince: historySharedSincePtr,
 		Timestamp:          now.UnixMilli(),
 	}
 	memberAddData, _ := json.Marshal(memberAddEvt)
-	if err := h.publish(ctx, subject.RoomMemberEvent(req.RoomID), memberAddData); err != nil {
+	if err := h.publish(ctx, subject.RoomMemberEvent(req.RoomID), memberAddData, ""); err != nil {
 		slog.Error("member add event publish failed", "error", err, "roomID", req.RoomID)
 	}
 
@@ -645,8 +580,21 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		AddedUsersCount: len(subs),
 	}
 	sysMsgData, _ := json.Marshal(membersAdded)
+	// Include requester + sorted accounts/orgs so same-ms requests don't collide.
+	seedAccounts := slices.Clone(actualAccounts)
+	slices.Sort(seedAccounts)
+	seedOrgs := slices.Clone(req.Orgs)
+	slices.Sort(seedOrgs)
+	addMembersSeed := fmt.Sprintf(
+		"addmembers:%s:%s:%d:%s:%s",
+		req.RoomID,
+		req.RequesterAccount,
+		req.Timestamp,
+		strings.Join(seedAccounts, ","),
+		strings.Join(seedOrgs, ","),
+	)
 	sysMsg := model.Message{
-		ID:          uuid.New().String(),
+		ID:          idgen.DeriveID(addMembersSeed),
 		RoomID:      req.RoomID,
 		UserID:      req.RequesterID,
 		UserAccount: req.RequesterAccount,
@@ -661,8 +609,9 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		Timestamp: now.UnixMilli(),
 	}
 	msgEvtData, _ := json.Marshal(msgEvt)
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData); err != nil {
-		slog.Error("system message publish failed", "error", err, "roomID", req.RoomID)
+	addMsgDedupID := idgen.DeriveID("addmembers-msg:" + addMembersSeed)
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData, addMsgDedupID); err != nil {
+		return fmt.Errorf("publish add-members system message: %w", err)
 	}
 
 	// 10. Outbox for cross-site members — batched by destination site
@@ -681,7 +630,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			Accounts:           accounts,
 			SiteID:             room.SiteID,
 			JoinedAt:           req.Timestamp,
-			HistorySharedSince: historySharedSince,
+			HistorySharedSince: historySharedSincePtr,
 			Timestamp:          now.UnixMilli(),
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)
@@ -690,7 +639,16 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			Payload: siteEvtData, Timestamp: now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData); err != nil {
+		siteSeedAccounts := slices.Clone(accounts)
+		slices.Sort(siteSeedAccounts)
+		addOutboxDedupID := idgen.DeriveID(fmt.Sprintf(
+			"addmembers-outbox:%s:%s:%d:%s",
+			req.RoomID,
+			destSiteID,
+			req.Timestamp,
+			strings.Join(siteSeedAccounts, ","),
+		))
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData, addOutboxDedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s failed: %w", destSiteID, err)
 		}
 	}

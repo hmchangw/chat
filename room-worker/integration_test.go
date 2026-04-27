@@ -10,33 +10,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
-	t.Helper()
-	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:4.4.15")
-	if err != nil {
-		t.Fatalf("start mongo: %v", err)
-	}
-	t.Cleanup(func() { container.Terminate(ctx) })
-
-	uri, err := container.ConnectionString(ctx)
-	if err != nil {
-		t.Fatalf("get mongo uri: %v", err)
-	}
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
-	if err != nil {
-		t.Fatalf("connect mongo: %v", err)
-	}
-	t.Cleanup(func() { client.Disconnect(ctx) })
-	return client.Database("chat_test")
+	return testutil.MongoDB(t, "room_worker_test")
 }
 
 func TestMongoStore_Integration(t *testing.T) {
@@ -44,7 +26,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
-	// Seed a room for IncrementUserCount and GetRoom
+	// Seed a room for ReconcileUserCount and GetRoom
 	db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r1", Name: "general", UserCount: 1})
 
 	// Test CreateSubscription
@@ -62,16 +44,16 @@ func TestMongoStore_Integration(t *testing.T) {
 		t.Errorf("got %+v", subs)
 	}
 
-	// Test IncrementUserCount
-	if err := store.IncrementUserCount(ctx, "r1"); err != nil {
-		t.Fatalf("IncrementUserCount: %v", err)
+	// Test ReconcileUserCount — sets userCount to the current subscription count.
+	if err := store.ReconcileUserCount(ctx, "r1"); err != nil {
+		t.Fatalf("ReconcileUserCount: %v", err)
 	}
 	room, err := store.GetRoom(ctx, "r1")
 	if err != nil {
 		t.Fatalf("GetRoom: %v", err)
 	}
-	if room.UserCount != 2 {
-		t.Errorf("UserCount = %d, want 2", room.UserCount)
+	if room.UserCount != 1 {
+		t.Errorf("UserCount = %d, want 1 (actual subscription count)", room.UserCount)
 	}
 }
 
@@ -293,20 +275,35 @@ func TestMongoStore_DeleteSubscriptionsByAccounts_Integration(t *testing.T) {
 	assert.Equal(t, "carol", subs[0].User.Account)
 }
 
-func TestMongoStore_DecrementUserCount_Integration(t *testing.T) {
+func TestMongoStore_ReconcileUserCount_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
+	// Room with a stale userCount (e.g., from a drift scenario).
 	room := &model.Room{ID: "r1", Name: "general", UserCount: 10, SiteID: "site-a", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	_, err := db.Collection("rooms").InsertOne(ctx, room)
 	require.NoError(t, err)
 
-	require.NoError(t, store.DecrementUserCount(ctx, "r1", 3))
+	// Seed 3 subscriptions for r1 — this is the ground truth.
+	_, err = db.Collection("subscriptions").InsertMany(ctx, []interface{}{
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
+		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"}, RoomID: "r1"},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.ReconcileUserCount(ctx, "r1"))
 
 	updated, err := store.GetRoom(ctx, "r1")
 	require.NoError(t, err)
-	assert.Equal(t, 7, updated.UserCount)
+	assert.Equal(t, 3, updated.UserCount, "reconcile must set userCount to actual subscription count")
+
+	// Idempotency: running it again yields the same value.
+	require.NoError(t, store.ReconcileUserCount(ctx, "r1"))
+	updated, err = store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
+	assert.Equal(t, 3, updated.UserCount, "reconcile must be idempotent")
 }
 
 func TestMongoStore_DeleteRoomMember_Integration(t *testing.T) {

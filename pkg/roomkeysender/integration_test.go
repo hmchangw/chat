@@ -61,7 +61,7 @@ websocket {
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "nats:2-alpine",
+			Image:        "nats:2.11-alpine",
 			ExposedPorts: []string{"4222/tcp", "8080/tcp"},
 			Cmd:          []string{"--config", "/nats.conf"},
 			Files: []testcontainers.ContainerFile{
@@ -136,10 +136,11 @@ func setupNode(t *testing.T, nw *testcontainers.DockerNetwork) testcontainers.Co
 	)
 	require.NoError(t, err, "copy ws-polyfill.cjs into container")
 
-	// Install tsx and nats (WebSocket client) only if not already present in the image.
+	// Install tsx, nats.ws (WebSocket NATS client), and websocket (W3C WebSocket
+	// polyfill referenced by ws-polyfill.cjs — Node 20 ships no native WebSocket).
 	exitCode, reader, err := container.Exec(ctx, []string{
 		"sh", "-c",
-		"command -v tsx >/dev/null 2>&1 || (npm install -g tsx --quiet 2>&1 && npm install -g nats.ws --quiet 2>&1)",
+		"command -v tsx >/dev/null 2>&1 || (npm install -g tsx --quiet 2>&1 && npm install -g nats.ws --quiet 2>&1 && npm install -g websocket --quiet 2>&1)",
 	})
 	require.NoError(t, err, "exec npm install")
 	out := readCombined(reader)
@@ -191,6 +192,7 @@ func TestRoomKeySender_TypeScriptClient_Unencrypted(t *testing.T) {
 
 	go func() {
 		exitCode, reader, err := nodeContainer.Exec(ctx, []string{
+			"env", "NODE_PATH=/usr/local/lib/node_modules",
 			"tsx", "--require", "/ws-polyfill.cjs", "/client.ts", wsURL, account, roomID,
 		})
 		stdout, combined := splitOutput(reader)
@@ -252,6 +254,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 
 	go func() {
 		exitCode, reader, err := nodeContainer.Exec(ctx, []string{
+			"env", "NODE_PATH=/usr/local/lib/node_modules",
 			"tsx", "--require", "/ws-polyfill.cjs", "/client.ts", wsURL, account, roomID,
 		})
 		stdout, combined := splitOutput(reader)
@@ -281,7 +284,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// 8. Encrypt a message with the room public key.
-	encrypted, err := roomcrypto.Encode(plaintext, pubKeyBytes)
+	encrypted, err := roomcrypto.Encode(plaintext, pubKeyBytes, version)
 	require.NoError(t, err, "encrypt message")
 	encryptedJSON, err := json.Marshal(encrypted)
 	require.NoError(t, err, "marshal encrypted message")

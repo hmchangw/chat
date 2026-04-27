@@ -17,18 +17,22 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 type config struct {
-	NatsURL       string `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
-	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID        string `env:"SITE_ID"         envDefault:"default"`
-	MongoURI      string `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
-	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
-	MaxWorkers    int    `env:"MAX_WORKERS"     envDefault:"100"`
+	NatsURL              string        `env:"NATS_URL"                  envDefault:"nats://localhost:4222"`
+	NatsCredsFile        string        `env:"NATS_CREDS_FILE"           envDefault:""`
+	SiteID               string        `env:"SITE_ID"                   envDefault:"default"`
+	MongoURI             string        `env:"MONGO_URI"                 envDefault:"mongodb://localhost:27017"`
+	MongoDB              string        `env:"MONGO_DB"                  envDefault:"chat"`
+	MaxWorkers           int           `env:"MAX_WORKERS"               envDefault:"100"`
+	ValkeyAddr           string        `env:"VALKEY_ADDR,required"`
+	ValkeyPassword       string        `env:"VALKEY_PASSWORD"           envDefault:""`
+	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
 }
 
 func main() {
@@ -56,6 +60,16 @@ func main() {
 	db := mongoClient.Database(cfg.MongoDB)
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
+
+	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        cfg.ValkeyAddr,
+		Password:    cfg.ValkeyPassword,
+		GracePeriod: cfg.ValkeyKeyGracePeriod,
+	})
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
+	}
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
@@ -88,7 +102,7 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(store, us, publisher)
+	handler := NewHandler(store, us, publisher, keyStore)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
@@ -145,6 +159,7 @@ func main() {
 		},
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { return keyStore.Close() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }

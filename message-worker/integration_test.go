@@ -5,42 +5,27 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/gocql/gocql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go/modules/cassandra"
-	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 func setupCassandra(t *testing.T) *gocql.Session {
 	t.Helper()
-	ctx := context.Background()
-	container, err := cassandra.Run(ctx, "cassandra:5")
-	require.NoError(t, err)
-	t.Cleanup(func() { container.Terminate(ctx) })
-
-	host, err := container.ConnectionHost(ctx)
-	require.NoError(t, err)
-
-	cluster := gocql.NewCluster(host)
-	cluster.Consistency = gocql.One
-	session, err := cluster.CreateSession()
-	require.NoError(t, err)
-	t.Cleanup(func() { session.Close() })
-
+	keyspace, adminSession, host := testutil.CassandraKeyspace(t, "message_worker_test")
 	stmts := []string{
-		`CREATE KEYSPACE IF NOT EXISTS chat_test WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`,
-		`CREATE TYPE IF NOT EXISTS chat_test."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT)`,
-		`CREATE TABLE IF NOT EXISTS chat_test.messages_by_room (
+		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT)`, keyspace),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.messages_by_room (
 			room_id       TEXT,
 			created_at    TIMESTAMP,
 			message_id    TEXT,
@@ -50,11 +35,12 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			updated_at    TIMESTAMP,
 			mentions      SET<FROZEN<"Participant">>,
 			tcount        INT,
+			tshow         BOOLEAN,
 			type          TEXT,
 			sys_msg_data  BLOB,
 			PRIMARY KEY ((room_id), created_at, message_id)
-		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`,
-		`CREATE TABLE IF NOT EXISTS chat_test.messages_by_id (
+		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`, keyspace),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.messages_by_id (
 			message_id               TEXT,
 			created_at               TIMESTAMP,
 			room_id                  TEXT,
@@ -67,11 +53,12 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			thread_parent_id         TEXT,
 			thread_parent_created_at TIMESTAMP,
 			tcount                   INT,
+			tshow                    BOOLEAN,
 			type                     TEXT,
 			sys_msg_data             BLOB,
 			PRIMARY KEY (message_id, created_at)
-		) WITH CLUSTERING ORDER BY (created_at DESC)`,
-		`CREATE TABLE IF NOT EXISTS chat_test.thread_messages_by_room (
+		) WITH CLUSTERING ORDER BY (created_at DESC)`, keyspace),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_room (
 			room_id          TEXT,
 			thread_room_id   TEXT,
 			created_at       TIMESTAMP,
@@ -82,16 +69,21 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			site_id          TEXT,
 			updated_at       TIMESTAMP,
 			mentions         SET<FROZEN<"Participant">>,
+			tshow            BOOLEAN,
 			type             TEXT,
 			sys_msg_data     BLOB,
 			PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
-		) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`,
+		) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`, keyspace),
 	}
 	for _, stmt := range stmts {
-		require.NoError(t, session.Query(stmt).Exec())
+		require.NoError(t, adminSession.Query(stmt).Exec())
 	}
 
-	cluster.Keyspace = "chat_test"
+	// Return a session whose default keyspace is the isolated one so tests
+	// can write plain `FROM messages_by_room` queries.
+	cluster := gocql.NewCluster(host)
+	cluster.Consistency = gocql.One
+	cluster.Keyspace = keyspace
 	ksSession, err := cluster.CreateSession()
 	require.NoError(t, err)
 	t.Cleanup(func() { ksSession.Close() })
@@ -99,20 +91,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 }
 
 func setupMongo(t *testing.T) *mongo.Database {
-	t.Helper()
-	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:7")
-	require.NoError(t, err)
-	t.Cleanup(func() { container.Terminate(ctx) })
-
-	uri, err := container.ConnectionString(ctx)
-	require.NoError(t, err)
-
-	client, err := mongoutil.Connect(ctx, uri)
-	require.NoError(t, err)
-	t.Cleanup(func() { mongoutil.Disconnect(ctx, client) })
-
-	return client.Database("chat_test")
+	return testutil.MongoDB(t, "message_worker_test")
 }
 
 func TestCassandraStore_SaveMessage(t *testing.T) {
@@ -328,23 +307,11 @@ func TestCassandraStore_GetMessageSender(t *testing.T) {
 func TestHandler_Integration(t *testing.T) {
 	ctx := context.Background()
 
-	// Start Cassandra
 	cassSession := setupCassandra(t)
+	mongoDB := setupMongo(t)
 
-	// Start MongoDB
-	mongoContainer, err := mongodb.Run(ctx, "mongo:7")
-	require.NoError(t, err)
-	t.Cleanup(func() { mongoContainer.Terminate(ctx) })
-
-	mongoURI, err := mongoContainer.ConnectionString(ctx)
-	require.NoError(t, err)
-
-	mongoClient, err := mongoutil.Connect(ctx, mongoURI)
-	require.NoError(t, err)
-	t.Cleanup(func() { mongoutil.Disconnect(ctx, mongoClient) })
-
-	userCol := mongoClient.Database("chat_test").Collection("users")
-	_, err = userCol.InsertOne(ctx, bson.M{
+	userCol := mongoDB.Collection("users")
+	_, err := userCol.InsertOne(ctx, bson.M{
 		"_id":         "u-1",
 		"account":     "alice",
 		"siteId":      "site-a",
@@ -356,7 +323,7 @@ func TestHandler_Integration(t *testing.T) {
 
 	store := NewCassandraStore(cassSession)
 	us := userstore.NewMongoStore(userCol)
-	threadStore := newThreadStoreMongo(mongoClient.Database("chat_test"))
+	threadStore := newThreadStoreMongo(mongoDB)
 	h := NewHandler(store, us, threadStore)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -523,6 +490,90 @@ func TestHandler_Integration_ThreadReply(t *testing.T) {
 	})
 }
 
+func TestHandler_Integration_ThreadReplyWithMention(t *testing.T) {
+	ctx := context.Background()
+
+	cassSession := setupCassandra(t)
+	db := setupMongo(t)
+
+	userCol := db.Collection("users")
+	_, err := userCol.InsertMany(ctx, []interface{}{
+		bson.M{"_id": "u-parent", "account": "parent-user", "siteId": "site-a", "engName": "Parent User", "chineseName": "家長", "employeeId": "EMP001"},
+		bson.M{"_id": "u-replier", "account": "replier", "siteId": "site-a", "engName": "Replier User", "chineseName": "回覆者", "employeeId": "EMP002"},
+		bson.M{"_id": "u-bob", "account": "bob", "siteId": "site-a", "engName": "Bob Chen", "chineseName": "鮑勃", "employeeId": "EMP003"},
+	})
+	require.NoError(t, err)
+
+	store := NewCassandraStore(cassSession)
+	us := userstore.NewMongoStore(userCol)
+	ts := newThreadStoreMongo(db)
+	require.NoError(t, ts.EnsureIndexes(ctx))
+	h := NewHandler(store, us, ts)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Save parent message so GetMessageSender can find it.
+	parentMsg := &model.Message{
+		ID: "msg-parent-mention", RoomID: "r-mention", UserID: "u-parent", UserAccount: "parent-user",
+		Content: "parent message", CreatedAt: now.Add(-1 * time.Minute),
+	}
+	parentSender := &cassParticipant{ID: "u-parent", EngName: "Parent User", Account: "parent-user"}
+	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
+
+	// Thread reply from replier that mentions @bob (non-participant).
+	replyEvt := model.MessageEvent{
+		Message: model.Message{
+			ID: "msg-reply-mention", RoomID: "r-mention", UserID: "u-replier", UserAccount: "replier",
+			Content: "hey @bob take a look", CreatedAt: now,
+			ThreadParentMessageID: "msg-parent-mention",
+		},
+		SiteID: "site-a", Timestamp: now.UnixMilli(),
+	}
+	data, err := json.Marshal(replyEvt)
+	require.NoError(t, err)
+	require.NoError(t, h.processMessage(ctx, data))
+
+	t.Run("bob auto-subscribed with hasMention=true", func(t *testing.T) {
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"parentMessageId": "msg-parent-mention",
+			"userId":          "u-bob",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.Equal(t, "bob", got.UserAccount)
+		assert.True(t, got.HasMention, "mentionee must have hasMention=true")
+		assert.Nil(t, got.LastSeenAt)
+	})
+
+	t.Run("parent author subscribed with hasMention=false (not mentioned)", func(t *testing.T) {
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"parentMessageId": "msg-parent-mention",
+			"userId":          "u-parent",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.False(t, got.HasMention)
+	})
+
+	t.Run("replier subscribed with hasMention=false (sender excluded)", func(t *testing.T) {
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"parentMessageId": "msg-parent-mention",
+			"userId":          "u-replier",
+		}).Decode(&got)
+		require.NoError(t, err)
+		assert.False(t, got.HasMention)
+	})
+
+	t.Run("three thread subscriptions total", func(t *testing.T) {
+		count, err := db.Collection("threadSubscriptions").CountDocuments(ctx, bson.M{
+			"parentMessageId": "msg-parent-mention",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), count)
+	})
+}
+
 func TestThreadStoreMongo_CreateThreadRoom(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
@@ -628,7 +679,7 @@ func TestThreadStoreMongo_InsertThreadSubscription(t *testing.T) {
 	})
 }
 
-func TestThreadStoreMongo_ThreadSubscriptionExists(t *testing.T) {
+func TestThreadStoreMongo_MarkThreadSubscriptionMention(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
 	store := newThreadStoreMongo(db)
@@ -636,25 +687,100 @@ func TestThreadStoreMongo_ThreadSubscriptionExists(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	t.Run("returns false when subscription absent", func(t *testing.T) {
-		exists, err := store.ThreadSubscriptionExists(ctx, "tr-nonexistent", "u-1")
+	t.Run("upsert creates new subscription with hasMention=true", func(t *testing.T) {
+		sub := &model.ThreadSubscription{
+			ID:              "ts-new-1",
+			ParentMessageID: "msg-parent-mk-1",
+			RoomID:          "r-1",
+			ThreadRoomID:    "tr-mk-1",
+			UserID:          "u-mk-new",
+			UserAccount:     "bob",
+			SiteID:          "site-a",
+			LastSeenAt:      nil,
+			HasMention:      true,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		require.NoError(t, store.MarkThreadSubscriptionMention(ctx, sub))
+
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"threadRoomId": "tr-mk-1",
+			"userId":       "u-mk-new",
+		}).Decode(&got)
 		require.NoError(t, err)
-		assert.False(t, exists)
+		assert.Equal(t, "ts-new-1", got.ID)
+		assert.Equal(t, "bob", got.UserAccount)
+		assert.True(t, got.HasMention, "hasMention must be true for new mentionee sub")
+		assert.Nil(t, got.LastSeenAt)
 	})
 
-	t.Run("returns true after insertion", func(t *testing.T) {
-		sub := &model.ThreadSubscription{
-			ID:           "ts-exists",
-			ThreadRoomID: "tr-exists",
-			UserID:       "u-exists",
-			CreatedAt:    now,
-			UpdatedAt:    now,
+	t.Run("upsert flips hasMention=true on existing subscription without overwriting other fields", func(t *testing.T) {
+		original := &model.ThreadSubscription{
+			ID:              "ts-existing-1",
+			ParentMessageID: "msg-parent-mk-2",
+			RoomID:          "r-1",
+			ThreadRoomID:    "tr-mk-2",
+			UserID:          "u-mk-existing",
+			UserAccount:     "alice",
+			SiteID:          "site-a",
+			LastSeenAt:      nil,
+			HasMention:      false,
+			CreatedAt:       now,
+			UpdatedAt:       now,
 		}
-		require.NoError(t, store.InsertThreadSubscription(ctx, sub))
+		require.NoError(t, store.InsertThreadSubscription(ctx, original))
 
-		exists, err := store.ThreadSubscriptionExists(ctx, "tr-exists", "u-exists")
+		later := now.Add(10 * time.Minute)
+		mention := &model.ThreadSubscription{
+			ID:              "ts-should-be-ignored",
+			ParentMessageID: "msg-parent-mk-2",
+			RoomID:          "r-1",
+			ThreadRoomID:    "tr-mk-2",
+			UserID:          "u-mk-existing",
+			UserAccount:     "alice",
+			SiteID:          "site-a",
+			LastSeenAt:      nil,
+			HasMention:      true,
+			CreatedAt:       later,
+			UpdatedAt:       later,
+		}
+		require.NoError(t, store.MarkThreadSubscriptionMention(ctx, mention))
+
+		var got model.ThreadSubscription
+		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
+			"threadRoomId": "tr-mk-2",
+			"userId":       "u-mk-existing",
+		}).Decode(&got)
 		require.NoError(t, err)
-		assert.True(t, exists)
+		assert.Equal(t, "ts-existing-1", got.ID, "original _id preserved on update")
+		assert.True(t, got.HasMention, "hasMention flipped to true")
+		assert.Equal(t, now, got.CreatedAt.UTC().Truncate(time.Millisecond), "createdAt preserved")
+		assert.Equal(t, later, got.UpdatedAt.UTC().Truncate(time.Millisecond), "updatedAt advanced")
+	})
+
+	t.Run("repeat call is idempotent", func(t *testing.T) {
+		sub := &model.ThreadSubscription{
+			ID:              "ts-idem",
+			ParentMessageID: "msg-parent-mk-3",
+			RoomID:          "r-1",
+			ThreadRoomID:    "tr-mk-3",
+			UserID:          "u-mk-idem",
+			UserAccount:     "charlie",
+			SiteID:          "site-a",
+			HasMention:      true,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		require.NoError(t, store.MarkThreadSubscriptionMention(ctx, sub))
+		require.NoError(t, store.MarkThreadSubscriptionMention(ctx, sub))
+
+		count, err := db.Collection("threadSubscriptions").CountDocuments(ctx, bson.M{
+			"threadRoomId": "tr-mk-3",
+			"userId":       "u-mk-idem",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), count, "second upsert must not create a second row")
 	})
 }
 

@@ -57,6 +57,58 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		ChineseName: "鮑勃",
 	}
 
+	// Thread reply that mentions @bob (non-participant).
+	threadMentionMsg := model.Message{
+		ID:                    "msg-thread-mention",
+		RoomID:                "r1",
+		UserID:                "u-1",
+		UserAccount:           "alice",
+		Content:               "thread reply @bob",
+		CreatedAt:             now,
+		ThreadParentMessageID: "msg-1",
+	}
+	threadMentionEvt := model.MessageEvent{Message: threadMentionMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
+	threadMentionData, _ := json.Marshal(threadMentionEvt)
+
+	// Thread reply where sender self-mentions — must be excluded.
+	threadSelfMsg := model.Message{
+		ID:                    "msg-thread-self",
+		RoomID:                "r1",
+		UserID:                "u-1",
+		UserAccount:           "alice",
+		Content:               "thread reply @alice",
+		CreatedAt:             now,
+		ThreadParentMessageID: "msg-1",
+	}
+	threadSelfEvt := model.MessageEvent{Message: threadSelfMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
+	threadSelfData, _ := json.Marshal(threadSelfEvt)
+
+	// Thread reply with @all only — must be ignored at thread level.
+	threadAllMsg := model.Message{
+		ID:                    "msg-thread-all",
+		RoomID:                "r1",
+		UserID:                "u-1",
+		UserAccount:           "alice",
+		Content:               "thread reply @all",
+		CreatedAt:             now,
+		ThreadParentMessageID: "msg-1",
+	}
+	threadAllEvt := model.MessageEvent{Message: threadAllMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
+	threadAllData, _ := json.Marshal(threadAllEvt)
+
+	// Thread reply mixing @all + @bob — only bob gets marked.
+	threadMixMsg := model.Message{
+		ID:                    "msg-thread-mix",
+		RoomID:                "r1",
+		UserID:                "u-1",
+		UserAccount:           "alice",
+		Content:               "thread reply @all and @bob",
+		CreatedAt:             now,
+		ThreadParentMessageID: "msg-1",
+	}
+	threadMixEvt := model.MessageEvent{Message: threadMixMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
+	threadMixData, _ := json.Marshal(threadMixEvt)
+
 	// Event with a real user mention — Mentions field is absent in the inbound event
 	// and will be populated by resolveMentions.
 	evtWithMention := model.MessageEvent{
@@ -247,6 +299,106 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			setupMocks: func(_ *MockStore, us *MockUserStore, _ *MockThreadStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-1").
 					Return(nil, errors.New("user not found"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "thread reply mentioning non-participant — marks that user's subscription",
+			data: threadMentionData,
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+					Return([]model.User{*bobUser}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				// First-reply path: create the thread room.
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
+					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				// Parent + replier subscriptions inserted.
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				// Mentionee @bob gets MarkThreadSubscriptionMention — assert sub fields.
+				ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "u-bob", sub.UserID)
+						assert.Equal(t, "bob", sub.UserAccount)
+						assert.Equal(t, "msg-1", sub.ParentMessageID)
+						assert.Equal(t, "r1", sub.RoomID)
+						assert.Equal(t, "site-a", sub.SiteID)
+						assert.True(t, sub.HasMention)
+						assert.Nil(t, sub.LastSeenAt)
+						return nil
+					})
+				store.EXPECT().SaveThreadMessage(gomock.Any(), gomock.Any(), gomock.Any(), "site-a", gomock.Any()).Return(nil)
+			},
+		},
+		{
+			name: "thread reply where sender self-mentions — no MarkThreadSubscriptionMention call",
+			data: threadSelfData,
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
+				// Sender's own account looked up; returns the sender user.
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).
+					Return([]model.User{*user}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
+					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				// MarkThreadSubscriptionMention must NOT be called — sender excluded.
+				store.EXPECT().SaveThreadMessage(gomock.Any(), gomock.Any(), gomock.Any(), "site-a", gomock.Any()).Return(nil)
+			},
+		},
+		{
+			name: "thread reply with @all only — no MarkThreadSubscriptionMention call",
+			data: threadAllData,
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
+				// No account lookup — @all bypasses the user-by-accounts query.
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
+					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				// MarkThreadSubscriptionMention must NOT be called — @all is thread-ignored.
+				store.EXPECT().SaveThreadMessage(gomock.Any(), gomock.Any(), gomock.Any(), "site-a", gomock.Any()).Return(nil)
+			},
+		},
+		{
+			name: "thread reply with @all + @bob — only bob marked",
+			data: threadMixData,
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+					Return([]model.User{*bobUser}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
+					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "u-bob", sub.UserID)
+						assert.True(t, sub.HasMention)
+						return nil
+					})
+				store.EXPECT().SaveThreadMessage(gomock.Any(), gomock.Any(), gomock.Any(), "site-a", gomock.Any()).Return(nil)
+			},
+		},
+		{
+			name: "thread reply mentioning non-participant — MarkThreadSubscriptionMention error is propagated",
+			data: threadMentionData,
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+					Return([]model.User{*bobUser}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
+					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+				ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).
+					Return(errors.New("mongo: write error"))
+				// SaveThreadMessage must NOT be called — mention-mark error aborts before save.
 			},
 			wantErr: true,
 		},

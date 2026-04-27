@@ -15,13 +15,16 @@ import (
 // fakeHashClient is a test double for hashCommander.
 // It simulates an in-memory Valkey hash store with injectable per-method errors.
 type fakeHashClient struct {
-	store             map[string]map[string]string
-	hsetErr           error
-	hgetallErr        error
-	hgetallCallCount  int // tracks number of hgetall calls made
-	hgetallErrOnCall  int // if >0, hgetallErr fires only on this call number (1-based)
-	rotatePipelineErr error
-	deletePipelineErr error
+	store                map[string]map[string]string
+	hsetErr              error
+	hgetallErr           error
+	hgetallCallCount     int // tracks number of hgetall calls made
+	hgetallErrOnCall     int // if >0, hgetallErr fires only on this call number (1-based)
+	hgetallManyCallCount int
+	rotatePipelineErr    error
+	deletePipelineErr    error
+	closeErr             error
+	closed               bool
 }
 
 func (f *fakeHashClient) hset(_ context.Context, key string, pub, priv string) error {
@@ -48,6 +51,19 @@ func (f *fakeHashClient) hgetall(_ context.Context, key string) (map[string]stri
 		return map[string]string{}, nil
 	}
 	return m, nil
+}
+
+func (f *fakeHashClient) hgetallMany(ctx context.Context, keys []string) ([]map[string]string, error) {
+	f.hgetallManyCallCount++
+	out := make([]map[string]string, len(keys))
+	for i, k := range keys {
+		m, err := f.hgetall(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = m
+	}
+	return out, nil
 }
 
 func (f *fakeHashClient) rotatePipeline(_ context.Context, currentKey, prevKey string, pub, priv string, _ time.Duration) (int, error) {
@@ -78,6 +94,14 @@ func (f *fakeHashClient) deletePipeline(_ context.Context, currentKey, prevKey s
 		delete(f.store, currentKey)
 		delete(f.store, prevKey)
 	}
+	return nil
+}
+
+func (f *fakeHashClient) closeClient() error {
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	f.closed = true
 	return nil
 }
 
@@ -500,6 +524,112 @@ func TestValkeyStore_Delete(t *testing.T) {
 			assert.False(t, exists, "current key should be removed after Delete")
 			_, exists = tt.fake.store[roomprevkey(tt.roomID)]
 			assert.False(t, exists, "previous key should be removed after Delete")
+		})
+	}
+}
+
+func TestValkeyStore_GetMany(t *testing.T) {
+	pubKey := bytes.Repeat([]byte{0xAB}, 65)
+	privKey := bytes.Repeat([]byte{0xCD}, 32)
+	pubKey2 := bytes.Repeat([]byte{0x11}, 65)
+	privKey2 := bytes.Repeat([]byte{0x22}, 32)
+
+	tests := []struct {
+		name          string
+		fake          *fakeHashClient
+		roomIDs       []string
+		wantLen       int
+		wantRoomIDs   []string
+		wantErr       bool
+		errContains   string
+		wantCallCount int // expected hgetallManyCallCount
+	}{
+		{
+			name:          "empty input — empty map, no error, hgetallMany not called",
+			fake:          &fakeHashClient{},
+			roomIDs:       []string{},
+			wantLen:       0,
+			wantCallCount: 0,
+		},
+		{
+			name: "all present — both rooms returned with Version==0",
+			fake: func() *fakeHashClient {
+				f := &fakeHashClient{}
+				s := newTestStore(f)
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Set(context.Background(), "room-2", RoomKeyPair{PublicKey: pubKey2, PrivateKey: privKey2})
+				return f
+			}(),
+			roomIDs:       []string{"room-1", "room-2"},
+			wantLen:       2,
+			wantRoomIDs:   []string{"room-1", "room-2"},
+			wantCallCount: 1,
+		},
+		{
+			name:          "all absent — empty map",
+			fake:          &fakeHashClient{},
+			roomIDs:       []string{"room-1", "room-2"},
+			wantLen:       0,
+			wantCallCount: 1,
+		},
+		{
+			name: "mixed — only present rooms in map",
+			fake: func() *fakeHashClient {
+				f := &fakeHashClient{}
+				s := newTestStore(f)
+				_, _ = s.Set(context.Background(), "room-1", RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey})
+				_, _ = s.Set(context.Background(), "room-2", RoomKeyPair{PublicKey: pubKey2, PrivateKey: privKey2})
+				return f
+			}(),
+			roomIDs:       []string{"room-1", "room-absent", "room-2"},
+			wantLen:       2,
+			wantRoomIDs:   []string{"room-1", "room-2"},
+			wantCallCount: 1,
+		},
+		{
+			name: "decode error — error containing room ID",
+			fake: &fakeHashClient{
+				store: map[string]map[string]string{
+					roomkey("room-1"): {"pub": "AQID", "priv": "AQID", "ver": "0"},
+					roomkey("room-2"): {"pub": "!!!notbase64!!!", "priv": "AQID", "ver": "0"},
+				},
+			},
+			roomIDs:       []string{"room-1", "room-2"},
+			wantErr:       true,
+			errContains:   "room-2",
+			wantCallCount: 1,
+		},
+		{
+			name: "version parse error — error containing room ID",
+			fake: &fakeHashClient{
+				store: map[string]map[string]string{
+					roomkey("room-1"): {"pub": "AQID", "priv": "AQID", "ver": "not-a-number"},
+				},
+			},
+			roomIDs:       []string{"room-1"},
+			wantErr:       true,
+			errContains:   "room-1",
+			wantCallCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(tt.fake)
+			got, err := store.GetMany(context.Background(), tt.roomIDs)
+			assert.Equal(t, tt.wantCallCount, tt.fake.hgetallManyCallCount)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, got, tt.wantLen)
+			for _, id := range tt.wantRoomIDs {
+				vkp, ok := got[id]
+				require.True(t, ok, "expected room %s in result", id)
+				assert.Equal(t, 0, vkp.Version)
+			}
 		})
 	}
 }

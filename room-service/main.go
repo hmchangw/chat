@@ -15,17 +15,22 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
 
 type config struct {
-	NatsURL       string `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
-	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID        string `env:"SITE_ID"         envDefault:"site-local"`
-	MongoURI      string `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
-	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
-	MaxRoomSize   int    `env:"MAX_ROOM_SIZE"   envDefault:"1000"`
+	NatsURL           string        `env:"NATS_URL"                  envDefault:"nats://localhost:4222"`
+	NatsCredsFile     string        `env:"NATS_CREDS_FILE"           envDefault:""`
+	SiteID            string        `env:"SITE_ID"                   envDefault:"site-local"`
+	MongoURI          string        `env:"MONGO_URI"                 envDefault:"mongodb://localhost:27017"`
+	MongoDB           string        `env:"MONGO_DB"                  envDefault:"chat"`
+	MaxRoomSize       int           `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
+	MaxBatchSize      int           `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
+	ValkeyAddr        string        `env:"VALKEY_ADDR,required"`
+	ValkeyPassword    string        `env:"VALKEY_PASSWORD"           envDefault:""`
+	ValkeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
 }
 
 func main() {
@@ -63,6 +68,16 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
+	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        cfg.ValkeyAddr,
+		Password:    cfg.ValkeyPassword,
+		GracePeriod: cfg.ValkeyGracePeriod,
+	})
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
+	}
+
 	streamCfg := stream.Rooms(cfg.SiteID)
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: streamCfg.Name, Subjects: streamCfg.Subjects,
@@ -72,7 +87,15 @@ func main() {
 	}
 
 	store := NewMongoStore(db)
-	handler := NewHandler(store, cfg.SiteID, cfg.MaxRoomSize, func(ctx context.Context, subj string, data []byte) error {
+	// Bounded timeout so a hung createIndexes surfaces at startup.
+	ensureCtx, ensureCancel := context.WithTimeout(ctx, 30*time.Second)
+	if err := store.EnsureIndexes(ensureCtx); err != nil {
+		ensureCancel()
+		slog.Error("ensure store indexes failed", "error", err)
+		os.Exit(1)
+	}
+	ensureCancel()
+	handler := NewHandler(store, keyStore, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, func(ctx context.Context, subj string, data []byte) error {
 		if _, err := js.Publish(ctx, subj, data); err != nil {
 			return fmt.Errorf("publish to %q: %w", subj, err)
 		}
@@ -89,6 +112,12 @@ func main() {
 	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(ctx context.Context) error {
+			if closer, ok := keyStore.(interface{ Close() error }); ok {
+				return closer.Close()
+			}
+			return nil
+		},
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
 }

@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/userstore"
@@ -79,6 +79,9 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		if err != nil {
 			return fmt.Errorf("handle thread room and subscriptions: %w", err)
 		}
+		if err := h.markThreadMentions(ctx, &evt.Message, threadRoomID, evt.SiteID); err != nil {
+			return fmt.Errorf("mark thread mentions: %w", err)
+		}
 		if err := h.store.SaveThreadMessage(ctx, &evt.Message, sender, evt.SiteID, threadRoomID); err != nil {
 			return fmt.Errorf("save thread message: %w", err)
 		}
@@ -100,7 +103,7 @@ func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *mod
 	now := msg.CreatedAt
 
 	threadRoom := model.ThreadRoom{
-		ID:              uuid.NewString(),
+		ID:              idgen.GenerateID(),
 		ParentMessageID: msg.ThreadParentMessageID,
 		RoomID:          msg.RoomID,
 		SiteID:          siteID,
@@ -205,7 +208,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 // updated by the message worker.
 func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, userID, userAccount, siteID string, now time.Time) *model.ThreadSubscription {
 	return &model.ThreadSubscription{
-		ID:              uuid.NewString(),
+		ID:              idgen.GenerateID(),
 		ParentMessageID: msg.ThreadParentMessageID,
 		RoomID:          msg.RoomID,
 		ThreadRoomID:    threadRoomID,
@@ -216,4 +219,25 @@ func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, user
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+}
+
+// markThreadMentions flips hasMention=true on the thread subscription of every
+// @account mentionee in msg (auto-creating the subscription if absent). The
+// sender is excluded, and @all is ignored at the thread level.
+func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, threadRoomID, siteID string) error {
+	for i := range msg.Mentions {
+		p := &msg.Mentions[i]
+		if p.Account == "all" {
+			continue
+		}
+		if p.UserID == msg.UserID {
+			continue
+		}
+		sub := h.buildThreadSubscription(msg, threadRoomID, p.UserID, p.Account, siteID, msg.CreatedAt)
+		sub.HasMention = true
+		if err := h.threadStore.MarkThreadSubscriptionMention(ctx, sub); err != nil {
+			return fmt.Errorf("mark thread subscription mention for user %s: %w", p.UserID, err)
+		}
+	}
+	return nil
 }
