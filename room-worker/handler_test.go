@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -1270,4 +1271,55 @@ func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *te
 	assert.True(t, result.Success)
 	assert.Equal(t, "", result.Error)
 	assert.Greater(t, result.Timestamp, int64(0))
+}
+
+func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
+	var capturedSubject string
+	var capturedData []byte
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		if strings.HasPrefix(subj, "chat.user.") {
+			capturedSubject = subj
+			capturedData = data
+		}
+		return nil
+	}
+	h := NewHandler(nil, "site1", publish)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-err-test")
+	jobErr := errors.New("oops")
+	h.publishAsyncJobResult(ctx, "alice", "add_members", jobErr)
+
+	assert.Equal(t, subject.UserResponse("alice", "req-err-test"), capturedSubject)
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(capturedData, &result))
+	assert.Equal(t, "req-err-test", result.RequestID)
+	assert.Equal(t, "add_members", result.Job)
+	assert.False(t, result.Success)
+	assert.Equal(t, "oops", result.Error)
+}
+
+func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequestID(t *testing.T) {
+	called := false
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		called = true
+		return nil
+	}
+	h := NewHandler(nil, "site1", publish)
+
+	// No WithRequestID on ctx → empty request ID → publish is skipped.
+	h.publishAsyncJobResult(context.Background(), "alice", "add_members", nil)
+	assert.False(t, called, "publish must be skipped when request ID is empty")
+}
+
+func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequester(t *testing.T) {
+	called := false
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		called = true
+		return nil
+	}
+	h := NewHandler(nil, "site1", publish)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-test")
+	h.publishAsyncJobResult(ctx, "", "add_members", nil)
+	assert.False(t, called, "publish must be skipped when requester account is empty")
 }
