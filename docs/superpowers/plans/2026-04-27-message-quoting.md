@@ -611,3 +611,244 @@ The fetcher implementation lands in a follow-up commit."
 ```
 
 ---
+
+## Task 4: Implement the history-service fetcher (`fetcher_history.go`)
+
+**Goal:** Provide the production implementation of `ParentMessageFetcher` that issues a synchronous NATS request to history-service's `GetMessageByID`, decodes the natsrouter response envelope, and projects the returned `cassandra.Message` into a `cassandra.QuotedParentMessage`. Test against an in-process NATS server.
+
+**Files:**
+- Create: `message-gatekeeper/fetcher_history.go`
+- Create: `message-gatekeeper/fetcher_history_test.go`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `message-gatekeeper/fetcher_history_test.go` with the following content:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/model/cassandra"
+	"github.com/hmchangw/chat/pkg/subject"
+)
+
+func startTestNATS(t *testing.T) *otelnats.Conn {
+	t.Helper()
+	opts := &natsserver.Options{Port: -1}
+	ns, err := natsserver.NewServer(opts)
+	require.NoError(t, err)
+	ns.Start()
+	require.True(t, ns.ReadyForConnections(5*time.Second), "nats server did not become ready")
+	t.Cleanup(ns.Shutdown)
+
+	nc, err := otelnats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	return nc
+}
+
+func TestHistoryParentFetcher_FetchQuotedParent(t *testing.T) {
+	const (
+		account   = "alice"
+		roomID    = "room-1"
+		siteID    = "site-a"
+		messageID = "parent-msg-uuid"
+		baseURL   = "http://localhost:3000"
+	)
+	parentCreatedAt := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+
+	t.Run("happy path — returns projected snapshot with messageLink", func(t *testing.T) {
+		nc := startTestNATS(t)
+
+		parent := cassandra.Message{
+			MessageID: messageID,
+			RoomID:    roomID,
+			Sender:    cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
+			CreatedAt: parentCreatedAt,
+			Msg:       "the original message",
+			Mentions:  []cassandra.Participant{{ID: "u-carol", Account: "carol", EngName: "Carol Lee"}},
+		}
+
+		// Stand up a stub responder on the exact subject the fetcher should publish on.
+		_, err := nc.Subscribe(subject.MsgGet(account, roomID, siteID), func(ctx context.Context, msg *otelnats.Msg) {
+			data, _ := json.Marshal(parent)
+			_ = msg.Respond(data)
+		})
+		require.NoError(t, err)
+
+		fetcher := newHistoryParentFetcher(nc, baseURL)
+		got, err := fetcher.FetchQuotedParent(context.Background(), account, roomID, siteID, messageID)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, messageID, got.MessageID)
+		assert.Equal(t, roomID, got.RoomID)
+		assert.Equal(t, "the original message", got.Msg)
+		assert.Equal(t, "bob", got.Sender.Account)
+		assert.Equal(t, parentCreatedAt, got.CreatedAt.UTC())
+		require.Len(t, got.Mentions, 1)
+		assert.Equal(t, "carol", got.Mentions[0].Account)
+		assert.Equal(t, baseURL+"/"+roomID+"/"+messageID, got.MessageLink)
+	})
+
+	t.Run("history returns natsrouter error envelope — returns error", func(t *testing.T) {
+		nc := startTestNATS(t)
+
+		_, err := nc.Subscribe(subject.MsgGet(account, roomID, siteID), func(ctx context.Context, msg *otelnats.Msg) {
+			data, _ := json.Marshal(model.ErrorResponse{Error: "message not found"})
+			_ = msg.Respond(data)
+		})
+		require.NoError(t, err)
+
+		fetcher := newHistoryParentFetcher(nc, baseURL)
+		got, err := fetcher.FetchQuotedParent(context.Background(), account, roomID, siteID, messageID)
+		require.Error(t, err)
+		assert.Nil(t, got)
+		assert.Contains(t, err.Error(), "message not found")
+	})
+
+	t.Run("no responder — returns error", func(t *testing.T) {
+		nc := startTestNATS(t)
+		// Intentionally no subscriber: nc.Request must fail with "no responders".
+
+		fetcher := newHistoryParentFetcher(nc, baseURL)
+		got, err := fetcher.FetchQuotedParent(context.Background(), account, roomID, siteID, messageID)
+		require.Error(t, err)
+		assert.Nil(t, got)
+	})
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `make test SERVICE=message-gatekeeper`
+
+Expected: FAIL — `newHistoryParentFetcher undefined`. Compilation error.
+
+- [ ] **Step 3: Create `message-gatekeeper/fetcher_history.go`**
+
+Create the file with the following content:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/model/cassandra"
+	"github.com/hmchangw/chat/pkg/subject"
+)
+
+// historyRequestTimeout bounds the synchronous request to history-service.
+// Matches the standard NATS Go client default. Hardcoded — promote to env
+// var only if ops needs to tune it.
+const historyRequestTimeout = 2 * time.Second
+
+// historyParentFetcher implements ParentMessageFetcher by issuing a NATS
+// request to history-service's GetMessageByID handler. The base URL is used
+// to build messageLink; it is injected so unit tests can supply any value.
+type historyParentFetcher struct {
+	nc          *otelnats.Conn
+	chatBaseURL string
+}
+
+func newHistoryParentFetcher(nc *otelnats.Conn, chatBaseURL string) *historyParentFetcher {
+	return &historyParentFetcher{nc: nc, chatBaseURL: chatBaseURL}
+}
+
+// getMessageByIDRequest mirrors history-service's request shape on the wire.
+// We duplicate the small struct rather than cross-import a service-internal
+// package.
+type getMessageByIDRequest struct {
+	MessageID string `json:"messageId"`
+}
+
+// FetchQuotedParent issues a NATS request to history-service's GetMessageByID
+// handler at subject.MsgGet(account, roomID, siteID). On a successful reply,
+// projects the returned cassandra.Message into a cassandra.QuotedParentMessage
+// snapshot. Any error (NATS timeout, no responder, natsrouter error envelope,
+// unmarshal failure) is wrapped and returned — the caller treats every error
+// as a soft-fail signal.
+func (f *historyParentFetcher) FetchQuotedParent(
+	ctx context.Context,
+	account, roomID, siteID, messageID string,
+) (*cassandra.QuotedParentMessage, error) {
+	reqBytes, err := json.Marshal(getMessageByIDRequest{MessageID: messageID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal GetMessageByID request: %w", err)
+	}
+
+	subj := subject.MsgGet(account, roomID, siteID)
+	msg, err := f.nc.Request(ctx, subj, reqBytes, historyRequestTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("history request: %w", err)
+	}
+
+	// natsrouter encodes errors as {"error":"...","code":"..."}. Detect that
+	// shape first; a successful Message has no top-level "error" field, so
+	// this can't false-positive on a real response.
+	var errEnv model.ErrorResponse
+	if jsonErr := json.Unmarshal(msg.Data, &errEnv); jsonErr == nil && errEnv.Error != "" {
+		return nil, fmt.Errorf("history response error: %s", errEnv.Error)
+	}
+
+	var parent cassandra.Message
+	if err := json.Unmarshal(msg.Data, &parent); err != nil {
+		return nil, fmt.Errorf("unmarshal parent message: %w", err)
+	}
+
+	return &cassandra.QuotedParentMessage{
+		MessageID:   parent.MessageID,
+		RoomID:      parent.RoomID,
+		Sender:      parent.Sender,
+		CreatedAt:   parent.CreatedAt,
+		Msg:         parent.Msg,
+		Mentions:    parent.Mentions,
+		MessageLink: fmt.Sprintf("%s/%s/%s", f.chatBaseURL, parent.RoomID, parent.MessageID),
+	}, nil
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `make test SERVICE=message-gatekeeper`
+
+Expected: PASS — all three subtests of `TestHistoryParentFetcher_FetchQuotedParent` plus the existing `TestHandler_ProcessMessage*` suites.
+
+- [ ] **Step 5: Run lint to make sure the new file conforms**
+
+Run: `make lint`
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add message-gatekeeper/fetcher_history.go message-gatekeeper/fetcher_history_test.go
+git commit -m "feat(gatekeeper): implement history-service quoted-parent fetcher
+
+Issues nc.Request(ctx, subject.MsgGet(...), ..., 2s) and projects the
+returned cassandra.Message into a cassandra.QuotedParentMessage snapshot,
+populating MessageLink from the injected chatBaseURL. Distinguishes a
+natsrouter error envelope (returns error) from a real Message reply
+(returns snapshot). Tested against an in-process NATS server."
+```
+
+---
