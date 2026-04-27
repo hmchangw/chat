@@ -133,7 +133,8 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handler.HandleJetStreamMsg(msgCtx, msg)
+				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
+				handler.HandleJetStreamMsg(handlerCtx, msg)
 			}()
 		}
 	}()
