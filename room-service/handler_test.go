@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1638,7 +1639,7 @@ func TestHandler_handleRoomsInfoBatch_chunking(t *testing.T) {
 	}
 }
 
-func TestHandler_HandleUpdateRole_PropagatesRequestID(t *testing.T) {
+func TestHandler_handleUpdateRole_PropagatesRequestID(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
@@ -1672,4 +1673,33 @@ func TestHandler_HandleUpdateRole_PropagatesRequestID(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, capturedHeader, "publish wrapper must build header from ctx")
 	assert.Equal(t, "req-room-svc-test", capturedHeader.Get(natsutil.RequestIDHeader))
+}
+
+func TestWrappedCtx_PropagatesXRequestIDFromHeaderToContext(t *testing.T) {
+	rawMsg := &nats.Msg{
+		Subject: "chat.room.test",
+		Data:    []byte("ignored"),
+		Header:  nats.Header{natsutil.RequestIDHeader: []string{"req-from-inbound-header"}},
+	}
+	m := otelnats.Msg{Msg: rawMsg, Ctx: context.Background()}
+
+	got := wrappedCtx(m)
+
+	assert.Equal(t, "req-from-inbound-header", natsutil.RequestIDFromContext(got),
+		"wrappedCtx must extract X-Request-ID from m.Msg.Header into the returned context")
+}
+
+func TestWrappedCtx_NoHeaderReturnsCtxUnchanged(t *testing.T) {
+	rawMsg := &nats.Msg{
+		Subject: "chat.room.test",
+		Data:    []byte("ignored"),
+		Header:  nats.Header{},
+	}
+	parent := context.Background()
+	m := otelnats.Msg{Msg: rawMsg, Ctx: parent}
+
+	got := wrappedCtx(m)
+
+	assert.Empty(t, natsutil.RequestIDFromContext(got),
+		"missing inbound header → empty request ID on returned ctx")
 }
