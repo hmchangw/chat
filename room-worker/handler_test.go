@@ -14,6 +14,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -274,6 +275,33 @@ func TestHandler_ProcessRoleUpdate_UnsupportedRole(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported role")
 	}
+}
+
+func TestHandler_ProcessRoleUpdate_PropagatesRequestID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
+		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").
+		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-a"}, nil)
+
+	var capturedCtx context.Context
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		capturedCtx = ctx
+		return nil
+	}
+	h := NewHandler(store, "site1", publish)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-rw-test")
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	reqData, _ := json.Marshal(req)
+	err := h.processRoleUpdate(ctx, reqData)
+	require.NoError(t, err)
+	require.NotNil(t, capturedCtx, "publish wrapper must receive a non-nil ctx")
+	assert.Equal(t, "req-rw-test", natsutil.RequestIDFromContext(capturedCtx),
+		"publish wrapper must receive ctx that still carries the request ID")
 }
 
 // --- processRemoveMember tests ---
