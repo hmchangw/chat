@@ -1,4 +1,5 @@
-COMPOSE ?= docker compose -f docker-compose.test.yml
+COMPOSE_BIN := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
+COMPOSE ?= $(COMPOSE_BIN) -f docker-compose.test.yml
 
 .PHONY: up seed send verify down logs
 

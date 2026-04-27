@@ -7,6 +7,12 @@ services:
     ports:
       - "4222:4222"
       - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--spider", "http://localhost:8222/healthz?js-meta-only=true"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
 
   nats_site2:
     image: nats:2.11-alpine
@@ -32,8 +38,10 @@ services:
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
     depends_on:
-      - nats_site1
-      - mongodb
+      nats_site1:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
 
   tools:
     image: natsio/nats-box:latest

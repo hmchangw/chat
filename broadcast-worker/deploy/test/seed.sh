@@ -3,11 +3,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE_CMD=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD=(docker-compose)
+else
+  echo "error: neither 'docker compose' nor 'docker-compose' is available" >&2
+  exit 1
+fi
+
 COMPOSE_FILES=(-f "$DEPLOY_DIR/docker-compose.test.yml")
 if [[ -n "${COMPOSE_OVERRIDE:-}" ]]; then
   COMPOSE_FILES+=(-f "$COMPOSE_OVERRIDE")
 fi
-COMPOSE=(docker compose "${COMPOSE_FILES[@]}")
+COMPOSE=("${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}")
 
 wait_for_mongo() {
   local attempt
@@ -28,14 +38,12 @@ load_collection() {
   local collection="$1"
   local json_file="$2"
 
-  "${COMPOSE[@]}" cp "$json_file" "mongodb:/tmp/$collection.json" >/dev/null
-
   "${COMPOSE[@]}" exec -T mongodb mongoimport \
     --uri="mongodb://localhost:27017/chat" \
     --collection="$collection" \
     --jsonArray \
     --drop \
-    --file="/tmp/$collection.json" 2>&1 \
+    < "$json_file" 2>&1 \
     | grep -E "imported|failed|error" || true
 }
 
