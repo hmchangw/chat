@@ -1633,7 +1633,9 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 
 - [ ] **Step 9.2: Add integration test 5 — cross-site timeout**
 
-Add after test 4:
+Add after test 4. The responder sleeps past the client timeout so the
+`context.WithTimeout` path fires (asserting on `errors.Is(err, context.DeadlineExceeded)`
+keeps the test free of wall-clock windows).
 
 ```go
 func TestAddMembers_CrossSiteTimeout(t *testing.T) {
@@ -1641,34 +1643,46 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	dbA := setupMongo(t)
+	db := setupMongo(t)
+	natsURL := setupNATS(t)
 	valCfg := setupValkey(t)
 
-	keyStore, _ := roomkeystore.NewValkeyStore(*valCfg)
-	storeA := NewMongoStore(dbA)
-
-	ncA, _ := nats.Connect("nats://localhost:9999") // non-existent NATS server
-	t.Cleanup(func() { ncA.Close() })
-
-	otelNCa, _ := otelnats.Connect("nats://localhost:4222") // use a real NATS for handler registration
-	t.Cleanup(func() { _ = otelNCa.Drain() })
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+	store := NewMongoStore(db)
+	otelNC, err := otelnats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNC.Drain() })
 
 	ctx := context.Background()
 
-	_ = storeA.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"})
-	_ = storeA.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}})
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
 
-	// Client with very short timeout connecting to non-existent server
-	memberListClient := NewNATSMemberListClient(ncA, 100*time.Millisecond)
-	handlerA := NewHandler(storeA, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	// Register a site-b responder that sleeps past the client timeout, so we actually
+	// exercise the context.WithTimeout path (not NATS "no responders" fast-fail).
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Close() })
+	sub, err := nc.Subscribe(subject.MemberList("alice", "source", "site-b"), func(m *nats.Msg) {
+		time.Sleep(400 * time.Millisecond)
+		_ = m.Respond([]byte(`{}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
+	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
-	data, _ := json.Marshal(req)
-	_, err := handlerA.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
 
+	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected deadline exceeded, got %v", err)
 	assert.Contains(t, err.Error(), "expand channels")
-	assert.Contains(t, err.Error(), "remote list-members") // wrapped in expandChannelRefs
+	assert.Contains(t, err.Error(), "remote list-members")
 }
 ```
 
