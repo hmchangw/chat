@@ -91,7 +91,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 			continue
 		}
 		sub := &model.Subscription{
-			ID:                 idgen.GenerateID(),
+			ID:                 idgen.GenerateUUIDv7(),
 			User:               model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:             event.RoomID,
 			SiteID:             event.SiteID,

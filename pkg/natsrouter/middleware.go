@@ -23,7 +23,7 @@ func RequestID() HandlerFunc {
 			reqID = c.Msg.Header.Get(natsutil.RequestIDHeader)
 		}
 		if reqID == "" {
-			reqID = idgen.GenerateID()
+			reqID = idgen.GenerateUUIDv7()
 		}
 		c.Set(requestIDKey, reqID)
 		c.SetContext(natsutil.WithRequestID(c.ctx, reqID))

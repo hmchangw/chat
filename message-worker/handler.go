@@ -101,7 +101,7 @@ func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *mod
 		parentCreatedAt = *msg.ThreadParentMessageCreatedAt
 	}
 	threadRoom := model.ThreadRoom{
-		ID:                    idgen.GenerateID(),
+		ID:                    idgen.GenerateUUIDv7(),
 		ParentMessageID:       msg.ThreadParentMessageID,
 		ThreadParentCreatedAt: parentCreatedAt,
 		RoomID:                msg.RoomID,
@@ -218,7 +218,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 // (client marking the thread as seen) ever sets this field.
 func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, userID, userAccount, siteID string, now time.Time) *model.ThreadSubscription {
 	return &model.ThreadSubscription{
-		ID:              idgen.GenerateID(),
+		ID:              idgen.GenerateUUIDv7(),
 		ParentMessageID: msg.ThreadParentMessageID,
 		RoomID:          msg.RoomID,
 		ThreadRoomID:    threadRoomID,
