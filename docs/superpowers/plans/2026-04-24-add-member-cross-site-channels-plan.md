@@ -1363,14 +1363,14 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
+	// Same-site only — no NATS server needed; pass nil for memberListClient.
+	// The same-site branch in expandChannelRefs uses store.ListRoomMembers and
+	// never invokes the client; a future cross-site ref would panic loudly here.
 	db := setupMongo(t)
-	natsURL := setupNATS(t)
 	valCfg := setupValkey(t)
 
 	keyStore, _ := roomkeystore.NewValkeyStore(*valCfg)
 	store := NewMongoStore(db)
-	otelNC, _ := otelnats.Connect(natsURL)
-	t.Cleanup(func() { _ = otelNC.Drain() })
 
 	ctx := context.Background()
 
@@ -1402,8 +1402,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 		User:   model.SubscriptionUser{ID: "req", Account: "alice"},
 	})
 
-	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(ctx context.Context, _ string, _ []byte) error {
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(ctx context.Context, _ string, _ []byte) error {
 		return nil // no publish for this test
 	})
 
@@ -1442,14 +1441,12 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
+	// Same-site only — nil memberListClient is safe (see RoomMembersPath test).
 	db := setupMongo(t)
-	natsURL := setupNATS(t)
 	valCfg := setupValkey(t)
 
 	keyStore, _ := roomkeystore.NewValkeyStore(*valCfg)
 	store := NewMongoStore(db)
-	otelNC, _ := otelnats.Connect(natsURL)
-	t.Cleanup(func() { _ = otelNC.Drain() })
 
 	ctx := context.Background()
 
@@ -1466,8 +1463,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	_ = store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}})
 	_ = store.CreateSubscription(ctx, &model.Subscription{RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}})
 
-	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, _ := json.Marshal(req)
@@ -1503,14 +1499,13 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
+	// Same-site only — nil memberListClient is safe; the request fails on the
+	// same-site GetSubscription check before the cross-site branch is reached.
 	db := setupMongo(t)
-	natsURL := setupNATS(t)
 	valCfg := setupValkey(t)
 
 	keyStore, _ := roomkeystore.NewValkeyStore(*valCfg)
 	store := NewMongoStore(db)
-	otelNC, _ := otelnats.Connect(natsURL)
-	t.Cleanup(func() { _ = otelNC.Drain() })
 
 	ctx := context.Background()
 
@@ -1520,8 +1515,7 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 	// Requester subscribed to target but NOT source
 	_ = store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}})
 
-	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, _ := json.Marshal(req)

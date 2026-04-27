@@ -861,15 +861,11 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	}
 
 	db := setupMongo(t)
-	natsURL := setupNATS(t)
 	valCfg := setupValkey(t)
 
 	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
 	require.NoError(t, err)
 	store := NewMongoStore(db)
-	otelNC, err := otelnats.Connect(natsURL)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = otelNC.Drain() })
 
 	ctx := context.Background()
 
@@ -899,7 +895,8 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s3", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s4", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
-	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
+	// Same-site only: pass nil for memberListClient — the same-site branch in
+	// expandChannelRefs uses store.ListRoomMembers and never invokes the client.
 	var publishedSubj string
 	var publishedData []byte
 	publish := func(_ context.Context, subj string, data []byte) error {
@@ -907,7 +904,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, publish)
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, publish)
 
 	req := model.AddMembersRequest{
 		Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}},
@@ -939,15 +936,11 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	}
 
 	db := setupMongo(t)
-	natsURL := setupNATS(t)
 	valCfg := setupValkey(t)
 
 	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
 	require.NoError(t, err)
 	store := NewMongoStore(db)
-	otelNC, err := otelnats.Connect(natsURL)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = otelNC.Drain() })
 
 	ctx := context.Background()
 
@@ -969,7 +962,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s4", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s5", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
-	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
+	// Same-site only: nil memberListClient is safe (the same-site branch never invokes it).
 	var publishedSubj string
 	var publishedData []byte
 	publish := func(_ context.Context, subj string, data []byte) error {
@@ -977,7 +970,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, publish)
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, publish)
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -1005,15 +998,11 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 	}
 
 	db := setupMongo(t)
-	natsURL := setupNATS(t)
 	valCfg := setupValkey(t)
 
 	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
 	require.NoError(t, err)
 	store := NewMongoStore(db)
-	otelNC, err := otelnats.Connect(natsURL)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = otelNC.Drain() })
 
 	ctx := context.Background()
 
@@ -1022,8 +1011,9 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 	// Requester subscribed to target but NOT source
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
 
-	memberListClient := NewNATSMemberListClient(otelNC.NatsConn(), 2*time.Second)
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	// Same-site only: nil memberListClient is safe — request fails on the same-site
+	// GetSubscription check before reaching the cross-site branch.
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
