@@ -284,105 +284,6 @@ func TestMongoStore_CountSubscriptions_Integration(t *testing.T) {
 	}
 }
 
-func TestMongoStore_GetRoomMembersByRooms_Integration(t *testing.T) {
-	db := setupMongo(t)
-	store := NewMongoStore(db)
-	ctx := context.Background()
-
-	now := time.Now().UTC().Truncate(time.Millisecond)
-	members := []interface{}{
-		model.RoomMember{ID: "m1", RoomID: "r1", Ts: now, Member: model.RoomMemberEntry{ID: "alice", Type: model.RoomMemberIndividual, Account: "alice"}},
-		model.RoomMember{ID: "m2", RoomID: "r1", Ts: now, Member: model.RoomMemberEntry{ID: "org1", Type: model.RoomMemberOrg}},
-		model.RoomMember{ID: "m3", RoomID: "r2", Ts: now, Member: model.RoomMemberEntry{ID: "bob", Type: model.RoomMemberIndividual, Account: "bob"}},
-		model.RoomMember{ID: "m4", RoomID: "r3", Ts: now, Member: model.RoomMemberEntry{ID: "charlie", Type: model.RoomMemberIndividual, Account: "charlie"}},
-	}
-	if _, err := store.roomMembers.InsertMany(ctx, members); err != nil {
-		t.Fatalf("seed room members: %v", err)
-	}
-
-	got, err := store.GetRoomMembersByRooms(ctx, []string{"r1", "r2"})
-	if err != nil {
-		t.Fatalf("GetRoomMembersByRooms: %v", err)
-	}
-	if len(got) != 3 {
-		t.Errorf("got %d members, want 3", len(got))
-	}
-
-	got, err = store.GetRoomMembersByRooms(ctx, []string{})
-	if err != nil {
-		t.Fatalf("GetRoomMembersByRooms empty: %v", err)
-	}
-	if got != nil {
-		t.Errorf("expected nil for empty roomIDs, got %v", got)
-	}
-
-	got, err = store.GetRoomMembersByRooms(ctx, nil)
-	if err != nil {
-		t.Fatalf("GetRoomMembersByRooms nil: %v", err)
-	}
-	if got != nil {
-		t.Errorf("expected nil for nil roomIDs, got %v", got)
-	}
-
-	got, err = store.GetRoomMembersByRooms(ctx, []string{"r999"})
-	if err != nil {
-		t.Fatalf("GetRoomMembersByRooms non-existent: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("got %d members for non-existent room, want 0", len(got))
-	}
-}
-
-func TestMongoStore_GetAccountsByRooms_Integration(t *testing.T) {
-	db := setupMongo(t)
-	store := NewMongoStore(db)
-	ctx := context.Background()
-
-	subs := []interface{}{
-		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
-		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
-		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r2"},
-		model.Subscription{ID: "s4", User: model.SubscriptionUser{ID: "u3", Account: "charlie"}, RoomID: "r2"},
-		model.Subscription{ID: "s5", User: model.SubscriptionUser{ID: "u4", Account: "dave"}, RoomID: "r3"},
-	}
-	if _, err := store.subscriptions.InsertMany(ctx, subs); err != nil {
-		t.Fatalf("seed subscriptions: %v", err)
-	}
-
-	accounts, err := store.GetAccountsByRooms(ctx, []string{"r1", "r2"})
-	if err != nil {
-		t.Fatalf("GetAccountsByRooms: %v", err)
-	}
-	if len(accounts) != 3 {
-		t.Errorf("got %d accounts, want 3", len(accounts))
-	}
-	accountSet := make(map[string]bool)
-	for _, a := range accounts {
-		accountSet[a] = true
-	}
-	for _, expected := range []string{"alice", "bob", "charlie"} {
-		if !accountSet[expected] {
-			t.Errorf("missing account %q in results", expected)
-		}
-	}
-
-	accounts, err = store.GetAccountsByRooms(ctx, []string{})
-	if err != nil {
-		t.Fatalf("GetAccountsByRooms empty: %v", err)
-	}
-	if accounts != nil {
-		t.Errorf("expected nil for empty roomIDs, got %v", accounts)
-	}
-
-	accounts, err = store.GetAccountsByRooms(ctx, []string{"r999"})
-	if err != nil {
-		t.Fatalf("GetAccountsByRooms non-existent: %v", err)
-	}
-	if accounts != nil {
-		t.Errorf("expected nil for non-existent room, got %v", accounts)
-	}
-}
-
 func TestMongoStore_ResolveAccounts_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -954,6 +855,316 @@ func TestMongoStore_ListRoomsByIDs(t *testing.T) {
 	})
 }
 
+func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	db := setupMongo(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+	store := NewMongoStore(db)
+
+	ctx := context.Background()
+
+	// Target room on site-a
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	// Source channel on site-a: seed room_members explicitly so ListRoomMembers takes the room_members
+	// branch (not the subscriptions fallback); also seed users so ResolveAccounts can find them.
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
+		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
+		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
+		model.User{ID: "u3", Account: "dave", SiteID: "site-a", SectID: "eng-org"},
+		model.User{ID: "req", Account: "alice", SiteID: "site-a"},
+	})
+	require.NoError(t, err)
+	// room_members: two individuals + one org — exercises both branches in the RoomMember switch.
+	_, err = db.Collection("room_members").InsertMany(ctx, []interface{}{
+		model.RoomMember{ID: "rm1", RoomID: "source", Ts: time.Now().UTC(), Member: model.RoomMemberEntry{ID: "u1", Type: model.RoomMemberIndividual, Account: "bob"}},
+		model.RoomMember{ID: "rm2", RoomID: "source", Ts: time.Now().UTC(), Member: model.RoomMemberEntry{ID: "u2", Type: model.RoomMemberIndividual, Account: "carol"}},
+		model.RoomMember{ID: "rm3", RoomID: "source", Ts: time.Now().UTC(), Member: model.RoomMemberEntry{ID: "eng-org", Type: model.RoomMemberOrg}},
+	})
+	require.NoError(t, err)
+	// Subscriptions: requester must be subscribed on both rooms; the source room's subscriptions
+	// collection stays in sync with room_members so existing-subscription filtering works downstream.
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s3", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s4", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+
+	// Same-site only: pass nil for memberListClient — the same-site branch in
+	// expandChannelRefs uses store.ListRoomMembers and never invokes the client.
+	var publishedSubj string
+	var publishedData []byte
+	publish := func(_ context.Context, subj string, data []byte) error {
+		publishedSubj = subj
+		publishedData = data
+		return nil
+	}
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, publish)
+
+	req := model.AddMembersRequest{
+		Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}},
+	}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	result, err := handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	require.NoError(t, err)
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(result, &status))
+	assert.Equal(t, "accepted", status["status"])
+
+	// Verify the canonical event was published with the expanded members.
+	// Source channel contributes: bob, carol (individuals) + eng-org (org → dave).
+	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
+	var normalized model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(publishedData, &normalized))
+	assert.Equal(t, "target", normalized.RoomID)
+	assert.Equal(t, "alice", normalized.RequesterAccount)
+	assert.Equal(t, "req", normalized.RequesterID)
+	assert.NotZero(t, normalized.Timestamp)
+	assert.ElementsMatch(t, []string{"eng-org"}, normalized.Orgs)
+	assert.ElementsMatch(t, []string{"bob", "carol", "dave"}, normalized.Users)
+}
+
+func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	db := setupMongo(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+	store := NewMongoStore(db)
+
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	// Seed users so ResolveAccounts can find them.
+	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
+		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
+		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
+		model.User{ID: "u3", Account: "dave", SiteID: "site-a"},
+		model.User{ID: "req", Account: "alice", SiteID: "site-a"},
+	})
+	require.NoError(t, err)
+	// Source only has subscriptions (no room_members rows) — ListRoomMembers falls back to subscriptions
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s3", RoomID: "source", User: model.SubscriptionUser{ID: "u3", Account: "dave"}}))
+	// Requester in both
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s4", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s5", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+
+	// Same-site only: nil memberListClient is safe (the same-site branch never invokes it).
+	var publishedSubj string
+	var publishedData []byte
+	publish := func(_ context.Context, subj string, data []byte) error {
+		publishedSubj = subj
+		publishedData = data
+		return nil
+	}
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, publish)
+
+	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	result, err := handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	require.NoError(t, err)
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(result, &status))
+	assert.Equal(t, "accepted", status["status"])
+
+	// Verify the canonical event was published with the expanded members
+	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
+	var normalized model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(publishedData, &normalized))
+	assert.Equal(t, "target", normalized.RoomID)
+	assert.Equal(t, "alice", normalized.RequesterAccount)
+	assert.Equal(t, "req", normalized.RequesterID)
+	assert.NotZero(t, normalized.Timestamp)
+	assert.ElementsMatch(t, []string{"bob", "carol", "dave"}, normalized.Users)
+}
+
+func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	db := setupMongo(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+	store := NewMongoStore(db)
+
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	// Requester subscribed to target but NOT source
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+
+	// Same-site only: nil memberListClient is safe — request fails on the same-site
+	// GetSubscription check before reaching the cross-site branch.
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+
+	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errNotChannelMember))
+}
+
+func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	// Two Mongo DBs (distinct prefixes since setupMongo hashes by t.Name()).
+	// Only site-B needs a NATS server — site-A's handler talks straight to site-B
+	// via the cross-site MemberListClient and uses an in-memory publish closure.
+	dbA := testutil.MongoDB(t, "room_service_test_a")
+	dbB := testutil.MongoDB(t, "room_service_test_b")
+	natsURLb := setupNATS(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+
+	storeA := NewMongoStore(dbA)
+	storeB := NewMongoStore(dbB)
+
+	otelNCb, err := otelnats.Connect(natsURLb)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNCb.Drain() })
+
+	ctx := context.Background()
+
+	// Site-A: target room; requester subscribed; user document needed for ResolveAccounts.
+	require.NoError(t, storeA.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	_, err = dbA.Collection("users").InsertMany(ctx, []interface{}{
+		model.User{ID: "req", Account: "alice", SiteID: "site-a"},
+		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
+		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, storeA.CreateSubscription(ctx, &model.Subscription{ID: "sa1", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+
+	// Site-B: source channel with members; requester subscribed on site-b too.
+	require.NoError(t, storeB.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-b"}))
+	_, err = dbB.Collection("users").InsertMany(ctx, []interface{}{
+		model.User{ID: "u1", Account: "bob", SiteID: "site-b"},
+		model.User{ID: "u2", Account: "carol", SiteID: "site-b"},
+		model.User{ID: "req", Account: "alice", SiteID: "site-b"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
+	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
+	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb3", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+
+	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
+	handlerB := NewHandler(storeB, keyStore, nil, "site-b", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	require.NoError(t, handlerB.RegisterCRUD(otelNCb))
+	require.NoError(t, otelNCb.NatsConn().Flush())
+
+	// Site-A's cross-site client: connect a plain nats.Conn directly to site-B's server.
+	// In production NATS gateways handle this routing; for this test we bypass gateways
+	// and connect the client directly — the subject and request/reply wiring is the same.
+	ncBfromA, err := nats.Connect(natsURLb)
+	require.NoError(t, err)
+	t.Cleanup(func() { ncBfromA.Close() })
+	memberListClient := NewNATSMemberListClient(ncBfromA, 5*time.Second)
+
+	// Capture what site-A publishes to its canonical stream
+	var publishedSubj string
+	var publishedData []byte
+	publish := func(_ context.Context, subj string, data []byte) error {
+		publishedSubj = subj
+		publishedData = data
+		return nil
+	}
+	handlerA := NewHandler(storeA, keyStore, memberListClient, "site-a", 1000, 500, publish)
+
+	// Call add-members on site-A with a site-B source channel
+	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	result, err := handlerA.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	require.NoError(t, err)
+
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(result, &status))
+	assert.Equal(t, "accepted", status["status"])
+
+	// Verify the canonical event has site-B members (bob, carol) — requester alice is excluded because ResolveAccounts filters existing subs
+	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
+	var normalized model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(publishedData, &normalized))
+	assert.Equal(t, "target", normalized.RoomID)
+	assert.Contains(t, normalized.Users, "bob")
+	assert.Contains(t, normalized.Users, "carol")
+	// Requester is already subscribed to target, so ResolveAccounts filters her out.
+	assert.NotContains(t, normalized.Users, "alice")
+}
+
+func TestAddMembers_CrossSiteTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	db := setupMongo(t)
+	natsURL := setupNATS(t)
+	valCfg := setupValkey(t)
+
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+	store := NewMongoStore(db)
+	otelNC, err := otelnats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNC.Drain() })
+
+	ctx := context.Background()
+
+	// Target on site-a, requester subscribed.
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+
+	// Register a site-b responder that sleeps past the client timeout, so we actually
+	// exercise the context.WithTimeout path (not NATS "no responders" fast-fail).
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Close() })
+	// Sleep just past the 200ms client timeout so the responder doesn't outlive the test
+	// and flag as a goroutine leak under -race/leak detectors.
+	sub, err := nc.Subscribe(subject.MemberList("alice", "source", "site-b"), func(m *nats.Msg) {
+		time.Sleep(400 * time.Millisecond)
+		_ = m.Respond([]byte(`{}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
+	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+
+	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected deadline exceeded, got %v", err)
+	assert.Contains(t, err.Error(), "expand channels")
+	assert.Contains(t, err.Error(), "remote list-members")
+}
+
 func TestRoomsInfoBatchRPC(t *testing.T) {
 	db := setupMongo(t)
 	valCfg := setupValkey(t)
@@ -988,7 +1199,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNC.Drain() })
 
-	handler := NewHandler(store, keyStore, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handler.RegisterCRUD(otelNC))
 	require.NoError(t, otelNC.NatsConn().Flush())
 

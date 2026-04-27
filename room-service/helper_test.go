@@ -109,3 +109,24 @@ func TestDedup_Empty(t *testing.T) {
 	got := dedup([]string{})
 	assert.Nil(t, got)
 }
+
+func TestSanitizeError_NotChannelMember(t *testing.T) {
+	msg := sanitizeError(errNotChannelMember)
+	assert.Equal(t, "only channel members can use a channel as a source", msg)
+}
+
+func TestSanitizeError_NotChannelMember_WhenWrapped(t *testing.T) {
+	// Guards the errors.Is whitelist — wrapping must not lose the user-safe message.
+	wrapped := fmt.Errorf("expand channels: %w", errNotChannelMember)
+	assert.Equal(t, "only channel members can use a channel as a source", sanitizeError(wrapped))
+}
+
+func TestSanitizeError_RemoteMemberListPrefix(t *testing.T) {
+	remote := errors.New("remote member.list: only room members can list members")
+	assert.Equal(t, "remote member.list: only room members can list members", sanitizeError(remote))
+}
+
+func TestSanitizeError_TransportFailureStillOpaque(t *testing.T) {
+	// Generic transport failure from the client — no user-safe substring — must still be "internal error".
+	assert.Equal(t, "internal error", sanitizeError(errors.New("member.list request to site-eu: nats: timeout")))
+}

@@ -34,3 +34,12 @@ func ReplyError(msg *nats.Msg, errMsg string) {
 		slog.Error("error reply failed", "error", err)
 	}
 }
+
+// TryParseError returns the ErrorResponse iff data decodes cleanly with a non-empty Error.
+func TryParseError(data []byte) (model.ErrorResponse, bool) {
+	var r model.ErrorResponse
+	if err := json.Unmarshal(data, &r); err != nil || r.Error == "" {
+		return model.ErrorResponse{}, false
+	}
+	return r, true
+}

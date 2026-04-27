@@ -24,16 +24,17 @@ import (
 )
 
 type Handler struct {
-	store           RoomStore
-	keyStore        RoomKeyStore
-	siteID          string
-	maxRoomSize     int
-	maxBatchSize    int
-	publishToStream func(ctx context.Context, subj string, data []byte) error
+	store            RoomStore
+	keyStore         RoomKeyStore
+	memberListClient MemberListClient
+	siteID           string
+	maxRoomSize      int
+	maxBatchSize     int
+	publishToStream  func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, keyStore RoomKeyStore, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
-	return &Handler{store: store, keyStore: keyStore, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
+func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
+	return &Handler{store: store, keyStore: keyStore, memberListClient: memberListClient, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
 }
 
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
@@ -428,7 +429,7 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	}
 
 	// 5. Expand channels
-	channelOrgIDs, channelAccounts, err := h.expandChannels(ctx, req.Channels)
+	channelOrgIDs, channelAccounts, err := h.expandChannelRefs(ctx, requester, req.Channels)
 	if err != nil {
 		return nil, fmt.Errorf("expand channels: %w", err)
 	}
@@ -471,45 +472,60 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	return json.Marshal(map[string]string{"status": "accepted"})
 }
 
-func (h *Handler) expandChannels(ctx context.Context, channelIDs []string) (orgIDs, accounts []string, err error) {
-	if len(channelIDs) == 0 {
-		return nil, nil, nil
-	}
+func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs []model.ChannelRef) (orgIDs, accounts []string, err error) {
+	for _, ref := range refs {
+		var members []model.RoomMember
 
-	// Batch fetch room_members for all channels
-	roomMembers, err := h.store.GetRoomMembersByRooms(ctx, channelIDs)
-	if err != nil {
-		return nil, nil, fmt.Errorf("get room members: %w", err)
-	}
+		if ref.SiteID == h.siteID {
+			if _, subErr := h.store.GetSubscription(ctx, requester, ref.RoomID); subErr != nil {
+				if errors.Is(subErr, model.ErrSubscriptionNotFound) {
+					return nil, nil, errNotChannelMember
+				}
+				return nil, nil, fmt.Errorf("subscription check %s: %w", ref.RoomID, subErr)
+			}
+			members, err = h.store.ListRoomMembers(ctx, ref.RoomID, nil, nil, false)
+			if err != nil {
+				return nil, nil, fmt.Errorf("local list-members %s: %w", ref.RoomID, err)
+			}
+		} else {
+			members, err = h.memberListClient.ListMembers(ctx, requester, ref)
+			if err != nil {
+				// Pass the sentinel through unwrapped so same-site and cross-site "not a member"
+				// produce identical behavior — errors.Is(err, errNotChannelMember) matches both.
+				if errors.Is(err, errNotChannelMember) {
+					return nil, nil, errNotChannelMember
+				}
+				return nil, nil, fmt.Errorf("remote list-members %s@%s: %w", ref.RoomID, ref.SiteID, err)
+			}
+		}
+		// Apply the size cap uniformly to both same-site and cross-site results.
+		// A misbehaving remote could send arbitrarily many; a same-site source channel
+		// could also have grown beyond maxRoomSize. Either way the downstream capacity
+		// check would reject — short-circuit here so we don't process a giant slice.
+		if len(members) > h.maxRoomSize {
+			return nil, nil, fmt.Errorf("list-members %s@%s: response size %d exceeds max %d", ref.RoomID, ref.SiteID, len(members), h.maxRoomSize)
+		}
 
-	// Build set of channels that have room_members
-	channelsWithMembers := make(map[string]struct{})
-	for i := range roomMembers {
-		rm := &roomMembers[i]
-		channelsWithMembers[rm.RoomID] = struct{}{}
-		switch rm.Member.Type {
-		case model.RoomMemberOrg:
-			orgIDs = append(orgIDs, rm.Member.ID)
-		case model.RoomMemberIndividual:
-			accounts = append(accounts, rm.Member.Account)
+		for i := range members {
+			m := &members[i].Member
+			switch m.Type {
+			case model.RoomMemberOrg:
+				orgIDs = append(orgIDs, m.ID)
+			case model.RoomMemberIndividual:
+				accounts = append(accounts, m.Account)
+			default:
+				// Schema skew between sites — log so the issue is visible without
+				// breaking the request. Same-site (m.Type from our own Mongo) shouldn't
+				// hit this in practice; cross-site can if a peer adds new types.
+				slog.Warn("expandChannelRefs: skipping member with unknown type",
+					"roomId", ref.RoomID,
+					"siteId", ref.SiteID,
+					"memberType", m.Type,
+					"memberId", m.ID,
+				)
+			}
 		}
 	}
-
-	// Channels without room_members — fallback to GetAccountsByRooms
-	var noMemberChannels []string
-	for _, chID := range channelIDs {
-		if _, ok := channelsWithMembers[chID]; !ok {
-			noMemberChannels = append(noMemberChannels, chID)
-		}
-	}
-	if len(noMemberChannels) > 0 {
-		fallbackAccounts, err := h.store.GetAccountsByRooms(ctx, noMemberChannels)
-		if err != nil {
-			return nil, nil, fmt.Errorf("get accounts by rooms: %w", err)
-		}
-		accounts = append(accounts, fallbackAccounts...)
-	}
-
 	return orgIDs, accounts, nil
 }
 

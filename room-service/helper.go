@@ -24,6 +24,8 @@ var (
 	// stripping the owner role during an individual-leave is only sound when
 	// the role can only be held alongside an individual entry.
 	errPromoteRequiresIndividual = errors.New("only individual members can be promoted to owner")
+	// Parallel to errNotRoomMember; scoped to add-member channel-source expansion (not list).
+	errNotChannelMember = errors.New("only channel members can use a channel as a source")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
@@ -63,6 +65,10 @@ func dedup(items []string) []string {
 
 func sanitizeError(err error) string {
 	switch {
+	case errors.Is(err, errNotChannelMember):
+		// Always return the sentinel message, even when wrapped, so callers
+		// get a clean user-safe message without the wrapping context.
+		return errNotChannelMember.Error()
 	case errors.Is(err, errInvalidRole),
 		errors.Is(err, errOnlyOwners),
 		errors.Is(err, errAlreadyOwner),
@@ -76,7 +82,7 @@ func sanitizeError(err error) string {
 		return err.Error()
 	default:
 		msg := err.Error()
-		for _, safe := range []string{"only owners can", "cannot add members", "room is at maximum capacity", "requester not in room", "invalid request"} {
+		for _, safe := range []string{"only owners can", "cannot add members", "room is at maximum capacity", "requester not in room", "invalid request", "remote member.list:"} {
 			if strings.Contains(msg, safe) {
 				return msg
 			}
