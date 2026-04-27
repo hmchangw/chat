@@ -31,8 +31,7 @@ func baseScanDest(m *models.Message) []any {
 	}
 }
 
-// scanWith iterates a Cassandra result set, using dest for each row's scan destinations.
-// Shared by all three table-specific scan helpers.
+// Shared by the three table-specific scan helpers.
 func scanWith(iter *gocql.Iter, dest func(*models.Message) []any) []models.Message {
 	messages := make([]models.Message, 0)
 	for {
@@ -65,7 +64,6 @@ func (r *Repository) fetchMessagesPage(q *gocql.Query, pageReq PageRequest, errM
 	}, nil
 }
 
-// GetMessagesBefore returns messages strictly before `before`, newest-first.
 func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q PageRequest) (Page[models.Message], error) {
 	return r.fetchMessagesPage(
 		r.session.Query(
@@ -76,8 +74,6 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, befor
 	)
 }
 
-// GetMessagesBetweenDesc returns messages between `since` and `before`, newest-first.
-// Used when a historySharedSince lower bound must be enforced.
 func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q PageRequest) (Page[models.Message], error) {
 	return r.fetchMessagesPage(
 		r.session.Query(
@@ -88,7 +84,6 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 	)
 }
 
-// GetMessagesAfter returns messages strictly after `after`, oldest-first.
 func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q PageRequest) (Page[models.Message], error) {
 	return r.fetchMessagesPage(
 		r.session.Query(
@@ -99,8 +94,6 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 	)
 }
 
-// GetAllMessagesAsc returns all messages in the room, oldest-first.
-// Used when there is no lower-bound access restriction.
 func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q PageRequest) (Page[models.Message], error) {
 	return r.fetchMessagesPage(
 		r.session.Query(

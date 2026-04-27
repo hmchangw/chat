@@ -57,15 +57,10 @@ func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID stri
 	return msg, nil
 }
 
-// UnavailableQuoteMsg is the stub text written into QuotedParentMessage.Msg when the
-// quoted message falls outside the caller's access window. Exported so callers can
-// distinguish the stub from real message content.
+// UnavailableQuoteMsg is written into QuotedParentMessage.Msg when the quoted message is outside the access window.
 const UnavailableQuoteMsg = "This message is unavailable"
 
-// redactUnavailableQuotes replaces quoted-message previews that fall outside
-// the caller's access window with a stub. For TShow messages, the thread parent's
-// CreatedAt is read from QuotedParentMessage.ThreadParentCreatedAt, which is
-// embedded at write time by message-worker — no Cassandra round-trip needed.
+// For TShow replies, inaccessibility uses ThreadParentCreatedAt embedded at write time by message-worker.
 func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
 	if accessSince == nil {
 		return

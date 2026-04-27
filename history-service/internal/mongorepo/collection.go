@@ -37,7 +37,7 @@ func (c *Collection[T]) FindByID(ctx context.Context, id string, opts ...QueryOp
 	return c.FindOne(ctx, bson.M{"_id": id}, opts...)
 }
 
-// FindMany returns all matching documents. Returns an empty slice (not nil) when none match.
+// FindMany returns all matching documents; returns empty (not nil) when none match.
 func (c *Collection[T]) FindMany(ctx context.Context, filter any, opts ...QueryOption) ([]T, error) {
 	cursor, err := c.col.Find(ctx, filter, apply(opts).findOpts())
 	if err != nil {
@@ -56,9 +56,7 @@ func (c *Collection[T]) FindMany(ctx context.Context, filter any, opts ...QueryO
 // Raw returns the underlying *mongo.Collection for escape-hatch scenarios.
 func (c *Collection[T]) Raw() *mongo.Collection { return c.col }
 
-// Aggregate runs the pipeline and decodes all results into []T.
-// Returns an empty slice (not nil) when none match.
-// No QueryOption accepted — the pipeline encodes all query logic.
+// Aggregate runs the pipeline; no QueryOption — the pipeline encodes all query logic.
 func (c *Collection[T]) Aggregate(ctx context.Context, pipeline bson.A) ([]T, error) {
 	cursor, err := c.col.Aggregate(ctx, pipeline)
 	if err != nil {
@@ -74,8 +72,7 @@ func (c *Collection[T]) Aggregate(ctx context.Context, pipeline bson.A) ([]T, er
 	return results, nil
 }
 
-// AggregatePaged appends a $facet stage that splits into a paginated data branch
-// (skip+limit) and a total-count branch, returning OffsetPage[T].
+// AggregatePaged appends a $facet: skip+limit data branch + count branch → OffsetPage[T].
 func (c *Collection[T]) AggregatePaged(ctx context.Context, pipeline bson.A, req OffsetPageRequest) (OffsetPage[T], error) {
 	facet := bson.D{{Key: "$facet", Value: bson.M{
 		"data": bson.A{

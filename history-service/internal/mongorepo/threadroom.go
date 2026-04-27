@@ -27,8 +27,7 @@ func NewThreadRoomRepo(db *mongo.Database) *ThreadRoomRepo {
 	}
 }
 
-// EnsureIndexes creates the indexes required by the three thread-list queries.
-// Safe to call on every startup — MongoDB ignores identical existing indexes.
+// EnsureIndexes creates the compound indexes required by the thread-list queries. Idempotent.
 func (r *ThreadRoomRepo) EnsureIndexes(ctx context.Context) error {
 	col := r.threadRooms.Raw().Indexes()
 
@@ -54,8 +53,6 @@ func (r *ThreadRoomRepo) EnsureIndexes(ctx context.Context) error {
 	return nil
 }
 
-// GetThreadRooms returns paginated thread rooms, sorted by newest activity.
-// When accessSince is non-nil, only threads whose parent was created at or after that time are included.
 func (r *ThreadRoomRepo) GetThreadRooms(ctx context.Context, roomID string, accessSince *time.Time, req OffsetPageRequest) (OffsetPage[model.ThreadRoom], error) {
 	page, err := r.threadRooms.AggregatePaged(ctx, allThreadsPipeline(roomID, accessSince), req)
 	if err != nil {
@@ -64,8 +61,6 @@ func (r *ThreadRoomRepo) GetThreadRooms(ctx context.Context, roomID string, acce
 	return page, nil
 }
 
-// GetFollowingThreadRooms returns paginated thread rooms where account appears in ReplyAccounts.
-// When accessSince is non-nil, only threads whose parent was created at or after that time are included.
 func (r *ThreadRoomRepo) GetFollowingThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req OffsetPageRequest) (OffsetPage[model.ThreadRoom], error) {
 	page, err := r.threadRooms.AggregatePaged(ctx, followingThreadsPipeline(roomID, account, accessSince), req)
 	if err != nil {
@@ -74,8 +69,7 @@ func (r *ThreadRoomRepo) GetFollowingThreadRooms(ctx context.Context, roomID, ac
 	return page, nil
 }
 
-// GetUnreadThreadRooms returns thread rooms with unread activity for account.
-// A thread is unread when the user has a threadSubscription AND lastMsgAt > sub.lastSeenAt.
+// Unread = subscribed AND lastMsgAt > lastSeenAt.
 func (r *ThreadRoomRepo) GetUnreadThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req OffsetPageRequest) (OffsetPage[model.ThreadRoom], error) {
 	page, err := r.threadRooms.AggregatePaged(ctx, unreadThreadsPipeline(roomID, account, accessSince), req)
 	if err != nil {

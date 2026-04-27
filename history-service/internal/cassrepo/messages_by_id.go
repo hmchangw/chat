@@ -21,7 +21,7 @@ func messageByIDScanDest(m *models.Message) []any {
 
 func scanMessagesByID(iter *gocql.Iter) []models.Message { return scanWith(iter, messageByIDScanDest) }
 
-// GetMessageByID returns a single message by ID, or (nil, nil) if not found.
+// Returns (nil, nil) when not found.
 func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*models.Message, error) {
 	var m models.Message
 	err := r.session.Query(
@@ -37,8 +37,7 @@ func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*mod
 	return &m, nil
 }
 
-// GetMessagesByIDs returns messages for the given IDs. Missing IDs are silently
-// omitted and order is not guaranteed. Returns an empty slice when messageIDs is empty.
+// Missing IDs are silently omitted; order is not guaranteed.
 func (r *Repository) GetMessagesByIDs(ctx context.Context, messageIDs []string) ([]models.Message, error) {
 	if len(messageIDs) == 0 {
 		return []models.Message{}, nil

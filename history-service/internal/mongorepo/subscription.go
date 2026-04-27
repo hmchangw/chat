@@ -27,10 +27,7 @@ func (r *SubscriptionRepo) GetSubscription(ctx context.Context, account, roomID 
 	return r.subscriptions.FindOne(ctx, bson.M{"u.account": account, "roomId": roomID})
 }
 
-// GetHistorySharedSince returns the access lower bound for a subscription.
-// (nil, true, nil)  — subscribed, no restriction (owner / full history).
-// (&t,  true, nil)  — subscribed with a historySharedSince restriction.
-// (nil, false, nil) — not subscribed.
+// GetHistorySharedSince returns (nil, true, nil) = full access; (&t, true, nil) = restricted; (nil, false, nil) = not subscribed.
 func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error) {
 	sub, err := r.subscriptions.FindOne(ctx,
 		bson.M{"u.account": account, "roomId": roomID},

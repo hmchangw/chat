@@ -9,8 +9,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/models"
 )
 
-// threadMessageColumns is a strict subset of messages_by_room — no tshow,
-// no thread_parent_created_at, no pinned_* — so it needs its own scan destination.
+// Subset of messages_by_room — no tshow, thread_parent_created_at, or pinned_* columns.
 const threadMessageColumns = "room_id, thread_room_id, created_at, message_id, thread_parent_id, " +
 	"sender, target_user, msg, mentions, attachments, file, card, card_action, " +
 	"quoted_parent_message, visible_to, unread, reactions, deleted, " +
@@ -35,8 +34,7 @@ func scanThreadMessages(iter *gocql.Iter) []models.Message {
 	return scanWith(iter, threadMessageScanDest)
 }
 
-// GetThreadMessages returns thread replies for (roomID, threadRoomID), newest-first.
-// Partition + first clustering key equality avoids ALLOW FILTERING.
+// Partition + clustering key equality avoids ALLOW FILTERING.
 func (r *Repository) GetThreadMessages(ctx context.Context, roomID, threadRoomID string, q PageRequest) (Page[models.Message], error) {
 	var messages []models.Message
 

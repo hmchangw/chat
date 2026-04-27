@@ -10,8 +10,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
-// GetThreadMessages returns a paginated list of replies for a thread.
-// NATS subject: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread
+// NATS: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread
 func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.GetThreadMessagesRequest) (*models.GetThreadMessagesResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
@@ -20,8 +19,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, natsrouter.ErrBadRequest("threadMessageId is required")
 	}
 
-	// Access check runs before the message fetch so an unauthenticated caller
-	// cannot probe whether arbitrary message IDs exist in rooms they don't belong to.
+	// Access check before fetch — prevents probing message IDs without room membership.
 	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
 		return nil, err
@@ -32,9 +30,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	// If the submitted ID belongs to a reply (not a parent), resolve the true parent
-	// so the access check enforces the historySharedSince gate against the correct row.
-	// Replies themselves never carry a ThreadParentID, so one indirection is enough.
+	// Reply ID submitted: resolve to the true parent for the access-window check.
 	parent := msg
 	if msg.ThreadParentID != "" {
 		parent, err = s.findMessage(c, roomID, msg.ThreadParentID)
@@ -52,9 +48,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, natsrouter.ErrForbidden("thread is outside access window")
 	}
 
-	// thread_room_id is stamped onto the parent row by message-worker when the first
-	// reply arrives. An empty value means no replies exist yet (or the reply event
-	// lacked ThreadParentMessageCreatedAt so the stamp was skipped).
+	// Empty ThreadRoomID: no replies yet, or stamp skipped due to missing event fields.
 	if parent.ThreadRoomID == "" {
 		return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false}, nil
 	}
@@ -85,8 +79,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	}, nil
 }
 
-// validateThreadFilter normalises and validates the thread filter value.
-// An empty filter is treated as "all" so clients can omit the field.
+// Empty filter defaults to "all" so clients can omit the field.
 func validateThreadFilter(filter models.ThreadFilter) (models.ThreadFilter, error) {
 	switch filter {
 	case "", models.ThreadFilterAll:
@@ -98,8 +91,7 @@ func validateThreadFilter(filter models.ThreadFilter) (models.ThreadFilter, erro
 	}
 }
 
-// GetThreadParentMessages returns a paginated list of thread parent messages for a room.
-// NATS subject: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread.parent
+// NATS: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread.parent
 func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req models.GetThreadParentMessagesRequest) (*models.GetThreadParentMessagesResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
@@ -156,11 +148,7 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 		msgByID[cassMessages[i].MessageID] = cassMessages[i]
 	}
 
-	// Preserve MongoDB sort order; silently skip messages missing in Cassandra or
-	// belonging to a different room (defense-in-depth against data drift).
-	// accessSince is re-checked against the actual Cassandra CreatedAt because
-	// MongoDB's threadParentCreatedAt can be zero when the field was absent from
-	// the original event, which would bypass the initial $match filter.
+	// accessSince re-checked here: MongoDB's threadParentCreatedAt can be zero when absent from the original event.
 	parentMessages := make([]models.Message, 0, len(threadPage.Data))
 	for i := range threadPage.Data {
 		msg, ok := msgByID[threadPage.Data[i].ParentMessageID]
