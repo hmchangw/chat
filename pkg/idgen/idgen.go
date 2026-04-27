@@ -18,7 +18,7 @@ import (
 const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 const (
-	// idLength: 17-char base62, ~101 bits of entropy. Channel room IDs and outbox dedup seeds.
+	// idLength: 17-char base62, ~101 bits of entropy. Channel room IDs.
 	idLength = 17
 	// messageIDLength: 20-char base62, ~119 bits of entropy. Message.ID and JetStream Nats-Msg-Id.
 	messageIDLength = 20
