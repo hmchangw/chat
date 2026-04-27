@@ -63,29 +63,36 @@ Env var: `BOOTSTRAP_STREAMS`. Default: `false`.
 Each existing `js.CreateOrUpdateStream` call is wrapped in a check on `cfg.Bootstrap.Enabled`. To make the gate independently unit-testable, extract a small helper per service:
 
 ```go
-// bootstrapStreams creates the streams this service consumes from.
-// In production this is a no-op (cfg.Bootstrap.Enabled is false) — streams
-// are owned by ops/IaC. In dev/integration the local docker-compose sets
-// BOOTSTRAP_STREAMS=true so a developer can stand the service up in
-// isolation against a fresh NATS instance.
-func bootstrapStreams(ctx context.Context, js streamCreator, siteID string, enabled bool) error {
-    if !enabled {
+// bootstrapStreams handles the JetStream stream(s) this service uses.
+// When enabled (dev/integration), it creates the stream(s) via
+// CreateOrUpdateStream. When disabled (production), it verifies they
+// exist via Stream() and returns an error if they don't — fail-fast so
+// a misprovisioned deploy surfaces at startup rather than at first
+// publish or consume.
+func bootstrapStreams(ctx context.Context, js streamManager, siteID string, enabled bool) error {
+    canonicalCfg := stream.MessagesCanonical(siteID)
+    if enabled {
+        if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+            Name:     canonicalCfg.Name,
+            Subjects: canonicalCfg.Subjects,
+        }); err != nil {
+            return fmt.Errorf("create MESSAGES_CANONICAL stream: %w", err)
+        }
         return nil
     }
-    canonicalCfg := stream.MessagesCanonical(siteID)
-    if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-        Name:     canonicalCfg.Name,
-        Subjects: canonicalCfg.Subjects,
-    }); err != nil {
-        return fmt.Errorf("create MESSAGES_CANONICAL stream: %w", err)
+    if _, err := js.Stream(ctx, canonicalCfg.Name); err != nil {
+        return fmt.Errorf("verify MESSAGES_CANONICAL stream: %w", err)
     }
     return nil
 }
 
-// streamCreator is the minimal interface the helper depends on, kept
-// service-local so we don't pollute pkg/ with a one-method type.
-type streamCreator interface {
-    CreateOrUpdateStream(ctx context.Context, cfg jetstream.StreamConfig) (jetstream.Stream, error)
+// streamManager is the minimal interface the helper depends on, kept
+// service-local so we don't pollute pkg/ with a multi-method type.
+// Returns oteljetstream.Stream because the actual js value is an
+// oteljetstream.JetStream (OTEL-instrumented wrapper).
+type streamManager interface {
+    CreateOrUpdateStream(ctx context.Context, cfg jetstream.StreamConfig) (oteljetstream.Stream, error)
+    Stream(ctx context.Context, name string) (oteljetstream.Stream, error)
 }
 ```
 
@@ -131,34 +138,68 @@ Production manifests stay unchanged — the absent env var means default `false`
 
 Per CLAUDE.md, every change follows Red-Green-Refactor.
 
-For each of the seven services, add a unit test in `main_test.go` (creating the file if it does not exist) that table-tests the new helper:
+For each of the seven services, add a unit test in `bootstrap_test.go` (creating the file if it does not exist) that table-tests the new helper. The fake records full `jetstream.StreamConfig` values (so tests can assert `Subjects` and other fields) and tracks which streams "exist" for the disabled/verify path:
 
 ```go
+type fakeStreamManager struct {
+    created  []jetstream.StreamConfig
+    existing map[string]bool
+    failOn   string
+    failErr  error
+}
+
+func (f *fakeStreamManager) CreateOrUpdateStream(_ context.Context, cfg jetstream.StreamConfig) (oteljetstream.Stream, error) {
+    if f.failOn != "" && cfg.Name == f.failOn {
+        return nil, f.failErr
+    }
+    f.created = append(f.created, cfg)
+    return nil, nil
+}
+
+func (f *fakeStreamManager) Stream(_ context.Context, name string) (oteljetstream.Stream, error) {
+    if f.existing[name] {
+        return nil, nil
+    }
+    return nil, jetstream.ErrStreamNotFound
+}
+
 func TestBootstrapStreams(t *testing.T) {
     tests := []struct {
         name        string
         enabled     bool
-        wantCreated []string  // stream names expected to be created
+        existing    map[string]bool
+        failOn      string
+        failErr     error
+        wantCreated []string
+        wantErrSub  string
     }{
-        {"disabled - skips creation", false, nil},
-        {"enabled - creates expected streams", true, []string{"MESSAGES_CANONICAL_test"}},
+        {name: "disabled - verifies existing stream", enabled: false, existing: map[string]bool{"MESSAGES_CANONICAL_test": true}},
+        {name: "disabled - fails when stream missing", enabled: false, wantErrSub: "verify MESSAGES_CANONICAL stream"},
+        {name: "enabled - creates expected streams", enabled: true, wantCreated: []string{"MESSAGES_CANONICAL_test"}},
+        {name: "enabled - wraps creator error", enabled: true, failOn: "MESSAGES_CANONICAL_test", failErr: errors.New("nats down"), wantErrSub: "create MESSAGES_CANONICAL stream"},
     }
     for _, tc := range tests {
         t.Run(tc.name, func(t *testing.T) {
-            fake := &fakeStreamCreator{}
-            err := bootstrapStreams(t.Context(), fake, "test", tc.enabled)
+            fake := &fakeStreamManager{existing: tc.existing, failOn: tc.failOn, failErr: tc.failErr}
+            err := bootstrapStreams(context.Background(), fake, "test", tc.enabled)
+            if tc.wantErrSub != "" {
+                require.Error(t, err)
+                assert.Contains(t, err.Error(), tc.wantErrSub)
+                return
+            }
             require.NoError(t, err)
-            require.Equal(t, tc.wantCreated, fake.created)
+            // For created streams, assert full StreamConfig (Name + Subjects)
+            // matches the canonical pkg/stream definition.
         })
     }
 }
 ```
 
-The fake `streamCreator` records which stream names it was asked to create. No mockgen-generated mock is needed — the interface has one method and the helper is service-local.
+For error-path cases, also use `assert.ErrorIs(t, err, tc.failErr)` so the wrapped sentinel is verified directly, not just the message — per CLAUDE.md "Never compare errors by string". For "stream missing" cases, the assertion target is `jetstream.ErrStreamNotFound`.
 
-For `bootstrapStreams` calls that fail, add an additional table case where the fake returns an error and assert the helper wraps it with `fmt.Errorf("create <STREAM> stream: %w", err)`.
+The interface has two methods; the helper is service-local. No mockgen-generated mock is needed.
 
-Coverage target per CLAUDE.md: ≥80% for the helper. The helper has only two paths (enabled false, enabled true with each stream) plus error wrapping, so reaching the threshold is straightforward.
+Coverage target per CLAUDE.md: ≥80% for the helper. The helper has four paths (enabled+create-success, enabled+create-error, disabled+verify-success, disabled+verify-error), so reaching the threshold is straightforward.
 
 ### Doc updates
 

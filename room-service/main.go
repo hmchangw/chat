@@ -19,10 +19,10 @@ import (
 )
 
 type config struct {
-	NatsURL           string          `env:"NATS_URL"                  envDefault:"nats://localhost:4222"`
+	NatsURL           string          `env:"NATS_URL,required"`
 	NatsCredsFile     string          `env:"NATS_CREDS_FILE"           envDefault:""`
 	SiteID            string          `env:"SITE_ID"                   envDefault:"site-local"`
-	MongoURI          string          `env:"MONGO_URI"                 envDefault:"mongodb://localhost:27017"`
+	MongoURI          string          `env:"MONGO_URI,required"`
 	MongoDB           string          `env:"MONGO_DB"                  envDefault:"chat"`
 	MongoUsername     string          `env:"MONGO_USERNAME"            envDefault:""`
 	MongoPassword     string          `env:"MONGO_PASSWORD"            envDefault:""`
