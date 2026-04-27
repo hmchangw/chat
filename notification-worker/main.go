@@ -132,8 +132,9 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				if err := handler.HandleMessage(msgCtx, msg.Data()); err != nil {
-					slog.Error("handle message failed", "error", err)
+				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
+				if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
+					slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 					if err := msg.Nak(); err != nil {
 						slog.Error("failed to nak message", "error", err)
 					}
@@ -175,5 +176,5 @@ type natsPublisher struct {
 }
 
 func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte) error {
-	return p.nc.Publish(ctx, subject, data)
+	return p.nc.PublishMsg(ctx, natsutil.NewMsg(ctx, subject, data))
 }

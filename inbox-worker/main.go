@@ -166,8 +166,9 @@ func main() {
 	handler := NewHandler(store, publisher)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
-		if err := handler.HandleEvent(m.Context(), m.Data()); err != nil {
-			slog.Error("handle event failed", "error", err)
+		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
+		if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
+			slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 			if err := m.Nak(); err != nil {
 				slog.Error("failed to nak message", "error", err)
 			}
@@ -201,5 +202,5 @@ type natsPublisher struct {
 }
 
 func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte) error {
-	return p.nc.Publish(ctx, subject, data)
+	return p.nc.PublishMsg(ctx, natsutil.NewMsg(ctx, subject, data))
 }

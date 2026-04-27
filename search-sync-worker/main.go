@@ -276,6 +276,8 @@ func main() {
 //  2. `handler.ActionCount() >= bulkBatchSize`: size-based flush.
 //  3. `time.Since(lastFlush) >= bulkFlushInterval` with a non-empty buffer:
 //     time-based flush to bound write latency during idle periods.
+//
+// Bulk flush spans many client requests, so per-message X-Request-ID is intentionally NOT propagated; mint a per-flush bulkID if per-batch traceability becomes a need.
 func runConsumer(
 	ctx context.Context,
 	cons oteljetstream.Consumer,
