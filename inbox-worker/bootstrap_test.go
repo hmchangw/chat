@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
+
+	"github.com/hmchangw/chat/pkg/stream"
 )
 
 type fakeStreamCreator struct {
@@ -42,7 +44,7 @@ func TestBootstrapStreams(t *testing.T) {
 			wantCreated: nil,
 		},
 		{
-			name:        "enabled - creates INBOX",
+			name:        "enabled - creates INBOX with Name and Subjects",
 			enabled:     true,
 			wantCreated: []string{"INBOX_test"},
 		},
@@ -66,13 +68,16 @@ func TestBootstrapStreams(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Len(t, fake.created, len(tc.wantCreated))
+			wantSubjects := stream.Inbox("test").Subjects
 			for i, wantName := range tc.wantCreated {
 				assert.Equal(t, wantName, fake.created[i].Name)
-				// The INBOX stream is created Name-only; ops/IaC owns
-				// cross-site Sources + SubjectTransforms. Lock that
-				// invariant in the test so a future "fix" that adds
-				// Subjects fails loudly here.
-				assert.Empty(t, fake.created[i].Subjects, "INBOX bootstrap must not set Subjects")
+				// App owns the schema (Name + Subjects). Federation
+				// (Sources + SubjectTransforms) belongs to ops/IaC and
+				// must not appear here.
+				assert.Equal(t, wantSubjects, fake.created[i].Subjects,
+					"INBOX bootstrap must set Subjects from pkg/stream.Inbox")
+				assert.Empty(t, fake.created[i].Sources,
+					"federation Sources are owned by ops/IaC and must not be set in app code")
 			}
 		})
 	}

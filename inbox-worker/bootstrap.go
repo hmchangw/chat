@@ -30,24 +30,24 @@ type streamCreator interface {
 	CreateOrUpdateStream(ctx context.Context, cfg jetstream.StreamConfig) (oteljetstream.Stream, error)
 }
 
-// bootstrapStreams creates the JetStream streams this service consumes from.
-// No-op when enabled is false (the production path) — streams are owned by
-// ops/IaC. In dev/integration the local docker-compose sets
+// bootstrapStreams creates the JetStream INBOX stream this service consumes
+// from. No-op when enabled is false (the production path) — streams are owned
+// by ops/IaC there. In dev/integration the local docker-compose sets
 // BOOTSTRAP_STREAMS=true so a developer can stand the service up in isolation
 // against a fresh NATS instance.
 //
-// Note: Subjects is intentionally omitted from the StreamConfig. In production
-// the INBOX stream's Sources and SubjectTransforms (cross-site OUTBOX→INBOX
-// sourcing) are configured by ops/IaC. This helper only creates the stream
-// with its Name so the consumer can be attached; the sourcing config is
-// managed externally and must not be overwritten here.
+// Ownership rule: this helper sets only the stream schema (Name + Subjects)
+// from pkg/stream.Inbox. Federation config (Sources + SubjectTransforms for
+// cross-site OUTBOX→INBOX sourcing) belongs to ops/IaC and is layered on in
+// production. App code never sets it.
 func bootstrapStreams(ctx context.Context, js streamCreator, siteID string, enabled bool) error {
 	if !enabled {
 		return nil
 	}
 	inboxCfg := stream.Inbox(siteID)
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: inboxCfg.Name,
+		Name:     inboxCfg.Name,
+		Subjects: inboxCfg.Subjects,
 	}); err != nil {
 		return fmt.Errorf("create INBOX stream: %w", err)
 	}
