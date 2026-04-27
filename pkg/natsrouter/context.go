@@ -67,6 +67,16 @@ func releaseContext(c *Context) {
 	// every field they can observe is stable from the moment of construction.
 }
 
+// RunChain executes the handler chain against c; exposed primarily for tests.
+func RunChain(c *Context, handlers []HandlerFunc) {
+	cs := chainPool.Get().(*chainState)
+	cs.handlers = handlers
+	cs.index = -1
+	c.chain = cs
+	c.Next()
+	releaseContext(c)
+}
+
 // NewContext creates a Context for testing handlers without a NATS connection.
 func NewContext(params map[string]string) *Context {
 	return &Context{
@@ -131,6 +141,11 @@ func (c *Context) MustGet(key string) any {
 		panic("natsrouter: key " + key + " not found in context")
 	}
 	return val
+}
+
+// SetContext replaces the underlying context.Context; call only from middleware before c.Next() (single-writer contract — racing with handler-spawned goroutines is unsafe).
+func (c *Context) SetContext(ctx context.Context) {
+	c.ctx = ctx
 }
 
 // Param returns a named parameter from the subject. Shortcut for c.Params.Get(key).

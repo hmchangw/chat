@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // Middleware is a handler that participates in the middleware chain.
@@ -14,20 +15,18 @@ type Middleware = HandlerFunc
 // requestIDKey is the context key used to store the request ID.
 const requestIDKey = "requestID"
 
-// RequestID returns middleware that generates or extracts a correlation ID
-// for each request and stores it in the context via c.Set("requestID", id).
-// If the incoming NATS message has an "X-Request-ID" header, that value is used;
-// otherwise a new ID is generated via idgen.
+// RequestID returns middleware that extracts X-Request-ID (or mints via idgen) and stores it on both the natsrouter keys map and the underlying ctx.
 func RequestID() HandlerFunc {
 	return func(c *Context) {
 		reqID := ""
 		if c.Msg != nil && c.Msg.Header != nil {
-			reqID = c.Msg.Header.Get("X-Request-ID")
+			reqID = c.Msg.Header.Get(natsutil.RequestIDHeader)
 		}
 		if reqID == "" {
 			reqID = idgen.GenerateID()
 		}
 		c.Set(requestIDKey, reqID)
+		c.SetContext(natsutil.WithRequestID(c, reqID))
 		c.Next()
 	}
 }
