@@ -76,10 +76,15 @@ func TestThreadRoomJSON(t *testing.T) {
 		SiteID:          "site-a",
 		LastMsgAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		LastMsgID:       "msg-2",
+		ReplyAccounts:   []string{"alice", "bob"},
 		CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 	}
-	roundTrip(t, &tr, &model.ThreadRoom{})
+	data, err := json.Marshal(&tr)
+	require.NoError(t, err)
+	var got model.ThreadRoom
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, tr, got)
 }
 
 func TestThreadSubscriptionJSON(t *testing.T) {
