@@ -438,7 +438,7 @@ func TestRequestID_FromHeader(t *testing.T) {
 	msg := nats.NewMsg("test.123")
 	msg.Data, _ = json.Marshal(testReq{Name: "test"})
 	msg.Header = nats.Header{}
-	msg.Header.Set("X-Request-ID", "custom-req-id-42")
+	msg.Header.Set(natsutil.RequestIDHeader, "custom-req-id-42")
 
 	resp, err := nc.NatsConn().RequestMsg(msg, 2*time.Second)
 	require.NoError(t, err)
@@ -625,13 +625,16 @@ func TestRequestIDMiddleware_OtherCtxKeysStillReadable(t *testing.T) {
 	c.SetContext(parentCtx)
 	c.Msg = &nats.Msg{Header: nats.Header{}}
 
+	called := false
 	chain := []HandlerFunc{
 		RequestID(),
 		func(c *Context) {
+			called = true
 			// This lookup must complete in finite time — would infinite-loop with the bug.
 			got := c.Value(k)
 			assert.Equal(t, "parent-value", got, "non-requestIDKey lookup must still find values from the original parent ctx")
 		},
 	}
 	runChain(c, chain)
+	assert.True(t, called, "downstream handler must run")
 }
