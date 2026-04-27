@@ -30,6 +30,8 @@ type config struct {
 	MongoURI             string        `env:"MONGO_URI"                 envDefault:"mongodb://localhost:27017"`
 	MongoDB              string        `env:"MONGO_DB"                  envDefault:"chat"`
 	MaxWorkers           int           `env:"MAX_WORKERS"               envDefault:"100"`
+	UserCacheSize        int           `env:"USER_CACHE_SIZE"           envDefault:"10000"`
+	UserCacheTTL         time.Duration `env:"USER_CACHE_TTL"            envDefault:"5m"`
 	ValkeyAddr           string        `env:"VALKEY_ADDR,required"`
 	ValkeyPassword       string        `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
@@ -60,6 +62,12 @@ func main() {
 	db := mongoClient.Database(cfg.MongoDB)
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
+	if cfg.UserCacheSize > 0 && cfg.UserCacheTTL > 0 {
+		us = NewCachedUserStore(us, cfg.UserCacheSize, cfg.UserCacheTTL)
+		slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)
+	} else {
+		slog.Info("user-cache disabled")
+	}
 
 	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
 		Addr:        cfg.ValkeyAddr,
