@@ -1,0 +1,53 @@
+{
+  "title": "Loadgen",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {"from": "now-15m", "to": "now"},
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Throughput (msg/s)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "rate(loadgen_published_total[10s])", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "E1 gatekeeper latency (P50/P95/P99)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum(rate(loadgen_e1_latency_seconds_bucket[30s])) by (le))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum(rate(loadgen_e1_latency_seconds_bucket[30s])) by (le))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum(rate(loadgen_e1_latency_seconds_bucket[30s])) by (le))", "legendFormat": "p99", "refId": "C"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "E2 broadcast latency (P50/P95/P99)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum(rate(loadgen_e2_latency_seconds_bucket[30s])) by (le))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum(rate(loadgen_e2_latency_seconds_bucket[30s])) by (le))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum(rate(loadgen_e2_latency_seconds_bucket[30s])) by (le))", "legendFormat": "p99", "refId": "C"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer pending",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [{"expr": "loadgen_consumer_pending", "legendFormat": "{{durable}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer ack pending",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [{"expr": "loadgen_consumer_ack_pending", "legendFormat": "{{durable}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Publish errors/sec",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [{"expr": "rate(loadgen_publish_errors_total[10s])", "legendFormat": "{{reason}}", "refId": "A"}]
+    }
+  ]
+}

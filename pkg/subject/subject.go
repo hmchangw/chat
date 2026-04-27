@@ -57,10 +57,6 @@ func UserMsgStream(account string) string {
 	return fmt.Sprintf("chat.user.%s.stream.msg", account)
 }
 
-func MemberInvite(account, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.invite", account, roomID, siteID)
-}
-
 func MemberRoleUpdate(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.role-update", account, roomID, siteID)
 }
@@ -184,10 +180,6 @@ func MsgSendWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.room.*.%s.msg.send", siteID)
 }
 
-func MemberInviteWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.invite", siteID)
-}
-
 func MemberRoleUpdateWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.role-update", siteID)
 }
@@ -257,6 +249,18 @@ func RoomsGetWildcard() string {
 // RoomsInfoBatchSubscribe is the per-site subscription subject for room-service.
 func RoomsInfoBatchSubscribe(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
+}
+
+func UserResponseWildcard() string {
+	return "chat.user.*.response.>"
+}
+
+func RoomEventWildcard() string {
+	return "chat.room.*.event"
+}
+
+func UserRoomEventWildcard() string {
+	return "chat.user.*.event.room"
 }
 
 // --- natsrouter patterns (use {param} placeholders for named extraction) ---

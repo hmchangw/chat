@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useNats } from '../context/NatsContext'
 import { roomsCreate } from '../lib/subjects'
+import { parseList } from '../lib/parseList'
 
 export default function CreateRoomDialog({ onClose, onCreated }) {
   const { user, request } = useNats()
   const [name, setName] = useState('')
-  const [roomType, setRoomType] = useState('group')
+  const [roomType, setRoomType] = useState('channel')
   const [members, setMembers] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -20,10 +21,7 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
     const account = user.account
     const siteId = user.siteId
 
-    const memberList = members
-      .split(',')
-      .map((m) => m.trim())
-      .filter(Boolean)
+    const memberList = parseList(members)
 
     try {
       const room = await request(roomsCreate(account), {
@@ -66,7 +64,7 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
             onChange={(e) => setRoomType(e.target.value)}
             disabled={loading}
           >
-            <option value="group">Group</option>
+            <option value="channel">Channel</option>
             <option value="dm">DM</option>
           </select>
 

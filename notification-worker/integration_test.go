@@ -9,33 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
-	t.Helper()
-	ctx := context.Background()
-	container, err := mongodb.Run(ctx, "mongo:8")
-	if err != nil {
-		t.Fatalf("start mongo: %v", err)
-	}
-	t.Cleanup(func() { container.Terminate(ctx) })
-
-	uri, err := container.ConnectionString(ctx)
-	if err != nil {
-		t.Fatalf("get mongo uri: %v", err)
-	}
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
-	if err != nil {
-		t.Fatalf("connect mongo: %v", err)
-	}
-	t.Cleanup(func() { client.Disconnect(ctx) })
-	return client.Database("chat_test")
+	return testutil.MongoDB(t, "notification_worker_test")
 }
 
 type recordingPublisher struct {
@@ -43,7 +25,7 @@ type recordingPublisher struct {
 	subjects []string
 }
 
-func (p *recordingPublisher) Publish(subj string, data []byte) error {
+func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.subjects = append(p.subjects, subj)
@@ -56,9 +38,9 @@ func TestNotificationWorker_Integration(t *testing.T) {
 
 	// Seed subscriptions
 	db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1"},
-		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2"}, RoomID: "r1"},
-		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3"}, RoomID: "r1"},
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
+		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"}, RoomID: "r1"},
 	})
 
 	memberLookup := &mongoMemberLookup{col: db.Collection("subscriptions")}
@@ -66,7 +48,6 @@ func TestNotificationWorker_Integration(t *testing.T) {
 	handler := NewHandler(memberLookup, pub)
 
 	evt := model.MessageEvent{
-		RoomID: "r1",
 		Message: model.Message{
 			ID: "m1", RoomID: "r1", UserID: "u1", Content: "hello",
 			CreatedAt: time.Now().UTC(),
@@ -84,8 +65,8 @@ func TestNotificationWorker_Integration(t *testing.T) {
 	}
 
 	expected := map[string]bool{
-		subject.Notification("u2"): true,
-		subject.Notification("u3"): true,
+		subject.Notification("bob"):   true,
+		subject.Notification("carol"): true,
 	}
 	for _, s := range pub.subjects {
 		if !expected[s] {

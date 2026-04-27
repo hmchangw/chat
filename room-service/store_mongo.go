@@ -28,6 +28,33 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	}
 }
 
+// EnsureIndexes creates the indexes that back the read paths in this service.
+// Must be invoked once at startup. Mongo treats index creation as idempotent
+// when the key spec and options match.
+func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
+	if _, err := s.roomMembers.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "rid", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure room_members (rid) index: %w", err)
+	}
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "u.account", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,u.account) index: %w", err)
+	}
+	if _, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "account", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure users (account) index: %w", err)
+	}
+	if _, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "sectId", Value: 1}, {Key: "account", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure users (sectId,account) index: %w", err)
+	}
+	return nil
+}
+
 func (s *MongoStore) CreateRoom(ctx context.Context, room *model.Room) error {
 	_, err := s.rooms.InsertOne(ctx, room)
 	return err
@@ -623,7 +650,7 @@ func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.
 		return nil, fmt.Errorf("decode users for org %q: %w", orgID, err)
 	}
 	if len(members) == 0 {
-		return nil, errInvalidOrg
+		return nil, fmt.Errorf("list org members for %q: %w", orgID, errInvalidOrg)
 	}
 	return members, nil
 }

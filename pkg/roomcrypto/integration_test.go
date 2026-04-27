@@ -21,6 +21,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 // decryptPayload is the JSON structure passed to the TypeScript decrypt script.
@@ -38,7 +40,7 @@ func setupNodeContainer(t *testing.T) testcontainers.Container {
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:      "node:20-alpine",
+			Image:      testimages.Node,
 			Cmd:        []string{"sh", "-c", "sleep 600"},
 			WaitingFor: wait.ForExec([]string{"node", "--version"}).WithStartupTimeout(30 * time.Second),
 		},
@@ -104,7 +106,7 @@ func TestEncode_TypeScriptDecrypt(t *testing.T) {
 			require.NoError(t, err)
 
 			// Encrypt with Go.
-			msg, err := Encode(tc.content, privKey.PublicKey().Bytes())
+			msg, err := Encode(tc.content, privKey.PublicKey().Bytes(), 0)
 			require.NoError(t, err)
 
 			// Build the JSON payload the TypeScript script expects.

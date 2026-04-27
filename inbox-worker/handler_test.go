@@ -292,7 +292,7 @@ func TestHandleEvent_RoomSync(t *testing.T) {
 	room := model.Room{
 		ID:        "room-1",
 		Name:      "general",
-		Type:      model.RoomTypeGroup,
+		Type:      model.RoomTypeChannel,
 		CreatedBy: "alice",
 		SiteID:    "site-b",
 		UserCount: 5,
@@ -354,7 +354,7 @@ func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 	// Insert initial room
 	room1 := model.Room{
 		ID: "room-1", Name: "old-name", SiteID: "site-b",
-		Type: model.RoomTypeGroup, CreatedBy: "alice", UserCount: 2,
+		Type: model.RoomTypeChannel, CreatedBy: "alice", UserCount: 2,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
@@ -368,7 +368,7 @@ func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 	// Update same room with new name
 	room2 := model.Room{
 		ID: "room-1", Name: "new-name", SiteID: "site-b",
-		Type: model.RoomTypeGroup, CreatedBy: "alice", UserCount: 10,
+		Type: model.RoomTypeChannel, CreatedBy: "alice", UserCount: 10,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
 	}

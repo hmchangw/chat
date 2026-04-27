@@ -37,7 +37,7 @@ func baseInboxMemberEvent() *model.InboxMemberEvent {
 	return &model.InboxMemberEvent{
 		RoomID:    "r-eng",
 		RoomName:  "engineering",
-		RoomType:  model.RoomTypeGroup,
+		RoomType:  model.RoomTypeChannel,
 		SiteID:    "site-a",
 		Accounts:  []string{"alice"},
 		JoinedAt:  joinedAt,
@@ -137,7 +137,7 @@ func TestSpotlightCollection_BuildAction_MemberAdded(t *testing.T) {
 	assert.Equal(t, "alice", doc["userAccount"])
 	assert.Equal(t, "r-eng", doc["roomId"])
 	assert.Equal(t, "engineering", doc["roomName"])
-	assert.Equal(t, "group", doc["roomType"])
+	assert.Equal(t, "channel", doc["roomType"])
 	assert.Equal(t, "site-a", doc["siteId"])
 }
 

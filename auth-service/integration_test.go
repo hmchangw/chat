@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,24 +16,10 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 )
 
-type fakeValidator struct {
-	account string
-}
-
-func (v *fakeValidator) Validate(_ context.Context, _ string) (pkgoidc.Claims, error) {
-	return pkgoidc.Claims{
-		Subject:           "uuid-" + v.account,
-		PreferredUsername: v.account,
-		Email:             v.account + "@example.com",
-		Description:       "E001, Test User, 測試用戶",
-		DeptName:          "QA",
-		DeptID:            "ABC",
-	}, nil
-}
+// fakeValidator is defined in handler_test.go (same package). The integration
+// test reuses it rather than declaring its own to avoid name collisions.
 
 func TestAuthHandler_Integration(t *testing.T) {
 	kp, err := nkeys.CreateAccount()
@@ -45,8 +30,15 @@ func TestAuthHandler_Integration(t *testing.T) {
 	userPub, err := userKP.PublicKey()
 	require.NoError(t, err)
 
-	validator := &fakeValidator{account: "testuser"}
-	handler := NewAuthHandler(validator, kp, 2*time.Hour)
+	validator := &fakeValidator{
+		account:     "testuser",
+		subject:     "uuid-testuser",
+		email:       "testuser@example.com",
+		description: "E001, Test User, 測試用戶",
+		deptName:    "QA",
+		deptId:      "ABC",
+	}
+	handler := NewAuthHandler(validator, kp, 2*time.Hour, false)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

@@ -6,8 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+
+	"github.com/hmchangw/chat/pkg/idgen"
 )
 
 type natsSub struct {
@@ -107,10 +108,10 @@ func (h *natsHub) Subscribe(subject string) (Subscription, error) {
 		return Subscription{}, fmt.Errorf("not connected to dest NATS")
 	}
 
-	id := uuid.NewString()
+	id := idgen.GenerateID()
 	sub, err := h.destConn.Subscribe(subject, func(msg *nats.Msg) {
 		h.broadcast(Message{
-			ID:        uuid.NewString(),
+			ID:        idgen.GenerateID(),
 			Subject:   msg.Subject,
 			Payload:   string(msg.Data),
 			Timestamp: time.Now().UTC(),
@@ -181,7 +182,7 @@ func (h *natsHub) Subscriptions() []Subscription {
 func (h *natsHub) RegisterSSEClient(ch chan<- Message) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	id := uuid.NewString()
+	id := idgen.GenerateID()
 	h.clients[id] = ch
 	return id
 }

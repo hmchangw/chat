@@ -36,3 +36,15 @@ export function roomMetadataUpdate(account) {
 export function userRoomEvent(account) {
   return `chat.user.${account}.event.room`
 }
+
+export function memberAdd(account, roomId, siteId) {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.member.add`
+}
+
+export function memberRemove(account, roomId, siteId) {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.member.remove`
+}
+
+export function memberRoleUpdate(account, roomId, siteId) {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.member.role-update`
+}
