@@ -10,19 +10,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
 func makePublishFunc(published *[]publishedMsg, returnErr error) publishFunc {
-	return func(_ context.Context, subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	return func(_ context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 		if published != nil {
-			*published = append(*published, publishedMsg{subject: subj, data: data})
+			*published = append(*published, publishedMsg{subject: msg.Subject, data: msg.Data})
 		}
 		if returnErr != nil {
 			return nil, returnErr
@@ -346,4 +348,29 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}}, nil)
+
+	var capturedHeader nats.Header
+	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		capturedHeader = msg.Header
+		return &jetstream.PubAck{}, nil
+	}
+	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
+
+	h := NewHandler(store, pub, reply, "site1")
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-mg-test-id")
+	req := model.SendMessageRequest{ID: uuid.New().String(), Content: "hello"}
+	data, _ := json.Marshal(req)
+
+	_, err := h.processMessage(ctx, "alice", "room-1", "site1", data)
+	require.NoError(t, err)
+	require.NotNil(t, capturedHeader, "publish must propagate header from ctx")
+	assert.Equal(t, "req-mg-test-id", capturedHeader.Get(natsutil.RequestIDHeader))
 }
