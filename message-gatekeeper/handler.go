@@ -126,6 +126,10 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		return nil, fmt.Errorf("invalid message ID %q: must be a 20-char base62 string", req.ID)
 	}
 
+	if req.ThreadParentMessageID != "" && !idgen.IsValidMessageID(req.ThreadParentMessageID) {
+		return nil, fmt.Errorf("invalid thread parent message ID %q: must be a 20-char base62 string", req.ThreadParentMessageID)
+	}
+
 	// Validate content is non-empty
 	if req.Content == "" {
 		return nil, fmt.Errorf("content must not be empty")

@@ -89,11 +89,19 @@ func TestGenerateUUIDv7_VersionAndVariantBits(t *testing.T) {
 }
 
 func TestGenerateUUIDv7_TimeOrdered(t *testing.T) {
-	// First 12 hex chars (48-bit Unix-ms timestamp) sort lexicographically by time when separated by >=2ms.
+	// First 12 hex chars (48-bit Unix-ms timestamp) should increase once the timestamp prefix advances.
 	a := idgen.GenerateUUIDv7()
-	time.Sleep(2 * time.Millisecond)
-	b := idgen.GenerateUUIDv7()
-	assert.Less(t, a[:12], b[:12], "later UUIDv7 must have a larger timestamp prefix")
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for {
+		b := idgen.GenerateUUIDv7()
+		if a[:12] != b[:12] {
+			assert.Less(t, a[:12], b[:12], "later UUIDv7 must have a larger timestamp prefix")
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("UUIDv7 timestamp prefix did not advance before deadline")
+		}
+	}
 }
 
 func TestGenerateUUIDv7_ConcurrentSafe(t *testing.T) {

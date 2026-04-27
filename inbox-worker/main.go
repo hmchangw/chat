@@ -204,5 +204,8 @@ type natsPublisher struct {
 }
 
 func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte) error {
-	return p.nc.PublishMsg(ctx, natsutil.NewMsg(ctx, subject, data))
+	if err := p.nc.PublishMsg(ctx, natsutil.NewMsg(ctx, subject, data)); err != nil {
+		return fmt.Errorf("publish to %q: %w", subject, err)
+	}
+	return nil
 }

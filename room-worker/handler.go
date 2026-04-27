@@ -204,6 +204,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 				return fmt.Errorf("demote dual-member owner: %w", err)
 			}
 		}
+		h.publishAsyncJobResult(ctx, req.Requester, "remove_member", nil)
 		return nil
 	}
 
