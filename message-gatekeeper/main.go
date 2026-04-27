@@ -21,12 +21,13 @@ import (
 )
 
 type config struct {
-	NatsURL       string `env:"NATS_URL,required"`
-	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID        string `env:"SITE_ID,required"`
-	MongoURI      string `env:"MONGO_URI,required"`
-	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
-	MaxWorkers    int    `env:"MAX_WORKERS"     envDefault:"100"`
+	NatsURL       string          `env:"NATS_URL,required"`
+	NatsCredsFile string          `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID        string          `env:"SITE_ID,required"`
+	MongoURI      string          `env:"MONGO_URI,required"`
+	MongoDB       string          `env:"MONGO_DB"        envDefault:"chat"`
+	MaxWorkers    int             `env:"MAX_WORKERS"     envDefault:"100"`
+	Bootstrap     bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 }
 
 func main() {
@@ -73,26 +74,12 @@ func main() {
 	}
 	handler := NewHandler(store, pub, reply, cfg.SiteID)
 
-	// Create MESSAGES stream
+	if err := bootstrapStreams(ctx, js, cfg.SiteID, cfg.Bootstrap.Enabled); err != nil {
+		slog.Error("bootstrap streams failed", "error", err)
+		os.Exit(1)
+	}
+
 	messagesCfg := stream.Messages(cfg.SiteID)
-	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     messagesCfg.Name,
-		Subjects: messagesCfg.Subjects,
-	}); err != nil {
-		slog.Error("create MESSAGES stream failed", "error", err)
-		os.Exit(1)
-	}
-
-	// Create MESSAGES_CANONICAL stream
-	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
-	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     canonicalCfg.Name,
-		Subjects: canonicalCfg.Subjects,
-	}); err != nil {
-		slog.Error("create MESSAGES_CANONICAL stream failed", "error", err)
-		os.Exit(1)
-	}
-
 	cons, err := js.CreateOrUpdateConsumer(ctx, messagesCfg.Name, jetstream.ConsumerConfig{
 		Durable:   "message-gatekeeper",
 		AckPolicy: jetstream.AckExplicitPolicy,
