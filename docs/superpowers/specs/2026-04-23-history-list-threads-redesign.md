@@ -443,7 +443,7 @@ Regenerated via `make generate SERVICE=history-service`. Both mock interfaces (`
 
 ### 7.1 Motivation
 
-`redactUnavailableQuotes` previously re-fetched thread parents from Cassandra at read time
+In the original implementation, `redactUnavailableQuotes` re-fetched thread parents from Cassandra at read time
 to check whether the parent message predates the caller's `historySharedSince` window. This
 was necessary because the `QuotedParentMessage` snapshot stored on a TShow reply could
 have a stale `CreatedAt`. The Cassandra fetch was batched and deduplicated, but still
