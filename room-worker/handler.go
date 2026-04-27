@@ -40,6 +40,39 @@ func outboxDedupID(ctx context.Context, destSiteID, payloadSeed string) string {
 	return base + ":" + destSiteID
 }
 
+// historySharedSincePtr returns &timestamp when mode is "none" with a positive timestamp; nil otherwise.
+func historySharedSincePtr(mode model.HistoryMode, timestamp int64, roomID string) *int64 {
+	if mode != model.HistoryModeNone {
+		return nil
+	}
+	if timestamp <= 0 {
+		slog.Error("restricted history with missing timestamp, emitting nil", "roomID", roomID, "mode", mode)
+		return nil
+	}
+	return &timestamp
+}
+
+// publishAsyncJobResult publishes a success/failure event to the requester's reply subject; best-effort, never fails the job.
+func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, job string, jobErr error) {
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" || requesterAccount == "" {
+		return
+	}
+	result := model.AsyncJobResult{
+		RequestID: requestID,
+		Job:       job,
+		Success:   jobErr == nil,
+		Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	if jobErr != nil {
+		result.Error = jobErr.Error()
+	}
+	data, _ := json.Marshal(result)
+	if err := h.publish(ctx, subject.UserResponse(requesterAccount, requestID), data, ""); err != nil {
+		slog.Warn("publish async job result failed", "error", err, "requestID", requestID)
+	}
+}
+
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	subj := msg.Subject()
 	var err error
@@ -269,6 +302,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		}
 	}
 
+	h.publishAsyncJobResult(ctx, req.Requester, "remove_member", nil)
 	return nil
 }
 
@@ -402,6 +436,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		}
 	}
 
+	h.publishAsyncJobResult(ctx, req.Requester, "remove_org", nil)
 	return nil
 }
 
@@ -576,27 +611,14 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 
 	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)
-	// Never emit &0 — the painless sentinel `hss <= 0` would misroute the
-	// restricted room into `rooms[]`. If the upstream request is malformed
-	// (restricted mode but missing timestamp), leave the pointer nil + log —
-	// we can't silently translate to &0.
-	var historySharedSincePtr *int64
-	if req.History.Mode == model.HistoryModeNone {
-		if req.Timestamp > 0 {
-			v := req.Timestamp
-			historySharedSincePtr = &v
-		} else {
-			slog.Error("restricted history with missing timestamp, emitting nil",
-				"roomID", req.RoomID, "mode", req.History.Mode)
-		}
-	}
+	historySharedSince := historySharedSincePtr(req.History.Mode, req.Timestamp, req.RoomID)
 	memberAddEvt := model.MemberAddEvent{
 		Type:               "member_added",
 		RoomID:             req.RoomID,
 		Accounts:           actualAccounts,
 		SiteID:             room.SiteID,
 		JoinedAt:           req.Timestamp,
-		HistorySharedSince: historySharedSincePtr,
+		HistorySharedSince: historySharedSince,
 		Timestamp:          now.UnixMilli(),
 	}
 	memberAddData, _ := json.Marshal(memberAddEvt)
@@ -653,7 +675,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			Accounts:           accounts,
 			SiteID:             room.SiteID,
 			JoinedAt:           req.Timestamp,
-			HistorySharedSince: historySharedSincePtr,
+			HistorySharedSince: historySharedSince,
 			Timestamp:          now.UnixMilli(),
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)
@@ -669,6 +691,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 	}
 
+	h.publishAsyncJobResult(ctx, req.RequesterAccount, "add_members", nil)
 	return nil
 }
 

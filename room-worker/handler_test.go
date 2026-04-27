@@ -1227,3 +1227,47 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	require.Error(t, err, "outbox failure must return error so JetStream NAKs and retries")
 	assert.Contains(t, err.Error(), "outbox")
 }
+
+func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var capturedSubject string
+	var capturedData []byte
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		if strings.HasPrefix(subj, "chat.user.") {
+			capturedSubject = subj
+			capturedData = data
+		}
+		return nil
+	}
+	h := NewHandler(store, "site1", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site1"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site1"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-async-test")
+	req := model.AddMembersRequest{
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+	}
+	reqData, _ := json.Marshal(req)
+	err := h.processAddMembers(ctx, reqData)
+	require.NoError(t, err)
+
+	assert.Equal(t, subject.UserResponse("alice", "req-async-test"), capturedSubject)
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(capturedData, &result))
+	assert.Equal(t, "req-async-test", result.RequestID)
+	assert.Equal(t, "add_members", result.Job)
+	assert.True(t, result.Success)
+	assert.Equal(t, "", result.Error)
+	assert.Greater(t, result.Timestamp, int64(0))
+}

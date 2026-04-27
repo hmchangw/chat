@@ -158,3 +158,12 @@ type MemberRemoveEvent struct {
 	OrgID     string   `json:"orgId,omitempty" bson:"orgId,omitempty"`
 	Timestamp int64    `json:"timestamp"       bson:"timestamp"`
 }
+
+// AsyncJobResult signals to the requester's client that an async room-worker job has completed.
+type AsyncJobResult struct {
+	RequestID string `json:"requestId"`
+	Job       string `json:"job"` // "add_members" | "remove_member" | "remove_org" | "role_update"
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+	Timestamp int64  `json:"timestamp"`
+}
