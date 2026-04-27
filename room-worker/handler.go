@@ -30,6 +30,16 @@ func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc) *Ha
 	return &Handler{store: store, siteID: siteID, publish: publish}
 }
 
+// outboxDedupID composes Nats-Msg-Id as base+":"+destSiteID; base is X-Request-ID from ctx, falling back to payloadSeed when absent (partial-deployment safety).
+func outboxDedupID(ctx context.Context, destSiteID, payloadSeed string) string {
+	base := natsutil.RequestIDFromContext(ctx)
+	if base == "" {
+		slog.Warn("missing X-Request-ID; falling back to payload-derived outbox dedup base", "destSiteID", destSiteID)
+		base = payloadSeed
+	}
+	return base + ":" + destSiteID
+}
+
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	subj := msg.Subject()
 	var err error
@@ -120,8 +130,8 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 			return fmt.Errorf("marshal outbox event: %w", err)
 		}
 		outboxSubj := subject.Outbox(h.siteID, user.SiteID, "role_updated")
-		// req.Timestamp is the stable acceptance time — keeps Nats-Msg-Id identical on redelivery.
-		dedupID := idgen.DeriveID(fmt.Sprintf("roleupd-outbox:%s:%s:%s:%d", req.RoomID, req.Account, req.NewRole, req.Timestamp))
+		payloadSeed := fmt.Sprintf("%s:%s:%s:%d", req.RoomID, req.Account, req.NewRole, req.Timestamp)
+		dedupID := outboxDedupID(ctx, user.SiteID, payloadSeed)
 		if err := h.publish(ctx, outboxSubj, outboxData, dedupID); err != nil {
 			return fmt.Errorf("publish outbox: %w", err)
 		}
@@ -252,8 +262,9 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 			Timestamp:  now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		outboxDedupID := idgen.DeriveID(fmt.Sprintf("rmindiv-outbox:%s:%s:%s:%d", req.RoomID, req.Account, user.SiteID, req.Timestamp))
-		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, "member_removed"), outboxData, outboxDedupID); err != nil {
+		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp)
+		dedupID := outboxDedupID(ctx, user.SiteID, payloadSeed)
+		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, "member_removed"), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s: %w", user.SiteID, err)
 		}
 	}
@@ -384,8 +395,9 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 			Timestamp:  now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		outboxDedupID := idgen.DeriveID(fmt.Sprintf("rmorg-outbox:%s:%s:%s:%d", req.RoomID, req.OrgID, destSiteID, req.Timestamp))
-		if err := h.publish(ctx, subject.Outbox(h.siteID, destSiteID, "member_removed"), outboxData, outboxDedupID); err != nil {
+		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)
+		dedupID := outboxDedupID(ctx, destSiteID, payloadSeed)
+		if err := h.publish(ctx, subject.Outbox(h.siteID, destSiteID, "member_removed"), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s: %w", destSiteID, err)
 		}
 	}
@@ -642,16 +654,9 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			Payload: siteEvtData, Timestamp: now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		siteSeedAccounts := slices.Clone(accounts)
-		slices.Sort(siteSeedAccounts)
-		addOutboxDedupID := idgen.DeriveID(fmt.Sprintf(
-			"addmembers-outbox:%s:%s:%d:%s",
-			req.RoomID,
-			destSiteID,
-			req.Timestamp,
-			strings.Join(siteSeedAccounts, ","),
-		))
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData, addOutboxDedupID); err != nil {
+		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
+		dedupID := outboxDedupID(ctx, destSiteID, payloadSeed)
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s failed: %w", destSiteID, err)
 		}
 	}

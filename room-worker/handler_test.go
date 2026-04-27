@@ -1131,9 +1131,8 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// Message.ID and Nats-Msg-Id both come from idgen.DeriveID now — its
-// determinism tests live in pkg/idgen, but keep a smoke test here to catch
-// any regressions in the seed format used for JetStream dedup headers.
+// Message.ID comes from idgen.DeriveID — its determinism tests live in pkg/idgen,
+// but keep a smoke test here to catch any regressions in the seed format used for JetStream system message dedup.
 func TestDedupID_StableAcrossCalls(t *testing.T) {
 	a := idgen.DeriveID("addmembers-msg:room-1:1")
 	b := idgen.DeriveID("addmembers-msg:room-1:1")
