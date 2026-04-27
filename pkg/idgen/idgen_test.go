@@ -201,3 +201,28 @@ func TestBuildDMRoomID_SelfDM(t *testing.T) {
 	id := idgen.BuildDMRoomID("u-alice", "u-alice")
 	assert.Equal(t, "u-aliceu-alice", id)
 }
+
+func TestMessageIDFromRequestID_DeterministicForSameReqIDAndSuffix(t *testing.T) {
+	a := idgen.MessageIDFromRequestID("req-abc", "rmindiv")
+	b := idgen.MessageIDFromRequestID("req-abc", "rmindiv")
+	assert.Equal(t, a, b)
+	assert.Len(t, a, 20)
+	assert.True(t, isBase62(a))
+}
+
+func TestMessageIDFromRequestID_DifferentSuffixesYieldDifferentIDs(t *testing.T) {
+	a := idgen.MessageIDFromRequestID("req-abc", "rmindiv")
+	b := idgen.MessageIDFromRequestID("req-abc", "rmorg")
+	assert.NotEqual(t, a, b)
+}
+
+func TestMessageIDFromRequestID_DifferentReqIDsYieldDifferentIDs(t *testing.T) {
+	a := idgen.MessageIDFromRequestID("req-abc", "rmindiv")
+	b := idgen.MessageIDFromRequestID("req-def", "rmindiv")
+	assert.NotEqual(t, a, b)
+}
+
+func TestMessageIDFromRequestID_OutputPassesValidator(t *testing.T) {
+	id := idgen.MessageIDFromRequestID("req-abc", "addmembers")
+	assert.True(t, idgen.IsValidMessageID(id))
+}

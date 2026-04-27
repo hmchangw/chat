@@ -13,6 +13,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -218,8 +219,14 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	} else {
 		sysMsgData, _ = json.Marshal(model.MemberRemoved{User: &sysMsgUser, RemovedUsersCount: 1})
 	}
+	seed := natsutil.RequestIDFromContext(ctx)
+	if seed == "" {
+		slog.Warn("missing X-Request-ID; falling back to payload-derived seed",
+			"handler", "processRemoveIndividual", "roomID", req.RoomID)
+		seed = fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp)
+	}
 	sysMsg := model.Message{
-		ID:         idgen.DeriveID(fmt.Sprintf("rmindiv:%s:%s:%d", req.RoomID, req.Account, req.Timestamp)),
+		ID:         idgen.MessageIDFromRequestID(seed, "rmindiv"),
 		RoomID:     req.RoomID,
 		Type:       evtType,
 		SysMsgData: sysMsgData,
@@ -231,8 +238,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		Timestamp: now.UnixMilli(),
 	}
 	msgEvtData, _ := json.Marshal(msgEvt)
-	sysMsgDedupID := idgen.DeriveID(fmt.Sprintf("rmindiv-msg:%s:%s:%d", req.RoomID, req.Account, req.Timestamp))
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsgDedupID); err != nil {
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsg.ID); err != nil {
 		return fmt.Errorf("publish individual removal system message: %w", err)
 	}
 
@@ -331,8 +337,14 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		SectName:          sectName,
 		RemovedUsersCount: len(toRemove),
 	})
+	seed := natsutil.RequestIDFromContext(ctx)
+	if seed == "" {
+		slog.Warn("missing X-Request-ID; falling back to payload-derived seed",
+			"handler", "processRemoveOrg", "roomID", req.RoomID)
+		seed = fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)
+	}
 	sysMsg := model.Message{
-		ID:         idgen.DeriveID(fmt.Sprintf("rmorg:%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)),
+		ID:         idgen.MessageIDFromRequestID(seed, "rmorg"),
 		RoomID:     req.RoomID,
 		Type:       "member_removed",
 		SysMsgData: sysMsgPayload,
@@ -344,8 +356,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		Timestamp: now.UnixMilli(),
 	}
 	msgEvtData, _ := json.Marshal(msgEvt)
-	sysMsgDedupID := idgen.DeriveID(fmt.Sprintf("rmorg-msg:%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp))
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsgDedupID); err != nil {
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsg.ID); err != nil {
 		return fmt.Errorf("publish org removal system message: %w", err)
 	}
 
@@ -580,21 +591,14 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		AddedUsersCount: len(subs),
 	}
 	sysMsgData, _ := json.Marshal(membersAdded)
-	// Include requester + sorted accounts/orgs so same-ms requests don't collide.
-	seedAccounts := slices.Clone(actualAccounts)
-	slices.Sort(seedAccounts)
-	seedOrgs := slices.Clone(req.Orgs)
-	slices.Sort(seedOrgs)
-	addMembersSeed := fmt.Sprintf(
-		"addmembers:%s:%s:%d:%s:%s",
-		req.RoomID,
-		req.RequesterAccount,
-		req.Timestamp,
-		strings.Join(seedAccounts, ","),
-		strings.Join(seedOrgs, ","),
-	)
+	seed := natsutil.RequestIDFromContext(ctx)
+	if seed == "" {
+		slog.Warn("missing X-Request-ID; falling back to payload-derived seed",
+			"handler", "processAddMembers", "roomID", req.RoomID)
+		seed = fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
+	}
 	sysMsg := model.Message{
-		ID:          idgen.DeriveID(addMembersSeed),
+		ID:          idgen.MessageIDFromRequestID(seed, "addmembers"),
 		RoomID:      req.RoomID,
 		UserID:      req.RequesterID,
 		UserAccount: req.RequesterAccount,
@@ -609,8 +613,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		Timestamp: now.UnixMilli(),
 	}
 	msgEvtData, _ := json.Marshal(msgEvt)
-	addMsgDedupID := idgen.DeriveID("addmembers-msg:" + addMembersSeed)
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData, addMsgDedupID); err != nil {
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData, sysMsg.ID); err != nil {
 		return fmt.Errorf("publish add-members system message: %w", err)
 	}
 

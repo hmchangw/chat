@@ -76,6 +76,12 @@ func GenerateMessageID() string {
 	return generateBase62(messageIDLength)
 }
 
+// MessageIDFromRequestID returns a deterministic 20-char base62 from SHA-256(requestID+":"+suffix); stable across redeliveries so JetStream dedup catches retries.
+func MessageIDFromRequestID(requestID, suffix string) string {
+	h := sha256.Sum256([]byte(requestID + ":" + suffix))
+	return encodeBase62(new(big.Int).SetBytes(h[:16]), messageIDLength)
+}
+
 // IsValidMessageID reports whether s is a well-formed 20-char base62 message ID.
 func IsValidMessageID(s string) bool {
 	if len(s) != messageIDLength {
