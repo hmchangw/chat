@@ -272,56 +272,6 @@ func (s *MongoStore) CountSubscriptions(ctx context.Context, roomID string) (int
 	return int(count), nil
 }
 
-func (s *MongoStore) ResolveAccounts(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error) {
-	if len(orgIDs) == 0 && len(directAccounts) == 0 {
-		return nil, nil
-	}
-
-	orFilter := bson.A{}
-	if len(orgIDs) > 0 {
-		orFilter = append(orFilter, bson.M{"sectId": bson.M{"$in": orgIDs}})
-	}
-	if len(directAccounts) > 0 {
-		orFilter = append(orFilter, bson.M{"account": bson.M{"$in": directAccounts}})
-	}
-
-	pipeline := bson.A{
-		bson.M{"$match": bson.M{
-			"$or":     orFilter,
-			"account": bson.M{"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""}},
-		}},
-		bson.M{"$lookup": bson.M{
-			"from": "subscriptions",
-			"let":  bson.M{"userAccount": "$account"},
-			"pipeline": bson.A{
-				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
-					bson.M{"$eq": bson.A{"$roomId", roomID}},
-					bson.M{"$eq": bson.A{"$u.account", "$$userAccount"}},
-				}}}},
-				bson.M{"$limit": 1},
-			},
-			"as": "existingSub",
-		}},
-		bson.M{"$match": bson.M{"existingSub": bson.M{"$eq": bson.A{}}}},
-		bson.M{"$group": bson.M{"_id": nil, "accounts": bson.M{"$addToSet": "$account"}}},
-	}
-
-	cursor, err := s.users.Aggregate(ctx, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("resolve accounts: %w", err)
-	}
-	var results []struct {
-		Accounts []string `bson:"accounts"`
-	}
-	if err := cursor.All(ctx, &results); err != nil {
-		return nil, fmt.Errorf("decode resolved accounts: %w", err)
-	}
-	if len(results) == 0 {
-		return nil, nil
-	}
-	return results[0].Accounts, nil
-}
-
 func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error) {
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return 0, nil

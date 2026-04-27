@@ -284,7 +284,7 @@ func TestMongoStore_CountSubscriptions_Integration(t *testing.T) {
 	}
 }
 
-func TestMongoStore_ResolveAccounts_Integration(t *testing.T) {
+func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
@@ -309,59 +309,52 @@ func TestMongoStore_ResolveAccounts_Integration(t *testing.T) {
 		t.Fatalf("seed subscriptions: %v", err)
 	}
 
-	accounts, err := store.ResolveAccounts(ctx, []string{"org1"}, nil, "r1")
+	count, err := store.CountNewMembers(ctx, []string{"org1"}, nil, "r1")
 	if err != nil {
-		t.Fatalf("ResolveAccounts org1: %v", err)
+		t.Fatalf("CountNewMembers org1: %v", err)
 	}
-	if len(accounts) != 2 {
-		t.Fatalf("got %d accounts, want 2: %v", len(accounts), accounts)
-	}
-	accountSet := make(map[string]bool)
-	for _, a := range accounts {
-		accountSet[a] = true
-	}
-	if !accountSet["bob"] || !accountSet["charlie"] {
-		t.Errorf("expected bob and charlie, got %v", accounts)
+	if count != 2 {
+		t.Errorf("expected 2 (bob, charlie; alice already subscribed; bots excluded), got %d", count)
 	}
 
-	accounts, err = store.ResolveAccounts(ctx, nil, []string{"eve"}, "r1")
+	count, err = store.CountNewMembers(ctx, nil, []string{"eve"}, "r1")
 	if err != nil {
-		t.Fatalf("ResolveAccounts direct: %v", err)
+		t.Fatalf("CountNewMembers direct: %v", err)
 	}
-	if len(accounts) != 1 || accounts[0] != "eve" {
-		t.Errorf("expected [eve], got %v", accounts)
+	if count != 1 {
+		t.Errorf("expected 1 (eve), got %d", count)
 	}
 
-	accounts, err = store.ResolveAccounts(ctx, []string{"org2"}, []string{"dave"}, "r1")
+	count, err = store.CountNewMembers(ctx, []string{"org2"}, []string{"dave"}, "r1")
 	if err != nil {
-		t.Fatalf("ResolveAccounts dedup: %v", err)
+		t.Fatalf("CountNewMembers dedup: %v", err)
 	}
-	if len(accounts) != 1 || accounts[0] != "dave" {
-		t.Errorf("expected [dave], got %v", accounts)
+	if count != 1 {
+		t.Errorf("expected 1 (dave; deduped between org2 and direct), got %d", count)
 	}
 
-	accounts, err = store.ResolveAccounts(ctx, nil, nil, "r1")
+	count, err = store.CountNewMembers(ctx, nil, nil, "r1")
 	if err != nil {
-		t.Fatalf("ResolveAccounts empty: %v", err)
+		t.Fatalf("CountNewMembers empty: %v", err)
 	}
-	if accounts != nil {
-		t.Errorf("expected nil for empty inputs, got %v", accounts)
+	if count != 0 {
+		t.Errorf("expected 0 for empty inputs, got %d", count)
 	}
 
-	accounts, err = store.ResolveAccounts(ctx, nil, []string{"alice"}, "r1")
+	count, err = store.CountNewMembers(ctx, nil, []string{"alice"}, "r1")
 	if err != nil {
-		t.Fatalf("ResolveAccounts all existing: %v", err)
+		t.Fatalf("CountNewMembers all existing: %v", err)
 	}
-	if accounts != nil {
-		t.Errorf("expected nil when all accounts already members, got %v", accounts)
+	if count != 0 {
+		t.Errorf("expected 0 when all accounts already members, got %d", count)
 	}
 
-	accounts, err = store.ResolveAccounts(ctx, nil, []string{"helper.bot", "p_webhook"}, "r1")
+	count, err = store.CountNewMembers(ctx, nil, []string{"helper.bot", "p_webhook"}, "r1")
 	if err != nil {
-		t.Fatalf("ResolveAccounts bots: %v", err)
+		t.Fatalf("CountNewMembers bots: %v", err)
 	}
-	if accounts != nil {
-		t.Errorf("expected nil for bot accounts, got %v", accounts)
+	if count != 0 {
+		t.Errorf("expected 0 for bot accounts, got %d", count)
 	}
 }
 

@@ -235,21 +235,6 @@ func (mr *MockRoomStoreMockRecorder) ListRoomsByIDs(ctx, ids any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRoomsByIDs", reflect.TypeOf((*MockRoomStore)(nil).ListRoomsByIDs), ctx, ids)
 }
 
-// ResolveAccounts mocks base method.
-func (m *MockRoomStore) ResolveAccounts(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ResolveAccounts", ctx, orgIDs, directAccounts, roomID)
-	ret0, _ := ret[0].([]string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ResolveAccounts indicates an expected call of ResolveAccounts.
-func (mr *MockRoomStoreMockRecorder) ResolveAccounts(ctx, orgIDs, directAccounts, roomID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveAccounts", reflect.TypeOf((*MockRoomStore)(nil).ResolveAccounts), ctx, orgIDs, directAccounts, roomID)
-}
-
 // MockRoomKeyStore is a mock of RoomKeyStore interface.
 type MockRoomKeyStore struct {
 	ctrl     *gomock.Controller

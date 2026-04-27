@@ -37,7 +37,6 @@ type RoomStore interface {
 	CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error)
 	CountOwners(ctx context.Context, roomID string) (int, error)
 	CountSubscriptions(ctx context.Context, roomID string) (int, error)
-	ResolveAccounts(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error)
 	// CountNewMembers returns the count of unique, non-bot, not-already-subscribed users
 	// that an add-members request would add to roomID for a given (orgIDs, directAccounts) tuple.
 	// Used by handleAddMembers for capacity validation. Delegates to
