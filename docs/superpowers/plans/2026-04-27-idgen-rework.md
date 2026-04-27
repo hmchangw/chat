@@ -1823,6 +1823,11 @@ If steps 1-4 surfaced a service that wasn't wired up correctly, fix it in a smal
 - Task 3.10: Update `CLAUDE.md` ID-format documentation
 - Task 3.11: Integration verification + Part 3 self-review
 
+### Bonus tasks from PR #118 review (in-scope, same PR)
+
+- Task 3.B1: `room-worker` — refactor redundant `historySharedSincePtr` block (PR #118 thread 22)
+- Task 3.B2: `room-worker` — publish async-job success event to user request subject (PR #118 thread 24)
+
 ---
 
 ## Task 3.1: `auth-service` + `pkg/natsrouter` request ID minting → `idgen.GenerateUUIDv7`
@@ -2747,6 +2752,201 @@ DM rooms are sorted user-ID concat, messages are 20-char base62) and
 only a subset (subscriptions, room_members, thread_rooms,
 thread_subscriptions) uses UUIDv7."
 git push origin <branch>
+```
+
+---
+
+## Task 3.B1: `room-worker` — refactor redundant `historySharedSincePtr` block
+
+**Background:** PR #118 review thread 22. The block at `room-worker/handler.go:548-561` constructs `historySharedSincePtr` from `req.Timestamp` after `acceptedAt` (a `time.Time` derived from the same `req.Timestamp` at line 412) is already computed. The pointer-from-timestamp dance is independent of `acceptedAt` because `MemberAddEvent.HistorySharedSince` is `*int64`, not `*time.Time`, so they're not directly interchangeable — but the logic can be tightened.
+
+**Goal:** Replace the inline conditional with a single helper or a one-line ternary-style pick. Keep the existing logging and the `&0` sentinel guard intact (the comment at lines 548-551 explains why).
+
+**Files:**
+- Modify: `room-worker/handler.go` — extract helper or simplify in place
+- Modify: `room-worker/handler_test.go` — verify behaviour unchanged
+
+### Implementation
+
+- [ ] **Step 1: Extract a small helper near the top of `handler.go`**
+
+```go
+// historySharedSincePtr returns &timestamp when mode is "none" with a positive timestamp; nil otherwise.
+func historySharedSincePtr(mode model.HistoryMode, timestamp int64, roomID string) *int64 {
+    if mode != model.HistoryModeNone {
+        return nil
+    }
+    if timestamp <= 0 {
+        slog.Error("restricted history with missing timestamp, emitting nil", "roomID", roomID, "mode", mode)
+        return nil
+    }
+    return &timestamp
+}
+```
+
+- [ ] **Step 2: Replace the inline block at `:548-561` with one call**
+
+```go
+historySharedSince := historySharedSincePtr(req.History.Mode, req.Timestamp, req.RoomID)
+```
+
+Update both downstream uses (`MemberAddEvent.HistorySharedSince`, the outbox payload's `HistorySharedSince`).
+
+- [ ] **Step 3: Run tests, lint, full build**
+
+```bash
+make test SERVICE=room-worker
+make lint
+make test
+```
+
+Expected: green. Behaviour unchanged.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add room-worker/
+git commit -m "refactor(room-worker): extract historySharedSincePtr helper
+
+Addresses PR #118 review thread 22. Inlines a one-line helper instead
+of an 8-line conditional block; preserves the existing &0 sentinel
+guard and error-log behaviour."
+```
+
+---
+
+## Task 3.B2: `room-worker` — publish async-job success event to user request subject
+
+**Background:** PR #118 review thread 24. Today the room-worker's async handlers (`processAddMembers`, `processRemoveMember`, `processRemoveOrg`, `processRoleUpdate`) succeed silently — the requester's client has no way to know when the job finished. The `pkg/subject.UserResponse(account, requestID)` helper already exists for this exact pattern; it just isn't called from these handlers.
+
+**Goal:** After each async handler completes successfully, publish a small `AsyncJobResult` event to `subject.UserResponse(req.RequesterAccount, requestID)`. The request ID is already on `ctx` (Part 2 plumbing); the requester account is in the request payload.
+
+**Files:**
+- Modify: `pkg/model/event.go` — add `AsyncJobResult` event type
+- Modify: `room-worker/handler.go` — publish at the end of each successful handler
+- Modify: `room-worker/handler_test.go` — verify the success event is published
+
+### TDD: write failing test first
+
+- [ ] **Step 1: Add `AsyncJobResult` event type**
+
+In `pkg/model/event.go`:
+
+```go
+// AsyncJobResult signals to the requester's client that an async room-worker job has completed.
+type AsyncJobResult struct {
+    RequestID string `json:"requestId"`
+    Job       string `json:"job"`              // "add_members" | "remove_member" | "remove_org" | "role_update"
+    Success   bool   `json:"success"`
+    Error     string `json:"error,omitempty"`  // populated only on failure (future use)
+    Timestamp int64  `json:"timestamp"`
+}
+```
+
+- [ ] **Step 2: Add a propagation test for one handler (e.g. processAddMembers)**
+
+```go
+func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *testing.T) {
+    // ... existing happy-path setup ...
+
+    var capturedSubject string
+    var capturedData []byte
+    publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+        if strings.HasPrefix(subj, "chat.user.") {
+            capturedSubject = subj
+            capturedData = data
+        }
+        return nil
+    }
+    h := NewHandler(store, "site1", publish)
+
+    ctx := natsutil.WithRequestID(context.Background(), "req-async-test")
+    err := h.processAddMembers(ctx, addMembersReqDataFixture("alice"))
+    require.NoError(t, err)
+
+    assert.Equal(t, subject.UserResponse("alice", "req-async-test"), capturedSubject)
+    var result model.AsyncJobResult
+    require.NoError(t, json.Unmarshal(capturedData, &result))
+    assert.Equal(t, "req-async-test", result.RequestID)
+    assert.Equal(t, "add_members", result.Job)
+    assert.True(t, result.Success)
+}
+```
+
+- [ ] **Step 3: Run test to verify it FAILS**
+
+Run: `make test SERVICE=room-worker`
+
+Expected: assertion failure — `capturedSubject` is empty because no publish to `chat.user.*` happens.
+
+### Implementation
+
+- [ ] **Step 4: Add a small helper to `room-worker/handler.go`**
+
+```go
+// publishAsyncJobResult publishes a success/failure event to the requester's reply subject.
+func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, job string, jobErr error) {
+    requestID := natsutil.RequestIDFromContext(ctx)
+    if requestID == "" || requesterAccount == "" {
+        return
+    }
+    result := model.AsyncJobResult{
+        RequestID: requestID,
+        Job:       job,
+        Success:   jobErr == nil,
+        Timestamp: time.Now().UTC().UnixMilli(),
+    }
+    if jobErr != nil {
+        result.Error = jobErr.Error()
+    }
+    data, _ := json.Marshal(result)
+    if err := h.publish(ctx, subject.UserResponse(requesterAccount, requestID), data, ""); err != nil {
+        slog.Warn("publish async job result failed", "error", err, "requestID", requestID)
+    }
+}
+```
+
+- [ ] **Step 5: Call the helper at the end of each async handler**
+
+In each of `processAddMembers`, `processRemoveMember`, `processRemoveOrg`, `processRoleUpdate` — at the successful return path:
+
+```go
+// Final line before `return nil`:
+h.publishAsyncJobResult(ctx, req.RequesterAccount, "add_members", nil)
+return nil
+```
+
+(Use `req.RequesterAccount` for add-members, `req.Requester` for remove-member, etc. — match the existing field names.)
+
+For the `role_update` handler the requester field may be different (e.g. caller account); use whatever the handler already has in scope.
+
+- [ ] **Step 6: Run tests, lint, full build**
+
+```bash
+make test SERVICE=room-worker
+make lint
+make test
+```
+
+Expected: green. The new publish is best-effort (logs but doesn't fail the handler), so behaviour on existing tests is unchanged.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add pkg/model/event.go room-worker/
+git commit -m "feat(room-worker): publish async job result to requester subject
+
+Addresses PR #118 review thread 24. Each async handler
+(processAddMembers, processRemoveMember, processRemoveOrg,
+processRoleUpdate) now publishes an AsyncJobResult event to
+subject.UserResponse(requesterAccount, requestID) when it completes
+successfully, so the requester's client can correlate the job with
+its outcome.
+
+Best-effort: a publish failure logs a warning but doesn't fail the
+job. requestID comes from natsutil.RequestIDFromContext(ctx) (Part 2
+plumbing); empty requestID skips the publish gracefully (e.g. for
+events triggered by cross-site INBOX rather than a client request)."
 ```
 
 ---
