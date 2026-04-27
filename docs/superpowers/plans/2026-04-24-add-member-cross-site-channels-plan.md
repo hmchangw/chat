@@ -52,7 +52,7 @@ Expected: each grep returns a line. If any return nothing, stop and rebase first
 | `pkg/natsutil/reply_test.go` | New table-driven tests for `TryParseError` |
 | `pkg/model/member.go` | Add `ChannelRef`; change `AddMembersRequest.Channels` and `MembersAdded.Channels` from `[]string` to `[]ChannelRef` |
 | `pkg/model/model_test.go` | Add `TestChannelRefJSONBSON`; update `TestAddMembersRequestJSON` and `TestMembersAddedJSON` to use `[]ChannelRef` |
-| `room-service/helper.go` | Add `errNotChannelMember` sentinel + add to `sanitizeError`'s `errors.Is` whitelist + add `"remote member.list:"` to substring fallback |
+| `room-service/helper.go` | Add `"remote member.list:"` to `sanitizeError`'s substring fallback (reuse the existing `errNotRoomMember` sentinel for channel-source authorization) |
 | `room-service/helper_test.go` | Extend `sanitizeError` tests to cover the new sentinel and the new substring fallback |
 | `room-service/store.go` | Remove `GetRoomMembersByRooms` and `GetAccountsByRooms` from `RoomStore` |
 | `room-service/store_mongo.go` | Remove the two method implementations |
@@ -73,7 +73,7 @@ Bottom-up so each task leaves `make test` green and commit-worthy:
 
 1. **`TryParseError` helper** — pure leaf, no consumers yet.
 2. **`ChannelRef` model type** — new type, not yet referenced.
-3. **`errNotChannelMember` sentinel + sanitizeError** — leaf in helper.go, not yet thrown.
+3. **Extend `sanitizeError` for remote errors** — leaf in helper.go; reuse `errNotRoomMember` for channel-source auth (same semantics: "user is not a member of this room/channel").
 4. **`MemberListClient`** — uses `ChannelRef` + `TryParseError`; new files, not yet wired.
 5. **Wire `MemberListClient` + `MemberListTimeout` config into `Handler`** — struct + `NewHandler` + `main.go`; every test call-site updated but the handler logic doesn't use the client yet.
 6. **Big coordinated swap** — `Channels: []string → []ChannelRef`, replace `expandChannels` → `expandChannelRefs`, update room-service/handler_test.go cases, update room-worker/handler_test.go fixtures. After this task: old store methods are dead code but still present.
@@ -267,33 +267,30 @@ git commit -m "feat(model): add ChannelRef for cross-site channel references"
 
 ---
 
-## Task 3: `room-service/helper.go`: `errNotChannelMember` sentinel + sanitizeError
+## Task 3: `room-service/helper.go`: extend `sanitizeError` for remote errors
 
 **Files:**
 - Modify: `room-service/helper.go`
 - Test: `room-service/helper_test.go`
 
-Why third: sentinel and `sanitizeError` plumbing belong to the service's helper layer — no handler changes yet. Lands cleanly before the client arrives.
+Why third: `sanitizeError` plumbing for cross-site error propagation. Reuses the existing `errNotRoomMember` sentinel for channel-source authorization — "not a room member" and "not a channel member" have identical semantics (the requester is not subscribed to the source). Lands cleanly before the client arrives.
 
 - [ ] **Step 3.1: Write the failing tests**
 
 Append to `room-service/helper_test.go` (new tests — keep existing cases intact):
 
 ```go
-func TestSanitizeError_NotChannelMember(t *testing.T) {
-	msg := sanitizeError(errNotChannelMember)
-	assert.Equal(t, "only channel members can use a channel as a source", msg)
-}
-
-func TestSanitizeError_NotChannelMember_WhenWrapped(t *testing.T) {
-	// Guards the errors.Is whitelist — wrapping must not lose the user-safe message.
-	wrapped := fmt.Errorf("expand channels: %w", errNotChannelMember)
-	assert.Equal(t, "only channel members can use a channel as a source", sanitizeError(wrapped))
-}
-
 func TestSanitizeError_RemoteMemberListPrefix(t *testing.T) {
 	remote := errors.New("remote member.list: only room members can list members")
 	assert.Equal(t, "remote member.list: only room members can list members", sanitizeError(remote))
+}
+
+func TestSanitizeError_RemoteMemberListWithContext(t *testing.T) {
+	// Error from cross-site RPC includes site context; preserve user-safe message.
+	remote := errors.New("expand channels: remote member.list: room not found")
+	msg := sanitizeError(remote)
+	assert.Contains(t, msg, "remote member.list:")
+	assert.Contains(t, msg, "room not found")
 }
 
 func TestSanitizeError_TransportFailureStillOpaque(t *testing.T) {
@@ -302,44 +299,18 @@ func TestSanitizeError_TransportFailureStillOpaque(t *testing.T) {
 }
 ```
 
-If `helper_test.go` doesn't already import `fmt` or `errors`, add them.
+If `helper_test.go` doesn't already import `errors`, add it.
 
 - [ ] **Step 3.2: Run the tests to verify they fail**
 
 ```bash
-go test ./room-service/ -run TestSanitizeError_NotChannelMember -v
+go test ./room-service/ -run TestSanitizeError_RemoteMemberList -v
 ```
-Expected: `undefined: errNotChannelMember` compile error.
+Expected: tests fail because `"remote member.list:"` isn't yet in the substring whitelist.
 
-- [ ] **Step 3.3: Add the sentinel + update `sanitizeError`**
+- [ ] **Step 3.3: Update `sanitizeError`**
 
-In `room-service/helper.go`, append to the sentinel-error `var (...)` block (after `errPromoteRequiresIndividual`):
-
-```go
-	// Requester must be a member of any channel used as an add-member source.
-	// Parallel to errNotRoomMember, but scoped to the add-member flow so the
-	// wording isn't misleading ("list members" vs. "use a channel as a source").
-	errNotChannelMember = errors.New("only channel members can use a channel as a source")
-```
-
-In `sanitizeError`, add `errNotChannelMember` to the `errors.Is` whitelist:
-
-```go
-	case errors.Is(err, errInvalidRole),
-		errors.Is(err, errOnlyOwners),
-		errors.Is(err, errAlreadyOwner),
-		errors.Is(err, errNotOwner),
-		errors.Is(err, errCannotDemoteLast),
-		errors.Is(err, errRoomTypeGuard),
-		errors.Is(err, errTargetNotMember),
-		errors.Is(err, errNotRoomMember),
-		errors.Is(err, errInvalidOrg),
-		errors.Is(err, errPromoteRequiresIndividual),
-		errors.Is(err, errNotChannelMember):
-		return err.Error()
-```
-
-And add `"remote member.list:"` to the substring fallback slice:
+`errNotRoomMember` is already in the `errors.Is` whitelist (PR #118). The only edit needed is to add `"remote member.list:"` to the substring fallback slice:
 
 ```go
 		for _, safe := range []string{
@@ -351,6 +322,8 @@ And add `"remote member.list:"` to the substring fallback slice:
 			"remote member.list:",
 		} {
 ```
+
+**Why reuse `errNotRoomMember`:** Both "user is not a room member" and "user is not a channel member (used as add-member source)" mean the same thing semantically — the requester lacks subscription to the source. Reusing the existing sentinel avoids duplicate error types and keeps cross-site/same-site behavior uniform (the cross-site `MemberListClient` already maps the remote sentinel onto the local one).
 
 - [ ] **Step 3.4: Run the tests to verify they pass**
 
@@ -364,13 +337,13 @@ Expected: all new sanitizeError tests PASS; existing sanitizeError tests still P
 ```bash
 make lint
 ```
-Expected: 0 issues. (The new sentinel is referenced only by its tests so far; that's fine.)
+Expected: 0 issues.
 
 - [ ] **Step 3.6: Commit**
 
 ```bash
 git add room-service/helper.go room-service/helper_test.go
-git commit -m "feat(room-service): add errNotChannelMember sentinel + sanitizeError plumbing"
+git commit -m "feat(room-service): extend sanitizeError for remote member.list errors"
 ```
 
 ---
@@ -950,7 +923,7 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 		if ref.SiteID == h.siteID {
 			if _, err := h.store.GetSubscription(ctx, requester, ref.RoomID); err != nil {
 				if errors.Is(err, model.ErrSubscriptionNotFound) {
-					return nil, nil, errNotChannelMember
+					return nil, nil, errNotRoomMember
 				}
 				return nil, nil, fmt.Errorf("subscription check %s: %w", ref.RoomID, err)
 			}
@@ -1139,7 +1112,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, errNotChannelMember))
+		assert.True(t, errors.Is(err, errNotRoomMember))
 	})
 
 	t.Run("same-site GetSubscription generic error", func(t *testing.T) {
@@ -1522,7 +1495,7 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 	_, err := handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
 
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errNotChannelMember))
+	assert.True(t, errors.Is(err, errNotRoomMember))
 }
 ```
 
@@ -1707,13 +1680,13 @@ Before handing off to subagent or inline execution, verify:
 - [x] `MemberListClient` interface + NATS impl (Task 4)
 - [x] `expandChannelRefs` with same/cross-site branching (Task 6)
 - [x] `sanitizeError` whitelist + substring fallback (Task 3)
-- [x] `errNotChannelMember` sentinel (Task 3)
+- [x] Reuse `errNotRoomMember` for channel-source authorization (Task 3)
 - [x] Handler struct + config wiring (Task 5)
 - [x] Type swap `AddMembersRequest.Channels`, `MembersAdded.Channels` (Task 6)
 - [x] Dead code removal `GetRoomMembersByRooms`/`GetAccountsByRooms` (Task 7)
 - [x] Integration tests: same-site, cross-site, timeout (Tasks 8–9)
 
-✅ **Type consistency**: All tasks use `model.ChannelRef`, `MemberListClient`, `expandChannelRefs`, `errNotChannelMember` consistently.
+✅ **Type consistency**: All tasks use `model.ChannelRef`, `MemberListClient`, `expandChannelRefs`, and reuse `errNotRoomMember` consistently.
 
 ✅ **No placeholders**: All code blocks are complete; no "TBD" or "implement X" stubs.
 

@@ -114,7 +114,7 @@ func (h *Handler) expandChannelRefs(
             // Symmetric auth: requester must be subscribed to the source channel.
             if _, err := h.store.GetSubscription(ctx, requester, ref.RoomID); err != nil {
                 if errors.Is(err, model.ErrSubscriptionNotFound) {
-                    return nil, nil, errNotChannelMember // unwrapped so sanitizeError forwards it
+                    return nil, nil, errNotRoomMember // unwrapped so sanitizeError forwards it
                 }
                 return nil, nil, fmt.Errorf("subscription check %s: %w", ref.RoomID, err)
             }
@@ -287,18 +287,15 @@ For both same-site and cross-site channel refs, the requester must hold a subscr
 
 ### `sanitizeError` whitelist
 
-Introduce a new sentinel in `room-service/helper.go` (do not reuse `errNotRoomMember` — its "only room members can list members" wording is specific to `member.list` and would be misleading in the add-member flow):
+Reuse the existing `errNotRoomMember` sentinel (already defined in `room-service/helper.go` and already on `sanitizeError`'s `errors.Is` whitelist). Both "the requester is not a room member" and "the requester is not a channel member (used as add-member source)" mean the same thing semantically — the requester lacks subscription to the source. Reusing the sentinel avoids a duplicate error type and keeps cross-site/same-site behavior uniform.
 
-```go
-errNotChannelMember = errors.New("only channel members can use a channel as a source")
-```
+The only edit needed in `room-service/helper.go` is:
 
-Two concrete edits to `room-service/helper.go` are required to make this work — stating both explicitly so the implementation can't miss either:
+1. **Add `"remote member.list:"` to the substring fallback list** in `sanitizeError`'s default branch, so remote user-facing messages returned by the peer site's `member.list` (via `natsutil.ReplyError(model.ErrorResponse{Error: …})`) propagate through to the caller as `"remote member.list: <remote-msg>"`.
 
-1. **Add `errNotChannelMember` to the `errors.Is` whitelist in `sanitizeError`**, alongside `errNotRoomMember`, `errInvalidRole`, `errPromoteRequiresIndividual`, etc. Without this, the `errors.Is` switch drops into the default branch and the user sees `"internal error"` instead of the sentinel message. Follows the exact pattern PR #118 already uses for `errPromoteRequiresIndividual`.
-2. **Add `"remote member.list:"` to the substring fallback list** in `sanitizeError`'s default branch, so remote user-facing messages returned by the peer site's `member.list` (via `natsutil.ReplyError(model.ErrorResponse{Error: …})`) propagate through to the caller as `"remote member.list: <remote-msg>"`.
+In `expandChannelRefs`, when `GetSubscription` returns `model.ErrSubscriptionNotFound`, return `errNotRoomMember` (no wrapping) so the `errors.Is` whitelist hit forwards the user-facing message unchanged. Any other `GetSubscription` error is wrapped via `fmt.Errorf("check subscription for channel %q: %w", ref.RoomID, err)` and mapped to `"internal error"` by `sanitizeError`'s default branch.
 
-In `expandChannelRefs`, when `GetSubscription` returns `model.ErrSubscriptionNotFound`, return `errNotChannelMember` (no wrapping) so the `errors.Is` whitelist hit forwards the user-facing message unchanged. Any other `GetSubscription` error is wrapped via `fmt.Errorf("check subscription for channel %q: %w", ref.RoomID, err)` and mapped to `"internal error"` by `sanitizeError`'s default branch.
+Cross-site `member.list` returns `errNotRoomMember.Error()` from the remote peer; the local `MemberListClient` matches the message and re-raises the local `errNotRoomMember` sentinel so callers get a uniform `errors.Is` match regardless of which site the source channel lives on.
 
 Transport failures (timeout, no responder) surface as `"internal error"` by default, which is acceptable — the caller doesn't need to know whether the remote site was unreachable or simply slow.
 
@@ -437,7 +434,7 @@ New table-driven `TestHandler_AddMembers_ChannelExpansion` using `NewMockRoomSto
 | 3 | Single same-site channel, mixed | 1 org + 1 individual | 1 org, 1 account |
 | 4 | Single cross-site channel | `memberListClient.ListMembers(req, ChannelRef{ch1, site-eu})` returns 1 org + 2 individuals; no local calls | 1 org + 2 accounts |
 | 5 | Mixed same-site + cross-site | two refs — one local, one remote | union returned |
-| 6 | Requester not subscribed to same-site source | `GetSubscription` → `model.ErrSubscriptionNotFound` | returns `errNotChannelMember` sentinel (unwrapped); `ListRoomMembers` and client never called; `sanitizeError` forwards the sentinel's message |
+| 6 | Requester not subscribed to same-site source | `GetSubscription` → `model.ErrSubscriptionNotFound` | returns `errNotRoomMember` sentinel (unwrapped); `ListRoomMembers` and client never called; `sanitizeError` forwards the sentinel's message |
 | 6b | Same-site `GetSubscription` generic error | `GetSubscription` → generic infra err | error wraps `"subscription check"`; `ListRoomMembers` and client never called |
 | 7 | Same-site `ListRoomMembers` error | store returns generic err | error wraps `"local list-members"` |
 | 8 | Cross-site client error | `client.ListMembers` returns err | error wraps `"remote list-members"`; fail-fast |
@@ -496,7 +493,7 @@ Uses the existing `setupMongo(t)` testcontainers helper. Cases 1–3 use a singl
 | `room-service/handler.go` | Replace `expandChannels` with `expandChannelRefs`; `Handler` + `NewHandler` gain `memberListClient`; step 7 uses `CountNewMembers` (count only); step 9 ships unresolved `Users`/`Orgs`/preserved `Channels` |
 | `pkg/natsutil/reply.go` | Add `TryParseError(data []byte) (model.ErrorResponse, bool)` — required to distinguish `ReplyError` bodies from success bodies that have no `error` field |
 | `pkg/natsutil/reply_test.go` | New cases for `TryParseError`: success body, error body, malformed JSON, empty `{}` |
-| `room-service/helper.go` | Add `errNotChannelMember` sentinel AND add it to `sanitizeError`'s `errors.Is` whitelist; add `"remote member.list:"` to the substring fallback list |
+| `room-service/helper.go` | Add `"remote member.list:"` to `sanitizeError`'s substring fallback list (reuse the existing `errNotRoomMember` sentinel for channel-source authorization) |
 | `room-service/handler_test.go` | New `TestHandler_AddMembers_ChannelExpansion`; update existing cases to `[]ChannelRef`; replace `ResolveAccounts(...).Return(list)` mocks with `CountNewMembers(...).Return(count, nil)`; canonical-event assertions updated to expect unresolved `Users` |
 | `room-service/store.go` | Remove `GetRoomMembersByRooms`, `GetAccountsByRooms`, and `ResolveAccounts` from `RoomStore`; add `CountNewMembers` |
 | `room-service/store_mongo.go` | Remove dead implementations; add `CountNewMembers` (delegates to `pkg/pipelines.GetNewMembersPipeline` + `$count`) |
