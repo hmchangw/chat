@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
@@ -49,7 +48,7 @@ func main() {
 	}
 
 	cassSession, err := cassutil.Connect(
-		strings.Split(cfg.Cassandra.Hosts, ","),
+		cfg.Cassandra.Hosts,
 		cfg.Cassandra.Keyspace,
 		cfg.Cassandra.Username,
 		cfg.Cassandra.Password,

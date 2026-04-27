@@ -9,6 +9,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParseHosts(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{name: "single host", in: "cass-a:9042", want: []string{"cass-a:9042"}},
+		{name: "comma separated", in: "cass-a:9042,cass-b:9042", want: []string{"cass-a:9042", "cass-b:9042"}},
+		{name: "trims surrounding whitespace", in: "cass-a:9042, cass-b:9042 ,cass-c:9042", want: []string{"cass-a:9042", "cass-b:9042", "cass-c:9042"}},
+		{name: "drops empty entries from trailing comma", in: "cass-a:9042,,cass-b:9042,", want: []string{"cass-a:9042", "cass-b:9042"}},
+		{name: "empty string yields no hosts", in: "", want: nil},
+		{name: "whitespace only yields no hosts", in: "  ,  ", want: nil},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, parseHosts(tc.in))
+		})
+	}
+}
+
 func TestBuildCluster(t *testing.T) {
 	hosts := []string{"cass-a:9042", "cass-b:9042"}
 	const keyspace = "chat_test"

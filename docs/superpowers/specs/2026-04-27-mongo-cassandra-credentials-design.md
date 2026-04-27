@@ -50,8 +50,10 @@ Otherwise, use `options.Client().ApplyURI(uri)` exactly as today. The existing `
 New signature:
 
 ```go
-func Connect(hosts []string, keyspace, username, password string) (*gocql.Session, error)
+func Connect(hosts, keyspace, username, password string) (*gocql.Session, error)
 ```
+
+`hosts` is a comma-separated list (e.g. `"cass-a:9042,cass-b:9042"`); `Connect` splits and trims internally so callsites can pass `cfg.CassandraHosts` directly.
 
 When both credentials are non-empty:
 
@@ -131,16 +133,18 @@ mongoutil.Connect(ctx, cfg.Mongo.URI, cfg.Mongo.Username, cfg.Mongo.Password)
 Every existing `cassutil.Connect(hosts, keyspace)` callsite becomes:
 
 ```go
-cassutil.Connect(strings.Split(cfg.CassandraHosts, ","), cfg.CassandraKeyspace,
+cassutil.Connect(cfg.CassandraHosts, cfg.CassandraKeyspace,
     cfg.CassandraUsername, cfg.CassandraPassword)
 ```
 
 Or for `history-service`:
 
 ```go
-cassutil.Connect(strings.Split(cfg.Cassandra.Hosts, ","), cfg.Cassandra.Keyspace,
+cassutil.Connect(cfg.Cassandra.Hosts, cfg.Cassandra.Keyspace,
     cfg.Cassandra.Username, cfg.Cassandra.Password)
 ```
+
+The `strings.Split` previously done at each callsite has moved into `cassutil` itself, removing the `strings` import from `message-worker/main.go` and `history-service/cmd/main.go`.
 
 Total: 12 callsite updates (10 Mongo + 2 Cassandra). The 10 Mongo callsites are one each in the 8 services plus 2 in `tools/loadgen`. The 2 Cassandra callsites are in `message-worker` and `history-service`.
 

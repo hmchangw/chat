@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -68,7 +67,7 @@ func main() {
 	}
 
 	cassSession, err := cassutil.Connect(
-		strings.Split(cfg.CassandraHosts, ","),
+		cfg.CassandraHosts,
 		cfg.CassandraKeyspace,
 		cfg.CassandraUsername,
 		cfg.CassandraPassword,

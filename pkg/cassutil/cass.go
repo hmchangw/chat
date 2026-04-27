@@ -3,13 +3,14 @@ package cassutil
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gocql/gocql"
 )
 
-func Connect(hosts []string, keyspace, username, password string) (*gocql.Session, error) {
-	cluster := buildCluster(hosts, keyspace, username, password)
+func Connect(hosts, keyspace, username, password string) (*gocql.Session, error) {
+	cluster := buildCluster(parseHosts(hosts), keyspace, username, password)
 
 	session, err := cluster.CreateSession()
 	if err != nil {
@@ -21,6 +22,18 @@ func Connect(hosts []string, keyspace, username, password string) (*gocql.Sessio
 
 func Close(session *gocql.Session) {
 	session.Close()
+}
+
+func parseHosts(s string) []string {
+	var hosts []string
+	for _, h := range strings.Split(s, ",") {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		hosts = append(hosts, h)
+	}
+	return hosts
 }
 
 func buildCluster(hosts []string, keyspace, username, password string) *gocql.ClusterConfig {
