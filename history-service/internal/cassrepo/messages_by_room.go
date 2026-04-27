@@ -46,7 +46,7 @@ func scanWith(iter *gocql.Iter, dest func(*models.Message) []any) []models.Messa
 
 func scanMessages(iter *gocql.Iter) []models.Message { return scanWith(iter, baseScanDest) }
 
-func (r *Repository) fetchMessagesPage(q *gocql.Query, pageReq PageRequest, errMsg string) (Page[models.Message], error) {
+func fetchMessagesPage(q *gocql.Query, pageReq PageRequest, errMsg string) (Page[models.Message], error) {
 	var messages []models.Message
 	nextCursor, err := NewQueryBuilder(q).
 		WithCursor(pageReq.Cursor).
@@ -65,7 +65,7 @@ func (r *Repository) fetchMessagesPage(q *gocql.Query, pageReq PageRequest, errM
 }
 
 func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q PageRequest) (Page[models.Message], error) {
-	return r.fetchMessagesPage(
+	return fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? AND created_at < ? ORDER BY created_at DESC`,
 			roomID, before,
@@ -75,7 +75,7 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, befor
 }
 
 func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q PageRequest) (Page[models.Message], error) {
-	return r.fetchMessagesPage(
+	return fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? AND created_at < ? ORDER BY created_at DESC`,
 			roomID, since, before,
@@ -85,7 +85,7 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 }
 
 func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q PageRequest) (Page[models.Message], error) {
-	return r.fetchMessagesPage(
+	return fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? ORDER BY created_at ASC`,
 			roomID, after,
@@ -95,7 +95,7 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 }
 
 func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q PageRequest) (Page[models.Message], error) {
-	return r.fetchMessagesPage(
+	return fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? ORDER BY created_at ASC`,
 			roomID,

@@ -446,6 +446,33 @@ func TestHistoryService_GetThreadParentMessages_MissingParentIgnored(t *testing.
 	assert.Equal(t, int64(2), resp.Total)
 }
 
+func TestHistoryService_GetThreadParentMessages_DeduplicatesParentIDs(t *testing.T) {
+	svc, msgs, subs, threadRooms := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	// Two thread rooms pointing to the same ParentMessageID — seenIDs must deduplicate.
+	dupPage := mongorepo.OffsetPage[pkgmodel.ThreadRoom]{
+		Data: []pkgmodel.ThreadRoom{
+			{ID: "tr-1", RoomID: "r1", ParentMessageID: "p1"},
+			{ID: "tr-2", RoomID: "r1", ParentMessageID: "p1"},
+		},
+		Total: 2,
+	}
+	threadRooms.EXPECT().GetThreadRooms(gomock.Any(), "r1", nil, gomock.Any()).Return(dupPage, nil)
+
+	// Must be called with exactly ["p1"], not ["p1","p1"].
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"p1"}).Return(
+		[]models.Message{{MessageID: "p1", RoomID: "r1", Msg: "the parent"}}, nil,
+	)
+
+	resp, err := svc.GetThreadParentMessages(c, models.GetThreadParentMessagesRequest{Limit: 20})
+	require.NoError(t, err)
+	assert.Len(t, resp.ParentMessages, 1)
+	assert.Equal(t, "p1", resp.ParentMessages[0].MessageID)
+}
+
 func TestHistoryService_GetThreadParentMessages_InvalidFilter(t *testing.T) {
 	svc, _, subs, _ := newService(t)
 	c := testContext()

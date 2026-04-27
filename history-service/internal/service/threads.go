@@ -148,10 +148,13 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 		msgByID[cassMessages[i].MessageID] = cassMessages[i]
 	}
 
-	// accessSince re-checked here: MongoDB's threadParentCreatedAt can be zero when absent from the original event.
-	parentMessages := make([]models.Message, 0, len(threadPage.Data))
-	for i := range threadPage.Data {
-		msg, ok := msgByID[threadPage.Data[i].ParentMessageID]
+	// Iterate parentIDs (deduplicated, MongoDB sort order preserved) rather than
+	// threadPage.Data to avoid emitting the same parent twice when MongoDB returns
+	// duplicate thread rooms for one parent. accessSince re-checked here:
+	// MongoDB's threadParentCreatedAt can be zero when absent from the original event.
+	parentMessages := make([]models.Message, 0, len(parentIDs))
+	for _, id := range parentIDs {
+		msg, ok := msgByID[id]
 		if !ok || msg.RoomID != roomID {
 			continue
 		}
