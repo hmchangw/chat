@@ -115,8 +115,22 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 	}
 
 	now := time.Now().UTC()
+
+	var roomID string
+	switch req.Type {
+	case model.RoomTypeChannel:
+		roomID = idgen.GenerateID()
+	case model.RoomTypeDM:
+		if len(req.Members) != 1 {
+			return nil, fmt.Errorf("DM requires exactly one other member, got %d", len(req.Members))
+		}
+		roomID = idgen.BuildDMRoomID(req.CreatedBy, req.Members[0])
+	default:
+		return nil, fmt.Errorf("unsupported room type %q", req.Type)
+	}
+
 	room := model.Room{
-		ID:        idgen.GenerateID(),
+		ID:        roomID,
 		Name:      req.Name,
 		Type:      req.Type,
 		CreatedBy: req.CreatedBy,
@@ -132,7 +146,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 
 	// Auto-create owner subscription
 	sub := model.Subscription{
-		ID:                 idgen.GenerateID(),
+		ID:                 idgen.GenerateUUIDv7(),
 		User:               model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByAccount},
 		RoomID:             room.ID,
 		SiteID:             req.SiteID,

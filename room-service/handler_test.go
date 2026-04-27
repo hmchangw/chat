@@ -1703,3 +1703,90 @@ func TestWrappedCtx_NoHeaderReturnsCtxUnchanged(t *testing.T) {
 	assert.Empty(t, natsutil.RequestIDFromContext(got),
 		"missing inbound header → empty request ID on returned ctx")
 }
+
+func TestHandler_handleCreateRoom_ChannelAndDMIDFormats(t *testing.T) {
+	cases := []struct {
+		name        string
+		req         model.CreateRoomRequest
+		assertID    func(t *testing.T, id string)
+		assertSubID func(t *testing.T, subID string)
+	}{
+		{
+			name: "channel uses 17-char base62",
+			req: model.CreateRoomRequest{
+				Name: "general", Type: model.RoomTypeChannel,
+				CreatedBy: "u-alice", CreatedByAccount: "alice", SiteID: "site1",
+			},
+			assertID: func(t *testing.T, id string) {
+				assert.Len(t, id, 17, "channel room ID is 17-char base62")
+			},
+			assertSubID: func(t *testing.T, subID string) {
+				assert.Len(t, subID, 32, "subscription ID is UUIDv7 (32 hex)")
+			},
+		},
+		{
+			name: "DM uses sorted user-ID concat",
+			req: model.CreateRoomRequest{
+				Type:      model.RoomTypeDM,
+				CreatedBy: "u-bob", CreatedByAccount: "bob",
+				Members: []string{"u-alice"}, SiteID: "site1",
+			},
+			assertID: func(t *testing.T, id string) {
+				assert.Equal(t, "u-aliceu-bob", id, "DM ID is sorted concat of two user.IDs")
+			},
+			assertSubID: func(t *testing.T, subID string) {
+				assert.Len(t, subID, 32, "subscription ID is UUIDv7 (32 hex)")
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			var capturedRoom *model.Room
+			var capturedSub *model.Subscription
+			store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, r *model.Room) error { capturedRoom = r; return nil })
+			store.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, s *model.Subscription) error { capturedSub = s; return nil })
+
+			h := NewHandler(store, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
+
+			data, _ := json.Marshal(tc.req)
+			_, err := h.handleCreateRoom(context.Background(), data)
+			require.NoError(t, err)
+			require.NotNil(t, capturedRoom)
+			require.NotNil(t, capturedSub)
+			tc.assertID(t, capturedRoom.ID)
+			tc.assertSubID(t, capturedSub.ID)
+		})
+	}
+}
+
+func TestHandler_handleCreateRoom_DMRequiresExactlyOneMember(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	h := NewHandler(store, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
+
+	cases := []struct {
+		name    string
+		members []string
+	}{
+		{"DM with no members", []string{}},
+		{"DM with too many members", []string{"u-alice", "u-charlie"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req := model.CreateRoomRequest{
+				Type: model.RoomTypeDM, CreatedBy: "u-bob", CreatedByAccount: "bob",
+				Members: tc.members, SiteID: "site1",
+			}
+			data, _ := json.Marshal(req)
+			_, err := h.handleCreateRoom(context.Background(), data)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "DM requires exactly one other member")
+		})
+	}
+}
