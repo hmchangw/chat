@@ -28,7 +28,8 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	}
 }
 
-// EnsureIndexes creates the indexes that back the read paths in this service.
+// EnsureIndexes creates the indexes that back the read paths in this service
+// and the unique constraints required for retry-safe writes by room-worker.
 // Must be invoked once at startup. Mongo treats index creation as idempotent
 // when the key spec and options match.
 func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
@@ -37,10 +38,24 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure room_members (rid) index: %w", err)
 	}
-	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "u.account", Value: 1}},
+	// Unique logical key — retries from room-worker generate fresh _id values
+	// (see processAddMembers), so without this constraint a redelivered
+	// member.add would silently insert duplicate room_members. The bulk-insert
+	// path in room-worker already ignores mongo.IsDuplicateKeyError, so this
+	// makes redelivery idempotent.
+	if _, err := s.roomMembers.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "rid", Value: 1}, {Key: "member.type", Value: 1}, {Key: "member.id", Value: 1}},
+		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return fmt.Errorf("ensure subscriptions (roomId,u.account) index: %w", err)
+		return fmt.Errorf("ensure room_members (rid,member.type,member.id) unique index: %w", err)
+	}
+	// Unique logical key for subscriptions. Same retry-idempotency rationale
+	// as room_members above.
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "u.account", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,u.account) unique index: %w", err)
 	}
 	if _, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "account", Value: 1}},
