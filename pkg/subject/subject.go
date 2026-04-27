@@ -226,6 +226,10 @@ func MsgHistoryWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.history", siteID)
 }
 
+func MsgThreadWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.thread", siteID)
+}
+
 func MsgCanonicalWildcard(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.>", siteID)
 }
@@ -269,6 +273,10 @@ func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
 }
 
+func MsgThreadPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.thread", siteID)
+}
+
 func MemberAdd(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.add", account, roomID, siteID)
 }
@@ -279,4 +287,12 @@ func MemberAddWildcard(siteID string) string {
 
 func RoomMemberEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event.member", roomID)
+}
+
+func MsgThreadParentPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.thread.parent", siteID)
+}
+
+func MsgThreadParentWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.msg.thread.parent", siteID)
 }

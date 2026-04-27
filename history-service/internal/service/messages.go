@@ -52,6 +52,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 		return nil, natsrouter.ErrInternal("failed to load message history")
 	}
 
+	s.redactUnavailableQuotes(c, page.Data, accessSince)
 	return &models.LoadHistoryResponse{Messages: page.Data}, nil
 }
 
@@ -92,6 +93,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 		return nil, natsrouter.ErrInternal("failed to load messages")
 	}
 
+	s.redactUnavailableQuotes(c, page.Data, accessSince)
 	return &models.LoadNextMessagesResponse{
 		Messages:   page.Data,
 		NextCursor: page.NextCursor,
@@ -123,8 +125,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	if limit > maxPageSize {
 		limit = maxPageSize
 	}
-	// Split limit-1 (excluding central message) across before and after.
-	// before gets the larger half on odd splits.
+	// Split limit-1 across before/after; before gets the larger half on odd splits.
 	remaining := limit - 1
 	if remaining <= 0 {
 		return &models.LoadSurroundingMessagesResponse{
@@ -143,7 +144,6 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, err
 	}
 
-	// Before-page: messages older than central, newest-first.
 	var beforePage cassrepo.Page[models.Message]
 	if accessSince == nil {
 		beforePage, err = s.messages.GetMessagesBefore(c, roomID, centralMsg.CreatedAt, beforePageReq)
@@ -155,7 +155,6 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
 	}
 
-	// After-page: messages newer than central, oldest-first.
 	afterPage, err := s.messages.GetMessagesAfter(c, roomID, centralMsg.CreatedAt, afterPageReq)
 	if err != nil {
 		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "after")
@@ -170,6 +169,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	messages = append(messages, *centralMsg)
 	messages = append(messages, afterPage.Data...)
 
+	s.redactUnavailableQuotes(c, messages, accessSince)
 	return &models.LoadSurroundingMessagesResponse{
 		Messages:   messages,
 		MoreBefore: beforePage.HasNext,
@@ -195,5 +195,7 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 		return nil, natsrouter.ErrForbidden("message is outside access window")
 	}
 
-	return msg, nil
+	msgSlice := []models.Message{*msg}
+	s.redactUnavailableQuotes(c, msgSlice, accessSince)
+	return &msgSlice[0], nil
 }
