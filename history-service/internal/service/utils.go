@@ -60,55 +60,23 @@ func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID stri
 const unavailableQuoteMsg = "This message is unavailable"
 
 // redactUnavailableQuotes replaces quoted-message previews that fall outside
-// the caller's access window with a stub. For TShow messages — thread replies
-// that are also surfaced in the main channel — the thread parent's actual
-// Cassandra row is re-fetched and checked, because the snapshot stored on the
-// reply could be stale or tampered. Thread parents are fetched in one batch,
-// deduped.
-func (s *HistoryService) redactUnavailableQuotes(ctx context.Context, msgs []models.Message, accessSince *time.Time) {
+// the caller's access window with a stub. For TShow messages, the thread parent's
+// CreatedAt is read from QuotedParentMessage.ThreadParentCreatedAt, which is
+// embedded at write time by message-worker — no Cassandra round-trip needed.
+func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
 	if accessSince == nil {
 		return
 	}
-
-	// Collect unique thread-parent IDs for tshow messages that have a quote
-	// snapshot — no fetch needed for messages that would be skipped anyway.
-	visitedParentIDs := make(map[string]struct{})
-	var tshowParentIDs []string
 	for i := range msgs {
-		if msgs[i].TShow && msgs[i].ThreadParentID != "" && msgs[i].QuotedParentMessage != nil {
-			if _, dup := visitedParentIDs[msgs[i].ThreadParentID]; !dup {
-				visitedParentIDs[msgs[i].ThreadParentID] = struct{}{}
-				tshowParentIDs = append(tshowParentIDs, msgs[i].ThreadParentID)
-			}
-		}
-	}
-
-	tshowParentCreatedAt := make(map[string]time.Time, len(tshowParentIDs))
-	if len(tshowParentIDs) > 0 {
-		tshowParents, err := s.messages.GetMessagesByIDs(ctx, tshowParentIDs)
-		if err != nil {
-			slog.Error("fetching thread parents for tshow redaction", "error", err)
-			// tshow path skipped for this batch; standard path still runs below.
-		} else {
-			for i := range tshowParents {
-				tshowParentCreatedAt[tshowParents[i].MessageID] = tshowParents[i].CreatedAt
-			}
-		}
-	}
-
-	for i := range msgs {
-		if msgs[i].QuotedParentMessage == nil {
+		q := msgs[i].QuotedParentMessage
+		if q == nil {
 			continue
 		}
-
-		tshowParentInaccessible := false
-		if msgs[i].TShow && msgs[i].ThreadParentID != "" {
-			if parentAt, ok := tshowParentCreatedAt[msgs[i].ThreadParentID]; ok {
-				tshowParentInaccessible = parentAt.Before(*accessSince)
-			}
-		}
-
-		if msgs[i].QuotedParentMessage.CreatedAt.Before(*accessSince) || tshowParentInaccessible {
+		tshowParentInaccessible := msgs[i].TShow &&
+			q.ThreadParentID != "" &&
+			q.ThreadParentCreatedAt != nil &&
+			q.ThreadParentCreatedAt.Before(*accessSince)
+		if q.CreatedAt.Before(*accessSince) || tshowParentInaccessible {
 			msgs[i].QuotedParentMessage = &models.QuotedParentMessage{Msg: unavailableQuoteMsg}
 		}
 	}

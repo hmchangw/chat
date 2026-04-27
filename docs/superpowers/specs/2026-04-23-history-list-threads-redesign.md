@@ -436,6 +436,57 @@ Regenerated via `make generate SERVICE=history-service`. Both mock interfaces (`
 
 ---
 
+---
+
+## 7. QuotedParentMessage Schema Extension (post-ship)
+
+### 7.1 Motivation
+
+`redactUnavailableQuotes` previously re-fetched thread parents from Cassandra at read time
+to check whether the parent message predates the caller's `historySharedSince` window. This
+was necessary because the `QuotedParentMessage` snapshot stored on a TShow reply could
+have a stale `CreatedAt`. The Cassandra fetch was batched and deduplicated, but still
+added latency and complexity to every history read.
+
+### 7.2 Schema change — `QuotedParentMessage` UDT
+
+Two fields added (set by message-worker at write time, never by history-service):
+
+| Field | CQL type | JSON key | Purpose |
+|-------|----------|----------|---------|
+| `thread_parent_id` | `TEXT` | `threadParentId` | ID of the thread parent for this TShow reply |
+| `thread_parent_created_at` | `TIMESTAMP` | `threadParentCreatedAt` | Actual `created_at` of that parent row |
+
+Files touched: `pkg/model/cassandra/message.go`, `docker-local/cassandra/init/06-udt-quoted_parent_message.cql`, `docs/cassandra_message_model.md`.
+
+### 7.3 Impact on `redactUnavailableQuotes`
+
+The function is simplified to a single-pass loop with no Cassandra call:
+
+```go
+func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
+    if accessSince == nil { return }
+    for i := range msgs {
+        q := msgs[i].QuotedParentMessage
+        if q == nil { continue }
+        tshowParentInaccessible := msgs[i].TShow &&
+            q.ThreadParentID != "" &&
+            q.ThreadParentCreatedAt != nil &&
+            q.ThreadParentCreatedAt.Before(*accessSince)
+        if q.CreatedAt.Before(*accessSince) || tshowParentInaccessible {
+            msgs[i].QuotedParentMessage = &models.QuotedParentMessage{Msg: unavailableQuoteMsg}
+        }
+    }
+}
+```
+
+The function is now package-level (no `*HistoryService` receiver, no `context.Context`).
+
+### 7.4 Responsibility split
+
+- **message-worker** populates `QuotedParentMessage.ThreadParentID` and `ThreadParentCreatedAt` when writing TShow replies. history-service does not write these fields.
+- **history-service** reads them at query time for access-window enforcement.
+
 **End of spec.**
 
 
