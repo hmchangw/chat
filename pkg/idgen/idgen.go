@@ -1,4 +1,8 @@
-// Package idgen produces identifiers for the chat system; see CLAUDE.md for the ID format matrix per entity type.
+// Package idgen produces identifiers for the chat system:
+// UUIDv7 hex (32 chars) for entity MongoDB _ids via GenerateUUIDv7,
+// 20-char base62 for message IDs via GenerateMessageID,
+// 17-char base62 for channel room IDs via GenerateID, and
+// sorted-concat user IDs for DM rooms via BuildDMRoomID.
 package idgen
 
 import (
@@ -61,7 +65,7 @@ func GenerateID() string {
 	return generateBase62(idLength)
 }
 
-// DeriveID returns a deterministic 17-char base62 ID from seed (SHA-256 → 128-bit → base62); retired in Part 3.
+// DeriveID returns a deterministic 17-char base62 ID from seed (SHA-256 → 128-bit → base62).
 func DeriveID(seed string) string {
 	h := sha256.Sum256([]byte(seed))
 	return encodeBase62(new(big.Int).SetBytes(h[:16]), idLength)
