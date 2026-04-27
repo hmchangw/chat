@@ -6,9 +6,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
-// buildBaseThreadMatch returns the base {roomId, threadParentCreatedAt?} filter
-// shared by all three thread-room queries. accessSince restricts to threads
-// whose parent was created at/after the user's join time.
+// accessSince gates to threads whose parent was created at or after the user's join time.
 func buildBaseThreadMatch(roomID string, accessSince *time.Time) bson.M {
 	match := bson.M{"roomId": roomID}
 	if accessSince != nil {
@@ -24,7 +22,6 @@ func allThreadsPipeline(roomID string, accessSince *time.Time) bson.A {
 	}
 }
 
-// followingThreadsPipeline filters to threads where account is in replyAccounts.
 func followingThreadsPipeline(roomID, account string, accessSince *time.Time) bson.A {
 	match := buildBaseThreadMatch(roomID, accessSince)
 	match["replyAccounts"] = account
@@ -34,13 +31,7 @@ func followingThreadsPipeline(roomID, account string, accessSince *time.Time) bs
 	}
 }
 
-// unreadThreadsPipeline returns threads that have unread activity for userAccount:
-//  1. Match thread rooms (uses {roomId, lastMsgAt, threadParentCreatedAt} index).
-//  2. $lookup threadSubscriptions for the requesting user.
-//  3. Keep only threads where the user has a subscription.
-//  4. Keep only threads where lastMsgAt > lastSeenAt (nil lastSeenAt counts as
-//     never-seen, which is always less than lastMsgAt — so it's included as unread).
-//  5. Drop the joined sub field before returning.
+// Unread = subscribed AND lastMsgAt > lastSeenAt (nil lastSeenAt = never seen = always unread).
 func unreadThreadsPipeline(roomID, userAccount string, accessSince *time.Time) bson.A {
 	match := buildBaseThreadMatch(roomID, accessSince)
 	return bson.A{

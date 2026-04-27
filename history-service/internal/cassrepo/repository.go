@@ -2,15 +2,10 @@ package cassrepo
 
 import "github.com/gocql/gocql"
 
-// casMaxRetries mirrors the constant used by message-worker's tcount
-// increment. A conflict means another thread-reply increment or decrement
-// landed between our read and CAS; 16 retries are sufficient for realistic
-// bursts while bounding the loop.
+// casMaxRetries bounds the CAS loop; 16 retries cover realistic burst concurrency.
 const casMaxRetries = 16
 
-// casDecrement atomically decrements a nullable INT counter toward zero
-// (clamping at zero). Mirrors the shape of message-worker's casIncrement at
-// message-worker/store_cassandra.go:127 but decrements instead of increments.
+// casDecrement atomically decrements a nullable INT toward zero (clamping at zero); mirrors message-worker/store_cassandra.go casIncrement.
 func casDecrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
 	tcount := initial
 	for range maxRetries {
@@ -30,12 +25,10 @@ func casDecrement(maxRetries int, initial *int, update func(newVal int, expected
 	return fmt.Errorf("cas decrement exceeded %d retries", maxRetries)
 }
 
-// Repository implements service.MessageRepository using Cassandra.
 type Repository struct {
 	session *gocql.Session
 }
 
-// NewRepository creates a new Cassandra repository.
 func NewRepository(session *gocql.Session) *Repository {
 	return &Repository{session: session}
 }

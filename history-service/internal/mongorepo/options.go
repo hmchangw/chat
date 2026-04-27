@@ -37,28 +37,27 @@ func (qo *queryOptions) findOpts() *options.FindOptionsBuilder {
 
 type QueryOption func(*queryOptions)
 
-// WithProjection sets which fields to include (1) or exclude (0).
 func WithProjection(projection any) QueryOption {
 	return func(o *queryOptions) {
 		o.projection = projection
 	}
 }
 
-// WithSort sets the sort order. Only applies to FindMany.
+// WithSort only applies to FindMany.
 func WithSort(sort any) QueryOption {
 	return func(o *queryOptions) {
 		o.sort = sort
 	}
 }
 
-// WithLimit caps results. Only applies to FindMany.
+// WithLimit only applies to FindMany.
 func WithLimit(limit int64) QueryOption {
 	return func(o *queryOptions) {
 		o.limit = &limit
 	}
 }
 
-// WithSkip skips results. Only applies to FindMany.
+// WithSkip only applies to FindMany.
 func WithSkip(skip int64) QueryOption {
 	return func(o *queryOptions) {
 		o.skip = &skip
