@@ -425,7 +425,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			continue
 		}
 		sub := &model.Subscription{
-			ID:       idgen.GenerateID(),
+			ID:       idgen.GenerateUUIDv7(),
 			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:   req.RoomID,
 			SiteID:   room.SiteID,
@@ -460,7 +460,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	if writeIndividuals {
 		for _, sub := range subs {
 			roomMembers = append(roomMembers, &model.RoomMember{
-				ID:     idgen.GenerateID(),
+				ID:     idgen.GenerateUUIDv7(),
 				RoomID: req.RoomID,
 				Ts:     acceptedAt,
 				Member: model.RoomMemberEntry{
@@ -473,7 +473,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 	for _, org := range req.Orgs {
 		roomMembers = append(roomMembers, &model.RoomMember{
-			ID:     idgen.GenerateID(),
+			ID:     idgen.GenerateUUIDv7(),
 			RoomID: req.RoomID,
 			Ts:     acceptedAt,
 			Member: model.RoomMemberEntry{
@@ -503,7 +503,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 				} else {
 					for i := range backfillUsers {
 						roomMembers = append(roomMembers, &model.RoomMember{
-							ID:     idgen.GenerateID(),
+							ID:     idgen.GenerateUUIDv7(),
 							RoomID: req.RoomID,
 							Ts:     acceptedAt,
 							Member: model.RoomMemberEntry{
