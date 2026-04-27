@@ -707,7 +707,7 @@ func TestThreadStoreMongo_MarkThreadSubscriptionMention(t *testing.T) {
 		var got model.ThreadSubscription
 		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
 			"threadRoomId": "tr-mk-1",
-			"userId":       "u-mk-new",
+			"userAccount":  "bob",
 		}).Decode(&got)
 		require.NoError(t, err)
 		assert.Equal(t, "ts-new-1", got.ID)
@@ -751,7 +751,7 @@ func TestThreadStoreMongo_MarkThreadSubscriptionMention(t *testing.T) {
 		var got model.ThreadSubscription
 		err := db.Collection("threadSubscriptions").FindOne(ctx, bson.M{
 			"threadRoomId": "tr-mk-2",
-			"userId":       "u-mk-existing",
+			"userAccount":  "alice",
 		}).Decode(&got)
 		require.NoError(t, err)
 		assert.Equal(t, "ts-existing-1", got.ID, "original _id preserved on update")
@@ -778,7 +778,7 @@ func TestThreadStoreMongo_MarkThreadSubscriptionMention(t *testing.T) {
 
 		count, err := db.Collection("threadSubscriptions").CountDocuments(ctx, bson.M{
 			"threadRoomId": "tr-mk-3",
-			"userId":       "u-mk-idem",
+			"userAccount":  "charlie",
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), count, "second upsert must not create a second row")

@@ -19,7 +19,7 @@
 | `pkg/subject/subject.go` | Add `MsgThreadPattern(siteID)` and `MsgThreadWildcard(siteID)` |
 | `pkg/subject/subject_test.go` | Add cases for the two new builders |
 | `history-service/internal/models/message.go` | Add `GetThreadMessagesRequest` + `GetThreadMessagesResponse` |
-| `history-service/internal/cassrepo/repository.go` | Add `threadMessageColumns`, `threadMessageScanDest`, `GetThreadMessages` |
+| `history-service/internal/cassrepo/thread_messages.go` | Add `threadMessageColumns`, `threadMessageScanDest`, `GetThreadMessages` (shipped as a separate file; `repository.go` was split into per-table files) |
 | `history-service/internal/cassrepo/integration_test.go` | Add seeding helper + four integration test cases |
 | `history-service/internal/service/service.go` | Extend `MessageRepository` interface; register handler |
 | `history-service/internal/service/messages.go` | Add `GetThreadMessages` handler |
@@ -523,7 +523,7 @@ func threadCtx() *natsrouter.Context {
 }
 
 func TestHistoryService_GetThreadMessages_Success(t *testing.T) {
-	svc, msgs, subs := newService(t)
+	svc, msgs, subs, _ := newService(t) // 4th return: *mocks.MockThreadRoomRepository (added later)
 	c := threadCtx()
 
 	parentCreatedAt := joinTime.Add(5 * time.Minute)

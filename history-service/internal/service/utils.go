@@ -60,6 +60,15 @@ func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID stri
 // UnavailableQuoteMsg is written into QuotedParentMessage.Msg when the quoted message is outside the access window.
 const UnavailableQuoteMsg = "This message is unavailable"
 
+func redactUnavailableQuote(m *models.Message, accessSince *time.Time) {
+	if m == nil || accessSince == nil {
+		return
+	}
+	tmp := []models.Message{*m}
+	redactUnavailableQuotes(tmp, accessSince)
+	*m = tmp[0]
+}
+
 // For TShow replies, inaccessibility uses ThreadParentCreatedAt embedded at write time by message-worker.
 func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
 	if accessSince == nil {

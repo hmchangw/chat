@@ -475,7 +475,7 @@ func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
             q.ThreadParentCreatedAt != nil &&
             q.ThreadParentCreatedAt.Before(*accessSince)
         if q.CreatedAt.Before(*accessSince) || tshowParentInaccessible {
-            msgs[i].QuotedParentMessage = &models.QuotedParentMessage{Msg: unavailableQuoteMsg}
+            msgs[i].QuotedParentMessage = &models.QuotedParentMessage{Msg: UnavailableQuoteMsg}
         }
     }
 }

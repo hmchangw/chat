@@ -199,9 +199,8 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 		return nil, natsrouter.ErrForbidden("message is outside access window")
 	}
 
-	msgSlice := []models.Message{*msg}
-	redactUnavailableQuotes(msgSlice, accessSince)
-	return &msgSlice[0], nil
+	redactUnavailableQuote(msg, accessSince)
+	return msg, nil
 }
 
 // EditMessage handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit.

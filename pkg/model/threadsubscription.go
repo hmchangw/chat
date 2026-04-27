@@ -10,7 +10,8 @@ type ThreadSubscription struct {
 	UserID          string     `json:"userId"          bson:"userId"`
 	UserAccount     string     `json:"userAccount"     bson:"userAccount"`
 	SiteID          string     `json:"siteId"          bson:"siteId"`
-	LastSeenAt      *time.Time `json:"lastSeenAt"      bson:"lastSeenAt"`
+	// Never add omitempty: unreadThreadsPipeline relies on BSON encoding nil as explicit null, not a missing field.
+	LastSeenAt *time.Time `json:"lastSeenAt" bson:"lastSeenAt"`
 	HasMention      bool       `json:"hasMention"      bson:"hasMention"`
 	CreatedAt       time.Time  `json:"createdAt"       bson:"createdAt"`
 	UpdatedAt       time.Time  `json:"updatedAt"       bson:"updatedAt"`

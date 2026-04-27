@@ -223,7 +223,7 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_room: %w", parentMessageID, err)
 	}
 	if !applied {
-		slog.Warn("parent row absent in messages_by_room; thread_room_id not stamped", "messageID", parentMessageID)
+		slog.Warn("parent row absent in messages_by_room; thread_room_id not stamped", "messageID", parentMessageID, "roomID", roomID)
 	}
 	return nil
 }

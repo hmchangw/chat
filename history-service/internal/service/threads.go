@@ -116,6 +116,9 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 		threadPage, err = s.threadRooms.GetFollowingThreadRooms(c, roomID, account, accessSince, pageReq)
 	case models.ThreadFilterUnread:
 		threadPage, err = s.threadRooms.GetUnreadThreadRooms(c, roomID, account, accessSince, pageReq)
+	default:
+		slog.Error("unhandled thread filter", "filter", filter)
+		return nil, natsrouter.ErrInternal("unhandled thread filter")
 	}
 	if err != nil {
 		slog.Error("loading thread rooms from MongoDB", "error", err, "roomID", roomID, "filter", filter)
@@ -155,7 +158,11 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 	parentMessages := make([]models.Message, 0, len(parentIDs))
 	for _, id := range parentIDs {
 		msg, ok := msgByID[id]
-		if !ok || msg.RoomID != roomID {
+		if !ok {
+			continue
+		}
+		if msg.RoomID != roomID {
+			slog.Warn("thread parent message belongs to unexpected room", "messageID", id, "gotRoom", msg.RoomID, "wantRoom", roomID)
 			continue
 		}
 		if accessSince != nil && msg.CreatedAt.Before(*accessSince) {
