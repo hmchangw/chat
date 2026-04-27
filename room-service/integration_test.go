@@ -910,8 +910,9 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result, &status))
 	assert.Equal(t, "accepted", status["status"])
 
-	// Verify the canonical event was published with the expanded members.
-	// Source channel contributes: bob, carol (individuals) + eng-org (org → dave).
+	// Verify the canonical event was published with the merged-but-unresolved members.
+	// Source channel contributes: bob, carol (individuals) + eng-org (org).
+	// Room-worker expands eng-org → dave at write time via ListNewMembers.
 	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
 	var normalized model.AddMembersRequest
 	require.NoError(t, json.Unmarshal(publishedData, &normalized))
@@ -920,7 +921,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	assert.Equal(t, "req", normalized.RequesterID)
 	assert.NotZero(t, normalized.Timestamp)
 	assert.ElementsMatch(t, []string{"eng-org"}, normalized.Orgs)
-	assert.ElementsMatch(t, []string{"bob", "carol", "dave"}, normalized.Users)
+	assert.ElementsMatch(t, []string{"bob", "carol"}, normalized.Users)
 }
 
 func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
@@ -974,7 +975,9 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result, &status))
 	assert.Equal(t, "accepted", status["status"])
 
-	// Verify the canonical event was published with the expanded members
+	// Verify the canonical event was published with the merged-but-unresolved members.
+	// Source channel subscriptions: bob, carol, dave, alice (requester).
+	// Already-subscribed filtering happens in room-worker via ListNewMembers, not here.
 	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
 	var normalized model.AddMembersRequest
 	require.NoError(t, json.Unmarshal(publishedData, &normalized))
@@ -982,7 +985,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	assert.Equal(t, "alice", normalized.RequesterAccount)
 	assert.Equal(t, "req", normalized.RequesterID)
 	assert.NotZero(t, normalized.Timestamp)
-	assert.ElementsMatch(t, []string{"bob", "carol", "dave"}, normalized.Users)
+	assert.ElementsMatch(t, []string{"bob", "carol", "dave", "alice"}, normalized.Users)
 }
 
 func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
@@ -1097,15 +1100,16 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result, &status))
 	assert.Equal(t, "accepted", status["status"])
 
-	// Verify the canonical event has site-B members (bob, carol) — requester alice is excluded because ResolveAccounts filters existing subs
+	// Verify the canonical event has site-B members (bob, carol, alice).
+	// Already-subscribed filtering (alice on target) happens in room-worker via
+	// ListNewMembers, not at the room-service stage.
 	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
 	var normalized model.AddMembersRequest
 	require.NoError(t, json.Unmarshal(publishedData, &normalized))
 	assert.Equal(t, "target", normalized.RoomID)
 	assert.Contains(t, normalized.Users, "bob")
 	assert.Contains(t, normalized.Users, "carol")
-	// Requester is already subscribed to target, so ResolveAccounts filters her out.
-	assert.NotContains(t, normalized.Users, "alice")
+	assert.Contains(t, normalized.Users, "alice")
 }
 
 func TestAddMembers_CrossSiteTimeout(t *testing.T) {
