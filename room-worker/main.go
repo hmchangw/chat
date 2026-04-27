@@ -73,15 +73,13 @@ func main() {
 
 	store := NewMongoStore(mongoClient.Database(cfg.MongoDB))
 	handler := NewHandler(store, cfg.SiteID, func(ctx context.Context, subj string, data []byte, msgID string) error {
+		msg := natsutil.NewMsg(ctx, subj, data)
 		if msgID == "" {
-			// Ephemeral client-delivery subjects (subscription updates, member
-			// events) — core NATS fan-out, not persisted.
-			return nc.Publish(ctx, subj, data)
+			// Ephemeral client-delivery (member/subscription events) — core NATS, not persisted.
+			return nc.PublishMsg(ctx, msg)
 		}
-		// JetStream-backed subjects (MESSAGES_CANONICAL, OUTBOX) — block on
-		// PubAck so stream-accept failures surface as errors and trigger NAK.
-		// Server honors Nats-Msg-Id for stream-level dedup within the window.
-		_, err := js.Publish(ctx, subj, data, jetstream.WithMsgID(msgID))
+		// JetStream-backed (MESSAGES_CANONICAL, OUTBOX) — block on PubAck; server honors Nats-Msg-Id for dedup.
+		_, err := js.PublishMsg(ctx, msg, jetstream.WithMsgID(msgID))
 		return err
 	})
 
@@ -115,7 +113,8 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handler.HandleJetStreamMsg(msgCtx, msg)
+				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
+				handler.HandleJetStreamMsg(handlerCtx, msg)
 			}()
 		}
 	}()
