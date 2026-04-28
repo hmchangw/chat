@@ -70,10 +70,17 @@ func main() {
 
 	store := NewMongoStore(db)
 	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
-		return js.PublishMsg(ctx, msg, opts...)
+		ack, err := js.PublishMsg(ctx, msg, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("publish to %q: %w", msg.Subject, err)
+		}
+		return ack, nil
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error {
-		return nc.PublishMsg(ctx, msg)
+		if err := nc.PublishMsg(ctx, msg); err != nil {
+			return fmt.Errorf("reply to %q: %w", msg.Subject, err)
+		}
+		return nil
 	}
 	handler := NewHandler(store, pub, reply, cfg.SiteID)
 

@@ -39,7 +39,7 @@ func TestHandler_ProcessRoleUpdate_Promote(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	if err := h.processRoleUpdate(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -90,7 +90,7 @@ func TestHandler_ProcessRoleUpdate_Demote(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	if err := h.processRoleUpdate(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -132,7 +132,7 @@ func TestHandler_ProcessRoleUpdate_CrossSite(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	if err := h.processRoleUpdate(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -172,6 +172,22 @@ func TestHandler_ProcessRoleUpdate_CrossSite(t *testing.T) {
 
 // --- Error-path tests for processRoleUpdate ---
 
+func TestHandler_ProcessRoleUpdate_RejectsInvalidTimestamp(t *testing.T) {
+	h := NewHandler(nil, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+		return nil
+	})
+	req := model.UpdateRoleRequest{
+		RoomID:    "r1",
+		Account:   "bob",
+		NewRole:   model.RoleOwner,
+		Timestamp: 0, // invalid
+	}
+	data, _ := json.Marshal(req)
+	err := h.processRoleUpdate(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timestamp must be > 0")
+}
+
 func TestHandler_ProcessRoleUpdate_InvalidJSON(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
@@ -196,7 +212,7 @@ func TestHandler_ProcessRoleUpdate_AddRoleError(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -215,7 +231,7 @@ func TestHandler_ProcessRoleUpdate_RemoveRoleError(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -234,7 +250,7 @@ func TestHandler_ProcessRoleUpdate_GetSubscriptionError(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -253,7 +269,7 @@ func TestHandler_ProcessRoleUpdate_PublishError(t *testing.T) {
 		return fmt.Errorf("nats down")
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -269,7 +285,7 @@ func TestHandler_ProcessRoleUpdate_UnsupportedRole(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: "admin"}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: "admin", Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -295,7 +311,7 @@ func TestHandler_ProcessRoleUpdate_PropagatesRequestID(t *testing.T) {
 	h := NewHandler(store, "site1", publish)
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-rw-test")
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	reqData, _ := json.Marshal(req)
 	err := h.processRoleUpdate(ctx, reqData)
 	require.NoError(t, err)
@@ -305,6 +321,22 @@ func TestHandler_ProcessRoleUpdate_PropagatesRequestID(t *testing.T) {
 }
 
 // --- processRemoveMember tests ---
+
+func TestHandler_ProcessRemoveMember_RejectsInvalidTimestamp(t *testing.T) {
+	h := NewHandler(nil, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+		return nil
+	})
+	req := model.RemoveMemberRequest{
+		RoomID:    "r1",
+		Account:   "alice",
+		Requester: "alice",
+		Timestamp: 0, // invalid
+	}
+	data, _ := json.Marshal(req)
+	err := h.processRemoveMember(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timestamp must be > 0")
+}
 
 func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -346,7 +378,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	})
 
 	// Self-leave: Requester == Account
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -412,7 +444,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -466,7 +498,7 @@ func TestHandler_ProcessRemoveMember_DualMembership_OwnerDemoted(t *testing.T) {
 				return nil
 			})
 
-			req := model.RemoveMemberRequest{RoomID: roomID, Requester: tc.requester, Account: account}
+			req := model.RemoveMemberRequest{RoomID: roomID, Requester: tc.requester, Account: account, Timestamp: 1}
 			data, _ := json.Marshal(req)
 
 			err := h.processRemoveMember(context.Background(), data)
@@ -519,7 +551,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	})
 
 	// requester != account means this is owner-removes-other
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, Account: account, Timestamp: 1}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -539,6 +571,22 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 }
 
 // --- processAddMembers tests ---
+
+func TestHandler_ProcessAddMembers_RejectsInvalidTimestamp(t *testing.T) {
+	h := NewHandler(nil, "site1", func(_ context.Context, _ string, _ []byte, _ string) error {
+		return nil
+	})
+	req := model.AddMembersRequest{
+		RoomID:           "r1",
+		RequesterAccount: "alice",
+		Users:            []string{"bob"},
+		Timestamp:        0, // invalid
+	}
+	data, _ := json.Marshal(req)
+	err := h.processAddMembers(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timestamp must be > 0")
+}
 
 func TestHandler_ProcessAddMembers(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -574,7 +622,8 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 
 	req := model.AddMembersRequest{
 		RoomID: "r1", Users: []string{"bob", "charlie"},
-		History: model.HistoryConfig{Mode: model.HistoryModeNone},
+		History:   model.HistoryConfig{Mode: model.HistoryModeNone},
+		Timestamp: 1,
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -624,7 +673,8 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 
 	req := model.AddMembersRequest{
 		RoomID: "r1", Users: []string{"bob"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		History:   model.HistoryConfig{Mode: model.HistoryModeAll},
+		Timestamp: 1,
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -736,7 +786,8 @@ func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) 
 
 	req := model.AddMembersRequest{
 		RoomID: "r1", Users: []string{"bob"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		History:   model.HistoryConfig{Mode: model.HistoryModeAll},
+		Timestamp: 1,
 	}
 	reqData, _ := json.Marshal(req)
 	require.NoError(t, h.processAddMembers(context.Background(), reqData))
@@ -779,8 +830,12 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	}, nil)
 
 	req := model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"bob"}, Orgs: []string{"eng"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		Orgs:             []string{"eng"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -811,8 +866,11 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"bob", "ghost"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		RoomID:           "r1",
+		Users:            []string{"bob", "ghost"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -844,8 +902,11 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"alice", "bob", "charlie"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		RoomID:           "r1",
+		Users:            []string{"alice", "bob", "charlie"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -910,7 +971,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID, Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -968,7 +1029,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1003,7 +1064,7 @@ func TestHandler_ProcessRemoveIndividual_GetUserError(t *testing.T) {
 		Return(nil, fmt.Errorf("db down"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1025,7 +1086,7 @@ func TestHandler_ProcessRemoveIndividual_DeleteRoomMemberError(t *testing.T) {
 		Return(fmt.Errorf("write failed"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1051,7 +1112,7 @@ func TestHandler_ProcessRemoveIndividual_DualDemoteError(t *testing.T) {
 		Return(fmt.Errorf("write failed"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1076,7 +1137,7 @@ func TestHandler_ProcessRemoveIndividual_DeleteSubscriptionError(t *testing.T) {
 		Return(int64(0), fmt.Errorf("write failed"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1104,7 +1165,7 @@ func TestHandler_ProcessRemoveIndividual_ReconcileUserCountError(t *testing.T) {
 		Return(fmt.Errorf("write failed"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1137,9 +1198,11 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 		})
 
 	req := model.AddMembersRequest{
-		RoomID:  "r1",
-		Users:   []string{"bob"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -1183,7 +1246,7 @@ func TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates(t *testing.T) {
 	}
 	h := NewHandler(store, localSite, publish)
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1221,7 +1284,7 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	}
 	h := NewHandler(store, localSite, publish)
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID, Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1313,8 +1376,7 @@ func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
 	assert.Equal(t, "req-error-test", result.RequestID)
 	assert.Equal(t, "add_members", result.Job)
 	assert.False(t, result.Success, "failure event must have Success=false")
-	assert.NotEmpty(t, result.Error, "failure event must include error message")
-	assert.Contains(t, result.Error, "find users by accounts")
+	assert.Equal(t, "operation failed", result.Error, "failure event must carry sanitized error message")
 	assert.Greater(t, result.Timestamp, int64(0))
 }
 
@@ -1340,7 +1402,7 @@ func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
 	assert.Equal(t, "req-err-test", result.RequestID)
 	assert.Equal(t, "add_members", result.Job)
 	assert.False(t, result.Success)
-	assert.Equal(t, "oops", result.Error)
+	assert.Equal(t, "operation failed", result.Error)
 }
 
 func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequestID(t *testing.T) {

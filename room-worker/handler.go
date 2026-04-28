@@ -75,7 +75,8 @@ func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, j
 		Timestamp: time.Now().UTC().UnixMilli(),
 	}
 	if jobErr != nil {
-		result.Error = jobErr.Error()
+		result.Error = "operation failed"
+		slog.Error("async room job failed", "error", jobErr, "job", job, "requestID", requestID)
 	}
 	data, _ := json.Marshal(result)
 	if err := h.publish(ctx, subject.UserResponse(requesterAccount, requestID), data, ""); err != nil {
@@ -112,6 +113,9 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 	var req model.UpdateRoleRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return fmt.Errorf("unmarshal role update request: %w", err)
+	}
+	if req.Timestamp <= 0 {
+		return fmt.Errorf("invalid role update request: timestamp must be > 0, got %d", req.Timestamp)
 	}
 
 	// Promote: add "owner" to roles. Demote: remove "owner" from roles.
@@ -195,6 +199,9 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 }
 
 func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
+	if req.Timestamp <= 0 {
+		return fmt.Errorf("invalid remove member request: timestamp must be > 0, got %d", req.Timestamp)
+	}
 	isSelfLeave := req.Requester == req.Account
 	// Defer the result publish covers all subsequent return paths.
 	defer func() {
@@ -316,6 +323,9 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 }
 
 func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
+	if req.Timestamp <= 0 {
+		return fmt.Errorf("invalid remove member request: timestamp must be > 0, got %d", req.Timestamp)
+	}
 	// Defer the result publish covers all subsequent return paths.
 	defer func() {
 		h.publishAsyncJobResult(ctx, req.Requester, "remove_org", err)
@@ -453,6 +463,9 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	var req model.AddMembersRequest
 	if err = json.Unmarshal(data, &req); err != nil {
 		return fmt.Errorf("unmarshal add members request: %w", err)
+	}
+	if req.Timestamp <= 0 {
+		return fmt.Errorf("invalid add members request: timestamp must be > 0, got %d", req.Timestamp)
 	}
 	// Now req is populated; defer the result publish covers all subsequent return paths.
 	defer func() {

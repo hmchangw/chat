@@ -77,12 +77,17 @@ func main() {
 	handler := NewHandler(store, cfg.SiteID, func(ctx context.Context, subj string, data []byte, msgID string) error {
 		msg := natsutil.NewMsg(ctx, subj, data)
 		if msgID == "" {
-			// Ephemeral client-delivery (member/subscription events) — core NATS, not persisted.
-			return nc.PublishMsg(ctx, msg)
+			// Ephemeral client-delivery — core NATS, not persisted.
+			if err := nc.PublishMsg(ctx, msg); err != nil {
+				return fmt.Errorf("publish to %q: %w", subj, err)
+			}
+			return nil
 		}
 		// JetStream-backed (MESSAGES_CANONICAL, OUTBOX) — block on PubAck; server honors Nats-Msg-Id for dedup.
-		_, err := js.PublishMsg(ctx, msg, jetstream.WithMsgID(msgID))
-		return err
+		if _, err := js.PublishMsg(ctx, msg, jetstream.WithMsgID(msgID)); err != nil {
+			return fmt.Errorf("publish to %q: %w", subj, err)
+		}
+		return nil
 	})
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, jetstream.ConsumerConfig{
