@@ -9,8 +9,8 @@
 The `GetThreadsList` endpoint was specified and partially implemented per `2026-04-21-history-list-threads-design.md`. Two subsequent decisions require a redesign of the data model, the unread-threads query, and the mongorepo abstraction:
 
 1. **PM decision (2026-04-22):** the endpoint returns plain parent `Message` objects. The `ThreadParentMessage` envelope (enriched with `ThreadRoom` metadata) is dropped. Frontend does not consume the extra fields.
-2. **Unread semantics review (2026-04-23):** `Subscription.threadUnread` — a user-scoped list of unread `parentMessageId` values — is redundant with `threadSubscriptions`. The latter is already maintained by `message-worker` and carries a `lastSeenAt` timestamp per thread. Comparing `threadRoom.lastMsgAt > threadSubscription.lastSeenAt` is the canonical definition of "unread thread".
-3. **Efficiency requirement:** the unread query must not collection-scan `threadSubscriptions`. The relevant index on `threadSubscriptions` that the history-service relies on is `{threadRoomId, userAccount}` (owned by message-worker, also ensured at startup by history-service). A query keyed by `{userAccount, roomId}` has no supporting index. The redesign drives the query from `threadRooms` and joins into `threadSubscriptions` via `threadRoomId` — leveraging the existing index.
+2. **Unread semantics review (2026-04-23):** `Subscription.threadUnread` — a user-scoped list of unread `parentMessageId` values — is redundant with `thread_subscriptions`. The latter is already maintained by `message-worker` and carries a `lastSeenAt` timestamp per thread. Comparing `threadRoom.lastMsgAt > threadSubscription.lastSeenAt` is the canonical definition of "unread thread".
+3. **Efficiency requirement:** the unread query must not collection-scan `thread_subscriptions`. The relevant index on `thread_subscriptions` that the history-service relies on is `{threadRoomId, userAccount}` (owned by message-worker, also ensured at startup by history-service). A query keyed by `{userAccount, roomId}` has no supporting index. The redesign drives the query from `threadRooms` and joins into `thread_subscriptions` via `threadRoomId` — leveraging the existing index.
 
 ### In scope
 
@@ -19,13 +19,13 @@ The `GetThreadsList` endpoint was specified and partially implemented per `2026-
 - Replace the current `GetUnreadThreadRooms(ctx, roomID, parentIDs, ...)` signature with `GetUnreadThreadRooms(ctx, roomID, account, accessSince, ...)` implemented as a MongoDB aggregation pipeline.
 - Introduce a pipeline abstraction in `mongorepo`: `Aggregate`, `AggregatePaged` (via `$facet`), and a `pipelines.go` file for pipeline builder functions.
 - Convert `OffsetPage[T]` from n+1 / `HasMore` semantics to a real `Total int64` produced by `$facet`.
-- Align `threadRooms.EnsureIndexes` with the new unread query's access pattern (no new indexes required — existing three compound indexes remain correct).
+- Align `threadRooms.EnsureIndexes` with the new unread query's access pattern (no new indexes required — existing two `thread_rooms` compound indexes remain correct; the `parentMessageId` index listed in earlier drafts was not shipped).
 - Regenerate mocks; update handler/service unit tests; keep integration tests green.
 
 ### Out of scope
 
-- Writer-side maintenance of `threadRooms` and `threadSubscriptions` (owned by `message-worker`).
-- Indexing `threadSubscriptions` by `{userAccount, roomId}` — deferred; the aggregation pattern does not require it.
+- Writer-side maintenance of `threadRooms` and `thread_subscriptions` (owned by `message-worker`).
+- Indexing `thread_subscriptions` by `{userAccount, roomId}` — deferred; the aggregation pattern does not require it.
 - Cassandra schema — unchanged from the prior spec.
 - Behaviour of the `all` and `following` filters — unchanged, same repo methods, only the response shape flattens.
 
@@ -49,7 +49,7 @@ type Subscription struct {
 }
 ```
 
-Unread thread state is no longer tracked per-subscription. It is derived at query time from `threadRooms.lastMsgAt` vs `threadSubscriptions.lastSeenAt` (section 4).
+Unread thread state is no longer tracked per-subscription. It is derived at query time from `threadRooms.lastMsgAt` vs `thread_subscriptions.lastSeenAt` (section 4).
 
 `pkg/model/model_test.go::TestSubscriptionJSON` drops the `ThreadUnread` fixture field from both the input and the expected JSON.
 
@@ -59,7 +59,8 @@ Unread thread state is no longer tracked per-subscription. It is derived at quer
 
 - `{roomId:1, lastMsgAt:-1, threadParentCreatedAt:1}` — `all`
 - `{roomId:1, replyAccounts:1, lastMsgAt:-1, threadParentCreatedAt:1}` — `following`
-- `{roomId:1, parentMessageId:1, lastMsgAt:-1, threadParentCreatedAt:1}` — retained for parent-lookup use cases; the new `unread` query does not use it (drives from the first compound instead).
+
+The `{roomId, parentMessageId, lastMsgAt, threadParentCreatedAt}` index mentioned in earlier drafts was not created — none of the shipped query methods require it.
 
 ### 2.3 `pkg/model/threadsubscription.go` — no changes
 
@@ -121,18 +122,18 @@ MongoDB sort key: `{lastMsgAt: -1, threadParentCreatedAt: 1}`. `threadParentCrea
 
 A thread is unread for user `U` in room `R` when **both** hold:
 
-1. `U` has a `threadSubscription` for the thread (implies `U` has participated in or was mentioned in the thread — the only writer of `threadSubscriptions` is `message-worker`, which creates them on participation).
+1. `U` has a `threadSubscription` for the thread (implies `U` has participated in or was mentioned in the thread — the only writer of `thread_subscriptions` is `message-worker`, which creates them on participation).
 2. `threadRoom.lastMsgAt > threadSubscription.lastSeenAt` **or** `threadSubscription.lastSeenAt` is nil (the user has a subscription but has never opened the thread).
 
 Consequently, a user with no `threadSubscription` for a given thread is **not** notified of unread activity there. This matches the product decision: "no subscription = did not post = no notification". Threads the user passively sees in the room do not count as unread.
 
-### 4.2 Query strategy: drive from `threadRooms`, `$lookup` into `threadSubscriptions`
+### 4.2 Query strategy: drive from `threadRooms`, `$lookup` into `thread_subscriptions`
 
 Two approaches were considered:
 
-**Approach A (rejected):** two-query join. First `threadSubscriptions.Find({userAccount: U, roomId: R})`, then `threadRooms.Find({_id: $in: [...], lastMsgAt: $gt: ...})`. Rejected because `threadSubscriptions` has no `{userAccount, roomId}` index; the first query is a full collection scan globally.
+**Approach A (rejected):** two-query join. First `thread_subscriptions.Find({userAccount: U, roomId: R})`, then `threadRooms.Find({_id: $in: [...], lastMsgAt: $gt: ...})`. Rejected because `thread_subscriptions` has no `{userAccount, roomId}` index; the first query is a full collection scan globally.
 
-**Approach B (chosen):** single aggregation pipeline starting from `threadRooms`. Match by `roomId` (uses `{roomId, lastMsgAt, threadParentCreatedAt}` index), `$lookup` into `threadSubscriptions` keyed by `threadRoomId` (uses `{threadRoomId, userAccount}` index — leading field hit), filter to rows where the subscription exists and `lastMsgAt > lastSeenAt`. Bounded by threads-in-room × participants-per-thread, rather than total subscriptions globally.
+**Approach B (chosen):** single aggregation pipeline starting from `threadRooms`. Match by `roomId` (uses `{roomId, lastMsgAt, threadParentCreatedAt}` index), `$lookup` into `thread_subscriptions` keyed by `threadRoomId` (uses `{threadRoomId, userAccount}` index — leading field hit), filter to rows where the subscription exists and `lastMsgAt > lastSeenAt`. Bounded by threads-in-room × participants-per-thread, rather than total subscriptions globally.
 
 ### 4.3 Pipeline stages
 
@@ -143,7 +144,7 @@ Two approaches were considered:
       threadParentCreatedAt: { $gte: <accessSince> }   // only when accessSince != nil
   }},
   { $lookup: {
-      from: "threadSubscriptions",
+      from: "thread_subscriptions",
       let:  { tr: "$_id" },
       pipeline: [
         { $match: {
@@ -174,7 +175,7 @@ Two approaches were considered:
 
 - Initial `$match` hits `{roomId:1, lastMsgAt:-1, threadParentCreatedAt:1}` — the `all` compound index. Room-scoped, with the sort order already encoded.
 - `$lookup` inner `$match` hits `{threadRoomId:1, userAccount:1}` — leading-field prefix scan, owned by `message-worker` and also ensured by history-service at startup.
-- No new indexes required. `threadSubscriptions.{userAccount, roomId}` remains unindexed; the aggregation does not need it.
+- No new indexes required. `thread_subscriptions.{userAccount, roomId}` remains unindexed; the aggregation does not need it.
 
 ### 4.6 What changes in the repository
 
@@ -190,7 +191,7 @@ to:
 GetUnreadThreadRooms(ctx, roomID, account string, accessSince *time.Time, req OffsetPageRequest) (OffsetPage[ThreadRoom], error)
 ```
 
-The `parentIDs` slice is gone (the subscription-derived list no longer exists). The service layer no longer passes `threadUnread` into the repo. Unread queries reference `threadSubscriptions` by collection name inside a `$lookup` stage; no direct `*Collection` dependency is added to `ThreadRoomRepo` (section 6).
+The `parentIDs` slice is gone (the subscription-derived list no longer exists). The service layer no longer passes `threadUnread` into the repo. Unread queries reference `thread_subscriptions` by collection name inside a `$lookup` stage; no direct `*Collection` dependency is added to `ThreadRoomRepo` (section 6).
 
 ## 5. Mongorepo Pipeline Abstraction
 
@@ -225,7 +226,7 @@ func allThreadsPipeline(roomID string, accessSince *time.Time) bson.A {
 func followingThreadsPipeline(roomID, account string, accessSince *time.Time) bson.A { ... }
 
 // unreadThreadsPipeline: section 4.3 — drives from threadRooms, $lookup
-// into threadSubscriptions, filters by lastMsgAt > sub.lastSeenAt.
+// into thread_subscriptions, filters by lastMsgAt > sub.lastSeenAt.
 func unreadThreadsPipeline(roomID, userAccount string, accessSince *time.Time) bson.A { ... }
 ```
 
@@ -397,7 +398,7 @@ func NewThreadRoomRepo(db *mongo.Database) *ThreadRoomRepo {
 }
 ```
 
-Note: the unread aggregation references `threadSubscriptions` by collection name inside the `$lookup` stage — no direct `*Collection` field is needed on the struct. The collection name string embedded in the pipeline is sufficient.
+Note: the unread aggregation references `thread_subscriptions` by collection name inside the `$lookup` stage — no direct `*Collection` field is needed on the struct. The collection name string embedded in the pipeline is sufficient.
 
 ### 6.4 Service-layer wiring
 
@@ -414,17 +415,16 @@ Regenerated via `make generate SERVICE=history-service`. Both mock interfaces (`
 
 ### 6.6 Index strategy (unchanged from prior spec)
 
-`ThreadRoomRepo.EnsureIndexes` keeps its three compound indexes:
+`ThreadRoomRepo.EnsureIndexes` creates two `thread_rooms` compound indexes:
 
 - `{roomId:1, lastMsgAt:-1, threadParentCreatedAt:1}` — `all` + `unread` (outer `$match`)
 - `{roomId:1, replyAccounts:1, lastMsgAt:-1, threadParentCreatedAt:1}` — `following`
-- `{roomId:1, parentMessageId:1, lastMsgAt:-1, threadParentCreatedAt:1}` — retained for other callers
 
-`threadSubscriptions` indexes:
+`thread_subscriptions` indexes:
 
 - `{threadRoomId:1, userAccount:1}` unique — **leading field drives the `$lookup` inner `$match`**; created by message-worker and also ensured at startup by history-service
 
-`threadSubscriptions.{userAccount, roomId}` is intentionally **not** added. The aggregation does not need it; adding it would impose maintenance cost for no query benefit.
+`thread_subscriptions.{userAccount, roomId}` is intentionally **not** added. The aggregation does not need it; adding it would impose maintenance cost for no query benefit.
 
 ### 6.7 Test updates
 

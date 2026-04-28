@@ -682,6 +682,30 @@ func TestHistoryService_LoadSurroundingMessages_Limit1_OnlyCentral(t *testing.T)
 	assert.False(t, resp.MoreAfter)
 }
 
+func TestHistoryService_LoadSurroundingMessages_Limit1_RedactsInaccessibleQuote(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	centralMsg := &models.Message{
+		MessageID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute),
+		QuotedParentMessage: &models.QuotedParentMessage{
+			MessageID: "old-msg", Msg: "secret", CreatedAt: joinTime.Add(-time.Hour),
+		},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m5").Return(centralMsg, nil)
+
+	resp, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{
+		MessageID: "m5", Limit: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Messages, 1)
+	q := resp.Messages[0].QuotedParentMessage
+	require.NotNil(t, q)
+	assert.Equal(t, service.UnavailableQuoteMsg, q.Msg)
+	assert.Empty(t, q.MessageID)
+}
+
 // --- Access Control: Not Subscribed ---
 
 func TestHistoryService_LoadHistory_NotSubscribed(t *testing.T) {

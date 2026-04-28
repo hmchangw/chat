@@ -60,6 +60,15 @@ func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID stri
 // UnavailableQuoteMsg is written into QuotedParentMessage.Msg when the quoted message is outside the access window.
 const UnavailableQuoteMsg = "This message is unavailable"
 
+// quoteInaccessible reports whether a quoted message falls outside the access window.
+// For TShow replies, uses ThreadParentCreatedAt embedded at write time; nil timestamp
+// means the parent time was never captured, so redact conservatively to prevent leaks.
+func quoteInaccessible(m *models.Message, q *models.QuotedParentMessage, accessSince time.Time) bool {
+	tshowParentInaccessible := m.TShow && q.ThreadParentID != "" && q.ThreadParentCreatedAt != nil && q.ThreadParentCreatedAt.Before(accessSince)
+	legacyTShowMissingParentTime := m.TShow && q.ThreadParentID != "" && q.ThreadParentCreatedAt == nil
+	return q.CreatedAt.Before(accessSince) || tshowParentInaccessible || legacyTShowMissingParentTime
+}
+
 func redactUnavailableQuote(m *models.Message, accessSince *time.Time) {
 	if m == nil || accessSince == nil {
 		return
@@ -68,9 +77,7 @@ func redactUnavailableQuote(m *models.Message, accessSince *time.Time) {
 	if q == nil {
 		return
 	}
-	tshowParentInaccessible := m.TShow && q.ThreadParentID != "" && q.ThreadParentCreatedAt != nil && q.ThreadParentCreatedAt.Before(*accessSince)
-	legacyTShowMissingParentTime := m.TShow && q.ThreadParentID != "" && q.ThreadParentCreatedAt == nil
-	if q.CreatedAt.Before(*accessSince) || tshowParentInaccessible || legacyTShowMissingParentTime {
+	if quoteInaccessible(m, q, *accessSince) {
 		m.QuotedParentMessage = &models.QuotedParentMessage{Msg: UnavailableQuoteMsg}
 	}
 }
@@ -84,16 +91,7 @@ func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
 		if q == nil {
 			continue
 		}
-		tshowParentInaccessible := msgs[i].TShow &&
-			q.ThreadParentID != "" &&
-			q.ThreadParentCreatedAt != nil &&
-			q.ThreadParentCreatedAt.Before(*accessSince)
-		// Legacy TShow quotes where ThreadParentCreatedAt wasn't captured cannot be
-		// verified against the access window — redact conservatively to prevent leaks.
-		legacyTShowMissingParentTime := msgs[i].TShow &&
-			q.ThreadParentID != "" &&
-			q.ThreadParentCreatedAt == nil
-		if q.CreatedAt.Before(*accessSince) || tshowParentInaccessible || legacyTShowMissingParentTime {
+		if quoteInaccessible(&msgs[i], q, *accessSince) {
 			msgs[i].QuotedParentMessage = &models.QuotedParentMessage{Msg: UnavailableQuoteMsg}
 		}
 	}

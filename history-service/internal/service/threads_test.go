@@ -548,6 +548,41 @@ func TestHistoryService_GetThreadMessages_KeepsQuoteAfterAccessSince(t *testing.
 	assert.Equal(t, "visible-msg", q.MessageID)
 }
 
+func TestHistoryService_GetThreadMessages_RedactsLegacyTShowMissingParentTimestamp(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	parentCreatedAt := joinTime.Add(5 * time.Minute)
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: parentCreatedAt, ThreadRoomID: "tr-1"}
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+
+	// quoteCreatedAt is after accessSince — without the legacy-TShow branch it would pass through.
+	quoteCreatedAt := joinTime.Add(time.Hour)
+	replies := []models.Message{
+		{
+			MessageID: "reply-1", RoomID: "r1", CreatedAt: parentCreatedAt.Add(time.Minute),
+			TShow: true,
+			QuotedParentMessage: &models.QuotedParentMessage{
+				MessageID:             "legacy-msg",
+				Msg:                   "content",
+				CreatedAt:             quoteCreatedAt,
+				ThreadParentID:        "tp-1",
+				ThreadParentCreatedAt: nil, // not captured by legacy message-worker
+			},
+		},
+	}
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any()).Return(makePage(replies, false), nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	require.Len(t, resp.Messages, 1)
+	q := resp.Messages[0].QuotedParentMessage
+	require.NotNil(t, q)
+	assert.Equal(t, service.UnavailableQuoteMsg, q.Msg)
+	assert.Empty(t, q.MessageID)
+}
+
 func TestHistoryService_GetThreadParentMessages_RedactsQuoteBeforeAccessSince(t *testing.T) {
 	svc, msgs, subs, _, threadRooms := newService(t)
 	c := testContext()

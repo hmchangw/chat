@@ -22,8 +22,8 @@
 | `history-service/internal/cassrepo/thread_messages.go` | Add `threadMessageColumns`, `threadMessageScanDest`, `GetThreadMessages` (shipped as a separate file; `repository.go` was split into per-table files) |
 | `history-service/internal/cassrepo/integration_test.go` | Add seeding helper + four integration test cases |
 | `history-service/internal/service/service.go` | Extend `MessageRepository` interface; register handler |
-| `history-service/internal/service/messages.go` | Add `GetThreadMessages` handler |
-| `history-service/internal/service/messages_test.go` | Table-driven unit tests for the handler |
+| `history-service/internal/service/threads.go` | Add `GetThreadMessages` handler |
+| `history-service/internal/service/threads_test.go` | Table-driven unit tests for the handler |
 | `history-service/internal/service/mocks/mock_repository.go` | Regenerated via `make generate SERVICE=history-service` |
 
 No other services, docker init, or docs are touched.
@@ -499,8 +499,8 @@ git commit -m "feat(history-service): extend MessageRepository with GetThreadMes
 ## Task 5 — `GetThreadMessages` handler (TDD)
 
 **Files:**
-- Modify: `history-service/internal/service/messages_test.go`
-- Modify: `history-service/internal/service/messages.go`
+- Modify: `history-service/internal/service/threads_test.go`
+- Modify: `history-service/internal/service/threads.go`
 
 The handler follows the spec's flow exactly. Key points:
 
@@ -510,7 +510,7 @@ The handler follows the spec's flow exactly. Key points:
 
 - [ ] **Step 1: Write failing unit tests**
 
-Open `history-service/internal/service/messages_test.go`. Append at the end of the file (after `TestHistoryService_GetMessageByID_NotSubscribed`):
+Open `history-service/internal/service/threads_test.go`. Append at the end of the file (after `TestHistoryService_GetMessageByID_NotSubscribed`):
 
 ```go
 // --- GetThreadMessages ---
@@ -764,7 +764,7 @@ Expected: FAIL with `svc.GetThreadMessages undefined`.
 
 - [ ] **Step 3: Implement the handler**
 
-Open `history-service/internal/service/messages.go`. Append at the end of the file:
+Open `history-service/internal/service/threads.go`. Append at the end of the file:
 
 ```go
 func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.GetThreadMessagesRequest) (*models.GetThreadMessagesResponse, error) {
@@ -830,7 +830,7 @@ Expected: all pre-existing tests plus the 14 new `TestHistoryService_GetThreadMe
 
 ```bash
 make lint
-git add history-service/internal/service/messages.go history-service/internal/service/messages_test.go
+git add history-service/internal/service/threads.go history-service/internal/service/threads_test.go
 git commit -m "feat(history-service): add GetThreadMessages handler"
 ```
 

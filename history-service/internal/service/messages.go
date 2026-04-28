@@ -132,8 +132,10 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	// Split limit-1 across before/after; before gets the larger half on odd splits.
 	remaining := limit - 1
 	if remaining <= 0 {
+		only := *centralMsg
+		redactUnavailableQuote(&only, accessSince)
 		return &models.LoadSurroundingMessagesResponse{
-			Messages: []models.Message{*centralMsg},
+			Messages: []models.Message{only},
 		}, nil
 	}
 	beforeCount := (remaining + 1) / 2
