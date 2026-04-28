@@ -338,7 +338,6 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	assert.True(t, subjSet[subject.SubscriptionUpdate(account)], "expected subscription update published")
 	assert.True(t, subjSet[subject.MemberEvent(roomID)], "expected member event published")
 
-	// Verify the RoomType is carried on the SubscriptionUpdateEvent payload
 	for _, p := range published {
 		if p.subj != subject.SubscriptionUpdate(account) {
 			continue

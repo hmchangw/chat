@@ -90,6 +90,9 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 			slog.Warn("user not found for account", "account", account)
 			continue
 		}
+		// RoomType is fixed to channel: cross-site member_added events only
+		// originate from rooms that support add-member (channel/discussion),
+		// never from DM/botDM.
 		sub := &model.Subscription{
 			ID:                 idgen.GenerateID(),
 			User:               model.SubscriptionUser{ID: user.ID, Account: user.Account},
