@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
@@ -24,14 +25,15 @@ func TestRequestIDMiddleware_AttachesIDToRequestContext(t *testing.T) {
 		c.Status(http.StatusOK)
 	})
 
+	testID := "01893f8b1c4a7000abcdef0123456789"
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(natsutil.RequestIDHeader, "auth-svc-test-id")
+	req.Header.Set(natsutil.RequestIDHeader, testID)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	assert.Equal(t, "auth-svc-test-id", fromGin, "Gin context still carries the ID under request_id")
-	assert.Equal(t, "auth-svc-test-id", fromCtx, "request.Context() must also carry the ID via natsutil")
-	assert.Equal(t, "auth-svc-test-id", w.Header().Get(natsutil.RequestIDHeader), "echoed in response header")
+	assert.Equal(t, testID, fromGin, "Gin context still carries the ID under request_id")
+	assert.Equal(t, testID, fromCtx, "request.Context() must also carry the ID via natsutil")
+	assert.Equal(t, testID, w.Header().Get(natsutil.RequestIDHeader), "echoed in response header")
 }
 
 func TestRequestIDMiddleware_GeneratesAndAttachesWhenHeaderAbsent(t *testing.T) {
@@ -55,6 +57,28 @@ func TestRequestIDMiddleware_GeneratesAndAttachesWhenHeaderAbsent(t *testing.T) 
 	assert.Equal(t, fromCtx, fromGin, "minted ID must be identical in ctx and Gin keys map")
 	assert.Equal(t, fromCtx, w.Header().Get(natsutil.RequestIDHeader),
 		"the same minted ID must be echoed in the response header")
+}
+
+func TestRequestIDMiddleware_RegeneratesOnMalformedHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(requestIDMiddleware())
+
+	var fromCtx string
+	r.GET("/test", func(c *gin.Context) {
+		fromCtx = natsutil.RequestIDFromContext(c.Request.Context())
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set(natsutil.RequestIDHeader, "not-a-uuidv7")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.NotEqual(t, "not-a-uuidv7", fromCtx, "malformed inbound ID must be replaced with a freshly minted one")
+	assert.True(t, idgen.IsValidUUIDv7(fromCtx), "the regenerated ID must itself be a valid UUIDv7")
+	assert.Equal(t, fromCtx, w.Header().Get(natsutil.RequestIDHeader),
+		"echoed response header must match the regenerated ID, not the malformed input")
 }
 
 func TestAccessLogMiddleware_LogsAndPassesThrough(t *testing.T) {

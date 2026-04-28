@@ -213,3 +213,39 @@ func TestMessageIDFromRequestID_OutputPassesValidator(t *testing.T) {
 	id := idgen.MessageIDFromRequestID("req-abc", "addmembers")
 	assert.True(t, idgen.IsValidMessageID(id))
 }
+
+func TestIsValidUUIDv7(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"valid UUIDv7 (matches GenerateUUIDv7 output)", idgen.GenerateUUIDv7(), true},
+		{"empty", "", false},
+		{"too short (31)", "01893f8b1c4a7000b8e2d4f6a1c3e5b", false},
+		{"too long (33)", "01893f8b1c4a7000b8e2d4f6a1c3e5b77", false},
+		{"uppercase hex", "01893F8B1C4A7000B8E2D4F6A1C3E5B7", false},
+		{"contains hyphen", "01893f8b-1c4a-7000-b8e2-d4f6a1c3e5b7", false},
+		{"non-hex char", "01893f8b1c4a7000b8e2d4f6a1c3e5bz", false},
+		{"wrong version nibble (4)", "01893f8b1c4a4000b8e2d4f6a1c3e5b7", false},
+		{"wrong variant nibble (c)", "01893f8b1c4a7000c8e2d4f6a1c3e5b7", false},
+		{"variant 8 valid", "01893f8b1c4a70008abcdef012345678", true},
+		{"variant 9 valid", "01893f8b1c4a70009abcdef012345678", true},
+		{"variant a valid", "01893f8b1c4a7000abcdef0123456789", true},
+		{"variant b valid", "01893f8b1c4a7000babcdef012345678", true},
+		{"20-char base62 message ID", "AbCdEfGhIjKlMnOpQrSt", false},
+		{"17-char base62 (legacy)", "AbCdEfGhIjKlMnOpQ", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, idgen.IsValidUUIDv7(tc.in))
+		})
+	}
+}
+
+func TestIsValidUUIDv7_AcceptsGenerateUUIDv7Output(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		assert.True(t, idgen.IsValidUUIDv7(idgen.GenerateUUIDv7()))
+	}
+}

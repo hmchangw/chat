@@ -22,7 +22,7 @@ func RequestID() HandlerFunc {
 		if c.Msg != nil && c.Msg.Header != nil {
 			reqID = c.Msg.Header.Get(natsutil.RequestIDHeader)
 		}
-		if reqID == "" {
+		if !idgen.IsValidUUIDv7(reqID) {
 			reqID = idgen.GenerateUUIDv7()
 		}
 		c.Set(requestIDKey, reqID)

@@ -1273,6 +1273,49 @@ func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *te
 	assert.Greater(t, result.Timestamp, int64(0))
 }
 
+func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var capturedSubject string
+	var capturedData []byte
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		if strings.HasPrefix(subj, "chat.user.") {
+			capturedSubject = subj
+			capturedData = data
+		}
+		return nil
+	}
+	h := NewHandler(store, "site1", publish)
+
+	// Mock store to fail on FindUsersByAccounts (first store operation after unmarshal)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site1"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return(nil, fmt.Errorf("database connection failed"))
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-error-test")
+	req := model.AddMembersRequest{
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+	}
+	reqData, _ := json.Marshal(req)
+	err := h.processAddMembers(ctx, reqData)
+	require.Error(t, err, "processAddMembers must return error on FindUsersByAccounts failure")
+	assert.Contains(t, err.Error(), "find users by accounts")
+
+	// Verify failure event was published to requester
+	assert.Equal(t, subject.UserResponse("alice", "req-error-test"), capturedSubject)
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(capturedData, &result))
+	assert.Equal(t, "req-error-test", result.RequestID)
+	assert.Equal(t, "add_members", result.Job)
+	assert.False(t, result.Success, "failure event must have Success=false")
+	assert.NotEmpty(t, result.Error, "failure event must include error message")
+	assert.Contains(t, result.Error, "find users by accounts")
+	assert.Greater(t, result.Timestamp, int64(0))
+}
+
 func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
 	var capturedSubject string
 	var capturedData []byte

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
@@ -438,12 +439,13 @@ func TestRequestID_FromHeader(t *testing.T) {
 	msg := nats.NewMsg("test.123")
 	msg.Data, _ = json.Marshal(testReq{Name: "test"})
 	msg.Header = nats.Header{}
-	msg.Header.Set(natsutil.RequestIDHeader, "custom-req-id-42")
+	testID := "01893f8b1c4a7000abcdef0123456789"
+	msg.Header.Set(natsutil.RequestIDHeader, testID)
 
 	resp, err := nc.NatsConn().RequestMsg(msg, 2*time.Second)
 	require.NoError(t, err)
 	assert.NotEmpty(t, string(resp.Data))
-	assert.Equal(t, "custom-req-id-42", capturedID)
+	assert.Equal(t, testID, capturedID)
 }
 
 func TestRegisterNoBody_HandlerError(t *testing.T) {
@@ -576,7 +578,8 @@ func TestRequestIDMiddleware_StoresIDOnUnderlyingContext(t *testing.T) {
 	// natsutil.RequestIDFromContext(c) must equal c.Get("requestID") — the contract publish helpers rely on.
 	c := NewContext(nil)
 	c.Msg = &nats.Msg{Header: nats.Header{}}
-	c.Msg.Header.Set(natsutil.RequestIDHeader, "from-header")
+	testID := "01893f8b1c4a7000abcdef0123456789"
+	c.Msg.Header.Set(natsutil.RequestIDHeader, testID)
 
 	called := false
 	chain := []HandlerFunc{
@@ -585,8 +588,8 @@ func TestRequestIDMiddleware_StoresIDOnUnderlyingContext(t *testing.T) {
 			called = true
 			fromKeys, _ := c.Get("requestID")
 			fromCtx := natsutil.RequestIDFromContext(c)
-			assert.Equal(t, "from-header", fromKeys)
-			assert.Equal(t, "from-header", fromCtx)
+			assert.Equal(t, testID, fromKeys)
+			assert.Equal(t, testID, fromCtx)
 		},
 	}
 	runChain(c, chain)
@@ -610,6 +613,24 @@ func TestRequestIDMiddleware_GeneratesAndStoresOnContext_WhenHeaderMissing(t *te
 	runChain(c, chain)
 	assert.NotEmpty(t, fromCtx, "RequestID middleware must mint and propagate to ctx when header is absent")
 	assert.Equal(t, fromCtx, fromKeys, "minted ID must be identical in ctx and keys map")
+}
+
+func TestRequestIDMiddleware_RegeneratesOnMalformedHeader(t *testing.T) {
+	c := NewContext(nil)
+	c.Msg = &nats.Msg{Header: nats.Header{}}
+	c.Msg.Header.Set(natsutil.RequestIDHeader, "not-a-uuidv7")
+
+	var fromCtx string
+	chain := []HandlerFunc{
+		RequestID(),
+		func(c *Context) {
+			fromCtx = natsutil.RequestIDFromContext(c)
+		},
+	}
+	runChain(c, chain)
+
+	assert.NotEqual(t, "not-a-uuidv7", fromCtx, "malformed inbound ID must be replaced")
+	assert.True(t, idgen.IsValidUUIDv7(fromCtx), "regenerated ID must be a valid UUIDv7")
 }
 
 func TestRequestIDMiddleware_OtherCtxKeysStillReadable(t *testing.T) {

@@ -94,6 +94,31 @@ func IsValidMessageID(s string) bool {
 	return true
 }
 
+// IsValidUUIDv7 reports whether s is a 32-char lowercase hex UUIDv7 (no hyphens). Validates length, alphabet, version nibble (index 12 == '7'), and variant nibble (index 16 ∈ {8,9,a,b}).
+func IsValidUUIDv7(s string) bool {
+	const uuidv7HexLength = 32
+	if len(s) != uuidv7HexLength {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		default:
+			return false
+		}
+	}
+	if s[12] != '7' {
+		return false
+	}
+	switch s[16] {
+	case '8', '9', 'a', 'b':
+		return true
+	}
+	return false
+}
+
 // GenerateUUIDv7 returns a fresh UUIDv7 as 32-char lowercase hex without hyphens (entity Mongo _id and request IDs).
 func GenerateUUIDv7() string {
 	u, err := uuid.NewV7()

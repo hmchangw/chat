@@ -194,8 +194,12 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 	return h.processRemoveIndividual(ctx, &req)
 }
 
-func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest) error {
+func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
 	isSelfLeave := req.Requester == req.Account
+	// Defer the result publish covers all subsequent return paths.
+	defer func() {
+		h.publishAsyncJobResult(ctx, req.Requester, "remove_member", err)
+	}()
 
 	user, err := h.store.GetUserWithMembership(ctx, req.RoomID, req.Account)
 	if err != nil {
@@ -214,7 +218,6 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 				return fmt.Errorf("demote dual-member owner: %w", err)
 			}
 		}
-		h.publishAsyncJobResult(ctx, req.Requester, "remove_member", nil)
 		return nil
 	}
 
@@ -309,11 +312,15 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		}
 	}
 
-	h.publishAsyncJobResult(ctx, req.Requester, "remove_member", nil)
 	return nil
 }
 
-func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest) error {
+func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
+	// Defer the result publish covers all subsequent return paths.
+	defer func() {
+		h.publishAsyncJobResult(ctx, req.Requester, "remove_org", err)
+	}()
+
 	members, err := h.store.GetOrgMembersWithIndividualStatus(ctx, req.RoomID, req.OrgID)
 	if err != nil {
 		return fmt.Errorf("get org members with individual status: %w", err)
@@ -439,15 +446,18 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		}
 	}
 
-	h.publishAsyncJobResult(ctx, req.Requester, "remove_org", nil)
 	return nil
 }
 
-func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
+func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error) {
 	var req model.AddMembersRequest
-	if err := json.Unmarshal(data, &req); err != nil {
+	if err = json.Unmarshal(data, &req); err != nil {
 		return fmt.Errorf("unmarshal add members request: %w", err)
 	}
+	// Now req is populated; defer the result publish covers all subsequent return paths.
+	defer func() {
+		h.publishAsyncJobResult(ctx, req.RequesterAccount, "add_members", err)
+	}()
 
 	room, err := h.store.GetRoom(ctx, req.RoomID)
 	if err != nil {
@@ -690,7 +700,6 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		}
 	}
 
-	h.publishAsyncJobResult(ctx, req.RequesterAccount, "add_members", nil)
 	return nil
 }
 

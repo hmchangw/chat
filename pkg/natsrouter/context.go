@@ -133,7 +133,18 @@ func (c *Context) MustGet(key string) any {
 	return val
 }
 
-// SetContext replaces the underlying context.Context; call only from middleware before c.Next() (single-writer contract — racing with handler-spawned goroutines is unsafe).
+// SetContext replaces the underlying context.Context.
+//
+// Single-writer contract: call only from middleware before c.Next() (racing
+// with handler-spawned goroutines that read c.Value is unsafe — c.ctx is not
+// guarded against concurrent writers).
+//
+// Cycle pitfall: never pass c (the *Context) as the parent of the new ctx.
+// c.Value(k) delegates to c.ctx.Value(k), so a chain like
+// context.WithValue(c, k, v) creates a ctx whose parent traverses back to c —
+// any c.Value(otherKey) lookup then loops forever. Always derive from c.ctx
+// (private to this package) or from a stable parent like context.Background().
+// Example: ctx := natsutil.WithRequestID(c.ctx, reqID); c.SetContext(ctx).
 func (c *Context) SetContext(ctx context.Context) {
 	c.ctx = ctx
 }
