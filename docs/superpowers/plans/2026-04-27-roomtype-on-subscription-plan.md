@@ -246,3 +246,227 @@ Depends on Task 1 (`Subscription.RoomType` must exist).
   git add room-service/
   git commit -m "room-service: populate Subscription.RoomType on CreateRoom"
   ```
+
+---
+
+### Task 3: `room-worker` — add and remove paths
+
+**Files:**
+- Modify: `room-worker/handler.go`
+  - `processAddMembers` — `sub := &model.Subscription{...}` literal inside the per-account loop
+  - `processRemoveIndividual` — the partial `model.Subscription{...}` literal inside the `SubscriptionUpdateEvent`
+  - `processRemoveOrg` — the partial `model.Subscription{...}` literal inside the per-account event loop
+- Modify: `room-worker/handler_test.go`
+  - `TestHandler_ProcessAddMembers`
+  - `TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly`
+  - `TestHandler_ProcessRemoveMember_OwnerRemovesIndividual`
+  - `TestHandler_ProcessRemoveMember_OwnerRemovesOrg`
+  - `TestHandler_ProcessRemoveMember_CrossSiteOutbox`
+  - `TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates`
+  - `TestHandler_ProcessRemoveOrg_OutboxFailurePropagates`
+
+Depends on Task 1. The room-worker `SubscriptionStore` interface already has `GetRoom`; no `make generate` needed.
+
+**Design notes (from spec §4):**
+
+The remove paths fetch the room once per operation and stamp `room.Type` onto the partial Subscription literal that the `SubscriptionUpdateEvent` payload carries. The fetch is **non-fatal** — on `GetRoom` error, log at warn and continue with `RoomType: ""`. The removal itself must not block on this lookup.
+
+`processAddMembers` does NOT do a room-fetch — it hardcodes `RoomTypeChannel` because DM/botDM rooms reject `member.add` upstream.
+
+- [ ] **Step 3.1: Update `TestHandler_ProcessAddMembers` — assert RoomType on every created sub**
+
+  Inside the existing `BulkCreateSubscriptions` `DoAndReturn` callback, add a per-sub assertion:
+
+  ```go
+  store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).DoAndReturn(
+      func(_ context.Context, subs []*model.Subscription) error {
+          assert.Len(t, subs, 2)
+          for _, s := range subs {
+              assert.Equal(t, "site-a", s.SiteID)
+              assert.Equal(t, model.RoomTypeChannel, s.RoomType)
+              assert.Equal(t, []model.Role{model.RoleMember}, s.Roles)
+              require.NotNil(t, s.HistorySharedSince)
+              assert.Equal(t, s.JoinedAt, *s.HistorySharedSince)
+          }
+          return nil
+      })
+  ```
+
+- [ ] **Step 3.2: Update `TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly` — add `GetRoom` mock and `RoomType` assertion**
+
+  Add a new `EXPECT` for `GetRoom` after the existing `ReconcileUserCount` expect:
+
+  ```go
+  store.EXPECT().
+      ReconcileUserCount(gomock.Any(), roomID).Return(nil)
+  store.EXPECT().
+      GetRoom(gomock.Any(), roomID).
+      Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
+  ```
+
+  Then after the `assert.True(t, subjSet[subject.MemberEvent(roomID)], ...)` line, add:
+
+  ```go
+  // The subscription update event should carry the RoomType from the fetched room.
+  for _, p := range published {
+      if p.subj != subject.SubscriptionUpdate(account) {
+          continue
+      }
+      var evt model.SubscriptionUpdateEvent
+      require.NoError(t, json.Unmarshal(p.data, &evt))
+      assert.Equal(t, model.RoomTypeChannel, evt.Subscription.RoomType, "subscription update should carry RoomType")
+  }
+  ```
+
+- [ ] **Step 3.3: Update `TestHandler_ProcessRemoveMember_OwnerRemovesIndividual` — add `GetRoom` mock**
+
+  After the existing `ReconcileUserCount` expect, append:
+
+  ```go
+  store.EXPECT().
+      GetRoom(gomock.Any(), roomID).
+      Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
+  ```
+
+  No additional assertion needed — the previous test already asserts the RoomType payload contract.
+
+- [ ] **Step 3.4: Update `TestHandler_ProcessRemoveMember_OwnerRemovesOrg` — add `GetRoom` mock**
+
+  After the existing `ReconcileUserCount(... )` expect, append:
+
+  ```go
+  store.EXPECT().
+      GetRoom(gomock.Any(), roomID).
+      Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
+  ```
+
+- [ ] **Step 3.5: Update `TestHandler_ProcessRemoveMember_CrossSiteOutbox` — add `GetRoom` mock**
+
+  After the existing `ReconcileUserCount(... )` expect, append:
+
+  ```go
+  store.EXPECT().
+      GetRoom(gomock.Any(), roomID).
+      Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
+  ```
+
+- [ ] **Step 3.6: Update both `OutboxFailurePropagates` tests — add `GetRoom` mock**
+
+  Both `TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates` and `TestHandler_ProcessRemoveOrg_OutboxFailurePropagates` exercise the publish path, so they will also hit the new `GetRoom` call. Add this expect after `ReconcileUserCount` in each test:
+
+  ```go
+  store.EXPECT().
+      GetRoom(gomock.Any(), roomID).
+      Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
+  ```
+
+- [ ] **Step 3.7: Run tests — expect red**
+
+  ```
+  make test SERVICE=room-worker
+  ```
+
+  Expected failures: `TestHandler_ProcessAddMembers` (`RoomType = ""`), and the four+two remove tests fail with `missing call(s) to *main.MockSubscriptionStore.GetRoom`.
+
+- [ ] **Step 3.8: Hardcode `RoomTypeChannel` on `processAddMembers` subs**
+
+  In `room-worker/handler.go` find the literal inside `processAddMembers`:
+
+  ```go
+  sub := &model.Subscription{
+      ID:       idgen.GenerateID(),
+      User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
+      RoomID:   req.RoomID,
+      RoomType: model.RoomTypeChannel,
+      SiteID:   room.SiteID,
+      Roles:    []model.Role{model.RoleMember},
+      JoinedAt: acceptedAt,
+  }
+  ```
+
+- [ ] **Step 3.9: Fetch room and stamp RoomType in `processRemoveIndividual`**
+
+  In `room-worker/handler.go` find the block that begins with `now := time.Now().UTC()` followed by `// Subscription update event` (inside `processRemoveIndividual`). Insert a `GetRoom` call between them and use the fetched type when building the partial Subscription:
+
+  ```go
+  now := time.Now().UTC()
+
+  // Fetch the room so the removed-event payload carries RoomType.
+  // Non-fatal: on failure we proceed with an empty RoomType.
+  var roomType model.RoomType
+  if room, err := h.store.GetRoom(ctx, req.RoomID); err != nil {
+      slog.Warn("get room failed during remove-individual", "error", err, "roomID", req.RoomID)
+  } else if room != nil {
+      roomType = room.Type
+  }
+
+  // Subscription update event
+  subEvt := model.SubscriptionUpdateEvent{
+      UserID: user.ID,
+      Subscription: model.Subscription{
+          RoomID:   req.RoomID,
+          RoomType: roomType,
+          User:     model.SubscriptionUser{ID: user.ID, Account: req.Account},
+      },
+      Action:    "removed",
+      Timestamp: now.UnixMilli(),
+  }
+  ```
+
+- [ ] **Step 3.10: Fetch room and stamp RoomType in `processRemoveOrg`**
+
+  In `room-worker/handler.go` find the matching `now := time.Now().UTC()` followed by `// Publish per-account subscription update and collect cross-site accounts` block (inside `processRemoveOrg`). Make the same insertion — one `GetRoom` call before the loop, reuse `roomType` per iteration:
+
+  ```go
+  now := time.Now().UTC()
+
+  // Fetch the room once so every per-account removed event carries RoomType.
+  // Non-fatal: on failure we proceed with an empty RoomType.
+  var roomType model.RoomType
+  if room, err := h.store.GetRoom(ctx, req.RoomID); err != nil {
+      slog.Warn("get room failed during remove-org", "error", err, "roomID", req.RoomID)
+  } else if room != nil {
+      roomType = room.Type
+  }
+
+  // Publish per-account subscription update and collect cross-site accounts
+  sectName := ""
+  for _, m := range toRemove {
+      if m.SectName != "" {
+          sectName = m.SectName
+      }
+      subEvt := model.SubscriptionUpdateEvent{
+          Subscription: model.Subscription{
+              RoomID:   req.RoomID,
+              RoomType: roomType,
+              User:     model.SubscriptionUser{Account: m.Account},
+          },
+          Action:    "removed",
+          Timestamp: now.UnixMilli(),
+      }
+      // ...rest of the loop unchanged
+  }
+  ```
+
+- [ ] **Step 3.11: Run tests — expect green**
+
+  ```
+  make test SERVICE=room-worker
+  ```
+
+  Expected: `ok  	github.com/hmchangw/chat/room-worker	1.0xxs`
+
+- [ ] **Step 3.12: Lint clean**
+
+  ```
+  make lint
+  ```
+
+  Expected: `0 issues.`
+
+- [ ] **Step 3.13: Commit**
+
+  ```bash
+  git add room-worker/
+  git commit -m "room-worker: populate Subscription.RoomType on add and remove"
+  ```
