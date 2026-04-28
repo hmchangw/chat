@@ -171,3 +171,78 @@ This task is independently buildable: every existing call site keeps compiling b
   git add pkg/model/
   git commit -m "model: add RoomType on Subscription and botDM/discussion constants"
   ```
+
+---
+
+### Task 2: `room-service` CreateRoom owner subscription
+
+**Files:**
+- Modify: `room-service/handler.go` (the `handleCreateRoom` function — the `sub := model.Subscription{...}` literal)
+- Modify: `room-service/handler_test.go` (`TestHandler_CreateRoom`)
+
+Depends on Task 1 (`Subscription.RoomType` must exist).
+
+- [ ] **Step 2.1: Add the RoomType assertion to `TestHandler_CreateRoom`**
+
+  Edit `room-service/handler_test.go`. The test already captures the auto-created subscription via `var capturedSub *model.Subscription`. Append a `RoomType` assertion at the bottom of the test, just before the closing brace:
+
+  ```go
+  if capturedSub != nil && capturedSub.RoomType != model.RoomTypeChannel {
+      t.Errorf("expected owner subscription RoomType=%q, got %q", model.RoomTypeChannel, capturedSub.RoomType)
+  }
+  ```
+
+  The request fixture in this test already uses `Type: model.RoomTypeChannel`, so the assertion is internally consistent.
+
+- [ ] **Step 2.2: Run the test — expect red**
+
+  ```
+  make test SERVICE=room-service
+  ```
+
+  Expected:
+  ```
+  --- FAIL: TestHandler_CreateRoom (0.00s)
+      handler_test.go:51: expected owner subscription RoomType="channel", got ""
+  ```
+
+- [ ] **Step 2.3: Stamp `req.Type` onto the owner subscription**
+
+  Edit `room-service/handler.go` inside `handleCreateRoom`. The block `sub := model.Subscription{...}` builds the auto-created owner sub. Add `RoomType: req.Type,` between `RoomID` and `SiteID`:
+
+  ```go
+  // Auto-create owner subscription
+  sub := model.Subscription{
+      ID:                 idgen.GenerateID(),
+      User:               model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByAccount},
+      RoomID:             room.ID,
+      RoomType:           req.Type,
+      SiteID:             req.SiteID,
+      Roles:              []model.Role{model.RoleOwner},
+      HistorySharedSince: &now,
+      JoinedAt:           now,
+  }
+  ```
+
+- [ ] **Step 2.4: Run the test — expect green**
+
+  ```
+  make test SERVICE=room-service
+  ```
+
+  Expected: `ok  	github.com/hmchangw/chat/room-service	1.0xxs`
+
+- [ ] **Step 2.5: Lint clean**
+
+  ```
+  make lint
+  ```
+
+  Expected: `0 issues.`
+
+- [ ] **Step 2.6: Commit**
+
+  ```bash
+  git add room-service/
+  git commit -m "room-service: populate Subscription.RoomType on CreateRoom"
+  ```
