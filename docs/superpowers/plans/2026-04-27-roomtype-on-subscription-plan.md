@@ -43,3 +43,131 @@ No store interfaces change. `room-worker`'s `SubscriptionStore` already has `Get
    - `processRemoveIndividual`: fetch the room, stamp `RoomType` on the partial sub literal carried by the "removed" `SubscriptionUpdateEvent`.
    - `processRemoveOrg`: same, with one room fetch reused across the per-account event loop.
 4. **`inbox-worker`** — cross-site `handleMemberAdded` hardcodes `RoomTypeChannel` (only channel/discussion-style rooms ever produce cross-site `member_added` events, never DM/botDM).
+
+---
+
+### Task 1: `pkg/model` foundation
+
+**Files:**
+- Modify: `pkg/model/room.go` (the `RoomType` const block)
+- Modify: `pkg/model/subscription.go` (the `Subscription` struct)
+- Modify: `pkg/model/model_test.go` (`TestSubscriptionJSON`, `TestRoomTypeValues`)
+
+This task is independently buildable: every existing call site keeps compiling because the new `Subscription.RoomType` field defaults to `""`.
+
+- [ ] **Step 1.1: Update `TestSubscriptionJSON` to set the new field**
+
+  Edit `pkg/model/model_test.go`. Find the `TestSubscriptionJSON` function and add `RoomType: model.RoomTypeChannel` between `RoomID` and `SiteID` so the round-trip exercises the new field:
+
+  ```go
+  func TestSubscriptionJSON(t *testing.T) {
+      hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+      s := model.Subscription{
+          ID:                 "s1",
+          User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
+          RoomID:             "r1",
+          RoomType:           model.RoomTypeChannel,
+          SiteID:             "site-a",
+          Roles:              []model.Role{model.RoleOwner},
+          HistorySharedSince: &hss,
+          JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+          LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+          HasMention:         true,
+      }
+      // (rest of the test unchanged — it already round-trips s through JSON)
+  }
+  ```
+
+- [ ] **Step 1.2: Update `TestRoomTypeValues` to assert the four constants**
+
+  Replace the existing `TestRoomTypeValues` body with:
+
+  ```go
+  func TestRoomTypeValues(t *testing.T) {
+      if model.RoomTypeChannel != "channel" {
+          t.Errorf("RoomTypeChannel = %q", model.RoomTypeChannel)
+      }
+      if model.RoomTypeDM != "dm" {
+          t.Errorf("RoomTypeDM = %q", model.RoomTypeDM)
+      }
+      if model.RoomTypeBotDM != "botDM" {
+          t.Errorf("RoomTypeBotDM = %q", model.RoomTypeBotDM)
+      }
+      if model.RoomTypeDiscussion != "discussion" {
+          t.Errorf("RoomTypeDiscussion = %q", model.RoomTypeDiscussion)
+      }
+  }
+  ```
+
+- [ ] **Step 1.3: Run the tests — expect a build failure**
+
+  ```
+  make test SERVICE=pkg/model
+  ```
+
+  Expected output (verbatim):
+  ```
+  pkg/model/model_test.go:387:3: unknown field RoomType in struct literal of type model.Subscription
+  pkg/model/model_test.go:416:11: undefined: model.RoomTypeBotDM
+  pkg/model/model_test.go:419:11: undefined: model.RoomTypeDiscussion
+  FAIL	github.com/hmchangw/chat/pkg/model [build failed]
+  ```
+
+- [ ] **Step 1.4: Add the new constants in `pkg/model/room.go`**
+
+  Replace the existing `const ( ... )` block with:
+
+  ```go
+  const (
+      RoomTypeChannel    RoomType = "channel"
+      RoomTypeDM         RoomType = "dm"
+      RoomTypeBotDM      RoomType = "botDM"
+      RoomTypeDiscussion RoomType = "discussion"
+  )
+  ```
+
+- [ ] **Step 1.5: Add the `RoomType` field on `Subscription`**
+
+  Edit `pkg/model/subscription.go`. Insert the new field between `RoomID` and `SiteID`:
+
+  ```go
+  type Subscription struct {
+      ID                 string           `json:"id" bson:"_id"`
+      User               SubscriptionUser `json:"u" bson:"u"`
+      RoomID             string           `json:"roomId" bson:"roomId"`
+      RoomType           RoomType         `json:"roomType" bson:"roomType"`
+      SiteID             string           `json:"siteId" bson:"siteId"`
+      Roles              []Role           `json:"roles" bson:"roles"`
+      HistorySharedSince *time.Time       `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
+      JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`
+      LastSeenAt         time.Time        `json:"lastSeenAt" bson:"lastSeenAt"`
+      HasMention         bool             `json:"hasMention" bson:"hasMention"`
+  }
+  ```
+
+- [ ] **Step 1.6: Run the tests — expect green**
+
+  ```
+  make test SERVICE=pkg/model
+  ```
+
+  Expected:
+  ```
+  ok  	github.com/hmchangw/chat/pkg/model	1.0xxs
+  ok  	github.com/hmchangw/chat/pkg/model/cassandra	(cached)
+  ```
+
+- [ ] **Step 1.7: Lint clean**
+
+  ```
+  make lint
+  ```
+
+  Expected: `0 issues.`
+
+- [ ] **Step 1.8: Commit**
+
+  ```bash
+  git add pkg/model/
+  git commit -m "model: add RoomType on Subscription and botDM/discussion constants"
+  ```
