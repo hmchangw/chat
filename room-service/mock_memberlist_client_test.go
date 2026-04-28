@@ -42,16 +42,16 @@ func (m *MockMemberListClient) EXPECT() *MockMemberListClientMockRecorder {
 }
 
 // ListMembers mocks base method.
-func (m *MockMemberListClient) ListMembers(ctx context.Context, requester string, ch model.ChannelRef) ([]model.RoomMember, error) {
+func (m *MockMemberListClient) ListMembers(ctx context.Context, requester string, ch model.ChannelRef, limit int) ([]model.RoomMember, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListMembers", ctx, requester, ch)
+	ret := m.ctrl.Call(m, "ListMembers", ctx, requester, ch, limit)
 	ret0, _ := ret[0].([]model.RoomMember)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ListMembers indicates an expected call of ListMembers.
-func (mr *MockMemberListClientMockRecorder) ListMembers(ctx, requester, ch any) *gomock.Call {
+func (mr *MockMemberListClientMockRecorder) ListMembers(ctx, requester, ch, limit any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListMembers", reflect.TypeOf((*MockMemberListClient)(nil).ListMembers), ctx, requester, ch)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListMembers", reflect.TypeOf((*MockMemberListClient)(nil).ListMembers), ctx, requester, ch, limit)
 }

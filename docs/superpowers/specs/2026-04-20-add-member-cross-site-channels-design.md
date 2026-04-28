@@ -20,7 +20,7 @@ It also relocates **org→user resolution** from room-service to room-worker. Ro
 Covers:
 - Wire-format change on `AddMembersRequest.Channels` and `MembersAdded.Channels` from `[]string` to `[]ChannelRef{RoomID, SiteID}`.
 - A new site-aware expansion function in `room-service/handler.go` replacing the current `expandChannels`.
-- A `MemberListClient` interface with a NATS-backed implementation for cross-site `member.list` calls (enrich=false, no limit/offset).
+- A `MemberListClient` interface with a NATS-backed implementation for cross-site `member.list` calls (enrich=false; the call sets `Limit=maxRoomSize+1` so the wire never carries an unbounded result set).
 - Symmetric authorization: the requester must hold a subscription to every source channel, whether it lives on the local site or a remote site.
 - Removal of the now-dead store methods `GetRoomMembersByRooms` and `GetAccountsByRooms`.
 - New config `MEMBER_LIST_TIMEOUT` (default `5s`) for cross-site request/reply.
@@ -118,12 +118,12 @@ func (h *Handler) expandChannelRefs(
                 }
                 return nil, nil, fmt.Errorf("subscription check %s: %w", ref.RoomID, err)
             }
-            members, err = h.store.ListRoomMembers(ctx, ref.RoomID, nil, nil, false)
+            members, err = h.store.ListRoomMembers(ctx, ref.RoomID, &listLimit, nil, false)
             if err != nil {
                 return nil, nil, fmt.Errorf("local list-members %s: %w", ref.RoomID, err)
             }
         } else {
-            members, err = h.memberListClient.ListMembers(ctx, requester, ref)
+            members, err = h.memberListClient.ListMembers(ctx, requester, ref, listLimit)
             if err != nil {
                 return nil, nil, fmt.Errorf("remote list-members %s@%s: %w", ref.RoomID, ref.SiteID, err)
             }
@@ -163,7 +163,7 @@ if err != nil {
 5. `expandChannelRefs` — **all refs resolved fully before proceeding; fail-fast on any error**
 6. `dedup` orgs + users with channel-sourced additions
 7. `CountNewMembers(orgs, users, roomID)` — count-only aggregation; the actual list is **not** materialized in room-service. Returns the number of net-new accounts that would be added.
-8. `CountSubscriptions` — capacity check (`current + count > maxRoomSize → reject`)
+8. Capacity check — uses `room.UserCount` (already fetched at step 3, kept current by room-worker's `ReconcileUserCount`) so we avoid a separate count query: `room.UserCount + count > maxRoomSize → reject`
 9. Publish to `chat.room.canonical.{siteID}.member.add` with `Users = original ∪ channelAccounts`, `Orgs = original ∪ channelOrgs`, `Channels = original` (audit; not consumed downstream)
 10. Reply `{"status":"accepted"}`
 
@@ -175,11 +175,11 @@ New file: `room-service/memberlist_client.go`.
 
 ### Interface
 
-`requester` is the only free parameter; the channel itself is a `ChannelRef` so there's one argument per logical concept. `requester`, `ch.RoomID`, and `ch.SiteID` all end up in the subject — the JSON body carries only request-scoped flags (`Enrich`/`Limit`/`Offset`), none of which this client sets, so the wire body is `{}`.
+`requester` and `ch` route the request; `limit` caps the response size at the wire layer so a misconfigured or oversized remote room cannot exhaust caller memory. Callers pass `maxRoomSize+1` so an oversized source channel is rejected before its members are loaded into a slice. `ch.RoomID` and `ch.SiteID` end up in the subject; `limit` is forwarded via the `Limit` field of `ListRoomMembersRequest`.
 
 ```go
 type MemberListClient interface {
-    ListMembers(ctx context.Context, requester string, ch model.ChannelRef) ([]model.RoomMember, error)
+    ListMembers(ctx context.Context, requester string, ch model.ChannelRef, limit int) ([]model.RoomMember, error)
 }
 ```
 
@@ -195,9 +195,15 @@ func NewNATSMemberListClient(nc *nats.Conn, timeout time.Duration) MemberListCli
     return &natsMemberListClient{nc: nc, timeout: timeout}
 }
 
-func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string, ch model.ChannelRef) ([]model.RoomMember, error) {
-    // Body marshals to {}; requester, roomID, siteID travel in the subject.
-    body, err := json.Marshal(model.ListRoomMembersRequest{})
+func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string, ch model.ChannelRef, limit int) ([]model.RoomMember, error) {
+    // Forwards the cap to the remote so the response never exceeds it on the
+    // wire. Requester, roomID, siteID travel in the subject; only Limit goes
+    // in the body.
+    req := model.ListRoomMembersRequest{}
+    if limit > 0 {
+        req.Limit = &limit
+    }
+    body, err := json.Marshal(req)
     if err != nil {
         return nil, fmt.Errorf("marshal member.list body: %w", err)
     }

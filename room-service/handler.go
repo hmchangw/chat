@@ -444,13 +444,11 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 		return nil, fmt.Errorf("count new members: %w", err)
 	}
 
-	// 8. Capacity check
-	currentCount, err := h.store.CountSubscriptions(ctx, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("count subscriptions: %w", err)
-	}
-	if currentCount+newCount > h.maxRoomSize {
-		return nil, fmt.Errorf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, newCount, currentCount)
+	// 8. Capacity check — use room.UserCount (kept current by room-worker's
+	// ReconcileUserCount after each membership change) instead of issuing a
+	// separate CountSubscriptions query.
+	if room.UserCount+newCount > h.maxRoomSize {
+		return nil, fmt.Errorf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, newCount, room.UserCount)
 	}
 
 	// 9. Normalize and publish — Users and Orgs ship as merged-but-unresolved.
@@ -474,35 +472,38 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 }
 
 func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs []model.ChannelRef) (orgIDs, accounts []string, err error) {
+	// maxRoomSize+1 is enough to distinguish "fits" from "exceeds the cap" without
+	// ever materializing an unbounded result set in memory.
+	listLimit := h.maxRoomSize + 1
 	for _, ref := range refs {
 		var members []model.RoomMember
 
 		if ref.SiteID == h.siteID {
 			if _, subErr := h.store.GetSubscription(ctx, requester, ref.RoomID); subErr != nil {
 				if errors.Is(subErr, model.ErrSubscriptionNotFound) {
-					return nil, nil, errNotChannelMember
+					return nil, nil, errNotRoomMember
 				}
 				return nil, nil, fmt.Errorf("subscription check %s: %w", ref.RoomID, subErr)
 			}
-			members, err = h.store.ListRoomMembers(ctx, ref.RoomID, nil, nil, false)
+			members, err = h.store.ListRoomMembers(ctx, ref.RoomID, &listLimit, nil, false)
 			if err != nil {
 				return nil, nil, fmt.Errorf("local list-members %s: %w", ref.RoomID, err)
 			}
 		} else {
-			members, err = h.memberListClient.ListMembers(ctx, requester, ref)
+			members, err = h.memberListClient.ListMembers(ctx, requester, ref, listLimit)
 			if err != nil {
 				// Pass the sentinel through unwrapped so same-site and cross-site "not a member"
-				// produce identical behavior — errors.Is(err, errNotChannelMember) matches both.
-				if errors.Is(err, errNotChannelMember) {
-					return nil, nil, errNotChannelMember
+				// produce identical behavior — errors.Is(err, errNotRoomMember) matches both.
+				if errors.Is(err, errNotRoomMember) {
+					return nil, nil, errNotRoomMember
 				}
 				return nil, nil, fmt.Errorf("remote list-members %s@%s: %w", ref.RoomID, ref.SiteID, err)
 			}
 		}
 		// Apply the size cap uniformly to both same-site and cross-site results.
-		// A misbehaving remote could send arbitrarily many; a same-site source channel
-		// could also have grown beyond maxRoomSize. Either way the downstream capacity
-		// check would reject — short-circuit here so we don't process a giant slice.
+		// The listLimit above caps the response at maxRoomSize+1 so we never
+		// load more than that into memory; if we hit the cap, the source room
+		// is too large and the downstream capacity check would reject anyway.
 		if len(members) > h.maxRoomSize {
 			return nil, nil, fmt.Errorf("list-members %s@%s: response size %d exceeds max %d", ref.RoomID, ref.SiteID, len(members), h.maxRoomSize)
 		}

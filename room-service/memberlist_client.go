@@ -16,8 +16,12 @@ import (
 )
 
 // MemberListClient fetches room members from a remote site's member.list endpoint.
+// limit caps the response size at the wire layer so a misconfigured or oversized
+// remote room cannot exhaust the caller's memory; pass maxRoomSize+1 to detect
+// "source channel too large" without the local cap check ever seeing more than
+// that many members.
 type MemberListClient interface {
-	ListMembers(ctx context.Context, requester string, ch model.ChannelRef) ([]model.RoomMember, error)
+	ListMembers(ctx context.Context, requester string, ch model.ChannelRef, limit int) ([]model.RoomMember, error)
 }
 
 // natsMemberListClient is a NATS-backed implementation of MemberListClient.
@@ -34,8 +38,12 @@ func NewNATSMemberListClient(nc *nats.Conn, timeout time.Duration) *natsMemberLi
 }
 
 // ListMembers fetches members from a remote or same-site room via NATS request.
-func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string, ch model.ChannelRef) ([]model.RoomMember, error) {
-	body, err := json.Marshal(model.ListRoomMembersRequest{})
+func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string, ch model.ChannelRef, limit int) ([]model.RoomMember, error) {
+	req := model.ListRoomMembersRequest{}
+	if limit > 0 {
+		req.Limit = &limit
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal member.list body: %w", err)
 	}
@@ -55,12 +63,12 @@ func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string
 	}
 
 	if errResp, ok := natsutil.TryParseError(reply.Data); ok {
-		// Map remote "not a member" to the local sentinel so callers can use
-		// errors.Is(err, errNotChannelMember) uniformly regardless of which site
-		// the source channel lives on. Other remote errors are passed through
-		// verbatim via the "remote member.list:" prefix that sanitizeError whitelists.
+		// Map the remote sentinel string back onto the local sentinel so callers
+		// can use errors.Is(err, errNotRoomMember) uniformly regardless of which
+		// site the source channel lives on. Other remote errors are passed
+		// through via the "remote member.list:" prefix sanitizeError whitelists.
 		if errResp.Error == errNotRoomMember.Error() {
-			return nil, errNotChannelMember
+			return nil, errNotRoomMember
 		}
 		return nil, fmt.Errorf("remote member.list: %s", errResp.Error)
 	}

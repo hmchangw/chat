@@ -260,18 +260,6 @@ func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error
 	return int(count), nil
 }
 
-func (s *MongoStore) CountSubscriptions(ctx context.Context, roomID string) (int, error) {
-	filter := bson.M{
-		"roomId":    roomID,
-		"u.account": bson.M{"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""}},
-	}
-	count, err := s.subscriptions.CountDocuments(ctx, filter)
-	if err != nil {
-		return 0, fmt.Errorf("count subscriptions for room %q: %w", roomID, err)
-	}
-	return int(count), nil
-}
-
 func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error) {
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return 0, nil

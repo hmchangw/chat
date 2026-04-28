@@ -87,21 +87,6 @@ func (mr *MockRoomStoreMockRecorder) CountOwners(ctx, roomID any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountOwners", reflect.TypeOf((*MockRoomStore)(nil).CountOwners), ctx, roomID)
 }
 
-// CountSubscriptions mocks base method.
-func (m *MockRoomStore) CountSubscriptions(ctx context.Context, roomID string) (int, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CountSubscriptions", ctx, roomID)
-	ret0, _ := ret[0].(int)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// CountSubscriptions indicates an expected call of CountSubscriptions.
-func (mr *MockRoomStoreMockRecorder) CountSubscriptions(ctx, roomID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountSubscriptions", reflect.TypeOf((*MockRoomStore)(nil).CountSubscriptions), ctx, roomID)
-}
-
 // CreateRoom mocks base method.
 func (m *MockRoomStore) CreateRoom(ctx context.Context, room *model.Room) error {
 	m.ctrl.T.Helper()

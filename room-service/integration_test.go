@@ -243,47 +243,6 @@ func TestMongoStore_CountOwners_Integration(t *testing.T) {
 	}
 }
 
-func TestMongoStore_CountSubscriptions_Integration(t *testing.T) {
-	db := setupMongo(t)
-	store := NewMongoStore(db)
-	ctx := context.Background()
-
-	subs := []interface{}{
-		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
-		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
-		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "helper.bot"}, RoomID: "r1"},
-		model.Subscription{ID: "s4", User: model.SubscriptionUser{ID: "u4", Account: "p_webhook"}, RoomID: "r1"},
-		model.Subscription{ID: "s5", User: model.SubscriptionUser{ID: "u5", Account: "charlie"}, RoomID: "r2"},
-	}
-	if _, err := store.subscriptions.InsertMany(ctx, subs); err != nil {
-		t.Fatalf("seed subscriptions: %v", err)
-	}
-
-	count, err := store.CountSubscriptions(ctx, "r1")
-	if err != nil {
-		t.Fatalf("CountSubscriptions: %v", err)
-	}
-	if count != 2 {
-		t.Errorf("CountSubscriptions(r1) = %d, want 2", count)
-	}
-
-	count, err = store.CountSubscriptions(ctx, "r2")
-	if err != nil {
-		t.Fatalf("CountSubscriptions r2: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("CountSubscriptions(r2) = %d, want 1", count)
-	}
-
-	count, err = store.CountSubscriptions(ctx, "r999")
-	if err != nil {
-		t.Fatalf("CountSubscriptions r999: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("CountSubscriptions(r999) = %d, want 0", count)
-	}
-}
-
 func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -1016,7 +975,7 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 	require.NoError(t, err)
 	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errNotChannelMember))
+	assert.True(t, errors.Is(err, errNotRoomMember))
 }
 
 func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {

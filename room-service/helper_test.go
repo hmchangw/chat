@@ -110,15 +110,11 @@ func TestDedup_Empty(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestSanitizeError_NotChannelMember(t *testing.T) {
-	msg := sanitizeError(errNotChannelMember)
-	assert.Equal(t, "only channel members can use a channel as a source", msg)
-}
-
-func TestSanitizeError_NotChannelMember_WhenWrapped(t *testing.T) {
-	// Guards the errors.Is whitelist — wrapping must not lose the user-safe message.
-	wrapped := fmt.Errorf("expand channels: %w", errNotChannelMember)
-	assert.Equal(t, "only channel members can use a channel as a source", sanitizeError(wrapped))
+func TestSanitizeError_NotRoomMember_WhenWrapped(t *testing.T) {
+	// Guards the errors.Is whitelist — wrapping (e.g. by add-member's
+	// "expand channels: %w") must not lose the user-safe message.
+	wrapped := fmt.Errorf("expand channels: %w", errNotRoomMember)
+	assert.Equal(t, "only room members can list members", sanitizeError(wrapped))
 }
 
 func TestSanitizeError_RemoteMemberListPrefix(t *testing.T) {

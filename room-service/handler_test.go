@@ -909,13 +909,10 @@ func TestHandler_AddMembers_CapacityExceeded(t *testing.T) {
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
 	store.EXPECT().
 		GetRoom(gomock.Any(), "r1").
-		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel, UserCount: 8}, nil)
 	store.EXPECT().
 		CountNewMembers(gomock.Any(), gomock.Any(), []string{"u1", "u2", "u3", "u4", "u5"}, "r1").
 		Return(5, nil)
-	store.EXPECT().
-		CountSubscriptions(gomock.Any(), "r1").
-		Return(8, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10,
 		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
@@ -941,11 +938,10 @@ func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {
 		Roles: []model.Role{model.RoleOwner},
 	}, nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
-		ID: "r1", Type: model.RoomTypeChannel, Restricted: true,
+		ID: "r1", Type: model.RoomTypeChannel, Restricted: true, UserCount: 1,
 	}, nil)
 	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return(1, nil)
-	store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(1, nil)
 
 	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"bob"}}
 	reqData, _ := json.Marshal(req)
@@ -969,11 +965,10 @@ func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
 		Roles: []model.Role{model.RoleMember},
 	}, nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
-		ID: "r1", Type: model.RoomTypeChannel,
+		ID: "r1", Type: model.RoomTypeChannel, UserCount: 5,
 	}, nil)
 	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return(0, nil)
-	store.EXPECT().CountSubscriptions(gomock.Any(), "r1").Return(5, nil)
 
 	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"alice"}}
 	reqData, _ := json.Marshal(req)
@@ -994,7 +989,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-a"}
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "ch1").Return(&model.Subscription{}, nil)
-		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", nil, nil, false).Return([]model.RoomMember{
+		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", gomock.Any(), nil, false).Return([]model.RoomMember{
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "bob"}},
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "carol"}},
 		}, nil)
@@ -1014,7 +1009,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-a"}
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "ch1").Return(&model.Subscription{}, nil)
-		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", nil, nil, false).Return([]model.RoomMember{
+		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", gomock.Any(), nil, false).Return([]model.RoomMember{
 			{Member: model.RoomMemberEntry{ID: "org1", Type: model.RoomMemberOrg}},
 			{Member: model.RoomMemberEntry{ID: "org2", Type: model.RoomMemberOrg}},
 		}, nil)
@@ -1034,7 +1029,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-a"}
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "ch1").Return(&model.Subscription{}, nil)
-		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", nil, nil, false).Return([]model.RoomMember{
+		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", gomock.Any(), nil, false).Return([]model.RoomMember{
 			{Member: model.RoomMemberEntry{ID: "org1", Type: model.RoomMemberOrg}},
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "bob"}},
 		}, nil)
@@ -1053,7 +1048,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		mc := NewMockMemberListClient(ctrl)
 
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-eu"}
-		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch).Return([]model.RoomMember{
+		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch, gomock.Any()).Return([]model.RoomMember{
 			{Member: model.RoomMemberEntry{ID: "org1", Type: model.RoomMemberOrg}},
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "bob"}},
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "carol"}},
@@ -1076,10 +1071,10 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		remote := model.ChannelRef{RoomID: "ch-remote", SiteID: "site-eu"}
 
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "ch-local").Return(&model.Subscription{}, nil)
-		store.EXPECT().ListRoomMembers(gomock.Any(), "ch-local", nil, nil, false).Return([]model.RoomMember{
+		store.EXPECT().ListRoomMembers(gomock.Any(), "ch-local", gomock.Any(), nil, false).Return([]model.RoomMember{
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "local-user"}},
 		}, nil)
-		mc.EXPECT().ListMembers(gomock.Any(), "alice", remote).Return([]model.RoomMember{
+		mc.EXPECT().ListMembers(gomock.Any(), "alice", remote, gomock.Any()).Return([]model.RoomMember{
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "remote-user"}},
 		}, nil)
 
@@ -1102,7 +1097,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, errNotChannelMember))
+		assert.True(t, errors.Is(err, errNotRoomMember))
 	})
 
 	t.Run("same-site GetSubscription generic error", func(t *testing.T) {
@@ -1127,7 +1122,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-a"}
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "ch1").Return(&model.Subscription{}, nil)
-		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", nil, nil, false).Return(nil, errors.New("mongo timeout"))
+		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", gomock.Any(), nil, false).Return(nil, errors.New("mongo timeout"))
 
 		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
@@ -1142,7 +1137,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		mc := NewMockMemberListClient(ctrl)
 
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-eu"}
-		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch).Return(nil, errors.New("nats: timeout"))
+		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch, gomock.Any()).Return(nil, errors.New("nats: timeout"))
 
 		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
@@ -1157,16 +1152,16 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		mc := NewMockMemberListClient(ctrl)
 
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-eu"}
-		// Client already mapped the remote errNotRoomMember to errNotChannelMember; expandChannelRefs
-		// must pass it through unwrapped (parallel to the same-site branch) so errors.Is matches
-		// the sentinel for both paths.
-		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch).Return(nil, errNotChannelMember)
+		// Client already mapped the remote sentinel string back onto errNotRoomMember;
+		// expandChannelRefs must pass it through unwrapped (parallel to the same-site
+		// branch) so errors.Is matches the sentinel for both paths.
+		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch, gomock.Any()).Return(nil, errNotRoomMember)
 
 		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, errNotChannelMember))
+		assert.True(t, errors.Is(err, errNotRoomMember))
 		assert.NotContains(t, err.Error(), "remote list-members")
 	})
 
@@ -1182,7 +1177,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		for i := range oversized {
 			oversized[i] = model.RoomMember{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "u"}}
 		}
-		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch).Return(oversized, nil)
+		mc.EXPECT().ListMembers(gomock.Any(), "alice", ch, gomock.Any()).Return(oversized, nil)
 
 		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 5, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
@@ -1199,7 +1194,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		ref1 := model.ChannelRef{RoomID: "ch1", SiteID: "site-eu"}
 		ref2 := model.ChannelRef{RoomID: "ch2", SiteID: "site-eu"}
 
-		mc.EXPECT().ListMembers(gomock.Any(), "alice", ref1).Return(nil, errors.New("nats: timeout"))
+		mc.EXPECT().ListMembers(gomock.Any(), "alice", ref1, gomock.Any()).Return(nil, errors.New("nats: timeout"))
 
 		h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc}
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ref1, ref2})
@@ -1227,7 +1222,7 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 
 		ch := model.ChannelRef{RoomID: "ch1", SiteID: "site-a"}
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "ch1").Return(&model.Subscription{}, nil)
-		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", nil, nil, false).Return([]model.RoomMember{
+		store.EXPECT().ListRoomMembers(gomock.Any(), "ch1", gomock.Any(), nil, false).Return([]model.RoomMember{
 			{Member: model.RoomMemberEntry{ID: "unknown", Type: ""}},
 			{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "bob"}},
 		}, nil)

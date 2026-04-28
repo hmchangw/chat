@@ -52,7 +52,7 @@ func TestNATSMemberListClient_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	got, err := client.ListMembers(context.Background(), requester, ch)
+	got, err := client.ListMembers(context.Background(), requester, ch, 0)
 	require.NoError(t, err)
 	assert.Equal(t, members, got)
 }
@@ -73,11 +73,11 @@ func TestNATSMemberListClient_RemoteError(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	_, err = client.ListMembers(context.Background(), requester, ch)
+	_, err = client.ListMembers(context.Background(), requester, ch, 0)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "remote member.list:")
 	assert.Contains(t, err.Error(), "room not found")
-	assert.False(t, errors.Is(err, errNotChannelMember), "generic remote errors must not masquerade as the sentinel")
+	assert.False(t, errors.Is(err, errNotRoomMember), "generic remote errors must not masquerade as the sentinel")
 }
 
 func TestNATSMemberListClient_RemoteNotMember_MapsToSentinel(t *testing.T) {
@@ -87,8 +87,9 @@ func TestNATSMemberListClient_RemoteNotMember_MapsToSentinel(t *testing.T) {
 	ch := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
 	requester := "alice"
 
-	// Remote site returns errNotRoomMember's exact message — must map to the local
-	// errNotChannelMember sentinel so cross-site and same-site behavior are uniform.
+	// Remote site returns errNotRoomMember's exact message — the client must map
+	// it back onto the local errNotRoomMember sentinel so cross-site and
+	// same-site "not a member" behave uniformly under errors.Is.
 	sub, err := nc.Subscribe(subject.MemberList(requester, ch.RoomID, ch.SiteID), func(m *nats.Msg) {
 		data := natsutil.MarshalError(errNotRoomMember.Error())
 		_ = m.Respond(data)
@@ -96,9 +97,9 @@ func TestNATSMemberListClient_RemoteNotMember_MapsToSentinel(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	_, err = client.ListMembers(context.Background(), requester, ch)
+	_, err = client.ListMembers(context.Background(), requester, ch, 0)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errNotChannelMember))
+	assert.True(t, errors.Is(err, errNotRoomMember))
 }
 
 func TestNATSMemberListClient_InvalidJSONReply(t *testing.T) {
@@ -114,7 +115,7 @@ func TestNATSMemberListClient_InvalidJSONReply(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	_, err = client.ListMembers(context.Background(), requester, ch)
+	_, err = client.ListMembers(context.Background(), requester, ch, 0)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unmarshal member.list reply")
 }
@@ -134,7 +135,7 @@ func TestNATSMemberListClient_Timeout(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	_, err = client.ListMembers(context.Background(), requester, ch)
+	_, err = client.ListMembers(context.Background(), requester, ch, 0)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected deadline exceeded, got %v", err)
 	assert.Contains(t, err.Error(), "member.list request to site-us")
@@ -160,12 +161,37 @@ func TestNATSMemberListClient_BodyShape(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	_, err = client.ListMembers(context.Background(), requester, ch)
+	_, err = client.ListMembers(context.Background(), requester, ch, 0)
 	require.NoError(t, err)
 	received := <-bodyCh
 	assert.Nil(t, received.Limit)
 	assert.Nil(t, received.Offset)
 	assert.False(t, received.Enrich)
+}
+
+func TestNATSMemberListClient_LimitPropagated(t *testing.T) {
+	nc := startInProcessNATS(t)
+	client := NewNATSMemberListClient(nc, 2*time.Second)
+
+	ch := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
+	requester := "alice"
+
+	bodyCh := make(chan model.ListRoomMembersRequest, 1)
+	sub, err := nc.Subscribe(subject.MemberList(requester, ch.RoomID, ch.SiteID), func(m *nats.Msg) {
+		var parsed model.ListRoomMembersRequest
+		_ = json.Unmarshal(m.Data, &parsed)
+		bodyCh <- parsed
+		data, _ := json.Marshal(model.ListRoomMembersResponse{})
+		_ = m.Respond(data)
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	_, err = client.ListMembers(context.Background(), requester, ch, 250)
+	require.NoError(t, err)
+	received := <-bodyCh
+	require.NotNil(t, received.Limit, "limit must be forwarded to the remote so it can cap the response at the wire layer")
+	assert.Equal(t, 250, *received.Limit)
 }
 
 func TestNATSMemberListClient_SubjectCorrectness(t *testing.T) {
@@ -185,7 +211,7 @@ func TestNATSMemberListClient_SubjectCorrectness(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	_, err = client.ListMembers(context.Background(), requester, ch)
+	_, err = client.ListMembers(context.Background(), requester, ch, 0)
 	require.NoError(t, err)
 	assert.Equal(t, expectedSubj, <-subjCh)
 }
@@ -199,7 +225,7 @@ func TestNATSMemberListClient_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := client.ListMembers(ctx, "alice", ch)
+	_, err := client.ListMembers(ctx, "alice", ch, 0)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, context.Canceled), "expected context.Canceled, got %v", err)
 	assert.Contains(t, err.Error(), "member.list request to site-us")
