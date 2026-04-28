@@ -37,7 +37,7 @@ func unreadThreadsPipeline(roomID, userAccount string, accessSince *time.Time) b
 	return bson.A{
 		bson.D{{Key: "$match", Value: match}},
 		bson.D{{Key: "$lookup", Value: bson.M{
-			"from": "threadSubscriptions",
+			"from": "thread_subscriptions",
 			"let":  bson.M{"tr": "$_id"},
 			"pipeline": bson.A{
 				bson.D{{Key: "$match", Value: bson.M{
@@ -48,6 +48,7 @@ func unreadThreadsPipeline(roomID, userAccount string, accessSince *time.Time) b
 			},
 			"as": "sub",
 		}}},
+		// {$ne: []} — $lookup sets "sub" to [] when no subscription matched; non-empty means subscribed.
 		bson.D{{Key: "$match", Value: bson.M{"sub": bson.M{"$ne": bson.A{}}}}},
 		// null is the smallest BSON value, so $gt:[lastMsgAt, null] is true for any
 		// non-null lastMsgAt — threads with nil lastSeenAt (never seen) are included.

@@ -22,7 +22,7 @@ func insertThreadRoom(t *testing.T, db *mongo.Database, tr model.ThreadRoom) {
 
 func insertThreadSubscription(t *testing.T, db *mongo.Database, ts model.ThreadSubscription) {
 	t.Helper()
-	_, err := db.Collection("threadSubscriptions").InsertOne(context.Background(), ts)
+	_, err := db.Collection("thread_subscriptions").InsertOne(context.Background(), ts)
 	require.NoError(t, err)
 }
 

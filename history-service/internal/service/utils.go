@@ -64,12 +64,17 @@ func redactUnavailableQuote(m *models.Message, accessSince *time.Time) {
 	if m == nil || accessSince == nil {
 		return
 	}
-	tmp := []models.Message{*m}
-	redactUnavailableQuotes(tmp, accessSince)
-	*m = tmp[0]
+	q := m.QuotedParentMessage
+	if q == nil {
+		return
+	}
+	tshowParentInaccessible := m.TShow && q.ThreadParentID != "" && q.ThreadParentCreatedAt != nil && q.ThreadParentCreatedAt.Before(*accessSince)
+	legacyTShowMissingParentTime := m.TShow && q.ThreadParentID != "" && q.ThreadParentCreatedAt == nil
+	if q.CreatedAt.Before(*accessSince) || tshowParentInaccessible || legacyTShowMissingParentTime {
+		m.QuotedParentMessage = &models.QuotedParentMessage{Msg: UnavailableQuoteMsg}
+	}
 }
 
-// For TShow replies, inaccessibility uses ThreadParentCreatedAt embedded at write time by message-worker.
 func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
 	if accessSince == nil {
 		return

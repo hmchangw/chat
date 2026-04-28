@@ -25,7 +25,7 @@ type ThreadRoomRepo struct {
 func NewThreadRoomRepo(db *mongo.Database) *ThreadRoomRepo {
 	return &ThreadRoomRepo{
 		threadRooms:         NewCollection[model.ThreadRoom](db.Collection(threadRoomsCollection)),
-		threadSubscriptions: db.Collection("threadSubscriptions"),
+		threadSubscriptions: db.Collection("thread_subscriptions"),
 	}
 }
 
@@ -59,7 +59,7 @@ func (r *ThreadRoomRepo) EnsureIndexes(ctx context.Context) error {
 		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userAccount", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return fmt.Errorf("ensure threadSubscriptions (threadRoomId,userAccount) index: %w", err)
+		return fmt.Errorf("ensure thread_subscriptions (threadRoomId,userAccount) index: %w", err)
 	}
 	return nil
 }

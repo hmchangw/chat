@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   room_id TEXT,
   created_at TIMESTAMP,
   message_id TEXT,
-  thread_room_id TEXT, // todo in future, value will come from threadRooms collection, currently it hold a value "N/A"
+  thread_room_id TEXT,
   sender FROZEN<"Participant">,
   target_user FROZEN<"Participant">,
   msg TEXT,
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
 ```cql
 CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   room_id TEXT,
-  thread_room_id TEXT, // todo in future, value will come from threadRooms collection, currently it hold a value "N/A"
+  thread_room_id TEXT,
   created_at TIMESTAMP,
   message_id TEXT,
   thread_parent_id TEXT,
@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
 CREATE TABLE IF NOT EXISTS messages_by_id(
   message_id TEXT,
   room_id TEXT,
-  thread_room_id TEXT, // todo in future, value will come from threadRooms collection, currently it hold a value "N/A"
+  thread_room_id TEXT,
   sender FROZEN<"Participant">,
   target_user FROZEN<"Participant">,
   msg TEXT,

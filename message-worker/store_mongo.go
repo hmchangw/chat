@@ -29,7 +29,7 @@ var _ ThreadStore = (*threadStoreMongo)(nil)
 func newThreadStoreMongo(db *mongo.Database) *threadStoreMongo {
 	return &threadStoreMongo{
 		threadRooms:         db.Collection("thread_rooms"),
-		threadSubscriptions: db.Collection("threadSubscriptions"),
+		threadSubscriptions: db.Collection("thread_subscriptions"),
 	}
 }
 
@@ -51,7 +51,7 @@ func (s *threadStoreMongo) EnsureIndexes(ctx context.Context) error {
 		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userAccount", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return fmt.Errorf("ensure threadSubscriptions (threadRoomId,userAccount) index: %w", err)
+		return fmt.Errorf("ensure thread_subscriptions (threadRoomId,userAccount) index: %w", err)
 	}
 
 	return nil
