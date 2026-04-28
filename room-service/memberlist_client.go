@@ -20,6 +20,7 @@ type MemberListClient interface {
 	ListMembers(ctx context.Context, requester string, ch model.ChannelRef) ([]model.RoomMember, error)
 }
 
+// natsMemberListClient is a NATS-backed implementation of MemberListClient.
 type natsMemberListClient struct {
 	nc      *nats.Conn
 	timeout time.Duration
@@ -32,6 +33,7 @@ func NewNATSMemberListClient(nc *nats.Conn, timeout time.Duration) *natsMemberLi
 	return &natsMemberListClient{nc: nc, timeout: timeout}
 }
 
+// ListMembers fetches members from a remote or same-site room via NATS request.
 func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string, ch model.ChannelRef) ([]model.RoomMember, error) {
 	body, err := json.Marshal(model.ListRoomMembersRequest{})
 	if err != nil {

@@ -27,6 +27,7 @@ type ChannelRef struct {
 	SiteID string `json:"siteId" bson:"siteId"`
 }
 
+// AddMembersRequest is the event published by room-service when a user requests to add members to a room.
 type AddMembersRequest struct {
 	RoomID           string        `json:"roomId"           bson:"roomId"`
 	Users            []string      `json:"users"            bson:"users"`
@@ -85,6 +86,7 @@ type MemberRemoved struct {
 	RemovedUsersCount int         `json:"removedUsersCount"`
 }
 
+// MembersAdded describes the members that were added to a room, including individuals, organizations, and channel sources.
 type MembersAdded struct {
 	Individuals     []string     `json:"individuals"`
 	Orgs            []string     `json:"orgs"`
