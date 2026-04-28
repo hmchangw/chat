@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -62,20 +63,23 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 		return fmt.Errorf("update messages_by_id: %w", err)
 	}
 
-	if msg.ThreadParentID == "" {
+	switch {
+	case msg.ThreadParentID == "":
 		if err := r.session.Query(
 			`UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
 			newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("update messages_by_room: %w", err)
 		}
-	} else {
+	case msg.ThreadRoomID != "":
 		if err := r.session.Query(
 			`UPDATE thread_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
 			newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("update thread_messages_by_room: %w", err)
 		}
+	default:
+		slog.Warn("skipping thread_messages_by_room edit: ThreadRoomID not set", "messageID", msg.MessageID)
 	}
 
 	if msg.PinnedAt != nil {
@@ -118,20 +122,23 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		return existing, false, nil
 	}
 
-	if msg.ThreadParentID == "" {
+	switch {
+	case msg.ThreadParentID == "":
 		if err := r.session.Query(
 			`UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
 			deletedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
 		).WithContext(ctx).Exec(); err != nil {
 			return time.Time{}, false, fmt.Errorf("update messages_by_room: %w", err)
 		}
-	} else {
+	case msg.ThreadRoomID != "":
 		if err := r.session.Query(
 			`UPDATE thread_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
 			deletedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
 		).WithContext(ctx).Exec(); err != nil {
 			return time.Time{}, false, fmt.Errorf("update thread_messages_by_room: %w", err)
 		}
+	default:
+		slog.Warn("skipping thread_messages_by_room delete: ThreadRoomID not set", "messageID", msg.MessageID)
 	}
 
 	if msg.PinnedAt != nil {
