@@ -55,7 +55,6 @@ func (r *Repository) GetMessagesByIDs(ctx context.Context, messageIDs []string) 
 }
 
 func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	// Always: messages_by_id
 	if err := r.session.Query(
 		`UPDATE messages_by_id SET msg = ?, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`,
 		newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
@@ -63,7 +62,6 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 		return fmt.Errorf("update messages_by_id: %w", err)
 	}
 
-	// Top-level vs thread-reply: mutually exclusive.
 	if msg.ThreadParentID == "" {
 		if err := r.session.Query(
 			`UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
@@ -80,7 +78,6 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 		}
 	}
 
-	// Pinned mirror — additive to either of the above.
 	if msg.PinnedAt != nil {
 		if err := r.session.Query(
 			`UPDATE pinned_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
@@ -97,7 +94,6 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 // the winning goroutine runs mirror-table updates and tcount decrement, preventing double-decrement.
 // `IF deleted != true` matches NULL (message-worker never writes deleted) and false, excluding true.
 func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (time.Time, bool, error) {
-	// Step 1 — CAS gate on messages_by_id.
 	var current bool
 	applied, err := r.session.Query(
 		`UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`,
@@ -122,7 +118,6 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		return existing, false, nil
 	}
 
-	// Step 2 — top-level vs thread-reply mirror update (mutually exclusive).
 	if msg.ThreadParentID == "" {
 		if err := r.session.Query(
 			`UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
@@ -139,7 +134,6 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		}
 	}
 
-	// Step 3 — pinned mirror, additive.
 	if msg.PinnedAt != nil {
 		if err := r.session.Query(
 			`UPDATE pinned_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
@@ -149,7 +143,6 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		}
 	}
 
-	// Step 4 — tcount decrement on the parent for thread-reply deletes.
 	if msg.ThreadParentID != "" {
 		if err := r.decrementParentTcount(ctx, msg); err != nil {
 			return time.Time{}, false, fmt.Errorf("decrement parent tcount: %w", err)

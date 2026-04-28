@@ -124,6 +124,9 @@ func timeMax(a, b time.Time) time.Time {
 // The helper treats an empty account on either side as unauthorized to avoid
 // matching messages with missing sender data.
 func canModify(msg *models.Message, account string) bool {
+	if msg == nil {
+		return false
+	}
 	if account == "" {
 		return false
 	}

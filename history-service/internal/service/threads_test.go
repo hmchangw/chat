@@ -662,4 +662,6 @@ func TestHistoryService_GetThreadParentMessages_PostHydrationAccessCheck(t *test
 	require.NoError(t, err)
 	// The parent pre-dates accessSince — must be filtered out even though MongoDB passed it.
 	assert.Empty(t, resp.ParentMessages)
+	// Total reflects MongoDB's pre-hydration count, not the post-filter result.
+	assert.Equal(t, int64(1), resp.Total)
 }
