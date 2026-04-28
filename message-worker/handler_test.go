@@ -993,7 +993,8 @@ func TestHandler_ProcessMessage_Quote(t *testing.T) {
 		QuotedParentMessage: snapshot,
 	}
 	quotedEvt := model.MessageEvent{Message: quotedMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
-	quotedData, _ := json.Marshal(quotedEvt)
+	quotedData, err := json.Marshal(quotedEvt)
+	require.NoError(t, err)
 
 	t.Run("quote snapshot reaches SaveMessage unchanged", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
