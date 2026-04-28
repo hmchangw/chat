@@ -3,10 +3,11 @@
 ## Summary
 
 Add a `RoomType` field to `model.Subscription` so that every subscription record
-carries the kind of room it belongs to. Align the `RoomType` enum with the
-product's current room taxonomy: `dm`, `channel`, `botDM`, `discussion`.
-Remove the legacy `RoomTypeGroup = "group"` constant and replace every
-call site with `RoomTypeChannel`.
+carries the kind of room it belongs to. Add the new `RoomTypeBotDM` and
+`RoomTypeDiscussion` constants to align the `RoomType` enum with the product's
+current taxonomy: `dm`, `channel`, `botDM`, `discussion`. The legacy
+`RoomTypeGroup = "group"` constant was already removed by PR #118 — this change
+does not redo that work.
 
 ## Motivation
 
@@ -21,13 +22,13 @@ product's current naming.
 
 ### In scope
 
-1. `pkg/model/room.go` — enum changes.
-2. `pkg/model/subscription.go` — new field.
+1. `pkg/model/room.go` — add `RoomTypeBotDM` and `RoomTypeDiscussion` constants.
+2. `pkg/model/subscription.go` — new `RoomType` field.
 3. All production code that creates a `model.Subscription` — populate the new
    field.
-4. All production code and tests that reference `model.RoomTypeGroup` — rename
-   to `model.RoomTypeChannel`.
-5. Unit and integration tests updated accordingly.
+4. The two `room-worker` "removed" event payloads — populate the new field on
+   the partial `Subscription` literal carried by `SubscriptionUpdateEvent`.
+5. Unit tests updated accordingly.
 
 ### Out of scope
 
@@ -51,9 +52,9 @@ const (
 )
 ```
 
-- Remove `RoomTypeGroup`.
 - Add `RoomTypeBotDM` and `RoomTypeDiscussion`.
-- `RoomTypeChannel` and `RoomTypeDM` are unchanged.
+- `RoomTypeChannel` and `RoomTypeDM` are unchanged. `RoomTypeGroup` was already
+  removed by PR #118.
 
 ### 2. `pkg/model/subscription.go`
 
@@ -141,10 +142,15 @@ Following the repository's TDD rules: write failing tests, then implement.
 
 ## Commit strategy
 
-A single commit on branch `claude/add-roomtype-subscription-Uqow3` covering
-the model change, all call-site updates, renames, and tests. The rename is
-atomic — splitting across commits would leave the tree unbuildable between
-commits.
+Five commits on branch `claude/add-roomtype-subscription-Uqow3`, each leaving
+the tree green:
+
+1. Spec doc.
+2. `pkg/model`: add the new constants and the `RoomType` field, plus model tests.
+3. `room-service`: populate `RoomType` on the CreateRoom owner subscription.
+4. `room-worker`: populate `RoomType` on `processAddMembers`,
+   `processRemoveIndividual`, and `processRemoveOrg`.
+5. `inbox-worker`: populate `RoomType` on the cross-site `member_added` handler.
 
 ## Risks
 
