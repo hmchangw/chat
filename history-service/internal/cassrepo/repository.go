@@ -268,56 +268,86 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 // message's tcount via lightweight transactions. See the delete spec for the
 // table-membership + tcount semantics.
 //
-// Order: (1) the `deleted = true` UPDATEs on all applicable tables, (2) the
-// tcount decrement on parent tables when the target is a thread reply. On
-// partial failure between the two phases, tcount can drift by one — this is
-// documented and matches the existing worker-side increment drift model.
-// Idempotent with respect to the `deleted` column; `updated_at` advances per
-// call.
-func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
-	// Always: messages_by_id
-	if err := r.session.Query(
-		`UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ?`,
+// The messages_by_id UPDATE is a Cassandra LWT (`IF deleted != true`) used as
+// a one-shot gate: only the goroutine that flips deleted to true runs the
+// mirror-table UPDATEs and the parent-tcount decrement. A concurrent second
+// delete observes applied=false and returns without performing the side
+// effects, preventing tcount double-decrement on the parent.
+//
+// `IF deleted != true` matches both NULL (the value at INSERT time —
+// message-worker doesn't write deleted) and false, while excluding true.
+//
+// Returns:
+//   - actualDeletedAt: the timestamp now in messages_by_id.updated_at. When
+//     applied, equals deletedAt; when a concurrent delete won, equals the
+//     value the winning goroutine wrote (read back via SELECT).
+//   - applied: true if this call performed the soft-delete (and ran the
+//     mirror-table + tcount work). false if the LWT did not apply.
+//   - err: a real Cassandra error.
+//
+// Partial failure between the LWT and the tcount decrement can still drift
+// tcount by one — same model as the worker-side increment drift.
+func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (time.Time, bool, error) {
+	// Step 1 — CAS gate on messages_by_id.
+	var current bool
+	applied, err := r.session.Query(
+		`UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`,
 		deletedAt, msg.MessageID, msg.CreatedAt,
-	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("update messages_by_id: %w", err)
+	).WithContext(ctx).ScanCAS(&current)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("cas update messages_by_id: %w", err)
+	}
+	if !applied {
+		// Concurrent delete won. Read the existing updated_at so the caller
+		// can return an accurate response timestamp.
+		var existing time.Time
+		if err := r.session.Query(
+			`SELECT updated_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			msg.MessageID, msg.CreatedAt,
+		).WithContext(ctx).Scan(&existing); err != nil {
+			if errors.Is(err, gocql.ErrNotFound) {
+				return time.Time{}, false, nil
+			}
+			return time.Time{}, false, fmt.Errorf("read updated_at after cas miss: %w", err)
+		}
+		return existing, false, nil
 	}
 
-	// Top-level vs thread-reply: mutually exclusive.
+	// Step 2 — top-level vs thread-reply mirror update (mutually exclusive).
 	if msg.ThreadParentID == "" {
 		if err := r.session.Query(
 			`UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
 			deletedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
 		).WithContext(ctx).Exec(); err != nil {
-			return fmt.Errorf("update messages_by_room: %w", err)
+			return time.Time{}, false, fmt.Errorf("update messages_by_room: %w", err)
 		}
 	} else {
 		if err := r.session.Query(
 			`UPDATE thread_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
 			deletedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
 		).WithContext(ctx).Exec(); err != nil {
-			return fmt.Errorf("update thread_messages_by_room: %w", err)
+			return time.Time{}, false, fmt.Errorf("update thread_messages_by_room: %w", err)
 		}
 	}
 
-	// Pinned mirror — additive to either of the above.
+	// Step 3 — pinned mirror, additive.
 	if msg.PinnedAt != nil {
 		if err := r.session.Query(
 			`UPDATE pinned_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
 			deletedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
 		).WithContext(ctx).Exec(); err != nil {
-			return fmt.Errorf("update pinned_messages_by_room: %w", err)
+			return time.Time{}, false, fmt.Errorf("update pinned_messages_by_room: %w", err)
 		}
 	}
 
-	// tcount decrement on parent for thread-reply deletes.
+	// Step 4 — tcount decrement on the parent for thread-reply deletes.
 	if msg.ThreadParentID != "" {
 		if err := r.decrementParentTcount(ctx, msg); err != nil {
-			return fmt.Errorf("decrement parent tcount: %w", err)
+			return time.Time{}, false, fmt.Errorf("decrement parent tcount: %w", err)
 		}
 	}
 
-	return nil
+	return deletedAt, true, nil
 }
 
 // decrementParentTcount decrements tcount on the parent message row in both

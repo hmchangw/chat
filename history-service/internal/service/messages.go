@@ -222,6 +222,14 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, req models.EditMessa
 		return nil, err
 	}
 
+	// A soft-deleted message must not be editable — that would emit a
+	// message_edited event after message_deleted, which downstream consumers
+	// can't reconcile. Same ErrNotFound as wrong-room to keep the leak
+	// surface symmetric.
+	if msg.Deleted {
+		return nil, natsrouter.ErrNotFound("message not found")
+	}
+
 	// 3. Sender gate.
 	if !canModify(msg, account) {
 		return nil, natsrouter.ErrForbidden("only the sender can edit")
@@ -307,15 +315,27 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, req models.DeleteM
 		}, nil
 	}
 
-	// 5. Persist.
+	// 5. Persist via LWT. The repo's CAS gates the mirror-table UPDATEs and
+	// parent-tcount decrement so two concurrent deletes can't double-decrement
+	// the parent.
 	deletedAt := time.Now().UTC()
-	if err := s.messages.SoftDeleteMessage(c, msg, deletedAt); err != nil {
+	actualDeletedAt, applied, err := s.messages.SoftDeleteMessage(c, msg, deletedAt)
+	if err != nil {
 		slog.Error("delete: soft-delete", "error", err, "messageID", req.MessageID)
 		return nil, natsrouter.ErrInternal("failed to delete message")
 	}
+	if !applied {
+		// A concurrent delete won the CAS. Skip the publish — the winning
+		// goroutine has emitted (or will emit) the message_deleted event —
+		// and return the timestamp actually persisted.
+		return &models.DeleteMessageResponse{
+			MessageID: req.MessageID,
+			DeletedAt: actualDeletedAt.UnixMilli(),
+		}, nil
+	}
 
 	// 6. Publish live event (best-effort).
-	deletedAtMs := deletedAt.UnixMilli()
+	deletedAtMs := actualDeletedAt.UnixMilli()
 	evt := models.MessageDeletedEvent{
 		Type:      "message_deleted",
 		Timestamp: deletedAtMs,

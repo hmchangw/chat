@@ -622,7 +622,9 @@ func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
 		ThreadParentID: "",
 	}
 	deletedAt := createdAt.Add(time.Minute)
-	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, deletedAt))
+	_, applied, err := repo.SoftDeleteMessage(ctx, msg, deletedAt)
+	require.NoError(t, err)
+	require.True(t, applied, "first delete should apply")
 
 	// messages_by_id: deleted = true, msg retained, updated_at advanced
 	var gotDeleted bool
@@ -699,7 +701,9 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 		ThreadRoomID:          threadRoomID,
 	}
 	deletedAt := replyCreatedAt.Add(time.Minute)
-	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, deletedAt))
+	_, applied, err := repo.SoftDeleteMessage(ctx, msg, deletedAt)
+	require.NoError(t, err)
+	require.True(t, applied, "first delete should apply")
 
 	// messages_by_id: reply now deleted
 	var gotDeleted bool
@@ -767,7 +771,9 @@ func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
 		PinnedAt:       &pinnedAt,
 	}
 	deletedAt := createdAt.Add(time.Minute)
-	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, deletedAt))
+	_, applied, err := repo.SoftDeleteMessage(ctx, msg, deletedAt)
+	require.NoError(t, err)
+	require.True(t, applied, "first delete should apply")
 
 	// All three tables should reflect deleted = true
 	var gotDeleted bool
@@ -834,7 +840,9 @@ func TestRepository_SoftDeleteMessage_DecrementsParentTcount(t *testing.T) {
 		ThreadParentCreatedAt: &parentCreatedAtPtr,
 		ThreadRoomID:          threadRoomID,
 	}
-	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, replyCreatedAt.Add(time.Minute)))
+	_, applied, err := repo.SoftDeleteMessage(ctx, msg, replyCreatedAt.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, applied, "first delete should apply")
 
 	// Both tables' tcount should now be 2.
 	var gotTcount int
@@ -878,7 +886,9 @@ func TestRepository_SoftDeleteMessage_TopLevelDoesNotTouchTcount(t *testing.T) {
 		Sender:         sender,
 		ThreadParentID: "",
 	}
-	require.NoError(t, repo.SoftDeleteMessage(ctx, msg, createdAt.Add(time.Minute)))
+	_, applied, err := repo.SoftDeleteMessage(ctx, msg, createdAt.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, applied, "first delete should apply")
 
 	// tcount stays at 5 — top-level delete does not cascade / decrement (spec §8.2).
 	var gotTcount int
@@ -887,4 +897,99 @@ func TestRepository_SoftDeleteMessage_TopLevelDoesNotTouchTcount(t *testing.T) {
 		roomID, createdAt, msgID,
 	).Scan(&gotTcount))
 	assert.Equal(t, 5, gotTcount, "top-level soft-delete must not touch tcount — replies are preserved (no cascade)")
+}
+
+// TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement covers the
+// concurrent-delete race: a thread reply that's already been soft-deleted
+// must not have its parent's tcount decremented again on a second delete.
+// This is the load-bearing test for the IF deleted != true CAS gate.
+func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-lwt"
+	threadRoomID := "thread-lwt-1"
+	parentID := "m-lwt-parent"
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyID := "m-lwt-reply"
+	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
+
+	// Seed parent with tcount = 1 (one reply).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, deleted, tcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		parentID, roomID, parentCreatedAt, sender, "parent", "", false, 1,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, thread_parent_id, deleted, tcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, parentCreatedAt, parentID, sender, "parent", "", false, 1,
+	).Exec())
+
+	// Seed the reply in both messages_by_id and thread_messages_by_room.
+	// Note: message-worker doesn't write `deleted` at INSERT time, so deleted
+	// will be NULL on a real reply row. We mirror that here by NOT setting
+	// `deleted` in the INSERT — this also exercises the IF deleted != true
+	// branch that must match NULL.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_parent_created_at, thread_room_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		replyID, roomID, replyCreatedAt, sender, "reply", parentID, parentCreatedAt, threadRoomID,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID, parentCreatedAt,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:             replyID,
+		RoomID:                roomID,
+		CreatedAt:             replyCreatedAt,
+		Sender:                sender,
+		ThreadParentID:        parentID,
+		ThreadParentCreatedAt: &parentCreatedAt,
+		ThreadRoomID:          threadRoomID,
+	}
+
+	// First delete: LWT applies (deleted was NULL → matches != true).
+	firstAt := replyCreatedAt.Add(time.Minute)
+	gotAt1, applied1, err := repo.SoftDeleteMessage(ctx, msg, firstAt)
+	require.NoError(t, err)
+	require.True(t, applied1, "first delete must apply (deleted was NULL)")
+	assert.Equal(t, firstAt.UnixMilli(), gotAt1.UnixMilli())
+
+	// Confirm tcount went 1 -> 0 on both parent rows.
+	var tcount int
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		parentID, parentCreatedAt,
+	).Scan(&tcount))
+	assert.Equal(t, 0, tcount, "first delete should have decremented messages_by_id.tcount")
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, parentCreatedAt, parentID,
+	).Scan(&tcount))
+	assert.Equal(t, 0, tcount, "first delete should have decremented messages_by_room.tcount")
+
+	// Second delete on the same reply: LWT must NOT apply (deleted is now
+	// true), and tcount must NOT be decremented a second time. Pass the same
+	// hydrated msg (Deleted=false) to simulate a stale read; the repo's CAS
+	// is authoritative.
+	secondAt := firstAt.Add(time.Second)
+	gotAt2, applied2, err := repo.SoftDeleteMessage(ctx, msg, secondAt)
+	require.NoError(t, err)
+	require.False(t, applied2, "second delete must NOT apply — deleted is already true")
+	assert.Equal(t, firstAt.UnixMilli(), gotAt2.UnixMilli(), "actualDeletedAt should reflect the winning goroutine's timestamp")
+
+	// tcount must still be 0 (not -1 / not double-decremented). casDecrement
+	// also clamps at zero, but the LWT gate is the proper defense.
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		parentID, parentCreatedAt,
+	).Scan(&tcount))
+	assert.Equal(t, 0, tcount, "second delete must not double-decrement messages_by_id.tcount")
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, parentCreatedAt, parentID,
+	).Scan(&tcount))
+	assert.Equal(t, 0, tcount, "second delete must not double-decrement messages_by_room.tcount")
 }

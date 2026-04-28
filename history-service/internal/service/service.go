@@ -20,7 +20,11 @@ type MessageRepository interface {
 	GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
 	UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error
-	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error
+	// SoftDeleteMessage performs a Cassandra LWT on messages_by_id and only
+	// runs the mirror-table and parent-tcount work when the LWT applies.
+	// Returns the updated_at value now persisted (the deletedAt argument when
+	// applied; the existing value when a concurrent delete won the race).
+	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (actualDeletedAt time.Time, applied bool, err error)
 }
 
 // SubscriptionRepository defines MongoDB-backed subscription lookups.

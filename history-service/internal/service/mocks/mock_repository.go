@@ -119,11 +119,13 @@ func (mr *MockMessageRepositoryMockRecorder) GetMessagesBetweenDesc(ctx, roomID,
 }
 
 // SoftDeleteMessage mocks base method.
-func (m *MockMessageRepository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+func (m *MockMessageRepository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (time.Time, bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SoftDeleteMessage", ctx, msg, deletedAt)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret0, _ := ret[0].(time.Time)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
 }
 
 // SoftDeleteMessage indicates an expected call of SoftDeleteMessage.

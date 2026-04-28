@@ -6,11 +6,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
-
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/config"
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
+	"github.com/hmchangw/chat/history-service/internal/publisher"
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -62,8 +61,8 @@ func main() {
 
 	cassRepo := cassrepo.NewRepository(cassSession)
 	mongoRepo := mongorepo.NewSubscriptionRepo(mongoClient.Database(cfg.Mongo.DB))
-	publisher := &natsPublisher{nc: nc}
-	svc := service.New(cassRepo, mongoRepo, publisher)
+	pub := publisher.New(nc)
+	svc := service.New(cassRepo, mongoRepo, pub)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
@@ -79,14 +78,4 @@ func main() {
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 	)
-}
-
-// natsPublisher adapts *otelnats.Conn to the service.EventPublisher interface.
-// Mirrors broadcast-worker/main.go:152-159.
-type natsPublisher struct {
-	nc *otelnats.Conn
-}
-
-func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte) error {
-	return p.nc.Publish(ctx, subject, data)
 }

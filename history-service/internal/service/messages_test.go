@@ -848,6 +848,31 @@ func TestHistoryService_EditMessage_WrongRoom(t *testing.T) {
 	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
 }
 
+func TestHistoryService_EditMessage_AlreadyDeleted(t *testing.T) {
+	svc, msgs, subs, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	// A soft-deleted message should be invisible to the edit path. Returning
+	// ErrNotFound (not ErrForbidden) keeps the leak surface symmetric with the
+	// WrongRoom case and prevents an impossible delete -> edit event sequence.
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+		Deleted:   true,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
+	assert.Nil(t, resp)
+
+	var routeErr *natsrouter.RouteError
+	require.ErrorAs(t, err, &routeErr)
+	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+}
+
 func TestHistoryService_EditMessage_EmptyNewMsg(t *testing.T) {
 	svc, msgs, subs, _ := newService(t)
 	c := testContext()
@@ -961,7 +986,9 @@ func TestHistoryService_DeleteMessage_Success(t *testing.T) {
 
 	msgs.EXPECT().
 		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
-		Return(nil)
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, error) {
+			return deletedAt, true, nil
+		})
 
 	pub.EXPECT().
 		Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).
@@ -1096,13 +1123,50 @@ func TestHistoryService_DeleteMessage_SoftDeleteFails(t *testing.T) {
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
 	msgs.EXPECT().
 		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
-		Return(fmt.Errorf("cassandra timeout"))
+		Return(time.Time{}, false, fmt.Errorf("cassandra timeout"))
 
 	// No Publish expected when the UPDATE fails.
 
 	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
 	assert.Nil(t, resp)
 	assertInternalErr(t, err, "failed to delete message")
+}
+
+// TestHistoryService_DeleteMessage_ConcurrentDeleteSkipsPublish covers the
+// race case where two clients delete the same message simultaneously: hydrate
+// sees deleted=false (so the handler-level short-circuit doesn't fire), but
+// the repo's LWT returns applied=false because a parallel goroutine already
+// flipped the row. The handler must NOT publish a duplicate message_deleted
+// event and must return the timestamp the winning goroutine wrote.
+func TestHistoryService_DeleteMessage_ConcurrentDeleteSkipsPublish(t *testing.T) {
+	svc, msgs, subs, pub := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+		Deleted:   false,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+
+	winnerWrote := time.Date(2026, 4, 28, 9, 0, 0, 0, time.UTC)
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		Return(winnerWrote, false, nil)
+
+	// Critically, NO Publish call is expected — gomock will fail the test if
+	// the handler tries to publish on the LWT-not-applied path.
+
+	resp, err := svc.DeleteMessage(c, models.DeleteMessageRequest{MessageID: "m-abc"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "m-abc", resp.MessageID)
+	assert.Equal(t, winnerWrote.UnixMilli(), resp.DeletedAt)
+
+	_ = pub // unused: asserting absence of Publish via gomock strict expectations
 }
 
 func TestHistoryService_DeleteMessage_PublishFails(t *testing.T) {
@@ -1117,7 +1181,11 @@ func TestHistoryService_DeleteMessage_PublishFails(t *testing.T) {
 		Sender:    models.Participant{Account: "u1"},
 	}
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
-	msgs.EXPECT().SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).Return(nil)
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, error) {
+			return deletedAt, true, nil
+		})
 
 	pub.EXPECT().Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).Return(fmt.Errorf("nats disconnected"))
 
