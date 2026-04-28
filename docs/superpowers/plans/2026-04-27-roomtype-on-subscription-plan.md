@@ -470,3 +470,127 @@ The remove paths fetch the room once per operation and stamp `room.Type` onto th
   git add room-worker/
   git commit -m "room-worker: populate Subscription.RoomType on add and remove"
   ```
+
+---
+
+### Task 4: `inbox-worker` cross-site member_added
+
+**Files:**
+- Modify: `inbox-worker/handler.go` (the `sub := &model.Subscription{...}` literal inside `handleMemberAdded`)
+- Modify: `inbox-worker/handler_test.go` (`TestHandleEvent_MemberAdded`)
+
+Depends on Task 1.
+
+Cross-site `member_added` events only fire for rooms that support add-member (channels and discussions). Hardcoding `RoomTypeChannel` mirrors `room-worker.processAddMembers` so every persisted subscription carries a non-empty `RoomType`.
+
+- [ ] **Step 4.1: Add the RoomType assertion to `TestHandleEvent_MemberAdded`**
+
+  In `inbox-worker/handler_test.go`, find the per-field assertion block on the captured `sub`. After the `Roles` assertion and before the `sub.ID == ""` check, add:
+
+  ```go
+  if sub.RoomType != model.RoomTypeChannel {
+      t.Errorf("subscription RoomType = %q, want %q", sub.RoomType, model.RoomTypeChannel)
+  }
+  ```
+
+- [ ] **Step 4.2: Run tests — expect red**
+
+  ```
+  make test SERVICE=inbox-worker
+  ```
+
+  Expected:
+  ```
+  --- FAIL: TestHandleEvent_MemberAdded (0.00s)
+      handler_test.go:222: subscription RoomType = "", want "channel"
+  ```
+
+- [ ] **Step 4.3: Hardcode `RoomTypeChannel` on the cross-site sub**
+
+  In `inbox-worker/handler.go` find the literal inside `handleMemberAdded`. Add `RoomType: model.RoomTypeChannel,` between `RoomID` and `SiteID`:
+
+  ```go
+  sub := &model.Subscription{
+      ID:                 idgen.GenerateID(),
+      User:               model.SubscriptionUser{ID: user.ID, Account: user.Account},
+      RoomID:             event.RoomID,
+      RoomType:           model.RoomTypeChannel,
+      SiteID:             event.SiteID,
+      Roles:              []model.Role{model.RoleMember},
+      HistorySharedSince: historySharedSince,
+      JoinedAt:           joinedAt,
+  }
+  ```
+
+- [ ] **Step 4.4: Run tests — expect green**
+
+  ```
+  make test SERVICE=inbox-worker
+  ```
+
+  Expected: `ok  	github.com/hmchangw/chat/inbox-worker	1.0xxs`
+
+- [ ] **Step 4.5: Lint clean**
+
+  ```
+  make lint
+  ```
+
+  Expected: `0 issues.`
+
+- [ ] **Step 4.6: Commit**
+
+  ```bash
+  git add inbox-worker/
+  git commit -m "inbox-worker: populate RoomTypeChannel on cross-site member_added"
+  ```
+
+---
+
+## Final verification
+
+After all four tasks land, sweep the whole repo and push:
+
+- [ ] **V.1: Full test sweep**
+
+  ```
+  make test
+  ```
+
+  Expected: every package shows `ok ...` (no `FAIL`). The `pkg/cassutil`, `pkg/oidc`, `pkg/otelutil`, `pkg/userstore`, etc. lines may show `[no test files]` — that's normal.
+
+- [ ] **V.2: Full lint sweep**
+
+  ```
+  make lint
+  ```
+
+  Expected: `0 issues.`
+
+- [ ] **V.3: Integration tests (where Docker is available)**
+
+  ```
+  make test-integration SERVICE=room-worker
+  make test-integration SERVICE=room-service
+  make test-integration SERVICE=inbox-worker
+  ```
+
+  These require Docker for testcontainers. Skip if not available locally — CI will exercise them.
+
+- [ ] **V.4: Push to the feature branch**
+
+  ```
+  git push -u origin claude/add-roomtype-subscription-Uqow3
+  ```
+
+  If the branch already has the previous (pre-rebase) commits on the remote, force-push with lease:
+  ```
+  git push --force-with-lease origin claude/add-roomtype-subscription-Uqow3
+  ```
+
+## Risks and rollback
+
+- **Old subscriptions without `roomType`.** Returned as `RoomType: ""`. No code in this branch reads the field, so old documents are harmless until a future consumer relies on it. A backfill job is out of scope.
+- **`GetRoom` failure during remove paths.** Logged at warn; the removal itself still succeeds and the SubscriptionUpdateEvent fires with an empty `RoomType`. Matches the pre-existing best-effort treatment of notification payloads.
+- **Future creation site forgets to set `RoomType`.** Mitigated by per-site test assertions in Tasks 2-4.
+- **Rollback:** revert the four implementation commits in reverse order. Reverting only the model commit (Task 1) would break compilation of the call sites that use the new field — revert all four together if needed.
