@@ -39,7 +39,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		}
 		if parent.ThreadParentID != "" {
 			slog.Error("data model violation: resolved parent is itself a reply",
-				"messageID", msg.ThreadParentID, "parentThreadParentID", parent.ThreadParentID)
+				"threadParentID", msg.ThreadParentID, "parentThreadParentID", parent.ThreadParentID)
 			return nil, natsrouter.ErrInternal("invalid thread structure")
 		}
 	}
