@@ -165,27 +165,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		threadParentCreatedAt = &t
 	}
 
-	var quotedSnapshot *cassandra.QuotedParentMessage
-	if req.QuotedParentMessageID != "" {
-		snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, req.QuotedParentMessageID)
-		switch {
-		case err != nil:
-			slog.Warn("quoted parent unavailable, dropping quote",
-				"quotedParentMessageId", req.QuotedParentMessageID,
-				"roomId", roomID,
-				"error", err)
-		case snap.ThreadParentID != req.ThreadParentMessageID:
-			// Strict same-conversation-context rule: main↔main, threadT↔threadT.
-			// Anything else (cross-thread, main↔thread, thread↔main) drops the quote.
-			slog.Warn("quoted parent has different thread context, dropping quote",
-				"quotedParentMessageId", req.QuotedParentMessageID,
-				"roomId", roomID,
-				"newMessageThread", req.ThreadParentMessageID,
-				"parentThread", snap.ThreadParentID)
-		default:
-			quotedSnapshot = snap
-		}
-	}
+	quotedSnapshot := h.resolveQuoteSnapshot(ctx, account, roomID, siteID, req.QuotedParentMessageID, req.ThreadParentMessageID)
 
 	msg := model.Message{
 		ID:                           req.ID,
@@ -213,4 +193,34 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	}
 
 	return json.Marshal(msg)
+}
+
+// resolveQuoteSnapshot fetches the quoted parent (when requested) and returns
+// the snapshot to embed on the new message. Soft-fails on every failure mode:
+// returns nil + WARN log on RPC errors, and on thread-context mismatches per
+// the strict same-conversation-context rule (main↔main only, threadT↔threadT
+// only — quoting across thread boundaries, including a thread reply quoting
+// its own thread parent, drops the quote).
+func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, siteID, quotedParentMessageID, newMessageThreadID string) *cassandra.QuotedParentMessage {
+	if quotedParentMessageID == "" {
+		return nil
+	}
+	snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, quotedParentMessageID)
+	switch {
+	case err != nil:
+		slog.Warn("quoted parent unavailable, dropping quote",
+			"quotedParentMessageId", quotedParentMessageID,
+			"roomID", roomID,
+			"error", err)
+		return nil
+	case snap.ThreadParentID != newMessageThreadID:
+		slog.Warn("quoted parent has different thread context, dropping quote",
+			"quotedParentMessageId", quotedParentMessageID,
+			"roomID", roomID,
+			"newMessageThread", newMessageThreadID,
+			"parentThread", snap.ThreadParentID)
+		return nil
+	default:
+		return snap
+	}
 }

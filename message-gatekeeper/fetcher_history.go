@@ -13,9 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// historyRequestTimeout bounds the synchronous request to history-service.
-// Matches the standard NATS Go client default. Hardcoded — promote to env
-// var only if ops needs to tune it.
+// historyRequestTimeout matches the nats.go default request timeout.
 const historyRequestTimeout = 2 * time.Second
 
 // historyParentFetcher implements ParentMessageFetcher by issuing a NATS
@@ -30,9 +28,8 @@ func newHistoryParentFetcher(nc *otelnats.Conn, chatBaseURL string) *historyPare
 	return &historyParentFetcher{nc: nc, chatBaseURL: chatBaseURL}
 }
 
-// getMessageByIDRequest mirrors history-service's request shape on the wire.
-// We duplicate the small struct rather than cross-import a service-internal
-// package.
+// getMessageByIDRequest mirrors history-service's GetMessageByIDRequest wire
+// shape (the source struct lives under internal/ and isn't importable).
 type getMessageByIDRequest struct {
 	MessageID string `json:"messageId"`
 }

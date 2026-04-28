@@ -281,6 +281,9 @@ func MsgSurroundingPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.surrounding", siteID)
 }
 
+// MsgGetPattern is the natsrouter pattern history-service uses to register
+// its GetMessageByID handler. Pair with MsgGet for the concrete-subject form
+// callers publish on.
 func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
 }
