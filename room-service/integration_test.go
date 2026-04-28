@@ -1139,8 +1139,8 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 		{ID: "r2", Name: "room-2", Type: model.RoomTypeChannel, SiteID: "site-a"},
 		{ID: "r3", Name: "room-3", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &earlier},
 	}
-	for _, r := range rooms {
-		require.NoError(t, store.CreateRoom(ctx, &r))
+	for i := range rooms {
+		require.NoError(t, store.CreateRoom(ctx, &rooms[i]))
 	}
 
 	pubKey := bytes.Repeat([]byte{0xAB}, 65)

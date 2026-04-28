@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
@@ -91,14 +90,24 @@ func (h *Handler) natsListRooms(m otelnats.Msg) {
 }
 
 func (h *Handler) natsGetRoom(m otelnats.Msg) {
-	parts := strings.Split(m.Msg.Subject, ".")
-	roomID := parts[len(parts)-1]
-	room, err := h.store.GetRoom(m.Context(), roomID)
+	room, err := h.handleGetRoom(m.Context(), m.Msg.Subject)
 	if err != nil {
 		natsutil.ReplyError(m.Msg, err.Error())
 		return
 	}
 	natsutil.ReplyJSON(m.Msg, room)
+}
+
+func (h *Handler) handleGetRoom(ctx context.Context, subj string) (*model.Room, error) {
+	_, roomID, ok := subject.ParseRoomsGetSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid get-room subject")
+	}
+	room, err := h.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	return room, nil
 }
 
 func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, error) {

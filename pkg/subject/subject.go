@@ -218,6 +218,22 @@ func ParseOrgMembersSubject(subj string) (orgID string, ok bool) {
 	return parts[5], true
 }
 
+// ParseRoomsGetSubject returns the account and roomID from a subject matching
+// the pattern "chat.user.{account}.request.rooms.get.{roomId}".
+// Tokens (by strings.Split on "."): [0]chat [1]user [2]{account} [3]request
+// [4]rooms [5]get [6]{roomId}.
+func ParseRoomsGetSubject(subj string) (account, roomID string, ok bool) {
+	parts := strings.Split(subj, ".")
+	if len(parts) != 7 {
+		return "", "", false
+	}
+	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" ||
+		parts[4] != "rooms" || parts[5] != "get" {
+		return "", "", false
+	}
+	return parts[2], parts[6], true
+}
+
 func RoomCanonicalWildcard(siteID string) string {
 	return fmt.Sprintf("chat.room.canonical.%s.>", siteID)
 }

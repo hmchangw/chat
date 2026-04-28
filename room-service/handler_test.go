@@ -1782,3 +1782,54 @@ func TestHandler_handleRoomsInfoBatch_chunking(t *testing.T) {
 		assert.False(t, ri.Found)
 	}
 }
+
+func TestHandler_HandleGetRoom(t *testing.T) {
+	t.Run("valid subject returns room", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockRoomStore(ctrl)
+		store.EXPECT().GetRoom(gomock.Any(), "r1").
+			Return(&model.Room{ID: "r1", Name: "general"}, nil)
+
+		h := &Handler{store: store}
+		room, err := h.handleGetRoom(context.Background(), subject.RoomsGet("alice", "r1"))
+		require.NoError(t, err)
+		assert.Equal(t, "r1", room.ID)
+		assert.Equal(t, "general", room.Name)
+	})
+
+	t.Run("malformed subjects return error and do not panic", func(t *testing.T) {
+		// Each input would have caused a runtime panic under the previous
+		// `parts[len(parts)-1]` implementation when the trailing token was
+		// missing, or silently extracted the wrong value when the prefix
+		// did not match. The parser must reject all of these cleanly.
+		cases := []string{
+			"",
+			"chat",
+			"chat.user.alice.request.rooms.get",
+			"chat.user.alice.request.rooms.get.r1.extra",
+			"foo.user.alice.request.rooms.get.r1",
+			"chat.user.alice.event.rooms.get.r1",
+		}
+		for _, subj := range cases {
+			t.Run(subj, func(t *testing.T) {
+				h := &Handler{store: NewMockRoomStore(gomock.NewController(t))}
+				room, err := h.handleGetRoom(context.Background(), subj)
+				require.Error(t, err)
+				assert.Nil(t, room)
+				assert.Contains(t, err.Error(), "invalid get-room subject")
+			})
+		}
+	})
+
+	t.Run("store error propagates", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockRoomStore(ctrl)
+		store.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, fmt.Errorf("db down"))
+
+		h := &Handler{store: store}
+		room, err := h.handleGetRoom(context.Background(), subject.RoomsGet("alice", "r1"))
+		require.Error(t, err)
+		assert.Nil(t, room)
+		assert.Contains(t, err.Error(), "db down")
+	})
+}

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -26,6 +28,33 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
+
+// newESRequest builds an HTTP request to the test Elasticsearch container by
+// validating esURL and joining path segments via net/url.
+// Validation:
+//   - esURL must parse via url.Parse
+//   - scheme must be http or https
+//   - host must be non-empty
+//
+// Building the final URL through url.JoinPath (instead of fmt.Sprintf) keeps
+// path components properly encoded and makes it explicit to SSRF static
+// analyzers that the request target is derived from validated components,
+// not free-form taint.
+func newESRequest(t *testing.T, method, esURL string, body io.Reader, segments ...string) *http.Request {
+	t.Helper()
+	base, err := url.Parse(esURL)
+	require.NoError(t, err, "parse esURL %q", esURL)
+	require.True(t, slices.Contains([]string{"http", "https"}, base.Scheme),
+		"esURL scheme must be http or https, got %q", base.Scheme)
+	require.NotEmpty(t, base.Host, "esURL must have a host")
+
+	full, err := url.JoinPath(esURL, segments...)
+	require.NoError(t, err, "join URL path")
+
+	req, err := http.NewRequest(method, full, body)
+	require.NoError(t, err)
+	return req
+}
 
 // Package-level singletons — one Elasticsearch + one NATS JetStream container
 // shared across all tests in this package. Tests isolate themselves via unique
@@ -168,8 +197,7 @@ func loadTestEvents(t *testing.T) []model.MessageEvent {
 // refreshIndex forces ES to make all indexed docs searchable.
 func refreshIndex(t *testing.T, esURL, pattern string) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/%s/_refresh", esURL, pattern), nil)
-	require.NoError(t, err)
+	req := newESRequest(t, http.MethodPost, esURL, nil, pattern, "_refresh")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -181,7 +209,8 @@ func refreshIndex(t *testing.T, esURL, pattern string) {
 // countDocs returns the number of documents matching the index pattern.
 func countDocs(t *testing.T, esURL, pattern string) int {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("%s/%s/_count", esURL, pattern))
+	req := newESRequest(t, http.MethodGet, esURL, nil, pattern, "_count")
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -206,7 +235,9 @@ func waitForClusterGreen(t *testing.T, esURL string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(fmt.Sprintf("%s/_cluster/health?wait_for_status=green&timeout=5s", esURL))
+		req := newESRequest(t, http.MethodGet, esURL, nil, "_cluster", "health")
+		req.URL.RawQuery = "wait_for_status=green&timeout=5s"
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
 			var health struct {
 				Status string `json:"status"`
@@ -226,8 +257,7 @@ func waitForClusterGreen(t *testing.T, esURL string, timeout time.Duration) {
 // preCreateIndex creates an ES index so shard allocation completes early.
 func preCreateIndex(t *testing.T, esURL, index string) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPut, fmt.Sprintf("%s/%s", esURL, index), nil)
-	require.NoError(t, err)
+	req := newESRequest(t, http.MethodPut, esURL, nil, index)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -257,7 +287,8 @@ func overrideIndexSettings(body json.RawMessage) json.RawMessage {
 // getDoc retrieves a single document from ES by ID. Returns nil if not found.
 func getDoc(t *testing.T, esURL, index, docID string) map[string]any {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("%s/%s/_doc/%s", esURL, index, docID))
+	req := newESRequest(t, http.MethodGet, esURL, nil, index, "_doc", docID)
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -407,8 +438,7 @@ func TestSearchSyncIntegration(t *testing.T) {
 func searchHits(t *testing.T, esURL, indexPattern, query string) int {
 	t.Helper()
 	body := fmt.Sprintf(`{"query":{"match":{"content":{"query":%q}}}}`, query)
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/%s/_search", esURL, indexPattern), bytes.NewBufferString(body))
-	require.NoError(t, err)
+	req := newESRequest(t, http.MethodPost, esURL, bytes.NewBufferString(body), indexPattern, "_search")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -436,8 +466,7 @@ func searchHits(t *testing.T, esURL, indexPattern, query string) int {
 func searchHitsWildcard(t *testing.T, esURL, indexPattern, pattern string) int {
 	t.Helper()
 	body := fmt.Sprintf(`{"query":{"wildcard":{"content":{"value":%q}}}}`, pattern)
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/%s/_search", esURL, indexPattern), bytes.NewBufferString(body))
-	require.NoError(t, err)
+	req := newESRequest(t, http.MethodPost, esURL, bytes.NewBufferString(body), indexPattern, "_search")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)

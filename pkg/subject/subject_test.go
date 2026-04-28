@@ -231,3 +231,34 @@ func TestParseOrgMembersSubject(t *testing.T) {
 		})
 	}
 }
+
+func TestParseRoomsGetSubject(t *testing.T) {
+	tests := []struct {
+		name        string
+		subj        string
+		wantAccount string
+		wantRoomID  string
+		wantOK      bool
+	}{
+		{"valid", "chat.user.alice.request.rooms.get.r1", "alice", "r1", true},
+		{"valid different values", "chat.user.bob.request.rooms.get.room-42", "bob", "room-42", true},
+		{"wrong prefix", "foo.user.alice.request.rooms.get.r1", "", "", false},
+		{"not user", "chat.blah.alice.request.rooms.get.r1", "", "", false},
+		{"wrong action", "chat.user.alice.event.rooms.get.r1", "", "", false},
+		{"wrong resource", "chat.user.alice.request.orgs.get.r1", "", "", false},
+		{"wrong verb", "chat.user.alice.request.rooms.list.r1", "", "", false},
+		{"too short", "chat.user.alice.request.rooms.get", "", "", false},
+		{"too long", "chat.user.alice.request.rooms.get.r1.extra", "", "", false},
+		{"empty", "", "", "", false},
+		{"single dot", ".", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			account, roomID, ok := subject.ParseRoomsGetSubject(tt.subj)
+			if ok != tt.wantOK || account != tt.wantAccount || roomID != tt.wantRoomID {
+				t.Errorf("ParseRoomsGetSubject(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tt.subj, account, roomID, ok, tt.wantAccount, tt.wantRoomID, tt.wantOK)
+			}
+		})
+	}
+}
