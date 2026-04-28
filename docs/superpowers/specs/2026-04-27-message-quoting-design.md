@@ -259,9 +259,14 @@ ALTER TYPE chat."QuotedParentMessage" ADD thread_parent_created_at TIMESTAMP;
 
 `docker-local/cassandra/init/06-udt-quoted_parent_message.cql` is updated with the two new fields. The local stack typically runs the init scripts on a fresh keyspace, so `CREATE TYPE IF NOT EXISTS` simply produces the right shape from scratch. Long-lived dev databases need the same `ALTER TYPE` as prod.
 
-### Hand-rolled UDTs in tests
+### Hand-rolled UDTs in tests and standalone dev stacks
 
-`history-service/internal/cassrepo/integration_test.go:42` declares the same UDT inline for testcontainers; that statement is updated to keep the two test environments in sync.
+Two more places repeat the UDT shape and must stay in sync:
+
+- `history-service/internal/cassrepo/integration_test.go:42` declares the UDT inline for testcontainers.
+- `history-service/docker-local/docker-compose.yml:68` declares the UDT in the standalone history-service local-dev stack (separate from the project-wide `docker-local/cassandra/init/*.cql`).
+
+Both are updated alongside the canonical UDT in this PR.
 
 ## Deploy order
 

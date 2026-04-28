@@ -1723,7 +1723,13 @@ After Task 7 commits, every spec requirement is implemented and tested:
 | `quoted_parent_message` persisted in `messages_by_room` / `messages_by_id` (regular + thread) and `thread_messages_by_room` | Task 6 |
 | Integration round-trip incl. thread-context fields + nil-UDT verification | Task 7 |
 
-**Production rollout reminder:** Run the two `ALTER TYPE` statements (see spec §"Cassandra schema migration") against each site's keyspace **before** deploying the new gatekeeper. Old binaries reading post-migration UDTs are unaffected (gocql tolerates extra UDT fields).
+**Production rollout reminder (3 strict steps):**
+
+1. Run the two `ALTER TYPE` statements (see spec §"Cassandra schema migration") against each site's keyspace.
+2. Deploy the new `message-worker` (so canonical events with snapshots are persisted into the new UDT fields).
+3. Deploy the new `message-gatekeeper` (starts populating the snapshot field on canonical events).
+
+Old binaries reading post-migration UDTs are unaffected (gocql tolerates extra UDT fields). Deploying gatekeeper before message-worker is not catastrophic — gocql ignores unspecified columns — but snapshots emitted in that window won't be persisted.
 
 **Out of scope (deferred):**
 - `attachments` field on the snapshot.
