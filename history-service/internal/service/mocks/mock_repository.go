@@ -239,25 +239,6 @@ func NewMockEventPublisher(ctrl *gomock.Controller) *MockEventPublisher {
 	return mock
 }
 
-// MockThreadRoomRepository is a mock of ThreadRoomRepository interface.
-type MockThreadRoomRepository struct {
-	ctrl     *gomock.Controller
-	recorder *MockThreadRoomRepositoryMockRecorder
-	isgomock struct{}
-}
-
-// MockThreadRoomRepositoryMockRecorder is the mock recorder for MockThreadRoomRepository.
-type MockThreadRoomRepositoryMockRecorder struct {
-	mock *MockThreadRoomRepository
-}
-
-// NewMockThreadRoomRepository creates a new mock instance.
-func NewMockThreadRoomRepository(ctrl *gomock.Controller) *MockThreadRoomRepository {
-	mock := &MockThreadRoomRepository{ctrl: ctrl}
-	mock.recorder = &MockThreadRoomRepositoryMockRecorder{mock}
-	return mock
-}
-
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockEventPublisher) EXPECT() *MockEventPublisherMockRecorder {
 	return m.recorder
@@ -275,6 +256,25 @@ func (m *MockEventPublisher) Publish(ctx context.Context, subject string, data [
 func (mr *MockEventPublisherMockRecorder) Publish(ctx, subject, data any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Publish", reflect.TypeOf((*MockEventPublisher)(nil).Publish), ctx, subject, data)
+}
+
+// MockThreadRoomRepository is a mock of ThreadRoomRepository interface.
+type MockThreadRoomRepository struct {
+	ctrl     *gomock.Controller
+	recorder *MockThreadRoomRepositoryMockRecorder
+	isgomock struct{}
+}
+
+// MockThreadRoomRepositoryMockRecorder is the mock recorder for MockThreadRoomRepository.
+type MockThreadRoomRepositoryMockRecorder struct {
+	mock *MockThreadRoomRepository
+}
+
+// NewMockThreadRoomRepository creates a new mock instance.
+func NewMockThreadRoomRepository(ctrl *gomock.Controller) *MockThreadRoomRepository {
+	mock := &MockThreadRoomRepository{ctrl: ctrl}
+	mock.recorder = &MockThreadRoomRepositoryMockRecorder{mock}
+	return mock
 }
 
 // EXPECT returns an object that allows the caller to indicate expected use.
