@@ -83,7 +83,12 @@ func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
 			q.ThreadParentID != "" &&
 			q.ThreadParentCreatedAt != nil &&
 			q.ThreadParentCreatedAt.Before(*accessSince)
-		if q.CreatedAt.Before(*accessSince) || tshowParentInaccessible {
+		// Legacy TShow quotes where ThreadParentCreatedAt wasn't captured cannot be
+		// verified against the access window — redact conservatively to prevent leaks.
+		legacyTShowMissingParentTime := msgs[i].TShow &&
+			q.ThreadParentID != "" &&
+			q.ThreadParentCreatedAt == nil
+		if q.CreatedAt.Before(*accessSince) || tshowParentInaccessible || legacyTShowMissingParentTime {
 			msgs[i].QuotedParentMessage = &models.QuotedParentMessage{Msg: UnavailableQuoteMsg}
 		}
 	}

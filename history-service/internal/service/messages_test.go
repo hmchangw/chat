@@ -1464,8 +1464,8 @@ func TestHistoryService_TShow_TwoMessagesWithSameParent_BothRedacted(t *testing.
 }
 
 // TShow message where ThreadParentCreatedAt is nil (message-worker didn't populate it) →
-// TShow path skipped; only standard CreatedAt check applies.
-func TestHistoryService_TShow_ThreadParentCreatedAtNil_NoTShowRedaction(t *testing.T) {
+// conservatively redacted because the access window cannot be verified.
+func TestHistoryService_TShow_ThreadParentCreatedAtNil_ConservativeRedaction(t *testing.T) {
 	svc, msgs, subs, _, _ := newService(t)
 	c := testContext()
 
@@ -1490,6 +1490,6 @@ func TestHistoryService_TShow_ThreadParentCreatedAtNil_NoTShowRedaction(t *testi
 	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.Messages, 1)
-	// TShow path skipped (ThreadParentCreatedAt nil); standard check passes — not redacted.
-	assert.Equal(t, "parent text", resp.Messages[0].QuotedParentMessage.Msg)
+	// ThreadParentCreatedAt nil → conservative redaction applied.
+	assert.Equal(t, service.UnavailableQuoteMsg, resp.Messages[0].QuotedParentMessage.Msg)
 }

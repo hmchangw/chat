@@ -8,7 +8,7 @@
 
 Add a NATS request/reply endpoint to `history-service` that returns the thread replies for a given thread-parent message, paginated newest-first. Ports the old Meteor `Messages.find({tmid: tmid}).sort({ts: -1})` query to the current stack: Cassandra as the store, cursor-based pagination matching the other history endpoints, and subscription-gated access via the existing `historySharedSince` helper.
 
-The query targets the existing `thread_messages_by_room` table. The `thread_room_id` clustering column is the partition slice key, producing an efficient single-slice read with native Cassandra `PageState` pagination. `message-worker/handler.go` and `store_cassandra.go` now create a real `ThreadRoom` UUID and stamp `thread_room_id` on the parent Cassandra row — the former `"N/A"` placeholder is no longer written. No schema change, no other-service change.
+The query targets the existing `thread_messages_by_room` table. The `thread_room_id` clustering column is the partition slice key, producing an efficient single-slice read with native Cassandra `PageState` pagination. `message-worker/handler.go` and `store_cassandra.go` create a real `ThreadRoom` UUID and stamp `thread_room_id` on the parent Cassandra row — the former `"N/A"` placeholder is no longer written. No Cassandra schema change; `message-worker` changes are included in the same PR.
 
 ## Scope
 
@@ -34,7 +34,7 @@ func MsgThreadWildcard(siteID string) string {
 }
 ```
 
-`{roomID}` is present in the pattern purely for consistency with the three existing history endpoints. **The handler does not read it.** The source of truth for the room is the parent message's own `room_id` (see Handler Flow). When a future cleanup drops `{roomID}` from history subjects, this handler requires no changes.
+`{roomID}` is present in the pattern for consistency with the three existing history endpoints. The handler reads it for the subscription access check — identical to the other endpoints. The parent message's own `room_id` is used as a secondary cross-check inside `findMessage`. When a future cleanup drops `{roomID}` from history subjects, this handler will require updating alongside the others.
 
 ## Request / Response Types
 
@@ -143,7 +143,7 @@ As a result, `parent.ThreadRoomID` is populated for any parent that has received
 
 Reuses the two gates already applied across the service:
 
-1. `getAccessSince(account, roomID)` — subscription existence + `historySharedSince` lookup via `SubscriptionRepository`. Non-subscribers receive `ErrForbidden("not subscribed to room")`. `roomID` here is the parent's own `room_id`, not a client-supplied value.
+1. `getAccessSince(account, roomID)` — subscription existence + `historySharedSince` lookup via `SubscriptionRepository`. Non-subscribers receive `ErrForbidden("not subscribed to room")`. `roomID` is the NATS subject parameter, consistent with the other history endpoints.
 2. `accessSince` window check — if `historySharedSince` is set and the **parent** was created before it, the whole thread is treated as outside the access window and returns `ErrForbidden`. Matches the old Meteor behavior of "if you can see the parent, you can see the thread."
 
 No additional validation of `tshow` / `tcount` on the parent. A message with no replies simply produces an empty page.
@@ -184,7 +184,7 @@ Table-driven, mocked repos, following the existing pattern in the same file. Cov
 | Limit clamping | `Limit = 500` | Repo called with `PageSize = 100` |
 | Negative limit | `Limit = -1` | Repo called with `PageSize = 20` |
 | Thread query repo error | `GetThreadMessages` returns error | `ErrInternal` |
-| Subject `roomID` is never read | Any test | Assert `GetHistorySharedSince` called with `parent.RoomID`, not a subject-derived value |
+| Subject `roomID` drives the subscription check | Any test | Assert `GetHistorySharedSince` called with the subject `roomID`; `findMessage` cross-checks `msg.RoomID == roomID` |
 
 Every test sets `parent.ThreadRoomID` to a realistic value (e.g. `"tr-test-1"`). No test uses `"N/A"`.
 
@@ -232,7 +232,7 @@ No edits to: `message-worker`, `message-gatekeeper`, `broadcast-worker`, `chat-f
 |----------|-----------|
 | Query `thread_messages_by_room` keyed on `thread_room_id` (not `thread_parent_id`) | `thread_room_id` is the first clustering column, so equality is a native slice seek with no `ALLOW FILTERING`. `thread_parent_id` is a plain column and would force a full-partition scan. The table was designed for this access shape — the writer is just lagging. |
 | No new table; reuse the existing one | Adding a `thread_messages_by_parent` table was considered. Once we accepted that `thread_room_id` will eventually be populated per the DDL comment, the existing table already supports the query efficiently. No need for denormalization or a second write. |
-| No schema / writer / other-service change in this task | Keeps the change atomic and reviewable. The writer is a separate concern tied to the unbuilt threadRooms-collection design. |
+| `message-worker` write path brought in scope | The original design deferred the writer change. During implementation it was determined that the reader was only useful with a real writer, so `message-worker/handler.go` and `store_cassandra.go` were included in the same PR to create `ThreadRoom` UUIDs and stamp `thread_room_id` on parent rows. |
 | No `"N/A"` defensive check in the handler | Requested. Pre-prod, no real caller. Returning stale/wrong data when the writer hasn't been updated yet is an acceptable failure mode — the spec documents exactly when it becomes correct (the future threadRooms writer). |
 | Read `{roomID}` from the subject | The NATS subject `roomID` parameter is trusted for the subscription/access check — it is authenticated by the NATS callout layer, so the client cannot forge it. Using the subject value is consistent with all other history endpoints. The parent's own `room_id` is used only as a secondary cross-check inside `findMessage`. |
 | Keep `{roomID}` in the subject pattern | Consistency with the other three history endpoints. Dropping it is a cross-cutting cleanup that should touch all four together, not one in isolation. |

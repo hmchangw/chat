@@ -10,7 +10,7 @@ The `GetThreadsList` endpoint was specified and partially implemented per `2026-
 
 1. **PM decision (2026-04-22):** the endpoint returns plain parent `Message` objects. The `ThreadParentMessage` envelope (enriched with `ThreadRoom` metadata) is dropped. Frontend does not consume the extra fields.
 2. **Unread semantics review (2026-04-23):** `Subscription.threadUnread` — a user-scoped list of unread `parentMessageId` values — is redundant with `threadSubscriptions`. The latter is already maintained by `message-worker` and carries a `lastSeenAt` timestamp per thread. Comparing `threadRoom.lastMsgAt > threadSubscription.lastSeenAt` is the canonical definition of "unread thread".
-3. **Efficiency requirement:** the unread query must not collection-scan `threadSubscriptions`. The only index on `threadSubscriptions` that the history-service can rely on is `{threadRoomId, userId}` (owned by message-worker). A query keyed by `{userAccount, roomId}` has no supporting index. The redesign drives the query from `threadRooms` and joins into `threadSubscriptions` via `threadRoomId` — leveraging the existing index.
+3. **Efficiency requirement:** the unread query must not collection-scan `threadSubscriptions`. The relevant index on `threadSubscriptions` that the history-service relies on is `{threadRoomId, userAccount}` (owned by message-worker, also ensured at startup by history-service). A query keyed by `{userAccount, roomId}` has no supporting index. The redesign drives the query from `threadRooms` and joins into `threadSubscriptions` via `threadRoomId` — leveraging the existing index.
 
 ### In scope
 
@@ -132,7 +132,7 @@ Two approaches were considered:
 
 **Approach A (rejected):** two-query join. First `threadSubscriptions.Find({userAccount: U, roomId: R})`, then `threadRooms.Find({_id: $in: [...], lastMsgAt: $gt: ...})`. Rejected because `threadSubscriptions` has no `{userAccount, roomId}` index; the first query is a full collection scan globally.
 
-**Approach B (chosen):** single aggregation pipeline starting from `threadRooms`. Match by `roomId` (uses `{roomId, lastMsgAt, threadParentCreatedAt}` index), `$lookup` into `threadSubscriptions` keyed by `threadRoomId` (uses `{threadRoomId, userId}` index — leading field hit), filter to rows where the subscription exists and `lastMsgAt > lastSeenAt`. Bounded by threads-in-room × participants-per-thread, rather than total subscriptions globally.
+**Approach B (chosen):** single aggregation pipeline starting from `threadRooms`. Match by `roomId` (uses `{roomId, lastMsgAt, threadParentCreatedAt}` index), `$lookup` into `threadSubscriptions` keyed by `threadRoomId` (uses `{threadRoomId, userAccount}` index — leading field hit), filter to rows where the subscription exists and `lastMsgAt > lastSeenAt`. Bounded by threads-in-room × participants-per-thread, rather than total subscriptions globally.
 
 ### 4.3 Pipeline stages
 
@@ -173,7 +173,7 @@ Two approaches were considered:
 ### 4.5 Index usage
 
 - Initial `$match` hits `{roomId:1, lastMsgAt:-1, threadParentCreatedAt:1}` — the `all` compound index. Room-scoped, with the sort order already encoded.
-- `$lookup` inner `$match` hits `{threadRoomId:1, userId:1}` — leading-field prefix scan, already owned by `message-worker`.
+- `$lookup` inner `$match` hits `{threadRoomId:1, userAccount:1}` — leading-field prefix scan, owned by `message-worker` and also ensured by history-service at startup.
 - No new indexes required. `threadSubscriptions.{userAccount, roomId}` remains unindexed; the aggregation does not need it.
 
 ### 4.6 What changes in the repository
@@ -420,12 +420,11 @@ Regenerated via `make generate SERVICE=history-service`. Both mock interfaces (`
 - `{roomId:1, replyAccounts:1, lastMsgAt:-1, threadParentCreatedAt:1}` — `following`
 - `{roomId:1, parentMessageId:1, lastMsgAt:-1, threadParentCreatedAt:1}` — retained for other callers
 
-`threadSubscriptions` indexes owned by `message-worker`:
+`threadSubscriptions` indexes:
 
-- `{parentMessageId:1}` unique
-- `{threadRoomId:1, userId:1}` unique — **leading field drives the `$lookup` inner `$match`**
+- `{threadRoomId:1, userAccount:1}` unique — **leading field drives the `$lookup` inner `$match`**; created by message-worker and also ensured at startup by history-service
 
-`threadSubscriptions.{userAccount, roomId}` is intentionally **not** added. The aggregation does not need it; adding it would impose maintenance cost on `message-worker` for no query benefit.
+`threadSubscriptions.{userAccount, roomId}` is intentionally **not** added. The aggregation does not need it; adding it would impose maintenance cost for no query benefit.
 
 ### 6.7 Test updates
 

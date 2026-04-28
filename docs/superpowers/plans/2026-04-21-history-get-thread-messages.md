@@ -502,11 +502,11 @@ git commit -m "feat(history-service): extend MessageRepository with GetThreadMes
 - Modify: `history-service/internal/service/messages_test.go`
 - Modify: `history-service/internal/service/messages.go`
 
-The handler follows the spec's flow exactly. Key deviations from sibling handlers:
+The handler follows the spec's flow exactly. Key points:
 
-- **It does NOT read `c.Param("roomID")`** — roomID is derived from `parent.RoomID`.
-- **It fetches the parent BEFORE the subscription check** — saves a Mongo round trip on 404s (documented trade-off in the spec).
-- **It uses `s.messages.GetMessageByID` directly** — the existing `findMessage` helper requires a roomID and would enforce `msg.RoomID == roomID`, which is precisely the subject-supplied roomID we're ignoring.
+- **It reads `c.Param("roomID")`** — used for the subscription access check, consistent with other endpoints.
+- **Subscription check runs BEFORE the parent fetch** — prevents callers from using the endpoint as a message-existence oracle.
+- **It uses `findMessage(c, roomID, req.ThreadMessageID)`** — the helper enforces `msg.RoomID == roomID` as a secondary cross-check.
 
 - [ ] **Step 1: Write failing unit tests**
 
@@ -938,8 +938,8 @@ Checked against `docs/superpowers/specs/2026-04-21-history-get-thread-messages-d
 | Dedicated `threadMessageColumns` + scan helper | Task 3 |
 | Integration tests: partition isolation by `room_id`, slice isolation by `thread_room_id`, DESC ordering, cursor pagination, empty thread | Task 3 |
 | `MessageRepository` interface extension + mock regeneration | Task 4 |
-| Handler reads only `account` from the subject (never `roomID`) | Task 5, enforced by `TestHistoryService_GetThreadMessages_UsesParentRoomNotSubject` |
-| Fetch parent before subscription check (short-circuit on 404) | Task 5, enforced by `TestHistoryService_GetThreadMessages_ParentNotFound` |
+| Handler reads `account` and `roomID` from the subject; subscription check uses subject `roomID` | Task 5 |
+| Subscription check runs before parent fetch; `findMessage` cross-checks `msg.RoomID == roomID` | Task 5 |
 | `historySharedSince` gating against parent's `CreatedAt` | Task 5, covered by `ParentBeforeAccessSince` + `NoHSS` |
 | Cursor pagination default/max/negative-limit handling | Task 5, covered by `DefaultLimit` / `LimitClampsToMax` / `NegativeLimit` |
 | Error matrix (bad request, not found, forbidden, internal) | Task 5, covered by the dedicated cases listed in the spec |
