@@ -213,6 +213,11 @@ func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, sit
 			"roomID", roomID,
 			"error", err)
 		return nil
+	case snap == nil:
+		// Defensive: fetcher contract requires (nil, err) on failure, but a
+		// buggy implementation returning (nil, nil) must not nil-deref the
+		// thread-context comparison below.
+		return nil
 	case snap.ThreadParentID != newMessageThreadID:
 		slog.Warn("quoted parent has different thread context, dropping quote",
 			"quotedParentMessageId", quotedParentMessageID,

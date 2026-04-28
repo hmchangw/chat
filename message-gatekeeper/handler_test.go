@@ -650,6 +650,34 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 				assert.Nil(t, msg.QuotedParentMessage)
 			},
 		},
+		{
+			name: "fetcher returns (nil, nil) — defensive guard drops quote without panicking",
+			buildData: func() []byte {
+				req := model.SendMessageRequest{
+					ID:                    validID,
+					Content:               validContent,
+					QuotedParentMessageID: parentMessageID,
+				}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+			},
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().
+					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, parentMessageID).
+					Return(nil, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			assertMessage: func(t *testing.T, msg model.Message) {
+				assert.Nil(t, msg.QuotedParentMessage, "nil snapshot from fetcher must not be embedded")
+				assert.Equal(t, validContent, msg.Content)
+			},
+		},
 	}
 
 	for _, tc := range tests {
