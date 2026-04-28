@@ -4,7 +4,7 @@
 
 **Goal:** Add a new NATS request/reply endpoint `getThreadMessages` to `history-service` that returns thread replies for a given parent message, paginated newest-first with a cursor.
 
-**Architecture:** Thin handler in `history-service/internal/service` calls a new Cassandra repo method `GetThreadMessages` that queries `thread_messages_by_room` on the partition key `room_id` + first clustering key `thread_room_id`. Handler derives the room from the fetched parent message — it never reads `roomID` from the NATS subject. Cursor-based pagination via existing `cassrepo.QueryBuilder` (native Cassandra `PageState`).
+**Architecture:** Thin handler in `history-service/internal/service` reads `roomID` from the NATS subject, enforces room access via subscription check before fetching any message (to prevent probing message IDs outside the caller's room), then calls a Cassandra repo method `GetThreadMessages` that queries `thread_messages_by_room` on the partition key `room_id` + first clustering key `thread_room_id`. Cursor-based pagination via existing `cassrepo.QueryBuilder` (native Cassandra `PageState`).
 
 **Tech Stack:** Go 1.25, `github.com/gocql/gocql`, `pkg/natsrouter`, `go.uber.org/mock`, `testify`, `testcontainers-go/modules/cassandra` for integration tests.
 

@@ -28,7 +28,7 @@ var _ ThreadStore = (*threadStoreMongo)(nil)
 
 func newThreadStoreMongo(db *mongo.Database) *threadStoreMongo {
 	return &threadStoreMongo{
-		threadRooms:         db.Collection("threadRooms"),
+		threadRooms:         db.Collection("thread_rooms"),
 		threadSubscriptions: db.Collection("threadSubscriptions"),
 	}
 }
@@ -39,7 +39,7 @@ func (s *threadStoreMongo) EnsureIndexes(ctx context.Context) error {
 		Keys:    bson.D{{Key: "parentMessageId", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return fmt.Errorf("ensure threadRooms parentMessageId index: %w", err)
+		return fmt.Errorf("ensure thread_rooms parentMessageId index: %w", err)
 	}
 
 	// Best-effort: drop the legacy (threadRoomId, userId) unique index so the new

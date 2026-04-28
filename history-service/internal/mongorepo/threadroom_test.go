@@ -16,7 +16,7 @@ import (
 
 func insertThreadRoom(t *testing.T, db *mongo.Database, tr model.ThreadRoom) {
 	t.Helper()
-	_, err := db.Collection("threadRooms").InsertOne(context.Background(), tr)
+	_, err := db.Collection("thread_rooms").InsertOne(context.Background(), tr)
 	require.NoError(t, err)
 }
 

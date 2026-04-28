@@ -12,7 +12,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-const threadRoomsCollection = "threadRooms"
+const threadRoomsCollection = "thread_rooms"
 
 // threadRoomSort: newest activity first, stable secondary sort matching the compound indexes.
 var threadRoomSort = bson.D{{Key: "lastMsgAt", Value: -1}, {Key: "threadParentCreatedAt", Value: 1}}

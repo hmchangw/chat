@@ -426,7 +426,7 @@ func TestHandler_Integration_ThreadReply(t *testing.T) {
 
 	t.Run("thread room created", func(t *testing.T) {
 		var room model.ThreadRoom
-		err := db.Collection("threadRooms").FindOne(ctx, bson.M{
+		err := db.Collection("thread_rooms").FindOne(ctx, bson.M{
 			"parentMessageId": "msg-parent",
 		}).Decode(&room)
 		require.NoError(t, err)
@@ -474,7 +474,7 @@ func TestHandler_Integration_ThreadReply(t *testing.T) {
 
 	t.Run("thread room lastMsgId updated", func(t *testing.T) {
 		var room model.ThreadRoom
-		err := db.Collection("threadRooms").FindOne(ctx, bson.M{
+		err := db.Collection("thread_rooms").FindOne(ctx, bson.M{
 			"parentMessageId": "msg-parent",
 		}).Decode(&room)
 		require.NoError(t, err)

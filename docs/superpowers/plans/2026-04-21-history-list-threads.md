@@ -1,6 +1,8 @@
 # GetThreadsList Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> ⚠️ **SUPERSEDED** — This plan was replaced by `2026-04-23-history-list-threads-redesign.md` before implementation. The shipped API is `GetThreadParentMessages` (not `GetThreadsList`), unread filtering uses `GetUnreadThreadRooms(ctx, roomID, account, ...)` (account-based, not parent-ID-driven), and `Subscription.ThreadUnread` was never added. **Do not execute this plan.**
+
+> **For agentic workers:** This plan is superseded — see above. Do not implement.
 
 **Goal:** Add a `GetThreadsList` NATS endpoint to `history-service` that returns thread-parent messages for a room sorted by last activity, with `all`/`following`/`unread` filter types and offset+limit pagination.
 

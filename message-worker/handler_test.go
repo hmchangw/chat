@@ -745,7 +745,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().UpdateParentMessageThreadRoomID(
 					gomock.Any(), "msg-parent", "r1",
-					gomock.Cond(func(x any) bool { t, ok := x.(time.Time); return ok && !t.IsZero() }),
+					now.Add(-5*time.Minute),
 					gomock.Cond(func(x any) bool { s, ok := x.(string); return ok && s == capturedRoomID }),
 				).Return(nil)
 			},
@@ -795,7 +795,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).Return(nil)
 				store.EXPECT().UpdateParentMessageThreadRoomID(
 					gomock.Any(), "msg-parent", "r1",
-					gomock.Cond(func(x any) bool { t, ok := x.(time.Time); return ok && !t.IsZero() }),
+					now.Add(-5*time.Minute),
 					"tr-existing",
 				).Return(nil)
 			},

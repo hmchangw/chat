@@ -190,7 +190,7 @@ to:
 GetUnreadThreadRooms(ctx, roomID, account string, accessSince *time.Time, req OffsetPageRequest) (OffsetPage[ThreadRoom], error)
 ```
 
-The `parentIDs` slice is gone (the subscription-derived list no longer exists). The service layer no longer passes `threadUnread` into the repo. `threadSubscriptions` is a new collection dependency of `ThreadRoomRepo` (section 6).
+The `parentIDs` slice is gone (the subscription-derived list no longer exists). The service layer no longer passes `threadUnread` into the repo. Unread queries reference `threadSubscriptions` by collection name inside a `$lookup` stage; no direct `*Collection` dependency is added to `ThreadRoomRepo` (section 6).
 
 ## 5. Mongorepo Pipeline Abstraction
 
@@ -383,7 +383,7 @@ GetUnreadThreadRooms(ctx, roomID, account string, accessSince *time.Time, req Of
 - `parentIDs []string` removed; replaced with `account string` (caller's NATS-authenticated identity).
 - Implementation body described in sections 4.3 and 5.4.
 
-### 6.3 `ThreadRoomRepo` struct — new collection dependency
+### 6.3 `ThreadRoomRepo` struct — collection dependency
 
 ```go
 type ThreadRoomRepo struct {
@@ -392,7 +392,7 @@ type ThreadRoomRepo struct {
 
 func NewThreadRoomRepo(db *mongo.Database) *ThreadRoomRepo {
     return &ThreadRoomRepo{
-        threadRooms: NewCollection[model.ThreadRoom](db.Collection("threadRooms")),
+        threadRooms: NewCollection[model.ThreadRoom](db.Collection("thread_rooms")),
     }
 }
 ```
