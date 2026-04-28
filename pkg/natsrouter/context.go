@@ -68,16 +68,6 @@ func releaseContext(c *Context) {
 	// SetContext during the chain but is no longer mutated once handlers return.
 }
 
-// runChain executes the handler chain against c; for tests in this package only.
-func runChain(c *Context, handlers []HandlerFunc) {
-	cs := chainPool.Get().(*chainState)
-	cs.handlers = handlers
-	cs.index = -1
-	c.chain = cs
-	c.Next()
-	releaseContext(c)
-}
-
 // NewContext creates a Context for testing handlers without a NATS connection.
 func NewContext(params map[string]string) *Context {
 	return &Context{
