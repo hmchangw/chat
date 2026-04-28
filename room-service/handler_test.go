@@ -1898,7 +1898,7 @@ func TestHandler_handleCreateRoom_ChannelAndDMIDFormats(t *testing.T) {
 			store.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).
 				DoAndReturn(func(_ context.Context, s *model.Subscription) error { capturedSub = s; return nil })
 
-			h := NewHandler(store, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
+			h := NewHandler(store, nil, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
 
 			data, _ := json.Marshal(tc.req)
 			_, err := h.handleCreateRoom(context.Background(), data)
@@ -1914,7 +1914,7 @@ func TestHandler_handleCreateRoom_ChannelAndDMIDFormats(t *testing.T) {
 func TestHandler_handleCreateRoom_DMRequiresExactlyOneMember(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	h := NewHandler(store, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
+	h := NewHandler(store, nil, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
 
 	cases := []struct {
 		name    string

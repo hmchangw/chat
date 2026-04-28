@@ -1245,6 +1245,7 @@ func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *te
 	h := NewHandler(store, "site1", publish)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site1"}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), []string{"bob"}, "r1").Return([]string{"bob"}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site1"},
 	}, nil)
@@ -1288,8 +1289,9 @@ func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
 	}
 	h := NewHandler(store, "site1", publish)
 
-	// Mock store to fail on FindUsersByAccounts (first store operation after unmarshal)
+	// Mock store to fail on FindUsersByAccounts (first store operation after ListNewMembers)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site1"}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), []string{"bob"}, "r1").Return([]string{"bob"}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return(nil, fmt.Errorf("database connection failed"))
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-error-test")
