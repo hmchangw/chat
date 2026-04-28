@@ -25,8 +25,27 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	t.Helper()
 	keyspace, adminSession, host := testutil.CassandraKeyspace(t, "message_worker_test")
 	stmts := []string{
-		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT)`, keyspace),
-		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP)`, keyspace),
+		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."Participant" (
+			id           TEXT,
+			eng_name     TEXT,
+			company_name TEXT,
+			app_id       TEXT,
+			app_name     TEXT,
+			is_bot       BOOLEAN,
+			account      TEXT
+		)`, keyspace),
+		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (
+			message_id               TEXT,
+			room_id                  TEXT,
+			sender                   FROZEN<"Participant">,
+			created_at               TIMESTAMP,
+			msg                      TEXT,
+			mentions                 SET<FROZEN<"Participant">>,
+			attachments              LIST<BLOB>,
+			message_link             TEXT,
+			thread_parent_id         TEXT,
+			thread_parent_created_at TIMESTAMP
+		)`, keyspace),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.messages_by_room (
 			room_id               TEXT,
 			created_at            TIMESTAMP,
@@ -84,10 +103,11 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		require.NoError(t, adminSession.Query(stmt).Exec())
 	}
 
-	// Return a session whose default keyspace is the isolated one so tests
-	// can write plain `FROM messages_by_room` queries.
+	// adminSession is keyspace-unscoped; open a session pinned to our isolated
+	// keyspace so test queries can use unqualified table names.
 	cluster := gocql.NewCluster(host)
 	cluster.Consistency = gocql.One
+	cluster.DisableInitialHostLookup = true
 	cluster.Keyspace = keyspace
 	ksSession, err := cluster.CreateSession()
 	require.NoError(t, err)
