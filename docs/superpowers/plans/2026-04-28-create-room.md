@@ -100,6 +100,46 @@ The plan executes in nine phases, each phase grouped into self-reviewable parts.
 
 ---
 
+## Review Adjustments — Apply Throughout
+
+These rules came out of a code-review pass on this plan. They cut across many tasks; rather than restate them inside each task, the implementer must apply them wherever the relevant code is written.
+
+1. **Request-ID format.** All `X-Request-ID` fixtures use the 36-char hyphenated UUIDv7 form (e.g. `0193abcd-0193-7abc-89ab-0193abcd0193`). The 32-char no-hyphen form is reserved for Mongo `_id` per CLAUDE.md and must NOT appear in request-ID headers, test fixtures, or smoke-test commands.
+
+2. **Reuse `room-worker/handler.go` `h.publish` for ALL JetStream publishes.** It already sets `Nats-Msg-Id` from its third arg and is the standard wrapper. Tasks 35, 36, 37 must NOT call `h.js.PublishMsg` directly or build `natsutil.NewMsg` inline. The `publishCanonical` helper in Task 36 is `h.publish(ctx, subject.MsgCanonicalCreated(siteID), data, msg.ID)` — do not reinvent header-setting.
+
+3. **Extract one `publishOutbox(ctx, destSiteID, eventType, payload, dedupSeed)` helper.** Tasks 35–37 add the fifth call site of the inline `model.OutboxEvent{...}` + `subject.Outbox(...)` + `outboxDedupID(...)` + `h.publish(...)` ritual already duplicated four times in `room-worker/handler.go`. Land the helper in this plan and refactor the existing four call sites in the same task that introduces the fifth.
+
+4. **Reuse, do not redefine, `publishAsyncJobResult`.** `room-worker/handler.go` already has it with three call sites. Task 6 / 16 / 37 must update the existing helper's signature in one place (and update all call sites); they must NOT introduce a parallel function with a different signature.
+
+5. **Promote duplicated helpers to `pkg/` instead of copying.** `truncateRunes`, `composeAutoName`, `composeName`, `stripAccount`, `sanitizeError` are flagged in Tasks 19, 20, 31, 33 as "copy from room-service/helper.go." Move them into a domain-named shared package (e.g. `pkg/roomname` and `pkg/natsutil` for `sanitizeError`) and import from both services. Do NOT defer this — keeping two copies in sync is a permanent cost.
+
+6. **Promote `determineRoomType` / `determineRoomTypeFromPayload` to `pkg/model`.** Task 24 (room-service) and Task 32 (room-worker) currently define identical bodies. Add `model.RoomTypeFor(req)` once and call from both.
+
+7. **Constants, not strings, for status / op / system-message types.** Add to `pkg/model` (in Task 6 alongside `AsyncJobOpRoomCreate`):
+   - `AsyncJobStatusOK = "ok"`, `AsyncJobStatusError = "error"`, `CreateRoomReplyAccepted = "accepted"`
+   - `MessageTypeRoomCreated = "room_created"`, `MessageTypeMembersAdded = "members_added"`
+   - `SubscriptionUpdateActionAdded = "added"`
+   Tasks 25, 27, 35, 36, 37 must reference these constants, never the raw strings.
+
+8. **Typed reply struct, not `map[string]string`.** Task 27 must define `model.CreateRoomReply{Status, RoomID, RoomType string}` in `pkg/model` and marshal that. CLAUDE.md forbids `map[string]interface{}` on the wire; the same rule applies to `map[string]string` for typed responses. Update Task 25/27 tests to deserialize into the struct.
+
+9. **Bulk-write helpers belong on the `Store` interface.** `bulkCreateSubsIdempotent` and `bulkCreateMembersIdempotent` in Task 33/34 must be added to `room-worker/store.go` (and implemented in `store_mongo.go` per Task 30), not declared as private handler methods.
+
+10. **Parallelize per-destination outbox publishes (Task 37) and per-sub `subscription.update` fan-out (Task 35).** Use `golang.org/x/sync/errgroup` with bounded concurrency (`SetLimit(8)`). Both loops sit on the request-handling tail and scale with N (sites / members) — sequential publishes turn N×RTT into 1×RTT.
+
+11. **Skip `ReconcileMemberCounts` for `RoomTypeDM` / `RoomTypeBotDM`.** Counts are fixed (1 owner + 1 member). Set `MemberCount`/`UserCount`/`AppCount` at `CreateRoom` insert time in Tasks 33 and call `ReconcileMemberCounts` only for `RoomTypeChannel` in Task 34 / `finishCreateRoom`. Saves a Mongo aggregate per DM.
+
+12. **`AddedUsersCount` is exact, not an approximation.** Use `len(allUsers) - 1` (the post-expansion non-owner count already computed in `finishCreateRoom`). Do NOT use `len(req.Users) + len(req.Orgs)` — that double-counts orgs against their expanded users and the spec contract is exact.
+
+13. **Drop the room-service pre-check + room-worker pre-check duplication for DM dedup.** Rely on the partial unique index from Task 23. Room-service's `FindDMSubscription` pre-check (Task 25) is a TOCTOU read — keep it ONLY as a fast-path optimization for the common case, and ensure the room-worker insert path also handles `mongo.ErrDuplicateKey` cleanly so a race between two concurrent DM creates produces the same `dmExistsError` either way.
+
+14. **Subscription field denormalization (`Name`, `RoomType`, `IsSubscribed`).** Task 2 adds these to keep them as a deliberate read-optimization for the sidebar query. Document this rationale in Task 2's commit message and add a test that asserts the values stay in sync after a room rename (the rename flow must update all subscriptions). If the rename plumbing is out of scope for this PR, file a follow-up task explicitly.
+
+15. **No `time.Sleep` in non-test code (CLAUDE.md).** Verification step in Task 43: add `! grep -rn 'time\.Sleep' room-service room-worker inbox-worker | grep -v _test.go` to the success criteria.
+
+---
+
 ## Phase 1 — `pkg/model` Foundation
 
 ### Task 1: Add `RoomTypeBotDM` constant + `Room.AppCount` field
@@ -1437,7 +1477,7 @@ Append to `room-worker/handler_test.go`:
 ```go
 func TestProcessAddMembersPopulatesNameAndRoomType(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	expectAddMembersHappyPath(t, mocks, []string{"bob"})
@@ -1633,7 +1673,7 @@ Append to `room-worker/handler_test.go`:
 ```go
 func TestProcessAddMembersOutboxCarriesRoomName(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	// Cross-site member: bob lives on site-B.
@@ -1737,7 +1777,7 @@ Append to `room-worker/handler_test.go`:
 ```go
 func TestProcessAddMembersPublishesAsyncJobOnSuccess(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	expectAddMembersHappyPath(t, mocks, []string{"bob"})
@@ -1875,7 +1915,7 @@ Append to `inbox-worker/handler_test.go`:
 ```go
 func TestHandleMemberAddedSetsNameAndRoomType(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
@@ -2621,7 +2661,7 @@ func TestHandleCreateRoomRejectsMissingRequestID(t *testing.T) {
 
 func TestHandleCreateRoomRejectsEmptyPayload(t *testing.T) {
 	h, _ := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 	body, _ := json.Marshal(model.CreateRoomRequest{})
 	_, err := h.handleCreateRoom(ctx, "chat.user.alice.request.room.site-A.create", body)
@@ -2631,7 +2671,7 @@ func TestHandleCreateRoomRejectsEmptyPayload(t *testing.T) {
 
 func TestHandleCreateRoomRequesterNotFound(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(nil, ErrUserNotFound)
 
@@ -2643,7 +2683,7 @@ func TestHandleCreateRoomRequesterNotFound(t *testing.T) {
 
 func TestHandleCreateRoomSelfDM(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_alice", Account: "alice", EngName: "A", ChineseName: "A"}, nil)
@@ -2769,7 +2809,7 @@ Append to `room-service/handler_test.go`:
 ```go
 func TestHandleCreateRoomDMHappyPath(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -2805,7 +2845,7 @@ func TestHandleCreateRoomDMHappyPath(t *testing.T) {
 
 func TestHandleCreateRoomDMAlreadyExists(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -2827,7 +2867,7 @@ func TestHandleCreateRoomDMAlreadyExists(t *testing.T) {
 
 func TestHandleCreateRoomBotDMHappyPath(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -2859,7 +2899,7 @@ func TestHandleCreateRoomBotDMHappyPath(t *testing.T) {
 
 func TestHandleCreateRoomBotDMAppDisabled(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -2982,7 +3022,7 @@ Append to `room-service/handler_test.go`:
 ```go
 func TestHandleCreateRoomChannelHappyPath(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -3012,7 +3052,7 @@ func TestHandleCreateRoomChannelHappyPath(t *testing.T) {
 
 func TestHandleCreateRoomChannelRejectsBot(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u_alice", Account: "alice", EngName: "A", ChineseName: "A",
@@ -3029,7 +3069,7 @@ func TestHandleCreateRoomChannelRejectsBot(t *testing.T) {
 func TestHandleCreateRoomChannelExceedsCapacity(t *testing.T) {
 	h, mocks := newTestHandler(t)
 	h.maxRoomSize = 5 // override on the test handler
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u_alice", Account: "alice", EngName: "A", ChineseName: "A",
@@ -3128,7 +3168,7 @@ Append to `room-service/handler_test.go`:
 ```go
 func TestNatsCreateRoomDMExistsRepliesWithRoomID(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u_alice", Account: "alice", EngName: "A", ChineseName: "A",
@@ -3154,7 +3194,7 @@ func TestNatsCreateRoomDMExistsRepliesWithRoomID(t *testing.T) {
 
 func TestNatsCreateRoomGenericErrorReplyShape(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(nil, ErrUserNotFound)
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
@@ -3609,7 +3649,7 @@ func TestProcessCreateRoomRequiresRequestID(t *testing.T) {
 
 func TestProcessCreateRoomInsertsRoom(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -3772,7 +3812,7 @@ Append to `room-worker/handler_test.go`:
 ```go
 func TestProcessCreateRoomDMBuildsTwoSubs(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -3814,7 +3854,7 @@ func TestProcessCreateRoomDMBuildsTwoSubs(t *testing.T) {
 
 func TestProcessCreateRoomBotDMHasIsSubscribedAndAppName(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -3967,7 +4007,7 @@ Append to `room-worker/handler_test.go`:
 ```go
 func TestProcessCreateRoomChannelBuildsSubsAndMembers(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -4029,7 +4069,7 @@ func TestProcessCreateRoomChannelBuildsSubsAndMembers(t *testing.T) {
 
 func TestProcessCreateRoomChannelNoOrgsSkipsRoomMembers(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -4200,7 +4240,7 @@ Append to `room-worker/handler_test.go`:
 ```go
 func TestProcessCreateRoomFiresSubscriptionUpdateForEverySub(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	expectChannelHappyPath(t, mocks, []string{"bob"}) // helper sketched below
@@ -4285,7 +4325,7 @@ Append to `room-worker/handler_test.go`:
 ```go
 func TestProcessCreateRoomChannelEmitsSysMessages(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	expectChannelHappyPath(t, mocks, []string{"bob"})
@@ -4311,7 +4351,7 @@ func TestProcessCreateRoomChannelEmitsSysMessages(t *testing.T) {
 
 func TestProcessCreateRoomDMEmitsNoSysMessages(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
@@ -4349,16 +4389,16 @@ In `room-worker/handler.go` `finishCreateRoom`, after the subscription.update lo
 
 ```go
 if room.Type == model.RoomTypeChannel {
-    if err := h.publishChannelSysMessages(ctx, req, room, requester, requestID, now); err != nil {
+    if err := h.publishChannelSysMessages(ctx, req, room, requester, len(allUsers)-1, requestID, now); err != nil {
         return fmt.Errorf("publish sys messages: %w", err)
     }
 }
 ```
 
-Add the helper:
+Add the helper. `addedUsersCount` is `len(allUsers) - 1` (post-expansion minus the owner) — the real count, not an approximation of `len(req.Users) + len(req.Orgs)` which double-counts orgs against their expanded users.
 
 ```go
-func (h *Handler) publishChannelSysMessages(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, now time.Time) error {
+func (h *Handler) publishChannelSysMessages(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, addedUsersCount int, requestID string, now time.Time) error {
     acceptedAt := time.UnixMilli(req.Timestamp).UTC()
 
     sysData1, err := json.Marshal(model.RoomCreated{
@@ -4366,7 +4406,7 @@ func (h *Handler) publishChannelSysMessages(ctx context.Context, req *model.Crea
         Users:           req.Users,
         Orgs:            req.Orgs,
         Channels:        req.Channels,
-        AddedUsersCount: len(req.Users) + len(req.Orgs), // approximation; refined per spec if needed
+        AddedUsersCount: addedUsersCount,
     })
     if err != nil {
         return fmt.Errorf("marshal room_created sys data: %w", err)
@@ -4389,7 +4429,7 @@ func (h *Handler) publishChannelSysMessages(ctx context.Context, req *model.Crea
         Individuals:     req.Users,
         Orgs:            req.Orgs,
         Channels:        req.Channels,
-        AddedUsersCount: len(req.Users) + len(req.Orgs),
+        AddedUsersCount: addedUsersCount,
     })
     if err != nil {
         return fmt.Errorf("marshal members_added sys data: %w", err)
@@ -4470,7 +4510,7 @@ Append to `room-worker/handler_test.go`:
 ```go
 func TestProcessCreateRoomOutboxPerRemoteSite(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	expectChannelHappyPathMixed(t, mocks)
@@ -4500,7 +4540,7 @@ func TestProcessCreateRoomOutboxPerRemoteSite(t *testing.T) {
 
 func TestProcessCreateRoomEmitsAsyncJobOk(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	expectChannelHappyPath(t, mocks, []string{"bob"})
@@ -4815,7 +4855,7 @@ func TestHandleRoomCreatedRequiresRequestID(t *testing.T) {
 
 func TestHandleRoomCreatedEmptyAccountsAcksWithWarn(t *testing.T) {
 	h, _ := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	payload, _ := json.Marshal(model.RoomCreatedOutbox{
@@ -4826,7 +4866,7 @@ func TestHandleRoomCreatedEmptyAccountsAcksWithWarn(t *testing.T) {
 
 func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
@@ -4861,7 +4901,7 @@ func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 
 func TestHandleRoomCreatedChannelBulkInsert(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	mocks.store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "ian"}).Return([]model.User{
@@ -5131,7 +5171,7 @@ func TestProcessCreateRoomChannelPersistsAllState(t *testing.T) {
 	})
 
 	h := newIntegrationHandler(t, store, "site-A")
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
 	body, _ := json.Marshal(model.CreateRoomRequest{
@@ -5171,7 +5211,7 @@ func TestProcessCreateRoomDMPersistsTwoSubsAndZeroMembers(t *testing.T) {
 		EngName: "B", ChineseName: "B", SiteID: "site-B"})
 
 	h := newIntegrationHandler(t, store, "site-A")
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
 	roomID := idgen.BuildDMRoomID("u_alice", "u_bob")
@@ -5210,7 +5250,7 @@ func TestProcessCreateRoomIdempotentRedelivery(t *testing.T) {
 		EngName: "B", ChineseName: "B", SiteID: "site-A"})
 
 	h := newIntegrationHandler(t, store, "site-A")
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
 	body, _ := json.Marshal(model.CreateRoomRequest{
@@ -5265,7 +5305,7 @@ func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
 		SiteID: "site-B", EngName: "Ian", ChineseName: "伊恩"})
 
 	h := newIntegrationHandler(t, store, "site-B")
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
 	payload, _ := json.Marshal(model.RoomCreatedOutbox{
@@ -5426,7 +5466,7 @@ Expected: two new messages with `Type: "room_created"` and `Type: "members_added
 ```
 nats request \
   "chat.user.alice.request.room.site-local.create" \
-  --header "X-Request-ID: 0193abcd0193abcd0193abcd0193abcd0193abcd" \
+  --header "X-Request-ID: 0193abcd-0193-7abc-89ab-0193abcd0193" \
   '{"users":["weather.bot"]}'
 ```
 
