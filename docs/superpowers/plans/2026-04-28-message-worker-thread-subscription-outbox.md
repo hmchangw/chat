@@ -622,7 +622,7 @@ Replace lines 75-92 of `message-worker/handler.go` with:
 
 - [ ] **Step 5.3: Update `handleThreadRoomAndSubscriptions` and the two reply handlers**
 
-Replace `handleThreadRoomAndSubscriptions`, `handleFirstThreadReply`, and `handleSubsequentThreadReply` in `message-worker/handler.go` with the versions below. The `replier *model.User` arg flows in; parent's siteID is fetched via `userStore.FindUserByID` with warn-and-skip on `userstore.ErrUserNotFound`.
+Replace `handleThreadRoomAndSubscriptions`, `handleFirstThreadReply`, `handleSubsequentThreadReply`, and add `lookupOwnerSiteID` in `message-worker/handler.go` with the versions below. The `replier *model.User` arg flows in; the new `lookupOwnerSiteID` helper resolves the parent's home site via `userStore.FindUserByID` with warn-and-skip on `userstore.ErrUserNotFound` and propagation on other errors.
 
 ```go
 // handleThreadRoomAndSubscriptions creates the ThreadRoom on first reply and
@@ -673,8 +673,11 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 		return fmt.Errorf("get parent message sender: %w", err)
 	}
 
-	parentSiteID, parentLookupOK := h.lookupOwnerSiteID(ctx, parentSender.ID, "first-reply parent")
-	if parentLookupOK {
+	parentSiteID, err := h.lookupOwnerSiteID(ctx, parentSender.ID, "first-reply parent")
+	if err != nil {
+		return fmt.Errorf("lookup parent owner site: %w", err)
+	}
+	if parentSiteID != "" {
 		if err := h.threadStore.InsertThreadSubscription(ctx,
 			h.buildThreadSubscription(msg, threadRoomID, parentSender.ID, parentSender.Account, parentSiteID, now),
 		); err != nil {
@@ -706,8 +709,11 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
 	switch {
 	case err == nil:
-		parentSiteID, parentLookupOK := h.lookupOwnerSiteID(ctx, parentSender.ID, "subsequent-reply parent")
-		if parentLookupOK {
+		parentSiteID, lookupErr := h.lookupOwnerSiteID(ctx, parentSender.ID, "subsequent-reply parent")
+		if lookupErr != nil {
+			return "", fmt.Errorf("lookup parent owner site: %w", lookupErr)
+		}
+		if parentSiteID != "" {
 			if err := h.threadStore.UpsertThreadSubscription(ctx,
 				h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, parentSiteID, now),
 			); err != nil {
@@ -743,39 +749,10 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 	return existingRoom.ID, nil
 }
 
-// lookupOwnerSiteID resolves a user's home site by ID. Returns (siteID, true)
-// on success. On userstore.ErrUserNotFound, logs a warning and returns
-// ("", false) so callers can skip that user gracefully (parallels the
-// errMessageNotFound branch already in this file). Other errors propagate.
-func (h *Handler) lookupOwnerSiteID(ctx context.Context, userID, role string) (string, bool) {
-	user, err := h.userStore.FindUserByID(ctx, userID)
-	if err != nil {
-		if errors.Is(err, userstore.ErrUserNotFound) {
-			slog.Warn("owner user not found — skipping thread subscription",
-				"userID", userID, "role", role)
-			return "", false
-		}
-		// Non-NotFound errors propagate via the caller — return ok=false but
-		// the next call to userStore from the caller will surface the error.
-		// For a clean API we return the lookup error to the caller instead.
-		// Match existing pattern: rewrap and panic-style would be wrong; instead
-		// the helper returns ok=false, and we rely on callers to handle the
-		// transient case. Simpler: change signature to also return error.
-		_ = err
-		return "", false
-	}
-	return user.SiteID, true
-}
-```
-
-> **Note on `lookupOwnerSiteID` error semantics:** for transient DB errors we still return `("", false)`, which causes the call site to skip that user. That's wrong for a transient failure — we should propagate. Fix this by returning an error.
-
-Replace the `lookupOwnerSiteID` body with a version that returns `(string, error)`:
-
-```go
-// lookupOwnerSiteID resolves a user's home site by ID. Returns
-// ("", nil) when the user is not found (logs a warning) so callers can skip
-// gracefully. Other DB errors are returned for the caller to NAK on.
+// lookupOwnerSiteID resolves a user's home site by ID.
+// Returns ("", nil) when the user is not found (logs a warning) so callers
+// can skip that user gracefully — parallels the errMessageNotFound branch
+// already in this file. Other DB errors are returned for the caller to NAK on.
 func (h *Handler) lookupOwnerSiteID(ctx context.Context, userID, role string) (string, error) {
 	user, err := h.userStore.FindUserByID(ctx, userID)
 	if err != nil {
@@ -789,20 +766,6 @@ func (h *Handler) lookupOwnerSiteID(ctx context.Context, userID, role string) (s
 	return user.SiteID, nil
 }
 ```
-
-Then update the two callers in `handleFirstThreadReply` and `handleSubsequentThreadReply` to:
-
-```go
-	parentSiteID, err := h.lookupOwnerSiteID(ctx, parentSender.ID, "first-reply parent")
-	if err != nil {
-		return fmt.Errorf("lookup parent owner site: %w", err)
-	}
-	if parentSiteID != "" {
-		// ... insert/upsert parent subscription ...
-	}
-```
-
-Use `return "", fmt.Errorf(...)` in `handleSubsequentThreadReply` (the (string, error) signature).
 
 - [ ] **Step 5.4: Update existing `markThreadMentions` to use `Participant.SiteID`**
 
@@ -2114,4 +2077,38 @@ git commit -m "inbox-worker: integration tests for UpsertThreadSubscription mono
 
 ---
 
-<!-- end-of-chunk-5c -->
+## Spec coverage map
+
+| Spec section / requirement | Task(s) |
+|---|---|
+| `OutboxThreadSubscriptionUpserted` constant | Task 1 |
+| `Participant.SiteID` field, propagation from `mention.Resolve` | Task 2 |
+| `Handler.publish PublishFunc` + `siteID` field | Task 3 |
+| `publishThreadSubOutboxIfRemote` helper, dedup ID seed, same-site no-op, empty-SiteID guard, error propagation | Task 4 |
+| `ThreadSubscription.SiteID` = owner's site (not room's) | Task 5 |
+| Parent siteID lookup via `userStore.FindUserByID`, warn-and-skip on `ErrUserNotFound`, propagate other errors | Tasks 5, 6, 7 |
+| Outbox publish on first reply (parent + replier) | Task 6 |
+| Outbox publish on subsequent reply (parent + replier) | Task 7 |
+| Outbox publish on thread mention (mentionees only, with `HasMention=true` payload) | Task 8 |
+| Skip @all and sender self-mention at thread level | Task 8 |
+| `main.go` JetStream publish closure with `Nats-Msg-Id` | Tasks 3, 9 |
+| `bootstrap.go` unchanged for OUTBOX (ops/IaC ownership) | Task 9 |
+| Inbox-worker dispatch case for `thread_subscription_upserted` | Task 10 |
+| `InboxStore.UpsertThreadSubscription` interface method | Task 10 |
+| Mongo `$setOnInsert` + `$set` + `$max` upsert with monotonic `hasMention` | Task 11 |
+| `(threadRoomId, userId)` unique index in inbox-worker | Task 11 |
+| Integration tests: insert path + monotonic mention merge | Task 12 |
+| Failure semantics: NAK on outbox publish error → JetStream redelivery → idempotent dedup | Tasks 4, 6, 7, 8 |
+| Migration / rollout note (deploy inbox-worker before message-worker) | covered by spec; no code task needed |
+| Non-goals: ThreadRoom replication, client UI events, delete events, @all propagation | none — explicitly excluded by spec |
+
+---
+
+## Execution handoff
+
+Plan complete and saved to `docs/superpowers/plans/2026-04-28-message-worker-thread-subscription-outbox.md`. Two execution options:
+
+1. **Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
+2. **Inline Execution** — Execute tasks in this session using `superpowers:executing-plans`, batch execution with checkpoints.
+
+Which approach?
