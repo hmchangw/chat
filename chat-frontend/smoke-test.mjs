@@ -132,7 +132,7 @@ async function main() {
   const respSub = aliceNc.subscribe(roomsList('alice'))
   ;(async () => {
     for await (const msg of respSub) {
-      const reply = { rooms: [{ id: roomId, name: 'test-room', type: 'group', userCount: 2 }] }
+      const reply = { rooms: [{ id: roomId, name: 'test-room', type: 'channel', userCount: 2 }] }
       msg.respond(sc.encode(JSON.stringify(reply)))
       respSub.unsubscribe()
     }

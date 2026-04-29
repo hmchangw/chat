@@ -30,13 +30,13 @@ export default function ChatPage() {
     setShowMembers(false)
   }
 
-  const isGroup = selectedRoom?.type === 'group'
+  const isChannel = selectedRoom?.type === 'channel'
 
   return (
     <div className="chat-layout">
       <div className="chat-header">
         <span className="chat-header-title">Chat</span>
-        {isGroup && (
+        {isChannel && (
           <>
             <button
               type="button"

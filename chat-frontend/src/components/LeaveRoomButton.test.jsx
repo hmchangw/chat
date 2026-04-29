@@ -8,7 +8,7 @@ vi.mock('../context/NatsContext', () => ({
 
 import { useNats } from '../context/NatsContext'
 
-const groupRoom = { id: 'r1', siteId: 'site-A', name: 'general', type: 'group' }
+const channelRoom = { id: 'r1', siteId: 'site-A', name: 'general', type: 'channel' }
 const dmRoom = { id: 'r2', siteId: 'site-A', name: 'bob-dm', type: 'dm' }
 
 function setup(room, overrides = {}) {
@@ -39,7 +39,7 @@ describe('LeaveRoomButton', () => {
 
   it('submits {roomId, account=self} after the user confirms', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const { request } = setup(groupRoom)
+    const { request } = setup(channelRoom)
     fireEvent.click(screen.getByRole('button', { name: /Leave/i }))
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
     expect(request).toHaveBeenCalledWith(
@@ -50,7 +50,7 @@ describe('LeaveRoomButton', () => {
 
   it('does nothing when the user cancels the confirm', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const { request } = setup(groupRoom)
+    const { request } = setup(channelRoom)
     fireEvent.click(screen.getByRole('button', { name: /Leave/i }))
     expect(request).not.toHaveBeenCalled()
   })
@@ -59,7 +59,7 @@ describe('LeaveRoomButton', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
     const request = vi.fn().mockRejectedValue(new Error('cannot leave: you are the last owner'))
-    setup(groupRoom, { request })
+    setup(channelRoom, { request })
     fireEvent.click(screen.getByRole('button', { name: /Leave/i }))
     await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
     expect(alertSpy.mock.calls[0][0]).toMatch(/^Failed to leave:.*last owner/)

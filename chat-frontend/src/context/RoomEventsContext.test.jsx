@@ -131,7 +131,7 @@ describe('RoomEventsProvider subscriptions', () => {
 
   it('fetches rooms on mount and subscribes to user-scoped events', async () => {
     const rooms = [
-      { id: 'g1', name: 'group', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: '2026-04-17T10:00:00Z' },
+      { id: 'g1', name: 'general-channel', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: '2026-04-17T10:00:00Z' },
       { id: 'd1', name: 'dm',    type: 'dm',    siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T11:00:00Z' },
     ]
     const request = vi.fn().mockImplementation((subject) => {
