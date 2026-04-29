@@ -34,7 +34,7 @@
 
 ## Task 1: Add `cql:` tags to `cassandra.Message` (C1 — Part 1)
 
-**Why:** gocql's `Iter.StructScan` maps returned columns to struct fields by the `cql:` tag name. Without tags the scan would fall back to lowercased field names (e.g. `RoomID` → `roomid`) which would not match snake_case Cassandra column names (e.g. `room_id`). Adding the tags is a zero-risk prerequisite — the existing positional `Scan()` calls ignore them entirely.
+**Why:** The custom `structScan` helper (added in Task 2) maps returned columns to struct fields by the `cql:` tag name. Without tags the scan would fall back to lowercased field names (e.g. `RoomID` → `roomid`) which would not match snake_case Cassandra column names (e.g. `room_id`). Adding the tags is a zero-risk prerequisite — the existing positional `Scan()` calls ignore them entirely.
 
 **Files:**
 - Modify: `pkg/model/cassandra/message.go`
@@ -110,9 +110,9 @@
 
 ---
 
-## Task 2: Replace positional scan with `Iter.StructScan` in cassrepo (C1 — Part 2)
+## Task 2: Replace positional scan with `structScan` helper in cassrepo (C1 — Part 2)
 
-**Why:** The current `baseScanDest` / `messageByIDScanDest` / `threadMessageScanDest` functions must stay perfectly in sync with the SELECT column list — one column added anywhere silently corrupts all subsequent fields. `Iter.StructScan(&m)` maps by `cql:` tag name, making column order irrelevant and eliminating the entire class of positional-scan bugs. After this task, `GetThreadMessages` also delegates to `fetchMessagesPage` (which all room-query methods already use) because the scan function is now uniform.
+**Why:** The current `baseScanDest` / `messageByIDScanDest` / `threadMessageScanDest` functions must stay perfectly in sync with the SELECT column list — one column added anywhere silently corrupts all subsequent fields. The custom `structScan(iter, &m)` helper (gocql v1.7.0 has no native `StructScan`) maps by `cql:` tag name via `MapScan`, making column order irrelevant and eliminating the entire class of positional-scan bugs. After this task, `GetThreadMessages` also delegates to `fetchMessagesPage` (which all room-query methods already use) because the scan function is now uniform.
 
 **Files:**
 - Modify: `history-service/internal/cassrepo/messages_by_room.go`
@@ -1264,7 +1264,7 @@ Follow TDD: write the failing test first.
   ```
 
   Expected output (three lines in the `QuotedParentMessage` UDT block):
-  ```
+  ```text
   55:  thread_parent_id TEXT,          -- set by message-worker when quoted message is a TShow reply
   56:  thread_parent_created_at TIMESTAMP  -- actual CreatedAt of the thread parent; used by history-service
   57:                                      -- to enforce access-window checks without a Cassandra round-trip
@@ -1274,7 +1274,7 @@ Follow TDD: write the failing test first.
 
   Edit `docs/cassandra_message_model.md` lines 55–57:
 
-  ```
+  ```cql
   thread_parent_id TEXT,          // set by message-worker when quoted message is a TShow reply
   thread_parent_created_at TIMESTAMP  // actual CreatedAt of the thread parent; used by history-service
                                       // to enforce access-window checks without a Cassandra round-trip

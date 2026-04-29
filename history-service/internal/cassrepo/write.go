@@ -27,7 +27,7 @@ const (
 )
 
 // casDecrement atomically decrements a nullable INT toward zero (clamping at zero); mirrors message-worker/store_cassandra.go casIncrement.
-// When expected is nil, the LWT becomes "IF tcount = null" — Cassandra evaluates a null column as equal to a null bind value, so the update applies.
+// When initial is nil the column was never written and the function returns immediately — no LWT is issued and no zero is materialised.
 func casDecrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
 	if initial == nil {
 		// tcount was never written — nothing to decrement; skip to avoid materialising a zero on a null column.
