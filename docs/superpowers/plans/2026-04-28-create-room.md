@@ -104,7 +104,7 @@ The plan executes in nine phases, each phase grouped into self-reviewable parts.
 
 These rules came out of a code-review pass on this plan. They cut across many tasks; rather than restate them inside each task, the implementer must apply them wherever the relevant code is written.
 
-1. **Request-ID format.** All `X-Request-ID` fixtures use the 36-char hyphenated UUIDv7 form (e.g. `0193abcd-0193-7abc-89ab-0193abcd0193`). The 32-char no-hyphen form is reserved for Mongo `_id` per CLAUDE.md and must NOT appear in request-ID headers, test fixtures, or smoke-test commands.
+1. **Request-ID format.** `X-Request-ID` values are 36-char hyphenated UUIDs — any version (v4 or v7) is accepted by `idgen.IsValidUUID`. Unit-test fixtures use a constant like `"0193abcd-0193-7abc-89ab-0193abcd0193"`; integration tests use `idgen.GenerateRequestID()` (which returns a UUIDv7 hyphenated). The 32-char no-hyphen form is exclusively for Mongo entity `_id` fields and must NOT be used for request IDs anywhere.
 
 2. **Reuse `room-worker/handler.go` `h.publish` for ALL JetStream publishes.** It already sets `Nats-Msg-Id` from its third arg and is the standard wrapper. Tasks 35, 36, 37 must NOT call `h.js.PublishMsg` directly or build `natsutil.NewMsg` inline. The `publishCanonical` helper in Task 36 is `h.publish(ctx, subject.MsgCanonicalCreated(siteID), data, msg.ID)` — do not reinvent header-setting.
 
@@ -137,6 +137,8 @@ These rules came out of a code-review pass on this plan. They cut across many ta
 14. **Subscription field denormalization (`Name`, `RoomType`, `IsSubscribed`).** Task 2 adds these to keep them as a deliberate read-optimization for the sidebar query. Document this rationale in Task 2's commit message and add a test that asserts the values stay in sync after a room rename (the rename flow must update all subscriptions). If the rename plumbing is out of scope for this PR, file a follow-up task explicitly.
 
 15. **No `time.Sleep` in non-test code (CLAUDE.md).** Verification step in Task 43: add `! grep -rn 'time\.Sleep' room-service room-worker inbox-worker | grep -v _test.go` to the success criteria.
+
+16. **Subscription and room-member IDs use `GenerateUUIDv7()`.** The spec has an internal contradiction: the summary bullet (line 52) says "deterministic `MessageIDFromRequestID(requestID, 'sub:' + account)`" but the detailed ID-generation section (line 344) says "`idgen.GenerateUUIDv7()` (32-char hex, no hyphens)." The 32-char hex form is correct — consistent with the established convention for `Subscription._id`, `RoomMember._id`, `ThreadRoom._id`, and `ThreadSubscription._id` throughout the codebase. Use `idgen.GenerateUUIDv7()` for both subscription IDs and room-member IDs in all tasks (13, 14, 33, 34, 39). Idempotency on JetStream redelivery is provided by the compound unique index (not by deterministic IDs). The `bulkCreateSubsIdempotent` and `bulkCreateMembersIdempotent` helpers already handle `mongo.IsDuplicateKeyError` → success, which is the correct pattern. Tests that check sub/member IDs must assert `idgen.IsValidUUIDv7(sub.ID)`, not a deterministic value.
 
 ---
 
@@ -1507,7 +1509,7 @@ In `room-worker/handler.go` inside `processAddMembers`, in the same loop that bu
 
 ```go
 sub := &model.Subscription{
-    ID:       idgen.MessageIDFromRequestID(requestID, "sub:" + user.Account),
+    ID:       idgen.GenerateUUIDv7(),
     User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
     RoomID:   req.RoomID,
     SiteID:   room.SiteID,
@@ -3915,9 +3917,9 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 	}
 
 	subs := []*model.Subscription{
-		newSub(idgen.MessageIDFromRequestID(requestID, "sub:"+requester.Account),
+		newSub(idgen.GenerateUUIDv7(),
 			requester, room, nil, other.Account, composeNameOrAccount(other), false, acceptedAt),
-		newSub(idgen.MessageIDFromRequestID(requestID, "sub:"+other.Account),
+		newSub(idgen.GenerateUUIDv7(),
 			other, room, nil, requester.Account, composeNameOrAccount(requester), false, acceptedAt),
 	}
 	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
@@ -3940,9 +3942,9 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 	}
 
 	subs := []*model.Subscription{
-		newSub(idgen.MessageIDFromRequestID(requestID, "sub:"+requester.Account),
+		newSub(idgen.GenerateUUIDv7(),
 			requester, room, nil, bot.Account, req.AppName, true, acceptedAt),
-		newSub(idgen.MessageIDFromRequestID(requestID, "sub:"+bot.Account),
+		newSub(idgen.GenerateUUIDv7(),
 			bot, room, nil, requester.Account, composeNameOrAccount(requester), false, acceptedAt),
 	}
 	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
@@ -4131,13 +4133,13 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	for i := range users {
 		u := &users[i]
 		subs = append(subs, newSub(
-			idgen.MessageIDFromRequestID(requestID, "sub:"+u.Account),
+			idgen.GenerateUUIDv7(),
 			u, room,
 			[]model.Role{model.RoleMember},
 			room.Name, "", false, acceptedAt))
 	}
 	subs = append(subs, newSub(
-		idgen.MessageIDFromRequestID(requestID, "sub:"+requester.Account),
+		idgen.GenerateUUIDv7(),
 		requester, room,
 		[]model.Role{model.RoleOwner},
 		room.Name, "", false, acceptedAt))
@@ -4150,7 +4152,7 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	if len(req.Orgs) > 0 {
 		for _, sub := range subs[:len(subs)-1] {
 			members = append(members, &model.RoomMember{
-				ID:     idgen.MessageIDFromRequestID(requestID, "member:"+sub.User.Account),
+				ID:     idgen.GenerateUUIDv7(),
 				RoomID: room.ID,
 				Ts:     acceptedAt,
 				Member: model.RoomMemberEntry{
@@ -4160,7 +4162,7 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 		}
 		for _, org := range req.Orgs {
 			members = append(members, &model.RoomMember{
-				ID:     idgen.MessageIDFromRequestID(requestID, "member:org:"+org),
+				ID:     idgen.GenerateUUIDv7(),
 				RoomID: room.ID,
 				Ts:     acceptedAt,
 				Member: model.RoomMemberEntry{ID: org, Type: model.RoomMemberOrg},
@@ -4169,7 +4171,7 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	}
 	// Owner row always written for channels.
 	members = append(members, &model.RoomMember{
-		ID:     idgen.MessageIDFromRequestID(requestID, "member:"+requester.Account),
+		ID:     idgen.GenerateUUIDv7(),
 		RoomID: room.ID,
 		Ts:     acceptedAt,
 		Member: model.RoomMemberEntry{
@@ -4889,7 +4891,7 @@ func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 
 	subs := captured.Args()
 	require.Len(t, subs, 1)
-	assert.Equal(t, idgen.MessageIDFromRequestID(reqID, "sub:bob"), subs[0].ID)
+	assert.True(t, idgen.IsValidUUIDv7(subs[0].ID)) // random GenerateUUIDv7(), not deterministic
 	assert.Equal(t, "u_aliceu_bob", subs[0].RoomID)
 	assert.Equal(t, "site-A", subs[0].SiteID) // room's home, not bob's
 	assert.Equal(t, "alice", subs[0].Name)
@@ -4967,7 +4969,7 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt model.OutboxEvent) 
 	subs := make([]*model.Subscription, 0, len(users))
 	for _, u := range users {
 		sub := &model.Subscription{
-			ID:           idgen.MessageIDFromRequestID(requestID, "sub:"+u.Account),
+			ID:           idgen.GenerateUUIDv7(),
 			User:         model.SubscriptionUser{ID: u.ID, Account: u.Account},
 			RoomID:       data.RoomID,
 			SiteID:       data.HomeSiteID,
@@ -5067,7 +5069,7 @@ func TestCreateRoomChannelEndToEnd(t *testing.T) {
 		Name:  "deal team",
 		Users: []string{"bob"},
 	})
-	reqID := idgen.GenerateUUIDv7()
+	reqID := idgen.GenerateRequestID()
 	req := natsutil.NewMsg(natsutil.WithRequestID(ctx, reqID),
 		"chat.user.alice.request.room.site-A.create", body)
 	reply, err := nc.RequestMsg(req, 5*time.Second)
@@ -5118,7 +5120,7 @@ func TestCreateRoomDMAlreadyExists(t *testing.T) {
 	startRoomService(t, nc, store, "site-A")
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
-	reqID := idgen.GenerateUUIDv7()
+	reqID := idgen.GenerateRequestID()
 	req := natsutil.NewMsg(natsutil.WithRequestID(ctx, reqID),
 		"chat.user.alice.request.room.site-A.create", body)
 	reply, err := nc.RequestMsg(req, 5*time.Second)
