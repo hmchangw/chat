@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,8 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -38,7 +39,7 @@ func TestHandler_ProcessRoleUpdate_Promote(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	if err := h.processRoleUpdate(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -89,7 +90,7 @@ func TestHandler_ProcessRoleUpdate_Demote(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	if err := h.processRoleUpdate(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -131,7 +132,7 @@ func TestHandler_ProcessRoleUpdate_CrossSite(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	if err := h.processRoleUpdate(context.Background(), data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -171,6 +172,30 @@ func TestHandler_ProcessRoleUpdate_CrossSite(t *testing.T) {
 
 // --- Error-path tests for processRoleUpdate ---
 
+func TestHandler_ProcessRoleUpdate_FallsBackToNowOnInvalidTimestamp(t *testing.T) {
+	// A missing timestamp should not short-circuit the handler. We confirm
+	// processing reached the store layer by stubbing the first store call to
+	// return a downstream error and asserting the error is NOT the timestamp
+	// rejection.
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(fmt.Errorf("db error"))
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+		return nil
+	})
+	req := model.UpdateRoleRequest{
+		RoomID:    "r1",
+		Account:   "bob",
+		NewRole:   model.RoleOwner,
+		Timestamp: 0,
+	}
+	data, _ := json.Marshal(req)
+	err := h.processRoleUpdate(context.Background(), data)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "timestamp must be > 0")
+	assert.Contains(t, err.Error(), "add owner role")
+}
+
 func TestHandler_ProcessRoleUpdate_InvalidJSON(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
@@ -195,7 +220,7 @@ func TestHandler_ProcessRoleUpdate_AddRoleError(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -214,7 +239,7 @@ func TestHandler_ProcessRoleUpdate_RemoveRoleError(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -233,7 +258,7 @@ func TestHandler_ProcessRoleUpdate_GetSubscriptionError(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -252,7 +277,7 @@ func TestHandler_ProcessRoleUpdate_PublishError(t *testing.T) {
 		return fmt.Errorf("nats down")
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -268,7 +293,7 @@ func TestHandler_ProcessRoleUpdate_UnsupportedRole(t *testing.T) {
 		return nil
 	}}
 
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: "admin"}
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: "admin", Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	if err == nil {
@@ -276,7 +301,57 @@ func TestHandler_ProcessRoleUpdate_UnsupportedRole(t *testing.T) {
 	}
 }
 
+func TestHandler_ProcessRoleUpdate_PropagatesRequestID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
+		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").
+		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-a"}, nil)
+
+	var capturedCtx context.Context
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		capturedCtx = ctx
+		return nil
+	}
+	h := NewHandler(store, "site1", publish)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-rw-test")
+	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
+	reqData, _ := json.Marshal(req)
+	err := h.processRoleUpdate(ctx, reqData)
+	require.NoError(t, err)
+	require.NotNil(t, capturedCtx, "publish wrapper must receive a non-nil ctx")
+	assert.Equal(t, "req-rw-test", natsutil.RequestIDFromContext(capturedCtx),
+		"publish wrapper must receive ctx that still carries the request ID")
+}
+
 // --- processRemoveMember tests ---
+
+func TestHandler_ProcessRemoveMember_FallsBackToNowOnInvalidTimestamp(t *testing.T) {
+	// A missing timestamp should not short-circuit the handler. We confirm
+	// processing reached the store layer by stubbing the first store call to
+	// return a downstream error and asserting the error is NOT the timestamp
+	// rejection.
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().GetUserWithMembership(gomock.Any(), "r1", "alice").Return(nil, fmt.Errorf("db error"))
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+		return nil
+	})
+	req := model.RemoveMemberRequest{
+		RoomID:    "r1",
+		Account:   "alice",
+		Requester: "alice",
+		Timestamp: 0,
+	}
+	data, _ := json.Marshal(req)
+	err := h.processRemoveMember(context.Background(), data)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "timestamp must be > 0")
+}
 
 func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -318,7 +393,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	})
 
 	// Self-leave: Requester == Account
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -384,7 +459,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -438,7 +513,7 @@ func TestHandler_ProcessRemoveMember_DualMembership_OwnerDemoted(t *testing.T) {
 				return nil
 			})
 
-			req := model.RemoveMemberRequest{RoomID: roomID, Requester: tc.requester, Account: account}
+			req := model.RemoveMemberRequest{RoomID: roomID, Requester: tc.requester, Account: account, Timestamp: 1}
 			data, _ := json.Marshal(req)
 
 			err := h.processRemoveMember(context.Background(), data)
@@ -491,7 +566,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	})
 
 	// requester != account means this is owner-removes-other
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, Account: account, Timestamp: 1}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -511,6 +586,29 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 }
 
 // --- processAddMembers tests ---
+
+func TestHandler_ProcessAddMembers_FallsBackToNowOnInvalidTimestamp(t *testing.T) {
+	// A missing timestamp should not short-circuit the handler. We confirm
+	// processing reached the store layer by stubbing the first store call to
+	// return a downstream error and asserting the error is NOT the timestamp
+	// rejection.
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, fmt.Errorf("db error"))
+	h := NewHandler(store, "site1", func(_ context.Context, _ string, _ []byte, _ string) error {
+		return nil
+	})
+	req := model.AddMembersRequest{
+		RoomID:           "r1",
+		RequesterAccount: "alice",
+		Users:            []string{"bob"},
+		Timestamp:        0,
+	}
+	data, _ := json.Marshal(req)
+	err := h.processAddMembers(context.Background(), data)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "timestamp must be > 0")
+}
 
 func TestHandler_ProcessAddMembers(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -546,7 +644,8 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 
 	req := model.AddMembersRequest{
 		RoomID: "r1", Users: []string{"bob", "charlie"},
-		History: model.HistoryConfig{Mode: model.HistoryModeNone},
+		History:   model.HistoryConfig{Mode: model.HistoryModeNone},
+		Timestamp: 1,
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -596,7 +695,8 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 
 	req := model.AddMembersRequest{
 		RoomID: "r1", Users: []string{"bob"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		History:   model.HistoryConfig{Mode: model.HistoryModeAll},
+		Timestamp: 1,
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -708,7 +808,8 @@ func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) 
 
 	req := model.AddMembersRequest{
 		RoomID: "r1", Users: []string{"bob"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		History:   model.HistoryConfig{Mode: model.HistoryModeAll},
+		Timestamp: 1,
 	}
 	reqData, _ := json.Marshal(req)
 	require.NoError(t, h.processAddMembers(context.Background(), reqData))
@@ -751,8 +852,12 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	}, nil)
 
 	req := model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"bob"}, Orgs: []string{"eng"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		Orgs:             []string{"eng"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -783,8 +888,11 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"bob", "ghost"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		RoomID:           "r1",
+		Users:            []string{"bob", "ghost"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -816,8 +924,11 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"alice", "bob", "charlie"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		RoomID:           "r1",
+		Users:            []string{"alice", "bob", "charlie"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
 	}
 	reqData, _ := json.Marshal(req)
 
@@ -882,7 +993,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID, Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -940,7 +1051,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		return nil
 	})
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -975,7 +1086,7 @@ func TestHandler_ProcessRemoveIndividual_GetUserError(t *testing.T) {
 		Return(nil, fmt.Errorf("db down"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -997,7 +1108,7 @@ func TestHandler_ProcessRemoveIndividual_DeleteRoomMemberError(t *testing.T) {
 		Return(fmt.Errorf("write failed"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1023,7 +1134,7 @@ func TestHandler_ProcessRemoveIndividual_DualDemoteError(t *testing.T) {
 		Return(fmt.Errorf("write failed"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1048,7 +1159,7 @@ func TestHandler_ProcessRemoveIndividual_DeleteSubscriptionError(t *testing.T) {
 		Return(int64(0), fmt.Errorf("write failed"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1076,7 +1187,7 @@ func TestHandler_ProcessRemoveIndividual_ReconcileUserCountError(t *testing.T) {
 		Return(fmt.Errorf("write failed"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice"}
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1109,28 +1220,16 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 		})
 
 	req := model.AddMembersRequest{
-		RoomID:  "r1",
-		Users:   []string{"bob"},
-		History: model.HistoryConfig{Mode: model.HistoryModeAll},
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
 	}
 	reqData, _ := json.Marshal(req)
 
 	err := h.processAddMembers(context.Background(), reqData)
 	require.NoError(t, err)
-}
-
-// Message.ID and Nats-Msg-Id both come from idgen.DeriveID now — its
-// determinism tests live in pkg/idgen, but keep a smoke test here to catch
-// any regressions in the seed format used for JetStream dedup headers.
-func TestDedupID_StableAcrossCalls(t *testing.T) {
-	a := idgen.DeriveID("addmembers-msg:room-1:1")
-	b := idgen.DeriveID("addmembers-msg:room-1:1")
-	assert.Equal(t, a, b)
-	assert.NotEmpty(t, a)
-	// Different seeds must produce different IDs — otherwise JetStream
-	// dedup would collapse unrelated operations into a single published event.
-	c := idgen.DeriveID("addmembers-msg:room-1:2")
-	assert.NotEqual(t, a, c)
 }
 
 // Bug 4: outbox publish failure must propagate (NAK), not be swallowed.
@@ -1169,7 +1268,7 @@ func TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates(t *testing.T) {
 	}
 	h := NewHandler(store, localSite, publish)
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
@@ -1207,10 +1306,149 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	}
 	h := NewHandler(store, localSite, publish)
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID, Timestamp: 1000}
 	data, _ := json.Marshal(req)
 
 	err := h.processRemoveMember(context.Background(), data)
 	require.Error(t, err, "outbox failure must return error so JetStream NAKs and retries")
 	assert.Contains(t, err.Error(), "outbox")
+}
+
+func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var capturedSubject string
+	var capturedData []byte
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		if strings.HasPrefix(subj, "chat.user.") {
+			capturedSubject = subj
+			capturedData = data
+		}
+		return nil
+	}
+	h := NewHandler(store, "site1", publish)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site1"}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), []string{"bob"}, "r1").Return([]string{"bob"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site1"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().ReconcileUserCount(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-async-test")
+	req := model.AddMembersRequest{
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+	}
+	reqData, _ := json.Marshal(req)
+	err := h.processAddMembers(ctx, reqData)
+	require.NoError(t, err)
+
+	assert.Equal(t, subject.UserResponse("alice", "req-async-test"), capturedSubject)
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(capturedData, &result))
+	assert.Equal(t, "req-async-test", result.RequestID)
+	assert.Equal(t, "add_members", result.Job)
+	assert.True(t, result.Success)
+	assert.Equal(t, "", result.Error)
+	assert.Greater(t, result.Timestamp, int64(0))
+}
+
+func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var capturedSubject string
+	var capturedData []byte
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		if strings.HasPrefix(subj, "chat.user.") {
+			capturedSubject = subj
+			capturedData = data
+		}
+		return nil
+	}
+	h := NewHandler(store, "site1", publish)
+
+	// Mock store to fail on FindUsersByAccounts (first store operation after ListNewMembers)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site1"}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), []string{"bob"}, "r1").Return([]string{"bob"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return(nil, fmt.Errorf("database connection failed"))
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-error-test")
+	req := model.AddMembersRequest{
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+	}
+	reqData, _ := json.Marshal(req)
+	err := h.processAddMembers(ctx, reqData)
+	require.Error(t, err, "processAddMembers must return error on FindUsersByAccounts failure")
+	assert.Contains(t, err.Error(), "find users by accounts")
+
+	// Verify failure event was published to requester
+	assert.Equal(t, subject.UserResponse("alice", "req-error-test"), capturedSubject)
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(capturedData, &result))
+	assert.Equal(t, "req-error-test", result.RequestID)
+	assert.Equal(t, "add_members", result.Job)
+	assert.False(t, result.Success, "failure event must have Success=false")
+	assert.Equal(t, "operation failed", result.Error, "failure event must carry sanitized error message")
+	assert.Greater(t, result.Timestamp, int64(0))
+}
+
+func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
+	var capturedSubject string
+	var capturedData []byte
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		if strings.HasPrefix(subj, "chat.user.") {
+			capturedSubject = subj
+			capturedData = data
+		}
+		return nil
+	}
+	h := NewHandler(nil, "site1", publish)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-err-test")
+	jobErr := errors.New("oops")
+	h.publishAsyncJobResult(ctx, "alice", "add_members", jobErr)
+
+	assert.Equal(t, subject.UserResponse("alice", "req-err-test"), capturedSubject)
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(capturedData, &result))
+	assert.Equal(t, "req-err-test", result.RequestID)
+	assert.Equal(t, "add_members", result.Job)
+	assert.False(t, result.Success)
+	assert.Equal(t, "operation failed", result.Error)
+}
+
+func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequestID(t *testing.T) {
+	called := false
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		called = true
+		return nil
+	}
+	h := NewHandler(nil, "site1", publish)
+
+	// No WithRequestID on ctx → empty request ID → publish is skipped.
+	h.publishAsyncJobResult(context.Background(), "alice", "add_members", nil)
+	assert.False(t, called, "publish must be skipped when request ID is empty")
+}
+
+func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequester(t *testing.T) {
+	called := false
+	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
+		called = true
+		return nil
+	}
+	h := NewHandler(nil, "site1", publish)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-test")
+	h.publishAsyncJobResult(ctx, "", "add_members", nil)
+	assert.False(t, called, "publish must be skipped when requester account is empty")
 }

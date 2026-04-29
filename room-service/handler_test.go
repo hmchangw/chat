@@ -9,11 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -1780,5 +1783,157 @@ func TestHandler_handleRoomsInfoBatch_chunking(t *testing.T) {
 	for i, ri := range batchResp.Rooms {
 		assert.Equal(t, fmt.Sprintf("r%d", i), ri.RoomID)
 		assert.False(t, ri.Found)
+	}
+}
+
+func TestHandler_handleUpdateRole_PropagatesRequestID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	store.EXPECT().
+		GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+			HasIndividualMembership: true,
+		}, nil)
+
+	var capturedHeader nats.Header
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(ctx context.Context, _ string, _ []byte) error {
+			capturedHeader = natsutil.HeaderForContext(ctx)
+			return nil
+		},
+	}
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-room-svc-test")
+	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleOwner}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
+
+	_, err := h.handleUpdateRole(ctx, subj, data)
+	require.NoError(t, err)
+	require.NotNil(t, capturedHeader, "publish wrapper must build header from ctx")
+	assert.Equal(t, "req-room-svc-test", capturedHeader.Get(natsutil.RequestIDHeader))
+}
+
+func TestWrappedCtx_PropagatesXRequestIDFromHeaderToContext(t *testing.T) {
+	rawMsg := &nats.Msg{
+		Subject: "chat.room.test",
+		Data:    []byte("ignored"),
+		Header:  nats.Header{natsutil.RequestIDHeader: []string{"req-from-inbound-header"}},
+	}
+	m := otelnats.Msg{Msg: rawMsg, Ctx: context.Background()}
+
+	got := wrappedCtx(m)
+
+	assert.Equal(t, "req-from-inbound-header", natsutil.RequestIDFromContext(got),
+		"wrappedCtx must extract X-Request-ID from m.Msg.Header into the returned context")
+}
+
+func TestWrappedCtx_NoHeaderReturnsCtxUnchanged(t *testing.T) {
+	rawMsg := &nats.Msg{
+		Subject: "chat.room.test",
+		Data:    []byte("ignored"),
+		Header:  nats.Header{},
+	}
+	parent := context.Background()
+	m := otelnats.Msg{Msg: rawMsg, Ctx: parent}
+
+	got := wrappedCtx(m)
+
+	assert.Empty(t, natsutil.RequestIDFromContext(got),
+		"missing inbound header → empty request ID on returned ctx")
+}
+
+func TestHandler_handleCreateRoom_ChannelAndDMIDFormats(t *testing.T) {
+	cases := []struct {
+		name        string
+		req         model.CreateRoomRequest
+		assertID    func(t *testing.T, id string)
+		assertSubID func(t *testing.T, subID string)
+	}{
+		{
+			name: "channel uses 17-char base62",
+			req: model.CreateRoomRequest{
+				Name: "general", Type: model.RoomTypeChannel,
+				CreatedBy: "u-alice", CreatedByAccount: "alice", SiteID: "site1",
+			},
+			assertID: func(t *testing.T, id string) {
+				assert.Len(t, id, 17, "channel room ID is 17-char base62")
+			},
+			assertSubID: func(t *testing.T, subID string) {
+				assert.Len(t, subID, 32, "subscription ID is UUIDv7 (32 hex)")
+			},
+		},
+		{
+			name: "DM uses sorted user-ID concat",
+			req: model.CreateRoomRequest{
+				Type:      model.RoomTypeDM,
+				CreatedBy: "u-bob", CreatedByAccount: "bob",
+				Members: []string{"u-alice"}, SiteID: "site1",
+			},
+			assertID: func(t *testing.T, id string) {
+				assert.Equal(t, "u-aliceu-bob", id, "DM ID is sorted concat of two user.IDs")
+			},
+			assertSubID: func(t *testing.T, subID string) {
+				assert.Len(t, subID, 32, "subscription ID is UUIDv7 (32 hex)")
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			var capturedRoom *model.Room
+			var capturedSub *model.Subscription
+			store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, r *model.Room) error { capturedRoom = r; return nil })
+			store.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, s *model.Subscription) error { capturedSub = s; return nil })
+
+			h := NewHandler(store, nil, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
+
+			data, _ := json.Marshal(tc.req)
+			_, err := h.handleCreateRoom(context.Background(), data)
+			require.NoError(t, err)
+			require.NotNil(t, capturedRoom)
+			require.NotNil(t, capturedSub)
+			tc.assertID(t, capturedRoom.ID)
+			tc.assertSubID(t, capturedSub.ID)
+		})
+	}
+}
+
+func TestHandler_handleCreateRoom_DMRequiresExactlyOneMember(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	h := NewHandler(store, nil, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
+
+	cases := []struct {
+		name    string
+		members []string
+	}{
+		{"DM with no members", []string{}},
+		{"DM with too many members", []string{"u-alice", "u-charlie"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req := model.CreateRoomRequest{
+				Type: model.RoomTypeDM, CreatedBy: "u-bob", CreatedByAccount: "bob",
+				Members: tc.members, SiteID: "site1",
+			}
+			data, _ := json.Marshal(req)
+			_, err := h.handleCreateRoom(context.Background(), data)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "DM requires exactly one other member")
+		})
 	}
 }

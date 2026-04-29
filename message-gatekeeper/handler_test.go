@@ -9,20 +9,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
 func makePublishFunc(published *[]publishedMsg, returnErr error) publishFunc {
-	return func(_ context.Context, subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	return func(_ context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 		if published != nil {
-			*published = append(*published, publishedMsg{subject: subj, data: data})
+			*published = append(*published, publishedMsg{subject: msg.Subject, data: msg.Data})
 		}
 		if returnErr != nil {
 			return nil, returnErr
@@ -37,7 +39,7 @@ type publishedMsg struct {
 }
 
 func TestHandler_ProcessMessage(t *testing.T) {
-	validID := uuid.New().String()
+	validID := idgen.GenerateMessageID()
 	validContent := "hello world"
 	validSiteID := "site-a"
 	validRoomID := "room-1"
@@ -106,10 +108,11 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
+				parentID := idgen.GenerateMessageID()
 				parentMillis := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC).UnixMilli()
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":"parent-msg-uuid","threadParentMessageCreatedAt":%d}`,
-					validID, validContent, parentMillis,
+					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d}`,
+					validID, validContent, parentID, parentMillis,
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -127,14 +130,16 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				require.NotNil(t, data)
 				var msg model.Message
 				require.NoError(t, json.Unmarshal(data, &msg))
-				assert.Equal(t, "parent-msg-uuid", msg.ThreadParentMessageID)
+				require.NotEmpty(t, msg.ThreadParentMessageID)
+				assert.Len(t, msg.ThreadParentMessageID, 20)
 				require.NotNil(t, msg.ThreadParentMessageCreatedAt)
 				assert.Equal(t, parentTS, msg.ThreadParentMessageCreatedAt.UTC())
 
 				require.Len(t, published, 1)
 				var evt model.MessageEvent
 				require.NoError(t, json.Unmarshal(published[0].data, &evt))
-				assert.Equal(t, "parent-msg-uuid", evt.Message.ThreadParentMessageID)
+				assert.NotEmpty(t, evt.Message.ThreadParentMessageID)
+				assert.Len(t, evt.Message.ThreadParentMessageID, 20)
 				require.NotNil(t, evt.Message.ThreadParentMessageCreatedAt)
 				assert.Equal(t, parentTS, evt.Message.ThreadParentMessageCreatedAt.UTC())
 				assert.Greater(t, evt.Timestamp, int64(0))
@@ -346,4 +351,53 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandler_processMessage_RejectsInvalidThreadParentMessageID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	// No store expectations: validation must fail before any store call.
+
+	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		return &jetstream.PubAck{}, nil
+	}
+	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
+	h := NewHandler(store, pub, reply, "site1")
+
+	parentTs := int64(1000)
+	req := model.SendMessageRequest{
+		ID:                           idgen.GenerateMessageID(),
+		Content:                      "reply",
+		ThreadParentMessageID:        "not-a-valid-msg-id",
+		ThreadParentMessageCreatedAt: &parentTs,
+	}
+	data, _ := json.Marshal(req)
+	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid thread parent message ID")
+}
+
+func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}}, nil)
+
+	var capturedHeader nats.Header
+	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		capturedHeader = msg.Header
+		return &jetstream.PubAck{}, nil
+	}
+	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
+
+	h := NewHandler(store, pub, reply, "site1")
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-mg-test-id")
+	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello"}
+	data, _ := json.Marshal(req)
+
+	_, err := h.processMessage(ctx, "alice", "room-1", "site1", data)
+	require.NoError(t, err)
+	require.NotNil(t, capturedHeader, "publish must propagate header from ctx")
+	assert.Equal(t, "req-mg-test-id", capturedHeader.Get(natsutil.RequestIDHeader))
 }

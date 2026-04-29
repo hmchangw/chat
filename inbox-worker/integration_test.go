@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"sync"
 	"testing"
 	"time"
 
@@ -23,18 +22,6 @@ func setupMongo(t *testing.T) *mongo.Database {
 	return testutil.MongoDB(t, "inbox_worker_test")
 }
 
-type recordingPublisher struct {
-	mu       sync.Mutex
-	subjects []string
-}
-
-func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.subjects = append(p.subjects, subj)
-	return nil
-}
-
 func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
@@ -44,8 +31,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	handler := NewHandler(store)
 
 	// Seed user for lookup
 	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u2", Account: "u2", SiteID: "site-b"})
@@ -82,9 +68,6 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	// handleMemberAdded does not publish SubscriptionUpdateEvent — room-worker
 	// publishes on the user's subject and the NATS supercluster routes it to
 	// the user's home site.
-	if len(pub.subjects) != 0 {
-		t.Fatalf("got %d publishes, want 0", len(pub.subjects))
-	}
 }
 
 func TestInboxWorker_RoomSync_Integration(t *testing.T) {
@@ -96,8 +79,7 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	handler := NewHandler(store)
 
 	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeChannel, UserCount: 5}
 	roomData, _ := json.Marshal(room)
@@ -128,8 +110,7 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	handler := NewHandler(store)
 
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
@@ -171,9 +152,6 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 
 	// No SubscriptionUpdateEvent is published — room-worker already handles
 	// user notification via NATS supercluster routing.
-	if len(pub.subjects) != 0 {
-		t.Fatalf("expected 0 publishes (room-worker handles notification), got %d", len(pub.subjects))
-	}
 }
 
 func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
@@ -182,8 +160,7 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
 	}
-	pub := &recordingPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	ctx := context.Background()
 
@@ -212,5 +189,4 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 	assert.Equal(t, int64(0), count)
 
 	// No publish — room-worker handles user notification via NATS supercluster.
-	assert.Empty(t, pub.subjects)
 }

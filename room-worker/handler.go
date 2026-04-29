@@ -13,6 +13,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -27,6 +28,60 @@ type Handler struct {
 
 func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc) *Handler {
 	return &Handler{store: store, siteID: siteID, publish: publish}
+}
+
+// outboxDedupID composes Nats-Msg-Id as base+":"+destSiteID; base is X-Request-ID from ctx, falling back to payloadSeed when absent (partial-deployment safety).
+func outboxDedupID(ctx context.Context, destSiteID, payloadSeed string) string {
+	base := natsutil.RequestIDFromContext(ctx)
+	if base == "" {
+		slog.Warn("missing X-Request-ID; falling back to payload-derived outbox dedup base", "destSiteID", destSiteID)
+		base = payloadSeed
+	}
+	return base + ":" + destSiteID
+}
+
+// messageDedupSeed returns the X-Request-ID from ctx, or payloadSeed when absent (partial-deployment safety, with a warn log).
+func messageDedupSeed(ctx context.Context, handler, roomID, payloadSeed string) string {
+	if seed := natsutil.RequestIDFromContext(ctx); seed != "" {
+		return seed
+	}
+	slog.Warn("missing X-Request-ID; falling back to payload-derived seed",
+		"handler", handler, "roomID", roomID)
+	return payloadSeed
+}
+
+// historySharedSincePtr returns &timestamp when mode is "none" with a positive timestamp; nil otherwise.
+func historySharedSincePtr(mode model.HistoryMode, timestamp int64, roomID string) *int64 {
+	if mode != model.HistoryModeNone {
+		return nil
+	}
+	if timestamp <= 0 {
+		slog.Error("restricted history with missing timestamp, emitting nil", "roomID", roomID, "mode", mode)
+		return nil
+	}
+	return &timestamp
+}
+
+// publishAsyncJobResult publishes a success/failure event to the requester's reply subject; best-effort, never fails the job.
+func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, job string, jobErr error) {
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" || requesterAccount == "" {
+		return
+	}
+	result := model.AsyncJobResult{
+		RequestID: requestID,
+		Job:       job,
+		Success:   jobErr == nil,
+		Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	if jobErr != nil {
+		result.Error = "operation failed"
+		slog.Error("async room job failed", "error", jobErr, "job", job, "requestID", requestID)
+	}
+	data, _ := json.Marshal(result)
+	if err := h.publish(ctx, subject.UserResponse(requesterAccount, requestID), data, ""); err != nil {
+		slog.Warn("publish async job result failed", "error", err, "requestID", requestID)
+	}
 }
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
@@ -58,6 +113,9 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 	var req model.UpdateRoleRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return fmt.Errorf("unmarshal role update request: %w", err)
+	}
+	if req.Timestamp <= 0 {
+		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
 
 	// Promote: add "owner" to roles. Demote: remove "owner" from roles.
@@ -119,8 +177,8 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 			return fmt.Errorf("marshal outbox event: %w", err)
 		}
 		outboxSubj := subject.Outbox(h.siteID, user.SiteID, "role_updated")
-		// req.Timestamp is the stable acceptance time — keeps Nats-Msg-Id identical on redelivery.
-		dedupID := idgen.DeriveID(fmt.Sprintf("roleupd-outbox:%s:%s:%s:%d", req.RoomID, req.Account, req.NewRole, req.Timestamp))
+		payloadSeed := fmt.Sprintf("%s:%s:%s:%d", req.RoomID, req.Account, req.NewRole, req.Timestamp)
+		dedupID := outboxDedupID(ctx, user.SiteID, payloadSeed)
 		if err := h.publish(ctx, outboxSubj, outboxData, dedupID); err != nil {
 			return fmt.Errorf("publish outbox: %w", err)
 		}
@@ -140,8 +198,15 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 	return h.processRemoveIndividual(ctx, &req)
 }
 
-func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest) error {
+func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
+	if req.Timestamp <= 0 {
+		req.Timestamp = time.Now().UTC().UnixMilli()
+	}
 	isSelfLeave := req.Requester == req.Account
+	// Defer the result publish covers all subsequent return paths.
+	defer func() {
+		h.publishAsyncJobResult(ctx, req.Requester, "remove_member", err)
+	}()
 
 	user, err := h.store.GetUserWithMembership(ctx, req.RoomID, req.Account)
 	if err != nil {
@@ -218,8 +283,10 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	} else {
 		sysMsgData, _ = json.Marshal(model.MemberRemoved{User: &sysMsgUser, RemovedUsersCount: 1})
 	}
+	seed := messageDedupSeed(ctx, "processRemoveIndividual", req.RoomID,
+		fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp))
 	sysMsg := model.Message{
-		ID:         idgen.DeriveID(fmt.Sprintf("rmindiv:%s:%s:%d", req.RoomID, req.Account, req.Timestamp)),
+		ID:         idgen.MessageIDFromRequestID(seed, "rmindiv"),
 		RoomID:     req.RoomID,
 		Type:       evtType,
 		SysMsgData: sysMsgData,
@@ -231,8 +298,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		Timestamp: now.UnixMilli(),
 	}
 	msgEvtData, _ := json.Marshal(msgEvt)
-	sysMsgDedupID := idgen.DeriveID(fmt.Sprintf("rmindiv-msg:%s:%s:%d", req.RoomID, req.Account, req.Timestamp))
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsgDedupID); err != nil {
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsg.ID); err != nil {
 		return fmt.Errorf("publish individual removal system message: %w", err)
 	}
 
@@ -246,8 +312,9 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 			Timestamp:  now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		outboxDedupID := idgen.DeriveID(fmt.Sprintf("rmindiv-outbox:%s:%s:%s:%d", req.RoomID, req.Account, user.SiteID, req.Timestamp))
-		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, "member_removed"), outboxData, outboxDedupID); err != nil {
+		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp)
+		dedupID := outboxDedupID(ctx, user.SiteID, payloadSeed)
+		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, "member_removed"), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s: %w", user.SiteID, err)
 		}
 	}
@@ -255,7 +322,15 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	return nil
 }
 
-func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest) error {
+func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
+	if req.Timestamp <= 0 {
+		req.Timestamp = time.Now().UTC().UnixMilli()
+	}
+	// Defer the result publish covers all subsequent return paths.
+	defer func() {
+		h.publishAsyncJobResult(ctx, req.Requester, "remove_org", err)
+	}()
+
 	members, err := h.store.GetOrgMembersWithIndividualStatus(ctx, req.RoomID, req.OrgID)
 	if err != nil {
 		return fmt.Errorf("get org members with individual status: %w", err)
@@ -331,8 +406,10 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		SectName:          sectName,
 		RemovedUsersCount: len(toRemove),
 	})
+	seed := messageDedupSeed(ctx, "processRemoveOrg", req.RoomID,
+		fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp))
 	sysMsg := model.Message{
-		ID:         idgen.DeriveID(fmt.Sprintf("rmorg:%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)),
+		ID:         idgen.MessageIDFromRequestID(seed, "rmorg"),
 		RoomID:     req.RoomID,
 		Type:       "member_removed",
 		SysMsgData: sysMsgPayload,
@@ -344,8 +421,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		Timestamp: now.UnixMilli(),
 	}
 	msgEvtData, _ := json.Marshal(msgEvt)
-	sysMsgDedupID := idgen.DeriveID(fmt.Sprintf("rmorg-msg:%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp))
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsgDedupID); err != nil {
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, sysMsg.ID); err != nil {
 		return fmt.Errorf("publish org removal system message: %w", err)
 	}
 
@@ -373,8 +449,9 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 			Timestamp:  now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		outboxDedupID := idgen.DeriveID(fmt.Sprintf("rmorg-outbox:%s:%s:%s:%d", req.RoomID, req.OrgID, destSiteID, req.Timestamp))
-		if err := h.publish(ctx, subject.Outbox(h.siteID, destSiteID, "member_removed"), outboxData, outboxDedupID); err != nil {
+		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)
+		dedupID := outboxDedupID(ctx, destSiteID, payloadSeed)
+		if err := h.publish(ctx, subject.Outbox(h.siteID, destSiteID, "member_removed"), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s: %w", destSiteID, err)
 		}
 	}
@@ -382,11 +459,18 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	return nil
 }
 
-func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
+func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error) {
 	var req model.AddMembersRequest
-	if err := json.Unmarshal(data, &req); err != nil {
+	if err = json.Unmarshal(data, &req); err != nil {
 		return fmt.Errorf("unmarshal add members request: %w", err)
 	}
+	if req.Timestamp <= 0 {
+		req.Timestamp = time.Now().UTC().UnixMilli()
+	}
+	// Now req is populated; defer the result publish covers all subsequent return paths.
+	defer func() {
+		h.publishAsyncJobResult(ctx, req.RequesterAccount, "add_members", err)
+	}()
 
 	room, err := h.store.GetRoom(ctx, req.RoomID)
 	if err != nil {
@@ -433,7 +517,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			continue
 		}
 		sub := &model.Subscription{
-			ID:       idgen.GenerateID(),
+			ID:       idgen.GenerateUUIDv7(),
 			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:   req.RoomID,
 			SiteID:   room.SiteID,
@@ -468,7 +552,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	if writeIndividuals {
 		for _, sub := range subs {
 			roomMembers = append(roomMembers, &model.RoomMember{
-				ID:     idgen.GenerateID(),
+				ID:     idgen.GenerateUUIDv7(),
 				RoomID: req.RoomID,
 				Ts:     acceptedAt,
 				Member: model.RoomMemberEntry{
@@ -481,7 +565,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 	for _, org := range req.Orgs {
 		roomMembers = append(roomMembers, &model.RoomMember{
-			ID:     idgen.GenerateID(),
+			ID:     idgen.GenerateUUIDv7(),
 			RoomID: req.RoomID,
 			Ts:     acceptedAt,
 			Member: model.RoomMemberEntry{
@@ -511,7 +595,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 				} else {
 					for i := range backfillUsers {
 						roomMembers = append(roomMembers, &model.RoomMember{
-							ID:     idgen.GenerateID(),
+							ID:     idgen.GenerateUUIDv7(),
 							RoomID: req.RoomID,
 							Ts:     acceptedAt,
 							Member: model.RoomMemberEntry{
@@ -553,27 +637,14 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 	}
 
 	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)
-	// Never emit &0 — the painless sentinel `hss <= 0` would misroute the
-	// restricted room into `rooms[]`. If the upstream request is malformed
-	// (restricted mode but missing timestamp), leave the pointer nil + log —
-	// we can't silently translate to &0.
-	var historySharedSincePtr *int64
-	if req.History.Mode == model.HistoryModeNone {
-		if req.Timestamp > 0 {
-			v := req.Timestamp
-			historySharedSincePtr = &v
-		} else {
-			slog.Error("restricted history with missing timestamp, emitting nil",
-				"roomID", req.RoomID, "mode", req.History.Mode)
-		}
-	}
+	historySharedSince := historySharedSincePtr(req.History.Mode, req.Timestamp, req.RoomID)
 	memberAddEvt := model.MemberAddEvent{
 		Type:               "member_added",
 		RoomID:             req.RoomID,
 		Accounts:           actualAccounts,
 		SiteID:             room.SiteID,
 		JoinedAt:           req.Timestamp,
-		HistorySharedSince: historySharedSincePtr,
+		HistorySharedSince: historySharedSince,
 		Timestamp:          now.UnixMilli(),
 	}
 	memberAddData, _ := json.Marshal(memberAddEvt)
@@ -588,21 +659,10 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		AddedUsersCount: len(subs),
 	}
 	sysMsgData, _ := json.Marshal(membersAdded)
-	// Include requester + sorted accounts/orgs so same-ms requests don't collide.
-	seedAccounts := slices.Clone(actualAccounts)
-	slices.Sort(seedAccounts)
-	seedOrgs := slices.Clone(req.Orgs)
-	slices.Sort(seedOrgs)
-	addMembersSeed := fmt.Sprintf(
-		"addmembers:%s:%s:%d:%s:%s",
-		req.RoomID,
-		req.RequesterAccount,
-		req.Timestamp,
-		strings.Join(seedAccounts, ","),
-		strings.Join(seedOrgs, ","),
-	)
+	seed := messageDedupSeed(ctx, "processAddMembers", req.RoomID,
+		fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp))
 	sysMsg := model.Message{
-		ID:          idgen.DeriveID(addMembersSeed),
+		ID:          idgen.MessageIDFromRequestID(seed, "addmembers"),
 		RoomID:      req.RoomID,
 		UserID:      req.RequesterID,
 		UserAccount: req.RequesterAccount,
@@ -617,8 +677,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 		Timestamp: now.UnixMilli(),
 	}
 	msgEvtData, _ := json.Marshal(msgEvt)
-	addMsgDedupID := idgen.DeriveID("addmembers-msg:" + addMembersSeed)
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData, addMsgDedupID); err != nil {
+	if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData, sysMsg.ID); err != nil {
 		return fmt.Errorf("publish add-members system message: %w", err)
 	}
 
@@ -638,7 +697,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			Accounts:           accounts,
 			SiteID:             room.SiteID,
 			JoinedAt:           req.Timestamp,
-			HistorySharedSince: historySharedSincePtr,
+			HistorySharedSince: historySharedSince,
 			Timestamp:          now.UnixMilli(),
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)
@@ -647,16 +706,9 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			Payload: siteEvtData, Timestamp: now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
-		siteSeedAccounts := slices.Clone(accounts)
-		slices.Sort(siteSeedAccounts)
-		addOutboxDedupID := idgen.DeriveID(fmt.Sprintf(
-			"addmembers-outbox:%s:%s:%d:%s",
-			req.RoomID,
-			destSiteID,
-			req.Timestamp,
-			strings.Join(siteSeedAccounts, ","),
-		))
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData, addOutboxDedupID); err != nil {
+		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
+		dedupID := outboxDedupID(ctx, destSiteID, payloadSeed)
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s failed: %w", destSiteID, err)
 		}
 	}

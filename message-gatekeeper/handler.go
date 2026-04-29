@@ -8,9 +8,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -32,10 +33,10 @@ func (e *infraError) Unwrap() error {
 }
 
 // replyFunc is the function signature for publishing a reply to a NATS subject.
-type replyFunc func(ctx context.Context, subject string, data []byte) error
+type replyFunc func(ctx context.Context, msg *nats.Msg) error
 
 // publishFunc is the function signature for publishing to JetStream.
-type publishFunc func(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
+type publishFunc func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
 
 // Handler processes messages from the MESSAGES stream and validates them
 // before publishing to MESSAGES_CANONICAL.
@@ -99,7 +100,8 @@ func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte,
 		return
 	}
 	respSubj := subject.UserResponse(account, req.RequestID)
-	if err := h.reply(ctx, respSubj, replyData); err != nil {
+	replyMsg := natsutil.NewMsg(ctx, respSubj, replyData)
+	if err := h.reply(ctx, replyMsg); err != nil {
 		slog.Error("reply to client failed", "error", err, "subject", respSubj)
 	}
 }
@@ -119,9 +121,13 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		return nil, fmt.Errorf("unmarshal send message request: %w", err)
 	}
 
-	// Validate ID is a valid UUID
-	if _, err := uuid.Parse(req.ID); err != nil {
-		return nil, fmt.Errorf("invalid message ID %q: %w", req.ID, err)
+	// Validate ID is a valid 20-char base62 message ID
+	if !idgen.IsValidMessageID(req.ID) {
+		return nil, fmt.Errorf("invalid message ID %q: must be a 20-char base62 string", req.ID)
+	}
+
+	if req.ThreadParentMessageID != "" && !idgen.IsValidMessageID(req.ThreadParentMessageID) {
+		return nil, fmt.Errorf("invalid thread parent message ID %q: must be a 20-char base62 string", req.ThreadParentMessageID)
 	}
 
 	// Validate content is non-empty
@@ -176,7 +182,8 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	}
 
 	canonicalSubj := subject.MsgCanonicalCreated(siteID)
-	if _, err := h.publish(ctx, canonicalSubj, evtData, jetstream.WithMsgID(msg.ID)); err != nil {
+	canonicalMsg := natsutil.NewMsg(ctx, canonicalSubj, evtData)
+	if _, err := h.publish(ctx, canonicalMsg, jetstream.WithMsgID(msg.ID)); err != nil {
 		return nil, &infraError{cause: fmt.Errorf("publish to MESSAGES_CANONICAL: %w", err)}
 	}
 

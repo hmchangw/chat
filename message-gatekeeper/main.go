@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
@@ -68,11 +69,18 @@ func main() {
 	db := mongoClient.Database(cfg.MongoDB)
 
 	store := NewMongoStore(db)
-	pub := func(ctx context.Context, subj string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
-		return js.Publish(ctx, subj, data, opts...)
+	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		ack, err := js.PublishMsg(ctx, msg, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("publish to %q: %w", msg.Subject, err)
+		}
+		return ack, nil
 	}
-	reply := func(ctx context.Context, subj string, data []byte) error {
-		return nc.Publish(ctx, subj, data)
+	reply := func(ctx context.Context, msg *nats.Msg) error {
+		if err := nc.PublishMsg(ctx, msg); err != nil {
+			return fmt.Errorf("reply to %q: %w", msg.Subject, err)
+		}
+		return nil
 	}
 	handler := NewHandler(store, pub, reply, cfg.SiteID)
 
@@ -113,7 +121,8 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handler.HandleJetStreamMsg(msgCtx, msg)
+				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
+				handler.HandleJetStreamMsg(handlerCtx, msg)
 			}()
 		}
 	}()

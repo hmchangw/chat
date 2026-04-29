@@ -14,7 +14,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
-	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -164,12 +163,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(store, publisher)
+	handler := NewHandler(store)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
-		if err := handler.HandleEvent(m.Context(), m.Data()); err != nil {
-			slog.Error("handle event failed", "error", err)
+		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
+		if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
+			slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 			if err := m.Nak(); err != nil {
 				slog.Error("failed to nak message", "error", err)
 			}
@@ -195,13 +194,4 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
-}
-
-// natsPublisher adapts *otelnats.Conn to the Publisher interface.
-type natsPublisher struct {
-	nc *otelnats.Conn
-}
-
-func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte) error {
-	return p.nc.Publish(ctx, subject, data)
 }

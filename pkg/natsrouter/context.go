@@ -19,11 +19,10 @@ type HandlerFunc func(c *Context)
 // including consumers that retain it past the handler's return (net/http
 // keep-alive cancel watchers, background goroutines, deferred async work).
 //
-// Every field observable from a goroutine that outlives the handler — ctx,
-// Msg, Params, keys — lives on the Context header and is set once at acquire.
-// Only the middleware-chain bookkeeping (handlers, index) is pooled, and it's
-// not reachable via any exported accessor that an async goroutine would call,
-// so pool reuse cannot race any outside observer.
+// Most fields — Msg, Params, keys — are set once at acquire and then stable.
+// The underlying ctx field may be replaced by SetContext, but only under the
+// single-writer contract: middleware must call SetContext before c.Next(),
+// never concurrently with handler-spawned goroutines that read c.Value.
 type Context struct {
 	ctx    context.Context
 	Msg    *nats.Msg
@@ -64,7 +63,9 @@ func releaseContext(c *Context) {
 	c.chain.index = 0
 	chainPool.Put(c.chain)
 	// c itself is left to GC. External ctx consumers may still hold it;
-	// every field they can observe is stable from the moment of construction.
+	// every field they can observe is stable from the moment of construction
+	// (Msg, Params, keys); the underlying ctx may have been swapped by
+	// SetContext during the chain but is no longer mutated once handlers return.
 }
 
 // NewContext creates a Context for testing handlers without a NATS connection.
@@ -76,9 +77,8 @@ func NewContext(params map[string]string) *Context {
 	}
 }
 
-// context.Context implementation — every method reads a field that is set
-// once at acquire, so these are safe for any consumer (net/http transport
-// watchers, goroutines spawned by the handler) that outlives the request.
+// context.Context implementation — delegates to c.ctx. Safe for async consumers
+// provided no middleware calls SetContext concurrently; see SetContext doc.
 func (c *Context) Deadline() (time.Time, bool) { return c.ctx.Deadline() }
 func (c *Context) Done() <-chan struct{}       { return c.ctx.Done() }
 func (c *Context) Err() error                  { return c.ctx.Err() }
@@ -131,6 +131,22 @@ func (c *Context) MustGet(key string) any {
 		panic("natsrouter: key " + key + " not found in context")
 	}
 	return val
+}
+
+// SetContext replaces the underlying context.Context.
+//
+// Single-writer contract: call only from middleware before c.Next() (racing
+// with handler-spawned goroutines that read c.Value is unsafe — c.ctx is not
+// guarded against concurrent writers).
+//
+// Cycle pitfall: never pass c (the *Context) as the parent of the new ctx.
+// c.Value(k) delegates to c.ctx.Value(k), so a chain like
+// context.WithValue(c, k, v) creates a ctx whose parent traverses back to c —
+// any c.Value(otherKey) lookup then loops forever. Always derive from c.ctx
+// (private to this package) or from a stable parent like context.Background().
+// Example: ctx := natsutil.WithRequestID(c.ctx, reqID); c.SetContext(ctx).
+func (c *Context) SetContext(ctx context.Context) {
+	c.ctx = ctx
 }
 
 // Param returns a named parameter from the subject. Shortcut for c.Params.Get(key).

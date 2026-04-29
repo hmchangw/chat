@@ -9,8 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -150,7 +149,7 @@ func (g *Generator) publishOne(ctx context.Context) {
 	subIdx := g.intn(len(g.cfg.Fixtures.Subscriptions))
 	sub := g.cfg.Fixtures.Subscriptions[subIdx]
 	content := g.content()
-	msgID := uuid.NewString()
+	msgID := idgen.GenerateMessageID()
 	publishTime := time.Now()
 
 	var (
@@ -175,7 +174,7 @@ func (g *Generator) publishOne(ctx context.Context) {
 		subj = subject.MsgCanonicalCreated(g.cfg.SiteID)
 		g.cfg.Collector.RecordPublishBroadcastOnly(msgID, publishTime)
 	default:
-		reqID = uuid.NewString()
+		reqID = idgen.GenerateRequestID()
 		req := model.SendMessageRequest{ID: msgID, Content: content, RequestID: reqID}
 		data, err = json.Marshal(req)
 		subj = subject.MsgSend(sub.User.Account, sub.RoomID, g.cfg.SiteID)

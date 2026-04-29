@@ -14,7 +14,9 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 type testReq struct {
@@ -437,12 +439,13 @@ func TestRequestID_FromHeader(t *testing.T) {
 	msg := nats.NewMsg("test.123")
 	msg.Data, _ = json.Marshal(testReq{Name: "test"})
 	msg.Header = nats.Header{}
-	msg.Header.Set("X-Request-ID", "custom-req-id-42")
+	testID := "01893f8b-1c4a-7000-abcd-ef0123456789"
+	msg.Header.Set(natsutil.RequestIDHeader, testID)
 
 	resp, err := nc.NatsConn().RequestMsg(msg, 2*time.Second)
 	require.NoError(t, err)
 	assert.NotEmpty(t, string(resp.Data))
-	assert.Equal(t, "custom-req-id-42", capturedID)
+	assert.Equal(t, testID, capturedID)
 }
 
 func TestRegisterNoBody_HandlerError(t *testing.T) {
@@ -560,4 +563,99 @@ func TestRegister_ErrInternal(t *testing.T) {
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
 	assert.Equal(t, "failed to load data", result.Message)
 	assert.Equal(t, "internal", result.Code)
+}
+
+func TestContext_SetContext_Propagates(t *testing.T) {
+	c := NewContext(nil)
+	type k int
+	const myKey k = 0
+	newCtx := context.WithValue(c, myKey, "value-from-set")
+	c.SetContext(newCtx)
+	assert.Equal(t, "value-from-set", c.Value(myKey))
+}
+
+func TestRequestIDMiddleware_StoresIDOnUnderlyingContext(t *testing.T) {
+	// natsutil.RequestIDFromContext(c) must equal c.Get("requestID") — the contract publish helpers rely on.
+	c := NewContext(nil)
+	c.Msg = &nats.Msg{Header: nats.Header{}}
+	testID := "01893f8b-1c4a-7000-abcd-ef0123456789"
+	c.Msg.Header.Set(natsutil.RequestIDHeader, testID)
+
+	called := false
+	chain := []HandlerFunc{
+		RequestID(),
+		func(c *Context) {
+			called = true
+			fromKeys, _ := c.Get("requestID")
+			fromCtx := natsutil.RequestIDFromContext(c)
+			assert.Equal(t, testID, fromKeys)
+			assert.Equal(t, testID, fromCtx)
+		},
+	}
+	runChain(c, chain)
+	assert.True(t, called, "downstream handler must run")
+}
+
+func TestRequestIDMiddleware_GeneratesAndStoresOnContext_WhenHeaderMissing(t *testing.T) {
+	c := NewContext(nil)
+	c.Msg = &nats.Msg{Header: nats.Header{}}
+
+	var fromCtx string
+	var fromKeys string
+	chain := []HandlerFunc{
+		RequestID(),
+		func(c *Context) {
+			fromCtx = natsutil.RequestIDFromContext(c)
+			fromKeysAny, _ := c.Get("requestID")
+			fromKeys = fromKeysAny.(string)
+		},
+	}
+	runChain(c, chain)
+	assert.NotEmpty(t, fromCtx, "RequestID middleware must mint and propagate to ctx when header is absent")
+	assert.Equal(t, fromCtx, fromKeys, "minted ID must be identical in ctx and keys map")
+}
+
+func TestRequestIDMiddleware_RegeneratesOnMalformedHeader(t *testing.T) {
+	c := NewContext(nil)
+	c.Msg = &nats.Msg{Header: nats.Header{}}
+	c.Msg.Header.Set(natsutil.RequestIDHeader, "not-a-uuidv7")
+
+	var fromCtx string
+	chain := []HandlerFunc{
+		RequestID(),
+		func(c *Context) {
+			fromCtx = natsutil.RequestIDFromContext(c)
+		},
+	}
+	runChain(c, chain)
+
+	assert.NotEqual(t, "not-a-uuidv7", fromCtx, "malformed inbound ID must be replaced")
+	assert.True(t, idgen.IsValidUUID(fromCtx), "regenerated ID must be a valid hyphenated UUID")
+}
+
+func TestRequestIDMiddleware_OtherCtxKeysStillReadable(t *testing.T) {
+	// Regression test: after RequestID() runs, c.Value(otherKey) must NOT hang.
+	// Bug history: an earlier version passed c (the *Context) as parent to
+	// WithRequestID, creating a circular ctx.parent → c → ctx.parent loop on
+	// any non-requestIDKey lookup. Fixed by passing c.ctx instead.
+	type otherKey int
+	const k otherKey = 0
+
+	parentCtx := context.WithValue(context.Background(), k, "parent-value")
+	c := NewContext(nil)
+	c.SetContext(parentCtx)
+	c.Msg = &nats.Msg{Header: nats.Header{}}
+
+	called := false
+	chain := []HandlerFunc{
+		RequestID(),
+		func(c *Context) {
+			called = true
+			// This lookup must complete in finite time — would infinite-loop with the bug.
+			got := c.Value(k)
+			assert.Equal(t, "parent-value", got, "non-requestIDKey lookup must still find values from the original parent ctx")
+		},
+	}
+	runChain(c, chain)
+	assert.True(t, called, "downstream handler must run")
 }
