@@ -106,7 +106,7 @@ These rules came out of a code-review pass on this plan. They cut across many ta
 
 1. **Request-ID format.** `X-Request-ID` values are 36-char hyphenated UUIDs — any version (v4 or v7) is accepted by `idgen.IsValidUUID`. Unit-test fixtures use a constant like `"0193abcd-0193-7abc-89ab-0193abcd0193"`; integration tests use `idgen.GenerateRequestID()` (which returns a UUIDv7 hyphenated). The 32-char no-hyphen form is exclusively for Mongo entity `_id` fields and must NOT be used for request IDs anywhere.
 
-2. **Reuse `room-worker/handler.go` `h.publish` for ALL JetStream publishes.** It already sets `Nats-Msg-Id` from its third arg and is the standard wrapper. Tasks 35, 36, 37 must NOT call `h.js.PublishMsg` directly or build `natsutil.NewMsg` inline. The `publishCanonical` helper in Task 36 is `h.publish(ctx, subject.MsgCanonicalCreated(siteID), data, msg.ID)` — do not reinvent header-setting.
+2. **All JetStream publishes go through `h.publish`.** It sets `Nats-Msg-Id` and is the standard wrapper. Task 36 introduces `publishCanonical` as a thin helper that wraps `h.publish(ctx, subject.MsgCanonicalCreated(siteID), data, msg.ID)` — this is the correct pattern. Tasks 35 and 37 must NOT call `h.js.PublishMsg` directly or build `natsutil.NewMsg` inline anywhere outside of `publishCanonical` / `publishOutbox` helpers.
 
 3. **Extract one `publishOutbox(ctx, destSiteID, eventType, payload, dedupSeed)` helper.** Tasks 35–37 add the fifth call site of the inline `model.OutboxEvent{...}` + `subject.Outbox(...)` + `outboxDedupID(...)` + `h.publish(...)` ritual already duplicated four times in `room-worker/handler.go`. Land the helper in this plan and refactor the existing four call sites in the same task that introduces the fifth.
 
@@ -130,7 +130,7 @@ These rules came out of a code-review pass on this plan. They cut across many ta
 
 11. **Skip `ReconcileMemberCounts` for `RoomTypeDM` / `RoomTypeBotDM`.** Counts are fixed (1 owner + 1 member). Set `MemberCount`/`UserCount`/`AppCount` at `CreateRoom` insert time in Tasks 33 and call `ReconcileMemberCounts` only for `RoomTypeChannel` in Task 34 / `finishCreateRoom`. Saves a Mongo aggregate per DM.
 
-12. **`AddedUsersCount` is exact, not an approximation.** Use `len(allUsers) - 1` (the post-expansion non-owner count already computed in `finishCreateRoom`). Do NOT use `len(req.Users) + len(req.Orgs)` — that double-counts orgs against their expanded users and the spec contract is exact.
+12. **`AddedUsersCount` is exact — use `len(subs) - 1`.** One subscription per account (including owner); subtracting 1 gives the non-owner member count. This matches the spec exactly and is the expression in scope at `finishCreateRoom` call sites. Do NOT use `len(req.Users) + len(req.Orgs)` — that double-counts orgs against their expanded users.
 
 13. **Drop the room-service pre-check + room-worker pre-check duplication for DM dedup.** Rely on the partial unique index from Task 23. Room-service's `FindDMSubscription` pre-check (Task 25) is a TOCTOU read — keep it ONLY as a fast-path optimization for the common case, and ensure the room-worker insert path also handles `mongo.ErrDuplicateKey` cleanly so a race between two concurrent DM creates produces the same `dmExistsError` either way.
 
@@ -1437,7 +1437,7 @@ In `room-worker/handler.go` `processAddMembers`, locate the sub-construction loo
 
 ```go
 sub := &model.Subscription{
-    ID:       idgen.GenerateID(),                  // OLD
+    ID:       idgen.GenerateID(),
     ...
 }
 ```
@@ -1514,8 +1514,8 @@ sub := &model.Subscription{
     RoomID:   req.RoomID,
     SiteID:   room.SiteID,
     Roles:    []model.Role{model.RoleMember},
-    Name:     room.Name,             // NEW
-    RoomType: room.Type,             // NEW (always model.RoomTypeChannel for add-member)
+    Name:     room.Name,
+    RoomType: room.Type, (always model.RoomTypeChannel for add-member)
     JoinedAt: acceptedAt,
 }
 ```
@@ -1734,7 +1734,7 @@ In `room-worker/handler.go` `processAddMembers`, find the loop that builds the p
 siteEvt := model.MemberAddEvent{
     Type:               "member_added",
     RoomID:             req.RoomID,
-    RoomName:           room.Name,            // NEW
+    RoomName:           room.Name,
     Accounts:           accounts,
     SiteID:             room.SiteID,
     JoinedAt:           req.Timestamp,
@@ -1965,7 +1965,7 @@ sub := &model.Subscription{
     RoomID:   data.RoomID,
     SiteID:   data.SiteID,
     Roles:    []model.Role{model.RoleMember},
-    Name:     data.RoomName,           // NEW
+    Name:     data.RoomName,
     RoomType: model.RoomTypeChannel,   // member_added events only fire for channels today
     JoinedAt: time.UnixMilli(data.JoinedAt).UTC(),
 }
@@ -2530,6 +2530,23 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	if _, err := s.db.Collection("subscriptions").Indexes().CreateOne(ctx, dmDedupIndex); err != nil {
 		return fmt.Errorf("ensure dm-dedup subscription index: %w", err)
 	}
+
+	// Idempotency index for create-room JetStream redelivery (spec §5.3).
+	subUniqueIndex := mongo.IndexModel{
+		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "u.account", Value: 1}},
+		Options: options.Index().SetName("roomId_account_unique_idx").SetUnique(true),
+	}
+	if _, err := s.db.Collection("subscriptions").Indexes().CreateOne(ctx, subUniqueIndex); err != nil {
+		return fmt.Errorf("ensure subscription unique index: %w", err)
+	}
+
+	memberUniqueIndex := mongo.IndexModel{
+		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "member.id", Value: 1}},
+		Options: options.Index().SetName("roomId_memberid_unique_idx").SetUnique(true),
+	}
+	if _, err := s.db.Collection("room_members").Indexes().CreateOne(ctx, memberUniqueIndex); err != nil {
+		return fmt.Errorf("ensure room_members unique index: %w", err)
+	}
 	return nil
 }
 ```
@@ -2718,6 +2735,9 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 	if requestID == "" {
 		return nil, errMissingRequestID
 	}
+	if !idgen.IsValidUUID(requestID) {
+		return nil, fmt.Errorf("invalid X-Request-ID format: %w", errMissingRequestID)
+	}
 
 	var req model.CreateRoomRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -2830,7 +2850,7 @@ func TestHandleCreateRoomDMHappyPath(t *testing.T) {
 	resp, err := h.handleCreateRoom(ctx, "chat.user.alice.request.room.site-A.create", body)
 	require.NoError(t, err)
 
-	var got map[string]string
+	var got model.CreateRoomReply
 	require.NoError(t, json.Unmarshal(resp, &got))
 	assert.Equal(t, "accepted", got["status"])
 	assert.Equal(t, deterministicID, got["roomId"])
@@ -2890,7 +2910,7 @@ func TestHandleCreateRoomBotDMHappyPath(t *testing.T) {
 	resp, err := h.handleCreateRoom(ctx, "chat.user.alice.request.room.site-A.create", body)
 	require.NoError(t, err)
 
-	var got map[string]string
+	var got model.CreateRoomReply
 	require.NoError(t, json.Unmarshal(resp, &got))
 	assert.Equal(t, "botDM", got["roomType"])
 
@@ -2988,10 +3008,10 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
     if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "create"), payload); err != nil {
         return nil, fmt.Errorf("publish canonical: %w", err)
     }
-    return json.Marshal(map[string]string{
-        "status":   "accepted",
-        "roomId":   req.RoomID,
-        "roomType": string(roomType),
+    return json.Marshal(model.CreateRoomReply{
+        Status:   model.CreateRoomReplyAccepted,
+        RoomID:   req.RoomID,
+        RoomType: string(roomType),
     })
 }
 ```
@@ -3039,7 +3059,7 @@ func TestHandleCreateRoomChannelHappyPath(t *testing.T) {
 	resp, err := h.handleCreateRoom(ctx, "chat.user.alice.request.room.site-A.create", body)
 	require.NoError(t, err)
 
-	var got map[string]string
+	var got model.CreateRoomReply
 	require.NoError(t, json.Unmarshal(resp, &got))
 	assert.Equal(t, "accepted", got["status"])
 	assert.NotEmpty(t, got["roomId"])
@@ -3976,8 +3996,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 	if err := h.store.ReconcileMemberCounts(ctx, room.ID); err != nil {
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
-	// TODO Tasks 34 & 35: subscription.update fan-out, sys-messages, outbox, async-job.
-	return nil
+	return nil // Tasks 35-37 extend this body with fan-out, sys-messages, outbox, and async-job result
 }
 ```
 
@@ -4391,13 +4410,13 @@ In `room-worker/handler.go` `finishCreateRoom`, after the subscription.update lo
 
 ```go
 if room.Type == model.RoomTypeChannel {
-    if err := h.publishChannelSysMessages(ctx, req, room, requester, len(allUsers)-1, requestID, now); err != nil {
+    if err := h.publishChannelSysMessages(ctx, req, room, requester, len(subs)-1, requestID, now); err != nil {
         return fmt.Errorf("publish sys messages: %w", err)
     }
 }
 ```
 
-Add the helper. `addedUsersCount` is `len(allUsers) - 1` (post-expansion minus the owner) — the real count, not an approximation of `len(req.Users) + len(req.Orgs)` which double-counts orgs against their expanded users.
+Add the helper. `addedUsersCount` is `len(subs) - 1` (subscriptions minus owner — one sub per account, matching the spec exactly).
 
 ```go
 func (h *Handler) publishChannelSysMessages(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, addedUsersCount int, requestID string, now time.Time) error {
@@ -4462,10 +4481,7 @@ func (h *Handler) publishCanonical(ctx context.Context, msg model.Message, siteI
     if err != nil {
         return fmt.Errorf("marshal MessageEvent: %w", err)
     }
-    m := natsutil.NewMsg(ctx, subject.MsgCanonicalCreated(siteID), data)
-    m.Header.Set("Nats-Msg-Id", msg.ID)
-    _, err = h.js.PublishMsg(ctx, m)
-    return err
+    return h.publish(ctx, subject.MsgCanonicalCreated(siteID), data, msg.ID)
 }
 ```
 
@@ -4600,16 +4616,14 @@ for destSiteID, accounts := range remoteSiteAccounts {
         return fmt.Errorf("marshal room_created outbox payload: %w", err)
     }
     envelope := model.OutboxEvent{
-        Type: "room_created", SiteID: room.SiteID, DestSiteID: destSiteID,
+        Type: model.MessageTypeRoomCreated, SiteID: room.SiteID, DestSiteID: destSiteID,
         Payload: pData, Timestamp: now.UnixMilli(),
     }
     eData, err := json.Marshal(envelope)
     if err != nil {
         return fmt.Errorf("marshal outbox envelope: %w", err)
     }
-    m := natsutil.NewMsg(ctx, subject.Outbox(room.SiteID, destSiteID, "room_created"), eData)
-    m.Header.Set("Nats-Msg-Id", requestID+":"+destSiteID)
-    if _, err := h.js.PublishMsg(ctx, m); err != nil {
+    if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, model.MessageTypeRoomCreated), eData, requestID+":"+destSiteID); err != nil {
         return fmt.Errorf("publish room_created outbox to %s: %w", destSiteID, err)
     }
 }
@@ -4617,7 +4631,7 @@ for destSiteID, accounts := range remoteSiteAccounts {
 if err := h.publishAsyncJobResult(ctx, requester.Account, model.AsyncJobResult{
     RequestID: requestID,
     Operation: model.AsyncJobOpRoomCreate,
-    Status:    "ok",
+    Status:    model.AsyncJobStatusOK,
     RoomID:    room.ID,
     Timestamp: now.UnixMilli(),
 }); err != nil {
@@ -5007,7 +5021,7 @@ var errPermanent = errors.New("permanent")
 Find the inbox-worker event-type switch (it dispatches `member_added`, `room_sync`, etc.) and add:
 
 ```go
-case "room_created":
+case model.MessageTypeRoomCreated:
     err = h.handleRoomCreated(ctx, evt)
 ```
 
@@ -5075,7 +5089,7 @@ func TestCreateRoomChannelEndToEnd(t *testing.T) {
 	reply, err := nc.RequestMsg(req, 5*time.Second)
 	require.NoError(t, err)
 
-	var got map[string]string
+	var got model.CreateRoomReply
 	require.NoError(t, json.Unmarshal(reply.Data, &got))
 	assert.Equal(t, "accepted", got["status"])
 	assert.Equal(t, "channel", got["roomType"])
@@ -5112,7 +5126,7 @@ func TestCreateRoomDMAlreadyExists(t *testing.T) {
 	roomID := idgen.BuildDMRoomID("u_alice", "u_bob")
 	mustInsertRoom(t, db, &model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-A"})
 	mustInsertSub(t, db, &model.Subscription{
-		ID: "sub_alice", RoomID: roomID, SiteID: "site-A",
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-A",
 		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
 		Name:     "bob", RoomType: model.RoomTypeDM,
 	})
@@ -5434,7 +5448,7 @@ Wait until all containers are `healthy`.
 ```
 nats request \
   "chat.user.alice.request.room.site-local.create" \
-  --header "X-Request-ID: 0193abcd0193abcd0193abcd0193abcd" \
+  --header "X-Request-ID: 0193abcd-0193-7abc-89ab-0193abcd0193" \
   '{"name":"smoke-test","users":["bob"]}'
 ```
 
