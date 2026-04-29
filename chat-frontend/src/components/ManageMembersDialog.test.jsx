@@ -8,7 +8,7 @@ vi.mock('../context/NatsContext', () => ({
 
 import { useNats } from '../context/NatsContext'
 
-const room = { id: 'r1', siteId: 'site-A', name: 'general', type: 'group' }
+const room = { id: 'r1', siteId: 'site-A', name: 'general', type: 'channel' }
 
 beforeEach(() => {
   useNats.mockReset()

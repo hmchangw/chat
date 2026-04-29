@@ -13,7 +13,7 @@ vi.mock('../components/RoomList', () => ({
   default: ({ onSelectRoom }) => (
     <div data-testid="room-list">
       <button onClick={() => onSelectRoom({ id: 'r1', name: 'general', type: 'channel', siteId: 'site-A' })}>
-        pick-group
+        pick-channel
       </button>
       <button onClick={() => onSelectRoom({ id: 'r2', name: 'bob-dm', type: 'dm', siteId: 'site-A' })}>
         pick-dm
@@ -60,16 +60,16 @@ describe('ChatPage header buttons', () => {
     expect(screen.queryByRole('button', { name: /^Leave$/ })).not.toBeInTheDocument()
   })
 
-  it('shows Members and Leave on a group room', () => {
+  it('shows Members and Leave on a channel room', () => {
     render(<ChatPage />)
-    fireEvent.click(screen.getByText('pick-group'))
+    fireEvent.click(screen.getByText('pick-channel'))
     expect(screen.getByRole('button', { name: /^Members$/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Leave$/ })).toBeInTheDocument()
   })
 
   it('opens ManageMembersDialog when Members is clicked', () => {
     render(<ChatPage />)
-    fireEvent.click(screen.getByText('pick-group'))
+    fireEvent.click(screen.getByText('pick-channel'))
     expect(screen.queryByRole('heading', { name: /Manage Members/i })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^Members$/ }))
     expect(screen.getByRole('heading', { name: /Manage Members — general/i })).toBeInTheDocument()
@@ -77,7 +77,7 @@ describe('ChatPage header buttons', () => {
 
   it('closes ManageMembersDialog when Close is clicked', () => {
     render(<ChatPage />)
-    fireEvent.click(screen.getByText('pick-group'))
+    fireEvent.click(screen.getByText('pick-channel'))
     fireEvent.click(screen.getByRole('button', { name: /^Members$/ }))
     fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
     expect(screen.queryByRole('heading', { name: /Manage Members/i })).not.toBeInTheDocument()
