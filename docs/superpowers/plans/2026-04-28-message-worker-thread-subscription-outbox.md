@@ -1862,4 +1862,108 @@ git commit -m "inbox-worker: dispatch thread_subscription_upserted to UpsertThre
 
 ---
 
-<!-- end-of-chunk-5a -->
+## Task 11: Mongo `UpsertThreadSubscription` implementation in inbox-worker
+
+Concrete implementation backing the interface added in Task 10. Uses `$setOnInsert` for first-event fields, `$set` for `updatedAt`, and `$max` on `hasMention` for monotonic merge. Includes ensuring the `(threadRoomId, userId)` unique index exists at startup.
+
+**Files:**
+- Modify: `inbox-worker/main.go` (add `threadSubCol` field; add `UpsertThreadSubscription` method; ensure index at startup)
+
+- [ ] **Step 11.1: Add `threadSubCol` to `mongoInboxStore` and wire it in `main`**
+
+In `inbox-worker/main.go`, replace the `mongoInboxStore` struct definition with:
+
+```go
+// mongoInboxStore implements InboxStore using MongoDB.
+type mongoInboxStore struct {
+	subCol       *mongo.Collection
+	roomCol      *mongo.Collection
+	userCol      *mongo.Collection
+	threadSubCol *mongo.Collection
+}
+```
+
+In `main()`, replace the store construction (around the existing `&mongoInboxStore{...}` literal) with:
+
+```go
+	store := &mongoInboxStore{
+		subCol:       db.Collection("subscriptions"),
+		roomCol:      db.Collection("rooms"),
+		userCol:      db.Collection("users"),
+		threadSubCol: db.Collection("threadSubscriptions"),
+	}
+	if err := store.ensureIndexes(ctx); err != nil {
+		slog.Error("ensure indexes failed", "error", err)
+		os.Exit(1)
+	}
+```
+
+- [ ] **Step 11.2: Add the `ensureIndexes` and `UpsertThreadSubscription` methods**
+
+Append to `inbox-worker/main.go` (after the existing `BulkCreateSubscriptions` method, before `func main()`):
+
+```go
+// ensureIndexes creates the unique index on (threadRoomId, userId) used by
+// UpsertThreadSubscription. The index name and shape match what message-worker
+// creates in its own threadStoreMongo so both services agree on the natural
+// key for thread subscriptions.
+func (s *mongoInboxStore) ensureIndexes(ctx context.Context) error {
+	if _, err := s.threadSubCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userId", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return fmt.Errorf("ensure threadSubscriptions (threadRoomId,userId) index: %w", err)
+	}
+	return nil
+}
+
+// UpsertThreadSubscription inserts the subscription on first event for a
+// (threadRoomId, userId) pair, and on subsequent events updates only
+// updatedAt and (monotonically) hasMention. $setOnInsert pins the immutable
+// fields on insert; $set always refreshes updatedAt; $max on hasMention
+// guarantees a non-mention event never clears a prior mention=true.
+//
+// $setOnInsert and $max operate on disjoint fields (hasMention is set by $max
+// only — never by $setOnInsert) so MongoDB doesn't reject the update with a
+// "conflicting update operators" error.
+func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
+	filter := bson.M{"threadRoomId": sub.ThreadRoomID, "userId": sub.UserID}
+	update := bson.M{
+		"$setOnInsert": bson.M{
+			"_id":             sub.ID,
+			"parentMessageId": sub.ParentMessageID,
+			"roomId":          sub.RoomID,
+			"threadRoomId":    sub.ThreadRoomID,
+			"userId":          sub.UserID,
+			"userAccount":     sub.UserAccount,
+			"siteId":          sub.SiteID,
+			"lastSeenAt":      sub.LastSeenAt,
+			"createdAt":       sub.CreatedAt,
+		},
+		"$set": bson.M{"updatedAt": sub.UpdatedAt},
+		"$max": bson.M{"hasMention": sub.HasMention},
+	}
+	if _, err := s.threadSubCol.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
+		return fmt.Errorf("upsert thread subscription (threadRoomID %q, userID %q): %w",
+			sub.ThreadRoomID, sub.UserID, err)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 11.3: Build and run unit tests**
+
+Run: `make build SERVICE=inbox-worker && make test SERVICE=inbox-worker`
+
+Expected: both pass. (The unit tests use the in-memory stub from Task 10; this task's Mongo code only matters in integration tests, added in Task 12.)
+
+- [ ] **Step 11.4: Commit**
+
+```bash
+git add inbox-worker/main.go
+git commit -m "inbox-worker: Mongo UpsertThreadSubscription with monotonic hasMention merge"
+```
+
+---
+
+<!-- end-of-chunk-5b -->
