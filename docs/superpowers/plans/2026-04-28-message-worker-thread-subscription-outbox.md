@@ -1355,4 +1355,276 @@ git commit -m "message-worker: emit outbox event on subsequent-reply ThreadSubsc
 
 ---
 
-<!-- end-of-chunk-3 -->
+## Task 8: Wire outbox publish into `markThreadMentions`
+
+After `MarkThreadSubscriptionMention` succeeds for a remote mentionee, publish the outbox event so the mentionee's home site upserts a `hasMention=true` subscription. Local mentionees: no publish.
+
+**Files:**
+- Modify: `message-worker/handler.go` (markThreadMentions body)
+- Modify: `message-worker/handler_test.go` (new test cases)
+
+- [ ] **Step 8.1: Write the failing test for mention publish**
+
+Append to `message-worker/handler_test.go`:
+
+```go
+func TestHandler_MarkThreadMentions_OutboxPublishes(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name              string
+		mentionees        []model.Participant
+		wantPublishToSite map[string]int
+	}{
+		{
+			name:              "no mentions — no publish",
+			mentionees:        nil,
+			wantPublishToSite: map[string]int{},
+		},
+		{
+			name: "local mentionee — mark only, no publish",
+			mentionees: []model.Participant{
+				{UserID: "u-bob", Account: "bob", SiteID: "site-a"},
+			},
+			wantPublishToSite: map[string]int{},
+		},
+		{
+			name: "remote mentionee — mark and publish",
+			mentionees: []model.Participant{
+				{UserID: "u-bob", Account: "bob", SiteID: "site-b"},
+			},
+			wantPublishToSite: map[string]int{"site-b": 1},
+		},
+		{
+			name: "two remote mentionees in different sites — two publishes",
+			mentionees: []model.Participant{
+				{UserID: "u-bob", Account: "bob", SiteID: "site-b"},
+				{UserID: "u-carol", Account: "carol", SiteID: "site-c"},
+			},
+			wantPublishToSite: map[string]int{"site-b": 1, "site-c": 1},
+		},
+		{
+			name: "@all is skipped — no mark, no publish",
+			mentionees: []model.Participant{
+				{Account: "all", EngName: "all"},
+			},
+			wantPublishToSite: map[string]int{},
+		},
+		{
+			name: "sender self-mention is skipped",
+			mentionees: []model.Participant{
+				{UserID: "u-sender", Account: "sender", SiteID: "site-b"},
+			},
+			wantPublishToSite: map[string]int{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			ts := NewMockThreadStore(ctrl)
+
+			expectedMarks := 0
+			for _, p := range tt.mentionees {
+				if p.Account == "all" {
+					continue
+				}
+				if p.UserID == "u-sender" {
+					continue
+				}
+				expectedMarks++
+			}
+			ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).
+				Times(expectedMarks).Return(nil)
+
+			var publishedDests []string
+			h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), ts, "site-a",
+				func(_ context.Context, _ string, data []byte, _ string) error {
+					var outer model.OutboxEvent
+					if err := json.Unmarshal(data, &outer); err != nil {
+						return err
+					}
+					publishedDests = append(publishedDests, outer.DestSiteID)
+					return nil
+				})
+
+			msg := &model.Message{
+				ID:                    "msg-reply",
+				RoomID:                "r1",
+				UserID:                "u-sender",
+				UserAccount:           "sender",
+				CreatedAt:             now,
+				ThreadParentMessageID: "msg-parent",
+				Mentions:              tt.mentionees,
+			}
+			err := h.markThreadMentions(context.Background(), msg, "tr-1", "site-a")
+			require.NoError(t, err)
+
+			gotByDest := map[string]int{}
+			for _, d := range publishedDests {
+				gotByDest[d]++
+			}
+			assert.Equal(t, tt.wantPublishToSite, gotByDest)
+		})
+	}
+}
+
+func TestHandler_MarkThreadMentions_OutboxPublishError_NAKs(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	ctrl := gomock.NewController(t)
+	ts := NewMockThreadStore(ctrl)
+	ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).Return(nil)
+
+	boom := errors.New("publish boom")
+	h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), ts, "site-a",
+		func(_ context.Context, _ string, _ []byte, _ string) error { return boom })
+
+	msg := &model.Message{
+		ID: "msg-reply", RoomID: "r1", UserID: "u-sender", UserAccount: "sender",
+		CreatedAt: now, ThreadParentMessageID: "msg-parent",
+		Mentions: []model.Participant{{UserID: "u-bob", Account: "bob", SiteID: "site-b"}},
+	}
+	err := h.markThreadMentions(context.Background(), msg, "tr-1", "site-a")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, boom)
+}
+
+func TestHandler_MarkThreadMentions_HasMentionInPayload(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	ctrl := gomock.NewController(t)
+	ts := NewMockThreadStore(ctrl)
+	ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).Return(nil)
+
+	var captured []byte
+	h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), ts, "site-a",
+		func(_ context.Context, _ string, data []byte, _ string) error {
+			captured = data
+			return nil
+		})
+
+	msg := &model.Message{
+		ID: "msg-reply", RoomID: "r1", UserID: "u-sender", UserAccount: "sender",
+		CreatedAt: now, ThreadParentMessageID: "msg-parent",
+		Mentions: []model.Participant{{UserID: "u-bob", Account: "bob", SiteID: "site-b"}},
+	}
+	require.NoError(t, h.markThreadMentions(context.Background(), msg, "tr-1", "site-a"))
+
+	var outer model.OutboxEvent
+	require.NoError(t, json.Unmarshal(captured, &outer))
+	var sub model.ThreadSubscription
+	require.NoError(t, json.Unmarshal(outer.Payload, &sub))
+	assert.True(t, sub.HasMention, "outbox-emitted ThreadSubscription must carry HasMention=true")
+	assert.Equal(t, "u-bob", sub.UserID)
+	assert.Equal(t, "site-b", sub.SiteID)
+}
+```
+
+- [ ] **Step 8.2: Run tests to verify they fail**
+
+Run: `make test SERVICE=message-worker -run TestHandler_MarkThreadMentions_Outbox`
+
+Expected: FAIL — `markThreadMentions` doesn't publish yet.
+
+- [ ] **Step 8.3: Wire the publish call into `markThreadMentions`**
+
+Replace `markThreadMentions` in `message-worker/handler.go` with:
+
+```go
+func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, threadRoomID, eventSiteID string) error {
+	for i := range msg.Mentions {
+		p := &msg.Mentions[i]
+		if p.Account == "all" {
+			continue
+		}
+		if p.UserID == msg.UserID {
+			continue
+		}
+		ownerSiteID := p.SiteID
+		if ownerSiteID == "" {
+			slog.Warn("mentionee participant has empty SiteID, falling back to event site",
+				"account", p.Account, "userID", p.UserID, "msgID", msg.ID)
+			ownerSiteID = eventSiteID
+		}
+		sub := h.buildThreadSubscription(msg, threadRoomID, p.UserID, p.Account, ownerSiteID, msg.CreatedAt)
+		sub.HasMention = true
+		if err := h.threadStore.MarkThreadSubscriptionMention(ctx, sub); err != nil {
+			return fmt.Errorf("mark thread subscription mention for user %s: %w", p.UserID, err)
+		}
+		if err := h.publishThreadSubOutboxIfRemote(ctx, sub, msg.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+```
+
+- [ ] **Step 8.4: Run tests to verify they pass**
+
+Run: `make test SERVICE=message-worker`
+
+Expected: pass.
+
+- [ ] **Step 8.5: Commit**
+
+```bash
+git add message-worker/handler.go message-worker/handler_test.go
+git commit -m "message-worker: emit outbox event on mention-marked ThreadSubscriptions"
+```
+
+---
+
+## Task 9: Wire JetStream publish closure in `message-worker/main.go`
+
+Task 3 plumbed `siteID` and a no-op publish closure into the test fixtures. The `main.go` change in Step 3.3 already added the JetStream-backed closure. This task verifies the wiring end-to-end and confirms `bootstrap.go` is unchanged for OUTBOX (per spec — ops/IaC owns OUTBOX).
+
+**Files:**
+- Verify: `message-worker/main.go:95-105`
+- Verify: `message-worker/bootstrap.go` (no changes)
+- Modify: `message-worker/main.go` (only if Step 3.3 wasn't applied)
+
+- [ ] **Step 9.1: Confirm `main.go` JetStream closure is in place**
+
+Read `message-worker/main.go` and verify the `NewHandler` call passes the publish closure exactly as below:
+
+```go
+	handler := NewHandler(store, us, threadStore, cfg.SiteID, func(ctx context.Context, subj string, data []byte, msgID string) error {
+		if msgID == "" {
+			return nc.Publish(ctx, subj, data)
+		}
+		_, err := js.Publish(ctx, subj, data, jetstream.WithMsgID(msgID))
+		return err
+	})
+```
+
+If missing or different, apply Step 3.3 from Task 3 verbatim.
+
+- [ ] **Step 9.2: Confirm `bootstrap.go` is unchanged for OUTBOX**
+
+Read `message-worker/bootstrap.go` and verify the only stream it bootstraps is `MESSAGES_CANONICAL`. There must be NO reference to `stream.Outbox(...)` or `OUTBOX_`.
+
+Per the spec ("Stream ownership"), OUTBOX is owned by ops/IaC. Adding it here would diverge from room-worker's pattern. Leave the file alone.
+
+- [ ] **Step 9.3: Build the binary**
+
+Run: `make build SERVICE=message-worker`
+
+Expected: succeeds. (Confirms imports and types compile end-to-end with the new publish closure.)
+
+- [ ] **Step 9.4: Run lint + full unit suite**
+
+Run: `make lint && make test`
+
+Expected: full repo passes.
+
+- [ ] **Step 9.5: Commit (if Step 9.1 made any change)**
+
+If Step 9.1 was a no-op (Task 3 already covered it), skip the commit. Otherwise:
+
+```bash
+git add message-worker/main.go
+git commit -m "message-worker: wire JetStream publish closure with Nats-Msg-Id"
+```
+
+---
+
+<!-- end-of-chunk-4 -->
