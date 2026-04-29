@@ -166,18 +166,22 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 		return fmt.Errorf("lookup parent owner site: %w", err)
 	}
 	if parentSiteID != "" {
-		if err := h.threadStore.InsertThreadSubscription(ctx,
-			h.buildThreadSubscription(msg, threadRoomID, parentSender.ID, parentSender.Account, parentSiteID, now),
-		); err != nil {
+		parentSub := h.buildThreadSubscription(msg, threadRoomID, parentSender.ID, parentSender.Account, parentSiteID, now)
+		if err := h.threadStore.InsertThreadSubscription(ctx, parentSub); err != nil {
 			return fmt.Errorf("insert parent author thread subscription: %w", err)
+		}
+		if err := h.publishThreadSubOutboxIfRemote(ctx, parentSub, msg.ID); err != nil {
+			return err
 		}
 	}
 
 	if replier != nil && msg.UserID != parentSender.ID {
-		if err := h.threadStore.InsertThreadSubscription(ctx,
-			h.buildThreadSubscription(msg, threadRoomID, msg.UserID, msg.UserAccount, replier.SiteID, now),
-		); err != nil {
+		replierSub := h.buildThreadSubscription(msg, threadRoomID, msg.UserID, msg.UserAccount, replier.SiteID, now)
+		if err := h.threadStore.InsertThreadSubscription(ctx, replierSub); err != nil {
 			return fmt.Errorf("insert replier thread subscription: %w", err)
+		}
+		if err := h.publishThreadSubOutboxIfRemote(ctx, replierSub, msg.ID); err != nil {
+			return err
 		}
 	}
 
