@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useNats } from '../context/NatsContext'
+import { DEFAULT_SITE_ID } from '../lib/runtimeConfig'
 
 export default function LoginPage() {
   const { connect, error: natsError } = useNats()
-  const defaultSiteId = import.meta.env.VITE_DEFAULT_SITE_ID || 'site-A'
+  const defaultSiteId = DEFAULT_SITE_ID
 
   const [account, setAccount] = useState('')
   const [siteId, setSiteId] = useState(defaultSiteId)

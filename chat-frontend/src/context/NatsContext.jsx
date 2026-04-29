@@ -1,6 +1,7 @@
 import { createContext, useContext, useRef, useState, useCallback } from 'react'
 import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
+import { AUTH_URL, NATS_URL } from '../lib/runtimeConfig'
 
 export const NatsContext = createContext(null)
 
@@ -12,8 +13,8 @@ export function NatsProvider({ children }) {
   const [user, setUser] = useState(null)
   const [error, setError] = useState(null)
 
-  const authUrl = import.meta.env.VITE_AUTH_URL || ''
-  const natsUrl = import.meta.env.VITE_NATS_URL || 'ws://localhost:4223'
+  const authUrl = AUTH_URL
+  const natsUrl = NATS_URL
 
   const connectToNats = useCallback(async (account, siteId) => {
     setError(null)
