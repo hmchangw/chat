@@ -15,12 +15,12 @@ import (
 //go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,SubscriptionRepository,EventPublisher,ThreadRoomRepository
 
 type MessageReader interface {
-	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
-	GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
-	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
-	GetAllMessagesAsc(ctx context.Context, roomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetAllMessagesAsc(ctx context.Context, roomID string, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
-	GetThreadMessages(ctx context.Context, roomID, threadRoomID string, q cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetThreadMessages(ctx context.Context, roomID, threadRoomID string, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessagesByIDs(ctx context.Context, messageIDs []string) ([]models.Message, error)
 }
 
@@ -80,3 +80,6 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MsgThreadPattern(siteID), s.GetThreadMessages)
 	natsrouter.Register(r, subject.MsgThreadParentPattern(siteID), s.GetThreadParentMessages)
 }
+
+// Compile-time check: *cassrepo.Repository must satisfy MessageRepository.
+var _ MessageRepository = (*cassrepo.Repository)(nil)

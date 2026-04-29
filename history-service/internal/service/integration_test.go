@@ -33,7 +33,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		cql(`CREATE TYPE IF NOT EXISTS %s."File" (id TEXT, name TEXT, type TEXT)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."Card" (template TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB)`),
-		cql(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP)`),
 	} {
 		require.NoError(t, adminSession.Query(stmt).Exec())
 	}
@@ -71,12 +71,12 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		sender FROZEN<"Participant">, target_user FROZEN<"Participant">, msg TEXT,
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
-		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
+		thread_parent_id TEXT,
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT, unread BOOLEAN,
 		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
 		PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
-	) WITH CLUSTERING ORDER BY (thread_room_id ASC, created_at DESC, message_id DESC)`)).Exec())
+	) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`)).Exec())
 
 	// pinned_messages_by_room isn't needed for the flows exercised here; the
 	// cassrepo integration tests cover that branch directly. Keeping the setup
@@ -272,8 +272,8 @@ func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 		replyID, roomID, replyCreatedAt, otherSender, "bob's reply", parentID, parentCreatedAt, threadRoomID, false,
 	).Exec())
 	require.NoError(t, session.Query(
-		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		roomID, threadRoomID, replyCreatedAt, replyID, otherSender, "bob's reply", parentID, parentCreatedAt, false,
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, otherSender, "bob's reply", parentID, false,
 	).Exec())
 
 	// Alice (the parent's sender) deletes the parent.

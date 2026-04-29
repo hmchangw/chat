@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -15,8 +14,25 @@ import (
 // casMaxRetries bounds the CAS loop; 16 retries cover realistic burst concurrency.
 const casMaxRetries = 16
 
+const (
+	editMsgByID   = `UPDATE messages_by_id SET msg = ?, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`
+	editMsgByRoom = `UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+	editThreadMsg = `UPDATE thread_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
+	editPinnedMsg = `UPDATE pinned_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+
+	deleteMsgByIDCAS = `UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`
+	deleteMsgByRoom  = `UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+	deleteThreadMsg  = `UPDATE thread_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
+	deletePinnedMsg  = `UPDATE pinned_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+)
+
 // casDecrement atomically decrements a nullable INT toward zero (clamping at zero); mirrors message-worker/store_cassandra.go casIncrement.
+// When initial is nil the column was never written and the function returns immediately — no LWT is issued and no zero is materialised.
 func casDecrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
+	if initial == nil {
+		// tcount was never written — nothing to decrement; skip to avoid materialising a zero on a null column.
+		return nil
+	}
 	tcount := initial
 	for range maxRetries {
 		newVal := 0
@@ -35,39 +51,56 @@ func casDecrement(maxRetries int, initial *int, update func(newVal int, expected
 	return fmt.Errorf("cas decrement exceeded %d retries", maxRetries)
 }
 
+func (r *Repository) editInMessagesByID(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	return r.session.Query(editMsgByID, newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt).WithContext(ctx).Exec()
+}
+
+func (r *Repository) editInMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	return r.session.Query(editMsgByRoom, newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+}
+
+func (r *Repository) editInThreadMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	return r.session.Query(editThreadMsg, newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+}
+
+func (r *Repository) editInPinnedMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	return r.session.Query(editPinnedMsg, newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID).WithContext(ctx).Exec()
+}
+
+func (r *Repository) deleteInMessagesByRoom(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	return r.session.Query(deleteMsgByRoom, deletedAt, msg.RoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+}
+
+func (r *Repository) deleteInThreadMessagesByRoom(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	return r.session.Query(deleteThreadMsg, deletedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+}
+
+func (r *Repository) deleteInPinnedMessagesByRoom(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	return r.session.Query(deletePinnedMsg, deletedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID).WithContext(ctx).Exec()
+}
+
 func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	if err := r.session.Query(
-		`UPDATE messages_by_id SET msg = ?, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`,
-		newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
-	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("update messages_by_id: %w", err)
+	if msg.ThreadParentID != "" && msg.ThreadRoomID == "" {
+		return fmt.Errorf("edit thread message %s: ThreadParentID %q is set but ThreadRoomID is empty", msg.MessageID, msg.ThreadParentID)
 	}
 
-	switch {
-	case msg.ThreadParentID == "":
-		if err := r.session.Query(
-			`UPDATE messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-			newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
-		).WithContext(ctx).Exec(); err != nil {
-			return fmt.Errorf("update messages_by_room: %w", err)
+	if err := r.editInMessagesByID(ctx, msg, newMsg, editedAt); err != nil {
+		return fmt.Errorf("update messages_by_id for message %s: %w", msg.MessageID, err)
+	}
+
+	if msg.ThreadParentID == "" {
+		if err := r.editInMessagesByRoom(ctx, msg, newMsg, editedAt); err != nil {
+			return fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
-	case msg.ThreadRoomID != "":
-		if err := r.session.Query(
-			`UPDATE thread_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
-			newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
-		).WithContext(ctx).Exec(); err != nil {
-			return fmt.Errorf("update thread_messages_by_room: %w", err)
+	} else {
+		if err := r.editInThreadMessagesByRoom(ctx, msg, newMsg, editedAt); err != nil {
+			return fmt.Errorf("update thread_messages_by_room for message %s room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
 		}
-	default:
-		slog.Warn("skipping thread_messages_by_room edit: ThreadRoomID not set", "messageID", msg.MessageID)
 	}
 
 	if msg.PinnedAt != nil {
-		if err := r.session.Query(
-			`UPDATE pinned_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-			newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
-		).WithContext(ctx).Exec(); err != nil {
-			return fmt.Errorf("update pinned_messages_by_room: %w", err)
+		if err := r.editInPinnedMessagesByRoom(ctx, msg, newMsg, editedAt); err != nil {
+			return fmt.Errorf("update pinned_messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
 	}
 
@@ -78,13 +111,17 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 // the winning goroutine runs mirror-table updates and tcount decrement, preventing double-decrement.
 // `IF deleted != true` matches NULL (message-worker never writes deleted) and false, excluding true.
 func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (time.Time, bool, error) {
+	if msg.ThreadParentID != "" && msg.ThreadRoomID == "" {
+		return time.Time{}, false, fmt.Errorf("delete thread message %s: ThreadParentID %q is set but ThreadRoomID is empty", msg.MessageID, msg.ThreadParentID)
+	}
+
 	var current bool
 	applied, err := r.session.Query(
-		`UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`,
+		deleteMsgByIDCAS,
 		deletedAt, msg.MessageID, msg.CreatedAt,
 	).WithContext(ctx).ScanCAS(&current)
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("cas update messages_by_id: %w", err)
+		return time.Time{}, false, fmt.Errorf("cas update messages_by_id for message %s: %w", msg.MessageID, err)
 	}
 	if !applied {
 		// Concurrent delete won. Read the existing updated_at so the caller
@@ -95,44 +132,33 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 			msg.MessageID, msg.CreatedAt,
 		).WithContext(ctx).Scan(&existing); err != nil {
 			if errors.Is(err, gocql.ErrNotFound) {
-				return time.Time{}, false, nil
+				// Row vanished between the CAS and the follow-up SELECT — abnormal race.
+				return time.Time{}, false, fmt.Errorf("message %s vanished after cas miss: %w", msg.MessageID, gocql.ErrNotFound)
 			}
-			return time.Time{}, false, fmt.Errorf("read updated_at after cas miss: %w", err)
+			return time.Time{}, false, fmt.Errorf("read updated_at after cas miss for message %s: %w", msg.MessageID, err)
 		}
 		return existing, false, nil
 	}
 
-	switch {
-	case msg.ThreadParentID == "":
-		if err := r.session.Query(
-			`UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-			deletedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
-		).WithContext(ctx).Exec(); err != nil {
-			return time.Time{}, false, fmt.Errorf("update messages_by_room: %w", err)
+	if msg.ThreadParentID == "" {
+		if err := r.deleteInMessagesByRoom(ctx, msg, deletedAt); err != nil {
+			return time.Time{}, false, fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
-	case msg.ThreadRoomID != "":
-		if err := r.session.Query(
-			`UPDATE thread_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
-			deletedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
-		).WithContext(ctx).Exec(); err != nil {
-			return time.Time{}, false, fmt.Errorf("update thread_messages_by_room: %w", err)
+	} else {
+		if err := r.deleteInThreadMessagesByRoom(ctx, msg, deletedAt); err != nil {
+			return time.Time{}, false, fmt.Errorf("update thread_messages_by_room for message %s room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
 		}
-	default:
-		slog.Warn("skipping thread_messages_by_room delete: ThreadRoomID not set", "messageID", msg.MessageID)
 	}
 
 	if msg.PinnedAt != nil {
-		if err := r.session.Query(
-			`UPDATE pinned_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-			deletedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
-		).WithContext(ctx).Exec(); err != nil {
-			return time.Time{}, false, fmt.Errorf("update pinned_messages_by_room: %w", err)
+		if err := r.deleteInPinnedMessagesByRoom(ctx, msg, deletedAt); err != nil {
+			return time.Time{}, false, fmt.Errorf("update pinned_messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
 	}
 
 	if msg.ThreadParentID != "" {
 		if err := r.decrementParentTcount(ctx, msg); err != nil {
-			return time.Time{}, false, fmt.Errorf("decrement parent tcount: %w", err)
+			return time.Time{}, false, fmt.Errorf("decrement parent tcount for message %s: %w", msg.MessageID, err)
 		}
 	}
 
