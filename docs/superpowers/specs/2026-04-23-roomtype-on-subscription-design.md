@@ -80,8 +80,8 @@ type Subscription struct {
 | Site | Source of `RoomType` |
 |---|---|
 | `room-service/handler.go` `handleCreateRoom` (owner subscription) | `req.Type` (the type the room is being created as) |
-| `room-worker/handler.go` `processAddMembers` | Hardcoded `RoomTypeChannel`. DM and botDM do not support add-member. |
-| `inbox-worker/handler.go` `handleMemberAdded` | Hardcoded `RoomTypeChannel`. Cross-site member_added events only fire for rooms that support add-member. |
+| `room-worker/handler.go` `processAddMembers` | Hardcoded `RoomTypeChannel`. Member-management ops (add/remove/role) only apply to channel rooms — room-service rejects them for any other kind. |
+| `inbox-worker/handler.go` `handleMemberAdded` | Hardcoded `RoomTypeChannel`. Cross-site `member_added` events only originate from channel rooms. |
 
 `processInvite` is intentionally absent: PR #118 ("Remove-member /
 role-update hardening", merged Apr 24 to main) removed the single-user
@@ -91,18 +91,18 @@ in `HandleJetStreamMsg`, and the function does not exist on main.
 ### 4. Partial `Subscription` payloads on removed events
 
 In `room-worker/handler.go` the "removed" variants of `SubscriptionUpdateEvent`
-construct a partial `Subscription` literal. Populate `RoomType` by fetching the
-room once per operation (not per account):
+construct a partial `Subscription` literal. Hardcode `RoomType` to
+`RoomTypeChannel` at both sites:
 
-- `processRemoveIndividual`: call `store.GetRoom(ctx, req.RoomID)`
-  near the top of the function, reuse `room.Type` when building the
-  `SubscriptionUpdateEvent.Subscription`.
-- `processRemoveOrg`: same — one `GetRoom` at the top, reuse across
-  the per-account event loop.
+- `processRemoveIndividual`: stamp `RoomType: model.RoomTypeChannel` on the
+  partial Subscription literal.
+- `processRemoveOrg`: same — every per-account event in the loop carries
+  `RoomTypeChannel`.
 
-If `GetRoom` returns an error, log at warn level and continue with
-`RoomType: ""`. The removal itself must not block on this lookup; populating
-the field is best-effort for the notification payload.
+The hardcode mirrors `processAddMembers` and rests on the same invariant:
+room-service is the single entry point for member-management requests and
+rejects every kind except channel before they reach the room-worker stream.
+No runtime `GetRoom` lookup is required.
 
 ### 5. `RoomTypeGroup` → `RoomTypeChannel` renames
 
