@@ -1288,6 +1288,12 @@ func TestHandler_SubsequentReply_OutboxPublishes(t *testing.T) {
 			parentUser:        parentUserAtC,
 			wantPublishToSite: map[string]int{"site-b": 1, "site-c": 1},
 		},
+		{
+			name:              "both remote, same site — two publishes to that site",
+			replierSite:       "site-b",
+			parentUser:        &model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-b"},
+			wantPublishToSite: map[string]int{"site-b": 2},
+		},
 	}
 
 	for _, tt := range tests {
