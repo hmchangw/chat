@@ -16,6 +16,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 func ptrTime(t time.Time) *time.Time { return &t }
@@ -219,6 +220,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				// Subsequent-reply path: upsert parent and replier subscriptions.
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", "alice", now).Return(nil)
@@ -237,6 +240,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 					Return(&model.ThreadRoom{ID: "tr-1"}, nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", "alice", now).Return(nil)
@@ -316,6 +321,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 				// Parent + replier subscriptions inserted.
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
@@ -345,6 +352,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				// MarkThreadSubscriptionMention must NOT be called — sender excluded.
@@ -360,6 +369,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				// MarkThreadSubscriptionMention must NOT be called — @all is thread-ignored.
@@ -376,6 +387,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).
@@ -397,6 +410,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).
@@ -447,11 +462,13 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		msg        *model.Message
-		siteID     string
-		setupMocks func(store *MockStore, ts *MockThreadStore)
-		wantErr    bool
+		name                string
+		msg                 *model.Message
+		siteID              string
+		setupMocks          func(store *MockStore, ts *MockThreadStore)
+		extraUserStoreSetup func(us *MockUserStore)
+		expectReplierInsert bool
+		wantErr             bool
 	}{
 		{
 			name:   "first reply — different users — creates room and two subscriptions",
@@ -483,6 +500,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 						assert.Nil(t, sub.LastSeenAt, "replier's LastSeenAt should be nil on init")
 						return nil
 					})
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 			},
 		},
 		{
@@ -518,6 +539,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 						return nil
 					})
 			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
+			},
 		},
 		{
 			name:   "first reply — GetMessageSender fails — returns error",
@@ -541,6 +566,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).
 					Return(errors.New("mongo: write error"))
 			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
+			},
 			wantErr: true,
 		},
 		{
@@ -556,6 +585,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				// Replier insert fails
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).
 					Return(errors.New("mongo: write error"))
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 			},
 			wantErr: true,
 		},
@@ -587,6 +620,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).
 					Return(nil)
 			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
+			},
 		},
 		{
 			name: "subsequent reply — same user as parent — upserts one subscription and updates last message",
@@ -614,6 +651,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					})
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "parent-user", now).
 					Return(nil)
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 			},
 		},
 		{
@@ -676,6 +717,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
 					Return(errors.New("mongo: write error"))
 			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
+			},
 			wantErr: true,
 		},
 		{
@@ -692,6 +737,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
 					Return(errors.New("mongo: write error"))
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 			},
 			wantErr: true,
 		},
@@ -710,6 +759,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).
 					Return(errors.New("mongo: write error"))
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 			},
 			wantErr: true,
 		},
@@ -752,6 +805,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					gomock.Cond(func(x any) bool { s, ok := x.(string); return ok && s == capturedRoomID }),
 				).Return(nil)
 			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
+			},
 		},
 		{
 			name: "first reply — UpdateParentMessageThreadRoomID fails — returns error",
@@ -773,6 +830,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().UpdateParentMessageThreadRoomID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(errors.New("cassandra: write timeout"))
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 			},
 			wantErr: true,
 		},
@@ -802,6 +863,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					"tr-existing",
 				).Return(nil)
 			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
+			},
 		},
 		{
 			name: "subsequent reply — UpdateParentMessageThreadRoomID fails — returns error",
@@ -825,6 +890,10 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).Return(nil)
 				store.EXPECT().UpdateParentMessageThreadRoomID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(errors.New("cassandra: write timeout"))
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
 			},
 			wantErr: true,
 		},
@@ -853,7 +922,36 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					})
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).Return(nil)
 				// UpdateParentMessageThreadRoomID must NOT be called — parent doesn't exist
+				// FindUserByID also not called — short-circuited by errMessageNotFound branch
 			},
+		},
+		{
+			name:   "first reply — parent user not found in userStore — warn-and-skip parent, still inserts replier",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").Return(parentSender, nil)
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(nil, fmt.Errorf("wrap: %w", userstore.ErrUserNotFound))
+			},
+			expectReplierInsert: true,
+		},
+		{
+			name:   "first reply — parent user lookup DB error — returns error",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").Return(parentSender, nil)
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(nil, errors.New("mongo: connection refused"))
+			},
+			wantErr: true,
 		},
 	}
 
@@ -864,11 +962,18 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			mockThreadStore := NewMockThreadStore(ctrl)
 			mockUserStore := NewMockUserStore(ctrl)
 			tt.setupMocks(mockStore, mockThreadStore)
+			if tt.extraUserStoreSetup != nil {
+				tt.extraUserStoreSetup(mockUserStore)
+			}
+			if tt.expectReplierInsert {
+				mockThreadStore.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+			}
 
 			h := NewHandler(mockStore, mockUserStore, mockThreadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
 				return nil
 			})
-			_, err := h.handleThreadRoomAndSubscriptions(context.Background(), tt.msg, tt.siteID)
+			replier := &model.User{ID: tt.msg.UserID, Account: tt.msg.UserAccount, SiteID: "site-a"}
+			_, err := h.handleThreadRoomAndSubscriptions(context.Background(), tt.msg, tt.siteID, replier)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {

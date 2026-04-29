@@ -13,6 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -87,7 +88,7 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	if evt.Message.ThreadParentMessageID != "" {
 		// Resolve (or create) the thread room first so we have the threadRoomID
 		// before persisting the message to Cassandra.
-		threadRoomID, err := h.handleThreadRoomAndSubscriptions(ctx, &evt.Message, evt.SiteID)
+		threadRoomID, err := h.handleThreadRoomAndSubscriptions(ctx, &evt.Message, evt.SiteID, user)
 		if err != nil {
 			return fmt.Errorf("handle thread room and subscriptions: %w", err)
 		}
@@ -106,7 +107,14 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	return nil
 }
 
-func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *model.Message, siteID string) (string, error) {
+// handleThreadRoomAndSubscriptions creates the ThreadRoom on first reply and
+// inserts ThreadSubscriptions for the parent author and replier. On subsequent
+// replies it upserts both subscriptions and bumps the room's last-message pointer.
+// It returns the threadRoomID so the caller can pass it to SaveThreadMessage.
+//
+// `replier` may be nil for system messages with no real user (rare in thread
+// paths); subscriptions for the replier are skipped in that case.
+func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *model.Message, eventSiteID string, replier *model.User) (string, error) {
 	now := msg.CreatedAt
 
 	var parentCreatedAt time.Time
@@ -118,7 +126,7 @@ func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *mod
 		ParentMessageID:       msg.ThreadParentMessageID,
 		ThreadParentCreatedAt: parentCreatedAt,
 		RoomID:                msg.RoomID,
-		SiteID:                siteID,
+		SiteID:                eventSiteID,
 		LastMsgAt:             now,
 		LastMsgID:             msg.ID,
 		ReplyAccounts:         []string{msg.UserAccount},
@@ -129,15 +137,19 @@ func (h *Handler) handleThreadRoomAndSubscriptions(ctx context.Context, msg *mod
 	err := h.threadStore.CreateThreadRoom(ctx, &threadRoom)
 	switch {
 	case err == nil:
-		return threadRoom.ID, h.handleFirstThreadReply(ctx, msg, siteID, threadRoom.ID, now)
+		return threadRoom.ID, h.handleFirstThreadReply(ctx, msg, threadRoom.ID, replier, now)
 	case errors.Is(err, errThreadRoomExists):
-		return h.handleSubsequentThreadReply(ctx, msg, siteID, now)
+		return h.handleSubsequentThreadReply(ctx, msg, replier, now)
 	default:
 		return "", fmt.Errorf("create thread room: %w", err)
 	}
 }
 
-func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message, siteID, threadRoomID string, now time.Time) error {
+// handleFirstThreadReply runs after the thread room has just been created.
+// It inserts subscriptions for the parent author (looked up via userStore for
+// the parent's home site) and, if distinct, for the replier (using the
+// replier's home site).
+func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message, threadRoomID string, replier *model.User, now time.Time) error {
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
 	if err != nil {
 		if errors.Is(err, errMessageNotFound) {
@@ -149,15 +161,21 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 		return fmt.Errorf("get parent message sender: %w", err)
 	}
 
-	if err := h.threadStore.InsertThreadSubscription(ctx,
-		h.buildThreadSubscription(msg, threadRoomID, parentSender.ID, parentSender.Account, siteID, now),
-	); err != nil {
-		return fmt.Errorf("insert parent author thread subscription: %w", err)
+	parentSiteID, err := h.lookupOwnerSiteID(ctx, parentSender.ID, "first-reply parent")
+	if err != nil {
+		return fmt.Errorf("lookup parent owner site: %w", err)
+	}
+	if parentSiteID != "" {
+		if err := h.threadStore.InsertThreadSubscription(ctx,
+			h.buildThreadSubscription(msg, threadRoomID, parentSender.ID, parentSender.Account, parentSiteID, now),
+		); err != nil {
+			return fmt.Errorf("insert parent author thread subscription: %w", err)
+		}
 	}
 
-	if msg.UserID != parentSender.ID {
+	if replier != nil && msg.UserID != parentSender.ID {
 		if err := h.threadStore.InsertThreadSubscription(ctx,
-			h.buildThreadSubscription(msg, threadRoomID, msg.UserID, msg.UserAccount, siteID, now),
+			h.buildThreadSubscription(msg, threadRoomID, msg.UserID, msg.UserAccount, replier.SiteID, now),
 		); err != nil {
 			return fmt.Errorf("insert replier thread subscription: %w", err)
 		}
@@ -174,9 +192,11 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 	return nil
 }
 
-// Upserts are idempotent — redeliveries after a partial first attempt never lose
-// the parent subscription.
-func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Message, siteID string, now time.Time) (string, error) {
+// handleSubsequentThreadReply runs when CreateThreadRoom reported an existing room.
+// Upserts subscriptions for both the parent author and the replier (idempotent
+// on redelivery), then bumps the room's last-message pointer. Returns the
+// existing thread room ID so the caller can pass it to SaveThreadMessage.
+func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Message, replier *model.User, now time.Time) (string, error) {
 	existingRoom, err := h.threadStore.GetThreadRoomByParentMessageID(ctx, msg.ThreadParentMessageID)
 	if err != nil {
 		return "", fmt.Errorf("get existing thread room: %w", err)
@@ -186,14 +206,20 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
 	switch {
 	case err == nil:
-		if err := h.threadStore.UpsertThreadSubscription(ctx,
-			h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, siteID, now),
-		); err != nil {
-			return "", fmt.Errorf("upsert parent author thread subscription: %w", err)
+		parentSiteID, lookupErr := h.lookupOwnerSiteID(ctx, parentSender.ID, "subsequent-reply parent")
+		if lookupErr != nil {
+			return "", fmt.Errorf("lookup parent owner site: %w", lookupErr)
 		}
-		if msg.UserID != parentSender.ID {
+		if parentSiteID != "" {
 			if err := h.threadStore.UpsertThreadSubscription(ctx,
-				h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, siteID, now),
+				h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, parentSiteID, now),
+			); err != nil {
+				return "", fmt.Errorf("upsert parent author thread subscription: %w", err)
+			}
+		}
+		if replier != nil && msg.UserID != parentSender.ID {
+			if err := h.threadStore.UpsertThreadSubscription(ctx,
+				h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, replier.SiteID, now),
 			); err != nil {
 				return "", fmt.Errorf("upsert replier thread subscription: %w", err)
 			}
@@ -203,10 +229,12 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 		slog.Warn("thread reply parent not found — skipping parent subscription upsert",
 			"parentMessageID", msg.ThreadParentMessageID,
 			"replyID", msg.ID)
-		if err := h.threadStore.UpsertThreadSubscription(ctx,
-			h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, siteID, now),
-		); err != nil {
-			return "", fmt.Errorf("upsert replier thread subscription: %w", err)
+		if replier != nil {
+			if err := h.threadStore.UpsertThreadSubscription(ctx,
+				h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, replier.SiteID, now),
+			); err != nil {
+				return "", fmt.Errorf("upsert replier thread subscription: %w", err)
+			}
 		}
 	default:
 		return "", fmt.Errorf("get parent message sender: %w", err)
@@ -227,9 +255,28 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 	return existingRoom.ID, nil
 }
 
-// lastSeenAt is always nil — subscriptions are insert-only; only the read path
-// (client marking the thread as seen) ever sets this field.
-func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, userID, userAccount, siteID string, now time.Time) *model.ThreadSubscription {
+// lookupOwnerSiteID resolves a user's home site by ID.
+// Returns ("", nil) when the user is not found (logs a warning) so callers
+// can skip that user gracefully — parallels the errMessageNotFound branch
+// already in this file. Other DB errors are returned for the caller to NAK on.
+func (h *Handler) lookupOwnerSiteID(ctx context.Context, userID, role string) (string, error) {
+	user, err := h.userStore.FindUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, userstore.ErrUserNotFound) {
+			slog.Warn("owner user not found — skipping thread subscription",
+				"userID", userID, "role", role)
+			return "", nil
+		}
+		return "", fmt.Errorf("lookup user %s: %w", userID, err)
+	}
+	return user.SiteID, nil
+}
+
+// buildThreadSubscription constructs a ThreadSubscription for (threadRoomID, userID).
+// ownerSiteID is the home site of the subscription's owner — NOT the room's site —
+// so the document round-trips correctly through the OUTBOX/INBOX federation.
+// lastSeenAt is always nil; the field is owned by user-action paths, not message-worker.
+func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, userID, userAccount, ownerSiteID string, now time.Time) *model.ThreadSubscription {
 	return &model.ThreadSubscription{
 		ID:              idgen.GenerateUUIDv7(),
 		ParentMessageID: msg.ThreadParentMessageID,
@@ -237,16 +284,18 @@ func (h *Handler) buildThreadSubscription(msg *model.Message, threadRoomID, user
 		ThreadRoomID:    threadRoomID,
 		UserID:          userID,
 		UserAccount:     userAccount,
-		SiteID:          siteID,
+		SiteID:          ownerSiteID,
 		LastSeenAt:      nil,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
 }
 
-// Sender and @all are excluded: sender already has a subscription; @all is a
-// broadcast that shouldn't trigger per-user mention state in threads.
-func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, threadRoomID, siteID string) error {
+// markThreadMentions flips hasMention=true on the thread subscription of every
+// @account mentionee in msg (auto-creating the subscription if absent). The
+// sender is excluded, and @all is ignored at the thread level. The
+// subscription's SiteID is the mentionee's home site (carried on Participant).
+func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, threadRoomID, eventSiteID string) error {
 	for i := range msg.Mentions {
 		p := &msg.Mentions[i]
 		if p.Account == "all" {
@@ -255,7 +304,16 @@ func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, th
 		if p.UserID == msg.UserID {
 			continue
 		}
-		sub := h.buildThreadSubscription(msg, threadRoomID, p.UserID, p.Account, siteID, msg.CreatedAt)
+		ownerSiteID := p.SiteID
+		if ownerSiteID == "" {
+			// Defensive: should not happen since mention.Resolve populates SiteID
+			// for resolved users. Fall back to event site so the local mark still
+			// happens; outbox publish (Task 8) will skip on empty SiteID anyway.
+			slog.Warn("mentionee participant has empty SiteID, falling back to event site",
+				"account", p.Account, "userID", p.UserID, "msgID", msg.ID)
+			ownerSiteID = eventSiteID
+		}
+		sub := h.buildThreadSubscription(msg, threadRoomID, p.UserID, p.Account, ownerSiteID, msg.CreatedAt)
 		sub.HasMention = true
 		if err := h.threadStore.MarkThreadSubscriptionMention(ctx, sub); err != nil {
 			return fmt.Errorf("mark thread subscription mention for user %s: %w", p.UserID, err)
@@ -297,10 +355,25 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
 	if err != nil {
 		return fmt.Errorf("marshal outbox event: %w", err)
 	}
-	dedupID := idgen.DeriveID(fmt.Sprintf("thread-sub-outbox:%s:%s:%s", sub.ThreadRoomID, sub.UserID, msgID))
+	payloadSeed := fmt.Sprintf("thread-sub-outbox:%s:%s:%s", sub.ThreadRoomID, sub.UserID, msgID)
+	dedupID := outboxDedupID(ctx, sub.SiteID, payloadSeed)
 	subj := subject.Outbox(h.siteID, sub.SiteID, model.OutboxThreadSubscriptionUpserted)
 	if err := h.publish(ctx, subj, data, dedupID); err != nil {
 		return fmt.Errorf("publish thread subscription outbox to %s: %w", sub.SiteID, err)
 	}
 	return nil
+}
+
+// outboxDedupID composes Nats-Msg-Id as base+":"+destSiteID; base is X-Request-ID
+// from ctx, falling back to payloadSeed when absent (partial-deployment safety).
+// Mirrors room-worker's helper of the same shape so cross-site dedup IDs are
+// consistent across services that publish to OUTBOX.
+func outboxDedupID(ctx context.Context, destSiteID, payloadSeed string) string {
+	base := natsutil.RequestIDFromContext(ctx)
+	if base == "" {
+		slog.Warn("missing X-Request-ID; falling back to payload-derived outbox dedup base",
+			"destSiteID", destSiteID)
+		base = payloadSeed
+	}
+	return base + ":" + destSiteID
 }
