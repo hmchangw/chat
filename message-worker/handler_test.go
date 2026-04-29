@@ -1220,6 +1220,37 @@ func TestHandler_FirstReply_OutboxPublishError_NAKs(t *testing.T) {
 	assert.ErrorIs(t, err, boom)
 }
 
+func TestHandler_FirstReply_ReplierOutboxPublishError_NAKs(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	ts := NewMockThreadStore(ctrl)
+
+	// Parent at the local site → no parent publish.
+	store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+		Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+	us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+		Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}, nil)
+	// Both inserts run; replier publish fails.
+	ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+	ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+
+	boom := errors.New("publish boom")
+	h := NewHandler(store, us, ts, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+		return boom
+	})
+
+	msg := &model.Message{
+		ID: "msg-reply", RoomID: "r1", UserID: "u-replier", UserAccount: "replier",
+		CreatedAt: now, ThreadParentMessageID: "msg-parent",
+	}
+	err := h.handleFirstThreadReply(context.Background(), msg,
+		"tr-1", &model.User{ID: "u-replier", Account: "replier", SiteID: "site-b"}, now)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, boom)
+}
+
 // fakeJSMsg is a minimal jetstream.Msg test double that records whether Ack or
 // Nak was called so tests can assert on ack/nak behaviour.
 type fakeJSMsg struct {

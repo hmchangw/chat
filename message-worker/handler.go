@@ -171,7 +171,7 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 			return fmt.Errorf("insert parent author thread subscription: %w", err)
 		}
 		if err := h.publishThreadSubOutboxIfRemote(ctx, parentSub, msg.ID); err != nil {
-			return err
+			return fmt.Errorf("publish parent thread subscription outbox: %w", err)
 		}
 	}
 
@@ -181,7 +181,7 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 			return fmt.Errorf("insert replier thread subscription: %w", err)
 		}
 		if err := h.publishThreadSubOutboxIfRemote(ctx, replierSub, msg.ID); err != nil {
-			return err
+			return fmt.Errorf("publish replier thread subscription outbox: %w", err)
 		}
 	}
 
