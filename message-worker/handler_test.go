@@ -1368,6 +1368,156 @@ func TestHandler_SubsequentReply_OutboxPublishError_NAKs(t *testing.T) {
 	assert.ErrorIs(t, err, boom)
 }
 
+func TestHandler_MarkThreadMentions_OutboxPublishes(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name              string
+		mentionees        []model.Participant
+		wantPublishToSite map[string]int
+	}{
+		{
+			name:              "no mentions — no publish",
+			mentionees:        nil,
+			wantPublishToSite: map[string]int{},
+		},
+		{
+			name: "local mentionee — mark only, no publish",
+			mentionees: []model.Participant{
+				{UserID: "u-bob", Account: "bob", SiteID: "site-a"},
+			},
+			wantPublishToSite: map[string]int{},
+		},
+		{
+			name: "remote mentionee — mark and publish",
+			mentionees: []model.Participant{
+				{UserID: "u-bob", Account: "bob", SiteID: "site-b"},
+			},
+			wantPublishToSite: map[string]int{"site-b": 1},
+		},
+		{
+			name: "two remote mentionees in different sites — two publishes",
+			mentionees: []model.Participant{
+				{UserID: "u-bob", Account: "bob", SiteID: "site-b"},
+				{UserID: "u-carol", Account: "carol", SiteID: "site-c"},
+			},
+			wantPublishToSite: map[string]int{"site-b": 1, "site-c": 1},
+		},
+		{
+			name: "@all is skipped — no mark, no publish",
+			mentionees: []model.Participant{
+				{Account: "all", EngName: "all"},
+			},
+			wantPublishToSite: map[string]int{},
+		},
+		{
+			name: "sender self-mention is skipped",
+			mentionees: []model.Participant{
+				{UserID: "u-sender", Account: "sender", SiteID: "site-b"},
+			},
+			wantPublishToSite: map[string]int{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			ts := NewMockThreadStore(ctrl)
+
+			expectedMarks := 0
+			for _, p := range tt.mentionees {
+				if p.Account == "all" {
+					continue
+				}
+				if p.UserID == "u-sender" {
+					continue
+				}
+				expectedMarks++
+			}
+			ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).
+				Times(expectedMarks).Return(nil)
+
+			var publishedDests []string
+			h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), ts, "site-a",
+				func(_ context.Context, _ string, data []byte, _ string) error {
+					var outer model.OutboxEvent
+					if err := json.Unmarshal(data, &outer); err != nil {
+						return err
+					}
+					publishedDests = append(publishedDests, outer.DestSiteID)
+					return nil
+				})
+
+			msg := &model.Message{
+				ID:                    "msg-reply",
+				RoomID:                "r1",
+				UserID:                "u-sender",
+				UserAccount:           "sender",
+				CreatedAt:             now,
+				ThreadParentMessageID: "msg-parent",
+				Mentions:              tt.mentionees,
+			}
+			err := h.markThreadMentions(context.Background(), msg, "tr-1", "site-a")
+			require.NoError(t, err)
+
+			gotByDest := map[string]int{}
+			for _, d := range publishedDests {
+				gotByDest[d]++
+			}
+			assert.Equal(t, tt.wantPublishToSite, gotByDest)
+		})
+	}
+}
+
+func TestHandler_MarkThreadMentions_OutboxPublishError_NAKs(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	ctrl := gomock.NewController(t)
+	ts := NewMockThreadStore(ctrl)
+	ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).Return(nil)
+
+	boom := errors.New("publish boom")
+	h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), ts, "site-a",
+		func(_ context.Context, _ string, _ []byte, _ string) error { return boom })
+
+	msg := &model.Message{
+		ID: "msg-reply", RoomID: "r1", UserID: "u-sender", UserAccount: "sender",
+		CreatedAt: now, ThreadParentMessageID: "msg-parent",
+		Mentions: []model.Participant{{UserID: "u-bob", Account: "bob", SiteID: "site-b"}},
+	}
+	err := h.markThreadMentions(context.Background(), msg, "tr-1", "site-a")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, boom)
+}
+
+func TestHandler_MarkThreadMentions_HasMentionInPayload(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	ctrl := gomock.NewController(t)
+	ts := NewMockThreadStore(ctrl)
+	ts.EXPECT().MarkThreadSubscriptionMention(gomock.Any(), gomock.Any()).Return(nil)
+
+	var captured []byte
+	h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), ts, "site-a",
+		func(_ context.Context, _ string, data []byte, _ string) error {
+			captured = data
+			return nil
+		})
+
+	msg := &model.Message{
+		ID: "msg-reply", RoomID: "r1", UserID: "u-sender", UserAccount: "sender",
+		CreatedAt: now, ThreadParentMessageID: "msg-parent",
+		Mentions: []model.Participant{{UserID: "u-bob", Account: "bob", SiteID: "site-b"}},
+	}
+	require.NoError(t, h.markThreadMentions(context.Background(), msg, "tr-1", "site-a"))
+
+	var outer model.OutboxEvent
+	require.NoError(t, json.Unmarshal(captured, &outer))
+	var sub model.ThreadSubscription
+	require.NoError(t, json.Unmarshal(outer.Payload, &sub))
+	assert.True(t, sub.HasMention, "outbox-emitted ThreadSubscription must carry HasMention=true")
+	assert.Equal(t, "u-bob", sub.UserID)
+	assert.Equal(t, "site-b", sub.SiteID)
+}
+
 // fakeJSMsg is a minimal jetstream.Msg test double that records whether Ack or
 // Nak was called so tests can assert on ack/nak behaviour.
 type fakeJSMsg struct {

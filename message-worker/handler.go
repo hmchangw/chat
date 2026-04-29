@@ -316,9 +316,6 @@ func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, th
 		}
 		ownerSiteID := p.SiteID
 		if ownerSiteID == "" {
-			// Defensive: should not happen since mention.Resolve populates SiteID
-			// for resolved users. Fall back to event site so the local mark still
-			// happens; outbox publish (Task 8) will skip on empty SiteID anyway.
 			slog.Warn("mentionee participant has empty SiteID, falling back to event site",
 				"account", p.Account, "userID", p.UserID, "msgID", msg.ID)
 			ownerSiteID = eventSiteID
@@ -327,6 +324,9 @@ func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, th
 		sub.HasMention = true
 		if err := h.threadStore.MarkThreadSubscriptionMention(ctx, sub); err != nil {
 			return fmt.Errorf("mark thread subscription mention for user %s: %w", p.UserID, err)
+		}
+		if err := h.publishThreadSubOutboxIfRemote(ctx, sub, msg.ID); err != nil {
+			return fmt.Errorf("publish thread mention outbox for user %s: %w", p.UserID, err)
 		}
 	}
 	return nil
