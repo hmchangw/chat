@@ -27,6 +27,7 @@ const (
 )
 
 // casDecrement atomically decrements a nullable INT toward zero (clamping at zero); mirrors message-worker/store_cassandra.go casIncrement.
+// When expected is nil, the LWT becomes "IF tcount = null" — Cassandra evaluates a null column as equal to a null bind value, so the update applies.
 func casDecrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
 	if initial == nil {
 		// tcount was never written — nothing to decrement; skip to avoid materialising a zero on a null column.
@@ -131,7 +132,8 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 			msg.MessageID, msg.CreatedAt,
 		).WithContext(ctx).Scan(&existing); err != nil {
 			if errors.Is(err, gocql.ErrNotFound) {
-				return time.Time{}, false, nil
+				// Row vanished between the CAS and the follow-up SELECT — abnormal race.
+				return time.Time{}, false, fmt.Errorf("message %s vanished after cas miss: %w", msg.MessageID, gocql.ErrNotFound)
 			}
 			return time.Time{}, false, fmt.Errorf("read updated_at after cas miss for message %s: %w", msg.MessageID, err)
 		}

@@ -284,8 +284,8 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 		replyID, roomID, replyCreatedAt, sender, "reply", parentID, parentCreatedAt, threadRoomID, false,
 	).Exec())
 	require.NoError(t, session.Query(
-		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID, parentCreatedAt, false,
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID, false,
 	).Exec())
 
 	parentCreatedAtPtr := parentCreatedAt
@@ -424,8 +424,8 @@ func TestRepository_SoftDeleteMessage_DecrementsParentTcount(t *testing.T) {
 		replyID, roomID, replyCreatedAt, sender, "reply", parentID, parentCreatedAt, threadRoomID, false,
 	).Exec())
 	require.NoError(t, session.Query(
-		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID, parentCreatedAt, false,
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID, false,
 	).Exec())
 
 	parentCreatedAtPtr := parentCreatedAt
@@ -602,8 +602,8 @@ func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
 		replyID, roomID, replyCreatedAt, sender, "reply", parentID, parentCreatedAt, threadRoomID,
 	).Exec())
 	require.NoError(t, session.Query(
-		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id, thread_parent_created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID, parentCreatedAt,
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, thread_parent_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, replyCreatedAt, replyID, sender, "reply", parentID,
 	).Exec())
 
 	msg := &models.Message{
