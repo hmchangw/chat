@@ -203,8 +203,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	pub := &recordingPublisher{}
-	handler := NewHandler(store, pub)
+	handler := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	sub := model.ThreadSubscription{
@@ -230,9 +229,6 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	assert.False(t, got.HasMention)
 	assert.True(t, got.CreatedAt.Equal(now))
 	assert.True(t, got.UpdatedAt.Equal(now))
-
-	// No client publishes for thread subscription upserts.
-	assert.Empty(t, pub.subjects)
 }
 
 func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *testing.T) {
@@ -247,7 +243,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := NewHandler(store, &recordingPublisher{})
+	handler := NewHandler(store)
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 
 	// First event: HasMention=true.

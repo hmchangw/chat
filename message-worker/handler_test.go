@@ -957,7 +957,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 						assert.Equal(t, "u-replier", sub.UserID, "only replier should be upserted; parent skipped")
 						return nil
 					})
-				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).
 					Return(nil)
 			},
 			extraUserStoreSetup: func(us *MockUserStore) {
@@ -1354,7 +1354,7 @@ func TestHandler_SubsequentReply_OutboxPublishes(t *testing.T) {
 			us.EXPECT().FindUserByID(gomock.Any(), "u-parent").Return(tt.parentUser, nil)
 			ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
 			ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
-			ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).Return(nil)
+			ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).Return(nil)
 
 			var publishedDests []string
 			h := NewHandler(store, us, ts, "site-a", func(_ context.Context, _ string, data []byte, _ string) error {

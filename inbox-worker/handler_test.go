@@ -154,7 +154,6 @@ func (s *stubInboxStore) getThreadSubs() []model.ThreadSubscription {
 	return cp
 }
 
-
 // --- Tests ---
 
 func TestHandleEvent_MemberAdded(t *testing.T) {
@@ -803,8 +802,7 @@ func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	sub := model.ThreadSubscription{
@@ -836,13 +834,11 @@ func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 	got := store.getThreadSubs()
 	require.Len(t, got, 1)
 	assert.Equal(t, sub, got[0])
-	assert.Empty(t, pub.getRecords(), "no client-facing publish on thread sub upsert")
 }
 
 func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	mentionSub := model.ThreadSubscription{
@@ -875,8 +871,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T
 
 func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
@@ -890,8 +885,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_StoreError(t *testing.T) {
 	store := &errorThreadSubStore{stubInboxStore: &stubInboxStore{}}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	sub := model.ThreadSubscription{
