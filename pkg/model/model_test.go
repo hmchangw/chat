@@ -617,6 +617,31 @@ func TestParticipantJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &dst))
 		assert.Equal(t, p, dst)
 	})
+
+	t.Run("with siteID round-trips", func(t *testing.T) {
+		p := model.Participant{
+			UserID:      "u1",
+			Account:     "alice",
+			SiteID:      "site-a",
+			ChineseName: "愛麗絲",
+			EngName:     "Alice Wang",
+		}
+		roundTrip(t, &p, &model.Participant{})
+	})
+
+	t.Run("siteID omitted when empty", func(t *testing.T) {
+		p := model.Participant{
+			UserID:  "u1",
+			Account: "alice",
+			EngName: "Alice Wang",
+		}
+		data, err := json.Marshal(p)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasSiteID := raw["siteId"]
+		assert.False(t, hasSiteID, "siteId should be omitted when empty")
+	})
 }
 
 func TestClientMessageJSON(t *testing.T) {

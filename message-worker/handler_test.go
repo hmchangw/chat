@@ -130,7 +130,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		Content:   "hey @bob can you check this?",
 		CreatedAt: now,
 		Mentions: []model.Participant{{
-			UserID: "u-bob", Account: "bob", ChineseName: "鮑勃", EngName: "Bob Chen",
+			UserID: "u-bob", Account: "bob", SiteID: "site-a", ChineseName: "鮑勃", EngName: "Bob Chen",
 		}},
 	}
 
