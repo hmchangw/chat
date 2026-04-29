@@ -174,7 +174,7 @@ func (g *Generator) publishOne(ctx context.Context) {
 		subj = subject.MsgCanonicalCreated(g.cfg.SiteID)
 		g.cfg.Collector.RecordPublishBroadcastOnly(msgID, publishTime)
 	default:
-		reqID = idgen.GenerateUUIDv7()
+		reqID = idgen.GenerateRequestID()
 		req := model.SendMessageRequest{ID: msgID, Content: content, RequestID: reqID}
 		data, err = json.Marshal(req)
 		subj = subject.MsgSend(sub.User.Account, sub.RoomID, g.cfg.SiteID)

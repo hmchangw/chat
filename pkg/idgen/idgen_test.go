@@ -149,7 +149,9 @@ func TestIsValidMessageID(t *testing.T) {
 		{"unicode char", "AbCdEfGhIjKlMnOpQrSé", false},
 		{"UUIDv4 with hyphens (36)", "550e8400-e29b-41d4-a716-446655440000", false},
 		{"UUIDv7 hex no hyphens (32)", "01893f8b1c4a7000b8e2d4f6a1c3e5b7", false},
-		{"17-char base62 (legacy)", "AbCdEfGhIjKlMnOpQ", false},
+		{"17-char base62 (legacy, accepted for backward compat)", "AbCdEfGhIjKlMnOpQ", true},
+		{"too short (16)", "AbCdEfGhIjKlMnOp", false},
+		{"between legacy and current (18)", "AbCdEfGhIjKlMnOpQR", false},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -247,5 +249,64 @@ func TestIsValidUUIDv7(t *testing.T) {
 func TestIsValidUUIDv7_AcceptsGenerateUUIDv7Output(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		assert.True(t, idgen.IsValidUUIDv7(idgen.GenerateUUIDv7()))
+	}
+}
+
+func TestGenerateRequestID_LengthAndShape(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		id := idgen.GenerateRequestID()
+		assert.Len(t, id, 36, "request ID must be hyphenated UUID (36 chars)")
+		// Hyphens at canonical UUID positions.
+		assert.Equal(t, byte('-'), id[8], "hyphen at position 8")
+		assert.Equal(t, byte('-'), id[13], "hyphen at position 13")
+		assert.Equal(t, byte('-'), id[18], "hyphen at position 18")
+		assert.Equal(t, byte('-'), id[23], "hyphen at position 23")
+		// Version nibble at hex position 14 (after the second hyphen) is '7' for v7.
+		assert.Equal(t, byte('7'), id[14], "GenerateRequestID must mint UUIDv7")
+		assert.True(t, idgen.IsValidUUID(id), "GenerateRequestID output must satisfy IsValidUUID")
+	}
+}
+
+func TestGenerateRequestID_Unique(t *testing.T) {
+	seen := make(map[string]struct{}, 1000)
+	for i := 0; i < 1000; i++ {
+		id := idgen.GenerateRequestID()
+		_, dup := seen[id]
+		assert.False(t, dup, "duplicate request ID %q at iteration %d", id, i)
+		seen[id] = struct{}{}
+	}
+}
+
+func TestIsValidUUID(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"valid v4 lowercase", "550e8400-e29b-41d4-a716-446655440000", true},
+		{"valid v7 lowercase", "01970a4f-8c2d-7c9a-abcd-e0123456789f", true},
+		{"valid v7 uppercase", "01970A4F-8C2D-7C9A-ABCD-E0123456789F", true},
+		{"valid v7 mixed case", "01970A4f-8C2d-7C9a-aBcD-e0123456789F", true},
+		{"empty", "", false},
+		{"missing all hyphens (32)", "01970a4f8c2d7c9aabcde0123456789f", false},
+		{"too short (35)", "01970a4f-8c2d-7c9a-abcd-e0123456789", false},
+		{"too long (37)", "01970a4f-8c2d-7c9a-abcd-e0123456789ff", false},
+		{"non-hex char g", "01970a4g-8c2d-7c9a-abcd-e0123456789f", false},
+		{"non-hex char z", "01970a4f-8c2d-7c9a-abcd-e012345678zf", false},
+		{"hyphen in wrong place", "01970a4-f8c2d-7c9a-abcd-e0123456789f", false},
+		{"underscore instead of hyphen", "01970a4f_8c2d_7c9a_abcd_e0123456789f", false},
+		{"20-char base62 message ID", "AbCdEfGhIjKlMnOpQrSt", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, idgen.IsValidUUID(tc.in))
+		})
+	}
+}
+
+func TestIsValidUUID_AcceptsGenerateRequestIDOutput(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		assert.True(t, idgen.IsValidUUID(idgen.GenerateRequestID()))
 	}
 }

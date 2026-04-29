@@ -22,8 +22,8 @@ func RequestID() HandlerFunc {
 		if c.Msg != nil && c.Msg.Header != nil {
 			reqID = c.Msg.Header.Get(natsutil.RequestIDHeader)
 		}
-		if !idgen.IsValidUUIDv7(reqID) {
-			reqID = idgen.GenerateUUIDv7()
+		if !idgen.IsValidUUID(reqID) {
+			reqID = idgen.GenerateRequestID()
 		}
 		c.Set(requestIDKey, reqID)
 		c.SetContext(natsutil.WithRequestID(c.ctx, reqID))

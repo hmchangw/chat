@@ -14,8 +14,8 @@ import (
 func requestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.GetHeader(natsutil.RequestIDHeader)
-		if !idgen.IsValidUUIDv7(id) {
-			id = idgen.GenerateUUIDv7()
+		if !idgen.IsValidUUID(id) {
+			id = idgen.GenerateRequestID()
 		}
 		c.Set("request_id", id)
 		c.Request = c.Request.WithContext(natsutil.WithRequestID(c.Request.Context(), id))

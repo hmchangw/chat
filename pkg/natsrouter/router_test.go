@@ -439,7 +439,7 @@ func TestRequestID_FromHeader(t *testing.T) {
 	msg := nats.NewMsg("test.123")
 	msg.Data, _ = json.Marshal(testReq{Name: "test"})
 	msg.Header = nats.Header{}
-	testID := "01893f8b1c4a7000abcdef0123456789"
+	testID := "01893f8b-1c4a-7000-abcd-ef0123456789"
 	msg.Header.Set(natsutil.RequestIDHeader, testID)
 
 	resp, err := nc.NatsConn().RequestMsg(msg, 2*time.Second)
@@ -578,7 +578,7 @@ func TestRequestIDMiddleware_StoresIDOnUnderlyingContext(t *testing.T) {
 	// natsutil.RequestIDFromContext(c) must equal c.Get("requestID") — the contract publish helpers rely on.
 	c := NewContext(nil)
 	c.Msg = &nats.Msg{Header: nats.Header{}}
-	testID := "01893f8b1c4a7000abcdef0123456789"
+	testID := "01893f8b-1c4a-7000-abcd-ef0123456789"
 	c.Msg.Header.Set(natsutil.RequestIDHeader, testID)
 
 	called := false
@@ -630,7 +630,7 @@ func TestRequestIDMiddleware_RegeneratesOnMalformedHeader(t *testing.T) {
 	runChain(c, chain)
 
 	assert.NotEqual(t, "not-a-uuidv7", fromCtx, "malformed inbound ID must be replaced")
-	assert.True(t, idgen.IsValidUUIDv7(fromCtx), "regenerated ID must be a valid UUIDv7")
+	assert.True(t, idgen.IsValidUUID(fromCtx), "regenerated ID must be a valid hyphenated UUID")
 }
 
 func TestRequestIDMiddleware_OtherCtxKeysStillReadable(t *testing.T) {

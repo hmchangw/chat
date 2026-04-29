@@ -22,6 +22,10 @@ const (
 	idLength = 17
 	// messageIDLength: 20-char base62, ~119 bits of entropy. Message.ID and JetStream Nats-Msg-Id.
 	messageIDLength = 20
+	// legacyMessageIDLength: pre-cutover 17-char base62 message IDs; honored by the validator only.
+	legacyMessageIDLength = 17
+	// uuidHyphenatedLength: standard hyphenated UUID for X-Request-ID.
+	uuidHyphenatedLength = 36
 )
 
 // encodeBase62 renders n into a length-char base62 string. Mutates n.
@@ -76,9 +80,12 @@ func MessageIDFromRequestID(requestID, suffix string) string {
 	return encodeBase62(new(big.Int).SetBytes(h[:16]), messageIDLength)
 }
 
-// IsValidMessageID reports whether s is a well-formed 20-char base62 message ID.
+// IsValidMessageID reports whether s is a well-formed base62 message ID. Accepts
+// both the current 20-char form and the legacy 17-char form so pre-cutover
+// messages keep flowing through federation replays, JetStream redeliveries, and
+// historical reads.
 func IsValidMessageID(s string) bool {
-	if len(s) != messageIDLength {
+	if len(s) != messageIDLength && len(s) != legacyMessageIDLength {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
@@ -136,4 +143,45 @@ func BuildDMRoomID(userA, userB string) string {
 		return userA + userB
 	}
 	return userB + userA
+}
+
+// GenerateRequestID returns a fresh UUIDv7 in standard hyphenated form (36 chars,
+// e.g. "01970a4f-8c2d-7c9a-abcd-e0123456789f"). Used at HTTP/NATS entry points to
+// mint X-Request-ID values when no inbound header is present. The hyphenated form
+// matches the industry-standard UUID representation that frontends and tools expect.
+func GenerateRequestID() string {
+	u, err := uuid.NewV7()
+	if err != nil {
+		panic("idgen: uuid.NewV7 failed: " + err.Error())
+	}
+	return u.String()
+}
+
+// IsValidUUID reports whether s is a well-formed hyphenated UUID of any version
+// (case-insensitive). Used to validate inbound X-Request-ID headers — we don't
+// care which UUID scheme the caller used (v4 or v7), only that the shape is
+// well-formed. The strict v7 check (IsValidUUIDv7) is preserved for paths that
+// need to assert the v7 shape on the 32-char no-hyphen entity-_id form.
+func IsValidUUID(s string) bool {
+	if len(s) != uuidHyphenatedLength {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			switch {
+			case c >= '0' && c <= '9':
+			case c >= 'a' && c <= 'f':
+			case c >= 'A' && c <= 'F':
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }

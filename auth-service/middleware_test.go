@@ -25,7 +25,7 @@ func TestRequestIDMiddleware_AttachesIDToRequestContext(t *testing.T) {
 		c.Status(http.StatusOK)
 	})
 
-	testID := "01893f8b1c4a7000abcdef0123456789"
+	testID := "01893f8b-1c4a-7000-abcd-ef0123456789"
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set(natsutil.RequestIDHeader, testID)
 	w := httptest.NewRecorder()
@@ -76,7 +76,7 @@ func TestRequestIDMiddleware_RegeneratesOnMalformedHeader(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.NotEqual(t, "not-a-uuidv7", fromCtx, "malformed inbound ID must be replaced with a freshly minted one")
-	assert.True(t, idgen.IsValidUUIDv7(fromCtx), "the regenerated ID must itself be a valid UUIDv7")
+	assert.True(t, idgen.IsValidUUID(fromCtx), "the regenerated ID must itself be a valid hyphenated UUID")
 	assert.Equal(t, fromCtx, w.Header().Get(natsutil.RequestIDHeader),
 		"echoed response header must match the regenerated ID, not the malformed input")
 }
