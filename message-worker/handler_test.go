@@ -940,6 +940,51 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			expectReplierInsert: true,
 		},
 		{
+			name:   "subsequent reply — parent user not found in userStore — warn-and-skip parent, still upserts replier",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).
+					Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+					Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(parentSender, nil)
+				// Parent upsert SKIPPED because lookupOwnerSiteID returns ("", nil).
+				// Replier upsert still runs.
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "u-replier", sub.UserID, "only replier should be upserted; parent skipped")
+						return nil
+					})
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).
+					Return(nil)
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(nil, fmt.Errorf("wrap: %w", userstore.ErrUserNotFound))
+			},
+		},
+		{
+			name:   "subsequent reply — parent user lookup DB error — returns error",
+			msg:    msg,
+			siteID: "site-a",
+			setupMocks: func(store *MockStore, ts *MockThreadStore) {
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).
+					Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+					Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+					Return(parentSender, nil)
+				// Lookup error short-circuits — no upserts, no UpdateThreadRoomLastMessage.
+			},
+			extraUserStoreSetup: func(us *MockUserStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+					Return(nil, errors.New("mongo: connection refused"))
+			},
+			wantErr: true,
+		},
+		{
 			name:   "first reply — parent user lookup DB error — returns error",
 			msg:    msg,
 			siteID: "site-a",

@@ -127,6 +127,9 @@ func (s *mongoInboxStore) ensureIndexes(ctx context.Context) error {
 // fields on insert; $set always refreshes updatedAt; $max on hasMention
 // guarantees a non-mention event never clears a prior mention=true.
 //
+// $max on a bool works because BSON encodes false (0x00) < true (0x01), so
+// $max(existing, incoming) for a bool is equivalent to a monotonic OR.
+//
 // $setOnInsert and $max operate on disjoint fields (hasMention is set by $max
 // only — never by $setOnInsert) so MongoDB doesn't reject the update with a
 // "conflicting update operators" error.
