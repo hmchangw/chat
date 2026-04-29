@@ -215,17 +215,21 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 			return "", fmt.Errorf("lookup parent owner site: %w", lookupErr)
 		}
 		if parentSiteID != "" {
-			if err := h.threadStore.UpsertThreadSubscription(ctx,
-				h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, parentSiteID, now),
-			); err != nil {
+			parentSub := h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, parentSiteID, now)
+			if err := h.threadStore.UpsertThreadSubscription(ctx, parentSub); err != nil {
 				return "", fmt.Errorf("upsert parent author thread subscription: %w", err)
+			}
+			if err := h.publishThreadSubOutboxIfRemote(ctx, parentSub, msg.ID); err != nil {
+				return "", fmt.Errorf("publish parent thread subscription outbox: %w", err)
 			}
 		}
 		if replier != nil && msg.UserID != parentSender.ID {
-			if err := h.threadStore.UpsertThreadSubscription(ctx,
-				h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, replier.SiteID, now),
-			); err != nil {
+			replierSub := h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, replier.SiteID, now)
+			if err := h.threadStore.UpsertThreadSubscription(ctx, replierSub); err != nil {
 				return "", fmt.Errorf("upsert replier thread subscription: %w", err)
+			}
+			if err := h.publishThreadSubOutboxIfRemote(ctx, replierSub, msg.ID); err != nil {
+				return "", fmt.Errorf("publish replier thread subscription outbox: %w", err)
 			}
 		}
 	case errors.Is(err, errMessageNotFound):
@@ -234,10 +238,12 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 			"parentMessageID", msg.ThreadParentMessageID,
 			"replyID", msg.ID)
 		if replier != nil {
-			if err := h.threadStore.UpsertThreadSubscription(ctx,
-				h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, replier.SiteID, now),
-			); err != nil {
+			replierSub := h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, replier.SiteID, now)
+			if err := h.threadStore.UpsertThreadSubscription(ctx, replierSub); err != nil {
 				return "", fmt.Errorf("upsert replier thread subscription: %w", err)
+			}
+			if err := h.publishThreadSubOutboxIfRemote(ctx, replierSub, msg.ID); err != nil {
+				return "", fmt.Errorf("publish replier thread subscription outbox: %w", err)
 			}
 		}
 	default:
