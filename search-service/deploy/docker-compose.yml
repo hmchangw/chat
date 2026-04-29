@@ -18,6 +18,7 @@ services:
       - SEARCH_RESTRICTED_ROOMS_CACHE_TTL=5m
       - SEARCH_RECENT_WINDOW=8760h
       - SEARCH_REQUEST_TIMEOUT=10s
+      - SEARCH_USER_ROOM_INDEX=
       - SEARCH_METRICS_ADDR=:9090
     ports:
       # Expose /metrics so Prometheus / curl can scrape from the host

@@ -3,6 +3,10 @@ services:
     build:
       context: ../..
       dockerfile: chat-frontend/deploy/Dockerfile
+      args:
+        VITE_AUTH_URL: "http://localhost:8080"
+        VITE_NATS_URL: "ws://localhost:4223"
+        VITE_DEFAULT_SITE_ID: "site-A"
     ports:
       - "3000:80"
     depends_on:

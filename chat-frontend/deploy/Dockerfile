@@ -3,6 +3,12 @@ WORKDIR /app
 COPY chat-frontend/package.json chat-frontend/package-lock.json ./
 RUN npm ci
 COPY chat-frontend/ .
+ARG VITE_AUTH_URL
+ARG VITE_NATS_URL
+ARG VITE_DEFAULT_SITE_ID
+ENV VITE_AUTH_URL=$VITE_AUTH_URL \
+    VITE_NATS_URL=$VITE_NATS_URL \
+    VITE_DEFAULT_SITE_ID=$VITE_DEFAULT_SITE_ID
 RUN npm run build
 
 FROM nginx:alpine
