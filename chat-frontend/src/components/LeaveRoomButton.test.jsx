@@ -8,7 +8,7 @@ vi.mock('../context/NatsContext', () => ({
 
 import { useNats } from '../context/NatsContext'
 
-const groupRoom = { id: 'r1', siteId: 'site-A', name: 'general', type: 'group' }
+const groupRoom = { id: 'r1', siteId: 'site-A', name: 'general', type: 'channel' }
 const dmRoom = { id: 'r2', siteId: 'site-A', name: 'bob-dm', type: 'dm' }
 
 function setup(room, overrides = {}) {

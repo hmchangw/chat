@@ -12,7 +12,7 @@ vi.mock('../context/RoomEventsContext', () => ({
 vi.mock('../components/RoomList', () => ({
   default: ({ onSelectRoom }) => (
     <div data-testid="room-list">
-      <button onClick={() => onSelectRoom({ id: 'r1', name: 'general', type: 'group', siteId: 'site-A' })}>
+      <button onClick={() => onSelectRoom({ id: 'r1', name: 'general', type: 'channel', siteId: 'site-A' })}>
         pick-group
       </button>
       <button onClick={() => onSelectRoom({ id: 'r2', name: 'bob-dm', type: 'dm', siteId: 'site-A' })}>
@@ -38,7 +38,7 @@ beforeEach(() => {
   })
   useRoomSummaries.mockReturnValue({
     summaries: [
-      { id: 'r1', name: 'general', type: 'group', siteId: 'site-A', userCount: 2, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false },
+      { id: 'r1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false },
       { id: 'r2', name: 'bob-dm', type: 'dm', siteId: 'site-A', userCount: 2, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false },
     ],
     setActiveRoom: vi.fn(),

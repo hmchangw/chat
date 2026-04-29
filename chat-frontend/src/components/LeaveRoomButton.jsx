@@ -4,7 +4,7 @@ import { memberRemove } from '../lib/subjects'
 export default function LeaveRoomButton({ room }) {
   const { user, request } = useNats()
 
-  if (!room || room.type !== 'group') return null
+  if (!room || room.type !== 'channel') return null
 
   const handleClick = async () => {
     if (!window.confirm(`Leave "${room.name}"?`)) return
