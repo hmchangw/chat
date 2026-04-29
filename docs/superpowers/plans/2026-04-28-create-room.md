@@ -26,7 +26,7 @@ This section lists every file the plan touches and what it owns. Lock decomposit
 | `subscription.go` | modify | New `Name`, `RoomType`, `SidebarName`, `IsSubscribed` fields. |
 | `app.go` | **create** | `App`, `AppAssistant`, `AppSponsor` structs (read-only domain type). |
 | `member.go` | modify | `CreateRoomRequest` struct; extend `MemberAddEvent` with `RoomName`. Drop `RequestID` from `AddMembersRequest` if PR #131 added it. |
-| `event.go` | modify | New `RoomCreatedOutbox` payload struct; `ErrorResponse.RoomID` field; `AsyncJobResultOpRoomCreate` constant. |
+| `event.go` | modify | Migrate `AsyncJobResult` from `{Job, Success}` to `{Operation, Status, RoomID(omitempty)}`; add all five `AsyncJobOp*` constants; new `RoomCreatedOutbox` payload struct; `ErrorResponse.RoomID` field. |
 | `model_test.go` | modify | Round-trip assertions for every new field/struct. |
 
 ### `pkg/subject/` (NATS subject builders)
@@ -415,7 +415,7 @@ func TestCreateRoomRequestRoundtrip(t *testing.T) {
 func TestCreateRoomRequestBotDMHasAppName(t *testing.T) {
 	req := model.CreateRoomRequest{
 		Users:            []string{"weather.bot"},
-		RoomID:           "u_alice|u_wbot",
+		RoomID:           "u_aliceu_wbot",
 		RequesterID:      "u_alice",
 		RequesterAccount: "alice",
 		AppName:          "Weather Bot",
@@ -634,11 +634,35 @@ func TestErrorResponseRoomIDOmitempty(t *testing.T) {
 	assert.Contains(t, string(body2), `"roomId":"r1"`)
 }
 
+func TestAsyncJobResultShape(t *testing.T) {
+	// Verify the migrated struct uses Operation/Status (not Job/Success).
+	r := model.AsyncJobResult{
+		RequestID: "req-1",
+		Operation: model.AsyncJobOpRoomCreate,
+		Status:    "ok",
+		RoomID:    "r1",
+		Timestamp: 1,
+	}
+	var dst model.AsyncJobResult
+	raw := roundTrip(t, r, &dst)
+	assert.Equal(t, "ok", dst.Status)
+	assert.Equal(t, model.AsyncJobOpRoomCreate, dst.Operation)
+	assert.Equal(t, "r1", dst.RoomID)
+	assert.NotContains(t, string(raw), `"job"`)
+	assert.NotContains(t, string(raw), `"success"`)
+
+	// Error path — RoomID omitted when empty.
+	r2 := model.AsyncJobResult{Operation: model.AsyncJobOpRoomMemberAdd, Status: "error", Error: "failed"}
+	raw2, _ := json.Marshal(r2)
+	assert.NotContains(t, string(raw2), `"roomId"`)
+}
+
 func TestAsyncJobResultOpConstants(t *testing.T) {
-	// "room.create" must exist as a constant; "room.member.add" should
-	// already exist from PR #131 — assert both for guard-rail.
 	assert.Equal(t, "room.create", model.AsyncJobOpRoomCreate)
 	assert.Equal(t, "room.member.add", model.AsyncJobOpRoomMemberAdd)
+	assert.Equal(t, "room.member.remove", model.AsyncJobOpRoomMemberRemove)
+	assert.Equal(t, "room.member.remove_org", model.AsyncJobOpRoomMemberRemoveOrg)
+	assert.Equal(t, "room.member.role_update", model.AsyncJobOpRoomMemberRoleUpdate)
 }
 ```
 
@@ -646,13 +670,44 @@ func TestAsyncJobResultOpConstants(t *testing.T) {
 
 Run: `make test SERVICE=pkg/model 2>&1 | head -25`
 
-Expected: undefined `RoomCreatedOutbox`; undefined `ErrorResponse.RoomID`; undefined op constants.
+Expected: `Operation`/`Status` fields undefined on `AsyncJobResult`; undefined `RoomCreatedOutbox`; undefined `ErrorResponse.RoomID`; undefined op constants.
 
-- [ ] **Step 4: Add the new struct, field, and constants**
+- [ ] **Step 4: Migrate `AsyncJobResult`, add `RoomCreatedOutbox`, extend `ErrorResponse`, add constants**
 
 Edit `pkg/model/event.go`:
 
-Add `RoomID` to `ErrorResponse`:
+**4a. Replace the existing `AsyncJobResult` struct** (currently has `Job string` and `Success bool`) with the canonical shape:
+
+```go
+type AsyncJobResult struct {
+	RequestID string `json:"requestId"`
+	Operation string `json:"operation"`         // see AsyncJobOp* constants
+	Status    string `json:"status"`             // "ok" | "error"
+	RoomID    string `json:"roomId,omitempty"`   // populated for room.create
+	Error     string `json:"error,omitempty"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+const (
+	AsyncJobOpRoomCreate           = "room.create"
+	AsyncJobOpRoomMemberAdd        = "room.member.add"
+	AsyncJobOpRoomMemberRemove     = "room.member.remove"
+	AsyncJobOpRoomMemberRemoveOrg  = "room.member.remove_org"
+	AsyncJobOpRoomMemberRoleUpdate = "room.member.role_update"
+)
+```
+
+**4b. Update the three existing call sites in `room-worker/handler.go`** that pass `job string` and `jobErr error` to `publishAsyncJobResult`. Replace each with the typed constant and `Status` field:
+
+| Old | New |
+|-----|-----|
+| `"add_members"` | `AsyncJobOpRoomMemberAdd` |
+| `"remove_member"` | `AsyncJobOpRoomMemberRemove` |
+| `"remove_org"` | `AsyncJobOpRoomMemberRemoveOrg` |
+
+Also update `publishAsyncJobResult`'s signature if it still takes a bare `job string` — change it to accept `model.AsyncJobResult` directly (or keep `(account, op string, err error)` and build the struct internally using `Status: "ok"/"error"`).
+
+**4c. Add `RoomID` to `ErrorResponse`:**
 
 ```go
 type ErrorResponse struct {
@@ -661,7 +716,7 @@ type ErrorResponse struct {
 }
 ```
 
-Append to the file:
+**4d. Append `RoomCreatedOutbox` to the file:**
 
 ```go
 // RoomCreatedOutbox is the cross-site payload published by room-worker
@@ -681,28 +736,19 @@ type RoomCreatedOutbox struct {
 }
 ```
 
-Add the operation-name constants. Place them next to the existing `AsyncJobResult` definition (per PR #131); if PR #131 hasn't named existing constants, declare both here:
-
-```go
-const (
-	AsyncJobOpRoomCreate    = "room.create"
-	AsyncJobOpRoomMemberAdd = "room.member.add"
-)
-```
-
-If PR #131 already declared `AsyncJobOpRoomMemberAdd` (or an equivalent name), keep its name and only add `AsyncJobOpRoomCreate`. The test should reference whichever name the codebase uses — adjust the test if needed.
-
 - [ ] **Step 5: Run — confirm pass**
 
 Run: `make test SERVICE=pkg/model`
 
 Expected: PASS.
 
+Run: `make test SERVICE=room-worker` — confirm existing tests still pass after the `AsyncJobResult` caller updates.
+
 - [ ] **Step 6: Commit**
 
 ```bash
-git add pkg/model/event.go pkg/model/model_test.go
-git commit -m "model: add RoomCreatedOutbox + ErrorResponse.RoomID + AsyncJobOp constants"
+git add pkg/model/event.go pkg/model/model_test.go room-worker/handler.go
+git commit -m "model: migrate AsyncJobResult to Operation/Status; add all AsyncJobOp constants; add RoomCreatedOutbox + ErrorResponse.RoomID"
 ```
 
 ---
@@ -2769,14 +2815,14 @@ func TestHandleCreateRoomDMAlreadyExists(t *testing.T) {
 		ID: "u_bob", Account: "bob", EngName: "B", ChineseName: "B",
 	}, nil)
 	mocks.store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").
-		Return(&model.Subscription{RoomID: "u_alice|u_bob"}, nil)
+		Return(&model.Subscription{RoomID: "u_aliceu_bob"}, nil)
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
 	_, err := h.handleCreateRoom(ctx, "chat.user.alice.request.room.site-A.create", body)
 	require.Error(t, err)
 	var dmExists *dmExistsError
 	require.True(t, errors.As(err, &dmExists))
-	assert.Equal(t, "u_alice|u_bob", dmExists.RoomID())
+	assert.Equal(t, "u_aliceu_bob", dmExists.RoomID())
 }
 
 func TestHandleCreateRoomBotDMHappyPath(t *testing.T) {
@@ -3091,7 +3137,7 @@ func TestNatsCreateRoomDMExistsRepliesWithRoomID(t *testing.T) {
 		ID: "u_bob", Account: "bob", EngName: "B", ChineseName: "B",
 	}, nil)
 	mocks.store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").
-		Return(&model.Subscription{RoomID: "u_alice|u_bob"}, nil)
+		Return(&model.Subscription{RoomID: "u_aliceu_bob"}, nil)
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
 	msg := newTestNatsMsg(t,
@@ -3103,7 +3149,7 @@ func TestNatsCreateRoomDMExistsRepliesWithRoomID(t *testing.T) {
 	var got model.ErrorResponse
 	require.NoError(t, json.Unmarshal(msg.Replies[0], &got))
 	assert.Equal(t, "dm already exists", got.Error)
-	assert.Equal(t, "u_alice|u_bob", got.RoomID)
+	assert.Equal(t, "u_aliceu_bob", got.RoomID)
 }
 
 func TestNatsCreateRoomGenericErrorReplyShape(t *testing.T) {
@@ -3737,7 +3783,7 @@ func TestProcessCreateRoomDMBuildsTwoSubs(t *testing.T) {
 	}, nil)
 	mocks.store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	captured := captureBulkSubsArg(mocks)
-	mocks.store.EXPECT().ReconcileMemberCounts(gomock.Any(), "u_alice|u_bob").Return(nil)
+	mocks.store.EXPECT().ReconcileMemberCounts(gomock.Any(), "u_aliceu_bob").Return(nil)
 
 	roomID := idgen.BuildDMRoomID("u_alice", "u_bob")
 	body, _ := json.Marshal(model.CreateRoomRequest{
@@ -4789,9 +4835,9 @@ func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 	captured := captureBulkSubsArg(mocks)
 
 	payload, _ := json.Marshal(model.RoomCreatedOutbox{
-		RoomID:               "u_alice|u_bob",
+		RoomID:               "u_aliceu_bob",
 		RoomType:             model.RoomTypeDM,
-		RoomName:             "u_alice|u_bob",
+		RoomName:             "u_aliceu_bob",
 		HomeSiteID:           "site-A",
 		Accounts:             []string{"bob"},
 		RequesterAccount:     "alice",
@@ -4804,7 +4850,7 @@ func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 	subs := captured.Args()
 	require.Len(t, subs, 1)
 	assert.Equal(t, idgen.MessageIDFromRequestID(reqID, "sub:bob"), subs[0].ID)
-	assert.Equal(t, "u_alice|u_bob", subs[0].RoomID)
+	assert.Equal(t, "u_aliceu_bob", subs[0].RoomID)
 	assert.Equal(t, "site-A", subs[0].SiteID) // room's home, not bob's
 	assert.Equal(t, "alice", subs[0].Name)
 	assert.Equal(t, "Alice 爱丽丝", subs[0].SidebarName)
