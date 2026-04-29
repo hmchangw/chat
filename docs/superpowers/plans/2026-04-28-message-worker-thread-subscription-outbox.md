@@ -939,4 +939,420 @@ git commit -m "message-worker: ThreadSubscription.SiteID = owner site; lookup pa
 
 ---
 
-<!-- end-of-chunk-2 -->
+## Task 6: Wire outbox publish into `handleFirstThreadReply`
+
+After each `InsertThreadSubscription` succeeds, call `publishThreadSubOutboxIfRemote`. The helper short-circuits same-site, so local-only setups remain quiet.
+
+**Files:**
+- Modify: `message-worker/handler.go` (handleFirstThreadReply body — only the post-insert lines)
+- Modify: `message-worker/handler_test.go` (new test cases)
+
+- [ ] **Step 6.1: Write the failing test for first-reply remote publish**
+
+Append to `message-worker/handler_test.go` (a new top-level test, not part of the existing tables — having a dedicated function keeps the publish-recording wiring isolated):
+
+```go
+func TestHandler_FirstReply_OutboxPublishes(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	parentSender := &cassParticipant{ID: "u-parent", Account: "parent-user"}
+	parentUserAtA := &model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}
+	parentUserAtC := &model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-c"}
+
+	type publishCall struct {
+		subj  string
+		data  []byte
+		msgID string
+	}
+
+	tests := []struct {
+		name              string
+		replierSite       string
+		parentUser        *model.User
+		wantPublishToSite map[string]int // destSite → expected count
+	}{
+		{
+			name:              "both local — no publish",
+			replierSite:       "site-a",
+			parentUser:        parentUserAtA,
+			wantPublishToSite: map[string]int{},
+		},
+		{
+			name:              "replier remote — one publish to replier site",
+			replierSite:       "site-b",
+			parentUser:        parentUserAtA,
+			wantPublishToSite: map[string]int{"site-b": 1},
+		},
+		{
+			name:              "parent remote — one publish to parent site",
+			replierSite:       "site-a",
+			parentUser:        parentUserAtC,
+			wantPublishToSite: map[string]int{"site-c": 1},
+		},
+		{
+			name:              "both remote, different sites — two publishes",
+			replierSite:       "site-b",
+			parentUser:        parentUserAtC,
+			wantPublishToSite: map[string]int{"site-b": 1, "site-c": 1},
+		},
+		{
+			name:              "both remote, same site — two publishes to that site",
+			replierSite:       "site-b",
+			parentUser:        &model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-b"},
+			wantPublishToSite: map[string]int{"site-b": 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			us := NewMockUserStore(ctrl)
+			ts := NewMockThreadStore(ctrl)
+
+			store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").Return(parentSender, nil)
+			us.EXPECT().FindUserByID(gomock.Any(), "u-parent").Return(tt.parentUser, nil)
+			ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+			ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+
+			var calls []publishCall
+			h := NewHandler(store, us, ts, "site-a", func(_ context.Context, subj string, data []byte, msgID string) error {
+				calls = append(calls, publishCall{subj: subj, data: data, msgID: msgID})
+				return nil
+			})
+
+			replier := &model.User{ID: "u-replier", Account: "replier", SiteID: tt.replierSite}
+			msg := &model.Message{
+				ID:                    "msg-reply",
+				RoomID:                "r1",
+				UserID:                "u-replier",
+				UserAccount:           "replier",
+				CreatedAt:             now,
+				ThreadParentMessageID: "msg-parent",
+			}
+
+			err := h.handleFirstThreadReply(context.Background(), msg, "tr-1", replier, now)
+			require.NoError(t, err)
+
+			gotByDest := map[string]int{}
+			for _, c := range calls {
+				var outer model.OutboxEvent
+				require.NoError(t, json.Unmarshal(c.data, &outer))
+				assert.Equal(t, model.OutboxThreadSubscriptionUpserted, outer.Type)
+				gotByDest[outer.DestSiteID]++
+			}
+			assert.Equal(t, tt.wantPublishToSite, gotByDest)
+		})
+	}
+}
+
+func TestHandler_FirstReply_OutboxPublishError_NAKs(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	ts := NewMockThreadStore(ctrl)
+
+	store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+		Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+	us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+		Return(&model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-c"}, nil)
+	ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+	// Replier insert never reached because parent-publish fails first.
+
+	boom := errors.New("publish boom")
+	h := NewHandler(store, us, ts, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+		return boom
+	})
+
+	msg := &model.Message{
+		ID: "msg-reply", RoomID: "r1", UserID: "u-replier", UserAccount: "replier",
+		CreatedAt: now, ThreadParentMessageID: "msg-parent",
+	}
+	err := h.handleFirstThreadReply(context.Background(), msg,
+		"tr-1", &model.User{ID: "u-replier", SiteID: "site-b"}, now)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, boom)
+}
+```
+
+- [ ] **Step 6.2: Run tests to verify they fail**
+
+Run: `make test SERVICE=message-worker -run TestHandler_FirstReply_Outbox`
+
+Expected: FAIL — current handler never calls publish.
+
+- [ ] **Step 6.3: Wire the publish call into `handleFirstThreadReply`**
+
+In `message-worker/handler.go`, replace the body of `handleFirstThreadReply` (the version from Task 5.3) so that each successful insert is followed by an outbox publish:
+
+```go
+func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message, threadRoomID string, replier *model.User, now time.Time) error {
+	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
+	if err != nil {
+		if errors.Is(err, errMessageNotFound) {
+			slog.Warn("thread reply parent not found — skipping subscription creation",
+				"parentMessageID", msg.ThreadParentMessageID,
+				"replyID", msg.ID)
+			return nil
+		}
+		return fmt.Errorf("get parent message sender: %w", err)
+	}
+
+	parentSiteID, err := h.lookupOwnerSiteID(ctx, parentSender.ID, "first-reply parent")
+	if err != nil {
+		return fmt.Errorf("lookup parent owner site: %w", err)
+	}
+	if parentSiteID != "" {
+		parentSub := h.buildThreadSubscription(msg, threadRoomID, parentSender.ID, parentSender.Account, parentSiteID, now)
+		if err := h.threadStore.InsertThreadSubscription(ctx, parentSub); err != nil {
+			return fmt.Errorf("insert parent author thread subscription: %w", err)
+		}
+		if err := h.publishThreadSubOutboxIfRemote(ctx, parentSub, msg.ID); err != nil {
+			return err
+		}
+	}
+
+	if replier != nil && msg.UserID != parentSender.ID {
+		replierSub := h.buildThreadSubscription(msg, threadRoomID, msg.UserID, msg.UserAccount, replier.SiteID, now)
+		if err := h.threadStore.InsertThreadSubscription(ctx, replierSub); err != nil {
+			return fmt.Errorf("insert replier thread subscription: %w", err)
+		}
+		if err := h.publishThreadSubOutboxIfRemote(ctx, replierSub, msg.ID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+```
+
+- [ ] **Step 6.4: Run tests to verify they pass**
+
+Run: `make test SERVICE=message-worker`
+
+Expected: pass — new tests green and existing tests still green (existing fixtures use `site-a` everywhere so no remote publishes fire).
+
+- [ ] **Step 6.5: Commit**
+
+```bash
+git add message-worker/handler.go message-worker/handler_test.go
+git commit -m "message-worker: emit outbox event on first-reply ThreadSubscription inserts"
+```
+
+---
+
+## Task 7: Wire outbox publish into `handleSubsequentThreadReply`
+
+Same pattern as Task 6 but on the upsert path. Subsequent replies always upsert both subscriptions (idempotent on redelivery), so we publish after each successful upsert.
+
+**Files:**
+- Modify: `message-worker/handler.go` (handleSubsequentThreadReply body)
+- Modify: `message-worker/handler_test.go` (new test cases)
+
+- [ ] **Step 7.1: Write the failing test for subsequent-reply remote publish**
+
+Append to `message-worker/handler_test.go`:
+
+```go
+func TestHandler_SubsequentReply_OutboxPublishes(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	parentSender := &cassParticipant{ID: "u-parent", Account: "parent-user"}
+	parentUserAtA := &model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-a"}
+	parentUserAtC := &model.User{ID: "u-parent", Account: "parent-user", SiteID: "site-c"}
+
+	tests := []struct {
+		name              string
+		replierSite       string
+		parentUser        *model.User
+		wantPublishToSite map[string]int
+	}{
+		{
+			name:              "both local — no publish",
+			replierSite:       "site-a",
+			parentUser:        parentUserAtA,
+			wantPublishToSite: map[string]int{},
+		},
+		{
+			name:              "replier remote — one publish",
+			replierSite:       "site-b",
+			parentUser:        parentUserAtA,
+			wantPublishToSite: map[string]int{"site-b": 1},
+		},
+		{
+			name:              "parent remote — one publish",
+			replierSite:       "site-a",
+			parentUser:        parentUserAtC,
+			wantPublishToSite: map[string]int{"site-c": 1},
+		},
+		{
+			name:              "both remote, different sites — two publishes",
+			replierSite:       "site-b",
+			parentUser:        parentUserAtC,
+			wantPublishToSite: map[string]int{"site-b": 1, "site-c": 1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			us := NewMockUserStore(ctrl)
+			ts := NewMockThreadStore(ctrl)
+
+			ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+				Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
+			store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").Return(parentSender, nil)
+			us.EXPECT().FindUserByID(gomock.Any(), "u-parent").Return(tt.parentUser, nil)
+			ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+			ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+			ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", now).Return(nil)
+
+			var publishedDests []string
+			h := NewHandler(store, us, ts, "site-a", func(_ context.Context, _ string, data []byte, _ string) error {
+				var outer model.OutboxEvent
+				if err := json.Unmarshal(data, &outer); err != nil {
+					return err
+				}
+				publishedDests = append(publishedDests, outer.DestSiteID)
+				return nil
+			})
+
+			replier := &model.User{ID: "u-replier", Account: "replier", SiteID: tt.replierSite}
+			msg := &model.Message{
+				ID:                    "msg-reply",
+				RoomID:                "r1",
+				UserID:                "u-replier",
+				UserAccount:           "replier",
+				CreatedAt:             now,
+				ThreadParentMessageID: "msg-parent",
+			}
+
+			roomID, err := h.handleSubsequentThreadReply(context.Background(), msg, replier, now)
+			require.NoError(t, err)
+			assert.Equal(t, "tr-existing", roomID)
+
+			gotByDest := map[string]int{}
+			for _, d := range publishedDests {
+				gotByDest[d]++
+			}
+			assert.Equal(t, tt.wantPublishToSite, gotByDest)
+		})
+	}
+}
+
+func TestHandler_SubsequentReply_OutboxPublishError_NAKs(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	ts := NewMockThreadStore(ctrl)
+
+	ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+		Return(&model.ThreadRoom{ID: "tr-1"}, nil)
+	store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+		Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+	us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
+		Return(&model.User{ID: "u-parent", SiteID: "site-c"}, nil)
+	ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).Return(nil)
+
+	boom := errors.New("publish boom")
+	h := NewHandler(store, us, ts, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+		return boom
+	})
+
+	msg := &model.Message{
+		ID: "msg-reply", RoomID: "r1", UserID: "u-replier", UserAccount: "replier",
+		CreatedAt: now, ThreadParentMessageID: "msg-parent",
+	}
+	_, err := h.handleSubsequentThreadReply(context.Background(), msg,
+		&model.User{ID: "u-replier", SiteID: "site-b"}, now)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, boom)
+}
+```
+
+- [ ] **Step 7.2: Run tests to verify they fail**
+
+Run: `make test SERVICE=message-worker -run TestHandler_SubsequentReply_Outbox`
+
+Expected: FAIL — no publish happens yet on the upsert path.
+
+- [ ] **Step 7.3: Wire the publish call into `handleSubsequentThreadReply`**
+
+Replace `handleSubsequentThreadReply` in `message-worker/handler.go` with:
+
+```go
+func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Message, replier *model.User, now time.Time) (string, error) {
+	existingRoom, err := h.threadStore.GetThreadRoomByParentMessageID(ctx, msg.ThreadParentMessageID)
+	if err != nil {
+		return "", fmt.Errorf("get existing thread room: %w", err)
+	}
+
+	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
+	switch {
+	case err == nil:
+		parentSiteID, lookupErr := h.lookupOwnerSiteID(ctx, parentSender.ID, "subsequent-reply parent")
+		if lookupErr != nil {
+			return "", fmt.Errorf("lookup parent owner site: %w", lookupErr)
+		}
+		if parentSiteID != "" {
+			parentSub := h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, parentSiteID, now)
+			if err := h.threadStore.UpsertThreadSubscription(ctx, parentSub); err != nil {
+				return "", fmt.Errorf("upsert parent author thread subscription: %w", err)
+			}
+			if err := h.publishThreadSubOutboxIfRemote(ctx, parentSub, msg.ID); err != nil {
+				return "", err
+			}
+		}
+		if replier != nil && msg.UserID != parentSender.ID {
+			replierSub := h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, replier.SiteID, now)
+			if err := h.threadStore.UpsertThreadSubscription(ctx, replierSub); err != nil {
+				return "", fmt.Errorf("upsert replier thread subscription: %w", err)
+			}
+			if err := h.publishThreadSubOutboxIfRemote(ctx, replierSub, msg.ID); err != nil {
+				return "", err
+			}
+		}
+	case errors.Is(err, errMessageNotFound):
+		slog.Warn("thread reply parent not found — skipping parent subscription upsert",
+			"parentMessageID", msg.ThreadParentMessageID,
+			"replyID", msg.ID)
+		if replier != nil {
+			replierSub := h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, replier.SiteID, now)
+			if err := h.threadStore.UpsertThreadSubscription(ctx, replierSub); err != nil {
+				return "", fmt.Errorf("upsert replier thread subscription: %w", err)
+			}
+			if err := h.publishThreadSubOutboxIfRemote(ctx, replierSub, msg.ID); err != nil {
+				return "", err
+			}
+		}
+	default:
+		return "", fmt.Errorf("get parent message sender: %w", err)
+	}
+
+	if err := h.threadStore.UpdateThreadRoomLastMessage(ctx, existingRoom.ID, msg.ID, now); err != nil {
+		return "", fmt.Errorf("update thread room last message: %w", err)
+	}
+
+	return existingRoom.ID, nil
+}
+```
+
+- [ ] **Step 7.4: Run tests to verify they pass**
+
+Run: `make test SERVICE=message-worker`
+
+Expected: pass.
+
+- [ ] **Step 7.5: Commit**
+
+```bash
+git add message-worker/handler.go message-worker/handler_test.go
+git commit -m "message-worker: emit outbox event on subsequent-reply ThreadSubscription upserts"
+```
+
+---
+
+<!-- end-of-chunk-3 -->
