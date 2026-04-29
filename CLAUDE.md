@@ -90,6 +90,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 ### Request Logging & Tracing
 - HTTP services (Gin): use middleware that logs method, path, status code, latency, and request ID per request
 - Generate or extract a unique request/correlation ID at the entry point (HTTP middleware or NATS message handler), propagate via `context.Context`, include in all log lines
+- **Request ID format**: 36-char hyphenated UUID (industry-standard form, e.g. `01970a4f-8c2d-7c9a-abcd-e0123456789f`). Generated server-side via `idgen.GenerateRequestID()` (UUIDv7 hyphenated) when no inbound `X-Request-ID` header is present. Inbound IDs are accepted as long as they are valid UUIDs in standard hyphenated form (v4 or v7, case-insensitive) — validated via `idgen.IsValidUUID`. The 32-char no-hyphen form is reserved for Mongo entity `_id`s only and is NOT used for request IDs.
 
 ### Concurrency
 - Never use `time.Sleep` for goroutine synchronization — use proper sync primitives (channels, `sync.WaitGroup`, `sync.Mutex`)
@@ -227,7 +228,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
   - **Subscriptions, RoomMembers, ThreadRooms, ThreadSubscriptions**: UUIDv7 hex without hyphens (32 chars) via `idgen.GenerateUUIDv7()` — time-ordered for B-tree locality on high-write collections
   - **Channel Rooms**: 17-char base62 via `idgen.GenerateID()` — short, human-friendly
   - **DM Rooms**: sorted concat of two `user.ID` strings (~34 chars) via `idgen.BuildDMRoomID(a, b)` — deterministic, no separate dedup needed
-  - **Messages**: 20-char base62 via `idgen.GenerateMessageID()` (or client-supplied for user messages, validated by `idgen.IsValidMessageID`)
+  - **Messages**: 20-char base62 via `idgen.GenerateMessageID()` for new IDs (or client-supplied for user messages). `idgen.IsValidMessageID` accepts **either 17 or 20 char** base62 — 17 is the legacy length retained for backward compatibility with messages written before the 20-char cutover (federation replays, JetStream redeliveries, historical records).
 - Check `mongo.ErrNoDocuments` explicitly when a missing record is expected
 - Create indexes in the store constructor or a dedicated `EnsureIndexes` method at startup
 
