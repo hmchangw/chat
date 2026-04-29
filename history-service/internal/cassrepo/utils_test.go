@@ -99,3 +99,27 @@ func TestParsePageRequest_InvalidCursor_WrapsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse page request cursor")
 }
+
+func TestStructScan_NonPointer(t *testing.T) {
+	type S struct {
+		Name string `cql:"name"`
+	}
+	// Passing a non-pointer should return false before touching iter.
+	result := structScan(nil, S{Name: "x"})
+	assert.False(t, result)
+}
+
+func TestStructScan_PointerToNonStruct(t *testing.T) {
+	// Passing a pointer to a non-struct should return false before touching iter.
+	s := "hello"
+	result := structScan(nil, &s)
+	assert.False(t, result)
+}
+
+func TestNewCursor_TooLong(t *testing.T) {
+	// 515 raw bytes encode to 688 base64 chars, which exceeds EncodedLen(512)=684.
+	huge := base64.StdEncoding.EncodeToString(make([]byte, maxCursorBytes+3))
+	_, err := NewCursor(huge)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode cursor")
+}

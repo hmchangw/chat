@@ -2,37 +2,27 @@ package cassrepo
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/gocql/gocql"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
 )
 
-// messageByIDExtraColumns are only present in messages_by_id, not messages_by_room.
-const messageByIDExtraColumns = ", pinned_at, pinned_by"
-
-const messageByIDQuery = "SELECT " + baseColumns + messageByIDExtraColumns + " FROM messages_by_id"
-
-func messageByIDScanDest(m *models.Message) []any {
-	return append(baseScanDest(m), &m.PinnedAt, &m.PinnedBy)
-}
-
-func scanMessagesByID(iter *gocql.Iter) []models.Message { return scanWith(iter, messageByIDScanDest) }
+const messageByIDQuery = "SELECT " + baseColumns + ", pinned_at, pinned_by FROM messages_by_id"
 
 // Returns (nil, nil) when not found.
 func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*models.Message, error) {
-	var m models.Message
-	err := r.session.Query(
-		messageByIDQuery+` WHERE message_id = ?`,
+	iter := r.session.Query(
+		messageByIDQuery+` WHERE message_id = ? LIMIT 1`,
 		messageID,
-	).WithContext(ctx).Scan(messageByIDScanDest(&m)...)
-	if errors.Is(err, gocql.ErrNotFound) {
-		return nil, nil
+	).WithContext(ctx).Iter()
+
+	var m models.Message
+	found := structScan(iter, &m)
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("querying message by id %s: %w", messageID, err)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("querying message by id: %w", err)
+	if !found {
+		return nil, nil
 	}
 	return &m, nil
 }
@@ -46,7 +36,7 @@ func (r *Repository) GetMessagesByIDs(ctx context.Context, messageIDs []string) 
 		messageByIDQuery+` WHERE message_id IN ?`,
 		messageIDs,
 	).WithContext(ctx).Iter()
-	messages := scanMessagesByID(iter)
+	messages := scanMsgsFromIter(iter)
 	if err := iter.Close(); err != nil {
 		return nil, fmt.Errorf("querying messages by IDs: %w", err)
 	}

@@ -18,25 +18,15 @@ const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, ta
 
 const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 
-func baseScanDest(m *models.Message) []any {
-	return []any{
-		&m.RoomID, &m.CreatedAt, &m.MessageID, &m.ThreadRoomID,
-		&m.Sender, &m.TargetUser, &m.Msg,
-		&m.Mentions, &m.Attachments, &m.File,
-		&m.Card, &m.CardAction, &m.TShow, &m.TCount,
-		&m.ThreadParentID, &m.ThreadParentCreatedAt, &m.QuotedParentMessage,
-		&m.VisibleTo, &m.Unread, &m.Reactions,
-		&m.Deleted, &m.Type, &m.SysMsgData,
-		&m.SiteID, &m.EditedAt, &m.UpdatedAt,
-	}
-}
-
-// Shared by the three table-specific scan helpers.
-func scanWith(iter *gocql.Iter, dest func(*models.Message) []any) []models.Message {
+// scanMsgsFromIter collects all rows from iter into a slice.
+// structScan ignores columns absent from the struct's cql tags, so this
+// helper is safe to use with any column subset (e.g. messageByIDQuery
+// includes pinned_at/pinned_by which are absent from the base column list).
+func scanMsgsFromIter(iter *gocql.Iter) []models.Message {
 	messages := make([]models.Message, 0)
 	for {
 		var m models.Message
-		if !iter.Scan(dest(&m)...) {
+		if !structScan(iter, &m) {
 			break
 		}
 		messages = append(messages, m)
@@ -44,15 +34,13 @@ func scanWith(iter *gocql.Iter, dest func(*models.Message) []any) []models.Messa
 	return messages
 }
 
-func scanMessages(iter *gocql.Iter) []models.Message { return scanWith(iter, baseScanDest) }
-
 func fetchMessagesPage(q *gocql.Query, pageReq PageRequest, errMsg string) (Page[models.Message], error) {
 	var messages []models.Message
 	nextCursor, err := NewQueryBuilder(q).
 		WithCursor(pageReq.Cursor).
 		WithPageSize(pageReq.PageSize).
 		Fetch(func(iter *gocql.Iter) {
-			messages = scanMessages(iter)
+			messages = scanMsgsFromIter(iter)
 		})
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("%s: %w", errMsg, err)
@@ -64,42 +52,42 @@ func fetchMessagesPage(q *gocql.Query, pageReq PageRequest, errMsg string) (Page
 	}, nil
 }
 
-func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, q PageRequest) (Page[models.Message], error) {
+func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, pageReq PageRequest) (Page[models.Message], error) {
 	return fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? AND created_at < ? ORDER BY created_at DESC`,
 			roomID, before,
 		).WithContext(ctx),
-		q, "querying messages before",
+		pageReq, "querying messages before",
 	)
 }
 
-func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, q PageRequest) (Page[models.Message], error) {
+func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, pageReq PageRequest) (Page[models.Message], error) {
 	return fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? AND created_at < ? ORDER BY created_at DESC`,
 			roomID, since, before,
 		).WithContext(ctx),
-		q, "querying messages between desc",
+		pageReq, "querying messages between desc",
 	)
 }
 
-func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, q PageRequest) (Page[models.Message], error) {
+func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, pageReq PageRequest) (Page[models.Message], error) {
 	return fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? ORDER BY created_at ASC`,
 			roomID, after,
 		).WithContext(ctx),
-		q, "querying messages after",
+		pageReq, "querying messages after",
 	)
 }
 
-func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, q PageRequest) (Page[models.Message], error) {
+func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, pageReq PageRequest) (Page[models.Message], error) {
 	return fetchMessagesPage(
 		r.session.Query(
 			messageByRoomQuery+` WHERE room_id = ? ORDER BY created_at ASC`,
 			roomID,
 		).WithContext(ctx),
-		q, "querying all messages asc",
+		pageReq, "querying all messages asc",
 	)
 }
