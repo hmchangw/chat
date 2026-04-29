@@ -13,6 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
@@ -259,6 +260,47 @@ func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, th
 		if err := h.threadStore.MarkThreadSubscriptionMention(ctx, sub); err != nil {
 			return fmt.Errorf("mark thread subscription mention for user %s: %w", p.UserID, err)
 		}
+	}
+	return nil
+}
+
+// publishThreadSubOutboxIfRemote publishes a thread_subscription_upserted
+// outbox event when sub.SiteID is a remote site. Same-site or empty SiteID
+// is a no-op (empty SiteID logs a warning — it indicates a caller bug).
+//
+// The dedup-ID seed is (threadRoomID, userID, msgID): msg.ID is unique per
+// reply, and (msg.ID, userID) is unique within a reply, so the seed is stable
+// across MESSAGES_CANONICAL redeliveries and JetStream stream-level dedup
+// absorbs duplicates within the dedup window.
+func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model.ThreadSubscription, msgID string) error {
+	if sub.SiteID == "" {
+		slog.Warn("thread subscription has empty SiteID, skipping outbox publish",
+			"threadRoomID", sub.ThreadRoomID, "userID", sub.UserID, "msgID", msgID)
+		return nil
+	}
+	if sub.SiteID == h.siteID {
+		return nil
+	}
+
+	payload, err := json.Marshal(sub)
+	if err != nil {
+		return fmt.Errorf("marshal thread subscription: %w", err)
+	}
+	outbox := model.OutboxEvent{
+		Type:       model.OutboxThreadSubscriptionUpserted,
+		SiteID:     h.siteID,
+		DestSiteID: sub.SiteID,
+		Payload:    payload,
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}
+	data, err := json.Marshal(outbox)
+	if err != nil {
+		return fmt.Errorf("marshal outbox event: %w", err)
+	}
+	dedupID := idgen.DeriveID(fmt.Sprintf("thread-sub-outbox:%s:%s:%s", sub.ThreadRoomID, sub.UserID, msgID))
+	subj := subject.Outbox(h.siteID, sub.SiteID, model.OutboxThreadSubscriptionUpserted)
+	if err := h.publish(ctx, subj, data, dedupID); err != nil {
+		return fmt.Errorf("publish thread subscription outbox to %s: %w", sub.SiteID, err)
 	}
 	return nil
 }

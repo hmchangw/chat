@@ -878,6 +878,120 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 	}
 }
 
+func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	baseSub := &model.ThreadSubscription{
+		ID:              "sub-1",
+		ParentMessageID: "pm-1",
+		RoomID:          "r1",
+		ThreadRoomID:    "tr-1",
+		UserID:          "u-bob",
+		UserAccount:     "bob",
+		SiteID:          "site-b",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	t.Run("same site — no publish", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		var called bool
+		h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl), "site-b",
+			func(_ context.Context, _ string, _ []byte, _ string) error {
+				called = true
+				return nil
+			})
+
+		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-1")
+		require.NoError(t, err)
+		assert.False(t, called, "publish must not be called when sub.SiteID == h.siteID")
+	})
+
+	t.Run("empty siteID — skip with warn, no publish", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		var called bool
+		h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl), "site-a",
+			func(_ context.Context, _ string, _ []byte, _ string) error {
+				called = true
+				return nil
+			})
+
+		emptySub := *baseSub
+		emptySub.SiteID = ""
+		err := h.publishThreadSubOutboxIfRemote(context.Background(), &emptySub, "msg-1")
+		require.NoError(t, err)
+		assert.False(t, called, "publish must not be called when sub.SiteID is empty")
+	})
+
+	t.Run("remote site — publishes with expected subject and dedup ID", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		var captured struct {
+			subj    string
+			data    []byte
+			msgID   string
+			callCnt int
+		}
+		h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl), "site-a",
+			func(_ context.Context, subj string, data []byte, msgID string) error {
+				captured.subj = subj
+				captured.data = data
+				captured.msgID = msgID
+				captured.callCnt++
+				return nil
+			})
+
+		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-1")
+		require.NoError(t, err)
+		require.Equal(t, 1, captured.callCnt)
+		assert.Equal(t, "outbox.site-a.to.site-b.thread_subscription_upserted", captured.subj)
+		assert.NotEmpty(t, captured.msgID, "dedup ID must be set")
+
+		// Same inputs → same dedup ID (stable across redeliveries).
+		var second string
+		h2 := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl), "site-a",
+			func(_ context.Context, _ string, _ []byte, msgID string) error {
+				second = msgID
+				return nil
+			})
+		require.NoError(t, h2.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-1"))
+		assert.Equal(t, captured.msgID, second, "dedup ID must be deterministic for the same (threadRoomID, userID, msgID) seed")
+
+		// Different msgID → different dedup ID.
+		var third string
+		h3 := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl), "site-a",
+			func(_ context.Context, _ string, _ []byte, msgID string) error {
+				third = msgID
+				return nil
+			})
+		require.NoError(t, h3.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-2"))
+		assert.NotEqual(t, captured.msgID, third)
+
+		// Payload is an OutboxEvent whose inner Payload decodes back to the ThreadSubscription.
+		var outer model.OutboxEvent
+		require.NoError(t, json.Unmarshal(captured.data, &outer))
+		assert.Equal(t, model.OutboxThreadSubscriptionUpserted, outer.Type)
+		assert.Equal(t, "site-a", outer.SiteID)
+		assert.Equal(t, "site-b", outer.DestSiteID)
+		assert.Greater(t, outer.Timestamp, int64(0))
+
+		var inner model.ThreadSubscription
+		require.NoError(t, json.Unmarshal(outer.Payload, &inner))
+		assert.Equal(t, *baseSub, inner)
+	})
+
+	t.Run("publish error returned", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		boom := errors.New("publish boom")
+		h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl), "site-a",
+			func(_ context.Context, _ string, _ []byte, _ string) error {
+				return boom
+			})
+
+		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-1")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, boom)
+	})
+}
+
 // fakeJSMsg is a minimal jetstream.Msg test double that records whether Ack or
 // Nak was called so tests can assert on ack/nak behaviour.
 type fakeJSMsg struct {
