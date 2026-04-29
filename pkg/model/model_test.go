@@ -732,6 +732,27 @@ func TestOutboxEventJSON(t *testing.T) {
 	}
 }
 
+func TestOutboxEventJSON_ThreadSubscriptionUpserted(t *testing.T) {
+	src := model.OutboxEvent{
+		Type:       model.OutboxThreadSubscriptionUpserted,
+		SiteID:     "site-a",
+		DestSiteID: "site-b",
+		Payload:    []byte(`{"id":"sub-1","threadRoomId":"tr-1"}`),
+		Timestamp:  1735689600000,
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+
+	var dst model.OutboxEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+	if dst.Type != "thread_subscription_upserted" {
+		t.Errorf("Type = %q, want thread_subscription_upserted", dst.Type)
+	}
+}
+
 func TestInboxMemberEventJSON(t *testing.T) {
 	t.Run("add event, unrestricted room", func(t *testing.T) {
 		src := model.InboxMemberEvent{

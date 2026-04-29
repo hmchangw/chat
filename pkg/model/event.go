@@ -79,8 +79,9 @@ type NotificationEvent struct {
 type OutboxEventType = string
 
 const (
-	OutboxMemberAdded   OutboxEventType = "member_added"
-	OutboxMemberRemoved OutboxEventType = "member_removed"
+	OutboxMemberAdded                OutboxEventType = "member_added"
+	OutboxMemberRemoved              OutboxEventType = "member_removed"
+	OutboxThreadSubscriptionUpserted OutboxEventType = "thread_subscription_upserted"
 )
 
 type OutboxEvent struct {
