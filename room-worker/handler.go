@@ -173,14 +173,14 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	}
 
 	now := time.Now().UTC()
-	roomType := h.lookupRoomType(ctx, req.RoomID, "remove-individual")
 
-	// Subscription update event
+	// Subscription update event. RoomType is fixed to channel: room-service
+	// rejects member.remove for any other room kind.
 	subEvt := model.SubscriptionUpdateEvent{
 		UserID: user.ID,
 		Subscription: model.Subscription{
 			RoomID:   req.RoomID,
-			RoomType: roomType,
+			RoomType: model.RoomTypeChannel,
 			User:     model.SubscriptionUser{ID: user.ID, Account: req.Account},
 		},
 		Action:    "removed",
@@ -290,8 +290,6 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 
 	now := time.Now().UTC()
-	// Fetched once: reused across the per-account event loop below.
-	roomType := h.lookupRoomType(ctx, req.RoomID, "remove-org")
 
 	// Publish per-account subscription update and collect cross-site accounts
 	sectName := ""
@@ -302,7 +300,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		subEvt := model.SubscriptionUpdateEvent{
 			Subscription: model.Subscription{
 				RoomID:   req.RoomID,
-				RoomType: roomType,
+				RoomType: model.RoomTypeChannel,
 				User:     model.SubscriptionUser{Account: m.Account},
 			},
 			Action:    "removed",
@@ -430,7 +428,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 			continue
 		}
 		// RoomType is fixed to channel: room-service rejects member.add for
-		// any other room kind, so this code path only sees channel rooms.
+		// any other room kind.
 		sub := &model.Subscription{
 			ID:       idgen.GenerateID(),
 			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
@@ -667,19 +665,4 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) error {
 func mustMarshal(v any) []byte {
 	data, _ := json.Marshal(v)
 	return data
-}
-
-// lookupRoomType fetches the room and returns its Type. On failure it logs at
-// warn and returns "" — the field is best-effort metadata on notification
-// payloads, never load-bearing.
-func (h *Handler) lookupRoomType(ctx context.Context, roomID, op string) model.RoomType {
-	room, err := h.store.GetRoom(ctx, roomID)
-	if err != nil {
-		slog.Warn("get room failed", "error", err, "roomID", roomID, "op", op)
-		return ""
-	}
-	if room == nil {
-		return ""
-	}
-	return room.Type
 }

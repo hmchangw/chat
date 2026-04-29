@@ -310,9 +310,6 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().
-		GetRoom(gomock.Any(), roomID).
-		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -495,9 +492,6 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().
-		GetRoom(gomock.Any(), roomID).
-		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -877,9 +871,6 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil) // recount after removal
-	store.EXPECT().
-		GetRoom(gomock.Any(), roomID).
-		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -938,9 +929,6 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().
-		GetRoom(gomock.Any(), roomID).
-		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -1165,9 +1153,6 @@ func TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates(t *testing.T) {
 		Return(int64(1), nil)
 	store.EXPECT().
 		ReconcileUserCount(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().
-		GetRoom(gomock.Any(), roomID).
-		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
@@ -1206,9 +1191,6 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	store.EXPECT().DeleteSubscriptionsByAccounts(gomock.Any(), roomID, []string{"carol"}).Return(int64(1), nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
 	store.EXPECT().ReconcileUserCount(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().
-		GetRoom(gomock.Any(), roomID).
-		Return(&model.Room{ID: roomID, Type: model.RoomTypeChannel}, nil)
 
 	outboxSubj := subject.Outbox(localSite, remoteSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
