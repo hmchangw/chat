@@ -14,7 +14,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
-	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -164,8 +163,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(store, publisher)
+	handler := NewHandler(store)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
 		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
@@ -196,16 +194,4 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
-}
-
-// natsPublisher adapts *otelnats.Conn to the Publisher interface.
-type natsPublisher struct {
-	nc *otelnats.Conn
-}
-
-func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte) error {
-	if err := p.nc.PublishMsg(ctx, natsutil.NewMsg(ctx, subject, data)); err != nil {
-		return fmt.Errorf("publish to %q: %w", subject, err)
-	}
-	return nil
 }

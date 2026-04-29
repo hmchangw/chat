@@ -115,7 +115,7 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal role update request: %w", err)
 	}
 	if req.Timestamp <= 0 {
-		return fmt.Errorf("invalid role update request: timestamp must be > 0, got %d", req.Timestamp)
+		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
 
 	// Promote: add "owner" to roles. Demote: remove "owner" from roles.
@@ -200,7 +200,7 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 
 func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
 	if req.Timestamp <= 0 {
-		return fmt.Errorf("invalid remove member request: timestamp must be > 0, got %d", req.Timestamp)
+		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
 	isSelfLeave := req.Requester == req.Account
 	// Defer the result publish covers all subsequent return paths.
@@ -324,7 +324,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 
 func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
 	if req.Timestamp <= 0 {
-		return fmt.Errorf("invalid remove member request: timestamp must be > 0, got %d", req.Timestamp)
+		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
 	// Defer the result publish covers all subsequent return paths.
 	defer func() {
@@ -465,7 +465,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		return fmt.Errorf("unmarshal add members request: %w", err)
 	}
 	if req.Timestamp <= 0 {
-		return fmt.Errorf("invalid add members request: timestamp must be > 0, got %d", req.Timestamp)
+		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
 	// Now req is populated; defer the result publish covers all subsequent return paths.
 	defer func() {

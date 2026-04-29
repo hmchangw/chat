@@ -172,20 +172,28 @@ func TestHandler_ProcessRoleUpdate_CrossSite(t *testing.T) {
 
 // --- Error-path tests for processRoleUpdate ---
 
-func TestHandler_ProcessRoleUpdate_RejectsInvalidTimestamp(t *testing.T) {
-	h := NewHandler(nil, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+func TestHandler_ProcessRoleUpdate_FallsBackToNowOnInvalidTimestamp(t *testing.T) {
+	// A missing timestamp should not short-circuit the handler. We confirm
+	// processing reached the store layer by stubbing the first store call to
+	// return a downstream error and asserting the error is NOT the timestamp
+	// rejection.
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(fmt.Errorf("db error"))
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
 		return nil
 	})
 	req := model.UpdateRoleRequest{
 		RoomID:    "r1",
 		Account:   "bob",
 		NewRole:   model.RoleOwner,
-		Timestamp: 0, // invalid
+		Timestamp: 0,
 	}
 	data, _ := json.Marshal(req)
 	err := h.processRoleUpdate(context.Background(), data)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "timestamp must be > 0")
+	assert.NotContains(t, err.Error(), "timestamp must be > 0")
+	assert.Contains(t, err.Error(), "add owner role")
 }
 
 func TestHandler_ProcessRoleUpdate_InvalidJSON(t *testing.T) {
@@ -322,20 +330,27 @@ func TestHandler_ProcessRoleUpdate_PropagatesRequestID(t *testing.T) {
 
 // --- processRemoveMember tests ---
 
-func TestHandler_ProcessRemoveMember_RejectsInvalidTimestamp(t *testing.T) {
-	h := NewHandler(nil, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+func TestHandler_ProcessRemoveMember_FallsBackToNowOnInvalidTimestamp(t *testing.T) {
+	// A missing timestamp should not short-circuit the handler. We confirm
+	// processing reached the store layer by stubbing the first store call to
+	// return a downstream error and asserting the error is NOT the timestamp
+	// rejection.
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().GetUserWithMembership(gomock.Any(), "r1", "alice").Return(nil, fmt.Errorf("db error"))
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
 		return nil
 	})
 	req := model.RemoveMemberRequest{
 		RoomID:    "r1",
 		Account:   "alice",
 		Requester: "alice",
-		Timestamp: 0, // invalid
+		Timestamp: 0,
 	}
 	data, _ := json.Marshal(req)
 	err := h.processRemoveMember(context.Background(), data)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "timestamp must be > 0")
+	assert.NotContains(t, err.Error(), "timestamp must be > 0")
 }
 
 func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
@@ -572,20 +587,27 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 
 // --- processAddMembers tests ---
 
-func TestHandler_ProcessAddMembers_RejectsInvalidTimestamp(t *testing.T) {
-	h := NewHandler(nil, "site1", func(_ context.Context, _ string, _ []byte, _ string) error {
+func TestHandler_ProcessAddMembers_FallsBackToNowOnInvalidTimestamp(t *testing.T) {
+	// A missing timestamp should not short-circuit the handler. We confirm
+	// processing reached the store layer by stubbing the first store call to
+	// return a downstream error and asserting the error is NOT the timestamp
+	// rejection.
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, fmt.Errorf("db error"))
+	h := NewHandler(store, "site1", func(_ context.Context, _ string, _ []byte, _ string) error {
 		return nil
 	})
 	req := model.AddMembersRequest{
 		RoomID:           "r1",
 		RequesterAccount: "alice",
 		Users:            []string{"bob"},
-		Timestamp:        0, // invalid
+		Timestamp:        0,
 	}
 	data, _ := json.Marshal(req)
 	err := h.processAddMembers(context.Background(), data)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "timestamp must be > 0")
+	assert.NotContains(t, err.Error(), "timestamp must be > 0")
 }
 
 func TestHandler_ProcessAddMembers(t *testing.T) {

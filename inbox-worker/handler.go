@@ -21,20 +21,14 @@ type InboxStore interface {
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
 }
 
-// Publisher abstracts NATS publishing so the handler is testable.
-type Publisher interface {
-	Publish(ctx context.Context, subject string, data []byte) error
-}
-
 // Handler processes incoming cross-site OutboxEvent messages.
 type Handler struct {
 	store InboxStore
-	pub   Publisher
 }
 
-// NewHandler creates a Handler with the given store and publisher.
-func NewHandler(store InboxStore, pub Publisher) *Handler {
-	return &Handler{store: store, pub: pub}
+// NewHandler creates a Handler with the given store.
+func NewHandler(store InboxStore) *Handler {
+	return &Handler{store: store}
 }
 
 // HandleEvent processes a single JetStream message payload.

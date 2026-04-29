@@ -128,33 +128,6 @@ func (s *stubInboxStore) BulkCreateSubscriptions(_ context.Context, subs []*mode
 	return nil
 }
 
-// --- NATS publish recorder ---
-
-type publishRecord struct {
-	subject string
-	data    []byte
-}
-
-type mockPublisher struct {
-	mu      sync.Mutex
-	records []publishRecord
-}
-
-func (m *mockPublisher) Publish(_ context.Context, subject string, data []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.records = append(m.records, publishRecord{subject: subject, data: data})
-	return nil
-}
-
-func (m *mockPublisher) getRecords() []publishRecord {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cp := make([]publishRecord, len(m.records))
-	copy(cp, m.records)
-	return cp
-}
-
 // --- Tests ---
 
 func TestHandleEvent_MemberAdded(t *testing.T) {
@@ -163,8 +136,7 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -222,12 +194,6 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 		t.Error("subscription ID should be non-empty (generated UUID)")
 	}
 
-	// No SubscriptionUpdateEvent is published here — room-worker already
-	// publishes via the NATS supercluster to the user's home site.
-	records := pub.getRecords()
-	if len(records) != 0 {
-		t.Fatalf("expected 0 publishes, got %d", len(records))
-	}
 }
 
 func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
@@ -236,8 +202,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 			{ID: "uid-carol", Account: "carol", SiteID: "site-a"},
 		},
 	}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	joinedAt := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
@@ -286,8 +251,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 
 func TestHandleEvent_RoomSync(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	room := model.Room{
 		ID:        "room-1",
@@ -340,16 +304,11 @@ func TestHandleEvent_RoomSync(t *testing.T) {
 	}
 
 	// Verify no NATS publish for room_sync (only store update)
-	records := pub.getRecords()
-	if len(records) != 0 {
-		t.Errorf("expected 0 publishes for room_sync, got %d", len(records))
-	}
 }
 
 func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	// Insert initial room
 	room1 := model.Room{
@@ -394,8 +353,7 @@ func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 
 func TestHandleEvent_UnknownType(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type:       "unknown_type",
@@ -420,15 +378,11 @@ func TestHandleEvent_UnknownType(t *testing.T) {
 		t.Error("unexpected rooms created for unknown type")
 	}
 	// No publishes
-	if len(pub.getRecords()) != 0 {
-		t.Error("unexpected publishes for unknown type")
-	}
 }
 
 func TestHandleEvent_InvalidJSON(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	err := h.HandleEvent(context.Background(), []byte("not json"))
 	if err == nil {
@@ -438,8 +392,7 @@ func TestHandleEvent_InvalidJSON(t *testing.T) {
 
 func TestHandleEvent_MemberAdded_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type:       "member_added",
@@ -466,8 +419,7 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 			{ID: "uid-bob", Account: "account-bob", SiteID: "site-a"},
 		},
 	}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -515,9 +467,6 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 
 	// No SubscriptionUpdateEvent is published here — room-worker already
 	// publishes via the NATS supercluster to the user's home site.
-	if len(pub.getRecords()) != 0 {
-		t.Errorf("expected 0 publishes, got %d", len(pub.getRecords()))
-	}
 }
 
 func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
@@ -527,8 +476,7 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	joinedAt := time.Date(2026, 4, 5, 10, 30, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -598,9 +546,6 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 
 	// No SubscriptionUpdateEvent is published here — room-worker already
 	// publishes via the NATS supercluster to the user's home site.
-	if len(pub.getRecords()) != 0 {
-		t.Fatalf("expected 0 publishes, got %d", len(pub.getRecords()))
-	}
 }
 
 func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
@@ -609,8 +554,7 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 			{ID: "uid-dave", Account: "dave", SiteID: "site-a"},
 		},
 	}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	change := model.MemberAddEvent{
 		Type:     "member_added",
@@ -646,8 +590,7 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 
 func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type:       "room_sync",
@@ -670,8 +613,7 @@ func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_RoleUpdated(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 	subEvt := model.SubscriptionUpdateEvent{
 		UserID: "u2",
 		Subscription: model.Subscription{
@@ -701,16 +643,11 @@ func TestHandleEvent_RoleUpdated(t *testing.T) {
 		t.Errorf("role update roles = %v, want [owner]", updates[0].roles)
 	}
 	// No SubscriptionUpdateEvent publish — room-worker already handles that via NATS supercluster
-	records := pub.getRecords()
-	if len(records) != 0 {
-		t.Errorf("expected 0 publishes (room-worker handles notification), got %d", len(records))
-	}
 }
 
 func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 	evt := model.OutboxEvent{
 		Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b",
 		Payload: []byte("not valid json"),
@@ -727,8 +664,7 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	store.mu.Lock()
 	store.subscriptions = append(store.subscriptions, model.Subscription{
@@ -752,17 +688,11 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 
 	subs := store.getSubscriptions()
 	assert.Empty(t, subs)
-
-	// No SubscriptionUpdateEvent is published — room-worker already publishes
-	// via the NATS supercluster to the user's home site.
-	records := pub.getRecords()
-	assert.Empty(t, records)
 }
 
 func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
@@ -776,8 +706,7 @@ func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	// Pre-populate subscriptions for both accounts
 	store.mu.Lock()
@@ -806,16 +735,11 @@ func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 	// Both subscriptions should be deleted
 	subs := store.getSubscriptions()
 	assert.Empty(t, subs)
-
-	// No SubscriptionUpdateEvent publishes — room-worker handles that
-	records := pub.getRecords()
-	assert.Empty(t, records)
 }
 
 func TestHandleEvent_MemberRemoved_EmptyAccountsNoOp(t *testing.T) {
 	store := &stubInboxStore{}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{}}
 	payload, _ := json.Marshal(memberEvt)
@@ -835,8 +759,7 @@ func (s *errorDeleteStore) DeleteSubscriptionsByAccounts(_ context.Context, _ st
 
 func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 	store := &errorDeleteStore{stubInboxStore: &stubInboxStore{}}
-	pub := &mockPublisher{}
-	h := NewHandler(store, pub)
+	h := NewHandler(store)
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"alice"}}
 	payload, _ := json.Marshal(memberEvt)
