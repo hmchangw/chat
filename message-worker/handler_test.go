@@ -415,7 +415,9 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			mockThreadStore := NewMockThreadStore(ctrl)
 			tt.setupMocks(mockStore, mockUserStore, mockThreadStore)
 
-			h := NewHandler(mockStore, mockUserStore, mockThreadStore)
+			h := NewHandler(mockStore, mockUserStore, mockThreadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+				return nil
+			})
 			err := h.processMessage(context.Background(), tt.data)
 			if tt.wantErr {
 				require.Error(t, err)
@@ -863,7 +865,9 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			mockUserStore := NewMockUserStore(ctrl)
 			tt.setupMocks(mockStore, mockThreadStore)
 
-			h := NewHandler(mockStore, mockUserStore, mockThreadStore)
+			h := NewHandler(mockStore, mockUserStore, mockThreadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+				return nil
+			})
 			_, err := h.handleThreadRoomAndSubscriptions(context.Background(), tt.msg, tt.siteID)
 			if tt.wantErr {
 				require.Error(t, err)
@@ -947,7 +951,9 @@ func TestHandler_HandleJetStreamMsg(t *testing.T) {
 			mockThreadStore := NewMockThreadStore(ctrl)
 			tt.setupMocks(mockStore, mockUserStore, mockThreadStore)
 
-			h := NewHandler(mockStore, mockUserStore, mockThreadStore)
+			h := NewHandler(mockStore, mockUserStore, mockThreadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+				return nil
+			})
 
 			fakeMsg := &fakeJSMsg{data: tt.msgData}
 			h.HandleJetStreamMsg(context.Background(), fakeMsg)

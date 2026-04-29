@@ -92,7 +92,13 @@ func main() {
 		slog.Error("ensure thread store indexes failed", "error", err)
 		os.Exit(1)
 	}
-	handler := NewHandler(store, us, threadStore)
+	handler := NewHandler(store, us, threadStore, cfg.SiteID, func(ctx context.Context, subj string, data []byte, msgID string) error {
+		if msgID == "" {
+			return nc.Publish(ctx, subj, data)
+		}
+		_, err := js.Publish(ctx, subj, data, jetstream.WithMsgID(msgID))
+		return err
+	})
 
 	if err := bootstrapStreams(ctx, js, cfg.SiteID, cfg.Bootstrap.Enabled); err != nil {
 		slog.Error("bootstrap streams failed", "error", err)

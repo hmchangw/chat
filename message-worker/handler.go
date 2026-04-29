@@ -16,14 +16,26 @@ import (
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
+// PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
+// Mirrors room-worker's PublishFunc signature so message-worker can plug into the same publish closure.
+type PublishFunc func(ctx context.Context, subj string, data []byte, msgID string) error
+
 type Handler struct {
 	store       Store
 	userStore   userstore.UserStore
 	threadStore ThreadStore
+	siteID      string
+	publish     PublishFunc
 }
 
-func NewHandler(store Store, userStore userstore.UserStore, threadStore ThreadStore) *Handler {
-	return &Handler{store: store, userStore: userStore, threadStore: threadStore}
+func NewHandler(store Store, userStore userstore.UserStore, threadStore ThreadStore, siteID string, publish PublishFunc) *Handler {
+	return &Handler{
+		store:       store,
+		userStore:   userStore,
+		threadStore: threadStore,
+		siteID:      siteID,
+		publish:     publish,
+	}
 }
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
