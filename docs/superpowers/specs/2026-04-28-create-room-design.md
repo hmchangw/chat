@@ -2,7 +2,6 @@
 
 **Date:** 2026-04-28
 **Status:** Draft
-**Hard prerequisite:** [PR #131 — idgen rework](https://github.com/hmchangw/chat/pull/131) merged. This spec depends on `idgen.GenerateUUIDv7`, `idgen.BuildDMRoomID`, `idgen.MessageIDFromRequestID`, header-based `X-Request-ID` propagation through `pkg/natsutil` + `pkg/natsrouter`, and the `subject.UserResponse` async-job notification pattern.
 
 ## Summary
 
@@ -330,15 +329,11 @@ type AsyncJobResult struct {
 
 If PR #131 already defined this struct, reuse it. The `Operation` constant set is extended to include `"room.create"`.
 
-### Sub-ID derivation
+### Sub-ID and Member-ID generation
 
-All new subscriptions (create-room AND the add-member retrofit) use deterministic IDs:
+All new subscriptions (create-room AND the add-member retrofit) use `idgen.GenerateUUIDv7()` (32-char hex, no hyphens), consistent with the established convention for `Subscription._id`, `RoomMember._id`, `ThreadRoom._id`, and `ThreadSubscription._id`.
 
-```go
-sub.ID = idgen.MessageIDFromRequestID(requestID, "sub:" + account)
-```
-
-This protects against double-insertion on JetStream redelivery: re-running the handler produces the same IDs, and `BulkCreateSubscriptions` returns duplicate-key errors that the handler treats as success-on-redelivery.
+Idempotency on JetStream redelivery is achieved via compound unique indices rather than deterministic IDs — see the `EnsureIndexes` section and the idempotency tables below.
 
 ## Reply Contract
 
@@ -372,7 +367,7 @@ The client uses the second form to navigate the user to the existing DM.
 
 ```json
 {
-  "requestId": "<32-char hex>",
+  "requestId": "<UUID>",
   "operation": "room.create",
   "status":    "ok" | "error",
   "roomId":    "<id>",
@@ -629,11 +624,39 @@ dmDedupIndex := mongo.IndexModel{
 _, err = s.subscriptions.Indexes().CreateOne(ctx, dmDedupIndex)
 ```
 
+Two additional unique compound indices are created by `room-service` to support idempotency on JetStream redelivery (since subscription and member IDs are random UUIDv7, not deterministic):
+
+```go
+// Prevents duplicate subscriptions for the same user in the same room on redelivery.
+subUniqueIndex := mongo.IndexModel{
+    Keys: bson.D{
+        {Key: "roomId",    Value: 1},
+        {Key: "u.account", Value: 1},
+    },
+    Options: options.Index().
+        SetName("roomid_u_account_unique_idx").
+        SetUnique(true),
+}
+_, err = s.subscriptions.Indexes().CreateOne(ctx, subUniqueIndex)
+
+// Prevents duplicate room_members entries for the same member in the same room.
+memberUniqueIndex := mongo.IndexModel{
+    Keys: bson.D{
+        {Key: "roomId",    Value: 1},
+        {Key: "member.id", Value: 1},
+    },
+    Options: options.Index().
+        SetName("roomid_member_id_unique_idx").
+        SetUnique(true),
+}
+_, err = s.roomMembers.Indexes().CreateOne(ctx, memberUniqueIndex)
+```
+
 Notes:
 
 - The `apps` index is **not** marked unique. While `assistant.name` is expected to be unique in practice, uniqueness is a property of the `apps` collection's source-of-truth provisioning, not something this feature should enforce.
-- The subscription compound index uses a **partial filter expression** so it only contains DM/botDM subs. The vast majority of subs are channel subs, so the index stays small. The dedup query's `roomType $in {dm, botDM}` clause is satisfied by the partial filter, so the planner uses this index.
-- Existing subscription indices (`u.account`, `roomId`, etc.) stay as they are. The new compound index does not replace them.
+- The subscription DM-dedup partial index and the new `(roomId, u.account)` unique index coexist — they serve different query patterns and neither replaces the other.
+- Existing subscription indices (`u.account`, `roomId`, etc.) stay as they are.
 - `EnsureIndexes` calls are idempotent — re-running them is a no-op when the index already exists with the same definition.
 - `inbox-worker` and `room-worker` don't ensure these indices: only `room-service` queries them. (Convention check: existing code in this repo does the same — only the service that queries a collection ensures its indices, even though indices are global to the Mongo collection.)
 
@@ -720,12 +743,12 @@ default:
    --- dm branch ---
    otherUser, err := h.store.GetUser(ctx, req.Users[0])
    subs := []*model.Subscription{
-     newSub(idgen.MessageIDFromRequestID(requestID, "sub:" + requester.Account),
+     newSub(idgen.GenerateUUIDv7(),
             requester, room, nil,
             otherUser.Account,
             composeNameOrAccount(otherUser),
             false /* IsSubscribed */, acceptedAt),
-     newSub(idgen.MessageIDFromRequestID(requestID, "sub:" + otherUser.Account),
+     newSub(idgen.GenerateUUIDv7(),
             otherUser, room, nil,
             requester.Account,
             composeNameOrAccount(requester),
@@ -735,12 +758,12 @@ default:
    --- botDM branch ---
    bot, err := h.store.GetUser(ctx, req.Users[0])
    subs := []*model.Subscription{
-     newSub(idgen.MessageIDFromRequestID(requestID, "sub:" + requester.Account),
+     newSub(idgen.GenerateUUIDv7(),
             requester, room, nil,
             bot.Account,
             req.AppName,           // SidebarName = App.Name
             true /* IsSubscribed */, acceptedAt),
-     newSub(idgen.MessageIDFromRequestID(requestID, "sub:" + bot.Account),
+     newSub(idgen.GenerateUUIDv7(),
             bot, room, nil,
             requester.Account,
             composeNameOrAccount(requester),
@@ -758,7 +781,7 @@ default:
    subs := make([]*model.Subscription, 0, len(users)+1)
    for _, u := range users {
        subs = append(subs, newSub(
-           idgen.MessageIDFromRequestID(requestID, "sub:" + u.Account),
+           idgen.GenerateUUIDv7(),
            u, room,
            []model.Role{model.RoleMember},
            room.Name,             // Subscription.Name = Room.Name for channels
@@ -767,7 +790,7 @@ default:
    }
    // Owner sub for requester
    subs = append(subs, newSub(
-       idgen.MessageIDFromRequestID(requestID, "sub:" + requester.Account),
+       idgen.GenerateUUIDv7(),
        requester, room,
        []model.Role{model.RoleOwner},
        room.Name,
@@ -786,7 +809,7 @@ default:
    if writeIndividuals {
        for _, sub := range subs[:len(subs)-1] {  // exclude owner; appended below
            members = append(members, &model.RoomMember{
-             ID: idgen.MessageIDFromRequestID(requestID, "member:" + sub.User.Account),
+             ID: idgen.GenerateUUIDv7(),
              RoomID: room.ID,
              Ts: acceptedAt,
              Member: model.RoomMemberEntry{
@@ -796,7 +819,7 @@ default:
        }
        for _, org := range req.Orgs {
            members = append(members, &model.RoomMember{
-             ID: idgen.MessageIDFromRequestID(requestID, "member:org:" + org),
+             ID: idgen.GenerateUUIDv7(),
              RoomID: room.ID, Ts: acceptedAt,
              Member: model.RoomMemberEntry{ID: org, Type: model.RoomMemberOrg},
            })
@@ -804,7 +827,7 @@ default:
    }
    // Always write owner row
    members = append(members, &model.RoomMember{
-     ID: idgen.MessageIDFromRequestID(requestID, "member:" + requester.Account),
+     ID: idgen.GenerateUUIDv7(),
      RoomID: room.ID, Ts: acceptedAt,
      Member: model.RoomMemberEntry{
        ID: requester.ID, Type: model.RoomMemberIndividual, Account: requester.Account,
@@ -978,8 +1001,8 @@ type Store interface {
 | Step | Idempotency mechanism |
 |------|----------------------|
 | 4 — CreateRoom | Duplicate-key + matching-existing → continue. Mismatch → permanent error. |
-| 6 — BulkCreateSubscriptions | Deterministic IDs; duplicate-key → success. |
-| 7 — BulkCreateRoomMembers | Deterministic IDs; duplicate-key → success. |
+| 6 — BulkCreateSubscriptions | Unique compound index `(roomId, u.account)`; duplicate-key → success. |
+| 7 — BulkCreateRoomMembers | Unique compound index `(roomId, member.id)`; duplicate-key → success. |
 | 8 — ReconcileMemberCounts | Idempotent by construction (counts the current state). |
 | 9 — subscription.update | At-most-once delivery without dedup; redelivery republishes. Frontend is idempotent. |
 | 10 — sys-messages | NATS-Msg-Id = msg.ID (deterministic via `MessageIDFromRequestID`). JetStream dedup catches replays. |
@@ -1034,7 +1057,7 @@ default:
      subs := make([]*model.Subscription, 0, len(users))
      for _, u := range users {
          sub := &model.Subscription{
-           ID: idgen.MessageIDFromRequestID(requestID, "sub:" + u.Account),
+           ID: idgen.GenerateUUIDv7(),
            User: model.SubscriptionUser{ID: u.ID, Account: u.Account},
            RoomID:       data.RoomID,
            SiteID:       data.HomeSiteID,         // NOT this site — room's home site
@@ -1143,10 +1166,10 @@ func subscriptionIsSubscribed(d model.RoomCreatedOutbox, u model.User) bool {
 
 | Step | Mechanism |
 |------|-----------|
-| 4 — BulkCreateSubscriptions | Deterministic IDs from `MessageIDFromRequestID(requestID, "sub:"+account)`; duplicate-key → success. |
+| 4 — BulkCreateSubscriptions | Unique compound index `(roomId, u.account)`; duplicate-key → success. |
 | Outbox-event-level | NATS-Msg-Id = `requestID:destSiteID`; JetStream dedups at consumer side. |
 
-A redelivery from JetStream → already-deduped at the consumer level. If somehow the dedup window has expired and the handler runs again, the deterministic IDs make the bulk insert a no-op.
+A redelivery from JetStream → already-deduped at the consumer level (NATS-Msg-Id). If the dedup window has expired and the handler runs again, the unique compound index on `(roomId, u.account)` makes the bulk insert a no-op.
 
 ## Cross-Site Scenarios
 
@@ -1347,17 +1370,11 @@ The add-member feature needs three small changes alongside this work so both fea
 
 `room-service` makes the header **mandatory** for add-member requests too — no fallback.
 
-### 2. Deterministic subscription IDs
+### 2. Subscription IDs use `GenerateUUIDv7()`
 
-Switch `processAddMembers` from `idgen.GenerateID()` to:
+Switch `processAddMembers` from `idgen.GenerateID()` to `idgen.GenerateUUIDv7()`, consistent with the established convention for `Subscription._id`. The same applies to `inbox-worker.handleMemberAdded` for cross-site sub IDs.
 
-```go
-sub.ID = idgen.MessageIDFromRequestID(requestID, "sub:" + account)
-```
-
-Same as create-room. Deterministic IDs make JetStream redelivery a duplicate-key no-op instead of a double-insert.
-
-The same change applies to `inbox-worker.handleMemberAdded` for the cross-site sub IDs.
+Idempotency on JetStream redelivery is provided by the unique compound index `(roomId, u.account)` on the `subscriptions` collection — duplicate-key on that index is treated as success-on-redelivery.
 
 ### 3. Populate `Subscription.Name` and `Subscription.RoomType`
 
@@ -1389,7 +1406,27 @@ type MemberAddEvent struct {
 
 This is a backward-additive change. Old events without `RoomName` would produce empty `Subscription.Name` on the remote side; given that PR #131 has not yet shipped and add-member is the only consumer, we can safely roll this out as a single deployment with create-room.
 
-### 4. Async-job notification on completion
+### 4. History timestamp fallback for `"none"` history config
+
+When the add-members request specifies a history config of `"none"` (new members should not see history before joining), the config carries an optional `since` timestamp. If that timestamp is nil or absent, fall back to `time.Now().UTC()` so `Subscription.HistorySharedSince` is always populated when the intent is to restrict history:
+
+```go
+// inside processAddMembers, when building each sub:
+if req.HistoryConfig == "none" {
+    since := acceptedAt  // acceptedAt = time.UnixMilli(req.Timestamp).UTC()
+    if req.HistorySharedSince != nil {
+        since = time.UnixMilli(*req.HistorySharedSince).UTC()
+    }
+    sub.HistorySharedSince = &since
+}
+// if HistoryConfig != "none", leave HistorySharedSince nil (full history access)
+```
+
+The same fallback applies when constructing `MemberAddEvent.HistorySharedSince` for the outbox: if the config is `"none"` and no timestamp was in the request, the outbox event carries `time.Now().UnixMilli()` so `inbox-worker.handleMemberAdded` on remote sites also sets a non-nil `HistorySharedSince`.
+
+On the inbox-worker side, if `evt.HistorySharedSince` is non-nil, use it as-is (the home site already applied the fallback).
+
+### 5. Async-job notification on completion
 
 At the end of `processAddMembers` (success and permanent-error paths), publish an `AsyncJobResult` to `subject.UserResponse(req.RequesterAccount)`:
 
@@ -1629,15 +1666,19 @@ Mock store. Add test cases for `handleRoomCreated`:
 
 Existing `add-member` unit tests gain new assertions:
 
-- Subscription IDs are derived deterministically via `MessageIDFromRequestID(requestID, "sub:"+account)`.
+- Subscription IDs are `idgen.GenerateUUIDv7()` (32-char hex, no hyphens).
 - New subs have `Name == room.Name`.
 - AsyncJobResult{ok} fires on success; AsyncJobResult{error} fires on permanent error.
 - Missing `X-Request-ID` header now rejects.
 - `MemberAddEvent` cross-site outbox carries `RoomName`.
+- History config `"none"`, timestamp provided → `sub.HistorySharedSince == provided value`.
+- History config `"none"`, timestamp absent → `sub.HistorySharedSince` is set to approximately `now` (non-nil, within a few seconds of the test start).
+- History config absent (not `"none"`) → `sub.HistorySharedSince` is nil regardless.
 
 `inbox-worker.handleMemberAdded` tests:
 
 - New subs created from a remote `member_added` event have `Name == event.RoomName`.
+- When `evt.HistorySharedSince` is non-nil, sub's `HistorySharedSince` equals that value.
 
 ### Coverage targets
 

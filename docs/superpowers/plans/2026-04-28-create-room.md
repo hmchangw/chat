@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-04-28-create-room-design.md`
 
-**Hard prerequisite:** PR #131 ("idgen rework") merged. This plan assumes `idgen.GenerateUUIDv7`, `idgen.BuildDMRoomID`, `idgen.MessageIDFromRequestID`, `natsutil.NewMsg`, `natsutil.RequestIDFromContext`, `natsrouter` request-ID middleware, and `subject.UserResponse` / `model.AsyncJobResult` are all in `main`.
+**Foundation:** PR #131 ("idgen rework") is merged. `idgen.GenerateUUIDv7`, `idgen.BuildDMRoomID`, `idgen.MessageIDFromRequestID`, `natsutil.NewMsg`, `natsutil.RequestIDFromContext`, `natsrouter` request-ID middleware, and `subject.UserResponse` / `model.AsyncJobResult` are all available in `main`.
 
 ---
 
@@ -1274,7 +1274,7 @@ git commit -m "room-worker: require X-Request-ID in processAddMembers"
 
 ---
 
-### Task 13: Deterministic subscription IDs in `processAddMembers`
+### Task 13: Switch subscription IDs to `GenerateUUIDv7()` in `processAddMembers`
 
 **Files:**
 - Modify: `room-worker/handler.go`
@@ -1291,9 +1291,9 @@ Confirm `processAddMembers` currently uses `idgen.GenerateID()` for `Subscriptio
 Append to `room-worker/handler_test.go`:
 
 ```go
-func TestProcessAddMembersDeterministicSubIDs(t *testing.T) {
+func TestProcessAddMembersSubIDsAreUUIDv7(t *testing.T) {
 	h, mocks := newTestHandler(t)
-	const reqID = "0193abcd0193abcd0193abcd0193abcd"
+	const reqID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	expectAddMembersHappyPath(t, mocks, []string{"bob", "carol"}) // helper sketched below
@@ -1305,8 +1305,10 @@ func TestProcessAddMembersDeterministicSubIDs(t *testing.T) {
 
 	got := captured.Args()
 	require.Len(t, got, 2)
-	assert.Equal(t, idgen.MessageIDFromRequestID(reqID, "sub:bob"), got[0].ID)
-	assert.Equal(t, idgen.MessageIDFromRequestID(reqID, "sub:carol"), got[1].ID)
+	// IDs must be 32-char hex (UUIDv7 without hyphens), non-empty, and differ from each other.
+	assert.Len(t, got[0].ID, 32)
+	assert.Len(t, got[1].ID, 32)
+	assert.NotEqual(t, got[0].ID, got[1].ID)
 }
 ```
 
@@ -1337,9 +1339,9 @@ func expectAddMembersHappyPath(t *testing.T, mocks *handlerMocks, accounts []str
 
 - [ ] **Step 3: Run — confirm failure**
 
-Run: `make test SERVICE=room-worker -- -run TestProcessAddMembersDeterministicSubIDs`
+Run: `make test SERVICE=room-worker -- -run TestProcessAddMembersSubIDsAreUUIDv7`
 
-Expected: FAIL — IDs don't match the deterministic pattern (still random `GenerateID()`).
+Expected: FAIL — IDs are 17-char base62 from old `GenerateID()`, not 32-char hex.
 
 - [ ] **Step 4: Switch the ID generation**
 
@@ -1356,16 +1358,14 @@ Replace with:
 
 ```go
 sub := &model.Subscription{
-    ID:       idgen.MessageIDFromRequestID(requestID, "sub:" + user.Account),
+    ID:       idgen.GenerateUUIDv7(),
     ...
 }
 ```
 
-`requestID` is in scope from Task 12.
-
 - [ ] **Step 5: Run — confirm pass**
 
-Run: `make test SERVICE=room-worker -- -run TestProcessAddMembersDeterministicSubIDs`
+Run: `make test SERVICE=room-worker -- -run TestProcessAddMembersSubIDsAreUUIDv7`
 
 Expected: PASS.
 
@@ -1373,7 +1373,7 @@ Expected: PASS.
 
 ```bash
 git add room-worker/handler.go room-worker/handler_test.go
-git commit -m "room-worker: deterministic sub IDs in processAddMembers"
+git commit -m "room-worker: use GenerateUUIDv7 for sub IDs in processAddMembers"
 ```
 
 ---
@@ -1449,6 +1449,125 @@ Expected: PASS for everything that was passing before.
 ```bash
 git add room-worker/handler.go room-worker/handler_test.go
 git commit -m "room-worker: populate Sub.Name + Sub.RoomType in processAddMembers"
+```
+
+---
+
+### Task 14b: History timestamp fallback in `processAddMembers`
+
+**Files:**
+- Modify: `room-worker/handler.go`
+- Test: `room-worker/handler_test.go`
+
+When the add-members request specifies history config `"none"` but omits the `since` timestamp, use `time.Now().UTC()` rather than leaving `HistorySharedSince` nil (which would grant full history access) or returning an error.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `room-worker/handler_test.go`:
+
+```go
+func TestProcessAddMembersHistoryNoneWithTimestamp(t *testing.T) {
+	h, mocks := newTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), "01970a4f-8c2d-7c9a-abcd-e0123456789f")
+
+	ts := int64(1740000000000)
+	expectAddMembersHappyPath(t, mocks, []string{"bob"})
+	captured := captureBulkSubsArg(mocks)
+	body := mustMarshalAddMembersWithHistory(t, "r1", []string{"bob"}, "none", &ts)
+
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	got := captured.Args()
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].HistorySharedSince)
+	assert.Equal(t, time.UnixMilli(ts).UTC(), *got[0].HistorySharedSince)
+}
+
+func TestProcessAddMembersHistoryNoneWithoutTimestamp(t *testing.T) {
+	h, mocks := newTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), "01970a4f-8c2d-7c9a-abcd-e0123456789f")
+
+	before := time.Now().UTC()
+	expectAddMembersHappyPath(t, mocks, []string{"bob"})
+	captured := captureBulkSubsArg(mocks)
+	body := mustMarshalAddMembersWithHistory(t, "r1", []string{"bob"}, "none", nil)
+
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	got := captured.Args()
+	require.Len(t, got, 1)
+	// HistorySharedSince must be set (non-nil) and close to now.
+	require.NotNil(t, got[0].HistorySharedSince)
+	assert.True(t, !got[0].HistorySharedSince.Before(before),
+		"HistorySharedSince should be >= time before handler ran")
+}
+
+func TestProcessAddMembersNoHistoryConfigLeavesNil(t *testing.T) {
+	h, mocks := newTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), "01970a4f-8c2d-7c9a-abcd-e0123456789f")
+
+	expectAddMembersHappyPath(t, mocks, []string{"bob"})
+	captured := captureBulkSubsArg(mocks)
+	body := mustMarshalAddMembers(t, "r1", []string{"bob"}) // no history config
+
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	got := captured.Args()
+	require.Len(t, got, 1)
+	assert.Nil(t, got[0].HistorySharedSince)
+}
+```
+
+(`mustMarshalAddMembersWithHistory` marshals an `AddMembersRequest` that includes a `HistoryConfig` and optional `HistorySharedSince` field.)
+
+- [ ] **Step 2: Run — confirm failure**
+
+Run: `make test SERVICE=room-worker -- -run "TestProcessAddMembersHistory"`
+
+Expected: FAIL — no fallback logic yet; `HistorySharedSince` is nil when timestamp is absent.
+
+- [ ] **Step 3: Implement the fallback**
+
+In `room-worker/handler.go`, in the sub-construction logic of `processAddMembers`:
+
+```go
+if req.HistoryConfig == "none" {
+    since := now  // fall back to current time
+    if req.HistorySharedSince != nil {
+        since = time.UnixMilli(*req.HistorySharedSince).UTC()
+    }
+    sub.HistorySharedSince = &since
+}
+```
+
+Apply the same fallback when populating `MemberAddEvent.HistorySharedSince` for the outbox publish:
+
+```go
+var historySharedSincePtr *int64
+if req.HistoryConfig == "none" {
+    var ts int64
+    if req.HistorySharedSince != nil {
+        ts = *req.HistorySharedSince
+    } else {
+        ts = now.UnixMilli()
+    }
+    historySharedSincePtr = &ts
+}
+```
+
+- [ ] **Step 4: Run — confirm pass**
+
+Run: `make test SERVICE=room-worker -- -run "TestProcessAddMembersHistory"`
+
+Expected: all three cases PASS.
+
+Run full suite: `make test SERVICE=room-worker`. Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add room-worker/handler.go room-worker/handler_test.go
+git commit -m "room-worker: fall back to current timestamp when history config is none but timestamp absent"
 ```
 
 ---
@@ -1753,7 +1872,7 @@ In `inbox-worker/handler.go`, in the sub-construction loop:
 
 ```go
 sub := &model.Subscription{
-    ID:       idgen.MessageIDFromRequestID(requestID, "sub:" + u.Account),
+    ID:       idgen.GenerateUUIDv7(),
     User:     model.SubscriptionUser{ID: u.ID, Account: u.Account},
     RoomID:   data.RoomID,
     SiteID:   data.SiteID,
@@ -1764,7 +1883,7 @@ sub := &model.Subscription{
 }
 ```
 
-If the existing inbox-worker hasn't switched its sub IDs to `MessageIDFromRequestID` (Task 13 is room-worker only), do that here too — the spec says both sides should be deterministic for redelivery idempotency.
+Redelivery idempotency is provided by the unique compound index `(roomId, u.account)` on the `subscriptions` collection — duplicate-key on that index is treated as success.
 
 - [ ] **Step 5: Run — confirm pass**
 
