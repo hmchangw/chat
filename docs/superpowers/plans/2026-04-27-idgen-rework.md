@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate the chat system to a four-format ID scheme — UUIDv7 (no hyphens) for entity Mongo `_id`s and request IDs, 17-char base62 for channel room IDs, sorted-user-ID concat for DM rooms, and 20-char base62 for all message IDs — and replace the existing seed-derived outbox dedup with a request-ID-based scheme.
+**Goal:** Migrate the chat system to a five-format ID scheme — UUIDv7 hex no-hyphens (32) for entity Mongo `_id`s, hyphenated UUID (36) for HTTP/NATS request IDs, 17-char base62 for channel room IDs, sorted-user-ID concat for DM rooms, and 20-char base62 for new message IDs (validator accepts the legacy 17-char form for backward compatibility) — and replace the existing seed-derived outbox dedup with a request-ID-based scheme.
 
 **Tech Stack:** Go 1.25, `crypto/rand`, `encoding/hex`, `github.com/google/uuid` v1.6.0 (already in `go.mod`).
 
@@ -13,6 +13,7 @@
 | **Part 1: Foundation** | Extend `pkg/idgen` with new generators and validator. No call sites change. | `pkg/idgen/` |
 | **Part 2: Request-ID Propagation** | Add `pkg/natsutil` request-ID helpers; every outbound publish stamps `X-Request-ID`; every consumer extracts it into `context.Context`. Logging-only — no dedup changes. | `pkg/natsutil/`, `pkg/natsrouter/`, `auth-service/`, every service's `main.go` publish wrapper, every worker's JetStream consumer callback. |
 | **Part 3: ID Format Cutover** | Switch entity ID generation, channel/DM room logic, request ID format, message-gatekeeper validation. Mint system message IDs via `idgen.MessageIDFromRequestID(seed, suffix)` (deterministic from the propagated request ID, with a payload-derived fallback for partial-deployment safety). Replace seed-derived outbox dedup with `requestID + ":" + destSiteID`. Delete `idgen.DeriveID`. | `room-service`, `room-worker`, `inbox-worker`, `message-worker`, `message-gatekeeper`, `pkg/idgen/`, `auth-service/middleware.go`, `pkg/natsrouter/middleware.go`. |
+| **Part 4: Post-Review Format Refinements** | Split request-ID format from Mongo `_id` format (request IDs become 36-char hyphenated UUIDs aligned with the frontend / industry standard); loosen `IsValidMessageID` to accept either 17 or 20 char base62 (backward compat with pre-cutover messages). Mongo entity `_id`s remain 32-char hex no-hyphens. | `pkg/idgen/`, `pkg/natsrouter/middleware.go`, `auth-service/middleware.go`, related test fixtures. |
 
 **ID format matrix (final state):**
 
@@ -23,9 +24,10 @@
 | ThreadRoom / ThreadSubscription `_id` | UUIDv7 hex, no hyphens | 32 | `idgen.GenerateUUIDv7()` |
 | Channel Room `_id` | base62 random | 17 | `idgen.GenerateID()` |
 | DM Room `_id` | sorted concat of two `user.ID` | ~34 | `idgen.BuildDMRoomID(a, b)` |
-| Message `_id` (user) | base62 random, **client-supplied** | 20 | client; validated via `idgen.IsValidMessageID` |
+| Message `_id` (user, new) | base62 random, **client-supplied** | 20 | client; validated via `idgen.IsValidMessageID` (accepts 17 or 20) |
+| Message `_id` (user, legacy) | base62 random, **client-supplied** | 17 | pre-cutover writes; validator still accepts |
 | Message `_id` (system) | base62 deterministic from request ID + suffix | 20 | `idgen.MessageIDFromRequestID(seed, suffix)` |
-| Request ID (HTTP + NATS) | UUIDv7 hex, no hyphens | 32 | `idgen.GenerateUUIDv7()` (only at system entry points) |
+| Request ID (HTTP + NATS) | hyphenated UUID (v7 minted, v4 also accepted) | 36 | `idgen.GenerateRequestID()` (only at system entry points); inbound validated via `idgen.IsValidUUID` |
 
 **`Nats-Msg-Id` rules (final state):**
 - Canonical message publishes (user + system) → `WithMsgID(msg.ID)`. The receiving site's `inbox-worker` does not create a canonical replica; cross-site users see the message via the broadcast subject routed through the NATS supercluster, so no second canonical publish (and no `MessageID` field on cross-site events).
@@ -3055,6 +3057,202 @@ Expected: green.
   4. Part 3.5–3.6 (room-worker dedup mechanism switch) — coordinate with monitoring, since this is the first task with a real correctness impact under partial deployment
   5. Part 3.7–3.10 (cleanup)
 
+---
 
+# Part 4: Post-Review Format Refinements
 
+**Goal:** Apply two reviewer-requested format adjustments without disturbing the rest of the implementation:
 
+1. **Decouple request-ID format from Mongo `_id` format.** The 32-char hex no-hyphens form was originally chosen as a single shared scheme. The review feedback is that request IDs are an externally-visible boundary value (carried in `X-Request-ID` HTTP/NATS headers, surfaced in logs, originated by frontend code) and should match the industry-standard 36-char hyphenated UUID. Mongo entity `_id`s keep the compact form because the savings compound at storage scale. Inbound validation accepts any standard UUID (v4 or v7 hyphenated, case-insensitive).
+2. **Loosen `IsValidMessageID` to accept either 17 or 20 char base62.** Pre-cutover messages are 17-char and continue to flow through federation replays / JetStream redeliveries / historical reads. New writes still produce 20-char (entropy headroom for `MessageIDFromRequestID`).
+
+**Architecture:**
+- Add `idgen.GenerateRequestID()` — emits a UUIDv7 in standard hyphenated form (uses `github.com/google/uuid` v1.6.0 already in `go.mod`).
+- Add `idgen.IsValidUUID(s)` — accepts any valid hyphenated UUID (length 36, hyphens at indices 8/13/18/23, hex elsewhere — case-insensitive). No version-bit check; this is the request-ID validator. The strict `IsValidUUIDv7` stays available for entity-`_id` validation paths if needed.
+- Modify `idgen.IsValidMessageID(s)` — accept length 17 OR 20 (base62 alphabet check unchanged).
+- Update `auth-service/middleware.go` and `pkg/natsrouter/middleware.go` to call the new generator + validator. No structural change, just function-name swaps.
+- Update test fixtures that hardcoded 32-char no-hyphen UUIDv7 strings to the new 36-char hyphenated form.
+
+**Scope:**
+- Modify: `pkg/idgen/idgen.go` — add `GenerateRequestID`, add `IsValidUUID`, loosen `IsValidMessageID`.
+- Modify: `pkg/idgen/idgen_test.go` — tests for the new functions; loosen the `IsValidMessageID` test to cover both lengths.
+- Modify: `pkg/natsrouter/middleware.go` — swap `idgen.GenerateUUIDv7` → `idgen.GenerateRequestID`; swap `idgen.IsValidUUIDv7` → `idgen.IsValidUUID`.
+- Modify: `auth-service/middleware.go` — same two swaps.
+- Modify: test fixtures in `pkg/natsrouter/`, `pkg/natsutil/`, `auth-service/` — replace hardcoded 32-char hex with 36-char hyphenated form.
+
+## Task 4.1: Extend `pkg/idgen` with `GenerateRequestID` + `IsValidUUID`; loosen `IsValidMessageID`
+
+**TDD: Write failing tests first.**
+
+- [ ] **Step 1: Add tests to `pkg/idgen/idgen_test.go`**
+
+```go
+func TestGenerateRequestID_LengthAndShape(t *testing.T) {
+	id := idgen.GenerateRequestID()
+	assert.Len(t, id, 36, "request ID is hyphenated UUID (36 chars)")
+	assert.True(t, idgen.IsValidUUID(id), "GenerateRequestID output must satisfy IsValidUUID")
+	// Hyphens at canonical positions
+	assert.Equal(t, byte('-'), id[8])
+	assert.Equal(t, byte('-'), id[13])
+	assert.Equal(t, byte('-'), id[18])
+	assert.Equal(t, byte('-'), id[23])
+	// Version nibble at position 14 = '7'
+	assert.Equal(t, byte('7'), id[14])
+}
+
+func TestIsValidUUID(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"valid v4", "550e8400-e29b-41d4-a716-446655440000", true},
+		{"valid v7", "01970a4f-8c2d-7c9a-abcd-e0123456789f", true},
+		{"uppercase", "01970A4F-8C2D-7C9A-ABCD-E0123456789F", true},
+		{"empty", "", false},
+		{"missing hyphens", "01970a4f8c2d7c9aabcde0123456789f", false},
+		{"wrong length (35)", "01970a4f-8c2d-7c9a-abcd-e0123456789", false},
+		{"wrong length (37)", "01970a4f-8c2d-7c9a-abcd-e0123456789ff", false},
+		{"non-hex", "01970a4f-8c2d-7c9a-abcd-e012345678gz", false},
+		{"hyphen in wrong place", "01970a4f8-c2d-7c9a-abcd-e0123456789f", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, idgen.IsValidUUID(tc.in))
+		})
+	}
+}
+
+func TestIsValidMessageID_AcceptsBothLengths(t *testing.T) {
+	// 17-char legacy and 20-char current both pass; other lengths reject.
+	assert.True(t, idgen.IsValidMessageID("AbCdEfGhIjKlMnOpQ"), "17-char base62 (legacy)")
+	assert.True(t, idgen.IsValidMessageID("AbCdEfGhIjKlMnOpQrSt"), "20-char base62 (new)")
+	assert.False(t, idgen.IsValidMessageID("AbCdEfGhIjKlMnOpQr"), "18-char rejected")
+	assert.False(t, idgen.IsValidMessageID("AbCdEfGhIjKlMnOpQrS"), "19-char rejected")
+	assert.False(t, idgen.IsValidMessageID("AbCdEfGhIjKlMnOpQrStU"), "21-char rejected")
+}
+```
+
+The pre-existing `TestIsValidMessageID` table is amended: the `"17-char base62 (legacy)"` row's expected value flips from `false` to `true`.
+
+**Implementation:**
+
+- [ ] **Step 2: In `pkg/idgen/idgen.go`, add `GenerateRequestID` and `IsValidUUID`; loosen `IsValidMessageID`.**
+
+```go
+// GenerateRequestID returns a fresh UUIDv7 in standard hyphenated form (36 chars,
+// e.g. "01970a4f-8c2d-7c9a-abcd-e0123456789f"). Used at HTTP/NATS entry points to
+// mint X-Request-ID values when no inbound header is present. The hyphenated form
+// matches the industry-standard UUID representation that frontends and tools expect.
+func GenerateRequestID() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		panic(fmt.Errorf("uuid.NewV7: %w", err))
+	}
+	return id.String()
+}
+
+// IsValidUUID reports whether s is a valid hyphenated UUID (any version).
+// Accepts both v4 and v7 in either case. Used to validate inbound X-Request-ID
+// headers — we don't care which UUID scheme the caller used, only that the
+// shape is well-formed.
+func IsValidUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !isHex(byte(c)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+```
+
+Loosen `IsValidMessageID`:
+
+```go
+func IsValidMessageID(s string) bool {
+	if len(s) != messageIDLength && len(s) != legacyMessageIDLength {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			return false
+		}
+	}
+	return true
+}
+```
+
+Add `legacyMessageIDLength = 17` next to `messageIDLength = 20` in the constant block, with a comment explaining it's only honored on the read/validate side — generation always emits `messageIDLength`.
+
+- [ ] **Step 3: Run `make test SERVICE=pkg/idgen` (via `go test ./pkg/idgen/...`); confirm all green.**
+
+## Task 4.2: Swap call sites in middleware
+
+- [ ] **Step 1: `auth-service/middleware.go`** — replace `idgen.GenerateUUIDv7()` with `idgen.GenerateRequestID()`; replace `idgen.IsValidUUIDv7(id)` with `idgen.IsValidUUID(id)`.
+- [ ] **Step 2: `pkg/natsrouter/middleware.go`** — same two swaps.
+- [ ] **Step 3: Update test fixtures.** Hardcoded literals like `01893f8b1c4a7000abcdef0123456789` (32-char no-hyphen) must become hyphenated 36-char form (e.g. `01893f8b-1c4a-7000-abcd-ef0123456789`). Search command:
+
+```sh
+grep -rn "01893f8b1c4a7000abcdef0123456789\|from-header\|auth-svc-test-id" pkg/ auth-service/
+```
+
+For each hit, swap to a valid hyphenated UUID literal (any will do; the validator only checks shape). Tests for the strict v7 check on `IsValidUUIDv7` (if any remain in `pkg/idgen/idgen_test.go`) stay as-is — that function is preserved for entity-`_id` validation.
+
+- [ ] **Step 4: Run unit tests for the affected packages.**
+
+```sh
+go test ./pkg/idgen/... ./pkg/natsutil/... ./pkg/natsrouter/... ./auth-service/...
+```
+
+## Task 4.3: Verify + commit
+
+- [ ] **Step 1: `make lint`** — must pass.
+- [ ] **Step 2: `make test`** — full suite must pass.
+- [ ] **Step 3: Commit.**
+
+```sh
+git commit -m "feat(idgen): hyphenated request IDs; accept legacy 17-char message IDs
+
+Implements the Part 4 refinements:
+
+- GenerateRequestID: 36-char hyphenated UUIDv7 for HTTP/NATS X-Request-ID
+- IsValidUUID: accepts any hyphenated UUID (v4 or v7), case-insensitive
+- IsValidMessageID: now accepts 17 or 20 char base62 (backward compat)
+- Mongo _id generation (GenerateUUIDv7) is unchanged at 32-char no-hyphens
+- Middleware swaps in auth-service + pkg/natsrouter
+- Test fixtures updated to hyphenated form
+
+Aligns the request-ID boundary with the industry-standard hyphenated UUID
+format and the existing frontend convention. The compact 32-char form is
+preserved for Mongo entity primary keys where storage savings compound."
+```
+
+## Part 4 Self-Review Checklist
+
+1. **Generators split cleanly.** `GenerateUUIDv7` continues to emit 32-char no-hyphens for Mongo `_id`s; `GenerateRequestID` emits 36-char hyphenated for X-Request-ID. No call site uses the wrong one.
+2. **Validators tolerant in the right places.** `IsValidUUID` accepts any standard hyphenated UUID (request ID boundary). `IsValidMessageID` accepts both 17 and 20 char base62 (federation/replay safety). `IsValidUUIDv7` (strict) is still available if any path needs to assert the v7 shape on a 32-char hex input.
+3. **Wire/storage impact is bounded.** Request ID grows by 4 bytes per header / log line. Outbox dedup ID grows from ~42 to ~46 bytes per entry in NATS dedup window. Mongo `_id`s unchanged.
+4. **No dedup correctness regression.** Within a single logical request, the request-ID byte string is captured once and propagated verbatim — JetStream byte-exact dedup, `MessageIDFromRequestID` SHA-256 derivation, and outbox `<requestID>:<destSiteID>` concat all remain stable across retries.
+5. **Test fixtures consistent.** Every hardcoded request-ID literal uses the new hyphenated form. The validator no longer rejects strings the generator produces.
+
+## What's NOT in Part 4
+
+- No change to Mongo entity `_id` format, generator, or validator.
+- No change to `MessageIDFromRequestID` derivation logic — input format change is transparent to SHA-256.
+- No change to outbox dedup format — still `<requestID>:<destSiteID>`, just slightly longer.
+- No client-side coordination needed — frontends already emit hyphenated UUIDs.
