@@ -1627,4 +1627,239 @@ git commit -m "message-worker: wire JetStream publish closure with Nats-Msg-Id"
 
 ---
 
-<!-- end-of-chunk-4 -->
+## Task 10: Inbox-worker dispatch case for `thread_subscription_upserted`
+
+Inbox-worker needs to recognize the new event type, decode the payload, and call a new store method. This task adds the interface method, the dispatch case, the handler function, and unit-test coverage. The Mongo implementation comes in Task 11.
+
+**Files:**
+- Modify: `inbox-worker/handler.go` (extend `InboxStore` interface; add dispatch case + handler)
+- Modify: `inbox-worker/handler_test.go` (extend `stubInboxStore`; new dispatch tests)
+
+- [ ] **Step 10.1: Extend the `InboxStore` interface**
+
+In `inbox-worker/handler.go`, add `UpsertThreadSubscription` to the interface:
+
+```go
+// InboxStore abstracts the data store operations needed by the inbox worker.
+type InboxStore interface {
+	CreateSubscription(ctx context.Context, sub *model.Subscription) error
+	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
+	UpsertRoom(ctx context.Context, room *model.Room) error
+	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
+	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
+	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
+	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
+}
+```
+
+- [ ] **Step 10.2: Extend `stubInboxStore` with thread-subscription support**
+
+In `inbox-worker/handler_test.go`, extend `stubInboxStore`:
+
+Add a field to the struct (after `users`):
+
+```go
+	threadSubs []model.ThreadSubscription
+```
+
+Add a method (anywhere among the other stub methods):
+
+```go
+func (s *stubInboxStore) UpsertThreadSubscription(_ context.Context, sub *model.ThreadSubscription) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.threadSubs {
+		if s.threadSubs[i].ThreadRoomID == sub.ThreadRoomID && s.threadSubs[i].UserID == sub.UserID {
+			// Monotonic hasMention merge — never clear true→false.
+			if sub.HasMention {
+				s.threadSubs[i].HasMention = true
+			}
+			s.threadSubs[i].UpdatedAt = sub.UpdatedAt
+			return nil
+		}
+	}
+	s.threadSubs = append(s.threadSubs, *sub)
+	return nil
+}
+
+func (s *stubInboxStore) getThreadSubs() []model.ThreadSubscription {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]model.ThreadSubscription, len(s.threadSubs))
+	copy(cp, s.threadSubs)
+	return cp
+}
+```
+
+- [ ] **Step 10.3: Write the failing dispatch tests**
+
+Append to `inbox-worker/handler_test.go`:
+
+```go
+func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	sub := model.ThreadSubscription{
+		ID:              "sub-1",
+		ParentMessageID: "pm-1",
+		RoomID:          "r1",
+		ThreadRoomID:    "tr-1",
+		UserID:          "u-bob",
+		UserAccount:     "bob",
+		SiteID:          "site-b",
+		HasMention:      false,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	subData, err := json.Marshal(sub)
+	require.NoError(t, err)
+
+	evt := model.OutboxEvent{
+		Type:       "thread_subscription_upserted",
+		SiteID:     "site-a",
+		DestSiteID: "site-b",
+		Payload:    subData,
+		Timestamp:  now.UnixMilli(),
+	}
+	evtData, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(context.Background(), evtData))
+
+	got := store.getThreadSubs()
+	require.Len(t, got, 1)
+	assert.Equal(t, sub, got[0])
+	assert.Empty(t, pub.getRecords(), "no client-facing publish on thread sub upsert")
+}
+
+func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	mentionSub := model.ThreadSubscription{
+		ID: "sub-1", ParentMessageID: "pm-1", RoomID: "r1", ThreadRoomID: "tr-1",
+		UserID: "u-bob", UserAccount: "bob", SiteID: "site-b",
+		HasMention: true, CreatedAt: now, UpdatedAt: now,
+	}
+	mentionData, _ := json.Marshal(mentionSub)
+	mentionEvt, _ := json.Marshal(model.OutboxEvent{
+		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: mentionData, Timestamp: now.UnixMilli(),
+	})
+	require.NoError(t, h.HandleEvent(context.Background(), mentionEvt))
+
+	// Second event for same (threadRoomID, userID) with HasMention=false must NOT clear it.
+	plainSub := mentionSub
+	plainSub.HasMention = false
+	plainSub.UpdatedAt = now.Add(time.Minute)
+	plainData, _ := json.Marshal(plainSub)
+	plainEvt, _ := json.Marshal(model.OutboxEvent{
+		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: plainData, Timestamp: plainSub.UpdatedAt.UnixMilli(),
+	})
+	require.NoError(t, h.HandleEvent(context.Background(), plainEvt))
+
+	got := store.getThreadSubs()
+	require.Len(t, got, 1)
+	assert.True(t, got[0].HasMention, "hasMention must remain true after a non-mention event")
+}
+
+func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
+	store := &stubInboxStore{}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	evt := model.OutboxEvent{
+		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: []byte("not json"),
+	}
+	evtData, _ := json.Marshal(evt)
+
+	require.Error(t, h.HandleEvent(context.Background(), evtData))
+	assert.Empty(t, store.getThreadSubs())
+}
+
+func TestHandleEvent_ThreadSubscriptionUpserted_StoreError(t *testing.T) {
+	store := &errorThreadSubStore{stubInboxStore: &stubInboxStore{}}
+	pub := &mockPublisher{}
+	h := NewHandler(store, pub)
+
+	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	sub := model.ThreadSubscription{
+		ID: "sub-1", ThreadRoomID: "tr-1", UserID: "u-bob", SiteID: "site-b",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	subData, _ := json.Marshal(sub)
+	evtData, _ := json.Marshal(model.OutboxEvent{
+		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
+		Payload: subData, Timestamp: now.UnixMilli(),
+	})
+
+	err := h.HandleEvent(context.Background(), evtData)
+	require.Error(t, err)
+}
+
+type errorThreadSubStore struct {
+	*stubInboxStore
+}
+
+func (s *errorThreadSubStore) UpsertThreadSubscription(_ context.Context, _ *model.ThreadSubscription) error {
+	return fmt.Errorf("boom")
+}
+```
+
+- [ ] **Step 10.4: Run tests to verify they fail**
+
+Run: `make test SERVICE=inbox-worker -run TestHandleEvent_ThreadSubscriptionUpserted`
+
+Expected: compile error or unknown-event-type warn (handler.go has no case for the new type yet).
+
+- [ ] **Step 10.5: Add the dispatch case + handler**
+
+In `inbox-worker/handler.go`, add a new case in the `switch evt.Type` block of `HandleEvent`:
+
+```go
+	case "thread_subscription_upserted":
+		return h.handleThreadSubscriptionUpserted(ctx, &evt)
+```
+
+Then append the handler function (after `handleRoleUpdated`):
+
+```go
+// handleThreadSubscriptionUpserted upserts a ThreadSubscription on the local
+// site when message-worker on another site reports that a user (parent author,
+// replier, or mentionee) is participating in a thread. The Mongo store layer
+// is responsible for the monotonic hasMention merge — see store impl.
+func (h *Handler) handleThreadSubscriptionUpserted(ctx context.Context, evt *model.OutboxEvent) error {
+	var sub model.ThreadSubscription
+	if err := json.Unmarshal(evt.Payload, &sub); err != nil {
+		return fmt.Errorf("unmarshal thread_subscription_upserted payload: %w", err)
+	}
+	if err := h.store.UpsertThreadSubscription(ctx, &sub); err != nil {
+		return fmt.Errorf("upsert thread subscription (threadRoomID %q, userID %q): %w",
+			sub.ThreadRoomID, sub.UserID, err)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 10.6: Run tests to verify they pass**
+
+Run: `make test SERVICE=inbox-worker`
+
+Expected: pass.
+
+- [ ] **Step 10.7: Commit**
+
+```bash
+git add inbox-worker/handler.go inbox-worker/handler_test.go
+git commit -m "inbox-worker: dispatch thread_subscription_upserted to UpsertThreadSubscription"
+```
+
+---
+
+<!-- end-of-chunk-5a -->
