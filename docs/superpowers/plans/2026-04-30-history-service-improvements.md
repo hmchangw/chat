@@ -1069,3 +1069,46 @@ git commit -m "refactor(history-service): make casMaxRetries configurable per re
 ```
 
 ---
+
+## Task 8: TODO comment on the pinned-table edit/delete helpers
+
+**Why:** The pinned-table UPDATE in edit/delete uses `*msg.PinnedAt` as the clustering-key value. Per the project docs, no pin/unpin operation exists in the codebase today — these branches are dead code retained for future correctness. When a real pin/unpin ships, `msg.PinnedAt` (read from `messages_by_id`) could be stale relative to the actual `pinned_messages_by_room` row's clustering key (an unpin-then-repin would leave a row at a different timestamp), and the UPDATE would silently no-op. Flag this now while the affected code is in front of us, so a future implementer of pin/unpin sees the constraint.
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/write.go` (add TODO comment on the pinned helpers)
+
+- [ ] **Step 1: Add the TODO comment above `editInPinnedMessagesByRoom`**
+
+In `history-service/internal/cassrepo/write.go`, immediately above `func (r *Repository) editInPinnedMessagesByRoom(...)` (around line 66), insert:
+
+```go
+// TODO(pin-feature): When a real pin/unpin operation ships, this helper's
+// invariant — msg.PinnedAt matches the clustering key of the live
+// pinned_messages_by_room row — must be re-verified. An unpin-then-repin
+// flow would create a new row at a later pinned_at while messages_by_id
+// still references the older value (until the pin op updates it),
+// causing this UPDATE to silently no-op. The same constraint applies to
+// deleteInPinnedMessagesByRoom below.
+```
+
+- [ ] **Step 2: Verify only that comment was added**
+
+Run:
+```bash
+git diff history-service/internal/cassrepo/write.go
+```
+Expected: a single insertion of the comment block — no other changes.
+
+- [ ] **Step 3: Run lint and tests to confirm comment-only**
+
+Run: `make lint && make test SERVICE=history-service`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add history-service/internal/cassrepo/write.go
+git commit -m "docs(history-service): TODO on pinned-table helpers for future pin/unpin"
+```
+
+---
