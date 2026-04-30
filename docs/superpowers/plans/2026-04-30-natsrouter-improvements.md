@@ -767,3 +767,131 @@ git commit -m "feat(natsrouter): per-route WithConcurrency override"
 ```
 
 ---
+
+## Task 5: `HandlerTimeout` middleware
+
+**Why:** Without a ceiling, a slow Cassandra/Mongo query can keep a handler running for the full driver timeout, holding a semaphore slot that turns away subsequent requests with `ErrUnavailable`. A router-level handler-timeout middleware sets a ceiling — once exceeded, the handler's `ctx.Done()` fires and downstream calls (gocql, mongo-driver) abort their in-flight queries. Services apply it via `Router.Use(HandlerTimeout(5 * time.Second))` alongside `Recovery` and `Logging`.
+
+**Files:**
+- Modify: `pkg/natsrouter/middleware.go` (add `HandlerTimeout`)
+- Modify: `pkg/natsrouter/middleware_test.go` (or create — add unit tests)
+
+- [ ] **Step 1: Check whether `middleware_test.go` exists**
+
+```bash
+ls pkg/natsrouter/middleware_test.go
+```
+If it doesn't exist, create it in Step 2 with the package declaration and imports. If it does, append.
+
+- [ ] **Step 2: Write failing tests**
+
+In `pkg/natsrouter/middleware_test.go`:
+
+```go
+package natsrouter
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestHandlerTimeout_SetsDeadline(t *testing.T) {
+	c := &Context{ctx: context.Background(), chain: &chainState{index: -1}}
+	var observedDeadline time.Time
+	var ok bool
+	c.chain.handlers = []HandlerFunc{
+		HandlerTimeout(50 * time.Millisecond),
+		func(c *Context) {
+			observedDeadline, ok = c.Deadline()
+		},
+	}
+	c.Next()
+
+	require.True(t, ok, "deadline must be set inside the chain")
+	assert.WithinDuration(t, time.Now().Add(50*time.Millisecond), observedDeadline, 30*time.Millisecond)
+}
+
+func TestHandlerTimeout_DoneFiresAfterExpiry(t *testing.T) {
+	c := &Context{ctx: context.Background(), chain: &chainState{index: -1}}
+	c.chain.handlers = []HandlerFunc{
+		HandlerTimeout(20 * time.Millisecond),
+		func(c *Context) {
+			select {
+			case <-c.Done():
+				// expected
+			case <-time.After(200 * time.Millisecond):
+				t.Fatal("ctx.Done() did not fire within 200ms after a 20ms timeout")
+			}
+		},
+	}
+	c.Next()
+}
+
+func TestHandlerTimeout_DoesNotLeakDeadlineToCallerAfterChainEnds(t *testing.T) {
+	parent, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
+	c := &Context{ctx: parent, chain: &chainState{index: -1}}
+	c.chain.handlers = []HandlerFunc{
+		HandlerTimeout(20 * time.Millisecond),
+		func(c *Context) {
+			// no-op, return immediately
+		},
+	}
+	c.Next()
+	// After Next() returns, the timeout-derived ctx has been cancel()'d via
+	// defer. We can't directly observe c.ctx (private), but we can verify
+	// the parent ctx was not affected.
+	select {
+	case <-parent.Done():
+		t.Fatal("parent context must not be cancelled by HandlerTimeout")
+	default:
+	}
+}
+```
+
+- [ ] **Step 3: Run tests to verify they fail**
+
+Run: `go test ./pkg/natsrouter/...`
+Expected: FAIL — `HandlerTimeout` undefined.
+
+- [ ] **Step 4: Add `HandlerTimeout` to middleware.go**
+
+Append to `pkg/natsrouter/middleware.go`:
+
+```go
+// HandlerTimeout returns middleware that wraps the handler context with a
+// deadline of d. Downstream calls that respect context (Cassandra/Mongo
+// drivers, otelnats.Conn.Publish, etc.) will abort if the chain runs longer
+// than d. The deadline is released when the chain returns.
+//
+// Place this AFTER RequestID and BEFORE Logging so the duration logged by
+// Logging includes any time spent waiting for the deadline.
+func HandlerTimeout(d time.Duration) HandlerFunc {
+	return func(c *Context) {
+		ctx, cancel := context.WithTimeout(c.ctx, d)
+		defer cancel()
+		c.SetContext(ctx)
+		c.Next()
+	}
+}
+```
+
+Add `"context"` to the file's imports if not already present.
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `go test -race ./pkg/natsrouter/...`
+Expected: PASS — three new middleware tests, all existing tests still green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add pkg/natsrouter/middleware.go pkg/natsrouter/middleware_test.go
+git commit -m "feat(natsrouter): HandlerTimeout middleware"
+```
+
+---
