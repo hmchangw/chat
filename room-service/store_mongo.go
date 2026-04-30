@@ -14,6 +14,7 @@ import (
 )
 
 type MongoStore struct {
+	db            *mongo.Database
 	rooms         *mongo.Collection
 	subscriptions *mongo.Collection
 	roomMembers   *mongo.Collection
@@ -22,6 +23,7 @@ type MongoStore struct {
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{
+		db:            db,
 		rooms:         db.Collection("rooms"),
 		subscriptions: db.Collection("subscriptions"),
 		roomMembers:   db.Collection("room_members"),
@@ -67,6 +69,32 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 		Keys: bson.D{{Key: "sectId", Value: 1}, {Key: "account", Value: 1}},
 	}); err != nil {
 		return fmt.Errorf("ensure users (sectId,account) index: %w", err)
+	}
+	// Lookup index for botDM creation: GetApp filters by assistant.name.
+	appsIndex := mongo.IndexModel{
+		Keys:    bson.D{{Key: "assistant.name", Value: 1}},
+		Options: options.Index().SetName("assistant_name_idx"),
+	}
+	if _, err := s.db.Collection("apps").Indexes().CreateOne(ctx, appsIndex); err != nil {
+		return fmt.Errorf("ensure apps index: %w", err)
+	}
+
+	// Partial index for FindDMSubscription: matches only DM/botDM subs.
+	// Restricting via partialFilterExpression keeps the index small.
+	dmDedupIndex := mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "u.account", Value: 1},
+			{Key: "name", Value: 1},
+			{Key: "roomType", Value: 1},
+		},
+		Options: options.Index().
+			SetName("u_account_name_roomtype_dm_idx").
+			SetPartialFilterExpression(bson.M{
+				"roomType": bson.M{"$in": bson.A{model.RoomTypeDM, model.RoomTypeBotDM}},
+			}),
+	}
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, dmDedupIndex); err != nil {
+		return fmt.Errorf("ensure dm-dedup subscription index: %w", err)
 	}
 	return nil
 }
@@ -565,6 +593,46 @@ func (s *MongoStore) attachUserDisplayNames(ctx context.Context, roomID string, 
 		}
 	}
 	return nil
+}
+
+func (s *MongoStore) GetUser(ctx context.Context, account string) (*model.User, error) {
+	var u model.User
+	err := s.users.FindOne(ctx, bson.M{"account": account}).Decode(&u)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user %q: %w", account, err)
+	}
+	return &u, nil
+}
+
+func (s *MongoStore) GetApp(ctx context.Context, botAccount string) (*model.App, error) {
+	var a model.App
+	err := s.db.Collection("apps").FindOne(ctx, bson.M{"assistant.name": botAccount}).Decode(&a)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrAppNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get app for bot %q: %w", botAccount, err)
+	}
+	return &a, nil
+}
+
+func (s *MongoStore) FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error) {
+	var sub model.Subscription
+	err := s.subscriptions.FindOne(ctx, bson.M{
+		"u.account": account,
+		"name":      targetName,
+		"roomType":  bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}},
+	}).Decode(&sub)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, model.ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find dm subscription: %w", err)
+	}
+	return &sub, nil
 }
 
 // ListOrgMembers returns all users whose sectId equals orgID, projected as

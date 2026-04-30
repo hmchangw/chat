@@ -2,9 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
+)
+
+var (
+	// ErrUserNotFound is returned by store.GetUser when no users doc
+	// matches the supplied account.
+	ErrUserNotFound = errors.New("user not found")
+
+	// ErrAppNotFound is returned by store.GetApp when no apps doc
+	// matches the supplied bot account.
+	ErrAppNotFound = errors.New("app not found")
 )
 
 //go:generate mockgen -source=store.go -destination=mock_store_test.go -package=main
@@ -50,6 +61,22 @@ type RoomStore interface {
 	// as OrgMember rows sorted by account ascending. Returns errInvalidOrg
 	// when no users match (treated as "orgId is not valid").
 	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
+
+	// GetUser returns the user document by account, or ErrUserNotFound
+	// when no document matches. Used by create-room to resolve the
+	// requester and the DM/botDM counterpart.
+	GetUser(ctx context.Context, account string) (*model.User, error)
+
+	// GetApp returns the apps doc whose Assistant.Name equals
+	// botAccount, or ErrAppNotFound. Used to gate botDM creation on
+	// App.Assistant.Enabled.
+	GetApp(ctx context.Context, botAccount string) (*model.App, error)
+
+	// FindDMSubscription returns the requester's existing dm/botDM
+	// subscription whose Name == targetName, or ErrSubscriptionNotFound.
+	// The query filters on Subscription.RoomType to avoid false
+	// positives where a channel happens to be named after an account.
+	FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error)
 }
 
 // RoomKeyStore is the consumer-side interface for room encryption key lookups.
