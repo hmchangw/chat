@@ -165,11 +165,14 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 	if err != nil {
 		return fmt.Errorf("lookup parent owner site: %w", err)
 	}
+	parentSub := h.buildThreadSubscription(msg, threadRoomID, parentSender.ID, parentSender.Account, eventSiteID, now)
+	if err := h.threadStore.InsertThreadSubscription(ctx, parentSub); err != nil {
+		return fmt.Errorf("insert parent author thread subscription: %w", err)
+	}
+	// Outbox publish is gated on parentOwnerSite — if the parent user is missing
+	// from userStore, we can't route the cross-site copy, but the local Insert
+	// above is independent of that and still happens.
 	if parentOwnerSite != "" {
-		parentSub := h.buildThreadSubscription(msg, threadRoomID, parentSender.ID, parentSender.Account, eventSiteID, now)
-		if err := h.threadStore.InsertThreadSubscription(ctx, parentSub); err != nil {
-			return fmt.Errorf("insert parent author thread subscription: %w", err)
-		}
 		if err := h.publishThreadSubOutboxIfRemote(ctx, parentSub, parentOwnerSite, msg.ID); err != nil {
 			return fmt.Errorf("publish parent thread subscription outbox: %w", err)
 		}
@@ -216,11 +219,11 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 		if lookupErr != nil {
 			return "", fmt.Errorf("lookup parent owner site: %w", lookupErr)
 		}
+		parentSub := h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, eventSiteID, now)
+		if err := h.threadStore.UpsertThreadSubscription(ctx, parentSub); err != nil {
+			return "", fmt.Errorf("upsert parent author thread subscription: %w", err)
+		}
 		if parentOwnerSite != "" {
-			parentSub := h.buildThreadSubscription(msg, existingRoom.ID, parentSender.ID, parentSender.Account, eventSiteID, now)
-			if err := h.threadStore.UpsertThreadSubscription(ctx, parentSub); err != nil {
-				return "", fmt.Errorf("upsert parent author thread subscription: %w", err)
-			}
 			if err := h.publishThreadSubOutboxIfRemote(ctx, parentSub, parentOwnerSite, msg.ID); err != nil {
 				return "", fmt.Errorf("publish parent thread subscription outbox: %w", err)
 			}
@@ -375,16 +378,17 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
 	return nil
 }
 
-// outboxDedupID composes Nats-Msg-Id as base+":"+destSiteID; base is X-Request-ID
-// from ctx, falling back to payloadSeed when absent (partial-deployment safety).
-// Mirrors room-worker's helper of the same shape so cross-site dedup IDs are
-// consistent across services that publish to OUTBOX.
+// outboxDedupID composes Nats-Msg-Id as `{payloadSeed}:{destSiteID}`. The
+// payloadSeed must already encode per-publish uniqueness (here:
+// threadRoomID + userID + msg.ID) so that multiple subscriptions published
+// to the same destination from a single inbound message get distinct dedup
+// IDs. msg.ID is stable across MESSAGES_CANONICAL redeliveries, making the
+// dedup ID stable too. X-Request-ID isn't part of the result — payloadSeed
+// already gives per-publish entropy and per-redelivery stability.
 func outboxDedupID(ctx context.Context, destSiteID, payloadSeed string) string {
-	base := natsutil.RequestIDFromContext(ctx)
-	if base == "" {
-		slog.Warn("missing X-Request-ID; falling back to payload-derived outbox dedup base",
+	if natsutil.RequestIDFromContext(ctx) == "" {
+		slog.Warn("missing X-Request-ID; using payload-derived outbox dedup id",
 			"destSiteID", destSiteID)
-		base = payloadSeed
 	}
-	return base + ":" + destSiteID
+	return payloadSeed + ":" + destSiteID
 }

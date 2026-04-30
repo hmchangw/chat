@@ -926,12 +926,19 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			},
 		},
 		{
-			name:   "first reply — parent user not found in userStore — warn-and-skip parent, still inserts replier",
+			name:   "first reply — parent user not found in userStore — still inserts parent + replier locally, skips outbox",
 			msg:    msg,
 			siteID: "site-a",
 			setupMocks: func(store *MockStore, ts *MockThreadStore) {
 				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").Return(parentSender, nil)
+				// Parent insert still runs (independent of owner-site lookup) —
+				// only the cross-site outbox publish is gated on the lookup.
+				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "u-parent", sub.UserID, "parent insert must still happen on missing owner-site")
+						return nil
+					})
 			},
 			extraUserStoreSetup: func(us *MockUserStore) {
 				us.EXPECT().FindUserByID(gomock.Any(), "u-parent").
@@ -940,7 +947,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			expectReplierInsert: true,
 		},
 		{
-			name:   "subsequent reply — parent user not found in userStore — warn-and-skip parent, still upserts replier",
+			name:   "subsequent reply — parent user not found in userStore — still upserts parent + replier locally, skips parent outbox",
 			msg:    msg,
 			siteID: "site-a",
 			setupMocks: func(store *MockStore, ts *MockThreadStore) {
@@ -950,11 +957,16 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 					Return(&model.ThreadRoom{ID: "tr-existing"}, nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
 					Return(parentSender, nil)
-				// Parent upsert SKIPPED because lookupOwnerSiteID returns ("", nil).
-				// Replier upsert still runs.
+				// Parent upsert still runs (independent of owner-site lookup);
+				// only the cross-site outbox publish is gated.
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
-						assert.Equal(t, "u-replier", sub.UserID, "only replier should be upserted; parent skipped")
+						assert.Equal(t, "u-parent", sub.UserID)
+						return nil
+					})
+				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
+						assert.Equal(t, "u-replier", sub.UserID)
 						return nil
 					})
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-existing", "msg-reply", "replier", now).
