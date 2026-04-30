@@ -376,3 +376,146 @@ git commit -m "feat(natsrouter): spawn handlers with semaphore admission control
 ```
 
 ---
+
+## Task 3: Wait for in-flight handler goroutines on Shutdown
+
+**Why:** With handlers running in spawned goroutines, `sub.Drain()` followed by `SubscriptionClosed` only guarantees that the *dispatcher* has stopped — handler goroutines may still be running. Add a `WaitGroup` wait after the close signal so `Router.Shutdown` returns only when all spawned handlers have finished (or `ctx` expires).
+
+**Files:**
+- Modify: `pkg/natsrouter/router.go` (extend `Shutdown` to wait on `r.wg`)
+- Modify: `pkg/natsrouter/shutdown_test.go` (add WG-wait assertion if not already covered)
+
+- [ ] **Step 1: Inspect the existing shutdown test for guidance**
+
+Read `pkg/natsrouter/shutdown_test.go` to see the existing patterns. The integration-level test `TestIntegration_ShutdownUnderLoad` already validates that Shutdown blocks while handlers are running. With the new spawn model, that test must continue to pass — and the new WG wait is what makes it pass reliably.
+
+- [ ] **Step 2: Write a failing test that proves Shutdown waits for spawned handlers**
+
+Append to `pkg/natsrouter/integration_test.go`:
+
+```go
+// TestIntegration_ShutdownWaitsForSpawnedHandlers verifies that Shutdown
+// blocks until handler goroutines (spawned by the semaphore admission
+// model) have returned, not merely until the dispatcher has stopped.
+func TestIntegration_ShutdownWaitsForSpawnedHandlers(t *testing.T) {
+	nc := setupNATS(t)
+	r := natsrouter.New(nc, "integration-shutdown-wg", natsrouter.WithMaxConcurrency(8))
+
+	gate := make(chan struct{})
+	var completed atomic.Int64
+	natsrouter.Register(r, "wg.{id}",
+		func(c *natsrouter.Context, req echoReq) (*echoResp, error) {
+			<-gate
+			completed.Add(1)
+			return &echoResp{Seq: req.Seq}, nil
+		})
+
+	const inflight = 4
+	for i := 0; i < inflight; i++ {
+		go func(i int) {
+			data, _ := json.Marshal(echoReq{Seq: i})
+			_, _ = nc.Request(context.Background(), fmt.Sprintf("wg.%d", i), data, 5*time.Second)
+		}(i)
+	}
+
+	// Wait until all 4 handlers are blocked on `gate`.
+	require.Eventually(t, func() bool {
+		// Indirect signal: try a 5th request and confirm it succeeds (slot
+		// still available, since cap=8). Then assert nothing leaked yet.
+		return true // gate closure happens below; the assertion is on Shutdown timing.
+	}, 1*time.Second, 50*time.Millisecond)
+
+	// Shutdown in a goroutine; it must NOT return before we close gate.
+	shutdownDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownDone <- r.Shutdown(ctx)
+	}()
+
+	// Give Shutdown 200ms to (incorrectly) return early.
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned before handlers completed: err=%v", err)
+	case <-time.After(200 * time.Millisecond):
+		// expected — Shutdown is still blocked on the WaitGroup.
+	}
+
+	close(gate)
+
+	select {
+	case err := <-shutdownDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return after handlers completed")
+	}
+	assert.GreaterOrEqual(t, completed.Load(), int64(1), "at least one handler must have completed")
+}
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
+
+Run: `go test -tags=integration ./pkg/natsrouter/ -run TestIntegration_ShutdownWaitsForSpawnedHandlers -v`
+Expected: FAIL — `Shutdown` currently returns once `SubscriptionClosed` fires, before spawned handlers have completed. The test detects the early return.
+
+- [ ] **Step 4: Extend `Shutdown` to wait on `r.wg`**
+
+In `pkg/natsrouter/router.go`, locate the end of `Shutdown` (just before `return errors.Join(errs...)`) and replace this:
+
+```go
+	for i, ch := range closed {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			errs = append(errs, fmt.Errorf("waiting for %q close: %w", subs[i].Subject, ctx.Err()))
+			return errors.Join(errs...)
+		}
+	}
+	return errors.Join(errs...)
+```
+
+with:
+
+```go
+	for i, ch := range closed {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			errs = append(errs, fmt.Errorf("waiting for %q close: %w", subs[i].Subject, ctx.Err()))
+			return errors.Join(errs...)
+		}
+	}
+
+	// Dispatcher has exited and no further handlers will be spawned. Wait
+	// for in-flight spawned handlers (admission-control model) to return.
+	handlersDone := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(handlersDone)
+	}()
+	select {
+	case <-handlersDone:
+	case <-ctx.Done():
+		errs = append(errs, fmt.Errorf("waiting for in-flight handlers: %w", ctx.Err()))
+	}
+	return errors.Join(errs...)
+```
+
+- [ ] **Step 5: Run the integration tests to verify they pass**
+
+Run: `go test -tags=integration -race ./pkg/natsrouter/...`
+Expected: PASS — `TestIntegration_ShutdownWaitsForSpawnedHandlers` passes; `TestIntegration_ShutdownUnderLoad` passes; everything else still green.
+
+- [ ] **Step 6: Run unit tests**
+
+Run: `go test -race ./pkg/natsrouter/...`
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add pkg/natsrouter/router.go pkg/natsrouter/integration_test.go
+git commit -m "feat(natsrouter): Shutdown waits for in-flight handler goroutines"
+```
+
+---
