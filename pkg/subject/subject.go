@@ -320,16 +320,12 @@ func MemberAddWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.add", siteID)
 }
 
-// RoomCreate is the request/reply subject the client posts to in order
-// to create a new room. The siteID segment is the requester's site —
-// the room will be created there. NATS gateways route cross-site
-// requests transparently.
+// RoomCreate: client→room-service create subject; siteID is the requester's site.
 func RoomCreate(account, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.create", account, siteID)
 }
 
-// RoomCreateWildcard is the queue-subscription pattern room-service
-// uses for create-room requests on its own site.
+// RoomCreateWildcard is the queue-subscribe pattern for room-service.
 func RoomCreateWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.%s.create", siteID)
 }
@@ -369,8 +365,7 @@ func SearchRoomsPattern() string {
 	return "chat.user.{account}.request.search.rooms"
 }
 
-// ParseRoomCreateSubject extracts the account from a
-// chat.user.{account}.request.room.{siteID}.create subject.
+// ParseRoomCreateSubject extracts the account from chat.user.{account}.request.room.{siteID}.create.
 func ParseRoomCreateSubject(s string) (account string, ok bool) {
 	parts := strings.Split(s, ".")
 	if len(parts) != 7 {
@@ -382,11 +377,7 @@ func ParseRoomCreateSubject(s string) (account string, ok bool) {
 	return parts[2], true
 }
 
-// RoomCanonicalOperation extracts the trailing operation token from a
-// canonical room subject like "chat.room.canonical.{siteID}.{op}". It
-// returns ("", false) when the subject does not match the expected
-// shape. The operation may itself contain dots (e.g., "member.add"),
-// so the implementation joins everything after the siteID segment.
+// RoomCanonicalOperation returns the trailing op (e.g. "member.add") from chat.room.canonical.{siteID}.{op}.
 func RoomCanonicalOperation(s string) (string, bool) {
 	const prefix = "chat.room.canonical."
 	if !strings.HasPrefix(s, prefix) {

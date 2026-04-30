@@ -12,16 +12,9 @@ import "go.mongodb.org/mongo-driver/v2/bson"
 //
 // Pipeline target: the users collection.
 //
-// When roomID is non-empty, returns 3 stages:
-//  1. $match: account in directAccounts OR sectId in orgIDs, AND account
-//     does not match the bot regex (`.bot$|^p_`).
-//  2. $lookup: existing subscription documents for (account, roomID), with
-//     a $limit:1 sub-pipeline so we only need a yes/no answer.
-//  3. $match: keep only users where existingSub is the empty array (i.e.,
-//     no subscription exists for that account in roomID).
-//
-// When roomID is empty (capacity check at create time, no room exists yet),
-// returns only stage 1 (users matching org/account filters, excluding bots).
+// Stages: $match (org/account filter, exclude bots), then (when roomID != "")
+// $lookup + $match to filter out already-subscribed accounts. Empty roomID
+// returns the $match stage only (used by capacity-check at create time).
 //
 // Callers MUST append a terminal stage that fits their need:
 //   - room-service: bson.M{"$count": "n"}                                (capacity check)

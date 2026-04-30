@@ -9,13 +9,8 @@ import (
 )
 
 var (
-	// ErrUserNotFound is returned by store.GetUser when no users doc
-	// matches the supplied account.
-	ErrUserNotFound = errors.New("user not found")
-
-	// ErrAppNotFound is returned by store.GetApp when no apps doc
-	// matches the supplied bot account.
-	ErrAppNotFound = errors.New("app not found")
+	ErrUserNotFound = errors.New("user not found") // GetUser: no matching account
+	ErrAppNotFound  = errors.New("app not found")  // GetApp: no matching bot account
 )
 
 //go:generate mockgen -source=store.go -destination=mock_store_test.go -package=main
@@ -62,20 +57,11 @@ type RoomStore interface {
 	// when no users match (treated as "orgId is not valid").
 	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
 
-	// GetUser returns the user document by account, or ErrUserNotFound
-	// when no document matches. Used by create-room to resolve the
-	// requester and the DM/botDM counterpart.
+	// GetUser returns the user by account, or ErrUserNotFound.
 	GetUser(ctx context.Context, account string) (*model.User, error)
-
-	// GetApp returns the apps doc whose Assistant.Name equals
-	// botAccount, or ErrAppNotFound. Used to gate botDM creation on
-	// App.Assistant.Enabled.
+	// GetApp returns the app whose Assistant.Name == botAccount, or ErrAppNotFound.
 	GetApp(ctx context.Context, botAccount string) (*model.App, error)
-
-	// FindDMSubscription returns the requester's existing dm/botDM
-	// subscription whose Name == targetName, or ErrSubscriptionNotFound.
-	// The query filters on Subscription.RoomType to avoid false
-	// positives where a channel happens to be named after an account.
+	// FindDMSubscription returns the requester's existing dm/botDM sub with Name == targetName, filtered by RoomType.
 	FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error)
 }
 

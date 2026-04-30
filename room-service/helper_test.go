@@ -145,6 +145,7 @@ func TestNewSentinelErrorsExist(t *testing.T) {
 	assert.Equal(t, "missing X-Request-ID header", errMissingRequestID.Error())
 	assert.Equal(t, "invalid X-Request-ID format", errInvalidRequestID.Error())
 	assert.Equal(t, "channel name is required", errChannelNameRequired.Error())
+	assert.Equal(t, "channel name must be at most 100 characters", errChannelNameTooLong.Error())
 	assert.Equal(t, "user not found", errUserNotFound.Error())
 }
 
@@ -181,13 +182,6 @@ func TestStripAccount(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
-}
-
-func TestTruncateRunes(t *testing.T) {
-	assert.Equal(t, "hello", truncateRunes("hello", 100))
-	assert.Equal(t, "hel", truncateRunes("hello", 3))
-	assert.Equal(t, "你好", truncateRunes("你好世界", 2))
-	assert.Equal(t, "你好世界", truncateRunes("你好世界", 100))
 }
 
 func TestSanitizeErrorPassesThroughCreateRoomSentinels(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/roomname"
 )
 
 // Sentinel errors for user-facing validation failures.
@@ -38,6 +37,7 @@ var (
 	errMissingRequestID    = errors.New("missing X-Request-ID header")
 	errInvalidRequestID    = errors.New("invalid X-Request-ID format")
 	errChannelNameRequired = errors.New("channel name is required")
+	errChannelNameTooLong  = errors.New("channel name must be at most 100 characters")
 	errUserNotFound        = errors.New("user not found")
 )
 
@@ -80,10 +80,7 @@ func dedup(items []string) []string {
 	return result
 }
 
-// determineRoomType inspects the post-strip request and decides what
-// room type should be created. Empty payload is the caller's
-// responsibility — this function assumes at least one of users / orgs /
-// channels / name is non-empty.
+// determineRoomType classifies a post-strip request; caller must guarantee non-empty input.
 func determineRoomType(req *model.CreateRoomRequest) model.RoomType {
 	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 && len(req.Users) == 1 {
 		if strings.HasSuffix(req.Users[0], ".bot") {
@@ -94,9 +91,7 @@ func determineRoomType(req *model.CreateRoomRequest) model.RoomType {
 	return model.RoomTypeChannel
 }
 
-// dmExistsError carries the existing DM/botDM room ID through the error
-// chain so the natsCreateRoom handler can populate the special
-// "dm already exists" reply with the existing roomId.
+// dmExistsError carries the existing DM/botDM room ID for the "dm already exists" reply.
 type dmExistsError struct{ existingRoomID string }
 
 func newDMExistsError(roomID string) *dmExistsError {
@@ -110,15 +105,15 @@ func (e *dmExistsError) Is(target error) bool {
 	return ok
 }
 
-// stripAccount and truncateRunes are thin wrappers that delegate to pkg/roomname so
-// room-service and room-worker can never drift on these rules. composeAutoName was
-// removed when channels became required-name (see spec §"Behaviour").
+// stripAccount returns slice with all occurrences of account removed (order preserved).
 func stripAccount(slice []string, account string) []string {
-	return roomname.StripAccount(slice, account)
-}
-
-func truncateRunes(s string, max int) string {
-	return roomname.TruncateRunes(s, max)
+	out := make([]string, 0, len(slice))
+	for _, s := range slice {
+		if s != account {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // sanitizeError returns a user-safe error message for known error sentinels and approved patterns.
@@ -147,6 +142,7 @@ func sanitizeError(err error) string {
 		errors.Is(err, errMissingRequestID),
 		errors.Is(err, errInvalidRequestID),
 		errors.Is(err, errChannelNameRequired),
+		errors.Is(err, errChannelNameTooLong),
 		errors.Is(err, errUserNotFound),
 		errors.Is(err, &dmExistsError{}):
 		return err.Error()

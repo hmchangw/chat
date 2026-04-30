@@ -79,8 +79,7 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 		return fmt.Errorf("ensure apps index: %w", err)
 	}
 
-	// Partial index for FindDMSubscription: matches only DM/botDM subs.
-	// Restricting via partialFilterExpression keeps the index small.
+	// Partial index for FindDMSubscription, restricted to DM/botDM subs to keep it small.
 	dmDedupIndex := mongo.IndexModel{
 		Keys: bson.D{
 			{Key: "u.account", Value: 1},

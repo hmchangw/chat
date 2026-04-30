@@ -47,7 +47,7 @@ This section lists every file the plan touches and what it owns. Lock decomposit
 
 | File | Change | What it owns |
 |------|--------|--------------|
-| `helper.go` | modify | New sentinel errors (`errEmptyCreateRequest`, `errSelfDM`, `errBotInChannel`, `errBotNotAvailable`, `errInvalidUserData`, `errMissingRequestID`, `errInvalidRequestID`, `errChannelNameRequired`, `errUserNotFound`); `dmExistsError` typed wrapper; `stripAccount` helper; `truncateRunes` helper. Extend `sanitizeError` allowlist. **Channels require a client-supplied `Name`** — no server-side auto-name path, so `composeAutoName` is intentionally absent. |
+| `helper.go` | modify | New sentinel errors (`errEmptyCreateRequest`, `errSelfDM`, `errBotInChannel`, `errBotNotAvailable`, `errInvalidUserData`, `errMissingRequestID`, `errInvalidRequestID`, `errChannelNameRequired`, `errChannelNameTooLong`, `errUserNotFound`); `dmExistsError` typed wrapper; `stripAccount` helper. Extend `sanitizeError` allowlist. **Channels require a client-supplied `Name` validated for both presence and rune-length ≤ 100** — server never truncates or auto-names. |
 | `helper_test.go` | modify | Tests for the new helpers and `sanitizeError` allowlist additions. |
 | `handler.go` | modify | New `handleCreateRoom`, `natsCreateRoom`, `replyDMExists`. New helpers `determineRoomType`, `validateChannelBranch`, `validateDMBranch`. |
 | `handler_test.go` | modify | Table-driven tests for `handleCreateRoom` (≥18 rows per spec §9). |
@@ -112,7 +112,7 @@ These rules came out of a code-review pass on this plan. They cut across many ta
 
 4. **Reuse, do not redefine, `publishAsyncJobResult`.** `room-worker/handler.go` already has it with three call sites. Task 6 / 16 / 37 must update the existing helper's signature in one place (and update all call sites); they must NOT introduce a parallel function with a different signature.
 
-5. **Promote duplicated helpers to `pkg/` instead of copying.** `truncateRunes`, `composeAutoName`, `composeName`, `stripAccount`, `sanitizeError` are flagged in Tasks 19, 20, 31, 33 as "copy from room-service/helper.go." Move them into a domain-named shared package (e.g. `pkg/roomname` and `pkg/natsutil` for `sanitizeError`) and import from both services. Do NOT defer this — keeping two copies in sync is a permanent cost.
+5. **`stripAccount` is duplicated in both services.** It's a 5-line helper used in one place per service; per CLAUDE.md "three similar lines is better than a premature abstraction" we keep it inlined. The spec rule (channels require client-supplied Name; reject if length > 100) lives entirely in room-service `classifyAndValidate`, so there's no `truncateRunes` / `composeAutoName` to share.
 
 6. **Promote `determineRoomType` / `determineRoomTypeFromPayload` to `pkg/model`.** Task 24 (room-service) and Task 32 (room-worker) currently define identical bodies. Add `model.RoomTypeFor(req)` once and call from both.
 

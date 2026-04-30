@@ -216,9 +216,7 @@ func subscriptionName(d *model.RoomCreatedOutbox, u *model.User) string {
 	case model.RoomTypeChannel, model.RoomTypeDiscussion:
 		return d.RoomName
 	case model.RoomTypeDM, model.RoomTypeBotDM:
-		// The user being processed on this remote site is by definition
-		// not the requester (the home site holds the requester's sub).
-		// Therefore the "other party" from u's perspective is the requester.
+		// On the remote site, the "other party" relative to u is the requester.
 		return d.RequesterAccount
 	}
 	return ""

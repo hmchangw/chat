@@ -1,7 +1,6 @@
 package model
 
-// App is the read-only view of a row in the apps collection.
-// Provisioning is upstream; chat services only read.
+// App is a read-only view of the apps collection (provisioning is upstream).
 type App struct {
 	ID          string        `json:"id"                    bson:"_id"`
 	Name        string        `json:"name"                  bson:"name"`
@@ -10,9 +9,7 @@ type App struct {
 	Sponsors    []AppSponsor  `json:"sponsors,omitempty"    bson:"sponsors,omitempty"`
 }
 
-// AppAssistant declares the bot account and whether the assistant is
-// active. Assistant.Name is the bot's user account (always ends in
-// ".bot"). botDM creation requires Enabled == true.
+// AppAssistant: Name is the bot user account (".bot" suffix); botDM requires Enabled==true.
 type AppAssistant struct {
 	Enabled     bool   `json:"enabled"               bson:"enabled"`
 	Name        string `json:"name"                  bson:"name"`

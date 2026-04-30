@@ -1788,10 +1788,9 @@ func TestResolveRoomName(t *testing.T) {
 		roomType model.RoomType
 		want     string
 	}{
-		"dm uses roomID":         {model.CreateRoomRequest{RoomID: "u_a|u_b"}, model.RoomTypeDM, "u_a|u_b"},
-		"botDM uses roomID":      {model.CreateRoomRequest{RoomID: "u_a|u_w"}, model.RoomTypeBotDM, "u_a|u_w"},
-		"channel given name":     {model.CreateRoomRequest{Name: "deal team", RoomID: "r1"}, model.RoomTypeChannel, "deal team"},
-		"channel name truncated": {model.CreateRoomRequest{Name: strings.Repeat("a", 150), RoomID: "r2"}, model.RoomTypeChannel, strings.Repeat("a", 100)},
+		"dm uses roomID":     {model.CreateRoomRequest{RoomID: "u_a|u_b"}, model.RoomTypeDM, "u_a|u_b"},
+		"botDM uses roomID":  {model.CreateRoomRequest{RoomID: "u_a|u_w"}, model.RoomTypeBotDM, "u_a|u_w"},
+		"channel given name": {model.CreateRoomRequest{Name: "deal team", RoomID: "r1"}, model.RoomTypeChannel, "deal team"},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

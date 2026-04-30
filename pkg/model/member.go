@@ -18,9 +18,7 @@ const (
 
 type HistoryConfig struct {
 	Mode HistoryMode `json:"mode" bson:"mode"`
-	// SharedSince, when non-nil, restricts history to messages on or after this
-	// millisecond timestamp. Takes precedence over the acceptedAt fallback when
-	// Mode == HistoryModeNone. Omitted from wire when nil.
+	// SharedSince (ms): when non-nil under HistoryModeNone, takes precedence over acceptedAt.
 	SharedSince *int64 `json:"sharedSince,omitempty" bson:"sharedSince,omitempty"`
 }
 
@@ -98,8 +96,7 @@ type MembersAdded struct {
 	AddedUsersCount int          `json:"addedUsersCount"`
 }
 
-// RoomCreated is the sys-message payload for the "room_created" message
-// emitted when a new channel room is created.
+// RoomCreated is the sys-message payload emitted on channel creation.
 type RoomCreated struct {
 	Name            string       `json:"name"`
 	Users           []string     `json:"users"`
@@ -134,11 +131,7 @@ type ListOrgMembersResponse struct {
 	Members []OrgMember `json:"members"`
 }
 
-// CreateRoomRequest is the canonical event payload for creating a room.
-// Client supplies Name/Users/Orgs/Channels; room-service populates the
-// RoomID, Requester*, AppName, Timestamp before publishing to the
-// ROOMS canonical stream. The X-Request-ID header (not in this struct)
-// carries the request correlation ID per PR #131.
+// CreateRoomRequest is the canonical event payload (X-Request-ID rides on the NATS header).
 type CreateRoomRequest struct {
 	Name     string       `json:"name"     bson:"name"`
 	Users    []string     `json:"users"    bson:"users"`

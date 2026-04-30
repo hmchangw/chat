@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1907,9 +1908,11 @@ func TestHandleCreateRoom_RequesterMissingNameFields(t *testing.T) {
 }
 
 func TestHandleCreateRoom_SelfDMRejected(t *testing.T) {
+	// Self-DM is caught by classifyAndValidate before any DB lookup, so no GetUser
+	// expectation is set — the gomock controller would flag the unexpected call
+	// if validation regressed.
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"alice"}})
@@ -2042,11 +2045,10 @@ func TestHandleCreateRoom_Channel_HappyPath(t *testing.T) {
 
 func TestHandleCreateRoom_Channel_NameRequired(t *testing.T) {
 	// Channels must carry a client-supplied Name. Multiple users with no Name
-	// shape-classifies as channel (per determineRoomType), so the empty-Name
-	// guard in handleCreateRoomChannel must reject before any store call.
+	// shape-classifies as channel; classifyAndValidate must reject before any
+	// store call. No GetUser expectation: the controller fails if it leaks.
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob", "charlie"}})
@@ -2056,10 +2058,8 @@ func TestHandleCreateRoom_Channel_NameRequired(t *testing.T) {
 }
 
 func TestHandleCreateRoom_Channel_NameWhitespaceOnly(t *testing.T) {
-	// "   " with no rune content must be treated as empty.
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Name: "   ", Users: []string{"bob", "charlie"}})
@@ -2068,13 +2068,38 @@ func TestHandleCreateRoom_Channel_NameWhitespaceOnly(t *testing.T) {
 	assert.True(t, errors.Is(err, errChannelNameRequired))
 }
 
-func TestHandleCreateRoom_Channel_BotRejected(t *testing.T) {
+func TestHandleCreateRoom_Channel_NameTooLong(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Name: strings.Repeat("a", 101), Users: []string{"bob"}})
+	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errChannelNameTooLong))
+}
+
+func TestHandleCreateRoom_Channel_NameAtBoundary(t *testing.T) {
+	// Exactly 100 runes is allowed.
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "").Return(2, nil)
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Name: strings.Repeat("世", 100), Users: []string{"bob"}})
+	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.NoError(t, err)
+}
+
+func TestHandleCreateRoom_Channel_BotRejected(t *testing.T) {
+	// Bot detection is part of the input-only stage — no DB call required.
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
-	// Bot in users list for a channel (name non-empty → channel type)
 	body, _ := json.Marshal(model.CreateRoomRequest{Name: "general", Users: []string{"helper.bot"}})
 	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
 	require.Error(t, err)

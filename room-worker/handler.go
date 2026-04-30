@@ -16,12 +16,10 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
-	"github.com/hmchangw/chat/pkg/roomname"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// errPermanent marks errors that should not be retried by JetStream (e.g. invalid
-// message contents that will never succeed on redelivery).
+// errPermanent marks non-retryable errors (caller Acks instead of Nak).
 var errPermanent = errors.New("permanent")
 
 // PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
@@ -69,8 +67,7 @@ func historySharedSincePtr(mode model.HistoryMode, timestamp int64, roomID strin
 	return &timestamp
 }
 
-// publishAsyncJobResult publishes a success/failure event to the requester's reply subject; best-effort, never fails the job.
-// roomID is included in the result payload (omitted from JSON when empty).
+// publishAsyncJobResult publishes a success/failure event to the requester's reply subject; best-effort.
 func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, operation, roomID string, jobErr error) {
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" || requesterAccount == "" {
@@ -94,15 +91,12 @@ func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, o
 	}
 }
 
-// sanitizeAsyncJobError returns a user-safe error string. Permanent errors (validation,
-// not-found, etc.) are surfaced verbatim so clients can react; transient/internal errors
-// collapse to a generic message to avoid leaking internals.
+// sanitizeAsyncJobError surfaces permanent errors verbatim and collapses everything else.
 func sanitizeAsyncJobError(err error) string {
 	if err == nil {
 		return ""
 	}
 	if errors.Is(err, errPermanent) {
-		// Strip the trailing ": permanent" wrapping so the message is clean.
 		msg := err.Error()
 		if idx := strings.LastIndex(msg, ": "+errPermanent.Error()); idx >= 0 {
 			msg = msg[:idx]
@@ -766,8 +760,7 @@ func mustMarshal(v any) []byte {
 	return data
 }
 
-// composeName returns "eng ch" when both are non-empty and different, eng alone
-// when they are equal, or "" when either is empty.
+// composeName returns "eng ch" (or eng if equal, or "" if either empty).
 func composeName(eng, ch string) string {
 	if eng == "" || ch == "" {
 		return ""
@@ -778,8 +771,7 @@ func composeName(eng, ch string) string {
 	return eng + " " + ch
 }
 
-// composeNameOrAccount returns the display name for u, falling back to u.Account
-// when both EngName and ChineseName are absent.
+// composeNameOrAccount returns the display name for u, falling back to u.Account.
 func composeNameOrAccount(u *model.User) string {
 	if name := composeName(u.EngName, u.ChineseName); name != "" {
 		return name
@@ -789,16 +781,12 @@ func composeNameOrAccount(u *model.User) string {
 	return u.Account
 }
 
-// resolveRoomName determines the persisted room name from the create request.
-// DM and BotDM rooms use RoomID as their name. Channels use the client-supplied
-// Name truncated to 100 runes — room-service rejects empty Name with
-// errChannelNameRequired before publishing, so the worker can rely on Name
-// being populated for channels.
+// resolveRoomName: DM/BotDM use RoomID; channels use req.Name (room-service guarantees length and non-empty).
 func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) string {
 	if roomType == model.RoomTypeDM || roomType == model.RoomTypeBotDM {
 		return req.RoomID
 	}
-	return truncateRunes(req.Name, 100)
+	return req.Name
 }
 
 // createdByForType returns the requesterID for channel rooms and "" for DM/BotDM.
@@ -826,23 +814,19 @@ func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 	}
 }
 
-// truncateRunes and stripAccount delegate to the shared pkg/roomname so room-service
-// and room-worker share a single normalization implementation. composeAutoName was
-// removed when channels became required-name (see spec §"Behaviour").
-func truncateRunes(s string, max int) string {
-	return roomname.TruncateRunes(s, max)
-}
-
+// stripAccount returns slice with all occurrences of account removed (order preserved).
 func stripAccount(slice []string, account string) []string {
-	return roomname.StripAccount(slice, account)
+	out := make([]string, 0, len(slice))
+	for _, s := range slice {
+		if s != account {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error) {
-	// Capture the requester account and roomID for the async-job result. Both start empty
-	// and are populated as soon as we successfully unmarshal / look up the requester.
-	// publishAsyncJobResult is a no-op when requesterAccount is empty, so early
-	// "missing X-Request-ID" / "unmarshal" failures simply skip the result publish —
-	// any later failure (after we know the requester) will publish a sanitized error event.
+	// Defer must cover early failures; populate requester/roomID as soon as we have them.
 	var (
 		requesterAccount string
 		roomID           string
@@ -912,8 +896,7 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	}
 }
 
-// determineRoomTypeFromPayload mirrors room-service's determineRoomType
-// but operates on the canonical (post-strip, server-populated) payload.
+// determineRoomTypeFromPayload mirrors room-service's determineRoomType on the canonical payload.
 func determineRoomTypeFromPayload(req *model.CreateRoomRequest) model.RoomType {
 	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 && len(req.Users) == 1 {
 		if strings.HasSuffix(req.Users[0], ".bot") {
@@ -962,10 +945,7 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, bot}, subs, requestID, now)
 }
 
-// bulkCreateSubsIdempotent is a thin wrapper that adds context to the store-level
-// error. The store implementation already absorbs mongo duplicate-key errors so
-// the operation is safe to replay under JetStream redelivery — re-checking the
-// duplicate sentinel here would mask any future change to that contract.
+// bulkCreateSubsIdempotent: store absorbs duplicate-key; this only adds error context.
 func (h *Handler) bulkCreateSubsIdempotent(ctx context.Context, subs []*model.Subscription) error {
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
@@ -984,9 +964,6 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	if err != nil {
 		return fmt.Errorf("find users: %w", err)
 	}
-	// Race guard: if every requested account was deleted between room-service validation
-	// and worker processing, abort with a permanent error so the requester gets a clear
-	// async-job failure instead of a single-member channel created silently.
 	if len(users) == 0 {
 		return fmt.Errorf("no resolvable members for channel %s: %w", room.ID, errPermanent)
 	}
@@ -1046,8 +1023,7 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	return h.finishCreateRoom(ctx, req, room, requester, allUsers, subs, requestID, now)
 }
 
-// bulkCreateMembersIdempotent is a thin wrapper around the store call — see
-// bulkCreateSubsIdempotent for why we no longer re-check IsDuplicateKeyError here.
+// bulkCreateMembersIdempotent: see bulkCreateSubsIdempotent.
 func (h *Handler) bulkCreateMembersIdempotent(ctx context.Context, members []*model.RoomMember) error {
 	if len(members) == 0 {
 		return nil

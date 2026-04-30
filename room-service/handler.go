@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/nats-io/nats.go"
@@ -148,10 +149,10 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
-	originalUsers := append([]string(nil), req.Users...)
 
-	if req.Name == "" && len(req.Users) == 0 && len(req.Orgs) == 0 && len(req.Channels) == 0 {
-		return nil, errEmptyCreateRequest
+	roomType, err := classifyAndValidate(&req, requesterAccount)
+	if err != nil {
+		return nil, err
 	}
 
 	requester, err := h.store.GetUser(ctx, requesterAccount)
@@ -165,19 +166,6 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 		return nil, errInvalidUserData
 	}
 
-	// Self-DM detection BEFORE strip. Dedup first so payloads like
-	// {users: ["alice", "alice"]} from the requester "alice" are still classified
-	// as self-DM rather than collapsing to an empty channel via the post-strip check.
-	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 {
-		dedupedOriginal := dedup(originalUsers)
-		if len(dedupedOriginal) == 1 && dedupedOriginal[0] == requesterAccount {
-			return nil, errSelfDM
-		}
-	}
-
-	req.Users = stripAccount(dedup(req.Users), requesterAccount)
-
-	roomType := determineRoomType(&req)
 	switch roomType {
 	case model.RoomTypeChannel:
 		return h.handleCreateRoomChannel(ctx, &req, requester, requesterAccount, roomType)
@@ -187,6 +175,45 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 		return nil, fmt.Errorf("unknown room type: %s", roomType)
 	}
 }
+
+// classifyAndValidate runs all input-only validations in priority order
+// (empty → self-DM → channel-name → channel-name-length → bot-in-channel),
+// strips/dedups req.Users, and returns the classified room type. No DB calls.
+func classifyAndValidate(req *model.CreateRoomRequest, requesterAccount string) (model.RoomType, error) {
+	if req.Name == "" && len(req.Users) == 0 && len(req.Orgs) == 0 && len(req.Channels) == 0 {
+		return "", errEmptyCreateRequest
+	}
+
+	// Dedup before the self-DM check so {users: ["alice","alice"]} from alice still hits.
+	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 {
+		dedupedOriginal := dedup(req.Users)
+		if len(dedupedOriginal) == 1 && dedupedOriginal[0] == requesterAccount {
+			return "", errSelfDM
+		}
+	}
+
+	req.Users = stripAccount(dedup(req.Users), requesterAccount)
+	roomType := determineRoomType(req)
+
+	if roomType == model.RoomTypeChannel {
+		if strings.TrimSpace(req.Name) == "" {
+			return "", errChannelNameRequired
+		}
+		if utf8.RuneCountInString(req.Name) > maxChannelNameRunes {
+			return "", errChannelNameTooLong
+		}
+		for _, a := range req.Users {
+			if isBot(a) {
+				return "", errBotInChannel
+			}
+		}
+	}
+
+	return roomType, nil
+}
+
+// maxChannelNameRunes caps the rune length of a client-supplied channel name.
+const maxChannelNameRunes = 100
 
 func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.CreateRoomRequest, requester *model.User, roomType model.RoomType) ([]byte, error) {
 	otherAccount := req.Users[0]
@@ -229,32 +256,15 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 }
 
 func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, requester *model.User, requesterAccount string, roomType model.RoomType) ([]byte, error) {
-	// Channels must have a client-supplied name. The server never composes a channel name
-	// from the user/org/channel lists (see spec §"Behaviour"). Reject here so the canonical
-	// event always carries a non-empty Name; room-worker relies on this invariant.
-	if strings.TrimSpace(req.Name) == "" {
-		return nil, errChannelNameRequired
-	}
-	for _, a := range req.Users {
-		if isBot(a) {
-			return nil, errBotInChannel
-		}
-	}
-
 	channelOrgIDs, channelAccounts, err := h.expandChannelRefs(ctx, requester.Account, req.Channels)
 	if err != nil {
 		return nil, fmt.Errorf("expand channels: %w", err)
 	}
-	// Bots from source channels must not leak into a new channel — channels disallow bots
-	// at creation time (see the .bot suffix check on req.Users above), and an expanded
-	// channel-ref account list can contain bots that the requester never explicitly named.
+	// Strip bots from channel-ref expansion so they can't leak into a new channel.
 	channelAccounts = filterBots(channelAccounts)
 	allOrgs := dedup(append(append([]string{}, req.Orgs...), channelOrgIDs...))
 	allUsers := stripAccount(dedup(append(append([]string{}, req.Users...), channelAccounts...)), requesterAccount)
 
-	// Channel must have at least one resolved member or org. With Name now required up-front,
-	// the only way to reach this with everything empty is a request that supplied only
-	// channel refs whose expansion produced zero non-bot, non-requester accounts.
 	if len(allUsers) == 0 && len(allOrgs) == 0 {
 		return nil, errEmptyCreateRequest
 	}
