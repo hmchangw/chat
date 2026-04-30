@@ -8,8 +8,8 @@ import "encoding/json"
 // without a key (DM or key not yet provisioned), NewMsg carries the plaintext.
 // Per CLAUDE.md, every NATS event carries a Timestamp (event publish time).
 type MessageEditedEvent struct {
-	Type            string          `json:"type"`                      // always "message_edited"
-	Timestamp       int64           `json:"timestamp"`                 // UTC millis, event publish time
+	Type            string          `json:"type"`      // always "message_edited"
+	Timestamp       int64           `json:"timestamp"` // UTC millis, event publish time
 	RoomID          string          `json:"roomId"`
 	MessageID       string          `json:"messageId"`
 	NewMsg          string          `json:"newMsg,omitempty"`          // plaintext; empty when EncryptedNewMsg is set
