@@ -198,14 +198,10 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	return json.Marshal(msg)
 }
 
-// resolveQuoteSnapshot fetches the quoted parent (when requested) and returns
-// the snapshot to embed on the new message. Returns a non-nil error on any
-// failure mode (RPC failure, thread-context mismatch under the strict
-// same-conversation-context rule, or buggy fetcher returning (nil, nil)) so
-// the caller can reply to the client and let them retry. The
-// thread-context rule is main↔main only, threadT↔threadT only — quoting
-// across thread boundaries, including a thread reply quoting its own thread
-// parent, is rejected.
+// resolveQuoteSnapshot fetches the quoted parent and returns its snapshot.
+// The strict same-conversation-context rule rejects cross-thread quotes:
+// main-room messages may only quote main-room parents, and thread-T messages
+// may only quote other thread-T messages — including the thread's own parent.
 func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, siteID, quotedParentMessageID, newMessageThreadID string) (*cassandra.QuotedParentMessage, error) {
 	if quotedParentMessageID == "" {
 		return nil, nil
@@ -215,11 +211,12 @@ func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, sit
 	case err != nil:
 		return nil, fmt.Errorf("fetch quoted parent %s: %w", quotedParentMessageID, err)
 	case snap == nil:
-		// Defensive: fetcher contract requires (nil, err) on failure.
+		// Treat the fetcher's contract violation as a hard failure rather than
+		// silently dereferencing snap.ThreadParentID below.
 		return nil, fmt.Errorf("fetch quoted parent %s: fetcher returned nil snapshot", quotedParentMessageID)
 	case snap.ThreadParentID != newMessageThreadID:
-		return nil, fmt.Errorf("quoted parent thread context mismatch: parent thread %q, new message thread %q",
-			snap.ThreadParentID, newMessageThreadID)
+		return nil, fmt.Errorf("quoted parent %s thread context mismatch: parent thread %q, new message thread %q",
+			quotedParentMessageID, snap.ThreadParentID, newMessageThreadID)
 	default:
 		return snap, nil
 	}

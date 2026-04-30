@@ -635,7 +635,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 		},
 		{
-			name: "fetcher returns (nil, nil) — defensive guard fails request without panicking",
+			name: "fetcher returns (nil, nil) — request fails (defensive guard)",
 			buildData: func() []byte {
 				req := model.SendMessageRequest{
 					ID:                    validID,
