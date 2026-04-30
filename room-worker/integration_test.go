@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
@@ -21,7 +22,30 @@ import (
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
-	return testutil.MongoDB(t, "room_worker_test")
+	db := testutil.MongoDB(t, "room_worker_test")
+	ensureRoomIdempotencyIndexes(t, db)
+	return db
+}
+
+// ensureRoomIdempotencyIndexes mirrors the room-service-owned indexes that
+// processCreateRoom redelivery handling depends on. In production these are
+// created by room-service.EnsureIndexes; integration tests must replicate
+// them so duplicate-key on retry works.
+func ensureRoomIdempotencyIndexes(t *testing.T, db *mongo.Database) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := db.Collection("subscriptions").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "u.account", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		t.Fatalf("ensure subscriptions unique index: %v", err)
+	}
+	if _, err := db.Collection("room_members").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "rid", Value: 1}, {Key: "member.type", Value: 1}, {Key: "member.id", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		t.Fatalf("ensure room_members unique index: %v", err)
+	}
 }
 
 func TestMongoStore_Integration(t *testing.T) {
