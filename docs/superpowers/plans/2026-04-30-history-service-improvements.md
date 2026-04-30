@@ -1232,3 +1232,101 @@ git commit -m "perf(cassutil): token-aware host policy and NumConns=4 default wi
 ```
 
 ---
+
+## Task 10: Expose `CASSANDRA_NUM_CONNS` in history-service config
+
+**Why:** Task 9 added `WithNumConns` to `cassutil`. To let operators tune per-environment without recompiling, expose `CASSANDRA_NUM_CONNS` (default 4) in `history-service` config and forward it to `cassutil.Connect`. Other services keep the default automatically.
+
+**Files:**
+- Modify: `history-service/internal/config/config.go` (add `NumConns` field on `CassandraConfig`)
+- Modify: `history-service/cmd/main.go` (pass `cassutil.WithNumConns(cfg.Cassandra.NumConns)`)
+- Modify: `history-service/docker-local/.env.example` (document the new variable)
+
+- [ ] **Step 1: Add `NumConns` to `CassandraConfig`**
+
+In `history-service/internal/config/config.go`, replace the existing `CassandraConfig` block:
+
+```go
+type CassandraConfig struct {
+	Hosts    string `env:"HOSTS"    required:"true"`
+	Keyspace string `env:"KEYSPACE" envDefault:"chat"`
+	Username string `env:"USERNAME" envDefault:""`
+	Password string `env:"PASSWORD" envDefault:""`
+}
+```
+
+with:
+
+```go
+type CassandraConfig struct {
+	Hosts    string `env:"HOSTS"     required:"true"`
+	Keyspace string `env:"KEYSPACE"  envDefault:"chat"`
+	Username string `env:"USERNAME"  envDefault:""`
+	Password string `env:"PASSWORD"  envDefault:""`
+	NumConns int    `env:"NUM_CONNS" envDefault:"4"`
+}
+```
+
+Update the comment immediately above the struct from:
+```go
+// Env vars: CASSANDRA_HOSTS, CASSANDRA_KEYSPACE, CASSANDRA_USERNAME, CASSANDRA_PASSWORD
+```
+to:
+```go
+// Env vars: CASSANDRA_HOSTS, CASSANDRA_KEYSPACE, CASSANDRA_USERNAME, CASSANDRA_PASSWORD,
+// CASSANDRA_NUM_CONNS (TCP connections per host; default 4).
+```
+
+- [ ] **Step 2: Forward the value to `cassutil.Connect` in `main.go`**
+
+In `history-service/cmd/main.go`, replace the existing `cassutil.Connect` call:
+
+```go
+	cassSession, err := cassutil.Connect(
+		cfg.Cassandra.Hosts,
+		cfg.Cassandra.Keyspace,
+		cfg.Cassandra.Username,
+		cfg.Cassandra.Password,
+	)
+```
+
+with:
+
+```go
+	cassSession, err := cassutil.Connect(
+		cfg.Cassandra.Hosts,
+		cfg.Cassandra.Keyspace,
+		cfg.Cassandra.Username,
+		cfg.Cassandra.Password,
+		cassutil.WithNumConns(cfg.Cassandra.NumConns),
+	)
+```
+
+- [ ] **Step 3: Document the new env var in `.env.example`**
+
+Append to `history-service/docker-local/.env.example`:
+
+```
+# Optional. Number of TCP connections gocql keeps open per Cassandra host.
+# Default 4. Lower (2) is fine for a single-node local cluster.
+# CASSANDRA_NUM_CONNS=4
+```
+
+- [ ] **Step 4: Build the service to confirm wiring**
+
+Run: `make build SERVICE=history-service`
+Expected: PASS — `cfg.Cassandra.NumConns` is recognized; the call typechecks.
+
+- [ ] **Step 5: Run unit tests**
+
+Run: `make test SERVICE=history-service`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add history-service/internal/config/config.go history-service/cmd/main.go history-service/docker-local/.env.example
+git commit -m "feat(history-service): expose CASSANDRA_NUM_CONNS env var"
+```
+
+---
