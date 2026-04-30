@@ -1330,3 +1330,92 @@ git commit -m "feat(history-service): expose CASSANDRA_NUM_CONNS env var"
 ```
 
 ---
+
+## Task 11: Expose `ROUTER_MAX_CONCURRENCY` and wire it into `natsrouter.New`
+
+**Why:** Task in `pkg/natsrouter` (separate spec: `2026-04-30-natsrouter-improvements.md`) introduces `natsrouter.WithMaxConcurrency(int)` so the router admits at most N concurrent handlers per pod with a 503-busy reply on saturation. Surface that knob via `ROUTER_MAX_CONCURRENCY` (default 100) so operators can tune per environment.
+
+**Dependency:** This task MUST land AFTER the natsrouter improvements plan. Until `natsrouter.WithMaxConcurrency` exists, this task does not compile. Verify the natsrouter spec is merged before starting.
+
+**Files:**
+- Modify: `history-service/internal/config/config.go` (add `RouterConfig`)
+- Modify: `history-service/cmd/main.go` (pass `natsrouter.WithMaxConcurrency(cfg.Router.MaxConcurrency)`)
+- Modify: `history-service/docker-local/.env.example` (document the new variable)
+
+- [ ] **Step 1: Add `RouterConfig` to config**
+
+In `history-service/internal/config/config.go`, append after the `NATSConfig` block:
+
+```go
+// RouterConfig holds natsrouter tuning settings.
+// Env vars: ROUTER_MAX_CONCURRENCY (per-pod handler concurrency ceiling; default 100).
+type RouterConfig struct {
+	MaxConcurrency int `env:"MAX_CONCURRENCY" envDefault:"100"`
+}
+```
+
+Replace the existing `Config` struct:
+
+```go
+type Config struct {
+	SiteID    string          `env:"SITE_ID" envDefault:"site-local"`
+	Cassandra CassandraConfig `envPrefix:"CASSANDRA_"`
+	Mongo     MongoConfig     `envPrefix:"MONGO_"`
+	NATS      NATSConfig      `envPrefix:"NATS_"`
+}
+```
+
+with:
+
+```go
+type Config struct {
+	SiteID    string          `env:"SITE_ID" envDefault:"site-local"`
+	Cassandra CassandraConfig `envPrefix:"CASSANDRA_"`
+	Mongo     MongoConfig     `envPrefix:"MONGO_"`
+	NATS      NATSConfig      `envPrefix:"NATS_"`
+	Router    RouterConfig    `envPrefix:"ROUTER_"`
+}
+```
+
+- [ ] **Step 2: Pass the option to `natsrouter.New` in main.go**
+
+In `history-service/cmd/main.go`, replace:
+
+```go
+	router := natsrouter.New(nc, "history-service")
+```
+
+with:
+
+```go
+	router := natsrouter.New(nc, "history-service", natsrouter.WithMaxConcurrency(cfg.Router.MaxConcurrency))
+```
+
+- [ ] **Step 3: Document the env var in `.env.example`**
+
+Append to `history-service/docker-local/.env.example`:
+
+```
+# Optional. Maximum concurrent NATS handler invocations per pod. Default 100.
+# Saturation triggers a 503-busy reply (see natsrouter docs).
+# ROUTER_MAX_CONCURRENCY=100
+```
+
+- [ ] **Step 4: Build to confirm the API matches**
+
+Run: `make build SERVICE=history-service`
+Expected: PASS — assumes the natsrouter spec has shipped `WithMaxConcurrency`.
+
+- [ ] **Step 5: Run unit tests**
+
+Run: `make test SERVICE=history-service`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add history-service/internal/config/config.go history-service/cmd/main.go history-service/docker-local/.env.example
+git commit -m "feat(history-service): expose ROUTER_MAX_CONCURRENCY env var"
+```
+
+---
