@@ -950,6 +950,10 @@ func TestSubscriptionSidebarName(t *testing.T) {
 	d.AppName = "Weather Bot"
 	assert.Equal(t, "Alice 爱丽丝", subscriptionSidebarName(&d, &model.User{Account: "weather.bot"}))
 	assert.Equal(t, "Weather Bot", subscriptionSidebarName(&d, &model.User{Account: "alice"}))
+
+	// p_ webhook-style bots are bots too: their sidebar shows the human's
+	// display name (matching the .bot path).
+	assert.Equal(t, "Alice 爱丽丝", subscriptionSidebarName(&d, &model.User{Account: "p_webhook"}))
 }
 
 func TestSubscriptionIsSubscribed(t *testing.T) {
@@ -962,6 +966,8 @@ func TestSubscriptionIsSubscribed(t *testing.T) {
 	d.RoomType = model.RoomTypeBotDM
 	assert.False(t, subscriptionIsSubscribed(&d, &model.User{Account: "weather.bot"}))
 	assert.True(t, subscriptionIsSubscribed(&d, &model.User{Account: "alice"}))
+	// p_ webhook bots: same as .bot — bot side gets IsSubscribed=false.
+	assert.False(t, subscriptionIsSubscribed(&d, &model.User{Account: "p_webhook"}))
 }
 
 func TestHandleRoomCreatedRequiresRequestID(t *testing.T) {

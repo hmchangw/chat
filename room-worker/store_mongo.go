@@ -88,6 +88,10 @@ func (s *MongoStore) ReconcileMemberCounts(ctx context.Context, roomID string) e
 		if err := cur.Decode(&counts); err != nil {
 			return fmt.Errorf("decode member counts: %w", err)
 		}
+	} else if err := cur.Err(); err != nil {
+		// A cursor failure must not silently fall through to an UpdateOne with
+		// zero counts, which would clobber the rooms doc on a transient error.
+		return fmt.Errorf("iterate member counts: %w", err)
 	}
 	// No rows match → both counts stay 0, which is the correct reset behavior
 	// for a room whose last subscription was just removed.
@@ -143,6 +147,12 @@ func (s *MongoStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accou
 	}
 	defer cur.Close(ctx)
 	if !cur.Next(ctx) {
+		// Distinguish a true empty result from a cursor/read failure — the
+		// caller must not proceed to room creation when membership resolution
+		// silently failed.
+		if err := cur.Err(); err != nil {
+			return nil, fmt.Errorf("iterate aggregation result: %w", err)
+		}
 		return nil, nil
 	}
 	var doc struct {

@@ -276,6 +276,11 @@ func TestParseRoomCreateSubject(t *testing.T) {
 		{"wrong suffix", "chat.user.alice.request.room.site-A.member", "", false},
 		{"wrong prefix", "foo.user.alice.request.room.site-A.create", "", false},
 		{"empty", "", "", false},
+		// Wildcard guard: NATS '*' / '>' must never leak into the parsed account.
+		{"account is wildcard star", "chat.user.*.request.room.site-A.create", "", false},
+		{"account is wildcard tail", "chat.user.>.request.room.site-A.create", "", false},
+		{"account contains star", "chat.user.al*ce.request.room.site-A.create", "", false},
+		{"account contains tail", "chat.user.al>ce.request.room.site-A.create", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

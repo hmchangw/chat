@@ -1092,10 +1092,11 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	t.Cleanup(func() { nc.Close() })
 	// Sleep just past the 200ms client timeout so the responder doesn't outlive the test
 	// and flag as a goroutine leak under -race/leak detectors.
-	sub, err := nc.Subscribe(subject.MemberList("alice", "source", "site-b"), func(m *nats.Msg) {
-		time.Sleep(400 * time.Millisecond)
-		_ = m.Respond([]byte(`{}`))
-	})
+	// Subscriber that intentionally never replies — exercises the client-side
+	// timeout path without time.Sleep coordination (CLAUDE.md forbids sleep
+	// for goroutine sync). t.Cleanup unsubscribes so the responder doesn't
+	// outlive the test.
+	sub, err := nc.Subscribe(subject.MemberList("alice", "source", "site-b"), func(_ *nats.Msg) {})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 

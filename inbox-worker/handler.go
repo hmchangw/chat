@@ -222,6 +222,12 @@ func subscriptionName(d *model.RoomCreatedOutbox, u *model.User) string {
 	return ""
 }
 
+// isBot mirrors the bot predicate used by room-service/helper.go and pkg/pipelines:
+// accounts ending in ".bot" or starting with "p_" (webhook-style bots).
+func isBot(account string) bool {
+	return strings.HasSuffix(account, ".bot") || strings.HasPrefix(account, "p_")
+}
+
 func subscriptionSidebarName(d *model.RoomCreatedOutbox, u *model.User) string {
 	switch d.RoomType {
 	case model.RoomTypeChannel, model.RoomTypeDiscussion:
@@ -229,7 +235,7 @@ func subscriptionSidebarName(d *model.RoomCreatedOutbox, u *model.User) string {
 	case model.RoomTypeDM:
 		return composeName(d.RequesterEngName, d.RequesterChineseName)
 	case model.RoomTypeBotDM:
-		if strings.HasSuffix(u.Account, ".bot") {
+		if isBot(u.Account) {
 			return composeName(d.RequesterEngName, d.RequesterChineseName)
 		}
 		return d.AppName
@@ -241,7 +247,7 @@ func subscriptionIsSubscribed(d *model.RoomCreatedOutbox, u *model.User) bool {
 	if d.RoomType != model.RoomTypeBotDM {
 		return false
 	}
-	return !strings.HasSuffix(u.Account, ".bot")
+	return !isBot(u.Account)
 }
 
 func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent) error {

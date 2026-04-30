@@ -910,9 +910,18 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 			if fetchErr != nil {
 				return fmt.Errorf("fetch on duplicate-key: %w", fetchErr)
 			}
-			if existing.Type != room.Type || existing.SiteID != room.SiteID {
-				return newPermanent("room ID collision (existing type=%s site=%s; want %s/%s)",
-					existing.Type, existing.SiteID, room.Type, room.SiteID)
+			// Replay equivalence: only treat the collision as a redelivery
+			// when the existing room is identical on all immutable identity
+			// fields (Type, SiteID, Name, CreatedBy). Any mismatch means the
+			// same ID resolves to a different room — appending subscriptions
+			// or system messages to it would corrupt unrelated state.
+			if existing.Type != room.Type ||
+				existing.SiteID != room.SiteID ||
+				existing.Name != room.Name ||
+				existing.CreatedBy != room.CreatedBy {
+				return newPermanent("room ID collision (existing type=%s site=%s name=%q createdBy=%q; want %s/%s/%q/%q)",
+					existing.Type, existing.SiteID, existing.Name, existing.CreatedBy,
+					room.Type, room.SiteID, room.Name, room.CreatedBy)
 			}
 			room = existing
 		} else {
@@ -933,9 +942,12 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 }
 
 // determineRoomTypeFromPayload mirrors room-service's determineRoomType on the canonical payload.
+// botPattern matches both ".bot" suffix and "p_" prefix to classify webhook-style bots
+// consistently with room-service/helper.go and pkg/pipelines.
 func determineRoomTypeFromPayload(req *model.CreateRoomRequest) model.RoomType {
 	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 && len(req.Users) == 1 {
-		if strings.HasSuffix(req.Users[0], ".bot") {
+		acct := req.Users[0]
+		if strings.HasSuffix(acct, ".bot") || strings.HasPrefix(acct, "p_") {
 			return model.RoomTypeBotDM
 		}
 		return model.RoomTypeDM
@@ -996,9 +1008,20 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	if err != nil {
 		return fmt.Errorf("find users: %w", err)
 	}
+	// FindUsersByAccounts can return a subset when an account doesn't exist.
+	// Treat any missing account as a permanent error rather than silently
+	// creating the room without that member — the requester would otherwise
+	// see "ok" while observing a smaller room than they requested.
+	userSet := make(map[string]struct{}, len(users))
 	for i := range users {
+		userSet[users[i].Account] = struct{}{}
 		if users[i].EngName == "" || users[i].ChineseName == "" {
 			return newPermanent("user %s missing required name fields", users[i].Account)
+		}
+	}
+	for _, account := range accounts {
+		if _, ok := userSet[account]; !ok {
+			return newPermanent("user %s not found", account)
 		}
 	}
 

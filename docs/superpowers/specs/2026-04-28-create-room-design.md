@@ -50,7 +50,7 @@ In scope:
 
 **Add-member retrofit (in this same spec, behind PR #131's foundation)**
 - Drop `RequestID` from `AddMembersRequest` payload — header-only via `X-Request-ID` (per PR #131 convention).
-- Switch new subscription IDs from random `idgen.GenerateID()` to deterministic `idgen.MessageIDFromRequestID(requestID, "sub:" + account)`.
+- Generate new subscription IDs via `idgen.GenerateUUIDv7()` (32-char hex, time-ordered for B-tree locality). Redelivery safety relies on the unique compound index on `(roomId, u.account)` — duplicate-key on bulk insert is treated as success-on-redelivery, not on a deterministic ID derived from `requestID`.
 - Populate `Subscription.Name = Room.Name` and `Subscription.RoomType = Room.Type` (`"channel"`) on every new sub.
 - Extend `MemberAddEvent` with `RoomName` and propagate it through the cross-site outbox so `inbox-worker.handleMemberAdded` can populate `Subscription.Name` on remote-side subs.
 - Emit `AsyncJobResult{Operation:"room.member.add"}` on `subject.UserResponse(requesterAccount)` at completion.
@@ -728,10 +728,10 @@ default:
 
    resolveRoomName:
      - dm/botDM: return req.RoomID
-     - channel: return truncateRunes(req.Name, 100). Channels MUST have a
-       non-empty req.Name — room-service rejects empty Name with
-       errChannelNameRequired before publishing the canonical event, so the
-       worker can rely on req.Name being populated.
+     - channel: return req.Name verbatim. room-service has already validated
+       that req.Name is non-empty (errChannelNameRequired) and ≤ 100 runes
+       (errChannelNameTooLong) before publishing the canonical event; the
+       worker neither auto-generates nor truncates names.
 
    createdByForType:
      - channel: requester.ID
@@ -1072,8 +1072,10 @@ default:
 
 4. Persist:
      err := h.store.BulkCreateSubscriptions(ctx, subs)
-   Duplicate-key on bulk insert (deterministic IDs from MessageIDFromRequestID)
-   → treat as success-on-redelivery.
+   Subscription IDs are random `idgen.GenerateUUIDv7()`. Redelivery safety
+   comes from the unique compound index on `(roomId, u.account)` — a
+   duplicate-key error on bulk insert means the sub already exists for
+   this user/room pair, so treat it as success-on-redelivery.
 
 5. Return nil → ack.
    No event publishing. The home site already published per-user
@@ -1251,7 +1253,7 @@ inbox-worker (site-B)
   handleRoomCreated:
     - FindUsersByAccounts(["bob"]) → [User{ID:"u_bob", Account:"bob", ...}]
     - Build sub for bob:
-        ID:           MessageIDFromRequestID(requestID, "sub:bob")
+        ID:           idgen.GenerateUUIDv7()
         RoomID:       "u_aliceu_bob"
         SiteID:       "site-A"      (room's home, not bob's)
         Name:         "alice"
@@ -1607,7 +1609,7 @@ Mock `RoomStore` (extending the existing `mock_store_test.go` via `make generate
 | 15 | Stream publish fails | `js.Publish` returns error | reject (internal) |
 | 16 | Channel happy path with orgs | All valid | publish; reply `{accepted, roomId, channel}` |
 | 17 | DM happy path | All valid | publish; deterministic roomId via BuildDMRoomID |
-| 18 | Channel with channels | non-empty `Name`, request has `Channels=[ref]` | published `Name` is the client-supplied value (truncated to 100 runes); channelRef accounts/orgs merged via `expandChannelRefs` |
+| 18 | Channel with channels | non-empty `Name`, request has `Channels=[ref]` | published `Name` is the client-supplied value verbatim (already validated ≤ 100 runes by room-service); channelRef accounts/orgs merged via `expandChannelRefs` |
 
 Each row asserts:
 
@@ -1652,7 +1654,7 @@ Mock store. Add test cases for `handleRoomCreated`:
 - Channel remote receipt with multiple accounts → bulk insert all with `Name=Room.Name`.
 - Empty `Accounts` → no-op + warn log; no Mongo write.
 - Missing `X-Request-ID` → permanent error path.
-- Idempotent redelivery — same `requestID` produces deterministic sub IDs; duplicate-key on bulk insert treated as success.
+- Idempotent redelivery — sub IDs are random UUIDv7; redelivery safety comes from the unique compound index on `(roomId, u.account)`. A duplicate-key error on bulk insert means the sub already exists for this user/room pair → treat as success.
 
 ### `inbox-worker/integration_test.go`
 

@@ -365,6 +365,13 @@ func SearchRoomsPattern() string {
 	return "chat.user.{account}.request.search.rooms"
 }
 
+// isValidAccountToken rejects empty tokens and tokens containing NATS wildcard
+// characters ('*' or '>'). Subject parsers use it as the boundary guard for the
+// account token so wildcard semantics never leak into identity parsing.
+func isValidAccountToken(token string) bool {
+	return token != "" && !strings.ContainsAny(token, "*>")
+}
+
 // ParseRoomCreateSubject extracts the account from chat.user.{account}.request.room.{siteID}.create.
 func ParseRoomCreateSubject(s string) (account string, ok bool) {
 	parts := strings.Split(s, ".")
@@ -372,6 +379,9 @@ func ParseRoomCreateSubject(s string) (account string, ok bool) {
 		return "", false
 	}
 	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" || parts[4] != "room" || parts[6] != "create" {
+		return "", false
+	}
+	if !isValidAccountToken(parts[2]) {
 		return "", false
 	}
 	return parts[2], true

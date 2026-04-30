@@ -2048,6 +2048,10 @@ func TestHandleCreateRoom_BotDM_Disabled(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
 	store.EXPECT().GetUser(gomock.Any(), "helper.bot").Return(botUser(), nil)
+	// Dedup runs FIRST so an existing botDM with a now-disabled bot still
+	// resolves to the existing roomId. This case: no existing sub → fall
+	// through to the bot-availability check.
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "helper.bot").Return(nil, model.ErrSubscriptionNotFound)
 	store.EXPECT().GetApp(gomock.Any(), "helper.bot").Return(&model.App{
 		Name:      "Helper",
 		Assistant: &model.AppAssistant{Enabled: false},
@@ -2058,6 +2062,27 @@ func TestHandleCreateRoom_BotDM_Disabled(t *testing.T) {
 	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errBotNotAvailable))
+}
+
+// New: existing botDM where the bot was later disabled MUST still return the
+// existing roomId via dmExistsError, not errBotNotAvailable. This is the
+// idempotent open-or-create contract.
+func TestHandleCreateRoom_BotDM_DisabledButExisting(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	store.EXPECT().GetUser(gomock.Any(), "helper.bot").Return(botUser(), nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "helper.bot").
+		Return(&model.Subscription{RoomID: "existing-bot-dm"}, nil)
+	// GetApp must NOT be called when an existing DM is found.
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"helper.bot"}})
+	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.Error(t, err)
+	var de *dmExistsError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, "existing-bot-dm", de.RoomID())
 }
 
 func TestHandleCreateRoom_Channel_HappyPath(t *testing.T) {
@@ -2160,6 +2185,78 @@ func TestHandleCreateRoom_Channel_ExceedsCapacity(t *testing.T) {
 	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum capacity")
+}
+
+// Boundary case: with maxRoomSize=10, CountNewMembers=10 means the materialized
+// room would have 11 members (10 invitees + creator). Capacity check must reject.
+func TestHandleCreateRoom_Channel_RejectsWhenCreatorWouldOverflow(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "").Return(10, nil)
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Name: "edge", Users: []string{"bob"}})
+	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum capacity")
+	assert.Contains(t, err.Error(), "11 members")
+}
+
+// At maxRoomSize-1 invitees the creator-inclusive total equals the cap → accepted.
+func TestHandleCreateRoom_Channel_AcceptsAtCreatorInclusiveCap(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "").Return(9, nil)
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil }}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Name: "edge", Users: []string{"bob"}})
+	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.NoError(t, err)
+}
+
+// Malformed JSON must surface as a sanitized "invalid request" error, not panic.
+func TestHandleCreateRoom_MalformedJSON(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
+
+	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), []byte("{not json"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid request")
+}
+
+// determineRoomType / handleCreateRoom must classify "p_" webhook bots as botDM.
+func TestHandleCreateRoom_BotDM_PUnderscoreWebhookBot(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	store.EXPECT().GetUser(gomock.Any(), "p_webhook").Return(&model.User{
+		ID: "u_p", Account: "p_webhook", EngName: "Webhook", ChineseName: "网钩",
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "p_webhook").
+		Return(nil, model.ErrSubscriptionNotFound)
+	store.EXPECT().GetApp(gomock.Any(), "p_webhook").Return(&model.App{
+		Name: "Webhook", Assistant: &model.AppAssistant{Enabled: true},
+	}, nil)
+	var publishedData []byte
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(_ context.Context, _ string, data []byte) error {
+			publishedData = data
+			return nil
+		},
+	}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"p_webhook"}})
+	resp, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.NoError(t, err)
+
+	var reply model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(resp, &reply))
+	assert.Equal(t, string(model.RoomTypeBotDM), reply.RoomType, "p_ webhook account must classify as botDM")
+	assert.NotNil(t, publishedData)
 }
 
 // --- Phase 5c: natsCreateRoom adapter tests ---

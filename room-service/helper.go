@@ -83,9 +83,12 @@ func dedup(items []string) []string {
 }
 
 // determineRoomType classifies a post-strip request; caller must guarantee non-empty input.
+// Uses the shared isBot predicate so both ".bot" suffix and "p_" prefix accounts
+// classify as botDM, matching the bot-pattern guard used elsewhere in the service
+// (filterBots, errBotInChannel) and in pkg/pipelines.
 func determineRoomType(req *model.CreateRoomRequest) model.RoomType {
 	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 && len(req.Users) == 1 {
-		if strings.HasSuffix(req.Users[0], ".bot") {
+		if isBot(req.Users[0]) {
 			return model.RoomTypeBotDM
 		}
 		return model.RoomTypeDM

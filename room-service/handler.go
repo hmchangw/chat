@@ -238,6 +238,21 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 		return nil, errInvalidUserData
 	}
 
+	req.RoomID = idgen.BuildDMRoomID(requester.ID, other.ID)
+	// DM/BotDM resolved set matches the literal counterpart list — there is no expansion.
+	req.ResolvedUsers = append([]string(nil), req.Users...)
+
+	// Dedup BEFORE bot-availability check so an existing botDM still resolves
+	// to the existing roomId even if the bot was later disabled — preserves
+	// the deterministic "open-or-create" contract for DMs.
+	existing, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
+	if err == nil && existing != nil {
+		return nil, newDMExistsError(existing.RoomID)
+	}
+	if err != nil && !errors.Is(err, model.ErrSubscriptionNotFound) {
+		return nil, fmt.Errorf("dm dedup check: %w", err)
+	}
+
 	if roomType == model.RoomTypeBotDM {
 		app, err := h.store.GetApp(ctx, other.Account)
 		if err != nil {
@@ -250,18 +265,6 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 			return nil, errBotNotAvailable
 		}
 		req.AppName = app.Name
-	}
-
-	req.RoomID = idgen.BuildDMRoomID(requester.ID, other.ID)
-	// DM/BotDM resolved set matches the literal counterpart list — there is no expansion.
-	req.ResolvedUsers = append([]string(nil), req.Users...)
-
-	existing, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
-	if err == nil && existing != nil {
-		return nil, newDMExistsError(existing.RoomID)
-	}
-	if err != nil && !errors.Is(err, model.ErrSubscriptionNotFound) {
-		return nil, fmt.Errorf("dm dedup check: %w", err)
 	}
 
 	return h.publishCreateRoom(ctx, req, requester, roomType)
@@ -285,8 +288,13 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 	if err != nil {
 		return nil, fmt.Errorf("count new members: %w", err)
 	}
-	if newCount > h.maxRoomSize {
-		return nil, fmt.Errorf("exceeds maximum capacity (%d): would add %d", h.maxRoomSize, newCount)
+	// Creator is added implicitly as the channel owner; the requester was
+	// stripped from allUsers earlier so they aren't in newCount. Count them in
+	// the capacity check so a maxRoomSize=N bound caps the materialized room
+	// at N members, not N+1.
+	totalMembers := 1 + newCount
+	if totalMembers > h.maxRoomSize {
+		return nil, fmt.Errorf("exceeds maximum capacity (%d): would create %d members", h.maxRoomSize, totalMembers)
 	}
 
 	// Preserve req.Users / req.Orgs as the literal client request for sys-message payloads.
