@@ -379,3 +379,107 @@ git commit -m "refactor(history-service): drop unread column from cassrepo SELEC
 ```
 
 ---
+
+### Task 5: Drop `unread` from local-dev Cassandra init DDL
+
+**Files:**
+- Modify: `docker-local/cassandra/init/10-table-messages_by_room.cql`
+- Modify: `docker-local/cassandra/init/11-table-thread_messages_by_room.cql`
+- Modify: `docker-local/cassandra/init/12-table-pinned_messages_by_room.cql`
+- Modify: `docker-local/cassandra/init/13-table-messages_by_id.cql`
+
+**Context:** These `.cql` files are executed by the `cassandra-init` one-shot from `make deps-up` to create the local-dev keyspace + tables. They are **not** consulted by Go integration tests (those tests embed their own DDL — see Task 7). Production schema is owned by ops/IaC and is out of scope.
+
+Each file has a single `unread BOOLEAN,` line that needs to go away. Column ordering is otherwise preserved.
+
+- [ ] **Step 5.1: `10-table-messages_by_room.cql` — drop `unread`**
+
+In `docker-local/cassandra/init/10-table-messages_by_room.cql`, delete line 20:
+
+```cql
+  unread                   BOOLEAN,
+```
+
+The surrounding context after the edit:
+
+```cql
+  quoted_parent_message    FROZEN<"QuotedParentMessage">,
+  visible_to               TEXT,
+  reactions                MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+- [ ] **Step 5.2: `11-table-thread_messages_by_room.cql` — drop `unread`**
+
+In `docker-local/cassandra/init/11-table-thread_messages_by_room.cql`, delete line 17:
+
+```cql
+  unread                BOOLEAN,
+```
+
+Surrounding context after the edit:
+
+```cql
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
+  visible_to            TEXT,
+  reactions             MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+- [ ] **Step 5.3: `12-table-pinned_messages_by_room.cql` — drop `unread`**
+
+In `docker-local/cassandra/init/12-table-pinned_messages_by_room.cql`, delete line 15:
+
+```cql
+  unread                BOOLEAN,
+```
+
+Surrounding context after the edit:
+
+```cql
+  quoted_parent_message FROZEN<"QuotedParentMessage">,
+  visible_to            TEXT,
+  reactions             MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+- [ ] **Step 5.4: `13-table-messages_by_id.cql` — drop `unread`**
+
+In `docker-local/cassandra/init/13-table-messages_by_id.cql`, delete line 19:
+
+```cql
+  unread                   BOOLEAN,
+```
+
+Surrounding context after the edit:
+
+```cql
+  quoted_parent_message    FROZEN<"QuotedParentMessage">,
+  visible_to               TEXT,
+  reactions                MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+- [ ] **Step 5.5: Verify no `unread` remains under `docker-local/cassandra/`**
+
+Run: `grep -rn unread docker-local/cassandra/`
+Expected: no output.
+
+- [ ] **Step 5.6: (Optional) Re-bootstrap local Cassandra**
+
+> Skip this step in CI / agentic execution; execute only on a developer machine where local Cassandra is running.
+
+```bash
+make deps-down
+make deps-up
+```
+
+Expected: `cassandra-init` runs the four updated `.cql` files without error and produces the four tables without an `unread` column.
+
+- [ ] **Step 5.7: Commit**
+
+```bash
+git add docker-local/cassandra/init/10-table-messages_by_room.cql \
+        docker-local/cassandra/init/11-table-thread_messages_by_room.cql \
+        docker-local/cassandra/init/12-table-pinned_messages_by_room.cql \
+        docker-local/cassandra/init/13-table-messages_by_id.cql
+git commit -m "chore(cassandra-init): drop unread column from local-dev DDL"
+```
+
+---
