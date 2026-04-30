@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"testing"
 	"time"
@@ -13,7 +14,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/testutil"
 )
 
@@ -427,4 +430,129 @@ func TestReconcileMemberCountsSplitsBots(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, got.UserCount)
 	assert.Equal(t, 1, got.AppCount)
+}
+
+// mustInsertUser inserts a user document directly into the users collection.
+func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
+	t.Helper()
+	_, err := db.Collection("users").InsertOne(context.Background(), u)
+	require.NoError(t, err)
+}
+
+// newIntegrationHandler creates a Handler wired to the given store and siteID with a no-op publish function.
+func newIntegrationHandler(t *testing.T, store *MongoStore, siteID string) *Handler {
+	t.Helper()
+	noopPublish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
+	return NewHandler(store, siteID, noopPublish)
+}
+
+func TestProcessCreateRoomChannelPersistsAllState(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_bob", Account: "bob", SiteID: "site-A",
+		EngName: "Bob", ChineseName: "鲍勃",
+	})
+
+	h := newIntegrationHandler(t, store, "site-A")
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{
+		RoomID: "r_xyz", Name: "deal team",
+		Users:            []string{"bob"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	room, err := store.GetRoom(ctx, "r_xyz")
+	require.NoError(t, err)
+	assert.Equal(t, "deal team", room.Name)
+	assert.Equal(t, model.RoomTypeChannel, room.Type)
+	assert.Equal(t, 2, room.UserCount)
+	assert.Equal(t, 0, room.AppCount)
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": "r_xyz"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount)
+
+	rmCount, err := db.Collection("room_members").CountDocuments(ctx, bson.M{"rid": "r_xyz"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), rmCount)
+}
+
+func TestProcessCreateRoomDMPersistsTwoSubsAndZeroMembers(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice",
+		EngName: "A", ChineseName: "A", SiteID: "site-A"})
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
+		EngName: "B", ChineseName: "B", SiteID: "site-B"})
+
+	h := newIntegrationHandler(t, store, "site-A")
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	roomID := idgen.BuildDMRoomID("u_alice", "u_bob")
+	body, err := json.Marshal(model.CreateRoomRequest{
+		RoomID:           roomID,
+		Users:            []string{"bob"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount)
+
+	rmCount, err := db.Collection("room_members").CountDocuments(ctx, bson.M{"rid": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), rmCount)
+
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.Equal(t, model.RoomTypeDM, room.Type)
+	assert.Empty(t, room.CreatedBy)
+}
+
+func TestProcessCreateRoomIdempotentRedelivery(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice",
+		EngName: "A", ChineseName: "A", SiteID: "site-A"})
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
+		EngName: "B", ChineseName: "B", SiteID: "site-A"})
+
+	h := newIntegrationHandler(t, store, "site-A")
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{
+		RoomID: "r_idem", Name: "team",
+		Users:            []string{"bob"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, h.processCreateRoom(ctx, body))
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": "r_idem"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount, "redelivery must not create duplicate subs")
 }

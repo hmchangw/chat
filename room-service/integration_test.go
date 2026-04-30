@@ -21,7 +21,9 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
@@ -1189,4 +1191,135 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	assert.Nil(t, resp.Rooms[3].LastMsgAt)
 	assert.Nil(t, resp.Rooms[3].PrivateKey)
 	assert.Nil(t, resp.Rooms[3].KeyVersion)
+}
+
+// mustInsertUser inserts a user document directly into the users collection.
+func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
+	t.Helper()
+	_, err := db.Collection("users").InsertOne(context.Background(), u)
+	require.NoError(t, err)
+}
+
+// mustInsertRoom inserts a room document directly into the rooms collection.
+func mustInsertRoom(t *testing.T, db *mongo.Database, r *model.Room) {
+	t.Helper()
+	_, err := db.Collection("rooms").InsertOne(context.Background(), r)
+	require.NoError(t, err)
+}
+
+// mustInsertSub inserts a subscription document directly into the subscriptions collection.
+func mustInsertSub(t *testing.T, db *mongo.Database, sub *model.Subscription) {
+	t.Helper()
+	_, err := db.Collection("subscriptions").InsertOne(context.Background(), sub)
+	require.NoError(t, err)
+}
+
+// newRoomServiceHandler wires a Handler with a capture closure for published events.
+// Returns the handler and a func that returns the most recently published (subject, data).
+func newRoomServiceHandler(t *testing.T, store *MongoStore, keyStore RoomKeyStore, siteID string) (*Handler, func() (string, []byte)) {
+	t.Helper()
+	var lastSubj string
+	var lastData []byte
+	publish := func(_ context.Context, subj string, data []byte) error {
+		lastSubj = subj
+		lastData = data
+		return nil
+	}
+	h := NewHandler(store, keyStore, nil, siteID, 1000, 500, publish)
+	return h, func() (string, []byte) { return lastSubj, lastData }
+}
+
+func TestCreateRoomChannelEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	valCfg := setupValkey(t)
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_bob", Account: "bob", SiteID: "site-A",
+		EngName: "Bob", ChineseName: "鲍勃",
+	})
+
+	h, published := newRoomServiceHandler(t, store, keyStore, "site-A")
+
+	reqID := idgen.GenerateRequestID()
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{
+		Name:  "deal team",
+		Users: []string{"bob"},
+	})
+	require.NoError(t, err)
+
+	resp, err := h.handleCreateRoom(ctx, subject.RoomCreate("alice", "site-A"), body)
+	require.NoError(t, err)
+
+	var got model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(resp, &got))
+	assert.Equal(t, model.CreateRoomReplyAccepted, got.Status)
+	assert.Equal(t, "channel", got.RoomType)
+	assert.NotEmpty(t, got.RoomID)
+
+	publishedSubj, publishedData := published()
+	assert.Equal(t, subject.RoomCanonical("site-A", "create"), publishedSubj)
+	var canonical model.CreateRoomRequest
+	require.NoError(t, json.Unmarshal(publishedData, &canonical))
+	assert.Equal(t, got.RoomID, canonical.RoomID)
+	assert.Equal(t, "alice", canonical.RequesterAccount)
+}
+
+func TestCreateRoomDMAlreadyExists(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	valCfg := setupValkey(t)
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice",
+		EngName: "Alice", ChineseName: "爱丽丝", SiteID: "site-A"})
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
+		EngName: "Bob", ChineseName: "鲍勃", SiteID: "site-A"})
+
+	roomID := idgen.BuildDMRoomID("u_alice", "u_bob")
+	mustInsertRoom(t, db, &model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-A"})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-A",
+		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		Name:     "bob", RoomType: model.RoomTypeDM,
+	})
+
+	h, _ := newRoomServiceHandler(t, store, keyStore, "site-A")
+
+	reqID := idgen.GenerateRequestID()
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
+	require.NoError(t, err)
+
+	_, herr := h.handleCreateRoom(ctx, subject.RoomCreate("alice", "site-A"), body)
+	require.Error(t, herr)
+
+	var dmErr *dmExistsError
+	require.True(t, errors.As(herr, &dmErr), "expected dmExistsError, got %T: %v", herr, herr)
+	assert.Equal(t, "dm already exists", dmErr.Error())
+	assert.Equal(t, roomID, dmErr.RoomID())
 }
