@@ -1149,6 +1149,49 @@ func TestMemberAddEventJSON(t *testing.T) {
 	})
 }
 
+func TestMemberAddEventCarriesRoomName(t *testing.T) {
+	evt := model.MemberAddEvent{
+		Type:      "member_added",
+		RoomID:    "r1",
+		RoomName:  "deal team",
+		Accounts:  []string{"bob"},
+		SiteID:    "site-A",
+		JoinedAt:  1,
+		Timestamp: 1,
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Equal(t, "deal team", raw["roomName"])
+
+	var dst model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, "deal team", dst.RoomName)
+}
+
+func TestMemberAddEventRoomNameOmitemptyOnZero(t *testing.T) {
+	evt := model.MemberAddEvent{
+		Type:      "member_added",
+		RoomID:    "r1",
+		Accounts:  []string{},
+		SiteID:    "site-a",
+		Timestamp: 1,
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	// Note: RoomName is NOT omitempty, so empty string still appears
+	assert.Equal(t, "", raw["roomName"])
+
+	var dst model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Empty(t, dst.RoomName)
+}
+
 func TestListRoomMembersRequestJSON(t *testing.T) {
 	t.Run("with limit and offset", func(t *testing.T) {
 		limit, offset := 10, 5

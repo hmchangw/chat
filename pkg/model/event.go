@@ -95,6 +95,7 @@ type OutboxEvent struct {
 type MemberAddEvent struct {
 	Type               string   `json:"type"               bson:"type"`
 	RoomID             string   `json:"roomId"             bson:"roomId"`
+	RoomName           string   `json:"roomName"           bson:"roomName"`
 	Accounts           []string `json:"accounts"           bson:"accounts"`
 	SiteID             string   `json:"siteId"             bson:"siteId"`
 	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
