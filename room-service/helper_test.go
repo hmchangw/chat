@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -133,4 +135,110 @@ func TestSanitizeError_RemoteMemberListWithContext(t *testing.T) {
 func TestSanitizeError_TransportFailureStillOpaque(t *testing.T) {
 	// Generic transport failure from the client — no user-safe substring — must still be "internal error".
 	assert.Equal(t, "internal error", sanitizeError(errors.New("member.list request to site-eu: nats: timeout")))
+}
+
+func TestNewSentinelErrorsExist(t *testing.T) {
+	assert.Equal(t, "request must include at least one of users, orgs, channels, or name", errEmptyCreateRequest.Error())
+	assert.Equal(t, "cannot create a DM with yourself", errSelfDM.Error())
+	assert.Equal(t, "bots cannot be added to a channel during creation", errBotInChannel.Error())
+	assert.Equal(t, "bot not available", errBotNotAvailable.Error())
+	assert.Equal(t, "user is missing required name fields", errInvalidUserData.Error())
+	assert.Equal(t, "missing X-Request-ID header", errMissingRequestID.Error())
+	assert.Equal(t, "user not found", errUserNotFound.Error())
+}
+
+func TestDMExistsErrorWrapsCorrectly(t *testing.T) {
+	e := newDMExistsError("r_existing")
+	assert.Equal(t, "dm already exists", e.Error())
+	assert.Equal(t, "r_existing", e.RoomID())
+
+	var sentinel *dmExistsError
+	assert.True(t, errors.Is(e, sentinel))
+
+	wrapped := fmt.Errorf("validation failed: %w", e)
+	var target *dmExistsError
+	require.True(t, errors.As(wrapped, &target))
+	assert.Equal(t, "r_existing", target.RoomID())
+}
+
+func TestStripAccount(t *testing.T) {
+	tests := map[string]struct {
+		in      []string
+		account string
+		want    []string
+	}{
+		"present":        {[]string{"alice", "bob", "carol"}, "bob", []string{"alice", "carol"}},
+		"absent":         {[]string{"alice", "carol"}, "bob", []string{"alice", "carol"}},
+		"first":          {[]string{"alice", "bob"}, "alice", []string{"bob"}},
+		"only-element":   {[]string{"alice"}, "alice", []string{}},
+		"multiple-occur": {[]string{"alice", "alice", "bob"}, "alice", []string{"bob"}},
+		"empty":          {[]string{}, "alice", []string{}},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := stripAccount(tc.in, tc.account)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestTruncateRunes(t *testing.T) {
+	assert.Equal(t, "hello", truncateRunes("hello", 100))
+	assert.Equal(t, "hel", truncateRunes("hello", 3))
+	assert.Equal(t, "你好", truncateRunes("你好世界", 2))
+	assert.Equal(t, "你好世界", truncateRunes("你好世界", 100))
+}
+
+func TestComposeAutoName(t *testing.T) {
+	tests := map[string]struct {
+		users    []string
+		orgs     []string
+		channels []model.ChannelRef
+		want     string
+	}{
+		"users only":           {[]string{"alice", "bob"}, nil, nil, "alice, bob"},
+		"users + orgs":         {[]string{"alice"}, []string{"org-fx"}, nil, "alice, org-fx"},
+		"users + orgs + chans": {[]string{"alice"}, []string{"org-fx"}, []model.ChannelRef{{RoomID: "r0"}}, "alice, org-fx, r0"},
+		"channels only":        {nil, nil, []model.ChannelRef{{RoomID: "r0"}, {RoomID: "r1"}}, "r0, r1"},
+		"empty everything":     {nil, nil, nil, ""},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := composeAutoName(tc.users, tc.orgs, tc.channels)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestComposeAutoNameTruncatesAt100Runes(t *testing.T) {
+	users := make([]string, 0)
+	for i := 0; i < 50; i++ {
+		users = append(users, "userwithlongaccountname")
+	}
+	got := composeAutoName(users, nil, nil)
+	assert.Equal(t, 100, utf8.RuneCountInString(got))
+}
+
+func TestSanitizeErrorPassesThroughCreateRoomSentinels(t *testing.T) {
+	cases := []error{
+		errEmptyCreateRequest,
+		errSelfDM,
+		errBotInChannel,
+		errBotNotAvailable,
+		errInvalidUserData,
+		errMissingRequestID,
+		errUserNotFound,
+		newDMExistsError("r_existing"),
+		fmt.Errorf("validation: %w", errSelfDM),
+	}
+	for _, e := range cases {
+		t.Run(e.Error(), func(t *testing.T) {
+			assert.Equal(t, e.Error(), sanitizeError(e))
+		})
+	}
+}
+
+func TestSanitizeErrorCollapsesUnknown(t *testing.T) {
+	got := sanitizeError(errors.New("mongo: connection refused: tcp 127.0.0.1:27017"))
+	assert.Equal(t, "internal error", got)
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -27,6 +28,15 @@ var (
 	// stripping the owner role during an individual-leave is only sound when
 	// the role can only be held alongside an individual entry.
 	errPromoteRequiresIndividual = errors.New("only individual members can be promoted to owner")
+
+	// Sentinels for create-room validation.
+	errEmptyCreateRequest = errors.New("request must include at least one of users, orgs, channels, or name")
+	errSelfDM             = errors.New("cannot create a DM with yourself")
+	errBotInChannel       = errors.New("bots cannot be added to a channel during creation")
+	errBotNotAvailable    = errors.New("bot not available")
+	errInvalidUserData    = errors.New("user is missing required name fields")
+	errMissingRequestID   = errors.New("missing X-Request-ID header")
+	errUserNotFound       = errors.New("user not found")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
@@ -68,6 +78,61 @@ func dedup(items []string) []string {
 	return result
 }
 
+// dmExistsError carries the existing DM/botDM room ID through the error
+// chain so the natsCreateRoom handler can populate the special
+// "dm already exists" reply with the existing roomId.
+type dmExistsError struct{ existingRoomID string }
+
+func newDMExistsError(roomID string) *dmExistsError {
+	return &dmExistsError{existingRoomID: roomID}
+}
+
+func (e *dmExistsError) Error() string  { return "dm already exists" }
+func (e *dmExistsError) RoomID() string { return e.existingRoomID }
+func (e *dmExistsError) Is(target error) bool {
+	_, ok := target.(*dmExistsError)
+	return ok
+}
+
+// stripAccount returns a new slice with all occurrences of account removed.
+func stripAccount(slice []string, account string) []string {
+	out := make([]string, 0, len(slice))
+	for _, s := range slice {
+		if s != account {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// truncateRunes truncates s to at most max Unicode code points.
+func truncateRunes(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	out := make([]rune, 0, max)
+	for _, r := range s {
+		out = append(out, r)
+		if len(out) == max {
+			break
+		}
+	}
+	return string(out)
+}
+
+// composeAutoName joins users, orgs, and channel room IDs with ", " and
+// truncates the result to 100 runes for use as an auto-generated room name.
+func composeAutoName(users, orgs []string, channels []model.ChannelRef) string {
+	parts := make([]string, 0, len(users)+len(orgs)+len(channels))
+	parts = append(parts, users...)
+	parts = append(parts, orgs...)
+	for _, c := range channels {
+		parts = append(parts, c.RoomID)
+	}
+	joined := strings.Join(parts, ", ")
+	return truncateRunes(joined, 100)
+}
+
 // sanitizeError returns a user-safe error message for known error sentinels and approved patterns.
 func sanitizeError(err error) string {
 	switch {
@@ -85,6 +150,15 @@ func sanitizeError(err error) string {
 		errors.Is(err, errTargetNotMember),
 		errors.Is(err, errInvalidOrg),
 		errors.Is(err, errPromoteRequiresIndividual):
+		return err.Error()
+	case errors.Is(err, errEmptyCreateRequest),
+		errors.Is(err, errSelfDM),
+		errors.Is(err, errBotInChannel),
+		errors.Is(err, errBotNotAvailable),
+		errors.Is(err, errInvalidUserData),
+		errors.Is(err, errMissingRequestID),
+		errors.Is(err, errUserNotFound),
+		errors.Is(err, &dmExistsError{}):
 		return err.Error()
 	default:
 		msg := err.Error()
