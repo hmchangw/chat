@@ -11,7 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // --- In-memory InboxStore stub ---
@@ -910,6 +912,148 @@ type errorThreadSubStore struct {
 
 func (s *errorThreadSubStore) UpsertThreadSubscription(_ context.Context, _ *model.ThreadSubscription) error {
 	return fmt.Errorf("boom")
+}
+
+func TestRolesForType(t *testing.T) {
+	assert.Equal(t, []model.Role{model.RoleMember}, rolesForType(model.RoomTypeChannel))
+	assert.Nil(t, rolesForType(model.RoomTypeDM))
+	assert.Nil(t, rolesForType(model.RoomTypeBotDM))
+}
+
+func TestSubscriptionName(t *testing.T) {
+	d := model.RoomCreatedOutbox{
+		RoomType:         model.RoomTypeChannel,
+		RoomName:         "deal team",
+		RequesterAccount: "alice",
+	}
+	assert.Equal(t, "deal team", subscriptionName(&d, &model.User{Account: "bob"}))
+
+	d.RoomType = model.RoomTypeDM
+	assert.Equal(t, "alice", subscriptionName(&d, &model.User{Account: "bob"}))
+
+	d.RoomType = model.RoomTypeBotDM
+	assert.Equal(t, "alice", subscriptionName(&d, &model.User{Account: "weather.bot"}))
+}
+
+func TestSubscriptionSidebarName(t *testing.T) {
+	d := model.RoomCreatedOutbox{
+		RoomType:             model.RoomTypeChannel,
+		RequesterEngName:     "Alice",
+		RequesterChineseName: "爱丽丝",
+	}
+	assert.Empty(t, subscriptionSidebarName(&d, &model.User{Account: "bob"}))
+
+	d.RoomType = model.RoomTypeDM
+	assert.Equal(t, "Alice 爱丽丝", subscriptionSidebarName(&d, &model.User{Account: "bob"}))
+
+	d.RoomType = model.RoomTypeBotDM
+	d.AppName = "Weather Bot"
+	assert.Equal(t, "Alice 爱丽丝", subscriptionSidebarName(&d, &model.User{Account: "weather.bot"}))
+	assert.Equal(t, "Weather Bot", subscriptionSidebarName(&d, &model.User{Account: "alice"}))
+}
+
+func TestSubscriptionIsSubscribed(t *testing.T) {
+	d := model.RoomCreatedOutbox{RoomType: model.RoomTypeChannel}
+	assert.False(t, subscriptionIsSubscribed(&d, &model.User{Account: "bob"}))
+
+	d.RoomType = model.RoomTypeDM
+	assert.False(t, subscriptionIsSubscribed(&d, &model.User{Account: "bob"}))
+
+	d.RoomType = model.RoomTypeBotDM
+	assert.False(t, subscriptionIsSubscribed(&d, &model.User{Account: "weather.bot"}))
+	assert.True(t, subscriptionIsSubscribed(&d, &model.User{Account: "alice"}))
+}
+
+func TestHandleRoomCreatedRequiresRequestID(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+	payload, _ := json.Marshal(model.RoomCreatedOutbox{
+		RoomID: "r1", RoomType: model.RoomTypeChannel,
+		Accounts: []string{"bob"},
+	})
+	err := h.handleRoomCreated(context.Background(), &model.OutboxEvent{Payload: payload})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing X-Request-ID")
+}
+
+func TestHandleRoomCreatedEmptyAccountsAcksWithWarn(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx := natsutil.WithRequestID(context.Background(), reqID)
+
+	payload, _ := json.Marshal(model.RoomCreatedOutbox{
+		RoomID: "r1", RoomType: model.RoomTypeChannel, Accounts: []string{},
+	})
+	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
+}
+
+func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
+	store := &stubInboxStore{
+		users: []model.User{
+			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
+		},
+	}
+	h := NewHandler(store)
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx := natsutil.WithRequestID(context.Background(), reqID)
+
+	payload, _ := json.Marshal(model.RoomCreatedOutbox{
+		RoomID:               "u_aliceu_bob",
+		RoomType:             model.RoomTypeDM,
+		RoomName:             "u_aliceu_bob",
+		HomeSiteID:           "site-A",
+		Accounts:             []string{"bob"},
+		RequesterAccount:     "alice",
+		RequesterEngName:     "Alice",
+		RequesterChineseName: "爱丽丝",
+		Timestamp:            1740000000000,
+	})
+	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
+
+	subs := store.bulkSubscriptions
+	require.Len(t, subs, 1)
+	assert.True(t, idgen.IsValidUUIDv7(subs[0].ID))
+	assert.Equal(t, "u_aliceu_bob", subs[0].RoomID)
+	assert.Equal(t, "site-A", subs[0].SiteID)
+	assert.Equal(t, "alice", subs[0].Name)
+	assert.Equal(t, "Alice 爱丽丝", subs[0].SidebarName)
+	assert.Nil(t, subs[0].Roles)
+	assert.False(t, subs[0].IsSubscribed)
+	assert.Equal(t, model.RoomTypeDM, subs[0].RoomType)
+}
+
+func TestHandleRoomCreatedChannelBulkInsert(t *testing.T) {
+	store := &stubInboxStore{
+		users: []model.User{
+			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
+			{ID: "u_ian", Account: "ian", SiteID: "site-B"},
+		},
+	}
+	h := NewHandler(store)
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx := natsutil.WithRequestID(context.Background(), reqID)
+
+	payload, _ := json.Marshal(model.RoomCreatedOutbox{
+		RoomID:           "r1",
+		RoomType:         model.RoomTypeChannel,
+		RoomName:         "deal team",
+		HomeSiteID:       "site-A",
+		Accounts:         []string{"bob", "ian"},
+		RequesterAccount: "alice",
+		Timestamp:        1,
+	})
+	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
+
+	subs := store.bulkSubscriptions
+	require.Len(t, subs, 2)
+	for _, s := range subs {
+		assert.Equal(t, "deal team", s.Name)
+		assert.Empty(t, s.SidebarName)
+		assert.Equal(t, []model.Role{model.RoleMember}, s.Roles)
+		assert.Equal(t, model.RoomTypeChannel, s.RoomType)
+		assert.Equal(t, "site-A", s.SiteID)
+	}
 }
 
 func TestHandleMemberAddedSetsNameAndRoomType(t *testing.T) {

@@ -3,12 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
@@ -50,6 +55,8 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleRoleUpdated(ctx, &evt)
 	case "thread_subscription_upserted":
 		return h.handleThreadSubscriptionUpserted(ctx, &evt)
+	case model.MessageTypeRoomCreated:
+		return h.handleRoomCreated(ctx, &evt)
 	default:
 		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
@@ -180,6 +187,113 @@ func (h *Handler) handleThreadSubscriptionUpserted(ctx context.Context, evt *mod
 	if err := h.store.UpsertThreadSubscription(ctx, &sub); err != nil {
 		return fmt.Errorf("upsert thread subscription (threadRoomID %q, userID %q): %w",
 			sub.ThreadRoomID, sub.UserID, err)
+	}
+	return nil
+}
+
+// errPermanent signals a non-retryable error; callers should Ack and move on.
+var errPermanent = errors.New("permanent")
+
+func composeName(eng, ch string) string {
+	if eng == "" || ch == "" {
+		return ""
+	}
+	if eng == ch {
+		return eng
+	}
+	return eng + " " + ch
+}
+
+func rolesForType(t model.RoomType) []model.Role {
+	if t == model.RoomTypeChannel {
+		return []model.Role{model.RoleMember}
+	}
+	return nil
+}
+
+func subscriptionName(d *model.RoomCreatedOutbox, u *model.User) string {
+	switch d.RoomType {
+	case model.RoomTypeChannel, model.RoomTypeDiscussion:
+		return d.RoomName
+	case model.RoomTypeDM, model.RoomTypeBotDM:
+		// The user being processed on this remote site is by definition
+		// not the requester (the home site holds the requester's sub).
+		// Therefore the "other party" from u's perspective is the requester.
+		return d.RequesterAccount
+	}
+	return ""
+}
+
+func subscriptionSidebarName(d *model.RoomCreatedOutbox, u *model.User) string {
+	switch d.RoomType {
+	case model.RoomTypeChannel, model.RoomTypeDiscussion:
+		return ""
+	case model.RoomTypeDM:
+		return composeName(d.RequesterEngName, d.RequesterChineseName)
+	case model.RoomTypeBotDM:
+		if strings.HasSuffix(u.Account, ".bot") {
+			return composeName(d.RequesterEngName, d.RequesterChineseName)
+		}
+		return d.AppName
+	}
+	return ""
+}
+
+func subscriptionIsSubscribed(d *model.RoomCreatedOutbox, u *model.User) bool {
+	if d.RoomType != model.RoomTypeBotDM {
+		return false
+	}
+	return !strings.HasSuffix(u.Account, ".bot")
+}
+
+func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent) error {
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" {
+		return fmt.Errorf("missing X-Request-ID: %w", errPermanent)
+	}
+
+	var data model.RoomCreatedOutbox
+	if err := json.Unmarshal(evt.Payload, &data); err != nil {
+		return fmt.Errorf("unmarshal room_created payload: %w: %w", err, errPermanent)
+	}
+	if len(data.Accounts) == 0 {
+		slog.Warn("room_created event with empty Accounts list",
+			"requestId", requestID, "roomId", data.RoomID)
+		return nil
+	}
+
+	users, err := h.store.FindUsersByAccounts(ctx, data.Accounts)
+	if err != nil {
+		return fmt.Errorf("find users by accounts: %w", err)
+	}
+
+	acceptedAt := time.UnixMilli(data.Timestamp).UTC()
+	subs := make([]*model.Subscription, 0, len(users))
+	for i := range users {
+		u := &users[i]
+		sub := &model.Subscription{
+			ID:           idgen.GenerateUUIDv7(),
+			User:         model.SubscriptionUser{ID: u.ID, Account: u.Account},
+			RoomID:       data.RoomID,
+			SiteID:       data.HomeSiteID,
+			Roles:        rolesForType(data.RoomType),
+			Name:         subscriptionName(&data, u),
+			RoomType:     data.RoomType,
+			SidebarName:  subscriptionSidebarName(&data, u),
+			IsSubscribed: subscriptionIsSubscribed(&data, u),
+			JoinedAt:     acceptedAt,
+		}
+		subs = append(subs, sub)
+	}
+
+	if len(subs) == 0 {
+		return nil
+	}
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil
+		}
+		return fmt.Errorf("bulk create subs: %w", err)
 	}
 	return nil
 }
