@@ -4,7 +4,7 @@
 
 **Goal:** Add reply-with-quote support to the chat pipeline. Users send `quotedParentMessageId` on `SendMessageRequest`; gatekeeper resolves the parent via history-service's existing `GetMessageByID` RPC, projects it into `cassandra.QuotedParentMessage`, and embeds the snapshot on the canonical `MessageEvent`. message-worker persists it to all relevant Cassandra tables.
 
-**Architecture:** Gatekeeper does a synchronous NATS request/reply against `history-service` to fetch the parent (no Cassandra dependency added to gatekeeper). On any failure (not found, timeout, forbidden, etc.) the quote is dropped silently (soft-fail) and the message ships without it. The snapshot rides on the canonical event so broadcast-worker and notification-worker see it without re-fetching.
+**Architecture:** Gatekeeper does a synchronous NATS request/reply against `history-service` to fetch the parent (no Cassandra dependency added to gatekeeper). On any failure (not found, timeout, forbidden, thread-context mismatch, etc.) the entire send fails — gatekeeper replies the error to the client, acks the JetStream message, and does NOT publish to MESSAGES_CANONICAL. (The original soft-fail design was reversed during PR review — see the spec's "Hard-fail policy" section.) The snapshot rides on the canonical event so broadcast-worker and notification-worker see it without re-fetching.
 
 **Tech Stack:** Go 1.25 · NATS / JetStream · Cassandra (gocql) · MongoDB · `caarlos0/env` · `go.uber.org/mock` · `stretchr/testify`
 
@@ -1717,7 +1717,7 @@ After Task 7 commits, every spec requirement is implemented and tested:
 | `QuotedParentMessageID` on `SendMessageRequest` | Task 1 |
 | `QuotedParentMessage` on `Message` (uses `cassandra.QuotedParentMessage`) | Task 1 |
 | `subject.MsgGet` concrete-subject helper | Task 2 |
-| `ParentMessageFetcher` interface, soft-fail handler branch, **thread-context guard** (drops cross-thread-room quotes) | Task 3 |
+| `ParentMessageFetcher` interface, hard-fail handler branch, **thread-context guard** (rejects cross-thread-room quotes) | Task 3 |
 | `historyParentFetcher` implementation incl. `messageLink` and thread-context projection | Task 4 |
 | `CHAT_BASE_URL` env var, default `http://localhost:3000` | Task 5 |
 | `quoted_parent_message` persisted in `messages_by_room` / `messages_by_id` (regular + thread) and `thread_messages_by_room` | Task 6 |

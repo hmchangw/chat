@@ -497,7 +497,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 		},
 		{
-			name: "fetcher error — quote dropped, message still published",
+			name: "fetcher error — request fails",
 			buildData: func() []byte {
 				req := model.SendMessageRequest{
 					ID:                    validID,
@@ -516,13 +516,9 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 					Return(nil, fmt.Errorf("history response error: not found"))
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
-				var published []publishedMsg
-				return makePublishFunc(&published, nil), &published
+				return makePublishFunc(nil, nil), nil
 			},
-			assertMessage: func(t *testing.T, msg model.Message) {
-				assert.Nil(t, msg.QuotedParentMessage, "quote must be dropped on fetcher error")
-				assert.Equal(t, validContent, msg.Content, "message body must still ship")
-			},
+			wantErr: true,
 		},
 		{
 			name: "thread T msg quoting another reply in thread T — snapshot embedded",
@@ -552,7 +548,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 		},
 		{
-			name: "main-room msg quoting a thread reply — quote dropped (cross-thread)",
+			name: "main-room msg quoting a thread reply — request fails (cross-thread)",
 			buildData: func() []byte {
 				req := model.SendMessageRequest{
 					ID:                    validID,
@@ -571,16 +567,12 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 					Return(inThreadSnapshot, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
-				var published []publishedMsg
-				return makePublishFunc(&published, nil), &published
+				return makePublishFunc(nil, nil), nil
 			},
-			assertMessage: func(t *testing.T, msg model.Message) {
-				assert.Nil(t, msg.QuotedParentMessage, "thread-context mismatch must drop the quote")
-				assert.Equal(t, validContent, msg.Content)
-			},
+			wantErr: true,
 		},
 		{
-			name: "thread T msg quoting main-room parent — quote dropped (strict)",
+			name: "thread T msg quoting main-room parent — request fails (strict)",
 			buildData: func() []byte {
 				return []byte(fmt.Sprintf(
 					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
@@ -596,16 +588,12 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 					Return(mainRoomSnapshot, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
-				var published []publishedMsg
-				return makePublishFunc(&published, nil), &published
+				return makePublishFunc(nil, nil), nil
 			},
-			assertMessage: func(t *testing.T, msg model.Message) {
-				assert.Equal(t, threadID, msg.ThreadParentMessageID)
-				assert.Nil(t, msg.QuotedParentMessage, "thread-T cannot quote main-room parent under strict rule")
-			},
+			wantErr: true,
 		},
 		{
-			name: "thread T msg quoting reply in different thread T' — quote dropped",
+			name: "thread T msg quoting reply in different thread T' — request fails",
 			buildData: func() []byte {
 				return []byte(fmt.Sprintf(
 					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
@@ -621,13 +609,9 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 					Return(inDifferentThreadSnapshot, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
-				var published []publishedMsg
-				return makePublishFunc(&published, nil), &published
+				return makePublishFunc(nil, nil), nil
 			},
-			assertMessage: func(t *testing.T, msg model.Message) {
-				assert.Equal(t, threadID, msg.ThreadParentMessageID)
-				assert.Nil(t, msg.QuotedParentMessage, "different thread context must drop the quote")
-			},
+			wantErr: true,
 		},
 		{
 			name: "no quote field — fetcher not called",
@@ -651,7 +635,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 		},
 		{
-			name: "fetcher returns (nil, nil) — defensive guard drops quote without panicking",
+			name: "fetcher returns (nil, nil) — defensive guard fails request without panicking",
 			buildData: func() []byte {
 				req := model.SendMessageRequest{
 					ID:                    validID,
@@ -670,13 +654,9 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 					Return(nil, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
-				var published []publishedMsg
-				return makePublishFunc(&published, nil), &published
+				return makePublishFunc(nil, nil), nil
 			},
-			assertMessage: func(t *testing.T, msg model.Message) {
-				assert.Nil(t, msg.QuotedParentMessage, "nil snapshot from fetcher must not be embedded")
-				assert.Equal(t, validContent, msg.Content)
-			},
+			wantErr: true,
 		},
 	}
 

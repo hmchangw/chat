@@ -13,7 +13,7 @@ Let a user reply to a chat message with a "quote" — the new message renders al
 - Thread reply and quote are independent — a single message may carry both, neither, or only one (subject to the conversation-context rule above).
 - MVP snapshot fields: `messageId`, `roomId`, `sender`, `createdAt`, `msg`, `mentions`, `messageLink`, `threadParentId`, `threadParentCreatedAt`. `attachments` is out of scope for MVP.
 - Quoting a deleted parent is allowed. `history-service.GetMessageByID` does not filter on the `deleted` flag, so deleted parents return a normal snapshot. The snapshot is captured at quote time; the parent's later deletion does not invalidate it.
-- Soft-fail policy: any failure to resolve or accept the parent (not found, RPC error, timeout, forbidden by access-window, thread-context mismatch) drops the quote silently and lets the message ship without it. Failures are logged at WARN.
+- Hard-fail policy: any failure to resolve or accept the parent (not found, RPC error, timeout, forbidden by access-window, thread-context mismatch) fails the entire send. Gatekeeper replies to the client with the error so the user can retry. The new message is **not** published to MESSAGES_CANONICAL.
 
 ## Non-goals
 
@@ -36,7 +36,7 @@ client ──(SendMessageRequest{quotedParentMessageId})──> MESSAGES stream
                                   │   │   payload: {"messageId": "..."}
                                   │   ├─ on success: project to *cassandra.QuotedParentMessage,
                                   │   │              set msg.QuotedParentMessage
-                                  │   └─ on any error: warn, drop quote, proceed
+                                  │   └─ on any error: reply error to client, ack, do NOT publish
                                   └─ publish MessageEvent → MESSAGES_CANONICAL
                                                             │
               ┌─────────────────────────────────┬───────────┴───────────────────────┐
@@ -53,8 +53,8 @@ The canonical event is the single source of truth. Once gatekeeper has built the
 
 - `history-service.GetMessageByID` already implements lookup, room match (via subject param), subscription check, and access-window enforcement. The access-window check is desirable for quoting — a user who can't see the parent shouldn't be able to surface its content in a quote.
 - Keeps gatekeeper's dependency surface unchanged (Mongo only). Cassandra reads stay owned by history-service.
-- Room-level scoping is enforced by `findMessage` (`history-service/internal/service/utils.go:59`) — same `roomID` between subject and parent. **Thread-level scoping is enforced by gatekeeper itself** after the RPC: it compares `parent.ThreadParentID` (returned in the `cassandra.Message` body) against `req.ThreadParentMessageID` and drops the quote on mismatch. Both checks are needed because thread replies share the room ID with their main-room parent, so a `roomID` match alone does not imply same-thread.
-- Trade-off accepted: synchronous NATS hop on every quoted send, bounded by a 2-second timeout. On timeout or any RPC error, soft-fail drops the quote.
+- Room-level scoping is enforced by `findMessage` (`history-service/internal/service/utils.go:59`) — same `roomID` between subject and parent. **Thread-level scoping is enforced by gatekeeper itself** after the RPC: it compares `parent.ThreadParentID` (returned in the `cassandra.Message` body) against `req.ThreadParentMessageID` and fails the request on mismatch. Both checks are needed because thread replies share the room ID with their main-room parent, so a `roomID` match alone does not imply same-thread.
+- Trade-off accepted: synchronous NATS hop on every quoted send, bounded by a 2-second timeout. On timeout or any RPC error, the request fails and the client retries.
 
 The user-scoped subject is published on by gatekeeper acting on behalf of the sender — the sender's `account` and `roomID` come from the inbound MESSAGES subject. natsrouter parses params from the subject regardless of publisher identity, and all auth checks pass because the sender genuinely is subscribed.
 
@@ -115,7 +115,7 @@ Project rule (CLAUDE.md): use `pkg/subject` builders, never raw `fmt.Sprintf` at
 type ParentMessageFetcher interface {
     // FetchQuotedParent issues an RPC to history-service and returns a snapshot
     // suitable for embedding on a quoting message. Returns an error for any
-    // condition that should drop the quote (not found, RPC timeout, etc.).
+    // condition that should fail the request (not found, RPC timeout, etc.).
     FetchQuotedParent(ctx context.Context, account, roomID, siteID, messageID string) (*cassandra.QuotedParentMessage, error)
 }
 ```
@@ -160,7 +160,7 @@ msg := model.Message{
 }
 ```
 
-No UUID validation on `QuotedParentMessageID` — if the client sends garbage, the RPC's NotFound path handles it via soft-fail.
+No UUID validation on `QuotedParentMessageID` — if the client sends garbage, the RPC's NotFound path surfaces the error to the client.
 
 ### `main.go` — wiring
 
@@ -179,7 +179,7 @@ Construct the fetcher with the existing `nc *nats.Conn` plus `cfg.ChatBaseURL`, 
 Handler table-driven cases via `MockParentMessageFetcher`:
 - Quote field unset → fetcher not called.
 - Quote field set, fetcher returns snapshot → snapshot embedded on canonical event.
-- Quote field set, fetcher returns error → quote dropped, warn logged, message still published.
+- Quote field set, fetcher returns error → request fails with the wrapped error, message NOT published.
 - Thread + quote both set → both fields propagate.
 
 Fetcher tests against an in-process NATS server:
@@ -211,21 +211,23 @@ No conversion code — `evt.Message.QuotedParentMessage` is already the storage 
 - `cassandra.QuotedParentMessage` struct — used as-is.
 - Gatekeeper's existing `Store` interface, Mongo store, subscription validation, content validation, thread validation — all untouched.
 
-## Soft-fail policy (full enumeration)
+## Hard-fail policy (full enumeration)
 
 | Failure mode | Gatekeeper behavior |
 |---|---|
-| Client sends invalid UUID for quotedParentMessageId | RPC returns NotFound → quote dropped, message ships |
-| Parent message not found in Cassandra | RPC returns NotFound → quote dropped, message ships |
-| Parent in a different room (different `roomId`) | RPC returns NotFound (room param in subject doesn't match) → quote dropped, message ships |
-| Parent has a different thread context (`parent.ThreadParentID != req.ThreadParentMessageID`) | gatekeeper post-RPC check → quote dropped, message ships. Covers: main-room msg quoting a thread reply; thread-T msg quoting main; thread-T msg quoting thread-T'; thread-T msg quoting its own thread-parent main-room message. |
-| Parent has `deleted = true` | history-service returns the row (no deleted filter in `findMessage`) → snapshot embedded normally, quote ships |
-| Sender's `historySharedSince` is after parent's createdAt | RPC returns Forbidden → quote dropped, message ships |
-| history-service unreachable | NATS no-responder error → quote dropped, message ships |
-| history-service slow (>2s) | NATS timeout → quote dropped, message ships |
-| Any other error | Wrapped error returned → quote dropped, message ships |
+| Client sends invalid UUID for quotedParentMessageId | RPC returns NotFound → request fails, error replied to client |
+| Parent message not found in Cassandra | RPC returns NotFound → request fails, error replied to client |
+| Parent in a different room (different `roomId`) | RPC returns NotFound (room param in subject doesn't match) → request fails, error replied to client |
+| Parent has a different thread context (`parent.ThreadParentID != req.ThreadParentMessageID`) | gatekeeper post-RPC check → request fails, error replied to client. Covers: main-room msg quoting a thread reply; thread-T msg quoting main; thread-T msg quoting thread-T'; thread-T msg quoting its own thread-parent main-room message. |
+| Parent has `deleted = true` | history-service returns the row (no deleted filter in `findMessage`) → snapshot embedded normally, message ships |
+| Sender's `historySharedSince` is after parent's createdAt | RPC returns Forbidden → request fails, error replied to client |
+| history-service unreachable | NATS no-responder error → request fails, error replied to client |
+| history-service slow (>2s) | NATS timeout → request fails, error replied to client |
+| Any other error (including buggy fetcher returning `(nil, nil)`) | Wrapped error returned → request fails, error replied to client |
 
-In every error case the user's message lands in the room — only the quote decoration is lost, and a WARN log is emitted for operational visibility.
+The user explicitly intended to send a quoted reply; silently stripping the quote and shipping a plain message would be misleading. Failing the whole send gives the user clear feedback so they can correct the request (fix the parent ID, retry after a transient hiccup, drop the quote, etc.).
+
+Errors are classified as **validation errors** (plain `error`), not `infraError`, so the existing handler ack-and-reply path runs: the JetStream message is acked (no redelivery loop), and the client receives the error on its response subject.
 
 ## Cassandra schema migration
 
@@ -298,8 +300,6 @@ Per CLAUDE.md, every change lands as Red → Green → Refactor → Commit:
 
 ## Observability
 
-Two new log lines, both at WARN:
-- `"quoted parent unavailable, dropping quote"` — fetcher returned an error (RPC failure, history-service error envelope, etc.).
-- `"quoted parent has different thread context, dropping quote"` — thread-context guard rejected the snapshot.
+Quote-resolution failures surface through the existing `"process message failed"` ERROR log in `HandleJetStreamMsg` (with `error`, `account`, `roomID` fields) — the wrapped error from `resolveQuoteSnapshot` describes which arm tripped (RPC failure, thread-context mismatch, or buggy fetcher).
 
 No new metrics in MVP.

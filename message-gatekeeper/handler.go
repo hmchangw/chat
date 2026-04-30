@@ -165,7 +165,10 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		threadParentCreatedAt = &t
 	}
 
-	quotedSnapshot := h.resolveQuoteSnapshot(ctx, account, roomID, siteID, req.QuotedParentMessageID, req.ThreadParentMessageID)
+	quotedSnapshot, err := h.resolveQuoteSnapshot(ctx, account, roomID, siteID, req.QuotedParentMessageID, req.ThreadParentMessageID)
+	if err != nil {
+		return nil, err
+	}
 
 	msg := model.Message{
 		ID:                           req.ID,
@@ -196,36 +199,28 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 }
 
 // resolveQuoteSnapshot fetches the quoted parent (when requested) and returns
-// the snapshot to embed on the new message. Soft-fails on every failure mode:
-// returns nil + WARN log on RPC errors, and on thread-context mismatches per
-// the strict same-conversation-context rule (main↔main only, threadT↔threadT
-// only — quoting across thread boundaries, including a thread reply quoting
-// its own thread parent, drops the quote).
-func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, siteID, quotedParentMessageID, newMessageThreadID string) *cassandra.QuotedParentMessage {
+// the snapshot to embed on the new message. Returns a non-nil error on any
+// failure mode (RPC failure, thread-context mismatch under the strict
+// same-conversation-context rule, or buggy fetcher returning (nil, nil)) so
+// the caller can reply to the client and let them retry. The
+// thread-context rule is main↔main only, threadT↔threadT only — quoting
+// across thread boundaries, including a thread reply quoting its own thread
+// parent, is rejected.
+func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, siteID, quotedParentMessageID, newMessageThreadID string) (*cassandra.QuotedParentMessage, error) {
 	if quotedParentMessageID == "" {
-		return nil
+		return nil, nil
 	}
 	snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, quotedParentMessageID)
 	switch {
 	case err != nil:
-		slog.Warn("quoted parent unavailable, dropping quote",
-			"quotedParentMessageId", quotedParentMessageID,
-			"roomID", roomID,
-			"error", err)
-		return nil
+		return nil, fmt.Errorf("fetch quoted parent %s: %w", quotedParentMessageID, err)
 	case snap == nil:
-		// Defensive: fetcher contract requires (nil, err) on failure, but a
-		// buggy implementation returning (nil, nil) must not nil-deref the
-		// thread-context comparison below.
-		return nil
+		// Defensive: fetcher contract requires (nil, err) on failure.
+		return nil, fmt.Errorf("fetch quoted parent %s: fetcher returned nil snapshot", quotedParentMessageID)
 	case snap.ThreadParentID != newMessageThreadID:
-		slog.Warn("quoted parent has different thread context, dropping quote",
-			"quotedParentMessageId", quotedParentMessageID,
-			"roomID", roomID,
-			"newMessageThread", newMessageThreadID,
-			"parentThread", snap.ThreadParentID)
-		return nil
+		return nil, fmt.Errorf("quoted parent thread context mismatch: parent thread %q, new message thread %q",
+			snap.ThreadParentID, newMessageThreadID)
 	default:
-		return snap
+		return snap, nil
 	}
 }
