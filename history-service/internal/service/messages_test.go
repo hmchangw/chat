@@ -38,7 +38,7 @@ func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageReposi
 	subs := mocks.NewMockSubscriptionRepository(ctrl)
 	pub := mocks.NewMockEventPublisher(ctrl)
 	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
-	return service.New(msgs, subs, pub, threadRooms), msgs, subs, pub, threadRooms
+	return service.New(msgs, subs, pub, threadRooms, nil), msgs, subs, pub, threadRooms
 }
 
 func assertInternalErr(t *testing.T, err error, wantMsg string) {

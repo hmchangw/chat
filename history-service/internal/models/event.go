@@ -1,17 +1,21 @@
 package models
 
+import "encoding/json"
+
 // MessageEditedEvent is the live event published to chat.room.{roomID}.event
-// after a successful edit. Per CLAUDE.md, every NATS event carries a
-// Timestamp (event publish time). EditedAt is the domain time when the edit
-// occurred; both are populated from a single time.Now().UTC() in the handler.
+// after a successful edit. For channel rooms the edit content is encrypted via
+// roomcrypto.Encode and placed in EncryptedNewMsg (NewMsg is empty). For rooms
+// without a key (DM or key not yet provisioned), NewMsg carries the plaintext.
+// Per CLAUDE.md, every NATS event carries a Timestamp (event publish time).
 type MessageEditedEvent struct {
-	Type      string `json:"type"`      // always "message_edited"
-	Timestamp int64  `json:"timestamp"` // UTC millis, event publish time
-	RoomID    string `json:"roomId"`
-	MessageID string `json:"messageId"`
-	NewMsg    string `json:"newMsg"`
-	EditedBy  string `json:"editedBy"` // actor account (always == message.sender.account under sender-only auth)
-	EditedAt  int64  `json:"editedAt"` // UTC millis, domain time when edit occurred
+	Type            string          `json:"type"`                      // always "message_edited"
+	Timestamp       int64           `json:"timestamp"`                 // UTC millis, event publish time
+	RoomID          string          `json:"roomId"`
+	MessageID       string          `json:"messageId"`
+	NewMsg          string          `json:"newMsg,omitempty"`          // plaintext; empty when EncryptedNewMsg is set
+	EncryptedNewMsg json.RawMessage `json:"encryptedNewMsg,omitempty"` // roomcrypto.EncryptedMessage JSON; set for encrypted rooms
+	EditedBy        string          `json:"editedBy"`                  // actor account
+	EditedAt        int64           `json:"editedAt"`                  // UTC millis, domain time
 }
 
 // MessageDeletedEvent is the live event published to chat.room.{roomID}.event

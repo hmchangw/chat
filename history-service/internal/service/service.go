@@ -9,10 +9,11 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,SubscriptionRepository,EventPublisher,ThreadRoomRepository
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,EventPublisher,ThreadRoomRepository,RoomKeyProvider
 
 type MessageReader interface {
 	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
@@ -55,6 +56,13 @@ type ThreadRoomRepository interface {
 	GetUnreadThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongorepo.OffsetPageRequest) (mongorepo.OffsetPage[pkgmodel.ThreadRoom], error)
 }
 
+// RoomKeyProvider fetches the current encryption key for a room.
+// Defined here (not imported from pkg/roomkeystore directly) to keep the
+// dependency contract narrow — only Get is used by history-service.
+type RoomKeyProvider interface {
+	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
+}
+
 // HistoryService handles message history queries and mutations. Transport-agnostic.
 type HistoryService struct {
 	msgReader     MessageReader
@@ -62,11 +70,19 @@ type HistoryService struct {
 	subscriptions SubscriptionRepository
 	publisher     EventPublisher
 	threadRooms   ThreadRoomRepository
+	keyProvider   RoomKeyProvider
 }
 
 // New creates a HistoryService with the given repositories and event publisher.
-func New(msgs MessageRepository, subs SubscriptionRepository, pub EventPublisher, threadRooms ThreadRoomRepository) *HistoryService {
-	return &HistoryService{msgReader: msgs, msgWriter: msgs, subscriptions: subs, publisher: pub, threadRooms: threadRooms}
+func New(msgs MessageRepository, subs SubscriptionRepository, pub EventPublisher, threadRooms ThreadRoomRepository, keyProvider RoomKeyProvider) *HistoryService {
+	return &HistoryService{
+		msgReader:     msgs,
+		msgWriter:     msgs,
+		subscriptions: subs,
+		publisher:     pub,
+		threadRooms:   threadRooms,
+		keyProvider:   keyProvider,
+	}
 }
 
 // RegisterHandlers wires all NATS endpoints. Panics on subscription failure (fatal at startup).
