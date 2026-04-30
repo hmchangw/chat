@@ -1654,6 +1654,54 @@ func TestMessage_QuotedParentMessage_JSON(t *testing.T) {
 	})
 }
 
+func TestSubscriptionNewFields(t *testing.T) {
+	t.Run("channel sub round-trips with empty SidebarName/IsSubscribed", func(t *testing.T) {
+		sub := model.Subscription{
+			ID:       "s1",
+			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:   "r1",
+			SiteID:   "site-A",
+			Roles:    []model.Role{model.RoleOwner},
+			Name:     "deal team",
+			RoomType: model.RoomTypeChannel,
+			JoinedAt: time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC),
+		}
+		raw, err := json.Marshal(sub)
+		require.NoError(t, err)
+		var dst model.Subscription
+		require.NoError(t, json.Unmarshal(raw, &dst))
+		assert.Equal(t, "deal team", dst.Name)
+		assert.Equal(t, model.RoomTypeChannel, dst.RoomType)
+		assert.Empty(t, dst.SidebarName)
+		assert.False(t, dst.IsSubscribed)
+		assert.NotContains(t, string(raw), "sidebarName")
+		assert.NotContains(t, string(raw), "isSubscribed")
+	})
+	t.Run("botDM human sub round-trips with all fields", func(t *testing.T) {
+		sub := model.Subscription{
+			ID:           "s2",
+			User:         model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:       "r2",
+			SiteID:       "site-A",
+			Name:         "weather.bot",
+			RoomType:     model.RoomTypeBotDM,
+			SidebarName:  "Weather Bot",
+			IsSubscribed: true,
+			JoinedAt:     time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC),
+		}
+		raw, err := json.Marshal(sub)
+		require.NoError(t, err)
+		var dst model.Subscription
+		require.NoError(t, json.Unmarshal(raw, &dst))
+		assert.Equal(t, "weather.bot", dst.Name)
+		assert.Equal(t, model.RoomTypeBotDM, dst.RoomType)
+		assert.Equal(t, "Weather Bot", dst.SidebarName)
+		assert.True(t, dst.IsSubscribed)
+		assert.Contains(t, string(raw), `"sidebarName":"Weather Bot"`)
+		assert.Contains(t, string(raw), `"isSubscribed":true`)
+	})
+}
+
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T any](t *testing.T, src *T, dst *T) {
 	t.Helper()
