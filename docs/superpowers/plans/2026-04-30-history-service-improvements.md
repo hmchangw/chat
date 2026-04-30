@@ -1576,9 +1576,58 @@ git commit -m "docs(history-service): document service package's in-process scop
 
 ---
 
+## Task 15: Wire `HandlerTimeout(5s)` ceiling middleware
+
+**Why:** Once natsrouter ships `HandlerTimeout` (separate spec, Task 5), every history-service handler should run with a 5-second ceiling so a slow Cassandra/Mongo query can't hold a semaphore slot indefinitely. Hardcoded 5s — no env var, per the brainstorming decision.
+
+**Dependency:** Land this AFTER the natsrouter improvements plan ships `HandlerTimeout`.
+
+**Files:**
+- Modify: `history-service/cmd/main.go`
+
+- [ ] **Step 1: Add the middleware to the router setup**
+
+In `history-service/cmd/main.go`, replace this block:
+
+```go
+	router := natsrouter.New(nc, "history-service", natsrouter.WithMaxConcurrency(cfg.Router.MaxConcurrency))
+	router.Use(natsrouter.Recovery())
+	router.Use(natsrouter.Logging())
+```
+
+with:
+
+```go
+	router := natsrouter.New(nc, "history-service", natsrouter.WithMaxConcurrency(cfg.Router.MaxConcurrency))
+	router.Use(natsrouter.Recovery())
+	router.Use(natsrouter.HandlerTimeout(5 * time.Second))
+	router.Use(natsrouter.Logging())
+```
+
+`HandlerTimeout` goes between Recovery and Logging so panics from a deadline-driven downstream call are still caught, and the duration logged by Logging includes any deadline-related wait.
+
+- [ ] **Step 2: Build to confirm wiring**
+
+Run: `make build SERVICE=history-service`
+Expected: PASS.
+
+- [ ] **Step 3: Run unit tests**
+
+Run: `make test SERVICE=history-service`
+Expected: PASS — main.go isn't covered by unit tests, but the rest of the suite must remain green.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add history-service/cmd/main.go
+git commit -m "feat(history-service): apply 5s HandlerTimeout ceiling middleware"
+```
+
+---
+
 ## Self-Review
 
-After all 14 tasks are complete:
+After all 15 tasks are complete:
 
 - [ ] Run the full quality gate
   ```bash
