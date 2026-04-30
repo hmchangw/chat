@@ -231,3 +231,68 @@ git commit -m "feat(model): add Subscription.ThreadUnread and Alert"
 ```
 
 ---
+
+### Task 3: Remove `Unread` from `pkg/model/cassandra.Message`
+
+**Files:**
+- Modify: `pkg/model/cassandra/message.go`
+- Modify: `pkg/model/cassandra/message_test.go`
+
+**Rationale:** Per-message unread state is being centralized at the subscription level via `ThreadUnread`/`Alert`. The Cassandra column will be left in place physically (ops/IaC owns prod schema); removing the Go field is a read-safe change because gocql `structScan` ignores columns not present in the struct's `cql` tags.
+
+This task touches only the model and its unit tests. The cassrepo column-list constants and integration-test fixtures are addressed in Tasks 4 and 7 respectively.
+
+- [ ] **Step 3.1: Update unit tests first (drop `Unread` references)**
+
+Edit `pkg/model/cassandra/message_test.go`:
+
+In `TestMessage_JSON_Full` (around line 132), remove the `Unread: true,` line from the struct literal (currently line 153) and remove the `assert.True(t, got.Unread)` line (currently line 182).
+
+In `TestMessage_JSON_Minimal` (around line 196), remove `assert.False(t, got.Unread)` (currently line 218).
+
+- [ ] **Step 3.2: Verify the unit tests fail to compile**
+
+Run: `make test SERVICE=pkg/model`
+Expected: tests still PASS — the test edits removed references to `Unread` but the field still exists on the struct, so compilation succeeds. (This step is a sanity check that the test edits compile cleanly before we touch the struct.)
+
+> Note: this task departs slightly from strict TDD red-then-green because we're *removing* a field, not adding one. The "red" we care about is "downstream callers no longer reference the removed field"; we lean on the compiler to catch any reference we missed in Step 3.3.
+
+- [ ] **Step 3.3: Remove the field from the struct**
+
+Edit `pkg/model/cassandra/message.go`. Delete the `Unread` line (currently line 88):
+
+```go
+	Unread                bool                     `json:"unread,omitempty"                cql:"unread"`
+```
+
+The surrounding context after the edit should look like:
+
+```go
+	VisibleTo             string                   `json:"visibleTo,omitempty"             cql:"visible_to"`
+	Reactions             map[string][]Participant `json:"reactions,omitempty"             cql:"reactions"`
+	Deleted               bool                     `json:"deleted,omitempty"               cql:"deleted"`
+```
+
+- [ ] **Step 3.4: Confirm package builds and unit tests pass**
+
+Run: `make test SERVICE=pkg/model`
+Expected: PASS for both `pkg/model` and `pkg/model/cassandra`. If any test references a now-removed `Unread`, the compiler will surface it — fix by deleting that reference, then re-run.
+
+- [ ] **Step 3.5: Confirm no other unit-test code in the repo still references the field**
+
+Run: `grep -rEn "\.Unread\b|Unread:\s*(true|false)" --include="*.go" pkg/ history-service/ | grep -v "_test.go"; echo "---test files---"; grep -rEn "\.Unread\b|Unread:\s*(true|false)" --include="*_test.go" pkg/`
+Expected: no production-code matches (`---test files---` separator with no `pkg/model/cassandra/message_test.go` lines remaining). Integration-test files under `history-service/internal/cassrepo/` and `history-service/internal/service/` are addressed in Task 7 and may still appear here — that's expected at this stage.
+
+- [ ] **Step 3.6: Lint**
+
+Run: `make lint`
+Expected: clean exit. (history-service still references `unread` only in column-list strings and integration-test DDLs, which are not affected by removing the Go struct field.)
+
+- [ ] **Step 3.7: Commit**
+
+```bash
+git add pkg/model/cassandra/message.go pkg/model/cassandra/message_test.go
+git commit -m "refactor(cassandra): remove unused Unread field from Message model"
+```
+
+---
