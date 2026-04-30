@@ -571,3 +571,277 @@ git commit -m "docs(cassandra): drop unread column from message schema doc"
 ```
 
 ---
+
+### Task 7: Drop `unread` from integration-test inline DDL and INSERTs
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/integration_test.go`
+- Modify: `history-service/internal/cassrepo/thread_messages_integration_test.go`
+- Modify: `history-service/internal/cassrepo/messages_by_id_integration_test.go`
+- Modify: `history-service/internal/service/integration_test.go`
+
+**Context:** Integration tests embed their own keyspace DDL strings (so the test container doesn't depend on `docker-local/cassandra/init/*.cql`) and, in two cases, hand-rolled INSERT statements. Each occurrence of `unread BOOLEAN,` (DDL) and `unread,` (INSERT column list) — plus the matching `?` placeholder and value-arg — must be removed.
+
+This is the runtime-validation task: once it lands, `make test-integration SERVICE=history-service` will rebuild the test container against the new schema and exercise the new SELECT/INSERT shapes end-to-end.
+
+#### 7A. `cassrepo/integration_test.go` (3 DDLs)
+
+- [ ] **Step 7.1: `messages_by_room` DDL — drop `unread BOOLEAN,`**
+
+In `history-service/internal/cassrepo/integration_test.go`, in the `CREATE TABLE IF NOT EXISTS %s.messages_by_room` block (around lines 30–58), delete line 49:
+
+```
+		unread BOOLEAN,
+```
+
+Surrounding context after the edit:
+
+```
+		quoted_parent_message FROZEN<"QuotedParentMessage">,
+		visible_to TEXT,
+		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+- [ ] **Step 7.2: `messages_by_id` DDL — drop `unread BOOLEAN,`**
+
+In the same file, in the `CREATE TABLE IF NOT EXISTS %s.messages_by_id` block (around lines 60–90), delete line 78:
+
+```
+		unread BOOLEAN,
+```
+
+Surrounding context after the edit:
+
+```
+		quoted_parent_message FROZEN<"QuotedParentMessage">,
+		visible_to TEXT,
+		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+- [ ] **Step 7.3: `thread_messages_by_room` DDL — drop `unread BOOLEAN,`**
+
+In the same file, in the `CREATE TABLE IF NOT EXISTS %s.thread_messages_by_room` block (around lines 92–117), delete line 108:
+
+```
+		unread BOOLEAN,
+```
+
+Surrounding context after the edit:
+
+```
+		quoted_parent_message FROZEN<"QuotedParentMessage">,
+		visible_to TEXT,
+		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+> All three Edits target the same file. Use distinct surrounding context for each Edit — line numbers above are guidance, not anchors. Three near-identical strings in one file is a classic ambiguity trap.
+
+#### 7B. `cassrepo/thread_messages_integration_test.go` (1 INSERT)
+
+- [ ] **Step 7.4: Drop `unread` from the `thread_messages_by_room` INSERT**
+
+In `history-service/internal/cassrepo/thread_messages_integration_test.go`, around line 189, the test runs:
+
+```go
+insertCQL := `INSERT INTO thread_messages_by_room (
+    room_id, thread_room_id, created_at, message_id, thread_parent_id,
+    sender, target_user, msg, mentions, attachments, file, card, card_action,
+    quoted_parent_message, visible_to, unread, reactions, deleted,
+    type, sys_msg_data, site_id, edited_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+```
+
+Change to (drop `unread,` from the column list **and** drop one `?` from the placeholder list — count: 23 → 22):
+
+```go
+insertCQL := `INSERT INTO thread_messages_by_room (
+    room_id, thread_room_id, created_at, message_id, thread_parent_id,
+    sender, target_user, msg, mentions, attachments, file, card, card_action,
+    quoted_parent_message, visible_to, reactions, deleted,
+    type, sys_msg_data, site_id, edited_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+```
+
+Then in the immediately following `insertArgs := []any{ … }` slice (around line 195), find the line:
+
+```go
+		quotedMsg, "u1", true,
+```
+
+The trailing `true` is the value for the `unread` column. Change to:
+
+```go
+		quotedMsg, "u1",
+```
+
+Sanity check: count the values in `insertArgs` before/after. Before the edit the slice has 23 items in column order; after the edit, 22. Each value must align positionally with a column name in the INSERT.
+
+#### 7C. `cassrepo/messages_by_id_integration_test.go` (1 INSERT)
+
+- [ ] **Step 7.5: Drop `unread` from the `messages_by_id` INSERT**
+
+In `history-service/internal/cassrepo/messages_by_id_integration_test.go`, around line 71:
+
+```go
+insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, unread, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at, thread_room_id, pinned_at, pinned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+```
+
+Change to (drop `unread, ` from the column list **and** drop one `?` from the placeholder list — count: 27 → 26):
+
+```go
+insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at, thread_room_id, pinned_at, pinned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+```
+
+Then in `insertArgs` (around line 72) the line that currently reads:
+
+```go
+		true, "m-parent", threadParent, quotedMsg, "u1", true,
+```
+
+The leading `true` is `tshow`; the trailing `true` (after `"u1"`) is `unread`. Drop the trailing `true`:
+
+```go
+		true, "m-parent", threadParent, quotedMsg, "u1",
+```
+
+Sanity check: positional alignment. `insertArgs` had 27 items; after the edit, 26.
+
+#### 7D. `service/integration_test.go` (3 DDLs)
+
+- [ ] **Step 7.6: `messages_by_room` DDL — drop `unread BOOLEAN`**
+
+In `history-service/internal/service/integration_test.go`, in the `CREATE TABLE IF NOT EXISTS %s.messages_by_room` block (around lines 42–52), the relevant line packs `visible_to`, `unread`, and the next column on line 48:
+
+```
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT, unread BOOLEAN,
+```
+
+Change to:
+
+```
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
+```
+
+- [ ] **Step 7.7: `messages_by_id` DDL — drop `unread BOOLEAN`**
+
+In the same file, in the `CREATE TABLE IF NOT EXISTS %s.messages_by_id` block (around lines 55–66), line 61:
+
+```
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT, unread BOOLEAN,
+```
+
+Change to:
+
+```
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
+```
+
+- [ ] **Step 7.8: `thread_messages_by_room` DDL — drop `unread BOOLEAN`**
+
+In the same file, in the `CREATE TABLE IF NOT EXISTS %s.thread_messages_by_room` block (around lines 69–79), line 75:
+
+```
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT, unread BOOLEAN,
+```
+
+Change to:
+
+```
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
+```
+
+> All three lines in `service/integration_test.go` are byte-identical. Disambiguate each Edit by including the surrounding `CREATE TABLE` line or other unique nearby tokens.
+
+#### 7E. Verification
+
+- [ ] **Step 7.9: Confirm no `unread` remains in repo (excluding superseded plans/specs)**
+
+Run:
+
+```bash
+grep -rn unread \
+  --include="*.go" --include="*.cql" --include="*.md" \
+  pkg/ history-service/ docker-local/ docs/ \
+  | grep -v "docs/superpowers/plans/" \
+  | grep -v "docs/superpowers/specs/"
+```
+
+Expected: only matches in semantic prose (e.g., `mongorepo/pipelines.go` comment "Unread = subscribed AND lastMsgAt > lastSeenAt …", `mongorepo/threadroom.go` `fmt.Errorf("querying unread thread rooms: …")`, `models/thread_parent.go` `ThreadFilterUnread = "unread"`, `nats-subject-naming.md` discussing unread badges). No occurrences in DDL, INSERT, SELECT column lists, struct fields, or struct literals.
+
+> The grep filter excludes `docs/superpowers/plans/` and `docs/superpowers/specs/` because superseded plans (e.g. `2026-04-21-history-list-threads.md`, `2026-04-15-move-cassandra-message-to-pkg.md`) intentionally retain their original wording. Only operational artifacts must be `unread`-free after this task.
+
+- [ ] **Step 7.10: Run unit tests**
+
+Run: `make test SERVICE=history-service`
+Expected: PASS.
+
+- [ ] **Step 7.11: Run integration tests**
+
+Run: `make test-integration SERVICE=history-service`
+Expected: PASS. The Cassandra testcontainer is started fresh per run, applies the updated inline DDL, exercises the updated SELECTs from Tasks 4 and 7's INSERTs, and verifies round-trips against the now-fieldless `cassandra.Message` struct.
+
+If integration tests fail, common causes:
+- A column name in an INSERT no longer matches its placeholder count (positional misalignment) — re-check Step 7.4 / 7.5 sanity counts.
+- A column referenced by a SELECT (in `cassrepo/*.go` from Task 4) is missing from the test DDL — re-check Steps 7.1–7.3 / 7.6–7.8.
+- Cassandra rejects the DDL (syntax) — verify only the `unread BOOLEAN,` token was removed and surrounding commas/whitespace are intact.
+
+- [ ] **Step 7.12: Lint**
+
+Run: `make lint`
+Expected: clean exit.
+
+- [ ] **Step 7.13: Commit**
+
+```bash
+git add history-service/internal/cassrepo/integration_test.go \
+        history-service/internal/cassrepo/thread_messages_integration_test.go \
+        history-service/internal/cassrepo/messages_by_id_integration_test.go \
+        history-service/internal/service/integration_test.go
+git commit -m "test(history-service): drop unread column from integration fixtures"
+```
+
+---
+
+## Plan Self-Review
+
+### Spec coverage
+
+| Spec section | Covered by |
+|---|---|
+| `Room.MinUserLastSeenAt` field + tags | Task 1 |
+| `Subscription.ThreadUnread` + `Alert` fields + tags | Task 2 |
+| Remove `Unread` from `pkg/model/cassandra.Message` (struct + tests) | Task 3 |
+| Drop `unread` from cassrepo SELECTs (`baseColumns`, `threadMessageColumns`) | Task 4 |
+| Local-dev DDL (`docker-local/cassandra/init/*.cql`) | Task 5 |
+| `docs/cassandra_message_model.md` | Task 6 |
+| Integration-test DDL (`cassrepo/integration_test.go`, `service/integration_test.go`) | Task 7 |
+| Integration-test INSERTs (`messages_by_id_integration_test.go`, `thread_messages_integration_test.go`) | Task 7 |
+| Backward compat: prod ALTER TABLE | Out of scope (per spec) |
+| Backward compat: pre-existing Mongo docs | No-op (verified by Tasks 1, 2 omit/default behavior) |
+
+### Per-task verification gate
+
+Each task ends with `make test` / `make lint` / (Task 7) `make test-integration`. The cumulative chain leaves the build green at every commit boundary.
+
+### Placeholder scan
+
+Searched the plan for "TBD", "TODO", "fill in", "appropriate", "similar to", "etc". None remain.
+
+### Type / identifier consistency
+
+- `MinUserLastSeenAt` (Task 1) ↔ JSON `minUserLastSeenAt` ↔ BSON `minUserLastSeenAt` — consistent.
+- `ThreadUnread` (Task 2) ↔ JSON `threadUnread` ↔ BSON `threadUnread` — consistent.
+- `Alert` (Task 2) ↔ JSON `alert` ↔ BSON `alert` — consistent.
+- `baseColumns` and `threadMessageColumns` (Task 4) match their actual constant names in `messages_by_room.go` and `thread_messages.go`.
+- INSERT column counts in Steps 7.4 (23 → 22) and 7.5 (27 → 26) match the placeholder-count drop and the `insertArgs` slice-length drop.
+
+### Ordering invariant
+
+Tasks are ordered so that the build is green at every commit:
+- Tasks 1, 2 are pure additions.
+- Task 3 removes a Go field; gocql `structScan` ignores Cassandra columns absent from the struct, so SELECTs still asking for `unread` continue to work between commit 3 and commit 4.
+- Task 4 trims SELECTs; integration tests still pass because the DDL still has the column.
+- Task 5 trims local-dev DDL; no Go test depends on these files.
+- Task 6 trims the schema doc; no test depends on it.
+- Task 7 trims integration-test DDL + INSERTs; the testcontainer recreates schema per run, so this commit is the one that actually changes integration-test runtime behavior. Tests must pass after this commit.
+
