@@ -1716,3 +1716,39 @@ func roundTrip[T any](t *testing.T, src *T, dst *T) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", *dst, *src)
 	}
 }
+
+func TestAppRoundtrip(t *testing.T) {
+	a := model.App{
+		ID:          "app1",
+		Name:        "Weather Bot",
+		Description: "Forecasts and alerts",
+		Assistant: &model.AppAssistant{
+			Enabled:     true,
+			Name:        "weather.bot",
+			SettingsURL: "https://example.com/weather/settings",
+		},
+		Sponsors: []model.AppSponsor{
+			{Name: "Alice", Phone: "555-0100"},
+		},
+	}
+	var dst model.App
+	roundTrip(t, &a, &dst)
+	require.NotNil(t, dst.Assistant)
+	assert.True(t, dst.Assistant.Enabled)
+	assert.Equal(t, "weather.bot", dst.Assistant.Name)
+	assert.Equal(t, "Weather Bot", dst.Name)
+	assert.Len(t, dst.Sponsors, 1)
+	assert.Equal(t, "Alice", dst.Sponsors[0].Name)
+}
+
+func TestAppAssistantDisabledRoundtrip(t *testing.T) {
+	a := model.App{
+		ID:        "app2",
+		Name:      "Disabled Bot",
+		Assistant: &model.AppAssistant{Enabled: false, Name: "disabled.bot"},
+	}
+	var dst model.App
+	roundTrip(t, &a, &dst)
+	require.NotNil(t, dst.Assistant)
+	assert.False(t, dst.Assistant.Enabled)
+}
