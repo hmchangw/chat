@@ -98,6 +98,16 @@ type MembersAdded struct {
 	AddedUsersCount int          `json:"addedUsersCount"`
 }
 
+// RoomCreated is the sys-message payload for the "room_created" message
+// emitted when a new channel room is created.
+type RoomCreated struct {
+	Name            string       `json:"name"`
+	Users           []string     `json:"users"`
+	Orgs            []string     `json:"orgs"`
+	Channels        []ChannelRef `json:"channels"`
+	AddedUsersCount int          `json:"addedUsersCount"`
+}
+
 type ListRoomMembersRequest struct {
 	Limit  *int `json:"limit,omitempty"`
 	Offset *int `json:"offset,omitempty"`

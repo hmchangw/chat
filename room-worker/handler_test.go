@@ -1756,3 +1756,71 @@ func TestProcessAddMembers_PublishesAsyncJobOnSuccess(t *testing.T) {
 	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, got.Operation)
 	assert.Equal(t, "ok", got.Status)
 }
+
+func TestComposeName(t *testing.T) {
+	tests := map[string]struct{ eng, ch, want string }{
+		"distinct":   {"Alice", "爱丽丝", "Alice 爱丽丝"},
+		"equal":      {"Alice", "Alice", "Alice"},
+		"empty eng":  {"", "爱丽丝", ""},
+		"empty ch":   {"Alice", "", ""},
+		"both empty": {"", "", ""},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, composeName(tc.eng, tc.ch))
+		})
+	}
+}
+
+func TestComposeNameOrAccount(t *testing.T) {
+	u := &model.User{Account: "alice", EngName: "Alice", ChineseName: "爱丽丝"}
+	assert.Equal(t, "Alice 爱丽丝", composeNameOrAccount(u))
+
+	bare := &model.User{Account: "alice"}
+	assert.Equal(t, "alice", composeNameOrAccount(bare))
+}
+
+func TestResolveRoomName(t *testing.T) {
+	tests := map[string]struct {
+		req      model.CreateRoomRequest
+		roomType model.RoomType
+		want     string
+	}{
+		"dm uses roomID":     {model.CreateRoomRequest{RoomID: "u_a|u_b"}, model.RoomTypeDM, "u_a|u_b"},
+		"botDM uses roomID":  {model.CreateRoomRequest{RoomID: "u_a|u_w"}, model.RoomTypeBotDM, "u_a|u_w"},
+		"channel given name": {model.CreateRoomRequest{Name: "deal team", RoomID: "r1"}, model.RoomTypeChannel, "deal team"},
+		"channel auto-name":  {model.CreateRoomRequest{Users: []string{"bob"}, Orgs: []string{"org-fx"}, RoomID: "r2"}, model.RoomTypeChannel, "bob, org-fx"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resolveRoomName(&tc.req, tc.roomType))
+		})
+	}
+}
+
+func TestCreatedByForType(t *testing.T) {
+	assert.Equal(t, "u_alice", createdByForType("u_alice", model.RoomTypeChannel))
+	assert.Empty(t, createdByForType("u_alice", model.RoomTypeDM))
+	assert.Empty(t, createdByForType("u_alice", model.RoomTypeBotDM))
+}
+
+func TestNewSubSetsAllFields(t *testing.T) {
+	user := &model.User{ID: "u1", Account: "alice"}
+	room := &model.Room{ID: "r1", SiteID: "site-A", Type: model.RoomTypeChannel}
+	now := time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC)
+
+	sub := newSub("s1", user, room, []model.Role{model.RoleOwner},
+		"deal team", "", false, now)
+
+	assert.Equal(t, "s1", sub.ID)
+	assert.Equal(t, "u1", sub.User.ID)
+	assert.Equal(t, "alice", sub.User.Account)
+	assert.Equal(t, "r1", sub.RoomID)
+	assert.Equal(t, "site-A", sub.SiteID)
+	assert.Equal(t, []model.Role{model.RoleOwner}, sub.Roles)
+	assert.Equal(t, "deal team", sub.Name)
+	assert.Equal(t, model.RoomTypeChannel, sub.RoomType)
+	assert.Empty(t, sub.SidebarName)
+	assert.False(t, sub.IsSubscribed)
+	assert.Equal(t, now, sub.JoinedAt)
+}

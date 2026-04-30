@@ -1957,3 +1957,29 @@ func TestCreateRoomReplyBotDMRoundtrip(t *testing.T) {
 	assert.Equal(t, string(model.RoomTypeBotDM), dst.RoomType)
 	assert.Contains(t, string(data), `"roomType":"botDM"`)
 }
+
+func TestRoomCreatedRoundtrip(t *testing.T) {
+	rc := model.RoomCreated{
+		Name:  "deal team",
+		Users: []string{"alice", "bob"},
+		Orgs:  []string{"org-fx"},
+		Channels: []model.ChannelRef{
+			{RoomID: "r-src", SiteID: "site-b"},
+		},
+		AddedUsersCount: 3,
+	}
+	var dst model.RoomCreated
+	roundTrip(t, &rc, &dst)
+	assert.Equal(t, "deal team", dst.Name)
+	assert.Equal(t, []string{"alice", "bob"}, dst.Users)
+	assert.Equal(t, []string{"org-fx"}, dst.Orgs)
+	assert.Equal(t, []model.ChannelRef{{RoomID: "r-src", SiteID: "site-b"}}, dst.Channels)
+	assert.Equal(t, 3, dst.AddedUsersCount)
+}
+
+func TestMessageTypeAndAsyncJobStatusConstants(t *testing.T) {
+	assert.Equal(t, "room_created", model.MessageTypeRoomCreated)
+	assert.Equal(t, "members_added", model.MessageTypeMembersAdded)
+	assert.Equal(t, "ok", model.AsyncJobStatusOK)
+	assert.Equal(t, "error", model.AsyncJobStatusError)
+}

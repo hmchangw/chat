@@ -89,14 +89,45 @@ func (s *MongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, e
 }
 
 func (s *MongoStore) GetUser(ctx context.Context, account string) (*model.User, error) {
-	var user model.User
-	if err := s.users.FindOne(ctx, bson.M{"account": account}).Decode(&user); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, fmt.Errorf("user %q not found: %w", account, err)
-		}
+	var u model.User
+	err := s.users.FindOne(ctx, bson.M{"account": account}).Decode(&u)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
 		return nil, fmt.Errorf("get user %q: %w", account, err)
 	}
-	return &user, nil
+	return &u, nil
+}
+
+func (s *MongoStore) CreateRoom(ctx context.Context, room *model.Room) error {
+	if _, err := s.rooms.InsertOne(ctx, room); err != nil {
+		return fmt.Errorf("insert room: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string) ([]string, error) {
+	pipe := pipelines.GetNewMembersPipeline(orgIDs, accounts, "")
+	pipe = append(pipe, bson.M{"$group": bson.M{
+		"_id":      nil,
+		"accounts": bson.M{"$addToSet": "$account"},
+	}})
+	cur, err := s.users.Aggregate(ctx, pipe)
+	if err != nil {
+		return nil, fmt.Errorf("list new members for new room: %w", err)
+	}
+	defer cur.Close(ctx)
+	if !cur.Next(ctx) {
+		return nil, nil
+	}
+	var doc struct {
+		Accounts []string `bson:"accounts"`
+	}
+	if err := cur.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("decode aggregation result: %w", err)
+	}
+	return doc.Accounts, nil
 }
 
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {

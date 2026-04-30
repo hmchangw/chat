@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -740,4 +741,93 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 func mustMarshal(v any) []byte {
 	data, _ := json.Marshal(v)
 	return data
+}
+
+// composeName returns "eng ch" when both are non-empty and different, eng alone
+// when they are equal, or "" when either is empty.
+func composeName(eng, ch string) string {
+	if eng == "" || ch == "" {
+		return ""
+	}
+	if eng == ch {
+		return eng
+	}
+	return eng + " " + ch
+}
+
+// composeNameOrAccount returns the display name for u, falling back to u.Account
+// when both EngName and ChineseName are absent.
+func composeNameOrAccount(u *model.User) string {
+	if name := composeName(u.EngName, u.ChineseName); name != "" {
+		return name
+	}
+	slog.Warn("composeNameOrAccount: missing eng/chinese name; falling back to account",
+		"account", u.Account)
+	return u.Account
+}
+
+// resolveRoomName determines the persisted room name from the create request.
+// DM and BotDM rooms use RoomID as their name; channels use the explicit Name
+// when provided, otherwise an auto-generated name from Users/Orgs/Channels.
+func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) string {
+	if roomType == model.RoomTypeDM || roomType == model.RoomTypeBotDM {
+		return req.RoomID
+	}
+	if req.Name != "" {
+		return truncateRunes(req.Name, 100)
+	}
+	return composeAutoName(req.Users, req.Orgs, req.Channels)
+}
+
+// createdByForType returns the requesterID for channel rooms and "" for DM/BotDM.
+func createdByForType(requesterID string, roomType model.RoomType) string {
+	if roomType == model.RoomTypeChannel {
+		return requesterID
+	}
+	return ""
+}
+
+// newSub constructs a Subscription from its constituent parts.
+func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
+	name, sidebarName string, isSubscribed bool, joinedAt time.Time) *model.Subscription {
+	return &model.Subscription{
+		ID:           id,
+		User:         model.SubscriptionUser{ID: user.ID, Account: user.Account},
+		RoomID:       room.ID,
+		SiteID:       room.SiteID,
+		Roles:        roles,
+		Name:         name,
+		RoomType:     room.Type,
+		SidebarName:  sidebarName,
+		IsSubscribed: isSubscribed,
+		JoinedAt:     joinedAt,
+	}
+}
+
+// truncateRunes truncates s to at most max Unicode code points.
+func truncateRunes(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	out := make([]rune, 0, max)
+	for _, r := range s {
+		out = append(out, r)
+		if len(out) == max {
+			break
+		}
+	}
+	return string(out)
+}
+
+// composeAutoName joins users, orgs, and channel room IDs with ", " and
+// truncates the result to 100 runes for use as an auto-generated room name.
+func composeAutoName(users, orgs []string, channels []model.ChannelRef) string {
+	parts := make([]string, 0, len(users)+len(orgs)+len(channels))
+	parts = append(parts, users...)
+	parts = append(parts, orgs...)
+	for _, c := range channels {
+		parts = append(parts, c.RoomID)
+	}
+	joined := strings.Join(parts, ", ")
+	return truncateRunes(joined, 100)
 }

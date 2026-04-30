@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
+
+// ErrUserNotFound is returned by GetUser when the account does not exist.
+var ErrUserNotFound = errors.New("user not found")
 
 //go:generate mockgen -destination=mock_store_test.go -package=main . SubscriptionStore
 
@@ -64,4 +68,14 @@ type SubscriptionStore interface {
 	// Delegates to pkg/pipelines.GetNewMembersPipeline + a $group/$addToSet
 	// terminal stage.
 	ListNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error)
+
+	// CreateRoom inserts the room doc. Returns mongo.ErrDuplicateKey
+	// when the _id collides; the handler's idempotency logic handles
+	// matching-existing-room as success-on-redelivery.
+	CreateRoom(ctx context.Context, room *model.Room) error
+
+	// ListNewMembersForNewRoom is the empty-roomID variant of
+	// ListNewMembers — same dedup + bot filter, no "already-subscribed"
+	// pruning since the room doesn't exist yet.
+	ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string) ([]string, error)
 }

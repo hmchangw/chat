@@ -180,6 +180,20 @@ const (
 	AsyncJobOpRoomMemberRoleUpdate = "room.member.role_update"
 )
 
+const (
+	// MessageTypeRoomCreated is the system-message type emitted on room creation (channels only).
+	MessageTypeRoomCreated = "room_created"
+	// MessageTypeMembersAdded is the system-message type emitted when members are added.
+	MessageTypeMembersAdded = "members_added"
+)
+
+const (
+	// AsyncJobStatusOK indicates a successful async job result.
+	AsyncJobStatusOK = "ok"
+	// AsyncJobStatusError indicates a failed async job result.
+	AsyncJobStatusError = "error"
+)
+
 // CreateRoomReply is the synchronous NATS reply returned by room-service
 // to the client immediately after publishing the canonical create event.
 type CreateRoomReply struct {
