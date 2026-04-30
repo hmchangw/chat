@@ -94,10 +94,15 @@ func main() {
 	}
 	handler := NewHandler(store, us, threadStore, cfg.SiteID, func(ctx context.Context, subj string, data []byte, msgID string) error {
 		if msgID == "" {
-			return nc.Publish(ctx, subj, data)
+			if err := nc.Publish(ctx, subj, data); err != nil {
+				return fmt.Errorf("publish nats message to %s: %w", subj, err)
+			}
+			return nil
 		}
-		_, err := js.Publish(ctx, subj, data, jetstream.WithMsgID(msgID))
-		return err
+		if _, err := js.Publish(ctx, subj, data, jetstream.WithMsgID(msgID)); err != nil {
+			return fmt.Errorf("publish jetstream message to %s with msgID %s: %w", subj, msgID, err)
+		}
+		return nil
 	})
 
 	if err := bootstrapStreams(ctx, js, cfg.SiteID, cfg.Bootstrap.Enabled); err != nil {

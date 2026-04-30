@@ -214,19 +214,20 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 		UserID: "u-bob", UserAccount: "bob", SiteID: "site-a",
 		HasMention: false, CreatedAt: now, UpdatedAt: now,
 	}
-	subData, _ := json.Marshal(sub)
-	evtData, _ := json.Marshal(model.OutboxEvent{
+	subData, err := json.Marshal(sub)
+	require.NoError(t, err)
+	evtData, err := json.Marshal(model.OutboxEvent{
 		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
 		Payload: subData, Timestamp: now.UnixMilli(),
 	})
+	require.NoError(t, err)
 
 	require.NoError(t, handler.HandleEvent(ctx, evtData))
 
 	var got model.ThreadSubscription
-	err := db.Collection("threadSubscriptions").
+	require.NoError(t, db.Collection("threadSubscriptions").
 		FindOne(ctx, bson.M{"threadRoomId": "tr-1", "userId": "u-bob"}).
-		Decode(&got)
-	require.NoError(t, err)
+		Decode(&got))
 	assert.Equal(t, "sub-1", got.ID)
 	assert.Equal(t, "site-a", got.SiteID, "SiteID is the room's site, preserved across federation")
 	assert.False(t, got.HasMention)
@@ -255,11 +256,13 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 		UserID: "u-bob", UserAccount: "bob", SiteID: "site-a",
 		HasMention: true, CreatedAt: now, UpdatedAt: now,
 	}
-	mentionData, _ := json.Marshal(mentionSub)
-	mentionEvt, _ := json.Marshal(model.OutboxEvent{
+	mentionData, err := json.Marshal(mentionSub)
+	require.NoError(t, err)
+	mentionEvt, err := json.Marshal(model.OutboxEvent{
 		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
 		Payload: mentionData, Timestamp: now.UnixMilli(),
 	})
+	require.NoError(t, err)
 	require.NoError(t, handler.HandleEvent(ctx, mentionEvt))
 
 	// Second event: HasMention=false (later updatedAt). Must NOT clear the flag.
@@ -267,18 +270,19 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	plainSub.HasMention = false
 	later := now.Add(time.Minute)
 	plainSub.UpdatedAt = later
-	plainData, _ := json.Marshal(plainSub)
-	plainEvt, _ := json.Marshal(model.OutboxEvent{
+	plainData, err := json.Marshal(plainSub)
+	require.NoError(t, err)
+	plainEvt, err := json.Marshal(model.OutboxEvent{
 		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
 		Payload: plainData, Timestamp: later.UnixMilli(),
 	})
+	require.NoError(t, err)
 	require.NoError(t, handler.HandleEvent(ctx, plainEvt))
 
 	var got model.ThreadSubscription
-	err := db.Collection("threadSubscriptions").
+	require.NoError(t, db.Collection("threadSubscriptions").
 		FindOne(ctx, bson.M{"threadRoomId": "tr-1", "userId": "u-bob"}).
-		Decode(&got)
-	require.NoError(t, err)
+		Decode(&got))
 	assert.True(t, got.HasMention, "hasMention must remain true after a non-mention event")
 	assert.True(t, got.UpdatedAt.Equal(later), "updatedAt must advance to the later event's value")
 	// _id and createdAt come from $setOnInsert and must remain from the first event.
@@ -290,11 +294,13 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	thirdSub.HasMention = true
 	evenLater := later.Add(time.Minute)
 	thirdSub.UpdatedAt = evenLater
-	thirdData, _ := json.Marshal(thirdSub)
-	thirdEvt, _ := json.Marshal(model.OutboxEvent{
+	thirdData, err := json.Marshal(thirdSub)
+	require.NoError(t, err)
+	thirdEvt, err := json.Marshal(model.OutboxEvent{
 		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
 		Payload: thirdData, Timestamp: evenLater.UnixMilli(),
 	})
+	require.NoError(t, err)
 	require.NoError(t, handler.HandleEvent(ctx, thirdEvt))
 
 	require.NoError(t, db.Collection("threadSubscriptions").
