@@ -296,3 +296,86 @@ git commit -m "refactor(cassandra): remove unused Unread field from Message mode
 ```
 
 ---
+
+### Task 4: Drop `unread` from `cassrepo` column-list constants
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/messages_by_room.go`
+- Modify: `history-service/internal/cassrepo/thread_messages.go`
+
+**Why these two only:**
+- `messages_by_room.go` exports `baseColumns`, which is also reused by `messages_by_id.go` via `messageByIDQuery = "SELECT " + baseColumns + ", pinned_at, pinned_by FROM messages_by_id"`. Updating `baseColumns` propagates to both `messages_by_room` and `messages_by_id` SELECTs.
+- `thread_messages.go` defines its own `threadMessageColumns` for the `thread_messages_by_room` SELECT.
+- The `pinned_messages_by_room` SELECT happens in a separate file but does **not** include `unread` in its column list (verified: no `unread` reference in `pinned_messages.go` or equivalent), so no edit needed there.
+
+**Verification:** `make test SERVICE=history-service` covers these constants only via integration tests. We rely on those for runtime validation in Task 7. For this task, the unit-level guarantee is that the package compiles and unit tests still pass.
+
+- [ ] **Step 4.1: Drop `unread` from `baseColumns`**
+
+Edit `history-service/internal/cassrepo/messages_by_room.go`. Change:
+
+```go
+const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, target_user, " +
+	"msg, mentions, attachments, file, card, card_action, tshow, tcount, " +
+	"thread_parent_id, thread_parent_created_at, quoted_parent_message, " +
+	"visible_to, unread, reactions, deleted, " +
+	"type, sys_msg_data, site_id, edited_at, updated_at"
+```
+
+To:
+
+```go
+const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, target_user, " +
+	"msg, mentions, attachments, file, card, card_action, tshow, tcount, " +
+	"thread_parent_id, thread_parent_created_at, quoted_parent_message, " +
+	"visible_to, reactions, deleted, " +
+	"type, sys_msg_data, site_id, edited_at, updated_at"
+```
+
+(Only the `unread, ` token is removed; spacing/quoting on the surrounding lines is preserved.)
+
+- [ ] **Step 4.2: Drop `unread` from `threadMessageColumns`**
+
+Edit `history-service/internal/cassrepo/thread_messages.go`. Change:
+
+```go
+const threadMessageColumns = "room_id, thread_room_id, created_at, message_id, thread_parent_id, " +
+	"sender, target_user, msg, mentions, attachments, file, card, card_action, " +
+	"quoted_parent_message, visible_to, unread, reactions, deleted, " +
+	"type, sys_msg_data, site_id, edited_at, updated_at"
+```
+
+To:
+
+```go
+const threadMessageColumns = "room_id, thread_room_id, created_at, message_id, thread_parent_id, " +
+	"sender, target_user, msg, mentions, attachments, file, card, card_action, " +
+	"quoted_parent_message, reactions, deleted, " +
+	"type, sys_msg_data, site_id, edited_at, updated_at"
+```
+
+(Only `unread, ` is removed; `visible_to, ` continues directly into `reactions, `.)
+
+- [ ] **Step 4.3: Confirm package compiles and unit tests pass**
+
+Run: `make test SERVICE=history-service`
+Expected: PASS. (This runs the non-integration tests; cassrepo unit tests do not exercise the SELECTs against a live Cassandra.)
+
+- [ ] **Step 4.4: Lint**
+
+Run: `make lint`
+Expected: clean exit.
+
+- [ ] **Step 4.5: Confirm no other production code still mentions `unread` in a column list**
+
+Run: `grep -rn '"unread\b\|, unread\b\|unread,' --include="*.go" history-service/ | grep -v "_test.go"`
+Expected: no output. Any remaining matches inside `*_integration_test.go` are addressed in Task 7.
+
+- [ ] **Step 4.6: Commit**
+
+```bash
+git add history-service/internal/cassrepo/messages_by_room.go history-service/internal/cassrepo/thread_messages.go
+git commit -m "refactor(history-service): drop unread column from cassrepo SELECTs"
+```
+
+---
