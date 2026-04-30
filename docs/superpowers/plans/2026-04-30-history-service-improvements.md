@@ -1469,3 +1469,63 @@ git commit -m "build(history-service): run container as UID 65534"
 ```
 
 ---
+
+## Task 13: Add a repo-root `.dockerignore`
+
+**Why:** Every service's `deploy/docker-compose.yml` uses `context: ../..` (the repo root). With no `.dockerignore`, the entire repo (including `.git/`, `docs/`, `chat-frontend/`) is bundled into the build context and shipped to the Docker daemon on every build. That slows builds and weakens layer-cache stability — any change to anything in the repo invalidates the context.
+
+The Dockerfiles only `COPY go.mod go.sum`, `COPY pkg/`, and `COPY <service>/`, so excluding everything else from the context is safe.
+
+**Files:**
+- Create: `.dockerignore` at repo root
+
+- [ ] **Step 1: Create `.dockerignore`**
+
+Create `/home/user/chat/.dockerignore` with:
+
+```
+# Keep the build context tight. Each service's Dockerfile only COPYs
+# go.mod/go.sum, pkg/, and its own service directory; everything else here
+# is irrelevant to Go service builds.
+
+.git/
+.github/
+.claude/
+docs/
+chat-frontend/
+
+# Local artifacts that should never enter an image
+**/node_modules/
+**/coverage.out
+**/coverage.html
+**/*.swp
+**/.DS_Store
+
+# Defense against accidentally shipping local secrets
+**/.env
+```
+
+- [ ] **Step 2: Confirm a service still builds**
+
+Run from repo root:
+```bash
+docker build -f history-service/deploy/Dockerfile -t history-service:dockerignore-test .
+```
+Expected: PASS — image builds; output should mention a smaller transferred context size than before. (Compare against a build before this task if you want to confirm the win.)
+
+- [ ] **Step 3: Confirm the binary runs**
+
+Run:
+```bash
+docker run --rm history-service:dockerignore-test --help 2>&1 | head -5 || true
+```
+Expected: the binary starts and prints whatever it does (likely `parse config: ...` then exits since required env vars are unset). The point is that the binary launched — i.e. nothing critical was excluded from the context.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .dockerignore
+git commit -m "build: add repo-root .dockerignore to slim build context"
+```
+
+---
