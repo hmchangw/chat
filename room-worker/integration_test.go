@@ -490,6 +490,7 @@ func TestProcessCreateRoomChannelPersistsAllState(t *testing.T) {
 	body, err := json.Marshal(model.CreateRoomRequest{
 		RoomID: "r_xyz", Name: "deal team",
 		Users:            []string{"bob"},
+		ResolvedUsers:    []string{"bob"},
 		RequesterID:      "u_alice",
 		RequesterAccount: "alice",
 		Timestamp:        time.Now().UTC().UnixMilli(),
@@ -567,6 +568,7 @@ func TestProcessCreateRoomIdempotentRedelivery(t *testing.T) {
 	body, err := json.Marshal(model.CreateRoomRequest{
 		RoomID: "r_idem", Name: "team",
 		Users:            []string{"bob"},
+		ResolvedUsers:    []string{"bob"},
 		RequesterID:      "u_alice",
 		RequesterAccount: "alice",
 		Timestamp:        time.Now().UTC().UnixMilli(),

@@ -39,6 +39,7 @@ In scope:
 - DM/botDM idempotency: `subscriptions.findOne({u.account, name, roomType $in {dm,botDM}})` rejects duplicate creates with the existing `roomId` in the error reply.
 - `apps` collection lookup for botDM creation, gated on `App.Assistant.Enabled == true`.
 - Channels require a client-supplied `Name`. Empty/whitespace-only is rejected with `errChannelNameRequired`; > 100 runes is rejected with `errChannelNameTooLong`. The server never auto-generates or truncates a channel name. (DM/botDM rooms never carry a request `Name`; their `Room.Name` is `RoomID`.)
+- `CreateRoomRequest.Users`/`Orgs` are the literal client request (used verbatim in sys-message payloads). `CreateRoomRequest.ResolvedUsers`/`ResolvedOrgs` carry the post-expansion (channel-ref-merged, requester-stripped, dedup'd) sets used by the worker for member materialization.
 - `composeName(eng, ch)` helper for `SidebarName`: `"Eng Chinese"` (space-separated; collapses if equal).
 - `Subscription.SiteID` for cross-site participants is the **room's home site**, not the user's home site.
 - Async-job result emission to `subject.UserResponse(requesterAccount)` with new `Operation` values `"room.create"` (this feature) and `"room.member.add"` (retrofit).

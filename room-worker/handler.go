@@ -920,8 +920,10 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, composeNameOrAccount(other), false, acceptedAt),
 		newSub(idgen.GenerateUUIDv7(), other, room, nil, requester.Account, composeNameOrAccount(requester), false, acceptedAt),
 	}
-	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
-		return err
+	if len(subs) > 0 {
+		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+			return fmt.Errorf("bulk create subs: %w", err)
+		}
 	}
 	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, other}, subs, requestID, now)
 }
@@ -939,22 +941,16 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, req.AppName, true, acceptedAt),
 		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requester.Account, composeNameOrAccount(requester), false, acceptedAt),
 	}
-	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
-		return err
+	if len(subs) > 0 {
+		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+			return fmt.Errorf("bulk create subs: %w", err)
+		}
 	}
 	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, bot}, subs, requestID, now)
 }
 
-// bulkCreateSubsIdempotent: store absorbs duplicate-key; this only adds error context.
-func (h *Handler) bulkCreateSubsIdempotent(ctx context.Context, subs []*model.Subscription) error {
-	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-		return fmt.Errorf("bulk create subs: %w", err)
-	}
-	return nil
-}
-
 func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
-	accounts, err := h.store.ListNewMembersForNewRoom(ctx, req.Orgs, req.Users)
+	accounts, err := h.store.ListNewMembersForNewRoom(ctx, req.ResolvedOrgs, req.ResolvedUsers)
 	if err != nil {
 		return fmt.Errorf("list new members: %w", err)
 	}
@@ -963,9 +959,6 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	users, err := h.store.FindUsersByAccounts(ctx, accounts)
 	if err != nil {
 		return fmt.Errorf("find users: %w", err)
-	}
-	if len(users) == 0 {
-		return fmt.Errorf("no resolvable members for channel %s: %w", room.ID, errPermanent)
 	}
 	for i := range users {
 		if users[i].EngName == "" || users[i].ChineseName == "" {
@@ -980,12 +973,14 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	}
 	subs = append(subs, newSub(idgen.GenerateUUIDv7(), requester, room, []model.Role{model.RoleOwner}, room.Name, "", false, acceptedAt))
 
-	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
-		return err
+	if len(subs) > 0 {
+		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+			return fmt.Errorf("bulk create subs: %w", err)
+		}
 	}
 
-	members := make([]*model.RoomMember, 0, len(subs)+len(req.Orgs))
-	if len(req.Orgs) > 0 {
+	members := make([]*model.RoomMember, 0, len(subs)+len(req.ResolvedOrgs))
+	if len(req.ResolvedOrgs) > 0 {
 		for _, sub := range subs[:len(subs)-1] {
 			members = append(members, &model.RoomMember{
 				ID:     idgen.GenerateUUIDv7(),
@@ -994,7 +989,7 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 				Member: model.RoomMemberEntry{ID: sub.User.ID, Type: model.RoomMemberIndividual, Account: sub.User.Account},
 			})
 		}
-		for _, org := range req.Orgs {
+		for _, org := range req.ResolvedOrgs {
 			members = append(members, &model.RoomMember{
 				ID:     idgen.GenerateUUIDv7(),
 				RoomID: room.ID,
@@ -1010,8 +1005,10 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 		Member: model.RoomMemberEntry{ID: requester.ID, Type: model.RoomMemberIndividual, Account: requester.Account},
 	})
 
-	if err := h.bulkCreateMembersIdempotent(ctx, members); err != nil {
-		return err
+	if len(members) > 0 {
+		if err := h.store.BulkCreateRoomMembers(ctx, members); err != nil {
+			return fmt.Errorf("bulk create room members: %w", err)
+		}
 	}
 
 	allUsers := make([]*model.User, 0, len(users)+1)
@@ -1021,17 +1018,6 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	allUsers = append(allUsers, requester)
 
 	return h.finishCreateRoom(ctx, req, room, requester, allUsers, subs, requestID, now)
-}
-
-// bulkCreateMembersIdempotent: see bulkCreateSubsIdempotent.
-func (h *Handler) bulkCreateMembersIdempotent(ctx context.Context, members []*model.RoomMember) error {
-	if len(members) == 0 {
-		return nil
-	}
-	if err := h.store.BulkCreateRoomMembers(ctx, members); err != nil {
-		return fmt.Errorf("bulk create room members: %w", err)
-	}
-	return nil
 }
 
 func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, allUsers []*model.User, subs []*model.Subscription, requestID string, now time.Time) error {

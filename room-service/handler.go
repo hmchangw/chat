@@ -243,6 +243,8 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 	}
 
 	req.RoomID = idgen.BuildDMRoomID(requester.ID, other.ID)
+	// DM/BotDM resolved set matches the literal counterpart list — there is no expansion.
+	req.ResolvedUsers = append([]string(nil), req.Users...)
 
 	existing, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
 	if err == nil && existing != nil {
@@ -277,8 +279,10 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 		return nil, fmt.Errorf("exceeds maximum capacity (%d): would add %d", h.maxRoomSize, newCount)
 	}
 
-	req.Users = allUsers
-	req.Orgs = allOrgs
+	// Preserve req.Users / req.Orgs as the literal client request for sys-message payloads.
+	// The worker uses ResolvedUsers / ResolvedOrgs for capacity and member materialization.
+	req.ResolvedUsers = allUsers
+	req.ResolvedOrgs = allOrgs
 	req.RoomID = idgen.GenerateID()
 	return h.publishCreateRoom(ctx, req, requester, roomType)
 }

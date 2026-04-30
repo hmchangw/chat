@@ -2073,6 +2073,7 @@ func TestProcessCreateRoom_Channel_BuildsSubsAndMembers(t *testing.T) {
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID: "room-ch-1", Name: "Deal Team", RequesterAccount: "alice",
 		Users: []string{"bob", "carol"}, Orgs: []string{"org1"},
+		ResolvedUsers: []string{"bob", "carol"}, ResolvedOrgs: []string{"org1"},
 		Timestamp: time.Now().UnixMilli(),
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
@@ -2119,7 +2120,7 @@ func TestProcessCreateRoom_Channel_NoOrgsSkipsRoomMembers(t *testing.T) {
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
-	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), []string{}, []string{"bob"}).
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Nil(), []string{"bob"}).
 		Return([]string{"bob"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return(invited, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
@@ -2135,6 +2136,7 @@ func TestProcessCreateRoom_Channel_NoOrgsSkipsRoomMembers(t *testing.T) {
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID: "room-ch-2", Name: "Small Channel", RequesterAccount: "alice",
 		Users: []string{"bob"}, Orgs: []string{}, // no orgs
+		ResolvedUsers: []string{"bob"}, ResolvedOrgs: []string{},
 		Timestamp: time.Now().UnixMilli(),
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
@@ -2167,6 +2169,7 @@ func TestProcessCreateRoom_Channel_FiresSubscriptionUpdateForEverySub(t *testing
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID: "room-ch-3", Name: "Test Channel", RequesterAccount: "alice",
 		Users: []string{"bob"}, Orgs: []string{"org1"},
+		ResolvedUsers: []string{"bob"}, ResolvedOrgs: []string{"org1"},
 		Timestamp: time.Now().UnixMilli(),
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
@@ -2206,6 +2209,7 @@ func TestProcessCreateRoom_Channel_EmitsSysMessages(t *testing.T) {
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID: "room-ch-4", Name: "Sys Msg Channel", RequesterAccount: "alice",
 		Users: []string{"bob"}, Orgs: []string{"org1"},
+		ResolvedUsers: []string{"bob"}, ResolvedOrgs: []string{"org1"},
 		Timestamp: time.Now().UnixMilli(),
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
@@ -2227,6 +2231,57 @@ func TestProcessCreateRoom_Channel_EmitsSysMessages(t *testing.T) {
 	assert.Equal(t, model.MessageTypeMembersAdded, evt2.Message.Type)
 	expectedID2 := idgen.MessageIDFromRequestID(testRequestID, "members_added")
 	assert.Equal(t, expectedID2, evt2.Message.ID)
+}
+
+// Sys-message payloads must carry the LITERAL request (Users/Orgs/Channels), not the
+// post-expansion resolved set. This guards against drift if someone later changes the
+// worker to use ResolvedUsers/ResolvedOrgs in the sys-msg path.
+func TestProcessCreateRoom_Channel_SysMsgUsesLiteralRequest(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	// Resolved set expands org1 → [bob, carol, dave] but the literal request only named [bob] + [org1].
+	invited := []model.User{
+		{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"},
+		{ID: "u_carol", Account: "carol", EngName: "Carol C", ChineseName: "卡羅", SiteID: "site-A"},
+		{ID: "u_dave", Account: "dave", EngName: "Dave D", ChineseName: "戴夫", SiteID: "site-A"},
+	}
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return([]string{"bob", "carol", "dave"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "carol", "dave"}).Return(invited, nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-ch-lit").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room-ch-lit", Name: "Literal Test", RequesterAccount: "alice",
+		Users: []string{"bob"}, Orgs: []string{"org1"},
+		ResolvedUsers: []string{"bob", "carol", "dave"}, ResolvedOrgs: []string{"org1"},
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	canonical := messagesCanonical(getPublished(), "site-A")
+	require.Len(t, canonical, 2)
+
+	// room_created sys-msg payload
+	var evt1 model.MessageEvent
+	require.NoError(t, json.Unmarshal(canonical[0].data, &evt1))
+	var rc model.RoomCreated
+	require.NoError(t, json.Unmarshal(evt1.Message.SysMsgData, &rc))
+	assert.Equal(t, []string{"bob"}, rc.Users, "RoomCreated.Users must be the literal request, not the resolved set")
+	assert.Equal(t, []string{"org1"}, rc.Orgs, "RoomCreated.Orgs must be the literal request")
+
+	// members_added sys-msg payload
+	var evt2 model.MessageEvent
+	require.NoError(t, json.Unmarshal(canonical[1].data, &evt2))
+	var ma model.MembersAdded
+	require.NoError(t, json.Unmarshal(evt2.Message.SysMsgData, &ma))
+	assert.Equal(t, []string{"bob"}, ma.Individuals, "MembersAdded.Individuals must be the literal request")
+	assert.Equal(t, []string{"org1"}, ma.Orgs, "MembersAdded.Orgs must be the literal request")
 }
 
 // ---- Task 37: outbox + async-job ----
@@ -2252,6 +2307,7 @@ func TestProcessCreateRoom_Channel_OutboxPerRemoteSite(t *testing.T) {
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID: "room-ch-5", Name: "Cross Site", RequesterAccount: "alice",
 		Users: []string{"bob"}, Orgs: []string{"org1"},
+		ResolvedUsers: []string{"bob"}, ResolvedOrgs: []string{"org1"},
 		Timestamp: time.Now().UnixMilli(),
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
@@ -2292,6 +2348,7 @@ func TestProcessCreateRoom_Channel_EmitsAsyncJobOk(t *testing.T) {
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID: "room-ch-6", Name: "Job Test", RequesterAccount: "alice",
 		Users: []string{"bob"}, Orgs: []string{"org1"},
+		ResolvedUsers: []string{"bob"}, ResolvedOrgs: []string{"org1"},
 		Timestamp: time.Now().UnixMilli(),
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
@@ -2303,69 +2360,4 @@ func TestProcessCreateRoom_Channel_EmitsAsyncJobOk(t *testing.T) {
 	require.NoError(t, json.Unmarshal(responses[0].data, &result))
 	assert.Equal(t, model.AsyncJobStatusOK, result.Status)
 	assert.Equal(t, model.AsyncJobOpRoomCreate, result.Operation)
-}
-
-// ---- bulkCreate*Idempotent contract tests ----
-
-// TestBulkCreateSubsIdempotent_StoreReturnsNil verifies that when the store
-// absorbs duplicate-key errors (returns nil), the wrapper passes the success
-// through. This guards the documented contract: bulk-create at this layer is
-// safe under JetStream redelivery only because the store layer is.
-func TestBulkCreateSubsIdempotent_StoreReturnsNil(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	h := &Handler{store: store, siteID: "site-A"}
-
-	subs := []*model.Subscription{{ID: "s1"}}
-	require.NoError(t, h.bulkCreateSubsIdempotent(context.Background(), subs))
-}
-
-// TestBulkCreateSubsIdempotent_StoreErrorPropagates verifies that any error
-// the store returns (other than the duplicate-key it already swallows
-// internally) is wrapped and surfaced — the wrapper never silently swallows.
-func TestBulkCreateSubsIdempotent_StoreErrorPropagates(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	storeErr := errors.New("mongo write timeout")
-	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(storeErr)
-	h := &Handler{store: store, siteID: "site-A"}
-
-	err := h.bulkCreateSubsIdempotent(context.Background(), []*model.Subscription{{ID: "s1"}})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "bulk create subs")
-	assert.ErrorIs(t, err, storeErr)
-}
-
-func TestBulkCreateMembersIdempotent_StoreReturnsNil(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
-	h := &Handler{store: store, siteID: "site-A"}
-
-	members := []*model.RoomMember{{ID: "m1"}}
-	require.NoError(t, h.bulkCreateMembersIdempotent(context.Background(), members))
-}
-
-func TestBulkCreateMembersIdempotent_EmptyShortCircuits(t *testing.T) {
-	// Empty input must not invoke the store — otherwise mock expectation count drifts
-	// and the worker would issue useless Mongo round trips on no-op redeliveries.
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{store: store, siteID: "site-A"}
-
-	require.NoError(t, h.bulkCreateMembersIdempotent(context.Background(), nil))
-}
-
-func TestBulkCreateMembersIdempotent_StoreErrorPropagates(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	storeErr := errors.New("mongo write timeout")
-	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(storeErr)
-	h := &Handler{store: store, siteID: "site-A"}
-
-	err := h.bulkCreateMembersIdempotent(context.Background(), []*model.RoomMember{{ID: "m1"}})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "bulk create room members")
-	assert.ErrorIs(t, err, storeErr)
 }
