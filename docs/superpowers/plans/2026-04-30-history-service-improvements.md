@@ -1419,3 +1419,53 @@ git commit -m "feat(history-service): expose ROUTER_MAX_CONCURRENCY env var"
 ```
 
 ---
+
+## Task 12: Run the container as a non-root user
+
+**Why:** The image currently has no `USER` directive, so the entrypoint runs as root. Switching to UID `65534` (the conventional `nobody` UID) gives one layer of defense-in-depth: a container escape lands in an unprivileged user inside the namespace, not root. The Go binary is built `CGO_ENABLED=0` and writes nothing to disk, so no chown/chmod is required — `0755` permissions from the `COPY` already let `65534` execute.
+
+**Files:**
+- Modify: `history-service/deploy/Dockerfile`
+
+- [ ] **Step 1: Add the `USER` directive**
+
+In `history-service/deploy/Dockerfile`, after the `COPY --from=builder` line and before `ENTRYPOINT`, insert:
+
+```dockerfile
+USER 65534
+```
+
+The full runtime stage should look like:
+
+```dockerfile
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /history-service /history-service
+USER 65534
+ENTRYPOINT ["/history-service"]
+```
+
+- [ ] **Step 2: Build the image to confirm it still runs**
+
+Run from repo root:
+```bash
+docker build -f history-service/deploy/Dockerfile -t history-service:nonroot-test .
+```
+Expected: PASS — image builds successfully.
+
+- [ ] **Step 3: Verify the binary still starts as the non-root user**
+
+Run:
+```bash
+docker run --rm --entrypoint id history-service:nonroot-test
+```
+Expected output contains `uid=65534` (and not `uid=0`).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add history-service/deploy/Dockerfile
+git commit -m "build(history-service): run container as UID 65534"
+```
+
+---
