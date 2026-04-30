@@ -49,31 +49,53 @@ func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Sub
 
 // ReconcileMemberCounts counts the room's subscriptions, splitting on
 // the bot account naming pattern to produce both UserCount (non-bot) and
-// AppCount (bot). Writes both fields to the rooms collection in a
-// single updateOne. The regex must stay in lockstep with pkg/pipelines.GetNewMembersPipeline
-// — both classify accounts matching `.bot$|^p_` as bots.
+// AppCount (bot). A single $group aggregation does both buckets in one
+// collection scan (was: two CountDocuments queries). Writes both fields
+// to the rooms collection in a single updateOne. The regex must stay in
+// lockstep with pkg/pipelines.GetNewMembersPipeline — both classify
+// accounts matching `.bot$|^p_` as bots.
 func (s *MongoStore) ReconcileMemberCounts(ctx context.Context, roomID string) error {
 	const botRegex = `(\.bot$|^p_)`
-	userCount, err := s.subscriptions.CountDocuments(ctx, bson.M{
-		"roomId":    roomID,
-		"u.account": bson.M{"$not": bson.Regex{Pattern: botRegex, Options: ""}},
-	})
-	if err != nil {
-		return fmt.Errorf("count user subs: %w", err)
+	pipe := []bson.M{
+		{"$match": bson.M{"roomId": roomID}},
+		{"$group": bson.M{
+			"_id": nil,
+			"appCount": bson.M{"$sum": bson.M{
+				"$cond": []any{
+					bson.M{"$regexMatch": bson.M{"input": "$u.account", "regex": botRegex}},
+					1, 0,
+				},
+			}},
+			"userCount": bson.M{"$sum": bson.M{
+				"$cond": []any{
+					bson.M{"$regexMatch": bson.M{"input": "$u.account", "regex": botRegex}},
+					0, 1,
+				},
+			}},
+		}},
 	}
+	cur, err := s.subscriptions.Aggregate(ctx, pipe)
+	if err != nil {
+		return fmt.Errorf("aggregate member counts: %w", err)
+	}
+	defer cur.Close(ctx)
 
-	appCount, err := s.subscriptions.CountDocuments(ctx, bson.M{
-		"roomId":    roomID,
-		"u.account": bson.Regex{Pattern: botRegex, Options: ""},
-	})
-	if err != nil {
-		return fmt.Errorf("count app subs: %w", err)
+	var counts struct {
+		UserCount int64 `bson:"userCount"`
+		AppCount  int64 `bson:"appCount"`
 	}
+	if cur.Next(ctx) {
+		if err := cur.Decode(&counts); err != nil {
+			return fmt.Errorf("decode member counts: %w", err)
+		}
+	}
+	// No rows match → both counts stay 0, which is the correct reset behavior
+	// for a room whose last subscription was just removed.
 
 	if _, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{
 		"$set": bson.M{
-			"userCount": userCount,
-			"appCount":  appCount,
+			"userCount": counts.UserCount,
+			"appCount":  counts.AppCount,
 			"updatedAt": time.Now().UTC(),
 		},
 	}); err != nil {

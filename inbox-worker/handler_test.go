@@ -1092,3 +1092,49 @@ func TestHandleMemberAddedSetsNameAndRoomType(t *testing.T) {
 	assert.Equal(t, "deal team", subs[0].Name)
 	assert.Equal(t, model.RoomTypeChannel, subs[0].RoomType)
 }
+
+func TestHandleRoomCreatedBotDMBuildsRemoteBotSub(t *testing.T) {
+	// Cross-site botDM: human (alice) is the requester on site-A; bot
+	// (weather.bot) lives on site-B. The outbox event lands at site-B's
+	// inbox-worker, which must materialize the bot's sub with:
+	//   Name        = human's account ("alice")
+	//   SidebarName = human's eng+chinese name
+	//   IsSubscribed = false
+	//   Roles       = nil (no member role for botDM)
+	//   SiteID      = home site (site-A)
+	store := &stubInboxStore{
+		users: []model.User{
+			{ID: "u_weather", Account: "weather.bot", SiteID: "site-B"},
+		},
+	}
+	h := NewHandler(store)
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx := natsutil.WithRequestID(context.Background(), reqID)
+
+	payload, _ := json.Marshal(model.RoomCreatedOutbox{
+		RoomID:               "u_aliceu_weather",
+		RoomType:             model.RoomTypeBotDM,
+		RoomName:             "u_aliceu_weather",
+		HomeSiteID:           "site-A",
+		Accounts:             []string{"weather.bot"},
+		RequesterAccount:     "alice",
+		RequesterEngName:     "Alice",
+		RequesterChineseName: "爱丽丝",
+		AppName:              "Weather Bot",
+		Timestamp:            1740000000000,
+	})
+	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
+
+	subs := store.bulkSubscriptions
+	require.Len(t, subs, 1, "exactly one remote sub for the bot")
+	assert.True(t, idgen.IsValidUUIDv7(subs[0].ID))
+	assert.Equal(t, "u_aliceu_weather", subs[0].RoomID)
+	assert.Equal(t, "site-A", subs[0].SiteID, "bot's sub.siteID is the room's home site")
+	assert.Equal(t, "alice", subs[0].Name, "bot's sub.Name is the human account")
+	assert.Equal(t, "Alice 爱丽丝", subs[0].SidebarName, "bot's sub.SidebarName is the human display name")
+	assert.Nil(t, subs[0].Roles)
+	assert.False(t, subs[0].IsSubscribed)
+	assert.Equal(t, model.RoomTypeBotDM, subs[0].RoomType)
+	assert.Equal(t, "u_weather", subs[0].User.ID)
+	assert.Equal(t, "weather.bot", subs[0].User.Account)
+}

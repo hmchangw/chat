@@ -91,12 +91,36 @@ func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, o
 	}
 }
 
+// permanentError pairs a user-safe message with the errPermanent sentinel so
+// HandleJetStreamMsg can Ack the JetStream message AND publishAsyncJobResult
+// can render a clean per-cause string without depending on suffix matching of
+// the wrapped Error() output.
+type permanentError struct{ msg string }
+
+func newPermanent(format string, args ...any) error {
+	return &permanentError{msg: fmt.Sprintf(format, args...)}
+}
+
+func (e *permanentError) Error() string { return e.msg }
+func (e *permanentError) Is(target error) bool {
+	if target == errPermanent {
+		return true
+	}
+	_, ok := target.(*permanentError)
+	return ok
+}
+
 // sanitizeAsyncJobError surfaces permanent errors verbatim and collapses everything else.
 func sanitizeAsyncJobError(err error) string {
 	if err == nil {
 		return ""
 	}
+	var pe *permanentError
+	if errors.As(err, &pe) {
+		return pe.msg
+	}
 	if errors.Is(err, errPermanent) {
+		// Legacy %w-wrapped errPermanent: trim the trailing ": permanent" suffix.
 		msg := err.Error()
 		if idx := strings.LastIndex(msg, ": "+errPermanent.Error()); idx >= 0 {
 			msg = msg[:idx]
@@ -123,6 +147,15 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	}
 	if err != nil {
 		slog.Error("process message failed", "error", err, "subject", subj)
+		// Permanent failures must Ack so JetStream stops redelivering. The async-job
+		// error event has already been published to the requester via the per-handler
+		// defer in processCreateRoom / processAddMembers / processRemove*.
+		if errors.Is(err, errPermanent) {
+			if ackErr := msg.Ack(); ackErr != nil {
+				slog.Error("failed to ack permanent-error message", "error", ackErr)
+			}
+			return
+		}
 		if nakErr := msg.Nak(); nakErr != nil {
 			slog.Error("failed to nak message", "error", nakErr)
 		}
@@ -815,6 +848,9 @@ func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 }
 
 // stripAccount returns slice with all occurrences of account removed (order preserved).
+// Mirror of room-service/helper.go's stripAccount — kept duplicated because each
+// service is its own `package main` and the project explicitly forbids a shared
+// "utils" package; a future cleanup could expose this from a domain-named pkg.
 func stripAccount(slice []string, account string) []string {
 	out := make([]string, 0, len(slice))
 	for _, s := range slice {
@@ -837,12 +873,12 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" {
-		return fmt.Errorf("missing X-Request-ID: %w", errPermanent)
+		return newPermanent("missing X-Request-ID")
 	}
 
 	var req model.CreateRoomRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return fmt.Errorf("unmarshal create-room: %w: %w", err, errPermanent)
+		return newPermanent("unmarshal create-room: %s", err.Error())
 	}
 	requesterAccount = req.RequesterAccount
 	roomID = req.RoomID
@@ -850,7 +886,7 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	requester, err := h.store.GetUser(ctx, req.RequesterAccount)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
-			return fmt.Errorf("requester not found: %w", errPermanent)
+			return newPermanent("requester not found")
 		}
 		return fmt.Errorf("get requester: %w", err)
 	}
@@ -875,8 +911,8 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 				return fmt.Errorf("fetch on duplicate-key: %w", fetchErr)
 			}
 			if existing.Type != room.Type || existing.SiteID != room.SiteID {
-				return fmt.Errorf("room ID collision (existing type=%s site=%s; want %s/%s): %w",
-					existing.Type, existing.SiteID, room.Type, room.SiteID, errPermanent)
+				return newPermanent("room ID collision (existing type=%s site=%s; want %s/%s)",
+					existing.Type, existing.SiteID, room.Type, room.SiteID)
 			}
 			room = existing
 		} else {
@@ -892,7 +928,7 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	case model.RoomTypeChannel:
 		return h.processCreateRoomChannel(ctx, &req, room, requester, requestID, acceptedAt, now)
 	default:
-		return fmt.Errorf("unknown room type %q: %w", roomType, errPermanent)
+		return newPermanent("unknown room type %q", roomType)
 	}
 }
 
@@ -911,7 +947,7 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 	other, err := h.store.GetUser(ctx, req.Users[0])
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
-			return fmt.Errorf("counterpart not found: %w", errPermanent)
+			return newPermanent("counterpart not found")
 		}
 		return fmt.Errorf("get counterpart: %w", err)
 	}
@@ -932,7 +968,7 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 	bot, err := h.store.GetUser(ctx, req.Users[0])
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
-			return fmt.Errorf("bot user not found: %w", errPermanent)
+			return newPermanent("bot user not found")
 		}
 		return fmt.Errorf("get bot user: %w", err)
 	}
@@ -962,7 +998,7 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	}
 	for i := range users {
 		if users[i].EngName == "" || users[i].ChineseName == "" {
-			return fmt.Errorf("user %s missing required name fields: %w", users[i].Account, errPermanent)
+			return newPermanent("user %s missing required name fields", users[i].Account)
 		}
 	}
 

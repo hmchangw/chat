@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -91,6 +93,40 @@ func determineRoomType(req *model.CreateRoomRequest) model.RoomType {
 	return model.RoomTypeChannel
 }
 
+// channelExpandTimeoutError reports which (site, room) the channel-expansion
+// step failed to read within the per-ref deadline. The sync reply surfaces it
+// so the requester can see exactly which channel source stalled.
+type channelExpandTimeoutError struct {
+	SiteID string
+	RoomID string
+}
+
+func newChannelExpandTimeoutError(siteID, roomID string) *channelExpandTimeoutError {
+	return &channelExpandTimeoutError{SiteID: siteID, RoomID: roomID}
+}
+
+func (e *channelExpandTimeoutError) Error() string {
+	return fmt.Sprintf("timeout listing members of channel %s@%s", e.RoomID, e.SiteID)
+}
+
+func (e *channelExpandTimeoutError) Is(target error) bool {
+	_, ok := target.(*channelExpandTimeoutError)
+	return ok
+}
+
+// contextWithMemberListTimeout returns a derived context bounded by the
+// configured per-ref member-list timeout. When the configured timeout is
+// non-positive, the parent ctx is returned unchanged with a no-op cancel.
+func (h *Handler) contextWithMemberListTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if h.memberListTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, h.memberListTimeout)
+}
+
+// Compile-time check that channelExpandTimeoutError satisfies error.
+var _ error = (*channelExpandTimeoutError)(nil)
+
 // dmExistsError carries the existing DM/botDM room ID for the "dm already exists" reply.
 type dmExistsError struct{ existingRoomID string }
 
@@ -118,6 +154,12 @@ func stripAccount(slice []string, account string) []string {
 
 // sanitizeError returns a user-safe error message for known error sentinels and approved patterns.
 func sanitizeError(err error) string {
+	// Typed timeout error: surface the underlying message (site+roomId) directly,
+	// stripping any "expand channels: %w" or other wrapper context.
+	var ct *channelExpandTimeoutError
+	if errors.As(err, &ct) {
+		return ct.Error()
+	}
 	switch {
 	case errors.Is(err, errNotRoomMember):
 		// Always return the sentinel message, even when wrapped (e.g. by
@@ -144,7 +186,8 @@ func sanitizeError(err error) string {
 		errors.Is(err, errChannelNameRequired),
 		errors.Is(err, errChannelNameTooLong),
 		errors.Is(err, errUserNotFound),
-		errors.Is(err, &dmExistsError{}):
+		errors.Is(err, &dmExistsError{}),
+		errors.Is(err, &channelExpandTimeoutError{}):
 		return err.Error()
 	default:
 		msg := err.Error()

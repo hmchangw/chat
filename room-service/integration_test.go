@@ -848,7 +848,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, publish)
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, 5*time.Second, publish)
 
 	req := model.AddMembersRequest{
 		Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}},
@@ -915,7 +915,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, publish)
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, 5*time.Second, publish)
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -960,7 +960,7 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 
 	// Same-site only: nil memberListClient is safe — request fails on the same-site
 	// GetSubscription check before reaching the cross-site branch.
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -1018,7 +1018,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb3", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
 	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
-	handlerB := NewHandler(storeB, keyStore, nil, "site-b", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handlerB := NewHandler(storeB, keyStore, nil, "site-b", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handlerB.RegisterCRUD(otelNCb))
 	require.NoError(t, otelNCb.NatsConn().Flush())
 
@@ -1038,7 +1038,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handlerA := NewHandler(storeA, keyStore, memberListClient, "site-a", 1000, 500, publish)
+	handlerA := NewHandler(storeA, keyStore, memberListClient, "site-a", 1000, 500, 5*time.Second, publish)
 
 	// Call add-members on site-A with a site-B source channel
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
@@ -1100,7 +1100,7 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, 200*time.Millisecond, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
 	data, err := json.Marshal(req)
@@ -1108,9 +1108,13 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 
 	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected deadline exceeded, got %v", err)
-	assert.Contains(t, err.Error(), "expand channels")
-	assert.Contains(t, err.Error(), "remote list-members")
+	// Cross-site member.list deadline → typed channelExpandTimeoutError naming
+	// the offending site+roomId. sanitizeError surfaces the message verbatim.
+	var te *channelExpandTimeoutError
+	require.ErrorAs(t, err, &te, "expected channelExpandTimeoutError, got %v", err)
+	assert.Equal(t, "site-b", te.SiteID)
+	assert.Equal(t, "source", te.RoomID)
+	assert.Equal(t, "timeout listing members of channel source@site-b", sanitizeError(err))
 }
 
 func TestRoomsInfoBatchRPC(t *testing.T) {
@@ -1147,7 +1151,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNC.Drain() })
 
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handler.RegisterCRUD(otelNC))
 	require.NoError(t, otelNC.NatsConn().Flush())
 
@@ -1225,7 +1229,7 @@ func newRoomServiceHandler(t *testing.T, store *MongoStore, keyStore RoomKeyStor
 		lastData = data
 		return nil
 	}
-	h := NewHandler(store, keyStore, nil, siteID, 1000, 500, publish)
+	h := NewHandler(store, keyStore, nil, siteID, 1000, 500, 5*time.Second, publish)
 	return h, func() (string, []byte) { return lastSubj, lastData }
 }
 

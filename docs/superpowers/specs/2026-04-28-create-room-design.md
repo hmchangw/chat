@@ -439,9 +439,26 @@ Steps below are the canonical sequence. Each numbered step has explicit reject c
          channelOrgIDs, channelAccounts, err := h.expandChannelRefs(ctx, requesterAccount, req.Channels)
        Reuses local-channel-subscribed check + cross-site member.list call.
        Errors propagate as-is (errNotRoomMember etc.).
+
+       Per-ref deadline: each channel reference is bounded by
+       `MEMBER_LIST_TIMEOUT` (default 5s). If a same-site Mongo lookup or
+       cross-site `member.list` call exceeds the deadline, the helper
+       returns `*channelExpandTimeoutError{SiteID, RoomID}` rendered as
+       `"timeout listing members of channel {roomId}@{siteId}"`. The
+       sync reply surfaces it verbatim via `sanitizeError` so the client
+       sees exactly which channel source stalled.
+
+       Bot filter on expansion: the accounts returned by the helper are
+       passed through `filterBots` before the merge below. Any account
+       matching the bot pattern (suffix `.bot` or prefix `p_`) is dropped
+       so a source channel can never silently inject a bot into a new
+       channel via channelRefs. This is silent (no error) — it mirrors
+       the post-strip individual-bot check in 7a but operates on the
+       expanded set; without it, a `.bot` member in the source channel
+       would re-introduce the same bot the explicit users-list rejects.
    7c. Merge:
          allOrgs  := dedup(append(req.Orgs,  channelOrgIDs...))
-         allUsers := dedup(append(req.Users, channelAccounts...))
+         allUsers := dedup(append(req.Users, filterBots(channelAccounts)...))
          allUsers = stripAccount(allUsers, requesterAccount)  // channels can re-introduce
    7d. Re-check non-emptiness post-merge: if allUsers, allOrgs, and Name are
        ALL empty → reject errEmptyCreateRequest.

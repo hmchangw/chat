@@ -26,17 +26,27 @@ import (
 )
 
 type Handler struct {
-	store            RoomStore
-	keyStore         RoomKeyStore
-	memberListClient MemberListClient
-	siteID           string
-	maxRoomSize      int
-	maxBatchSize     int
-	publishToStream  func(ctx context.Context, subj string, data []byte) error
+	store             RoomStore
+	keyStore          RoomKeyStore
+	memberListClient  MemberListClient
+	siteID            string
+	maxRoomSize       int
+	maxBatchSize      int
+	memberListTimeout time.Duration
+	publishToStream   func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
-	return &Handler{store: store, keyStore: keyStore, memberListClient: memberListClient, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
+func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, publishToStream func(context.Context, string, []byte) error) *Handler {
+	return &Handler{
+		store:             store,
+		keyStore:          keyStore,
+		memberListClient:  memberListClient,
+		siteID:            siteID,
+		maxRoomSize:       maxRoomSize,
+		maxBatchSize:      maxBatchSize,
+		memberListTimeout: memberListTimeout,
+		publishToStream:   publishToStream,
+	}
 }
 
 // wrappedCtx returns m.Context() augmented with X-Request-ID from the inbound msg header; entry ctx for every nats* handler.
@@ -291,6 +301,13 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 	req.RequesterID = requester.ID
 	req.RequesterAccount = requester.Account
 	req.Timestamp = time.Now().UTC().UnixMilli()
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("room.id", req.RoomID),
+			attribute.String("room.type", string(roomType)),
+			attribute.String("site.id", h.siteID),
+		)
+	}
 
 	payload, err := json.Marshal(req)
 	if err != nil {
@@ -649,20 +666,38 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 	for _, ref := range refs {
 		var members []model.RoomMember
 
+		// Per-ref deadline so a slow same-site Mongo query or unresponsive
+		// remote site cannot stall the create/add request indefinitely; a
+		// timeout here surfaces to the caller as channelExpandTimeoutError
+		// with site+roomId so the requester can see which channel stalled.
+		refCtx, cancel := h.contextWithMemberListTimeout(ctx)
+
 		if ref.SiteID == h.siteID {
-			if _, subErr := h.store.GetSubscription(ctx, requester, ref.RoomID); subErr != nil {
+			if _, subErr := h.store.GetSubscription(refCtx, requester, ref.RoomID); subErr != nil {
+				cancel()
+				if errors.Is(subErr, context.DeadlineExceeded) {
+					return nil, nil, newChannelExpandTimeoutError(ref.SiteID, ref.RoomID)
+				}
 				if errors.Is(subErr, model.ErrSubscriptionNotFound) {
 					return nil, nil, errNotRoomMember
 				}
 				return nil, nil, fmt.Errorf("subscription check %s: %w", ref.RoomID, subErr)
 			}
-			members, err = h.store.ListRoomMembers(ctx, ref.RoomID, &listLimit, nil, false)
+			members, err = h.store.ListRoomMembers(refCtx, ref.RoomID, &listLimit, nil, false)
+			cancel()
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					return nil, nil, newChannelExpandTimeoutError(ref.SiteID, ref.RoomID)
+				}
 				return nil, nil, fmt.Errorf("local list-members %s: %w", ref.RoomID, err)
 			}
 		} else {
-			members, err = h.memberListClient.ListMembers(ctx, requester, ref, listLimit)
+			members, err = h.memberListClient.ListMembers(refCtx, requester, ref, listLimit)
+			cancel()
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					return nil, nil, newChannelExpandTimeoutError(ref.SiteID, ref.RoomID)
+				}
 				// Pass the sentinel through unwrapped so same-site and cross-site "not a member"
 				// produce identical behavior — errors.Is(err, errNotRoomMember) matches both.
 				if errors.Is(err, errNotRoomMember) {

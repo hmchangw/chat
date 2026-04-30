@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -2360,4 +2361,63 @@ func TestProcessCreateRoom_Channel_EmitsAsyncJobOk(t *testing.T) {
 	require.NoError(t, json.Unmarshal(responses[0].data, &result))
 	assert.Equal(t, model.AsyncJobStatusOK, result.Status)
 	assert.Equal(t, model.AsyncJobOpRoomCreate, result.Operation)
+}
+
+// ---- Permanent-error coverage for HandleJetStreamMsg Ack path + new permanentError type ----
+
+func TestProcessCreateRoom_RoomIDCollisionMismatchType_ReturnsPermanent(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	// Insert collides on _id.
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(mongo.WriteException{
+		WriteErrors: []mongo.WriteError{{Code: 11000, Message: "duplicate key"}},
+	})
+	// Existing room has DIFFERENT type (channel) than the request (DM).
+	mockStore.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&model.Room{
+		ID: "room-collide", Type: model.RoomTypeChannel, SiteID: "site-A",
+	}, nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID:           "room-collide",
+		RequesterAccount: "alice",
+		Users:            []string{"bob"}, // DM intent
+		Timestamp:        time.Now().UnixMilli(),
+	})
+
+	err := h.processCreateRoom(ctx, body)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPermanent)
+	assert.Contains(t, err.Error(), "room ID collision")
+
+	// Async-job error event must be published (defer fires before return).
+	responses := userResponseFor(getPublished(), "alice")
+	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(responses[0].data, &result))
+	assert.Equal(t, model.AsyncJobStatusError, result.Status)
+	assert.Contains(t, result.Error, "room ID collision")
+	// Sanitized error must NOT contain the trailing ": permanent" suffix.
+	assert.NotContains(t, result.Error, ": permanent")
+}
+
+func TestSanitizeAsyncJobError_PermanentErrorTypeReturnsCleanMessage(t *testing.T) {
+	err := newPermanent("counterpart not found")
+	got := sanitizeAsyncJobError(err)
+	assert.Equal(t, "counterpart not found", got)
+}
+
+func TestSanitizeAsyncJobError_LegacyWrappedSentinelStillTrimmed(t *testing.T) {
+	err := fmt.Errorf("legacy reason: %w", errPermanent)
+	got := sanitizeAsyncJobError(err)
+	assert.Equal(t, "legacy reason", got)
+}
+
+func TestSanitizeAsyncJobError_NonPermanentCollapsed(t *testing.T) {
+	err := fmt.Errorf("transient store error: %w", errors.New("connection reset"))
+	got := sanitizeAsyncJobError(err)
+	assert.Equal(t, "operation failed", got)
 }
