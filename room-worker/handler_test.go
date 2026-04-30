@@ -1363,8 +1363,8 @@ func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *te
 	var result model.AsyncJobResult
 	require.NoError(t, json.Unmarshal(capturedData, &result))
 	assert.Equal(t, "req-async-test", result.RequestID)
-	assert.Equal(t, "add_members", result.Job)
-	assert.True(t, result.Success)
+	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
+	assert.Equal(t, "ok", result.Status)
 	assert.Equal(t, "", result.Error)
 	assert.Greater(t, result.Timestamp, int64(0))
 }
@@ -1406,8 +1406,8 @@ func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
 	var result model.AsyncJobResult
 	require.NoError(t, json.Unmarshal(capturedData, &result))
 	assert.Equal(t, "req-error-test", result.RequestID)
-	assert.Equal(t, "add_members", result.Job)
-	assert.False(t, result.Success, "failure event must have Success=false")
+	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
+	assert.Equal(t, "error", result.Status, "failure event must have Status=error")
 	assert.Equal(t, "operation failed", result.Error, "failure event must carry sanitized error message")
 	assert.Greater(t, result.Timestamp, int64(0))
 }
@@ -1426,14 +1426,14 @@ func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-err-test")
 	jobErr := errors.New("oops")
-	h.publishAsyncJobResult(ctx, "alice", "add_members", jobErr)
+	h.publishAsyncJobResult(ctx, "alice", model.AsyncJobOpRoomMemberAdd, jobErr)
 
 	assert.Equal(t, subject.UserResponse("alice", "req-err-test"), capturedSubject)
 	var result model.AsyncJobResult
 	require.NoError(t, json.Unmarshal(capturedData, &result))
 	assert.Equal(t, "req-err-test", result.RequestID)
-	assert.Equal(t, "add_members", result.Job)
-	assert.False(t, result.Success)
+	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
+	assert.Equal(t, "error", result.Status)
 	assert.Equal(t, "operation failed", result.Error)
 }
 
@@ -1446,7 +1446,7 @@ func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequestID(t *testing.T) {
 	h := NewHandler(nil, "site1", publish)
 
 	// No WithRequestID on ctx → empty request ID → publish is skipped.
-	h.publishAsyncJobResult(context.Background(), "alice", "add_members", nil)
+	h.publishAsyncJobResult(context.Background(), "alice", model.AsyncJobOpRoomMemberAdd, nil)
 	assert.False(t, called, "publish must be skipped when request ID is empty")
 }
 
@@ -1459,6 +1459,6 @@ func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequester(t *testing.T) {
 	h := NewHandler(nil, "site1", publish)
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-test")
-	h.publishAsyncJobResult(ctx, "", "add_members", nil)
+	h.publishAsyncJobResult(ctx, "", model.AsyncJobOpRoomMemberAdd, nil)
 	assert.False(t, called, "publish must be skipped when requester account is empty")
 }

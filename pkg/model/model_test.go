@@ -1780,6 +1780,90 @@ func TestCreateRoomRequestBotDMHasAppName(t *testing.T) {
 	assert.Equal(t, "Weather Bot", dst.AppName)
 }
 
+func TestRoomCreatedOutboxRoundtrip(t *testing.T) {
+	out := model.RoomCreatedOutbox{
+		RoomID:               "r1",
+		RoomType:             model.RoomTypeChannel,
+		RoomName:             "deal team",
+		HomeSiteID:           "site-A",
+		Accounts:             []string{"bob", "ian"},
+		RequesterAccount:     "alice",
+		RequesterEngName:     "Alice",
+		RequesterChineseName: "爱丽丝",
+		Timestamp:            1740000000000,
+	}
+	data, err := json.Marshal(&out)
+	require.NoError(t, err)
+	var dst model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, model.RoomTypeChannel, dst.RoomType)
+	assert.Equal(t, []string{"bob", "ian"}, dst.Accounts)
+	assert.NotContains(t, string(data), "appName")
+}
+
+func TestRoomCreatedOutboxBotDMHasAppName(t *testing.T) {
+	out := model.RoomCreatedOutbox{
+		RoomID:               "r2",
+		RoomType:             model.RoomTypeBotDM,
+		HomeSiteID:           "site-A",
+		Accounts:             []string{"weather.bot"},
+		RequesterAccount:     "alice",
+		RequesterEngName:     "Alice",
+		RequesterChineseName: "爱丽丝",
+		AppName:              "Weather Bot",
+		Timestamp:            1,
+	}
+	data, err := json.Marshal(&out)
+	require.NoError(t, err)
+	var dst model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, "Weather Bot", dst.AppName)
+	assert.Contains(t, string(data), `"appName":"Weather Bot"`)
+}
+
+func TestErrorResponseRoomIDOmitempty(t *testing.T) {
+	er := model.ErrorResponse{Error: "internal"}
+	body, err := json.Marshal(er)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "roomId")
+
+	er2 := model.ErrorResponse{Error: "dm already exists", RoomID: "r1"}
+	body2, err := json.Marshal(er2)
+	require.NoError(t, err)
+	assert.Contains(t, string(body2), `"roomId":"r1"`)
+}
+
+func TestAsyncJobResultShape(t *testing.T) {
+	r := model.AsyncJobResult{
+		RequestID: "req-1",
+		Operation: model.AsyncJobOpRoomCreate,
+		Status:    "ok",
+		RoomID:    "r1",
+		Timestamp: 1,
+	}
+	data, err := json.Marshal(&r)
+	require.NoError(t, err)
+	var dst model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, "ok", dst.Status)
+	assert.Equal(t, model.AsyncJobOpRoomCreate, dst.Operation)
+	assert.Equal(t, "r1", dst.RoomID)
+	assert.NotContains(t, string(data), `"job"`)
+	assert.NotContains(t, string(data), `"success"`)
+
+	r2 := model.AsyncJobResult{Operation: model.AsyncJobOpRoomMemberAdd, Status: "error", Error: "failed"}
+	raw2, _ := json.Marshal(r2)
+	assert.NotContains(t, string(raw2), `"roomId"`)
+}
+
+func TestAsyncJobResultOpConstants(t *testing.T) {
+	assert.Equal(t, "room.create", model.AsyncJobOpRoomCreate)
+	assert.Equal(t, "room.member.add", model.AsyncJobOpRoomMemberAdd)
+	assert.Equal(t, "room.member.remove", model.AsyncJobOpRoomMemberRemove)
+	assert.Equal(t, "room.member.remove_org", model.AsyncJobOpRoomMemberRemoveOrg)
+	assert.Equal(t, "room.member.role_update", model.AsyncJobOpRoomMemberRoleUpdate)
+}
+
 func TestAddMembersRequestNoRequestIDField(t *testing.T) {
 	body, err := json.Marshal(model.AddMembersRequest{
 		RoomID:           "r1",

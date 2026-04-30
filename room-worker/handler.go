@@ -63,20 +63,21 @@ func historySharedSincePtr(mode model.HistoryMode, timestamp int64, roomID strin
 }
 
 // publishAsyncJobResult publishes a success/failure event to the requester's reply subject; best-effort, never fails the job.
-func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, job string, jobErr error) {
+func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, operation string, jobErr error) {
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" || requesterAccount == "" {
 		return
 	}
 	result := model.AsyncJobResult{
 		RequestID: requestID,
-		Job:       job,
-		Success:   jobErr == nil,
+		Operation: operation,
+		Status:    "ok",
 		Timestamp: time.Now().UTC().UnixMilli(),
 	}
 	if jobErr != nil {
+		result.Status = "error"
 		result.Error = "operation failed"
-		slog.Error("async room job failed", "error", jobErr, "job", job, "requestID", requestID)
+		slog.Error("async room job failed", "error", jobErr, "operation", operation, "requestID", requestID)
 	}
 	data, _ := json.Marshal(result)
 	if err := h.publish(ctx, subject.UserResponse(requesterAccount, requestID), data, ""); err != nil {
@@ -205,7 +206,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	isSelfLeave := req.Requester == req.Account
 	// Defer the result publish covers all subsequent return paths.
 	defer func() {
-		h.publishAsyncJobResult(ctx, req.Requester, "remove_member", err)
+		h.publishAsyncJobResult(ctx, req.Requester, model.AsyncJobOpRoomMemberRemove, err)
 	}()
 
 	user, err := h.store.GetUserWithMembership(ctx, req.RoomID, req.Account)
@@ -330,7 +331,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 	// Defer the result publish covers all subsequent return paths.
 	defer func() {
-		h.publishAsyncJobResult(ctx, req.Requester, "remove_org", err)
+		h.publishAsyncJobResult(ctx, req.Requester, model.AsyncJobOpRoomMemberRemoveOrg, err)
 	}()
 
 	members, err := h.store.GetOrgMembersWithIndividualStatus(ctx, req.RoomID, req.OrgID)
@@ -472,7 +473,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 	// Now req is populated; defer the result publish covers all subsequent return paths.
 	defer func() {
-		h.publishAsyncJobResult(ctx, req.RequesterAccount, "add_members", err)
+		h.publishAsyncJobResult(ctx, req.RequesterAccount, model.AsyncJobOpRoomMemberAdd, err)
 	}()
 
 	room, err := h.store.GetRoom(ctx, req.RoomID)

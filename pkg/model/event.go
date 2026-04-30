@@ -165,8 +165,33 @@ type MemberRemoveEvent struct {
 // AsyncJobResult signals to the requester's client that an async room-worker job has completed.
 type AsyncJobResult struct {
 	RequestID string `json:"requestId"`
-	Job       string `json:"job"` // "add_members" | "remove_member" | "remove_org" | "role_update"
-	Success   bool   `json:"success"`
+	Operation string `json:"operation"`
+	Status    string `json:"status"`
+	RoomID    string `json:"roomId,omitempty"`
 	Error     string `json:"error,omitempty"`
 	Timestamp int64  `json:"timestamp"`
+}
+
+const (
+	AsyncJobOpRoomCreate           = "room.create"
+	AsyncJobOpRoomMemberAdd        = "room.member.add"
+	AsyncJobOpRoomMemberRemove     = "room.member.remove"
+	AsyncJobOpRoomMemberRemoveOrg  = "room.member.remove_org"
+	AsyncJobOpRoomMemberRoleUpdate = "room.member.role_update"
+)
+
+// RoomCreatedOutbox is the cross-site payload published by room-worker
+// on the home site whenever a new room is created and at least one
+// member lives on the destination site. Wrapped in OutboxEvent.
+type RoomCreatedOutbox struct {
+	RoomID               string   `json:"roomId"`
+	RoomType             RoomType `json:"roomType"`
+	RoomName             string   `json:"roomName"`
+	HomeSiteID           string   `json:"homeSiteId"`
+	Accounts             []string `json:"accounts"`
+	RequesterAccount     string   `json:"requesterAccount"`
+	RequesterEngName     string   `json:"requesterEngName"`
+	RequesterChineseName string   `json:"requesterChineseName"`
+	AppName              string   `json:"appName,omitempty"`
+	Timestamp            int64    `json:"timestamp"`
 }
