@@ -26,6 +26,20 @@ const (
 	deletePinnedMsg  = `UPDATE pinned_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
 )
 
+// MessageTypeRemoved is the Cassandra type value written to thread parent messages
+// when they are soft-deleted, signalling to the frontend that the thread's
+// parent message has been removed.
+const MessageTypeRemoved = "message_removed"
+
+// Thread-parent delete queries — identical to the regular delete queries but also
+// set type = MessageTypeRemoved. Used when msg.TCount != nil && *msg.TCount > 0.
+const (
+	deleteThreadParentMsgByIDCAS = `UPDATE messages_by_id SET deleted = true, type = 'message_removed', updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`
+	deleteThreadParentMsgByRoom  = `UPDATE messages_by_room SET deleted = true, type = 'message_removed', updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+	deleteThreadParentThreadMsg  = `UPDATE thread_messages_by_room SET deleted = true, type = 'message_removed', updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
+	deleteThreadParentPinnedMsg  = `UPDATE pinned_messages_by_room SET deleted = true, type = 'message_removed', updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+)
+
 // casDecrement atomically decrements a nullable INT toward zero (clamping at zero); mirrors message-worker/store_cassandra.go casIncrement.
 // When initial is nil the column was never written and the function returns immediately — no LWT is issued and no zero is materialised.
 func casDecrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
@@ -79,6 +93,18 @@ func (r *Repository) deleteInPinnedMessagesByRoom(ctx context.Context, msg *mode
 	return r.session.Query(deletePinnedMsg, deletedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID).WithContext(ctx).Exec()
 }
 
+func (r *Repository) deleteThreadParentInMessagesByRoom(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	return r.session.Query(deleteThreadParentMsgByRoom, deletedAt, msg.RoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+}
+
+func (r *Repository) deleteThreadParentInThreadMessagesByRoom(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	return r.session.Query(deleteThreadParentThreadMsg, deletedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+}
+
+func (r *Repository) deleteThreadParentInPinnedMessagesByRoom(ctx context.Context, msg *models.Message, deletedAt time.Time) error {
+	return r.session.Query(deleteThreadParentPinnedMsg, deletedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID).WithContext(ctx).Exec()
+}
+
 func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
 	if msg.ThreadParentID != "" && msg.ThreadRoomID == "" {
 		return fmt.Errorf("edit thread message %s: ThreadParentID %q is set but ThreadRoomID is empty", msg.MessageID, msg.ThreadParentID)
@@ -115,9 +141,16 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		return time.Time{}, false, fmt.Errorf("delete thread message %s: ThreadParentID %q is set but ThreadRoomID is empty", msg.MessageID, msg.ThreadParentID)
 	}
 
+	isThreadParent := msg.TCount != nil && *msg.TCount > 0
+
+	casQuery := deleteMsgByIDCAS
+	if isThreadParent {
+		casQuery = deleteThreadParentMsgByIDCAS
+	}
+
 	var current bool
 	applied, err := r.session.Query(
-		deleteMsgByIDCAS,
+		casQuery,
 		deletedAt, msg.MessageID, msg.CreatedAt,
 	).WithContext(ctx).ScanCAS(&current)
 	if err != nil {
@@ -141,18 +174,36 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 	}
 
 	if msg.ThreadParentID == "" {
-		if err := r.deleteInMessagesByRoom(ctx, msg, deletedAt); err != nil {
-			return time.Time{}, false, fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+		if isThreadParent {
+			if err := r.deleteThreadParentInMessagesByRoom(ctx, msg, deletedAt); err != nil {
+				return time.Time{}, false, fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+			}
+		} else {
+			if err := r.deleteInMessagesByRoom(ctx, msg, deletedAt); err != nil {
+				return time.Time{}, false, fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+			}
 		}
 	} else {
-		if err := r.deleteInThreadMessagesByRoom(ctx, msg, deletedAt); err != nil {
-			return time.Time{}, false, fmt.Errorf("update thread_messages_by_room for message %s room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
+		if isThreadParent {
+			if err := r.deleteThreadParentInThreadMessagesByRoom(ctx, msg, deletedAt); err != nil {
+				return time.Time{}, false, fmt.Errorf("update thread_messages_by_room for message %s room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
+			}
+		} else {
+			if err := r.deleteInThreadMessagesByRoom(ctx, msg, deletedAt); err != nil {
+				return time.Time{}, false, fmt.Errorf("update thread_messages_by_room for message %s room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
+			}
 		}
 	}
 
 	if msg.PinnedAt != nil {
-		if err := r.deleteInPinnedMessagesByRoom(ctx, msg, deletedAt); err != nil {
-			return time.Time{}, false, fmt.Errorf("update pinned_messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+		if isThreadParent {
+			if err := r.deleteThreadParentInPinnedMessagesByRoom(ctx, msg, deletedAt); err != nil {
+				return time.Time{}, false, fmt.Errorf("update pinned_messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+			}
+		} else {
+			if err := r.deleteInPinnedMessagesByRoom(ctx, msg, deletedAt); err != nil {
+				return time.Time{}, false, fmt.Errorf("update pinned_messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+			}
 		}
 	}
 

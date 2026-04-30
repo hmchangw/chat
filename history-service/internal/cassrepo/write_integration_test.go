@@ -762,3 +762,165 @@ func TestRepository_SoftDeleteMessage_RowCreatedByLWT(t *testing.T) {
 	_, _, err := repo.SoftDeleteMessage(ctx, msg, deletedAt)
 	require.NoError(t, err, "SoftDeleteMessage must not return an error on a non-existent row")
 }
+
+// TestRepository_SoftDeleteMessage_ThreadParent_SetsTypeRemoved verifies that
+// deleting a top-level thread parent (TCount > 0) sets type = 'message_removed'
+// atomically in messages_by_id and messages_by_room.
+func TestRepository_SoftDeleteMessage_ThreadParent_SetsTypeRemoved(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-tp-del"
+	msgID := "m-tp-del"
+	tcount := 2
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed messages_by_id with tcount = 2 (has active replies — thread parent).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "parent msg", tcount, false,
+	).Exec())
+
+	// Seed messages_by_room (top-level message: no thread_parent_id).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "parent msg", tcount, false,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		TCount:         &tcount,
+		ThreadParentID: "", // top-level
+	}
+
+	deletedAt := createdAt.Add(time.Minute)
+	_, applied, err := repo.SoftDeleteMessage(ctx, msg, deletedAt)
+	require.NoError(t, err)
+	require.True(t, applied)
+
+	// Verify messages_by_id: deleted = true AND type = 'message_removed'.
+	var gotDeleted bool
+	var gotType string
+	require.NoError(t, session.Query(
+		`SELECT deleted, type FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotDeleted, &gotType))
+	assert.True(t, gotDeleted)
+	assert.Equal(t, "message_removed", gotType, "messages_by_id must have type='message_removed' for thread parent")
+
+	// Verify messages_by_room: deleted = true AND type = 'message_removed'.
+	require.NoError(t, session.Query(
+		`SELECT deleted, type FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, createdAt, msgID,
+	).Scan(&gotDeleted, &gotType))
+	assert.True(t, gotDeleted)
+	assert.Equal(t, "message_removed", gotType, "messages_by_room must have type='message_removed' for thread parent")
+}
+
+// TestRepository_SoftDeleteMessage_NonThreadParent_NoTypeChange verifies that
+// deleting a regular message (TCount nil) does NOT set type = 'message_removed'.
+func TestRepository_SoftDeleteMessage_NonThreadParent_NoTypeChange(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-non-tp"
+	msgID := "m-non-tp"
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed with no tcount (regular message, never had a thread).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, deleted) VALUES (?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "regular msg", false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, deleted) VALUES (?, ?, ?, ?, ?, ?)`,
+		roomID, createdAt, msgID, sender, "regular msg", false,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:      msgID,
+		RoomID:         roomID,
+		CreatedAt:      createdAt,
+		TCount:         nil, // no replies — not a thread parent
+		ThreadParentID: "",
+	}
+
+	deletedAt := createdAt.Add(time.Minute)
+	_, applied, err := repo.SoftDeleteMessage(ctx, msg, deletedAt)
+	require.NoError(t, err)
+	require.True(t, applied)
+
+	// type column should be empty (not set).
+	var gotType string
+	require.NoError(t, session.Query(
+		`SELECT type FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotType))
+	assert.Empty(t, gotType, "regular message delete must NOT set type")
+}
+
+// TestRepository_SoftDeleteMessage_ReplyThreadParent_SetsTypeRemoved verifies that
+// deleting a reply that is itself a thread parent (ThreadParentID != "" AND TCount > 0)
+// sets type = 'message_removed' in messages_by_id and thread_messages_by_room.
+func TestRepository_SoftDeleteMessage_ReplyThreadParent_SetsTypeRemoved(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "room-rtp"
+	threadRoomID := "tr-rtp"
+	parentMsgID := "m-rtp-parent"
+	msgID := "m-rtp"
+	tcount := 1
+	parentCreatedAt := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Millisecond)
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Seed messages_by_id: this message is a reply (ThreadParentID set) AND a parent (TCount = 1).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_room_id, thread_parent_created_at, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msgID, roomID, createdAt, sender, "nested thread parent", parentMsgID, threadRoomID, parentCreatedAt, tcount, false,
+	).Exec())
+
+	// Seed thread_messages_by_room (message is a reply in the parent's thread).
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, createdAt, msgID, sender, "nested thread parent", tcount, false,
+	).Exec())
+
+	msg := &models.Message{
+		MessageID:             msgID,
+		RoomID:                roomID,
+		ThreadRoomID:          threadRoomID,
+		CreatedAt:             createdAt,
+		ThreadParentID:        parentMsgID,
+		ThreadParentCreatedAt: &parentCreatedAt,
+		TCount:                &tcount,
+	}
+
+	deletedAt := createdAt.Add(time.Minute)
+	_, applied, err := repo.SoftDeleteMessage(ctx, msg, deletedAt)
+	require.NoError(t, err)
+	require.True(t, applied)
+
+	// Verify messages_by_id: type = 'message_removed'.
+	var gotType string
+	require.NoError(t, session.Query(
+		`SELECT type FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msgID, createdAt,
+	).Scan(&gotType))
+	assert.Equal(t, "message_removed", gotType, "messages_by_id must have type='message_removed'")
+
+	// Verify thread_messages_by_room: type = 'message_removed'.
+	require.NoError(t, session.Query(
+		`SELECT type FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
+		roomID, threadRoomID, createdAt, msgID,
+	).Scan(&gotType))
+	assert.Equal(t, "message_removed", gotType, "thread_messages_by_room must have type='message_removed'")
+}
