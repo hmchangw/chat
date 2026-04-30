@@ -31,14 +31,16 @@ func TestUserJSON(t *testing.T) {
 func TestRoomJSON(t *testing.T) {
 	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	lastMention := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	minSeen := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
-		LastMsgAt:        &lastMsg,
-		LastMsgID:        "m1",
-		LastMentionAllAt: &lastMention,
-		CreatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		LastMsgAt:         &lastMsg,
+		LastMsgID:         "m1",
+		LastMentionAllAt:  &lastMention,
+		MinUserLastSeenAt: &minSeen,
+		CreatedAt:         time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:         time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	roundTrip(t, &r, &model.Room{})
 }
@@ -62,10 +64,14 @@ func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
 	_, hasMention := raw["lastMentionAllAt"]
 	assert.False(t, hasMention, "nil LastMentionAllAt must be omitted from JSON")
 
+	_, hasMinSeen := raw["minUserLastSeenAt"]
+	assert.False(t, hasMinSeen, "nil MinUserLastSeenAt must be omitted from JSON")
+
 	var dst model.Room
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Nil(t, dst.LastMsgAt, "absent JSON field must unmarshal to nil pointer")
 	assert.Nil(t, dst.LastMentionAllAt, "absent JSON field must unmarshal to nil pointer")
+	assert.Nil(t, dst.MinUserLastSeenAt, "absent JSON field must unmarshal to nil pointer")
 }
 
 func TestThreadRoomJSON(t *testing.T) {
