@@ -1112,3 +1112,123 @@ git commit -m "docs(history-service): TODO on pinned-table helpers for future pi
 ```
 
 ---
+
+## Task 9: Token-aware host policy and `NumConns=4` default in `pkg/cassutil`
+
+**Why:** gocql defaults to round-robin host selection (every query hits a random host, which forwards to the partition replica — extra hop) and `NumConns=2` (two TCP connections per host). For a service whose workload is overwhelmingly partition-key reads/writes (every history-service query knows its `room_id` or `message_id`), token-aware routing eliminates the coordinator-forward hop and `NumConns=4` doubles the per-pod concurrency the driver can multiplex. These are universally good defaults; bake them into `pkg/cassutil`. `NumConns` becomes overridable via a functional option (consumed in Task 10 by history-service).
+
+**Files:**
+- Modify: `pkg/cassutil/cass.go` (add `Option`, `WithNumConns`, set defaults in `buildCluster`, apply options in `Connect`)
+- Modify: `pkg/cassutil/cass_test.go` (extend `TestBuildCluster`, add `TestWithNumConns`)
+
+This task affects two services that import `cassutil`: `history-service` and `message-worker`. Both keep working unchanged because the option is variadic.
+
+- [ ] **Step 1: Write the failing tests for the new defaults and option**
+
+In `pkg/cassutil/cass_test.go`, extend the existing `TestBuildCluster` block (inside the loop, after the `cluster.Timeout` assertion) by adding:
+
+```go
+				assert.Equal(t, 4, cluster.NumConns)
+				assert.NotNil(t, cluster.PoolConfig.HostSelectionPolicy)
+```
+
+Then append two new tests:
+
+```go
+func TestWithNumConns_Overrides(t *testing.T) {
+	cluster := buildCluster([]string{"h"}, "ks", "", "")
+	WithNumConns(8)(cluster)
+	assert.Equal(t, 8, cluster.NumConns)
+}
+
+func TestWithNumConns_IgnoresNonPositive(t *testing.T) {
+	cluster := buildCluster([]string{"h"}, "ks", "", "")
+	WithNumConns(0)(cluster)
+	assert.Equal(t, 4, cluster.NumConns)
+	WithNumConns(-3)(cluster)
+	assert.Equal(t, 4, cluster.NumConns)
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./pkg/cassutil/...`
+Expected: FAIL — `WithNumConns` undefined; existing `TestBuildCluster` subtests fail on the new `NumConns`/`HostSelectionPolicy` assertions.
+
+- [ ] **Step 3: Update `pkg/cassutil/cass.go` with defaults and option**
+
+Replace the existing `buildCluster` function with:
+
+```go
+func buildCluster(hosts []string, keyspace, username, password string) *gocql.ClusterConfig {
+	cluster := gocql.NewCluster(hosts...)
+	cluster.Keyspace = keyspace
+	cluster.Consistency = gocql.LocalQuorum
+	cluster.Timeout = 10 * time.Second
+	cluster.NumConns = 4
+	cluster.PoolConfig = gocql.PoolConfig{
+		HostSelectionPolicy: gocql.TokenAwareHostPolicy(gocql.RoundRobinHostPolicy()),
+	}
+	if username != "" && password != "" {
+		cluster.Authenticator = gocql.PasswordAuthenticator{
+			Username: username,
+			Password: password,
+		}
+	}
+	return cluster
+}
+```
+
+Add the option type and helper at the top of the same file (after the `import` block, before `Connect`):
+
+```go
+// Option configures a Cassandra cluster on Connect.
+type Option func(*gocql.ClusterConfig)
+
+// WithNumConns overrides the number of TCP connections gocql keeps open per
+// host. Default is 4. Non-positive values are ignored.
+func WithNumConns(n int) Option {
+	return func(c *gocql.ClusterConfig) {
+		if n > 0 {
+			c.NumConns = n
+		}
+	}
+}
+```
+
+Replace the `Connect` function with:
+
+```go
+func Connect(hosts, keyspace, username, password string, opts ...Option) (*gocql.Session, error) {
+	cluster := buildCluster(parseHosts(hosts), keyspace, username, password)
+	for _, opt := range opts {
+		opt(cluster)
+	}
+
+	session, err := cluster.CreateSession()
+	if err != nil {
+		return nil, fmt.Errorf("cassandra connect: %w", err)
+	}
+	slog.Info("connected to Cassandra", "keyspace", keyspace)
+	return session, nil
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test ./pkg/cassutil/...`
+Expected: PASS — `TestBuildCluster` (with new assertions), both `TestWithNumConns` tests, and `TestParseHosts`.
+
+- [ ] **Step 5: Verify both consumers still build**
+
+Run: `make build SERVICE=history-service && make build SERVICE=message-worker`
+Expected: PASS — both services compile with the variadic-options signature; existing `cassutil.Connect(...)` calls without options still work.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add pkg/cassutil/cass.go pkg/cassutil/cass_test.go
+git commit -m "perf(cassutil): token-aware host policy and NumConns=4 default with WithNumConns option"
+```
+
+---
