@@ -320,6 +320,20 @@ func MemberAddWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.add", siteID)
 }
 
+// RoomCreate is the request/reply subject the client posts to in order
+// to create a new room. The siteID segment is the requester's site —
+// the room will be created there. NATS gateways route cross-site
+// requests transparently.
+func RoomCreate(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.create", account, siteID)
+}
+
+// RoomCreateWildcard is the queue-subscription pattern room-service
+// uses for create-room requests on its own site.
+func RoomCreateWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.%s.create", siteID)
+}
+
 func RoomMemberEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event.member", roomID)
 }

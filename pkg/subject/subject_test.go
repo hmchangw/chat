@@ -103,6 +103,22 @@ func TestSubjectBuilders(t *testing.T) {
 		})
 	}
 
+	t.Run("RoomCreate", func(t *testing.T) {
+		got := subject.RoomCreate("alice", "site-A")
+		want := "chat.user.alice.request.room.site-A.create"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("RoomCreateWildcard", func(t *testing.T) {
+		got := subject.RoomCreateWildcard("site-A")
+		want := "chat.user.*.request.room.site-A.create"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
 	t.Run("InboxMemberEventSubjects", func(t *testing.T) {
 		got := subject.InboxMemberEventSubjects("site-a")
 		want := []string{
