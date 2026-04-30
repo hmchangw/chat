@@ -211,3 +211,168 @@ git commit -m "feat(natsrouter): add WithMaxConcurrency option and ErrUnavailabl
 ```
 
 ---
+
+## Task 2: Spawn handlers and reply busy on saturation
+
+**Why:** The dispatcher goroutine currently runs the handler chain inline, which serializes everything to one in-flight handler per route. Wire the semaphore from Task 1 into `addRoute`'s callback: try a non-blocking semaphore acquire; if it succeeds, spawn a goroutine to run the chain (releasing on return); if it fails, publish an `ErrUnavailable` reply immediately and return. The dispatcher goroutine becomes a thin admission-control loop.
+
+**Files:**
+- Modify: `pkg/natsrouter/router.go` (rewrite `addRoute` callback; add `replyBusy` helper)
+- Modify: `pkg/natsrouter/integration_test.go` (existing heavy-concurrency test must opt into a higher cap; add new busy-reply integration test)
+
+- [ ] **Step 1: Write the failing busy-reply integration test**
+
+Append to `pkg/natsrouter/integration_test.go`:
+
+```go
+// TestIntegration_BusyReplyOnSaturation verifies that requests arriving
+// while the per-pod concurrency cap is exhausted receive an ErrUnavailable
+// reply rather than blocking.
+func TestIntegration_BusyReplyOnSaturation(t *testing.T) {
+	nc := setupNATS(t)
+	r := natsrouter.New(nc, "integration-busy", natsrouter.WithMaxConcurrency(1))
+
+	gate := make(chan struct{})
+	natsrouter.Register(r, "busy.{id}",
+		func(c *natsrouter.Context, req echoReq) (*echoResp, error) {
+			<-gate
+			return &echoResp{Seq: req.Seq}, nil
+		})
+
+	// First request occupies the only slot.
+	first := make(chan struct {
+		resp []byte
+		err  error
+	}, 1)
+	go func() {
+		data, _ := json.Marshal(echoReq{Seq: 1})
+		resp, err := nc.Request(context.Background(), "busy.1", data, 5*time.Second)
+		var b []byte
+		if resp != nil {
+			b = resp.Data
+		}
+		first <- struct {
+			resp []byte
+			err  error
+		}{b, err}
+	}()
+
+	// Wait for the first handler to be in-flight.
+	require.Eventually(t, func() bool {
+		// A second request should now get busy because the slot is held.
+		data, _ := json.Marshal(echoReq{Seq: 2})
+		resp, err := nc.Request(context.Background(), "busy.2", data, 1*time.Second)
+		if err != nil {
+			return false
+		}
+		var re natsrouter.RouteError
+		if err := json.Unmarshal(resp.Data, &re); err != nil {
+			return false
+		}
+		return re.Code == natsrouter.CodeUnavailable
+	}, 5*time.Second, 50*time.Millisecond, "expected busy reply once slot is held")
+
+	// Release the gate; first request must complete normally.
+	close(gate)
+	got := <-first
+	require.NoError(t, got.err)
+	var ok echoResp
+	require.NoError(t, json.Unmarshal(got.resp, &ok))
+	assert.Equal(t, 1, ok.Seq)
+}
+```
+
+- [ ] **Step 2: Run the new test to verify it fails**
+
+Run: `go test -tags=integration ./pkg/natsrouter/ -run TestIntegration_BusyReplyOnSaturation -v`
+Expected: FAIL — the second request blocks rather than getting a busy reply (current code serializes inside the dispatcher).
+
+- [ ] **Step 3: Add the `replyBusy` helper in router.go**
+
+Add to `pkg/natsrouter/router.go`, after the `New` constructor:
+
+```go
+// replyBusy publishes an ErrUnavailable reply on m.Reply, used when the
+// router's admission control rejects a message. Best-effort — if the
+// caller did not set a reply subject, the publish is a no-op.
+func (r *Router) replyBusy(msg *nats.Msg) {
+	if msg.Reply == "" {
+		return
+	}
+	natsutil.ReplyJSON(msg, ErrUnavailable("service busy"))
+}
+```
+
+Add the import `"github.com/hmchangw/chat/pkg/natsutil"` to the file.
+
+- [ ] **Step 4: Rewrite the `natsHandler` closure inside `addRoute`**
+
+In `pkg/natsrouter/router.go`, replace the existing `natsHandler` closure inside `addRoute`:
+
+```go
+	natsHandler := func(m otelnats.Msg) {
+		c := acquireContext(m.Context(), m.Msg, rt.extractParams(m.Msg.Subject), all)
+		c.Next()
+		releaseContext(c)
+	}
+```
+
+with:
+
+```go
+	natsHandler := func(m otelnats.Msg) {
+		select {
+		case r.sem <- struct{}{}:
+		default:
+			r.replyBusy(m.Msg)
+			return
+		}
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			defer func() { <-r.sem }()
+			c := acquireContext(m.Context(), m.Msg, rt.extractParams(m.Msg.Subject), all)
+			c.Next()
+			releaseContext(c)
+		}()
+	}
+```
+
+- [ ] **Step 5: Update `TestIntegration_ConcurrentRequestsWithCopy` to opt into a higher cap**
+
+The existing test fires 300 concurrent requests and asserts all succeed. With the default cap of 100, some would be busy-replied. The test's intent is heavy-concurrency stress (context safety, not admission control), so bump the cap.
+
+In `pkg/natsrouter/integration_test.go`, replace:
+
+```go
+	r := natsrouter.New(nc, "integration-concurrent")
+```
+
+with:
+
+```go
+	r := natsrouter.New(nc, "integration-concurrent", natsrouter.WithMaxConcurrency(500))
+```
+
+- [ ] **Step 6: Run all tests to verify they pass**
+
+Run:
+```bash
+go test ./pkg/natsrouter/...
+go test -tags=integration ./pkg/natsrouter/...
+```
+Expected: PASS — unit tests still green; integration tests including the new busy-reply test pass.
+
+- [ ] **Step 7: Run with race detector**
+
+Run: `go test -tags=integration -race ./pkg/natsrouter/...`
+Expected: PASS — no data races introduced by the spawn-per-message model.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add pkg/natsrouter/router.go pkg/natsrouter/integration_test.go
+git commit -m "feat(natsrouter): spawn handlers with semaphore admission control"
+```
+
+---
