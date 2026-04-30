@@ -461,6 +461,25 @@ func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
 	assert.False(t, dst.Alert)
 }
 
+func TestRoomBotDMRoundtrip(t *testing.T) {
+	r := model.Room{
+		ID:        "r1",
+		Name:      "weather chat",
+		Type:      model.RoomTypeBotDM,
+		SiteID:    "site-A",
+		UserCount: 1,
+		AppCount:  1,
+		CreatedAt: time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC),
+	}
+
+	var dst model.Room
+	roundTrip(t, &r, &dst)
+	assert.Equal(t, model.RoomTypeBotDM, dst.Type)
+	assert.Equal(t, "botDM", string(dst.Type))
+	assert.Equal(t, 1, dst.AppCount)
+}
+
 func TestRoomTypeValues(t *testing.T) {
 	if model.RoomTypeChannel != "channel" {
 		t.Errorf("RoomTypeChannel = %q", model.RoomTypeChannel)
