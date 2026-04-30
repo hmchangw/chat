@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
@@ -101,6 +102,8 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 		err = h.processAddMembers(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".member.remove"):
 		err = h.processRemoveMember(ctx, msg.Data())
+	case strings.HasSuffix(subj, ".create"):
+		err = h.processCreateRoom(ctx, msg.Data())
 	default:
 		slog.Warn("unknown member operation", "subject", subj)
 	}
@@ -830,4 +833,364 @@ func composeAutoName(users, orgs []string, channels []model.ChannelRef) string {
 	}
 	joined := strings.Join(parts, ", ")
 	return truncateRunes(joined, 100)
+}
+
+// stripAccount returns slice with all occurrences of account removed.
+func stripAccount(slice []string, account string) []string {
+	out := make([]string, 0, len(slice))
+	for _, s := range slice {
+		if s != account {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error) {
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" {
+		return fmt.Errorf("missing X-Request-ID: %w", errPermanent)
+	}
+
+	var req model.CreateRoomRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("unmarshal create-room: %w: %w", err, errPermanent)
+	}
+
+	requester, err := h.store.GetUser(ctx, req.RequesterAccount)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return fmt.Errorf("requester not found: %w", errPermanent)
+		}
+		return fmt.Errorf("get requester: %w", err)
+	}
+
+	// Defer the result publish covers all subsequent return paths.
+	defer func() {
+		h.publishAsyncJobResult(ctx, requester.Account, model.AsyncJobOpRoomCreate, err)
+	}()
+
+	roomType := determineRoomTypeFromPayload(&req)
+	acceptedAt := time.UnixMilli(req.Timestamp).UTC()
+	now := time.Now().UTC()
+
+	room := &model.Room{
+		ID:        req.RoomID,
+		Name:      resolveRoomName(&req, roomType),
+		Type:      roomType,
+		CreatedBy: createdByForType(requester.ID, roomType),
+		SiteID:    h.siteID,
+		CreatedAt: acceptedAt,
+		UpdatedAt: acceptedAt,
+	}
+	if err := h.store.CreateRoom(ctx, room); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			existing, fetchErr := h.store.GetRoom(ctx, room.ID)
+			if fetchErr != nil {
+				return fmt.Errorf("fetch on duplicate-key: %w", fetchErr)
+			}
+			if existing.Type != room.Type || existing.SiteID != room.SiteID {
+				return fmt.Errorf("room ID collision (existing type=%s site=%s; want %s/%s): %w",
+					existing.Type, existing.SiteID, room.Type, room.SiteID, errPermanent)
+			}
+			room = existing
+		} else {
+			return fmt.Errorf("create room: %w", err)
+		}
+	}
+
+	switch roomType {
+	case model.RoomTypeDM:
+		return h.processCreateRoomDM(ctx, &req, room, requester, requestID, acceptedAt, now)
+	case model.RoomTypeBotDM:
+		return h.processCreateRoomBotDM(ctx, &req, room, requester, requestID, acceptedAt, now)
+	case model.RoomTypeChannel:
+		return h.processCreateRoomChannel(ctx, &req, room, requester, requestID, acceptedAt, now)
+	default:
+		return fmt.Errorf("unknown room type %q: %w", roomType, errPermanent)
+	}
+}
+
+// determineRoomTypeFromPayload mirrors room-service's determineRoomType
+// but operates on the canonical (post-strip, server-populated) payload.
+func determineRoomTypeFromPayload(req *model.CreateRoomRequest) model.RoomType {
+	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 && len(req.Users) == 1 {
+		if strings.HasSuffix(req.Users[0], ".bot") {
+			return model.RoomTypeBotDM
+		}
+		return model.RoomTypeDM
+	}
+	return model.RoomTypeChannel
+}
+
+func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
+	other, err := h.store.GetUser(ctx, req.Users[0])
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return fmt.Errorf("counterpart not found: %w", errPermanent)
+		}
+		return fmt.Errorf("get counterpart: %w", err)
+	}
+
+	otherDisplayName := composeNameOrAccount(other)
+	requesterDisplayName := composeNameOrAccount(requester)
+	subs := []*model.Subscription{
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, otherDisplayName, otherDisplayName, false, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), other, room, nil, requesterDisplayName, requesterDisplayName, false, acceptedAt),
+	}
+	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
+		return err
+	}
+	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, other}, subs, requestID, now)
+}
+
+func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
+	bot, err := h.store.GetUser(ctx, req.Users[0])
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return fmt.Errorf("bot user not found: %w", errPermanent)
+		}
+		return fmt.Errorf("get bot user: %w", err)
+	}
+
+	requesterDisplayName := composeNameOrAccount(requester)
+	subs := []*model.Subscription{
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, req.AppName, req.AppName, true, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requesterDisplayName, requesterDisplayName, false, acceptedAt),
+	}
+	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
+		return err
+	}
+	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, bot}, subs, requestID, now)
+}
+
+func (h *Handler) bulkCreateSubsIdempotent(ctx context.Context, subs []*model.Subscription) error {
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil
+		}
+		return fmt.Errorf("bulk create subs: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
+	accounts, err := h.store.ListNewMembersForNewRoom(ctx, req.Orgs, req.Users)
+	if err != nil {
+		return fmt.Errorf("list new members: %w", err)
+	}
+	accounts = stripAccount(accounts, requester.Account)
+
+	users, err := h.store.FindUsersByAccounts(ctx, accounts)
+	if err != nil {
+		return fmt.Errorf("find users: %w", err)
+	}
+	for i := range users {
+		if users[i].EngName == "" || users[i].ChineseName == "" {
+			return fmt.Errorf("user %s missing required name fields: %w", users[i].Account, errPermanent)
+		}
+	}
+
+	subs := make([]*model.Subscription, 0, len(users)+1)
+	for i := range users {
+		u := &users[i]
+		subs = append(subs, newSub(idgen.GenerateUUIDv7(), u, room, []model.Role{model.RoleMember}, room.Name, "", false, acceptedAt))
+	}
+	subs = append(subs, newSub(idgen.GenerateUUIDv7(), requester, room, []model.Role{model.RoleOwner}, room.Name, "", false, acceptedAt))
+
+	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
+		return err
+	}
+
+	members := make([]*model.RoomMember, 0, len(subs)+len(req.Orgs))
+	if len(req.Orgs) > 0 {
+		for _, sub := range subs[:len(subs)-1] {
+			members = append(members, &model.RoomMember{
+				ID:     idgen.GenerateUUIDv7(),
+				RoomID: room.ID,
+				Ts:     acceptedAt,
+				Member: model.RoomMemberEntry{ID: sub.User.ID, Type: model.RoomMemberIndividual, Account: sub.User.Account},
+			})
+		}
+		for _, org := range req.Orgs {
+			members = append(members, &model.RoomMember{
+				ID:     idgen.GenerateUUIDv7(),
+				RoomID: room.ID,
+				Ts:     acceptedAt,
+				Member: model.RoomMemberEntry{ID: org, Type: model.RoomMemberOrg},
+			})
+		}
+	}
+	members = append(members, &model.RoomMember{
+		ID:     idgen.GenerateUUIDv7(),
+		RoomID: room.ID,
+		Ts:     acceptedAt,
+		Member: model.RoomMemberEntry{ID: requester.ID, Type: model.RoomMemberIndividual, Account: requester.Account},
+	})
+
+	if err := h.bulkCreateMembersIdempotent(ctx, members); err != nil {
+		return err
+	}
+
+	allUsers := make([]*model.User, 0, len(users)+1)
+	for i := range users {
+		allUsers = append(allUsers, &users[i])
+	}
+	allUsers = append(allUsers, requester)
+
+	return h.finishCreateRoom(ctx, req, room, requester, allUsers, subs, requestID, now)
+}
+
+func (h *Handler) bulkCreateMembersIdempotent(ctx context.Context, members []*model.RoomMember) error {
+	if len(members) == 0 {
+		return nil
+	}
+	if err := h.store.BulkCreateRoomMembers(ctx, members); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil
+		}
+		return fmt.Errorf("bulk create room members: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, allUsers []*model.User, subs []*model.Subscription, requestID string, now time.Time) error {
+	if err := h.store.ReconcileMemberCounts(ctx, room.ID); err != nil {
+		return fmt.Errorf("reconcile member counts: %w", err)
+	}
+
+	// Task 35: subscription.update fan-out per sub
+	for _, sub := range subs {
+		evt := model.SubscriptionUpdateEvent{
+			UserID:       sub.User.ID,
+			Subscription: *sub,
+			Action:       "added",
+			Timestamp:    now.UnixMilli(),
+		}
+		data, err := json.Marshal(evt)
+		if err != nil {
+			slog.Error("marshal subscription.update failed", "error", err, "account", sub.User.Account)
+			continue
+		}
+		if err := h.publish(ctx, subject.SubscriptionUpdate(sub.User.Account), data, ""); err != nil {
+			slog.Error("publish subscription.update failed", "error", err, "account", sub.User.Account)
+		}
+	}
+
+	// Task 36: channel-only sys-messages
+	if room.Type == model.RoomTypeChannel {
+		if err := h.publishChannelSysMessages(ctx, req, room, requester, len(subs)-1, requestID, now); err != nil {
+			return fmt.Errorf("publish sys messages: %w", err)
+		}
+	}
+
+	// Task 37: outbox per remote site
+	remoteSiteAccounts := map[string][]string{}
+	for _, u := range allUsers {
+		if u.SiteID == h.siteID || u.SiteID == "" {
+			continue
+		}
+		remoteSiteAccounts[u.SiteID] = append(remoteSiteAccounts[u.SiteID], u.Account)
+	}
+	for destSiteID, accounts := range remoteSiteAccounts {
+		payload := model.RoomCreatedOutbox{
+			RoomID:               room.ID,
+			RoomType:             room.Type,
+			RoomName:             room.Name,
+			HomeSiteID:           room.SiteID,
+			Accounts:             accounts,
+			RequesterAccount:     requester.Account,
+			RequesterEngName:     requester.EngName,
+			RequesterChineseName: requester.ChineseName,
+			AppName:              req.AppName,
+			Timestamp:            req.Timestamp,
+		}
+		pData, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshal room_created outbox payload: %w", err)
+		}
+		envelope := model.OutboxEvent{
+			Type:       model.MessageTypeRoomCreated,
+			SiteID:     room.SiteID,
+			DestSiteID: destSiteID,
+			Payload:    pData,
+			Timestamp:  now.UnixMilli(),
+		}
+		eData, err := json.Marshal(envelope)
+		if err != nil {
+			return fmt.Errorf("marshal outbox envelope: %w", err)
+		}
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, model.MessageTypeRoomCreated), eData, requestID+":"+destSiteID); err != nil {
+			return fmt.Errorf("publish room_created outbox to %s: %w", destSiteID, err)
+		}
+	}
+
+	// Task 37: async-job result (success path — defer in processCreateRoom handles error path)
+	h.publishAsyncJobResult(ctx, requester.Account, model.AsyncJobOpRoomCreate, nil)
+	return nil
+}
+
+func (h *Handler) publishChannelSysMessages(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, addedUsersCount int, requestID string, now time.Time) error {
+	acceptedAt := time.UnixMilli(req.Timestamp).UTC()
+
+	sysData1, err := json.Marshal(model.RoomCreated{
+		Name:            room.Name,
+		Users:           req.Users,
+		Orgs:            req.Orgs,
+		Channels:        req.Channels,
+		AddedUsersCount: addedUsersCount,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal room_created sys data: %w", err)
+	}
+	msg1 := model.Message{
+		ID:          idgen.MessageIDFromRequestID(requestID, "room_created"),
+		RoomID:      room.ID,
+		UserID:      requester.ID,
+		UserAccount: requester.Account,
+		Type:        model.MessageTypeRoomCreated,
+		Content:     "a new room has been created",
+		SysMsgData:  sysData1,
+		CreatedAt:   acceptedAt,
+	}
+	if err := h.publishCanonical(ctx, &msg1, room.SiteID, now); err != nil {
+		return fmt.Errorf("publish room_created: %w", err)
+	}
+
+	sysData2, err := json.Marshal(model.MembersAdded{
+		Individuals:     req.Users,
+		Orgs:            req.Orgs,
+		Channels:        req.Channels,
+		AddedUsersCount: addedUsersCount,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal members_added sys data: %w", err)
+	}
+	msg2 := model.Message{
+		ID:          idgen.MessageIDFromRequestID(requestID, "members_added"),
+		RoomID:      room.ID,
+		UserID:      requester.ID,
+		UserAccount: requester.Account,
+		Type:        model.MessageTypeMembersAdded,
+		SysMsgData:  sysData2,
+		CreatedAt:   acceptedAt.Add(time.Millisecond),
+	}
+	if err := h.publishCanonical(ctx, &msg2, room.SiteID, now); err != nil {
+		return fmt.Errorf("publish members_added: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) publishCanonical(ctx context.Context, msg *model.Message, siteID string, now time.Time) error {
+	evt := model.MessageEvent{
+		Event:     model.EventCreated,
+		Message:   *msg,
+		SiteID:    siteID,
+		Timestamp: now.UnixMilli(),
+	}
+	data, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal MessageEvent: %w", err)
+	}
+	return h.publish(ctx, subject.MsgCanonicalCreated(siteID), data, msg.ID)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -1823,4 +1824,484 @@ func TestNewSubSetsAllFields(t *testing.T) {
 	assert.Empty(t, sub.SidebarName)
 	assert.False(t, sub.IsSubscribed)
 	assert.Equal(t, now, sub.JoinedAt)
+}
+
+// ---- processCreateRoom test helpers ----
+
+// newCreateRoomTestHandler builds a Handler with a mock store and capture-publish,
+// returning (handler, mockStore, getPublished). siteID is always "site-A".
+func newCreateRoomTestHandler(t *testing.T) (*Handler, *MockSubscriptionStore, func() []publishedMsg) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	mockStore := NewMockSubscriptionStore(ctrl)
+	var published []publishedMsg
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}
+	h := &Handler{store: mockStore, publish: publish, siteID: "site-A"}
+	return h, mockStore, func() []publishedMsg { return published }
+}
+
+// subscriptionUpdates filters published messages to subscription.update events.
+func subscriptionUpdates(published []publishedMsg) []publishedMsg {
+	var out []publishedMsg
+	for _, p := range published {
+		if strings.HasPrefix(p.subj, "chat.user.") && strings.HasSuffix(p.subj, ".event.subscription.update") {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// messagesCanonical filters published messages to the canonical message stream for a siteID.
+func messagesCanonical(published []publishedMsg, siteID string) []publishedMsg {
+	var out []publishedMsg
+	prefix := fmt.Sprintf("chat.msg.canonical.%s", siteID)
+	for _, p := range published {
+		if strings.HasPrefix(p.subj, prefix) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// outboxFor filters published messages to the outbox stream for a specific destSiteID and eventType.
+func outboxFor(published []publishedMsg, destSiteID, eventType string) []publishedMsg {
+	var out []publishedMsg
+	subj := fmt.Sprintf("outbox.site-A.to.%s.%s", destSiteID, eventType)
+	for _, p := range published {
+		if p.subj == subj {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// userResponseFor filters published messages to the async-job result for an account.
+func userResponseFor(published []publishedMsg, account string) []publishedMsg {
+	var out []publishedMsg
+	prefix := fmt.Sprintf("chat.user.%s.response.", account)
+	for _, p := range published {
+		if strings.HasPrefix(p.subj, prefix) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+const testRequestID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+
+// makeCreateRoomBody marshals a CreateRoomRequest to JSON.
+func makeCreateRoomBody(t *testing.T, req *model.CreateRoomRequest) []byte {
+	t.Helper()
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	return data
+}
+
+// ---- Task 32: skeleton tests ----
+
+func TestProcessCreateRoom_RequiresRequestID(t *testing.T) {
+	h, _, _ := newCreateRoomTestHandler(t)
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room1", RequesterAccount: "alice", Timestamp: time.Now().UnixMilli(),
+		Users: []string{"bob"},
+	})
+
+	err := h.processCreateRoom(context.Background(), body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing X-Request-ID")
+	assert.ErrorIs(t, err, errPermanent)
+}
+
+// ---- Task 33: DM branch tests ----
+
+func TestProcessCreateRoom_DM_BuildsTwoSubs(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	other := &model.User{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-1").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID:           "room-dm-1",
+		RequesterAccount: "alice",
+		Users:            []string{"bob"}, // no orgs/channels/name → DM
+		Timestamp:        time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	require.Len(t, capturedSubs, 2)
+
+	// alice's sub: Name = other's display name, SidebarName = other's display name
+	aliceSub := capturedSubs[0]
+	assert.Equal(t, "u_alice", aliceSub.User.ID)
+	assert.Equal(t, composeNameOrAccount(other), aliceSub.Name)
+	assert.Equal(t, composeNameOrAccount(other), aliceSub.SidebarName)
+	assert.Nil(t, aliceSub.Roles)
+	assert.False(t, aliceSub.IsSubscribed)
+	assert.Equal(t, model.RoomTypeDM, aliceSub.RoomType)
+
+	// bob's sub: Name = requester's display name
+	bobSub := capturedSubs[1]
+	assert.Equal(t, "u_bob", bobSub.User.ID)
+	assert.Equal(t, composeNameOrAccount(requester), bobSub.Name)
+	assert.Equal(t, composeNameOrAccount(requester), bobSub.SidebarName)
+	assert.Nil(t, bobSub.Roles)
+	assert.False(t, bobSub.IsSubscribed)
+
+	// No sys messages for DM
+	assert.Empty(t, messagesCanonical(getPublished(), "site-A"))
+}
+
+func TestProcessCreateRoom_DM_EmitsNoSysMessages(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	other := &model.User{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-1").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room-dm-1", RequesterAccount: "alice",
+		Users: []string{"bob"}, Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	assert.Empty(t, messagesCanonical(getPublished(), "site-A"), "DM must emit no sys-messages")
+}
+
+// ---- Task 33: botDM branch tests ----
+
+func TestProcessCreateRoom_BotDM_HasIsSubscribedAndAppName(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	bot := &model.User{ID: "u_bot", Account: "helper.bot", SiteID: "site-A"}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "helper.bot").Return(bot, nil)
+
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-bot-1").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room-bot-1", RequesterAccount: "alice",
+		Users: []string{"helper.bot"}, AppName: "HelperBot",
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	require.Len(t, capturedSubs, 2)
+
+	// human side (alice): SidebarName = AppName, IsSubscribed = true
+	humanSub := capturedSubs[0]
+	assert.Equal(t, "u_alice", humanSub.User.ID)
+	assert.Equal(t, "HelperBot", humanSub.SidebarName)
+	assert.True(t, humanSub.IsSubscribed)
+
+	// bot side: SidebarName = alice's display name, IsSubscribed = false
+	botSub := capturedSubs[1]
+	assert.Equal(t, "u_bot", botSub.User.ID)
+	assert.Equal(t, composeNameOrAccount(requester), botSub.SidebarName)
+	assert.False(t, botSub.IsSubscribed)
+
+	assert.Empty(t, messagesCanonical(getPublished(), "site-A"), "botDM must emit no sys-messages")
+}
+
+// ---- Task 34: Channel branch tests ----
+
+func TestProcessCreateRoom_Channel_BuildsSubsAndMembers(t *testing.T) {
+	h, mockStore, _ := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	invited := []model.User{
+		{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"},
+		{ID: "u_carol", Account: "carol", EngName: "Carol C", ChineseName: "卡羅", SiteID: "site-A"},
+	}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	// orgs present → ListNewMembersForNewRoom returns bob+carol (alice already stripped by service)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), []string{"org1"}, []string{"bob", "carol"}).
+		Return([]string{"bob", "carol"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "carol"}).Return(invited, nil)
+
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+
+	var capturedMembers []*model.RoomMember
+	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, members []*model.RoomMember) error {
+			capturedMembers = members
+			return nil
+		})
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-ch-1").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room-ch-1", Name: "Deal Team", RequesterAccount: "alice",
+		Users: []string{"bob", "carol"}, Orgs: []string{"org1"},
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	// 3 subs: bob (member), carol (member), alice (owner — last)
+	require.Len(t, capturedSubs, 3)
+	ownerSub := capturedSubs[2]
+	assert.Equal(t, "u_alice", ownerSub.User.ID)
+	assert.Equal(t, []model.Role{model.RoleOwner}, ownerSub.Roles)
+	assert.Equal(t, "Deal Team", ownerSub.Name)
+
+	memberSub := capturedSubs[0]
+	assert.Equal(t, []model.Role{model.RoleMember}, memberSub.Roles)
+
+	// 4 room_members: 2 individuals (bob+carol) + 1 org + 1 owner (alice)
+	require.Len(t, capturedMembers, 4)
+	types := make([]model.RoomMemberType, 0, 4)
+	for _, m := range capturedMembers {
+		types = append(types, m.Member.Type)
+	}
+	assert.Equal(t, 3, countType(types, model.RoomMemberIndividual))
+	assert.Equal(t, 1, countType(types, model.RoomMemberOrg))
+}
+
+// countType counts occurrences of t in slice.
+func countType(types []model.RoomMemberType, mt model.RoomMemberType) int {
+	n := 0
+	for _, t := range types {
+		if t == mt {
+			n++
+		}
+	}
+	return n
+}
+
+func TestProcessCreateRoom_Channel_NoOrgsSkipsRoomMembers(t *testing.T) {
+	h, mockStore, _ := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	invited := []model.User{
+		{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"},
+	}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), []string{}, []string{"bob"}).
+		Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return(invited, nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+
+	var capturedMembers []*model.RoomMember
+	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, members []*model.RoomMember) error {
+			capturedMembers = members
+			return nil
+		})
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-ch-2").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room-ch-2", Name: "Small Channel", RequesterAccount: "alice",
+		Users: []string{"bob"}, Orgs: []string{}, // no orgs
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	// Only the owner room_member is written (no org expansion)
+	require.Len(t, capturedMembers, 1)
+	assert.Equal(t, model.RoomMemberIndividual, capturedMembers[0].Member.Type)
+	assert.Equal(t, "u_alice", capturedMembers[0].Member.ID)
+}
+
+// ---- Task 35: subscription.update fan-out ----
+
+func TestProcessCreateRoom_Channel_FiresSubscriptionUpdateForEverySub(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	invited := []model.User{
+		{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"},
+	}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(invited, nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-ch-3").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room-ch-3", Name: "Test Channel", RequesterAccount: "alice",
+		Users: []string{"bob"}, Orgs: []string{"org1"},
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	updates := subscriptionUpdates(getPublished())
+	// 2 subs (bob + alice) → 2 subscription.update events
+	assert.Len(t, updates, 2)
+
+	// Verify subjects cover both accounts
+	subjects := make([]string, 0, len(updates))
+	for _, u := range updates {
+		subjects = append(subjects, u.subj)
+	}
+	assert.Contains(t, subjects, subject.SubscriptionUpdate("alice"))
+	assert.Contains(t, subjects, subject.SubscriptionUpdate("bob"))
+}
+
+// ---- Task 36: sys-messages ----
+
+func TestProcessCreateRoom_Channel_EmitsSysMessages(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	invited := []model.User{
+		{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"},
+	}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(invited, nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-ch-4").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room-ch-4", Name: "Sys Msg Channel", RequesterAccount: "alice",
+		Users: []string{"bob"}, Orgs: []string{"org1"},
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	canonical := messagesCanonical(getPublished(), "site-A")
+	require.Len(t, canonical, 2, "expected room_created + members_added sys messages")
+
+	// Unmarshal and verify message types
+	var evt1 model.MessageEvent
+	require.NoError(t, json.Unmarshal(canonical[0].data, &evt1))
+	assert.Equal(t, model.MessageTypeRoomCreated, evt1.Message.Type)
+	assert.Equal(t, "room-ch-4", evt1.Message.RoomID)
+	// ID must be deterministic from requestID
+	expectedID1 := idgen.MessageIDFromRequestID(testRequestID, "room_created")
+	assert.Equal(t, expectedID1, evt1.Message.ID)
+
+	var evt2 model.MessageEvent
+	require.NoError(t, json.Unmarshal(canonical[1].data, &evt2))
+	assert.Equal(t, model.MessageTypeMembersAdded, evt2.Message.Type)
+	expectedID2 := idgen.MessageIDFromRequestID(testRequestID, "members_added")
+	assert.Equal(t, expectedID2, evt2.Message.ID)
+}
+
+// ---- Task 37: outbox + async-job ----
+
+func TestProcessCreateRoom_Channel_OutboxPerRemoteSite(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	// bob is on site-B → should trigger outbox
+	invited := []model.User{
+		{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-B"},
+	}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(invited, nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-ch-5").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room-ch-5", Name: "Cross Site", RequesterAccount: "alice",
+		Users: []string{"bob"}, Orgs: []string{"org1"},
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	outboxMsgs := outboxFor(getPublished(), "site-B", model.MessageTypeRoomCreated)
+	require.Len(t, outboxMsgs, 1)
+
+	var envelope model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outboxMsgs[0].data, &envelope))
+	assert.Equal(t, model.MessageTypeRoomCreated, envelope.Type)
+	assert.Equal(t, "site-A", envelope.SiteID)
+	assert.Equal(t, "site-B", envelope.DestSiteID)
+
+	var payload model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(envelope.Payload, &payload))
+	assert.Equal(t, "room-ch-5", payload.RoomID)
+	assert.Equal(t, []string{"bob"}, payload.Accounts)
+	assert.Equal(t, "alice", payload.RequesterAccount)
+}
+
+func TestProcessCreateRoom_Channel_EmitsAsyncJobOk(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	invited := []model.User{
+		{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"},
+	}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(invited, nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-ch-6").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID: "room-ch-6", Name: "Job Test", RequesterAccount: "alice",
+		Users: []string{"bob"}, Orgs: []string{"org1"},
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	responses := userResponseFor(getPublished(), "alice")
+	// The defer in processCreateRoom + the explicit call in finishCreateRoom both fire on success;
+	// the defer fires after finishCreateRoom returns nil. Since publishAsyncJobResult is best-effort
+	// (no dedup), we may see 2 publishes. Assert at least 1 with status "ok".
+	require.NotEmpty(t, responses)
+
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(responses[0].data, &result))
+	assert.Equal(t, model.AsyncJobStatusOK, result.Status)
+	assert.Equal(t, model.AsyncJobOpRoomCreate, result.Operation)
 }
