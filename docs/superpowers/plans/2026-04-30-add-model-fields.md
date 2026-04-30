@@ -483,3 +483,91 @@ git commit -m "chore(cassandra-init): drop unread column from local-dev DDL"
 ```
 
 ---
+
+### Task 6: Drop `unread` from `docs/cassandra_message_model.md`
+
+**Files:**
+- Modify: `docs/cassandra_message_model.md`
+
+**Context:** Per CLAUDE.md, this doc is the single source of truth for the Cassandra message schema. Changes here must stay in lockstep with `pkg/model/cassandra/` (Task 3) and the local-dev init DDL (Task 5). The doc has four occurrences of `unread BOOLEAN,` — one per table block — and they all must be removed.
+
+- [ ] **Step 6.1: Drop `unread BOOLEAN,` from `messages_by_room` table block**
+
+Edit `docs/cassandra_message_model.md`. In the `messages_by_room` block, delete line 82:
+
+```
+  unread BOOLEAN,
+```
+
+After the edit, the relevant lines in that block read:
+
+```
+  visible_to TEXT,
+  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+- [ ] **Step 6.2: Drop `unread BOOLEAN,` from `thread_messages_by_room` table block**
+
+In the `thread_messages_by_room` block, delete line 111:
+
+```
+  unread BOOLEAN,
+```
+
+After the edit:
+
+```
+  visible_to TEXT,
+  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+- [ ] **Step 6.3: Drop `unread BOOLEAN,` from `pinned_messages_by_room` table block**
+
+In the `pinned_messages_by_room` block, delete line 138:
+
+```
+  unread BOOLEAN,
+```
+
+After the edit:
+
+```
+  visible_to TEXT,
+  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+- [ ] **Step 6.4: Drop `unread BOOLEAN,` from `messages_by_id` table block**
+
+In the `messages_by_id` block, delete line 170:
+
+```
+  unread BOOLEAN,
+```
+
+After the edit:
+
+```
+  visible_to TEXT,
+  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+```
+
+> **Implementation note for editor:** because all four removed lines are identical (`  unread BOOLEAN,`) and appear in distinct table blocks, the safest way to apply this task is one Edit per block, scoping the `old_string` to include the unique surrounding lines (e.g. the line above and below) so each Edit matches exactly one location. Do **not** use a global "replace all" — line numbers above are guidance, not anchors.
+
+- [ ] **Step 6.5: Verify no `unread` remains in the doc**
+
+Run: `grep -n unread docs/cassandra_message_model.md`
+Expected: no output.
+
+- [ ] **Step 6.6: Cross-check doc against Go struct**
+
+Run: `grep -n 'cql:"' pkg/model/cassandra/message.go | wc -l`
+Compare the count to the number of column lines in any one of the doc's table blocks (excluding primary-key declarations). They should align field-for-field — no `unread` mismatch on either side.
+
+- [ ] **Step 6.7: Commit**
+
+```bash
+git add docs/cassandra_message_model.md
+git commit -m "docs(cassandra): drop unread column from message schema doc"
+```
+
+---
