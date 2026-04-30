@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -45,8 +46,8 @@ func wrappedCtx(m otelnats.Msg) context.Context {
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
 func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	const queue = "room-service"
-	if _, err := nc.QueueSubscribe(subject.RoomsCreateWildcard(), queue, h.natsCreateRoom); err != nil {
-		return err
+	if _, err := nc.QueueSubscribe(subject.RoomCreateWildcard(h.siteID), queue, h.natsCreateRoom); err != nil {
+		return fmt.Errorf("subscribe room.create: %w", err)
 	}
 	if _, err := nc.QueueSubscribe(subject.RoomsListWildcard(), queue, h.natsListRooms); err != nil {
 		return err
@@ -77,13 +78,33 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 
 func (h *Handler) natsCreateRoom(m otelnats.Msg) {
 	ctx := wrappedCtx(m)
-	resp, err := h.handleCreateRoom(ctx, m.Msg.Data)
+	resp, err := h.handleCreateRoom(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
+		var dmExists *dmExistsError
+		if errors.As(err, &dmExists) {
+			h.replyDMExists(m.Msg, dmExists.RoomID())
+			return
+		}
+		slog.Error("create-room failed", "error", err, "subject", m.Msg.Subject)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
-		slog.Error("failed to respond to message", "error", err)
+		slog.Error("failed to respond to create-room", "error", err)
+	}
+}
+
+func (h *Handler) replyDMExists(msg *nats.Msg, existingRoomID string) {
+	body, err := json.Marshal(model.ErrorResponse{
+		Error:  "dm already exists",
+		RoomID: existingRoomID,
+	})
+	if err != nil {
+		natsutil.ReplyError(msg, "internal error")
+		return
+	}
+	if err := msg.Respond(body); err != nil {
+		slog.Error("failed to respond DM exists", "error", err)
 	}
 }
 
@@ -109,60 +130,149 @@ func (h *Handler) natsGetRoom(m otelnats.Msg) {
 	natsutil.ReplyJSON(m.Msg, room)
 }
 
-func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, error) {
+func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	requesterAccount, ok := subject.ParseRoomCreateSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid create-room subject: %s", subj)
+	}
+
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" {
+		return nil, errMissingRequestID
+	}
+	if !idgen.IsValidUUID(requestID) {
+		return nil, fmt.Errorf("invalid X-Request-ID format: %w", errMissingRequestID)
+	}
+
 	var req model.CreateRoomRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
+	originalUsers := append([]string(nil), req.Users...)
 
-	now := time.Now().UTC()
-
-	// Infer room type from request shape: DM when exactly one user and no name;
-	// otherwise channel. Phase 5 will handle full inference including botDM.
-	var roomType model.RoomType
-	var roomID string
-	if len(req.Users) == 1 && req.Name == "" {
-		roomType = model.RoomTypeDM
-		roomID = idgen.BuildDMRoomID(req.RequesterID, req.Users[0])
-		// TODO(idgen-rework follow-up): persist a second Subscription for req.Users[0] so DMs are two-sided.
-		// DMs have no add-member/role-update flow, so the recipient is currently un-enrolled.
-		// Needs the recipient's Account (store lookup or extend CreateRoomRequest). Also bump Room.UserCount to 2.
-	} else {
-		roomType = model.RoomTypeChannel
-		roomID = idgen.GenerateID()
+	if req.Name == "" && len(req.Users) == 0 && len(req.Orgs) == 0 && len(req.Channels) == 0 {
+		return nil, errEmptyCreateRequest
 	}
 
-	room := model.Room{
-		ID:        roomID,
-		Name:      req.Name,
-		Type:      roomType,
-		CreatedBy: req.RequesterID,
-		SiteID:    h.siteID,
-		UserCount: 1,
-		CreatedAt: now,
-		UpdatedAt: now,
+	requester, err := h.store.GetUser(ctx, requesterAccount)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return nil, errUserNotFound
+		}
+		return nil, fmt.Errorf("get requester: %w", err)
+	}
+	if requester.EngName == "" || requester.ChineseName == "" {
+		return nil, errInvalidUserData
 	}
 
-	if err := h.store.CreateRoom(ctx, &room); err != nil {
-		return nil, fmt.Errorf("create room: %w", err)
+	// Self-DM detection BEFORE strip
+	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 &&
+		len(originalUsers) == 1 && originalUsers[0] == requesterAccount {
+		return nil, errSelfDM
 	}
 
-	// Auto-create owner subscription
-	sub := model.Subscription{
-		ID:                 idgen.GenerateUUIDv7(),
-		User:               model.SubscriptionUser{ID: req.RequesterID, Account: req.RequesterAccount},
-		RoomID:             room.ID,
-		RoomType:           roomType,
-		SiteID:             h.siteID,
-		Roles:              []model.Role{model.RoleOwner},
-		HistorySharedSince: &now,
-		JoinedAt:           now,
+	req.Users = stripAccount(dedup(req.Users), requesterAccount)
+
+	roomType := determineRoomType(&req)
+	switch roomType {
+	case model.RoomTypeChannel:
+		return h.handleCreateRoomChannel(ctx, &req, requester, requesterAccount, roomType)
+	case model.RoomTypeDM, model.RoomTypeBotDM:
+		return h.handleCreateRoomDMOrBotDM(ctx, &req, requester, roomType)
+	default:
+		return nil, fmt.Errorf("unknown room type: %s", roomType)
 	}
-	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
-		slog.Warn("create owner subscription failed", "error", err)
+}
+
+func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.CreateRoomRequest, requester *model.User, roomType model.RoomType) ([]byte, error) {
+	otherAccount := req.Users[0]
+	other, err := h.store.GetUser(ctx, otherAccount)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return nil, errUserNotFound
+		}
+		return nil, fmt.Errorf("get counterpart: %w", err)
+	}
+	if other.EngName == "" || other.ChineseName == "" {
+		return nil, errInvalidUserData
 	}
 
-	return json.Marshal(room)
+	if roomType == model.RoomTypeBotDM {
+		app, err := h.store.GetApp(ctx, other.Account)
+		if err != nil {
+			if errors.Is(err, ErrAppNotFound) {
+				return nil, errBotNotAvailable
+			}
+			return nil, fmt.Errorf("get app: %w", err)
+		}
+		if app.Assistant == nil || !app.Assistant.Enabled {
+			return nil, errBotNotAvailable
+		}
+		req.AppName = app.Name
+	}
+
+	req.RoomID = idgen.BuildDMRoomID(requester.ID, other.ID)
+
+	existing, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
+	if err == nil && existing != nil {
+		return nil, newDMExistsError(existing.RoomID)
+	}
+	if err != nil && !errors.Is(err, model.ErrSubscriptionNotFound) {
+		return nil, fmt.Errorf("dm dedup check: %w", err)
+	}
+
+	return h.publishCreateRoom(ctx, req, requester, roomType)
+}
+
+func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, requester *model.User, requesterAccount string, roomType model.RoomType) ([]byte, error) {
+	for _, a := range req.Users {
+		if strings.HasSuffix(a, ".bot") {
+			return nil, errBotInChannel
+		}
+	}
+
+	channelOrgIDs, channelAccounts, err := h.expandChannelRefs(ctx, requester.Account, req.Channels)
+	if err != nil {
+		return nil, fmt.Errorf("expand channels: %w", err)
+	}
+	allOrgs := dedup(append(append([]string{}, req.Orgs...), channelOrgIDs...))
+	allUsers := stripAccount(dedup(append(append([]string{}, req.Users...), channelAccounts...)), requesterAccount)
+
+	if req.Name == "" && len(allUsers) == 0 && len(allOrgs) == 0 {
+		return nil, errEmptyCreateRequest
+	}
+
+	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, "")
+	if err != nil {
+		return nil, fmt.Errorf("count new members: %w", err)
+	}
+	if newCount > h.maxRoomSize {
+		return nil, fmt.Errorf("exceeds maximum capacity (%d): would add %d", h.maxRoomSize, newCount)
+	}
+
+	req.Users = allUsers
+	req.Orgs = allOrgs
+	req.RoomID = idgen.GenerateID()
+	return h.publishCreateRoom(ctx, req, requester, roomType)
+}
+
+func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRequest, requester *model.User, roomType model.RoomType) ([]byte, error) {
+	req.RequesterID = requester.ID
+	req.RequesterAccount = requester.Account
+	req.Timestamp = time.Now().UTC().UnixMilli()
+
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal canonical event: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "create"), payload); err != nil {
+		return nil, fmt.Errorf("publish canonical: %w", err)
+	}
+	return json.Marshal(model.CreateRoomReply{
+		Status:   model.CreateRoomReplyAccepted,
+		RoomID:   req.RoomID,
+		RoomType: string(roomType),
+	})
 }
 
 // NatsHandleRemoveMember handles remove-member authorization requests.

@@ -1926,3 +1926,34 @@ func TestAppAssistantDisabledRoundtrip(t *testing.T) {
 	require.NotNil(t, dst.Assistant)
 	assert.False(t, dst.Assistant.Enabled)
 }
+
+func TestCreateRoomReplyRoundtrip(t *testing.T) {
+	r := model.CreateRoomReply{
+		Status:   model.CreateRoomReplyAccepted,
+		RoomID:   "r-abc123",
+		RoomType: string(model.RoomTypeChannel),
+	}
+	var dst model.CreateRoomReply
+	roundTrip(t, &r, &dst)
+	assert.Equal(t, model.CreateRoomReplyAccepted, dst.Status)
+	assert.Equal(t, "r-abc123", dst.RoomID)
+	assert.Equal(t, string(model.RoomTypeChannel), dst.RoomType)
+}
+
+func TestCreateRoomReplyAcceptedConstant(t *testing.T) {
+	assert.Equal(t, "accepted", model.CreateRoomReplyAccepted)
+}
+
+func TestCreateRoomReplyBotDMRoundtrip(t *testing.T) {
+	r := model.CreateRoomReply{
+		Status:   model.CreateRoomReplyAccepted,
+		RoomID:   "dm-r1",
+		RoomType: string(model.RoomTypeBotDM),
+	}
+	data, err := json.Marshal(&r)
+	require.NoError(t, err)
+	var dst model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, string(model.RoomTypeBotDM), dst.RoomType)
+	assert.Contains(t, string(data), `"roomType":"botDM"`)
+}

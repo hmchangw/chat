@@ -369,6 +369,19 @@ func SearchRoomsPattern() string {
 	return "chat.user.{account}.request.search.rooms"
 }
 
+// ParseRoomCreateSubject extracts the account from a
+// chat.user.{account}.request.room.{siteID}.create subject.
+func ParseRoomCreateSubject(s string) (account string, ok bool) {
+	parts := strings.Split(s, ".")
+	if len(parts) != 7 {
+		return "", false
+	}
+	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" || parts[4] != "room" || parts[6] != "create" {
+		return "", false
+	}
+	return parts[2], true
+}
+
 // RoomCanonicalOperation extracts the trailing operation token from a
 // canonical room subject like "chat.room.canonical.{siteID}.{op}". It
 // returns ("", false) when the subject does not match the expected

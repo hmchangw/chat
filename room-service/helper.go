@@ -78,6 +78,20 @@ func dedup(items []string) []string {
 	return result
 }
 
+// determineRoomType inspects the post-strip request and decides what
+// room type should be created. Empty payload is the caller's
+// responsibility — this function assumes at least one of users / orgs /
+// channels / name is non-empty.
+func determineRoomType(req *model.CreateRoomRequest) model.RoomType {
+	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 && len(req.Users) == 1 {
+		if strings.HasSuffix(req.Users[0], ".bot") {
+			return model.RoomTypeBotDM
+		}
+		return model.RoomTypeDM
+	}
+	return model.RoomTypeChannel
+}
+
 // dmExistsError carries the existing DM/botDM room ID through the error
 // chain so the natsCreateRoom handler can populate the special
 // "dm already exists" reply with the existing roomId.

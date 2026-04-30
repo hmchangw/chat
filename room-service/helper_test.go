@@ -242,3 +242,54 @@ func TestSanitizeErrorCollapsesUnknown(t *testing.T) {
 	got := sanitizeError(errors.New("mongo: connection refused: tcp 127.0.0.1:27017"))
 	assert.Equal(t, "internal error", got)
 }
+
+func TestDetermineRoomType(t *testing.T) {
+	tests := []struct {
+		name string
+		req  model.CreateRoomRequest
+		want model.RoomType
+	}{
+		{
+			name: "single user no name → DM",
+			req:  model.CreateRoomRequest{Users: []string{"bob"}},
+			want: model.RoomTypeDM,
+		},
+		{
+			name: "single bot user no name → botDM",
+			req:  model.CreateRoomRequest{Users: []string{"helper.bot"}},
+			want: model.RoomTypeBotDM,
+		},
+		{
+			name: "single user with name → channel",
+			req:  model.CreateRoomRequest{Name: "general", Users: []string{"bob"}},
+			want: model.RoomTypeChannel,
+		},
+		{
+			name: "multiple users no name → channel",
+			req:  model.CreateRoomRequest{Users: []string{"bob", "charlie"}},
+			want: model.RoomTypeChannel,
+		},
+		{
+			name: "name only no users → channel",
+			req:  model.CreateRoomRequest{Name: "general"},
+			want: model.RoomTypeChannel,
+		},
+		{
+			name: "org only → channel",
+			req:  model.CreateRoomRequest{Orgs: []string{"eng"}},
+			want: model.RoomTypeChannel,
+		},
+		{
+			name: "channel ref only → channel",
+			req:  model.CreateRoomRequest{Channels: []model.ChannelRef{{RoomID: "r1", SiteID: "site-a"}}},
+			want: model.RoomTypeChannel,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got := determineRoomType(&tt.req)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

@@ -262,6 +262,34 @@ func TestParseOrgMembersSubject(t *testing.T) {
 	}
 }
 
+func TestParseRoomCreateSubject(t *testing.T) {
+	tests := []struct {
+		name        string
+		subj        string
+		wantAccount string
+		wantOK      bool
+	}{
+		{"valid", "chat.user.alice.request.room.site-A.create", "alice", true},
+		{"different account", "chat.user.bob.request.room.site-B.create", "bob", true},
+		{"too many tokens", "chat.user.alice.request.room.site-A.member.add", "", false},
+		{"too few tokens", "chat.user.alice.request.room.site-A", "", false},
+		{"wrong suffix", "chat.user.alice.request.room.site-A.member", "", false},
+		{"wrong prefix", "foo.user.alice.request.room.site-A.create", "", false},
+		{"empty", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := subject.ParseRoomCreateSubject(tt.subj)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v for %q", ok, tt.wantOK, tt.subj)
+			}
+			if got != tt.wantAccount {
+				t.Errorf("account = %q, want %q", got, tt.wantAccount)
+			}
+		})
+	}
+}
+
 func TestRoomCanonicalOperation(t *testing.T) {
 	tests := map[string]struct {
 		subject string

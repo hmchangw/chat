@@ -180,6 +180,19 @@ const (
 	AsyncJobOpRoomMemberRoleUpdate = "room.member.role_update"
 )
 
+// CreateRoomReply is the synchronous NATS reply returned by room-service
+// to the client immediately after publishing the canonical create event.
+type CreateRoomReply struct {
+	Status   string `json:"status"`
+	RoomID   string `json:"roomId"`
+	RoomType string `json:"roomType"`
+}
+
+// CreateRoomReplyAccepted is the canonical Status value when the request
+// has been validated and queued; it does not mean the room is fully
+// persisted (that happens asynchronously in room-worker).
+const CreateRoomReplyAccepted = "accepted"
+
 // RoomCreatedOutbox is the cross-site payload published by room-worker
 // on the home site whenever a new room is created and at least one
 // member lives on the destination site. Wrapped in OutboxEvent.
