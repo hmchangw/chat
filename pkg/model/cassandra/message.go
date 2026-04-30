@@ -85,7 +85,6 @@ type Message struct {
 	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 	QuotedParentMessage   *QuotedParentMessage     `json:"quotedParentMessage,omitempty"   cql:"quoted_parent_message"`
 	VisibleTo             string                   `json:"visibleTo,omitempty"             cql:"visible_to"`
-	Unread                bool                     `json:"unread,omitempty"                cql:"unread"`
 	Reactions             map[string][]Participant `json:"reactions,omitempty"             cql:"reactions"`
 	Deleted               bool                     `json:"deleted,omitempty"               cql:"deleted"`
 	Type                  string                   `json:"type,omitempty"                  cql:"type"`
