@@ -1303,8 +1303,8 @@ func TestCreateRoomDMAlreadyExists(t *testing.T) {
 	mustInsertRoom(t, db, &model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-A"})
 	mustInsertSub(t, db, &model.Subscription{
 		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-A",
-		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
-		Name:     "bob", RoomType: model.RoomTypeDM,
+		User: model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		Name: "bob", RoomType: model.RoomTypeDM,
 	})
 
 	h, _ := newRoomServiceHandler(t, store, keyStore, "site-A")
