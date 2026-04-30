@@ -368,3 +368,25 @@ func SearchMessagesPattern() string {
 func SearchRoomsPattern() string {
 	return "chat.user.{account}.request.search.rooms"
 }
+
+// RoomCanonicalOperation extracts the trailing operation token from a
+// canonical room subject like "chat.room.canonical.{siteID}.{op}". It
+// returns ("", false) when the subject does not match the expected
+// shape. The operation may itself contain dots (e.g., "member.add"),
+// so the implementation joins everything after the siteID segment.
+func RoomCanonicalOperation(s string) (string, bool) {
+	const prefix = "chat.room.canonical."
+	if !strings.HasPrefix(s, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(s, prefix)
+	dot := strings.IndexByte(rest, '.')
+	if dot == -1 {
+		return "", false
+	}
+	op := rest[dot+1:]
+	if op == "" {
+		return "", false
+	}
+	return op, true
+}

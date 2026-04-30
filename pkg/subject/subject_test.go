@@ -261,3 +261,27 @@ func TestParseOrgMembersSubject(t *testing.T) {
 		})
 	}
 }
+
+func TestRoomCanonicalOperation(t *testing.T) {
+	tests := map[string]struct {
+		subject string
+		want    string
+		ok      bool
+	}{
+		"member.add": {"chat.room.canonical.site-A.member.add", "member.add", true},
+		"create":     {"chat.room.canonical.site-A.create", "create", true},
+		"unrelated":  {"chat.user.alice.request.room.site-A.create", "", false},
+		"too short":  {"chat.room.canonical.site-A", "", false},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			op, ok := subject.RoomCanonicalOperation(tc.subject)
+			if ok != tc.ok {
+				t.Errorf("ok = %v, want %v", ok, tc.ok)
+			}
+			if op != tc.want {
+				t.Errorf("op = %q, want %q", op, tc.want)
+			}
+		})
+	}
+}
