@@ -100,3 +100,134 @@ git commit -m "feat(model): add Room.MinUserLastSeenAt"
 ```
 
 ---
+
+### Task 2: Add `Subscription.ThreadUnread` and `Subscription.Alert`
+
+**Files:**
+- Modify: `pkg/model/subscription.go`
+- Test: `pkg/model/model_test.go`
+
+**Semantics reminder:** `Alert` is a stored materialization of `len(ThreadUnread) > 0`. The writer service maintains the invariant; this task only defines the field shape and serialization. `ThreadUnread` is a slice of `ThreadParentMessageID` strings.
+
+- [ ] **Step 2.1: Write the failing tests**
+
+Edit `pkg/model/model_test.go`. Update `TestSubscriptionJSON` (currently around line 383) to populate the new fields, replacing its existing struct literal:
+
+```go
+func TestSubscriptionJSON(t *testing.T) {
+	hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s := model.Subscription{
+		ID:                 "s1",
+		User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:             "r1",
+		RoomType:           model.RoomTypeChannel,
+		SiteID:             "site-a",
+		Roles:              []model.Role{model.RoleOwner},
+		HistorySharedSince: &hss,
+		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		HasMention:         true,
+		ThreadUnread:       []string{"parent-1", "parent-2"},
+		Alert:              true,
+	}
+
+	data, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst model.Subscription
+	if err := json.Unmarshal(data, &dst); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(s, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
+	}
+}
+```
+
+Add a new sibling test immediately after `TestSubscriptionJSON` to lock in the omit-empty / always-emit behaviors:
+
+```go
+func TestSubscriptionJSON_NewFieldsOmitBehavior(t *testing.T) {
+	s := model.Subscription{
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		RoomType: model.RoomTypeChannel,
+		SiteID:   "site-a",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		// ThreadUnread nil, Alert false — defaults
+	}
+
+	data, err := json.Marshal(&s)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	_, hasThreadUnread := raw["threadUnread"]
+	assert.False(t, hasThreadUnread, "nil/empty ThreadUnread must be omitted from JSON")
+
+	alertVal, hasAlert := raw["alert"]
+	assert.True(t, hasAlert, "alert must be present in JSON even when false")
+	assert.Equal(t, false, alertVal)
+
+	var dst model.Subscription
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Nil(t, dst.ThreadUnread, "absent threadUnread must unmarshal to nil")
+	assert.False(t, dst.Alert)
+}
+```
+
+- [ ] **Step 2.2: Run tests to verify they fail**
+
+Run: `make test SERVICE=pkg/model`
+Expected: compile error — `unknown field ThreadUnread in struct literal of type model.Subscription` and `unknown field Alert in struct literal of type model.Subscription`.
+
+- [ ] **Step 2.3: Add the fields**
+
+Edit `pkg/model/subscription.go`. After the `HasMention` line in `Subscription`, insert:
+
+```go
+	ThreadUnread []string `json:"threadUnread,omitempty" bson:"threadUnread,omitempty"`
+	Alert        bool     `json:"alert" bson:"alert"`
+```
+
+Final relevant block:
+
+```go
+type Subscription struct {
+	ID                 string           `json:"id" bson:"_id"`
+	User               SubscriptionUser `json:"u" bson:"u"`
+	RoomID             string           `json:"roomId" bson:"roomId"`
+	RoomType           RoomType         `json:"roomType" bson:"roomType"`
+	SiteID             string           `json:"siteId" bson:"siteId"`
+	Roles              []Role           `json:"roles" bson:"roles"`
+	HistorySharedSince *time.Time       `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
+	JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`
+	LastSeenAt         time.Time        `json:"lastSeenAt" bson:"lastSeenAt"`
+	HasMention         bool             `json:"hasMention" bson:"hasMention"`
+	ThreadUnread       []string         `json:"threadUnread,omitempty" bson:"threadUnread,omitempty"`
+	Alert              bool             `json:"alert" bson:"alert"`
+}
+```
+
+- [ ] **Step 2.4: Run tests to verify they pass**
+
+Run: `make test SERVICE=pkg/model`
+Expected: PASS, including `TestSubscriptionJSON` and the new `TestSubscriptionJSON_NewFieldsOmitBehavior`.
+
+- [ ] **Step 2.5: Lint**
+
+Run: `make lint`
+Expected: clean exit.
+
+- [ ] **Step 2.6: Commit**
+
+```bash
+git add pkg/model/subscription.go pkg/model/model_test.go
+git commit -m "feat(model): add Subscription.ThreadUnread and Alert"
+```
+
+---
