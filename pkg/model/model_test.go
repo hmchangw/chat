@@ -1702,6 +1702,53 @@ func TestSubscriptionNewFields(t *testing.T) {
 	})
 }
 
+func TestCreateRoomRequestRoundtrip(t *testing.T) {
+	req := model.CreateRoomRequest{
+		Name:             "team",
+		Users:            []string{"bob", "carol"},
+		Orgs:             []string{"org-fx"},
+		Channels:         []model.ChannelRef{{RoomID: "r0", SiteID: "site-A"}},
+		RoomID:           "r_xyz",
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		AppName:          "",
+		Timestamp:        1740000000000,
+	}
+	var dst model.CreateRoomRequest
+	roundTrip(t, &req, &dst)
+	assert.Equal(t, "team", dst.Name)
+	assert.Equal(t, []string{"bob", "carol"}, dst.Users)
+	assert.Equal(t, "r_xyz", dst.RoomID)
+	assert.Equal(t, "u_alice", dst.RequesterID)
+	assert.Equal(t, int64(1740000000000), dst.Timestamp)
+}
+
+func TestCreateRoomRequestBotDMHasAppName(t *testing.T) {
+	req := model.CreateRoomRequest{
+		Users:            []string{"weather.bot"},
+		RoomID:           "u_aliceu_wbot",
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		AppName:          "Weather Bot",
+		Timestamp:        1,
+	}
+	var dst model.CreateRoomRequest
+	roundTrip(t, &req, &dst)
+	assert.Equal(t, "Weather Bot", dst.AppName)
+}
+
+func TestAddMembersRequestNoRequestIDField(t *testing.T) {
+	body, err := json.Marshal(model.AddMembersRequest{
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		Timestamp:        1,
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "requestId")
+}
+
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T any](t *testing.T, src *T, dst *T) {
 	t.Helper()

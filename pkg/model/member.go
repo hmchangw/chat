@@ -119,3 +119,21 @@ type OrgMember struct {
 type ListOrgMembersResponse struct {
 	Members []OrgMember `json:"members"`
 }
+
+// CreateRoomRequest is the canonical event payload for creating a room.
+// Client supplies Name/Users/Orgs/Channels; room-service populates the
+// RoomID, Requester*, AppName, Timestamp before publishing to the
+// ROOMS canonical stream. The X-Request-ID header (not in this struct)
+// carries the request correlation ID per PR #131.
+type CreateRoomRequest struct {
+	Name     string       `json:"name"     bson:"name"`
+	Users    []string     `json:"users"    bson:"users"`
+	Orgs     []string     `json:"orgs"     bson:"orgs"`
+	Channels []ChannelRef `json:"channels" bson:"channels"`
+
+	RoomID           string `json:"roomId"            bson:"roomId"`
+	RequesterID      string `json:"requesterId"       bson:"requesterId"`
+	RequesterAccount string `json:"requesterAccount"  bson:"requesterAccount"`
+	AppName          string `json:"appName,omitempty" bson:"appName,omitempty"`
+	Timestamp        int64  `json:"timestamp"         bson:"timestamp"`
+}

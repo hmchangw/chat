@@ -34,7 +34,7 @@ func TestHandler_CreateRoom(t *testing.T) {
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
-	req := model.CreateRoomRequest{Name: "general", Type: model.RoomTypeChannel, CreatedBy: "u1", CreatedByAccount: "alice", SiteID: "site-a"}
+	req := model.CreateRoomRequest{Name: "general", RequesterID: "u1", RequesterAccount: "alice"}
 	data, _ := json.Marshal(req)
 
 	resp, err := h.handleCreateRoom(context.Background(), data)
@@ -1864,8 +1864,9 @@ func TestHandler_handleCreateRoom_ChannelAndDMIDFormats(t *testing.T) {
 		{
 			name: "channel uses 17-char base62",
 			req: model.CreateRoomRequest{
-				Name: "general", Type: model.RoomTypeChannel,
-				CreatedBy: "u-alice", CreatedByAccount: "alice", SiteID: "site1",
+				Name:             "general",
+				RequesterID:      "u-alice",
+				RequesterAccount: "alice",
 			},
 			assertID: func(t *testing.T, id string) {
 				assert.Len(t, id, 17, "channel room ID is 17-char base62")
@@ -1877,9 +1878,9 @@ func TestHandler_handleCreateRoom_ChannelAndDMIDFormats(t *testing.T) {
 		{
 			name: "DM uses sorted user-ID concat",
 			req: model.CreateRoomRequest{
-				Type:      model.RoomTypeDM,
-				CreatedBy: "u-bob", CreatedByAccount: "bob",
-				Members: []string{"u-alice"}, SiteID: "site1",
+				RequesterID:      "u-bob",
+				RequesterAccount: "bob",
+				Users:            []string{"u-alice"},
 			},
 			assertID: func(t *testing.T, id string) {
 				assert.Equal(t, "u-aliceu-bob", id, "DM ID is sorted concat of two user.IDs")
@@ -1919,24 +1920,56 @@ func TestHandler_handleCreateRoom_DMRequiresExactlyOneMember(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 	h := NewHandler(store, nil, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
 
+	// The new inference: DM = 1 user + empty name. Tests below verify that
+	// multi-user with empty name still creates a channel (no DM path), not an
+	// error. The "DM requires exactly one other member" guard no longer exists;
+	// the old error path is replaced by shape-based inference in Phase 5.
+	// For now we just verify the two shapes produce the expected room types.
 	cases := []struct {
-		name    string
-		members []string
+		name         string
+		users        []string
+		roomName     string
+		expectRoomID func(t *testing.T, id string)
 	}{
-		{"DM with no members", []string{}},
-		{"DM with too many members", []string{"u-alice", "u-charlie"}},
+		{
+			"single user + empty name → DM (sorted concat ID)",
+			[]string{"u-alice"},
+			"",
+			func(t *testing.T, id string) {
+				assert.Equal(t, "u-aliceu-bob", id)
+			},
+		},
+		{
+			"two users + empty name → channel (17-char base62)",
+			[]string{"u-alice", "u-charlie"},
+			"",
+			func(t *testing.T, id string) {
+				assert.Len(t, id, 17)
+			},
+		},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			ctrl2 := gomock.NewController(t)
+			store2 := NewMockRoomStore(ctrl2)
+			store2.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+			store2.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).Return(nil)
+			h2 := NewHandler(store2, nil, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
+
 			req := model.CreateRoomRequest{
-				Type: model.RoomTypeDM, CreatedBy: "u-bob", CreatedByAccount: "bob",
-				Members: tc.members, SiteID: "site1",
+				Name:             tc.roomName,
+				RequesterID:      "u-bob",
+				RequesterAccount: "bob",
+				Users:            tc.users,
 			}
 			data, _ := json.Marshal(req)
-			_, err := h.handleCreateRoom(context.Background(), data)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "DM requires exactly one other member")
+			resp, err := h2.handleCreateRoom(context.Background(), data)
+			require.NoError(t, err)
+			var room model.Room
+			require.NoError(t, json.Unmarshal(resp, &room))
+			tc.expectRoomID(t, room.ID)
 		})
 	}
+	_ = h // suppress unused variable warning; h was used for the old cases
 }

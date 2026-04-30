@@ -117,28 +117,27 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 
 	now := time.Now().UTC()
 
+	// Infer room type from request shape: DM when exactly one user and no name;
+	// otherwise channel. Phase 5 will handle full inference including botDM.
+	var roomType model.RoomType
 	var roomID string
-	switch req.Type {
-	case model.RoomTypeChannel:
-		roomID = idgen.GenerateID()
-	case model.RoomTypeDM:
-		if len(req.Members) != 1 {
-			return nil, fmt.Errorf("DM requires exactly one other member, got %d", len(req.Members))
-		}
-		roomID = idgen.BuildDMRoomID(req.CreatedBy, req.Members[0])
-		// TODO(idgen-rework follow-up): persist a second Subscription for req.Members[0] so DMs are two-sided.
+	if len(req.Users) == 1 && req.Name == "" {
+		roomType = model.RoomTypeDM
+		roomID = idgen.BuildDMRoomID(req.RequesterID, req.Users[0])
+		// TODO(idgen-rework follow-up): persist a second Subscription for req.Users[0] so DMs are two-sided.
 		// DMs have no add-member/role-update flow, so the recipient is currently un-enrolled.
-		// Needs the recipient's Account (store lookup or extend CreateRoomRequest with MembersAccount). Also bump Room.UserCount to 2.
-	default:
-		return nil, fmt.Errorf("unsupported room type %q", req.Type)
+		// Needs the recipient's Account (store lookup or extend CreateRoomRequest). Also bump Room.UserCount to 2.
+	} else {
+		roomType = model.RoomTypeChannel
+		roomID = idgen.GenerateID()
 	}
 
 	room := model.Room{
 		ID:        roomID,
 		Name:      req.Name,
-		Type:      req.Type,
-		CreatedBy: req.CreatedBy,
-		SiteID:    req.SiteID,
+		Type:      roomType,
+		CreatedBy: req.RequesterID,
+		SiteID:    h.siteID,
 		UserCount: 1,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -151,10 +150,10 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 	// Auto-create owner subscription
 	sub := model.Subscription{
 		ID:                 idgen.GenerateUUIDv7(),
-		User:               model.SubscriptionUser{ID: req.CreatedBy, Account: req.CreatedByAccount},
+		User:               model.SubscriptionUser{ID: req.RequesterID, Account: req.RequesterAccount},
 		RoomID:             room.ID,
-		RoomType:           req.Type,
-		SiteID:             req.SiteID,
+		RoomType:           roomType,
+		SiteID:             h.siteID,
 		Roles:              []model.Role{model.RoleOwner},
 		HistorySharedSince: &now,
 		JoinedAt:           now,
