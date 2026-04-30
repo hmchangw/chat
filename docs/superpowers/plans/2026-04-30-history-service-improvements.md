@@ -530,3 +530,83 @@ git commit -m "refactor(history-service): split utils.go into access.go and reda
 ```
 
 ---
+
+## Task 4: Document Cassandra mirror-table consistency model on the writers
+
+**Why:** Edits and deletes touch up to four Cassandra tables sequentially with no cross-partition transaction. A crash between the canonical row update (`messages_by_id`) and the mirror updates leaves mirrors stale. The current behavior (eventual reconvergence on the next mutation) is acceptable, but the trade-off must be visible to anyone reading the writer code. Per the brainstorming decision: doc-comment only, no separate doc file.
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/write.go` (extend doc comments on `UpdateMessageContent` and `SoftDeleteMessage`)
+
+- [ ] **Step 1: Replace the doc comment on `UpdateMessageContent`**
+
+In `history-service/internal/cassrepo/write.go`, the function currently has no doc comment. Add this comment immediately above `func (r *Repository) UpdateMessageContent(...)` (around line 82):
+
+```go
+// UpdateMessageContent applies an edit across all Cassandra tables that hold
+// the message: messages_by_id (canonical), and depending on the message type
+// either messages_by_room (top-level) or thread_messages_by_room (thread
+// reply); plus pinned_messages_by_room when PinnedAt is set.
+//
+// Consistency model: messages_by_id is the source of truth. The mirror tables
+// are eventually consistent — sequential UPDATEs across separate partitions
+// have no atomic guarantee, so a crash mid-write leaves messages_by_id
+// updated and one or more mirrors stale. The next successful edit/delete on
+// the same message reconverges the mirrors. Readers that hit a stale mirror
+// (e.g. LoadHistory via messages_by_room while messages_by_id has been
+// updated) will see the pre-edit content for a brief window. This trade-off
+// is intentional given Cassandra's lack of multi-partition transactions.
+```
+
+- [ ] **Step 2: Extend the doc comment on `SoftDeleteMessage`**
+
+Replace the existing comment (lines 110–112):
+
+```go
+// SoftDeleteMessage uses a Cassandra LWT on messages_by_id as a one-shot gate so only
+// the winning goroutine runs mirror-table updates and tcount decrement, preventing double-decrement.
+// `IF deleted != true` matches NULL (message-worker never writes deleted) and false, excluding true.
+```
+
+with:
+
+```go
+// SoftDeleteMessage uses a Cassandra LWT on messages_by_id as a one-shot gate
+// so only the winning goroutine runs mirror-table updates and the parent
+// tcount decrement, preventing double-counting under concurrent retries.
+// `IF deleted != true` matches NULL (message-worker never writes deleted) and
+// false, excluding true.
+//
+// Consistency model: messages_by_id is the source of truth. After the LWT
+// applies, the mirror updates (messages_by_room or thread_messages_by_room,
+// optionally pinned_messages_by_room) and the parent tcount decrement run
+// sequentially with no atomic guarantee across partitions. A crash mid-write
+// leaves messages_by_id flagged deleted and one or more mirrors not yet
+// flagged; the next successful delete on the same message is short-circuited
+// upstream by the already-deleted check, so the mirrors remain stale until a
+// future operation touches the row. Readers that hit a stale mirror will see
+// the pre-deletion content for a brief window. This trade-off is intentional
+// given Cassandra's lack of multi-partition transactions.
+```
+
+- [ ] **Step 3: Verify nothing else changed**
+
+Run:
+```bash
+git diff history-service/internal/cassrepo/write.go
+```
+Expected: only the comment additions. No code changes.
+
+- [ ] **Step 4: Run unit + integration tests to confirm no functional drift**
+
+Run: `make test SERVICE=history-service && make test-integration SERVICE=history-service`
+Expected: PASS — comment-only change.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add history-service/internal/cassrepo/write.go
+git commit -m "docs(history-service): document mirror-table consistency model on writers"
+```
+
+---
