@@ -895,3 +895,126 @@ git commit -m "feat(natsrouter): HandlerTimeout middleware"
 ```
 
 ---
+
+## Task 6: Document the concurrency model and ordering trade-off
+
+**Why:** The behavior change introduced by Tasks 2–4 (semaphore admission, busy-reply, ordering loss) is invisible from the API surface. Document it in the package-level `doc.go` so adopters know what they're opting into.
+
+**Files:**
+- Modify: `pkg/natsrouter/doc.go`
+
+- [ ] **Step 1: Replace the existing `doc.go` content**
+
+Replace `pkg/natsrouter/doc.go` with:
+
+```go
+// Package natsrouter provides Gin-style pattern-based routing for NATS
+// request/reply services with typed handlers, middleware, route groups,
+// and automatic JSON marshal/unmarshal.
+//
+// # Concurrency model
+//
+// The router admits at most N concurrent handler invocations per process
+// across all routes registered on it (default 100, override with
+// WithMaxConcurrency at construction). Admission is enforced by a
+// non-blocking acquire on a semaphore inside the per-subscription
+// dispatcher callback:
+//
+//   - On acquire success, the router spawns a goroutine that runs the
+//     middleware chain + handler, releasing the semaphore on return.
+//   - On acquire failure (semaphore full), the router publishes an
+//     ErrUnavailable reply (`{"code":"unavailable","error":"service busy"}`)
+//     immediately and returns. Callers should retry with backoff.
+//
+// Per-route override: pass WithConcurrency(N) to Register/RegisterNoBody/
+// RegisterVoid to give a single route its own admission semaphore,
+// isolated from the router-wide pool. Use this for routes whose latency
+// or failure profile differs significantly from the rest, or when
+// bulkhead isolation against a noisy route is desired.
+//
+// # Ordering
+//
+// Per-subject FIFO ordering is NOT preserved. Two messages that arrive
+// on the same subscription are spawned into independent goroutines and
+// race; whichever wins the goroutine schedule runs first. Handlers must
+// be idempotent or use external coordination (e.g. Cassandra LWTs,
+// Mongo conditional updates) to ensure correctness under concurrent
+// invocation. To opt back into per-subject FIFO for a specific route,
+// register it with WithConcurrency(1).
+//
+// # Shutdown
+//
+// Router.Shutdown drains every subscription, waits for the dispatcher
+// goroutines to exit (SubscriptionClosed), and then waits on a
+// WaitGroup that tracks every spawned handler goroutine. The full
+// shutdown returns only after all in-flight handlers have completed or
+// the context expires (whichever comes first).
+//
+// See README.md in this directory for full documentation and examples.
+package natsrouter
+```
+
+- [ ] **Step 2: Verify the package still builds and `go doc` renders cleanly**
+
+Run:
+```bash
+go build ./pkg/natsrouter/
+go doc ./pkg/natsrouter/
+```
+Expected: PASS — the rewritten doc comment appears in `go doc` output.
+
+- [ ] **Step 3: Run all tests as a final sanity check**
+
+Run:
+```bash
+go test -race ./pkg/natsrouter/...
+go test -tags=integration -race ./pkg/natsrouter/...
+```
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add pkg/natsrouter/doc.go
+git commit -m "docs(natsrouter): document concurrency model and ordering trade-off"
+```
+
+---
+
+## Self-Review
+
+After all 6 tasks are complete:
+
+- [ ] Run the full quality gate
+  ```bash
+  go test -race ./pkg/natsrouter/...
+  go test -tags=integration -race ./pkg/natsrouter/...
+  go vet ./pkg/natsrouter/...
+  golangci-lint run ./pkg/natsrouter/...
+  ```
+  Expected: all PASS.
+
+- [ ] Confirm every existing service that imports natsrouter still builds:
+  ```bash
+  go build ./...
+  ```
+  Expected: PASS.
+
+- [ ] Confirm the public API surface added:
+  ```bash
+  go doc ./pkg/natsrouter | grep -E "WithMaxConcurrency|WithConcurrency|HandlerTimeout|ErrUnavailable|CodeUnavailable"
+  ```
+  Expected: all five symbols visible.
+
+- [ ] Verify the package's stated invariants by re-reading the new `doc.go` and tracing each claim through the code:
+  - "non-blocking acquire" → `select { case sem <- struct{}{}: default: ... }` in router.go
+  - "publishes an ErrUnavailable reply" → `r.replyBusy(m.Msg)` in router.go
+  - "WaitGroup tracks every spawned handler" → `r.wg.Add(1)` in addRoute, `r.wg.Wait()` in Shutdown
+  - "Per-route override" → `cfg.sem != nil` branch in addRoute
+
+- [ ] Verify a downstream service can adopt the new API in one line:
+  ```bash
+  grep -n "natsrouter.WithMaxConcurrency\|natsrouter.HandlerTimeout" history-service/cmd/main.go
+  ```
+  Expected: matches once the history-service plan's Task 11 ships.
+
