@@ -1788,10 +1788,10 @@ func TestResolveRoomName(t *testing.T) {
 		roomType model.RoomType
 		want     string
 	}{
-		"dm uses roomID":     {model.CreateRoomRequest{RoomID: "u_a|u_b"}, model.RoomTypeDM, "u_a|u_b"},
-		"botDM uses roomID":  {model.CreateRoomRequest{RoomID: "u_a|u_w"}, model.RoomTypeBotDM, "u_a|u_w"},
-		"channel given name": {model.CreateRoomRequest{Name: "deal team", RoomID: "r1"}, model.RoomTypeChannel, "deal team"},
-		"channel auto-name":  {model.CreateRoomRequest{Users: []string{"bob"}, Orgs: []string{"org-fx"}, RoomID: "r2"}, model.RoomTypeChannel, "bob, org-fx"},
+		"dm uses roomID":         {model.CreateRoomRequest{RoomID: "u_a|u_b"}, model.RoomTypeDM, "u_a|u_b"},
+		"botDM uses roomID":      {model.CreateRoomRequest{RoomID: "u_a|u_w"}, model.RoomTypeBotDM, "u_a|u_w"},
+		"channel given name":     {model.CreateRoomRequest{Name: "deal team", RoomID: "r1"}, model.RoomTypeChannel, "deal team"},
+		"channel name truncated": {model.CreateRoomRequest{Name: strings.Repeat("a", 150), RoomID: "r2"}, model.RoomTypeChannel, strings.Repeat("a", 100)},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -2304,4 +2304,69 @@ func TestProcessCreateRoom_Channel_EmitsAsyncJobOk(t *testing.T) {
 	require.NoError(t, json.Unmarshal(responses[0].data, &result))
 	assert.Equal(t, model.AsyncJobStatusOK, result.Status)
 	assert.Equal(t, model.AsyncJobOpRoomCreate, result.Operation)
+}
+
+// ---- bulkCreate*Idempotent contract tests ----
+
+// TestBulkCreateSubsIdempotent_StoreReturnsNil verifies that when the store
+// absorbs duplicate-key errors (returns nil), the wrapper passes the success
+// through. This guards the documented contract: bulk-create at this layer is
+// safe under JetStream redelivery only because the store layer is.
+func TestBulkCreateSubsIdempotent_StoreReturnsNil(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	h := &Handler{store: store, siteID: "site-A"}
+
+	subs := []*model.Subscription{{ID: "s1"}}
+	require.NoError(t, h.bulkCreateSubsIdempotent(context.Background(), subs))
+}
+
+// TestBulkCreateSubsIdempotent_StoreErrorPropagates verifies that any error
+// the store returns (other than the duplicate-key it already swallows
+// internally) is wrapped and surfaced — the wrapper never silently swallows.
+func TestBulkCreateSubsIdempotent_StoreErrorPropagates(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	storeErr := errors.New("mongo write timeout")
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(storeErr)
+	h := &Handler{store: store, siteID: "site-A"}
+
+	err := h.bulkCreateSubsIdempotent(context.Background(), []*model.Subscription{{ID: "s1"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bulk create subs")
+	assert.ErrorIs(t, err, storeErr)
+}
+
+func TestBulkCreateMembersIdempotent_StoreReturnsNil(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
+	h := &Handler{store: store, siteID: "site-A"}
+
+	members := []*model.RoomMember{{ID: "m1"}}
+	require.NoError(t, h.bulkCreateMembersIdempotent(context.Background(), members))
+}
+
+func TestBulkCreateMembersIdempotent_EmptyShortCircuits(t *testing.T) {
+	// Empty input must not invoke the store — otherwise mock expectation count drifts
+	// and the worker would issue useless Mongo round trips on no-op redeliveries.
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	h := &Handler{store: store, siteID: "site-A"}
+
+	require.NoError(t, h.bulkCreateMembersIdempotent(context.Background(), nil))
+}
+
+func TestBulkCreateMembersIdempotent_StoreErrorPropagates(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	storeErr := errors.New("mongo write timeout")
+	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(storeErr)
+	h := &Handler{store: store, siteID: "site-A"}
+
+	err := h.bulkCreateMembersIdempotent(context.Background(), []*model.RoomMember{{ID: "m1"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bulk create room members")
+	assert.ErrorIs(t, err, storeErr)
 }

@@ -47,7 +47,7 @@ This section lists every file the plan touches and what it owns. Lock decomposit
 
 | File | Change | What it owns |
 |------|--------|--------------|
-| `helper.go` | modify | New sentinel errors (`errEmptyCreateRequest`, `errSelfDM`, `errBotInChannel`, `errBotNotAvailable`, `errInvalidUserData`, `errMissingRequestID`, `errUserNotFound`); `dmExistsError` typed wrapper; `stripAccount` helper; `composeAutoName`, `truncateRunes` helpers. Extend `sanitizeError` allowlist. |
+| `helper.go` | modify | New sentinel errors (`errEmptyCreateRequest`, `errSelfDM`, `errBotInChannel`, `errBotNotAvailable`, `errInvalidUserData`, `errMissingRequestID`, `errInvalidRequestID`, `errChannelNameRequired`, `errUserNotFound`); `dmExistsError` typed wrapper; `stripAccount` helper; `truncateRunes` helper. Extend `sanitizeError` allowlist. **Channels require a client-supplied `Name`** — no server-side auto-name path, so `composeAutoName` is intentionally absent. |
 | `helper_test.go` | modify | Tests for the new helpers and `sanitizeError` allowlist additions. |
 | `handler.go` | modify | New `handleCreateRoom`, `natsCreateRoom`, `replyDMExists`. New helpers `determineRoomType`, `validateChannelBranch`, `validateDMBranch`. |
 | `handler_test.go` | modify | Table-driven tests for `handleCreateRoom` (≥18 rows per spec §9). |

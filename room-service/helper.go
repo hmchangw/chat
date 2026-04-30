@@ -30,14 +30,15 @@ var (
 	errPromoteRequiresIndividual = errors.New("only individual members can be promoted to owner")
 
 	// Sentinels for create-room validation.
-	errEmptyCreateRequest = errors.New("request must include at least one of users, orgs, channels, or name")
-	errSelfDM             = errors.New("cannot create a DM with yourself")
-	errBotInChannel       = errors.New("bots cannot be added to a channel during creation")
-	errBotNotAvailable    = errors.New("bot not available")
-	errInvalidUserData    = errors.New("user is missing required name fields")
-	errMissingRequestID   = errors.New("missing X-Request-ID header")
-	errInvalidRequestID   = errors.New("invalid X-Request-ID format")
-	errUserNotFound       = errors.New("user not found")
+	errEmptyCreateRequest  = errors.New("request must include at least one of users, orgs, channels, or name")
+	errSelfDM              = errors.New("cannot create a DM with yourself")
+	errBotInChannel        = errors.New("bots cannot be added to a channel during creation")
+	errBotNotAvailable     = errors.New("bot not available")
+	errInvalidUserData     = errors.New("user is missing required name fields")
+	errMissingRequestID    = errors.New("missing X-Request-ID header")
+	errInvalidRequestID    = errors.New("invalid X-Request-ID format")
+	errChannelNameRequired = errors.New("channel name is required")
+	errUserNotFound        = errors.New("user not found")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
@@ -109,18 +110,15 @@ func (e *dmExistsError) Is(target error) bool {
 	return ok
 }
 
-// stripAccount, truncateRunes, and composeAutoName are thin wrappers that delegate to
-// pkg/roomname so room-service and room-worker can never drift on these rules.
+// stripAccount and truncateRunes are thin wrappers that delegate to pkg/roomname so
+// room-service and room-worker can never drift on these rules. composeAutoName was
+// removed when channels became required-name (see spec §"Behaviour").
 func stripAccount(slice []string, account string) []string {
 	return roomname.StripAccount(slice, account)
 }
 
 func truncateRunes(s string, max int) string {
 	return roomname.TruncateRunes(s, max)
-}
-
-func composeAutoName(users, orgs []string, channels []model.ChannelRef) string {
-	return roomname.ComposeAutoName(users, orgs, channels)
 }
 
 // sanitizeError returns a user-safe error message for known error sentinels and approved patterns.
@@ -148,6 +146,7 @@ func sanitizeError(err error) string {
 		errors.Is(err, errInvalidUserData),
 		errors.Is(err, errMissingRequestID),
 		errors.Is(err, errInvalidRequestID),
+		errors.Is(err, errChannelNameRequired),
 		errors.Is(err, errUserNotFound),
 		errors.Is(err, &dmExistsError{}):
 		return err.Error()

@@ -7,10 +7,7 @@
 package roomname
 
 import (
-	"strings"
 	"unicode/utf8"
-
-	"github.com/hmchangw/chat/pkg/model"
 )
 
 // MaxNameRunes is the maximum number of Unicode code points allowed in a
@@ -43,17 +40,4 @@ func StripAccount(slice []string, account string) []string {
 		}
 	}
 	return out
-}
-
-// ComposeAutoName joins users, orgs, and channel room IDs with ", " and
-// truncates the result to MaxNameRunes for use as an auto-generated room name.
-func ComposeAutoName(users, orgs []string, channels []model.ChannelRef) string {
-	parts := make([]string, 0, len(users)+len(orgs)+len(channels))
-	parts = append(parts, users...)
-	parts = append(parts, orgs...)
-	for _, c := range channels {
-		parts = append(parts, c.RoomID)
-	}
-	joined := strings.Join(parts, ", ")
-	return TruncateRunes(joined, MaxNameRunes)
 }

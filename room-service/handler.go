@@ -229,8 +229,14 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 }
 
 func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, requester *model.User, requesterAccount string, roomType model.RoomType) ([]byte, error) {
+	// Channels must have a client-supplied name. The server never composes a channel name
+	// from the user/org/channel lists (see spec §"Behaviour"). Reject here so the canonical
+	// event always carries a non-empty Name; room-worker relies on this invariant.
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, errChannelNameRequired
+	}
 	for _, a := range req.Users {
-		if strings.HasSuffix(a, ".bot") {
+		if isBot(a) {
 			return nil, errBotInChannel
 		}
 	}
@@ -246,17 +252,10 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 	allOrgs := dedup(append(append([]string{}, req.Orgs...), channelOrgIDs...))
 	allUsers := stripAccount(dedup(append(append([]string{}, req.Users...), channelAccounts...)), requesterAccount)
 
-	// If the request had no Name and no direct users/orgs (i.e. only channel refs), require
-	// at least one resolved member after expansion. Without this, a request like
-	// `{channels: [<all-bots-room>]}` would silently create an empty channel.
-	noDirectInput := req.Name == "" && len(req.Users) == 0 && len(req.Orgs) == 0
-	if noDirectInput && len(allUsers) == 0 && len(allOrgs) == 0 {
-		return nil, errEmptyCreateRequest
-	}
-	// Also reject the all-empty case explicitly even when Name was supplied — a channel
-	// with zero members other than the requester is degenerate and easier to error early
-	// than to clean up afterwards.
-	if len(allUsers) == 0 && len(allOrgs) == 0 && len(req.Channels) > 0 {
+	// Channel must have at least one resolved member or org. With Name now required up-front,
+	// the only way to reach this with everything empty is a request that supplied only
+	// channel refs whose expansion produced zero non-bot, non-requester accounts.
+	if len(allUsers) == 0 && len(allOrgs) == 0 {
 		return nil, errEmptyCreateRequest
 	}
 

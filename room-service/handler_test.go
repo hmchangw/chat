@@ -2040,6 +2040,34 @@ func TestHandleCreateRoom_Channel_HappyPath(t *testing.T) {
 	assert.NotEmpty(t, reply.RoomID)
 }
 
+func TestHandleCreateRoom_Channel_NameRequired(t *testing.T) {
+	// Channels must carry a client-supplied Name. Multiple users with no Name
+	// shape-classifies as channel (per determineRoomType), so the empty-Name
+	// guard in handleCreateRoomChannel must reject before any store call.
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob", "charlie"}})
+	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errChannelNameRequired), "expected errChannelNameRequired, got %v", err)
+}
+
+func TestHandleCreateRoom_Channel_NameWhitespaceOnly(t *testing.T) {
+	// "   " with no rune content must be treated as empty.
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Name: "   ", Users: []string{"bob", "charlie"}})
+	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errChannelNameRequired))
+}
+
 func TestHandleCreateRoom_Channel_BotRejected(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)

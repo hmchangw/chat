@@ -790,16 +790,15 @@ func composeNameOrAccount(u *model.User) string {
 }
 
 // resolveRoomName determines the persisted room name from the create request.
-// DM and BotDM rooms use RoomID as their name; channels use the explicit Name
-// when provided, otherwise an auto-generated name from Users/Orgs/Channels.
+// DM and BotDM rooms use RoomID as their name. Channels use the client-supplied
+// Name truncated to 100 runes — room-service rejects empty Name with
+// errChannelNameRequired before publishing, so the worker can rely on Name
+// being populated for channels.
 func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) string {
 	if roomType == model.RoomTypeDM || roomType == model.RoomTypeBotDM {
 		return req.RoomID
 	}
-	if req.Name != "" {
-		return truncateRunes(req.Name, 100)
-	}
-	return composeAutoName(req.Users, req.Orgs, req.Channels)
+	return truncateRunes(req.Name, 100)
 }
 
 // createdByForType returns the requesterID for channel rooms and "" for DM/BotDM.
@@ -827,14 +826,11 @@ func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 	}
 }
 
-// truncateRunes, composeAutoName, and stripAccount delegate to the shared pkg/roomname
-// so room-service and room-worker share a single normalization implementation.
+// truncateRunes and stripAccount delegate to the shared pkg/roomname so room-service
+// and room-worker share a single normalization implementation. composeAutoName was
+// removed when channels became required-name (see spec §"Behaviour").
 func truncateRunes(s string, max int) string {
 	return roomname.TruncateRunes(s, max)
-}
-
-func composeAutoName(users, orgs []string, channels []model.ChannelRef) string {
-	return roomname.ComposeAutoName(users, orgs, channels)
 }
 
 func stripAccount(slice []string, account string) []string {
@@ -842,6 +838,19 @@ func stripAccount(slice []string, account string) []string {
 }
 
 func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error) {
+	// Capture the requester account and roomID for the async-job result. Both start empty
+	// and are populated as soon as we successfully unmarshal / look up the requester.
+	// publishAsyncJobResult is a no-op when requesterAccount is empty, so early
+	// "missing X-Request-ID" / "unmarshal" failures simply skip the result publish —
+	// any later failure (after we know the requester) will publish a sanitized error event.
+	var (
+		requesterAccount string
+		roomID           string
+	)
+	defer func() {
+		h.publishAsyncJobResult(ctx, requesterAccount, model.AsyncJobOpRoomCreate, roomID, err)
+	}()
+
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" {
 		return fmt.Errorf("missing X-Request-ID: %w", errPermanent)
@@ -851,6 +860,8 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	if err := json.Unmarshal(data, &req); err != nil {
 		return fmt.Errorf("unmarshal create-room: %w: %w", err, errPermanent)
 	}
+	requesterAccount = req.RequesterAccount
+	roomID = req.RoomID
 
 	requester, err := h.store.GetUser(ctx, req.RequesterAccount)
 	if err != nil {
@@ -859,11 +870,6 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		}
 		return fmt.Errorf("get requester: %w", err)
 	}
-
-	// Defer the result publish covers all subsequent return paths.
-	defer func() {
-		h.publishAsyncJobResult(ctx, requester.Account, model.AsyncJobOpRoomCreate, req.RoomID, err)
-	}()
 
 	roomType := determineRoomTypeFromPayload(&req)
 	acceptedAt := time.UnixMilli(req.Timestamp).UTC()
@@ -977,6 +983,12 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	users, err := h.store.FindUsersByAccounts(ctx, accounts)
 	if err != nil {
 		return fmt.Errorf("find users: %w", err)
+	}
+	// Race guard: if every requested account was deleted between room-service validation
+	// and worker processing, abort with a permanent error so the requester gets a clear
+	// async-job failure instead of a single-member channel created silently.
+	if len(users) == 0 {
+		return fmt.Errorf("no resolvable members for channel %s: %w", room.ID, errPermanent)
 	}
 	for i := range users {
 		if users[i].EngName == "" || users[i].ChineseName == "" {

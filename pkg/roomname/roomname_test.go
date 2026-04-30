@@ -1,13 +1,10 @@
 package roomname
 
 import (
-	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
-
-	"github.com/hmchangw/chat/pkg/model"
 )
 
 func TestTruncateRunes(t *testing.T) {
@@ -52,35 +49,4 @@ func TestStripAccount(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
-}
-
-func TestComposeAutoName(t *testing.T) {
-	tests := map[string]struct {
-		users    []string
-		orgs     []string
-		channels []model.ChannelRef
-		want     string
-	}{
-		"users only":    {[]string{"alice", "bob"}, nil, nil, "alice, bob"},
-		"users + orgs":  {[]string{"alice"}, []string{"org-fx"}, nil, "alice, org-fx"},
-		"all three":     {[]string{"alice"}, []string{"org-fx"}, []model.ChannelRef{{RoomID: "r0"}}, "alice, org-fx, r0"},
-		"channels only": {nil, nil, []model.ChannelRef{{RoomID: "r0"}, {RoomID: "r1"}}, "r0, r1"},
-		"all empty":     {nil, nil, nil, ""},
-	}
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			got := ComposeAutoName(tc.users, tc.orgs, tc.channels)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-}
-
-func TestComposeAutoNameTruncates(t *testing.T) {
-	users := make([]string, 0, 50)
-	for i := 0; i < 50; i++ {
-		users = append(users, "userwithlongaccountname")
-	}
-	got := ComposeAutoName(users, nil, nil)
-	assert.Equal(t, MaxNameRunes, utf8.RuneCountInString(got))
-	assert.True(t, strings.HasPrefix(got, "userwithlongaccountname"))
 }

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -144,6 +143,8 @@ func TestNewSentinelErrorsExist(t *testing.T) {
 	assert.Equal(t, "bot not available", errBotNotAvailable.Error())
 	assert.Equal(t, "user is missing required name fields", errInvalidUserData.Error())
 	assert.Equal(t, "missing X-Request-ID header", errMissingRequestID.Error())
+	assert.Equal(t, "invalid X-Request-ID format", errInvalidRequestID.Error())
+	assert.Equal(t, "channel name is required", errChannelNameRequired.Error())
 	assert.Equal(t, "user not found", errUserNotFound.Error())
 }
 
@@ -187,36 +188,6 @@ func TestTruncateRunes(t *testing.T) {
 	assert.Equal(t, "hel", truncateRunes("hello", 3))
 	assert.Equal(t, "你好", truncateRunes("你好世界", 2))
 	assert.Equal(t, "你好世界", truncateRunes("你好世界", 100))
-}
-
-func TestComposeAutoName(t *testing.T) {
-	tests := map[string]struct {
-		users    []string
-		orgs     []string
-		channels []model.ChannelRef
-		want     string
-	}{
-		"users only":           {[]string{"alice", "bob"}, nil, nil, "alice, bob"},
-		"users + orgs":         {[]string{"alice"}, []string{"org-fx"}, nil, "alice, org-fx"},
-		"users + orgs + chans": {[]string{"alice"}, []string{"org-fx"}, []model.ChannelRef{{RoomID: "r0"}}, "alice, org-fx, r0"},
-		"channels only":        {nil, nil, []model.ChannelRef{{RoomID: "r0"}, {RoomID: "r1"}}, "r0, r1"},
-		"empty everything":     {nil, nil, nil, ""},
-	}
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			got := composeAutoName(tc.users, tc.orgs, tc.channels)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-}
-
-func TestComposeAutoNameTruncatesAt100Runes(t *testing.T) {
-	users := make([]string, 0)
-	for i := 0; i < 50; i++ {
-		users = append(users, "userwithlongaccountname")
-	}
-	got := composeAutoName(users, nil, nil)
-	assert.Equal(t, 100, utf8.RuneCountInString(got))
 }
 
 func TestSanitizeErrorPassesThroughCreateRoomSentinels(t *testing.T) {
