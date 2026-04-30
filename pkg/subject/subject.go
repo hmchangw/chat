@@ -37,6 +37,14 @@ func MsgSend(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.room.%s.%s.msg.send", account, roomID, siteID)
 }
 
+// MsgGet returns the concrete subject for issuing a GetMessageByID request to
+// history-service on behalf of a given user/room. Pair with MsgGetPattern,
+// which is the natsrouter pattern used by history-service to register the
+// handler.
+func MsgGet(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", account, roomID, siteID)
+}
+
 func UserResponse(account, requestID string) string {
 	return fmt.Sprintf("chat.user.%s.response.%s", account, requestID)
 }
@@ -286,14 +294,6 @@ func MsgSurroundingPattern(siteID string) string {
 // callers publish on.
 func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
-}
-
-// MsgGet returns the concrete subject for issuing a GetMessageByID request to
-// history-service on behalf of a given user/room. Pair with MsgGetPattern,
-// which is the natsrouter pattern used by history-service to register the
-// handler.
-func MsgGet(account, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", account, roomID, siteID)
 }
 
 // MsgEditPattern is the natsrouter pattern for editing a message.
