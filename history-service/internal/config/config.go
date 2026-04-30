@@ -27,12 +27,20 @@ type NATSConfig struct {
 	CredsFile string `env:"CREDS_FILE" envDefault:""`
 }
 
+// ValkeyConfig holds Valkey (Redis-compatible) connection settings.
+// Env vars: VALKEY_ADDR, VALKEY_PASSWORD
+type ValkeyConfig struct {
+	Addr     string `env:"ADDR" required:"true"`
+	Password string `env:"PASSWORD" envDefault:""`
+}
+
 // Config is the top-level configuration for history-service.
 type Config struct {
 	SiteID    string          `env:"SITE_ID" envDefault:"site-local"`
 	Cassandra CassandraConfig `envPrefix:"CASSANDRA_"`
 	Mongo     MongoConfig     `envPrefix:"MONGO_"`
 	NATS      NATSConfig      `envPrefix:"NATS_"`
+	Valkey    ValkeyConfig    `envPrefix:"VALKEY_"`
 }
 
 // Load parses environment variables into Config. Returns error if required vars are missing.
