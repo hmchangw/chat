@@ -1946,19 +1946,19 @@ func TestProcessCreateRoom_DM_BuildsTwoSubs(t *testing.T) {
 
 	require.Len(t, capturedSubs, 2)
 
-	// alice's sub: Name = other's display name, SidebarName = other's display name
+	// alice's sub: Name = other's account, SidebarName = other's display name
 	aliceSub := capturedSubs[0]
 	assert.Equal(t, "u_alice", aliceSub.User.ID)
-	assert.Equal(t, composeNameOrAccount(other), aliceSub.Name)
+	assert.Equal(t, other.Account, aliceSub.Name)
 	assert.Equal(t, composeNameOrAccount(other), aliceSub.SidebarName)
 	assert.Nil(t, aliceSub.Roles)
 	assert.False(t, aliceSub.IsSubscribed)
 	assert.Equal(t, model.RoomTypeDM, aliceSub.RoomType)
 
-	// bob's sub: Name = requester's display name
+	// bob's sub: Name = requester's account, SidebarName = requester's display name
 	bobSub := capturedSubs[1]
 	assert.Equal(t, "u_bob", bobSub.User.ID)
-	assert.Equal(t, composeNameOrAccount(requester), bobSub.Name)
+	assert.Equal(t, requester.Account, bobSub.Name)
 	assert.Equal(t, composeNameOrAccount(requester), bobSub.SidebarName)
 	assert.Nil(t, bobSub.Roles)
 	assert.False(t, bobSub.IsSubscribed)
@@ -2019,15 +2019,17 @@ func TestProcessCreateRoom_BotDM_HasIsSubscribedAndAppName(t *testing.T) {
 
 	require.Len(t, capturedSubs, 2)
 
-	// human side (alice): SidebarName = AppName, IsSubscribed = true
+	// human side (alice): Name = bot's account, SidebarName = AppName, IsSubscribed = true
 	humanSub := capturedSubs[0]
 	assert.Equal(t, "u_alice", humanSub.User.ID)
+	assert.Equal(t, bot.Account, humanSub.Name)
 	assert.Equal(t, "HelperBot", humanSub.SidebarName)
 	assert.True(t, humanSub.IsSubscribed)
 
-	// bot side: SidebarName = alice's display name, IsSubscribed = false
+	// bot side: Name = requester's account, SidebarName = alice's display name, IsSubscribed = false
 	botSub := capturedSubs[1]
 	assert.Equal(t, "u_bot", botSub.User.ID)
+	assert.Equal(t, requester.Account, botSub.Name)
 	assert.Equal(t, composeNameOrAccount(requester), botSub.SidebarName)
 	assert.False(t, botSub.IsSubscribed)
 

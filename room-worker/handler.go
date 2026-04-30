@@ -932,11 +932,9 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 		return fmt.Errorf("get counterpart: %w", err)
 	}
 
-	otherDisplayName := composeNameOrAccount(other)
-	requesterDisplayName := composeNameOrAccount(requester)
 	subs := []*model.Subscription{
-		newSub(idgen.GenerateUUIDv7(), requester, room, nil, otherDisplayName, otherDisplayName, false, acceptedAt),
-		newSub(idgen.GenerateUUIDv7(), other, room, nil, requesterDisplayName, requesterDisplayName, false, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, composeNameOrAccount(other), false, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), other, room, nil, requester.Account, composeNameOrAccount(requester), false, acceptedAt),
 	}
 	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
 		return err
@@ -953,10 +951,9 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 		return fmt.Errorf("get bot user: %w", err)
 	}
 
-	requesterDisplayName := composeNameOrAccount(requester)
 	subs := []*model.Subscription{
-		newSub(idgen.GenerateUUIDv7(), requester, room, nil, req.AppName, req.AppName, true, acceptedAt),
-		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requesterDisplayName, requesterDisplayName, false, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, req.AppName, true, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requester.Account, composeNameOrAccount(requester), false, acceptedAt),
 	}
 	if err := h.bulkCreateSubsIdempotent(ctx, subs); err != nil {
 		return err
@@ -1125,8 +1122,6 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 		}
 	}
 
-	// Task 37: async-job result (success path — defer in processCreateRoom handles error path)
-	h.publishAsyncJobResult(ctx, requester.Account, model.AsyncJobOpRoomCreate, nil)
 	return nil
 }
 
