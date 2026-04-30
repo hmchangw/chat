@@ -431,6 +431,8 @@ form to publish a request on behalf of a specific user+room+site."
 
 ## Task 3: Add `ParentMessageFetcher` interface, regen mocks, wire handler branch + tests
 
+> **Post-PR-review note:** the soft-fail design captured below was reversed during PR review — `resolveQuoteSnapshot` now returns `(*snapshot, error)` and every failure mode (RPC error, thread-context mismatch, buggy `(nil, nil)` fetcher) returns a wrapped error. The existing `HandleJetStreamMsg` path then replies the error to the sender's response subject and acks. The five "quote dropped, message ships" test cases were renamed to `request fails …` and use `wantErr: true`. The body of this task below shows the original step-by-step instructions for historical reference — see `docs/superpowers/specs/2026-04-27-message-quoting-design.md` ("Hard-fail policy" section) and `message-gatekeeper/handler.go::resolveQuoteSnapshot` for the current behavior.
+
 **Goal:** Define the consumer-side interface message-gatekeeper will use to fetch the quoted parent. Add a new branch to `processMessage` that, when `req.QuotedParentMessageID` is non-empty, calls the fetcher and either embeds the snapshot on the message or soft-fails (warn + drop). Cover the new path with table-driven tests using a generated mock.
 
 **Files:**

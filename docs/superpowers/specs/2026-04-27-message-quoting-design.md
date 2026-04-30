@@ -138,25 +138,41 @@ The 2-second timeout is the standard NATS Go client default and is hardcoded inl
 
 ### `handler.go` — one new branch in `processMessage`
 
-After existing validation (UUID, content size, thread-pair, subscription), and before constructing the `Message`:
+After existing validation (UUID, content size, thread-pair, subscription), and before constructing the `Message`. Quote resolution is delegated to a `resolveQuoteSnapshot` helper that returns `(*snapshot, error)` — the caller propagates the error so the existing validation-error path replies to the client and acks the JetStream message:
 
 ```go
-var quotedSnapshot *cassandra.QuotedParentMessage
-if req.QuotedParentMessageID != "" {
-    snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, req.QuotedParentMessageID)
-    if err != nil {
-        slog.Warn("quoted parent unavailable, dropping quote",
-            "quotedParentMessageId", req.QuotedParentMessageID,
-            "roomId", roomID,
-            "error", err)
-    } else {
-        quotedSnapshot = snap
-    }
+quotedSnapshot, err := h.resolveQuoteSnapshot(ctx, account, roomID, siteID, req.QuotedParentMessageID, req.ThreadParentMessageID)
+if err != nil {
+    return nil, err
 }
 
 msg := model.Message{
     // ...existing fields...
     QuotedParentMessage: quotedSnapshot,
+}
+```
+
+The helper itself:
+
+```go
+func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, siteID, quotedParentMessageID, newMessageThreadID string) (*cassandra.QuotedParentMessage, error) {
+    if quotedParentMessageID == "" {
+        return nil, nil
+    }
+    snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, quotedParentMessageID)
+    switch {
+    case err != nil:
+        return nil, fmt.Errorf("fetch quoted parent %s: %w", quotedParentMessageID, err)
+    case snap == nil:
+        // Treat the fetcher's contract violation as a hard failure rather than
+        // silently dereferencing snap.ThreadParentID below.
+        return nil, fmt.Errorf("fetch quoted parent %s: fetcher returned nil snapshot", quotedParentMessageID)
+    case snap.ThreadParentID != newMessageThreadID:
+        return nil, fmt.Errorf("quoted parent %s thread context mismatch: parent thread %q, new message thread %q",
+            quotedParentMessageID, snap.ThreadParentID, newMessageThreadID)
+    default:
+        return snap, nil
+    }
 }
 ```
 
