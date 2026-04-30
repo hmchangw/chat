@@ -230,3 +230,303 @@ git commit -m "style(history-service): use idiomatic for-range counted loops"
 ```
 
 ---
+
+## Task 3: Split `internal/service/utils.go` into focused files
+
+**Why:** `utils.go` is a grab-bag (access checks, redaction, time helpers, mutation authorization). Split into two focused files (`access.go`, `redaction.go`) and absorb the small helpers into the handler file that already uses them. Wraps `SubscriptionRepository` in a tiny `accessChecker` type so the access policy has a name and a clear surface (the "small types" version of the original B+E recommendation).
+
+**Files:**
+- Create: `history-service/internal/service/access.go`
+- Create: `history-service/internal/service/redaction.go`
+- Modify: `history-service/internal/service/service.go` (field rename + constructor)
+- Modify: `history-service/internal/service/messages.go` (absorb `parsePageRequest`, `millisToTime`, `derefTime`, `timeMax`; rename `s.getAccessSince(...)` → `s.access.Check(...)`)
+- Modify: `history-service/internal/service/threads.go` (rename `s.getAccessSince(...)` → `s.access.Check(...)`)
+- Delete: `history-service/internal/service/utils.go`
+- Modify: `history-service/internal/service/utils_test.go` → rename file to `access_test.go` (TestCanModify covers `canModify` which now lives in `access.go`)
+
+- [ ] **Step 1: Create `access.go`**
+
+Create `history-service/internal/service/access.go` with this content:
+
+```go
+package service
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/pkg/natsrouter"
+)
+
+// accessChecker enforces room-membership and history-window policy. Wraps a
+// SubscriptionRepository so the policy has a single named home rather than
+// being inlined into each handler.
+type accessChecker struct {
+	subs SubscriptionRepository
+}
+
+func newAccessChecker(subs SubscriptionRepository) *accessChecker {
+	return &accessChecker{subs: subs}
+}
+
+// Check returns the historySharedSince lower bound for the user in this room.
+// nil means full access; a non-nil time means the user only sees messages at
+// or after that timestamp. Returns ErrForbidden when the user is not
+// subscribed to the room and ErrInternal when the subscription store fails.
+func (a *accessChecker) Check(ctx context.Context, account, roomID string) (*time.Time, error) {
+	accessSince, subscribed, err := a.subs.GetHistorySharedSince(ctx, account, roomID)
+	if err != nil {
+		slog.Error("checking subscription", "error", err, "account", account, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("unable to verify room access")
+	}
+	if !subscribed {
+		return nil, natsrouter.ErrForbidden("not subscribed to room")
+	}
+	return accessSince, nil
+}
+
+// findMessage fetches a message by ID and validates room ownership. Returns
+// ErrNotFound both for missing messages and for messages that belong to a
+// different room (same error to prevent cross-room ID probing).
+func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID string) (*models.Message, error) {
+	if messageID == "" {
+		return nil, natsrouter.ErrBadRequest("messageId is required")
+	}
+	msg, err := s.msgReader.GetMessageByID(ctx, messageID)
+	if err != nil {
+		slog.Error("finding message", "error", err, "messageID", messageID)
+		return nil, natsrouter.ErrInternal("failed to retrieve message")
+	}
+	if msg == nil {
+		return nil, natsrouter.ErrNotFound("message not found")
+	}
+	if msg.RoomID != roomID {
+		return nil, natsrouter.ErrNotFound("message not found")
+	}
+	return msg, nil
+}
+
+// canModify reports whether account is authorized to edit or soft-delete msg.
+// Sender-only authorization: the caller must be the message's original
+// sender. Empty account on either side is treated as unauthorized so messages
+// with missing sender data cannot match.
+func canModify(msg *models.Message, account string) bool {
+	if msg == nil {
+		return false
+	}
+	if account == "" {
+		return false
+	}
+	if msg.Sender.Account == "" {
+		return false
+	}
+	return msg.Sender.Account == account
+}
+
+// derefTime returns *t when t != nil, otherwise the zero time.
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// timeMax returns the later of two timestamps; zero values are ignored.
+func timeMax(a, b time.Time) time.Time {
+	if a.IsZero() {
+		return b
+	}
+	if b.IsZero() {
+		return a
+	}
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+```
+
+- [ ] **Step 2: Create `redaction.go`**
+
+Create `history-service/internal/service/redaction.go` with this content:
+
+```go
+package service
+
+import (
+	"time"
+
+	"github.com/hmchangw/chat/history-service/internal/models"
+)
+
+// UnavailableQuoteMsg replaces QuotedParentMessage.Msg when the quoted
+// message falls outside the user's access window.
+const UnavailableQuoteMsg = "This message is unavailable"
+
+// quoteInaccessible reports whether a quoted message is outside the access
+// window. For TShow replies, ThreadParentCreatedAt is checked; nil parent
+// time on a TShow quote is treated as inaccessible (conservative — prevents
+// leaks via legacy rows that lack the captured parent timestamp).
+func quoteInaccessible(m *models.Message, q *models.QuotedParentMessage, accessSince time.Time) bool {
+	tshowParentInaccessible := m.TShow && q.ThreadParentID != "" && q.ThreadParentCreatedAt != nil && q.ThreadParentCreatedAt.Before(accessSince)
+	legacyTShowMissingParentTime := m.TShow && q.ThreadParentID != "" && q.ThreadParentCreatedAt == nil
+	return q.CreatedAt.Before(accessSince) || tshowParentInaccessible || legacyTShowMissingParentTime
+}
+
+// redactUnavailableQuote replaces an inaccessible quote on a single message.
+func redactUnavailableQuote(m *models.Message, accessSince *time.Time) {
+	if m == nil || accessSince == nil {
+		return
+	}
+	q := m.QuotedParentMessage
+	if q == nil {
+		return
+	}
+	if quoteInaccessible(m, q, *accessSince) {
+		m.QuotedParentMessage = &models.QuotedParentMessage{Msg: UnavailableQuoteMsg}
+	}
+}
+
+// redactUnavailableQuotes replaces inaccessible quotes across a slice in place.
+func redactUnavailableQuotes(msgs []models.Message, accessSince *time.Time) {
+	if accessSince == nil {
+		return
+	}
+	for i := range msgs {
+		q := msgs[i].QuotedParentMessage
+		if q == nil {
+			continue
+		}
+		if quoteInaccessible(&msgs[i], q, *accessSince) {
+			msgs[i].QuotedParentMessage = &models.QuotedParentMessage{Msg: UnavailableQuoteMsg}
+		}
+	}
+}
+```
+
+- [ ] **Step 3: Update `service.go` to wrap subscriptions in accessChecker**
+
+In `history-service/internal/service/service.go`:
+
+Replace the `HistoryService` struct definition:
+```go
+// HistoryService handles message history queries and mutations. Transport-agnostic.
+type HistoryService struct {
+	msgReader     MessageReader
+	msgWriter     MessageWriter
+	subscriptions SubscriptionRepository
+	publisher     EventPublisher
+	threadRooms   ThreadRoomRepository
+}
+```
+with:
+```go
+// HistoryService handles message history queries and mutations. Transport-agnostic.
+type HistoryService struct {
+	msgReader   MessageReader
+	msgWriter   MessageWriter
+	access      *accessChecker
+	publisher   EventPublisher
+	threadRooms ThreadRoomRepository
+}
+```
+
+Replace the constructor:
+```go
+func New(msgs MessageRepository, subs SubscriptionRepository, pub EventPublisher, threadRooms ThreadRoomRepository) *HistoryService {
+	return &HistoryService{msgReader: msgs, msgWriter: msgs, subscriptions: subs, publisher: pub, threadRooms: threadRooms}
+}
+```
+with:
+```go
+func New(msgs MessageRepository, subs SubscriptionRepository, pub EventPublisher, threadRooms ThreadRoomRepository) *HistoryService {
+	return &HistoryService{
+		msgReader:   msgs,
+		msgWriter:   msgs,
+		access:      newAccessChecker(subs),
+		publisher:   pub,
+		threadRooms: threadRooms,
+	}
+}
+```
+
+- [ ] **Step 4: Move `parsePageRequest` and `millisToTime` into `messages.go`**
+
+Append to `history-service/internal/service/messages.go` (after the existing handler functions, before EOF):
+
+```go
+// millisToTime converts an optional unix-millis timestamp to a UTC time.Time;
+// nil yields the zero time.
+func millisToTime(millis *int64) time.Time {
+	if millis == nil {
+		return time.Time{}
+	}
+	return time.UnixMilli(*millis).UTC()
+}
+
+// parsePageRequest validates a cursor + limit and maps decode errors to a
+// user-facing ErrBadRequest. The original error is logged for debugging.
+func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {
+	q, err := cassrepo.ParsePageRequest(cursor, limit)
+	if err != nil {
+		slog.Error("invalid pagination cursor", "error", err, "cursor", cursor)
+		return cassrepo.PageRequest{}, natsrouter.ErrBadRequest("invalid pagination cursor")
+	}
+	return q, nil
+}
+```
+
+- [ ] **Step 5: Replace `s.getAccessSince(...)` calls in `messages.go`**
+
+In `history-service/internal/service/messages.go`, replace every occurrence of `s.getAccessSince(c, account, roomID)` with `s.access.Check(c, account, roomID)`. Six call sites: `LoadHistory`, `LoadNextMessages`, `LoadSurroundingMessages`, `GetMessageByID`, `EditMessage`, `DeleteMessage`.
+
+Run to verify no occurrences remain:
+```bash
+grep -n "s\.getAccessSince" history-service/internal/service/messages.go
+```
+Expected: no matches.
+
+- [ ] **Step 6: Replace `s.getAccessSince(...)` calls in `threads.go`**
+
+In `history-service/internal/service/threads.go`, replace both occurrences of `s.getAccessSince(c, account, roomID)` with `s.access.Check(c, account, roomID)` (in `GetThreadMessages` and `GetThreadParentMessages`).
+
+Run to verify:
+```bash
+grep -n "s\.getAccessSince\|s\.subscriptions" history-service/internal/service/threads.go
+```
+Expected: no matches.
+
+- [ ] **Step 7: Delete `utils.go`**
+
+```bash
+rm history-service/internal/service/utils.go
+```
+
+- [ ] **Step 8: Rename `utils_test.go` → `access_test.go`**
+
+```bash
+git mv history-service/internal/service/utils_test.go history-service/internal/service/access_test.go
+```
+
+The file's only test (`TestCanModify`) now lives in the same file-pair as the function it tests.
+
+- [ ] **Step 9: Run all unit tests**
+
+Run: `make test SERVICE=history-service`
+Expected: PASS — all existing tests still green. Compilation must succeed across `messages.go`, `threads.go`, `service.go`, `access.go`, `redaction.go`.
+
+- [ ] **Step 10: Run lint**
+
+Run: `make lint`
+Expected: PASS — no `goimports` / `staticcheck` complaints. If unused-import warnings appear in `messages.go` or `threads.go`, remove them.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add history-service/internal/service/
+git commit -m "refactor(history-service): split utils.go into access.go and redaction.go"
+```
+
+---
