@@ -18,6 +18,10 @@ const (
 
 type HistoryConfig struct {
 	Mode HistoryMode `json:"mode" bson:"mode"`
+	// SharedSince, when non-nil, restricts history to messages on or after this
+	// millisecond timestamp. Takes precedence over the acceptedAt fallback when
+	// Mode == HistoryModeNone. Omitted from wire when nil.
+	SharedSince *int64 `json:"sharedSince,omitempty" bson:"sharedSince,omitempty"`
 }
 
 // ChannelRef identifies a source channel by room + its home site. Used by add-member

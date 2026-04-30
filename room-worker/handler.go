@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -16,6 +17,10 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
+
+// errPermanent marks errors that should not be retried by JetStream (e.g. invalid
+// message contents that will never succeed on redelivery).
+var errPermanent = errors.New("permanent")
 
 // PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
 type PublishFunc func(ctx context.Context, subj string, data []byte, msgID string) error
@@ -468,6 +473,10 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	if err = json.Unmarshal(data, &req); err != nil {
 		return fmt.Errorf("unmarshal add members request: %w", err)
 	}
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" {
+		return fmt.Errorf("missing X-Request-ID: %w", errPermanent)
+	}
 	if req.Timestamp <= 0 {
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
@@ -526,6 +535,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 			ID:       idgen.GenerateUUIDv7(),
 			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:   req.RoomID,
+			Name:     room.Name,
 			RoomType: model.RoomTypeChannel,
 			SiteID:   room.SiteID,
 			Roles:    []model.Role{model.RoleMember},
@@ -533,6 +543,9 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 		if req.History.Mode == model.HistoryModeNone {
 			histTime := acceptedAt
+			if req.History.SharedSince != nil {
+				histTime = time.UnixMilli(*req.History.SharedSince).UTC()
+			}
 			sub.HistorySharedSince = &histTime
 		}
 		subs = append(subs, sub)
@@ -701,6 +714,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		siteEvt := model.MemberAddEvent{
 			Type:               "member_added",
 			RoomID:             req.RoomID,
+			RoomName:           room.Name,
 			Accounts:           accounts,
 			SiteID:             room.SiteID,
 			JoinedAt:           req.Timestamp,

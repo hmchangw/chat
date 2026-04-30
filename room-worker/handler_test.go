@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -614,7 +615,8 @@ func TestHandler_ProcessAddMembers_FallsBackToNowOnInvalidTimestamp(t *testing.T
 		Timestamp:        0,
 	}
 	data, _ := json.Marshal(req)
-	err := h.processAddMembers(context.Background(), data)
+	ctx := natsutil.WithRequestID(context.Background(), "req-fallback-ts-test")
+	err := h.processAddMembers(ctx, data)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "timestamp must be > 0")
 }
@@ -659,7 +661,8 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	err := h.processAddMembers(context.Background(), reqData)
+	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-basic")
+	err := h.processAddMembers(ctx, reqData)
 	require.NoError(t, err)
 
 	// 2 SubscriptionUpdate + 1 MemberAddEvent + 1 system msg + 1 batched outbox (site-b)
@@ -710,7 +713,8 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	err := h.processAddMembers(context.Background(), reqData)
+	ctx := natsutil.WithRequestID(context.Background(), "req-history-all-test")
+	err := h.processAddMembers(ctx, reqData)
 	require.NoError(t, err)
 }
 
@@ -765,7 +769,8 @@ func TestHandler_ProcessAddMembers_RestrictedPropagatesPointer(t *testing.T) {
 		Timestamp: reqTS,
 	}
 	reqData, _ := json.Marshal(req)
-	require.NoError(t, h.processAddMembers(context.Background(), reqData))
+	ctxR := natsutil.WithRequestID(context.Background(), "req-restricted-propagates")
+	require.NoError(t, h.processAddMembers(ctxR, reqData))
 
 	// Local RoomMemberEvent: HSS must be a non-nil pointer equal to request ts.
 	memberAddEvt, _ := findMemberAddEvent(t, published, "r1")
@@ -822,7 +827,8 @@ func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) 
 		Timestamp: 1,
 	}
 	reqData, _ := json.Marshal(req)
-	require.NoError(t, h.processAddMembers(context.Background(), reqData))
+	ctxU := natsutil.WithRequestID(context.Background(), "req-unrestricted-wire")
+	require.NoError(t, h.processAddMembers(ctxU, reqData))
 
 	evt, raw := findMemberAddEvent(t, published, "r1")
 	assert.Nil(t, evt.HistorySharedSince, "unrestricted event must decode HSS as nil")
@@ -871,7 +877,8 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	err := h.processAddMembers(context.Background(), reqData)
+	ctxOrgs := natsutil.WithRequestID(context.Background(), "req-with-orgs-test")
+	err := h.processAddMembers(ctxOrgs, reqData)
 	require.NoError(t, err)
 }
 
@@ -906,7 +913,8 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	err := h.processAddMembers(context.Background(), reqData)
+	ctxUNF := natsutil.WithRequestID(context.Background(), "req-user-not-found-test")
+	err := h.processAddMembers(ctxUNF, reqData)
 	require.NoError(t, err)
 }
 
@@ -942,12 +950,13 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	err := h.processAddMembers(context.Background(), reqData)
+	ctxMS := natsutil.WithRequestID(context.Background(), "req-multi-site-outbox-test")
+	err := h.processAddMembers(ctxMS, reqData)
 	require.NoError(t, err)
 
 	var outboxEvents []publishedMsg
 	for _, p := range published {
-		if strings.Contains(p.subj, "outbox") {
+		if strings.HasPrefix(p.subj, "outbox.") {
 			outboxEvents = append(outboxEvents, p)
 		}
 	}
@@ -1238,7 +1247,8 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	err := h.processAddMembers(context.Background(), reqData)
+	ctxEO := natsutil.WithRequestID(context.Background(), "req-existing-orgs-test")
+	err := h.processAddMembers(ctxEO, reqData)
 	require.NoError(t, err)
 }
 
@@ -1461,4 +1471,288 @@ func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequester(t *testing.T) {
 	ctx := natsutil.WithRequestID(context.Background(), "req-test")
 	h.publishAsyncJobResult(ctx, "", model.AsyncJobOpRoomMemberAdd, nil)
 	assert.False(t, called, "publish must be skipped when requester account is empty")
+}
+
+// ---------------------------------------------------------------------------
+// processAddMembers tests (Tasks 12, 14, 14b, 15, 16)
+// ---------------------------------------------------------------------------
+
+// newAddMembersTestHandler builds a Handler with a mock store and a capture-publish
+// closure, returning (handler, mockStore, getPublished).
+func newAddMembersTestHandler(t *testing.T) (*Handler, *MockSubscriptionStore, func() []publishedMsg) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	mockStore := NewMockSubscriptionStore(ctrl)
+	var published []publishedMsg
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}
+	h := &Handler{
+		store:   mockStore,
+		publish: publish,
+		siteID:  "site-A",
+	}
+	return h, mockStore, func() []publishedMsg { return published }
+}
+
+// setupAddMembersHappyPath sets up the standard happy-path mock expectations.
+// All users are on site-A (no cross-site outbox). HasOrgRoomMembers returns false.
+func setupAddMembersHappyPath(t *testing.T, mockStore *MockSubscriptionStore, accounts []string) {
+	t.Helper()
+	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
+	}, nil)
+	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return(accounts, nil)
+	users := make([]model.User, len(accounts))
+	for i, a := range accounts {
+		users[i] = model.User{ID: "u_" + a, Account: a, SiteID: "site-A", EngName: "X", ChineseName: "X"}
+	}
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), accounts).Return(users, nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+}
+
+// Task 12: missing X-Request-ID must return a permanent error immediately.
+func TestProcessAddMembers_RequiresRequestID(t *testing.T) {
+	h, _, _ := newAddMembersTestHandler(t)
+	body, err := json.Marshal(model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"},
+		RequesterID: "u_alice", RequesterAccount: "alice",
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, err)
+
+	// ctx has no request ID
+	err = h.processAddMembers(context.Background(), body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing X-Request-ID")
+	assert.ErrorIs(t, err, errPermanent)
+}
+
+// Task 14: subscription must carry Name == room.Name and RoomType == channel.
+func TestProcessAddMembers_PopulatesSubName(t *testing.T) {
+	h, mockStore, _ := newAddMembersTestHandler(t)
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx := natsutil.WithRequestID(context.Background(), reqID)
+
+	// Use a custom BulkCreateSubscriptions expectation to capture subs.
+	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
+	}, nil)
+	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u_bob", Account: "bob", SiteID: "site-A", EngName: "X", ChineseName: "X"},
+	}, nil)
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+
+	body, err := json.Marshal(model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"},
+		RequesterID: "u_alice", RequesterAccount: "alice", Timestamp: 1740000000000,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	require.Len(t, capturedSubs, 1)
+	assert.Equal(t, "deal team", capturedSubs[0].Name)
+	assert.Equal(t, model.RoomTypeChannel, capturedSubs[0].RoomType)
+}
+
+// Task 14b: HistoryModeNone with explicit SharedSince — sub.HistorySharedSince must match.
+func TestProcessAddMembers_HistoryNone_WithExplicitTimestamp(t *testing.T) {
+	h, mockStore, _ := newAddMembersTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0001")
+
+	explicitMs := int64(1700000000000)
+	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
+	}, nil)
+	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u_bob", Account: "bob", SiteID: "site-A", EngName: "X", ChineseName: "X"},
+	}, nil)
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+
+	body, err := json.Marshal(model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"},
+		RequesterID: "u_alice", RequesterAccount: "alice",
+		Timestamp: 1740000000000,
+		History:   model.HistoryConfig{Mode: model.HistoryModeNone, SharedSince: &explicitMs},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	require.Len(t, capturedSubs, 1)
+	require.NotNil(t, capturedSubs[0].HistorySharedSince)
+	wantTime := time.UnixMilli(explicitMs).UTC()
+	assert.Equal(t, wantTime, *capturedSubs[0].HistorySharedSince)
+}
+
+// Task 14b: HistoryModeNone without explicit SharedSince — sub.HistorySharedSince falls back to acceptedAt.
+func TestProcessAddMembers_HistoryNone_NoTimestamp(t *testing.T) {
+	h, mockStore, _ := newAddMembersTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0002")
+
+	const reqTimestampMs = int64(1740000000000)
+	acceptedAt := time.UnixMilli(reqTimestampMs).UTC()
+
+	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
+	}, nil)
+	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u_bob", Account: "bob", SiteID: "site-A", EngName: "X", ChineseName: "X"},
+	}, nil)
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+
+	// No SharedSince in HistoryConfig — falls back to req.Timestamp (acceptedAt).
+	body, err := json.Marshal(model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"},
+		RequesterID: "u_alice", RequesterAccount: "alice",
+		Timestamp: reqTimestampMs,
+		History:   model.HistoryConfig{Mode: model.HistoryModeNone},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	require.Len(t, capturedSubs, 1)
+	require.NotNil(t, capturedSubs[0].HistorySharedSince)
+	assert.Equal(t, acceptedAt, *capturedSubs[0].HistorySharedSince)
+}
+
+// Task 14b: no History.Mode set — sub.HistorySharedSince must be nil.
+func TestProcessAddMembers_NoHistoryConfig_LeavesNil(t *testing.T) {
+	h, mockStore, _ := newAddMembersTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0003")
+
+	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
+	}, nil)
+	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u_bob", Account: "bob", SiteID: "site-A", EngName: "X", ChineseName: "X"},
+	}, nil)
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+
+	// No History.Mode — HistorySharedSince must remain nil.
+	body, err := json.Marshal(model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"},
+		RequesterID: "u_alice", RequesterAccount: "alice",
+		Timestamp: 1740000000000,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	require.Len(t, capturedSubs, 1)
+	assert.Nil(t, capturedSubs[0].HistorySharedSince)
+}
+
+// Task 15: outbox MemberAddEvent for cross-site members must carry RoomName.
+func TestProcessAddMembers_OutboxCarriesRoomName(t *testing.T) {
+	h, mockStore, getPublished := newAddMembersTestHandler(t)
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx := natsutil.WithRequestID(context.Background(), reqID)
+
+	// Cross-site member: bob lives on site-B.
+	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
+	}, nil)
+	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+		Return([]string{"bob"}, nil)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u_bob", Account: "bob", SiteID: "site-B", EngName: "Bob", ChineseName: "鲍勃"},
+	}, nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+
+	body, err := json.Marshal(model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"},
+		RequesterID: "u_alice", RequesterAccount: "alice", Timestamp: 1,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	// Find outbox publish to site-B with member_added.
+	pub := getPublished()
+	var found bool
+	for _, m := range pub {
+		if !strings.HasPrefix(m.subj, "outbox.site-A.to.site-B.member_added") {
+			continue
+		}
+		found = true
+		var envelope model.OutboxEvent
+		require.NoError(t, json.Unmarshal(m.data, &envelope))
+		var evt model.MemberAddEvent
+		require.NoError(t, json.Unmarshal(envelope.Payload, &evt))
+		assert.Equal(t, "deal team", evt.RoomName)
+	}
+	require.True(t, found, "expected outbox publish to site-B with member_added subject")
+}
+
+// Task 16: successful processAddMembers must publish AsyncJobResult with status "ok".
+func TestProcessAddMembers_PublishesAsyncJobOnSuccess(t *testing.T) {
+	h, mockStore, getPublished := newAddMembersTestHandler(t)
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx := natsutil.WithRequestID(context.Background(), reqID)
+
+	setupAddMembersHappyPath(t, mockStore, []string{"bob"})
+	body, err := json.Marshal(model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob"},
+		RequesterID: "u_alice", RequesterAccount: "alice", Timestamp: 1,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	// Find async-job publish on subject.UserResponse("alice", reqID).
+	expectedSubj := subject.UserResponse("alice", reqID)
+	pub := getPublished()
+	var found *publishedMsg
+	for i := range pub {
+		if pub[i].subj == expectedSubj {
+			found = &pub[i]
+			break
+		}
+	}
+	require.NotNil(t, found, "expected async-job publish on %s", expectedSubj)
+
+	var got model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(found.data, &got))
+	assert.Equal(t, reqID, got.RequestID)
+	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, got.Operation)
+	assert.Equal(t, "ok", got.Status)
 }
