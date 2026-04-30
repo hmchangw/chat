@@ -610,3 +610,92 @@ git commit -m "docs(history-service): document mirror-table consistency model on
 ```
 
 ---
+
+## Task 5: Bound startup with a context deadline
+
+**Why:** `cmd/main.go` uses `context.Background()` for tracer init, Mongo connect, and `EnsureIndexes`. If any of those hangs (network partition, mongo primary stepdown, OTel collector down), the pod blocks indefinitely and never reaches Ready, denying the orchestrator the chance to restart and retry. A bounded context makes the failure surface as a non-zero exit, which the orchestrator can act on.
+
+**Files:**
+- Modify: `history-service/cmd/main.go`
+
+- [ ] **Step 1: Add the constant and bounded context to `main()`**
+
+In `history-service/cmd/main.go`, immediately after the existing `import` block, add the constant declaration:
+
+```go
+// startupTimeout bounds the time spent on tracer init, Mongo connect, and
+// index creation at startup. Hardcoded — startup time is not an
+// environment-tunable concern.
+const startupTimeout = 30 * time.Second
+```
+
+Then replace this section (around line 31):
+
+```go
+	ctx := context.Background()
+
+	tracerShutdown, err := otelutil.InitTracer(ctx, "history-service")
+```
+
+with:
+
+```go
+	ctx := context.Background()
+	startupCtx, cancelStartup := context.WithTimeout(ctx, startupTimeout)
+	defer cancelStartup()
+
+	tracerShutdown, err := otelutil.InitTracer(startupCtx, "history-service")
+```
+
+- [ ] **Step 2: Use `startupCtx` for the Mongo connect**
+
+In the same file, replace:
+```go
+	mongoClient, err := mongoutil.Connect(ctx, cfg.Mongo.URI, cfg.Mongo.Username, cfg.Mongo.Password)
+```
+with:
+```go
+	mongoClient, err := mongoutil.Connect(startupCtx, cfg.Mongo.URI, cfg.Mongo.Username, cfg.Mongo.Password)
+```
+
+- [ ] **Step 3: Use `startupCtx` for `EnsureIndexes` and release it after startup completes**
+
+Replace the existing index-ensure block:
+```go
+	if err := threadRoomRepo.EnsureIndexes(ctx); err != nil {
+		slog.Error("ensure thread_rooms indexes failed", "error", err)
+		os.Exit(1)
+	}
+```
+with:
+```go
+	if err := threadRoomRepo.EnsureIndexes(startupCtx); err != nil {
+		slog.Error("ensure thread_rooms indexes failed", "error", err)
+		os.Exit(1)
+	}
+	cancelStartup()
+```
+
+The explicit `cancelStartup()` releases the timer goroutine immediately once startup is complete; the `defer` from Step 1 still guards against early returns.
+
+- [ ] **Step 4: Verify the runtime context (`ctx`) is still used by the rest of `main`**
+
+Run:
+```bash
+grep -n "context\.\|ctx\b\|startupCtx" history-service/cmd/main.go
+```
+Expected: `shutdown.Wait` and any other long-lived calls still use `ctx` (the unbounded background context); only tracer/mongo/EnsureIndexes use `startupCtx`. NATS and Cassandra connects don't take a context — they keep their existing call signatures.
+
+- [ ] **Step 5: Build and run unit tests**
+
+Run: `make build SERVICE=history-service && make test SERVICE=history-service`
+Expected: PASS — main.go still compiles, unit tests unaffected (they don't touch main).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add history-service/cmd/main.go
+git commit -m "fix(history-service): bound startup with 30s context deadline"
+```
+
+---
