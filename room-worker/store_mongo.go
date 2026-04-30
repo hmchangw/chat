@@ -48,13 +48,15 @@ func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Sub
 }
 
 // ReconcileMemberCounts counts the room's subscriptions, splitting on
-// the ".bot" account suffix to produce both UserCount (non-bot) and
+// the bot account naming pattern to produce both UserCount (non-bot) and
 // AppCount (bot). Writes both fields to the rooms collection in a
-// single updateOne.
+// single updateOne. The regex must stay in lockstep with pkg/pipelines.GetNewMembersPipeline
+// — both classify accounts matching `.bot$|^p_` as bots.
 func (s *MongoStore) ReconcileMemberCounts(ctx context.Context, roomID string) error {
+	const botRegex = `(\.bot$|^p_)`
 	userCount, err := s.subscriptions.CountDocuments(ctx, bson.M{
 		"roomId":    roomID,
-		"u.account": bson.M{"$not": bson.Regex{Pattern: `\.bot$`, Options: ""}},
+		"u.account": bson.M{"$not": bson.Regex{Pattern: botRegex, Options: ""}},
 	})
 	if err != nil {
 		return fmt.Errorf("count user subs: %w", err)
@@ -62,7 +64,7 @@ func (s *MongoStore) ReconcileMemberCounts(ctx context.Context, roomID string) e
 
 	appCount, err := s.subscriptions.CountDocuments(ctx, bson.M{
 		"roomId":    roomID,
-		"u.account": bson.Regex{Pattern: `\.bot$`, Options: ""},
+		"u.account": bson.Regex{Pattern: botRegex, Options: ""},
 	})
 	if err != nil {
 		return fmt.Errorf("count app subs: %w", err)

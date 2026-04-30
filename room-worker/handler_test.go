@@ -1437,7 +1437,7 @@ func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-err-test")
 	jobErr := errors.New("oops")
-	h.publishAsyncJobResult(ctx, "alice", model.AsyncJobOpRoomMemberAdd, jobErr)
+	h.publishAsyncJobResult(ctx, "alice", model.AsyncJobOpRoomMemberAdd, "r1", jobErr)
 
 	assert.Equal(t, subject.UserResponse("alice", "req-err-test"), capturedSubject)
 	var result model.AsyncJobResult
@@ -1446,6 +1446,7 @@ func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
 	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
 	assert.Equal(t, "error", result.Status)
 	assert.Equal(t, "operation failed", result.Error)
+	assert.Equal(t, "r1", result.RoomID)
 }
 
 func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequestID(t *testing.T) {
@@ -1457,7 +1458,7 @@ func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequestID(t *testing.T) {
 	h := NewHandler(nil, "site1", publish)
 
 	// No WithRequestID on ctx → empty request ID → publish is skipped.
-	h.publishAsyncJobResult(context.Background(), "alice", model.AsyncJobOpRoomMemberAdd, nil)
+	h.publishAsyncJobResult(context.Background(), "alice", model.AsyncJobOpRoomMemberAdd, "r1", nil)
 	assert.False(t, called, "publish must be skipped when request ID is empty")
 }
 
@@ -1470,7 +1471,7 @@ func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequester(t *testing.T) {
 	h := NewHandler(nil, "site1", publish)
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-test")
-	h.publishAsyncJobResult(ctx, "", model.AsyncJobOpRoomMemberAdd, nil)
+	h.publishAsyncJobResult(ctx, "", model.AsyncJobOpRoomMemberAdd, "r1", nil)
 	assert.False(t, called, "publish must be skipped when requester account is empty")
 }
 
@@ -2297,9 +2298,6 @@ func TestProcessCreateRoom_Channel_EmitsAsyncJobOk(t *testing.T) {
 	require.NoError(t, h.processCreateRoom(ctx, body))
 
 	responses := userResponseFor(getPublished(), "alice")
-	// The defer in processCreateRoom + the explicit call in finishCreateRoom both fire on success;
-	// the defer fires after finishCreateRoom returns nil. Since publishAsyncJobResult is best-effort
-	// (no dedup), we may see 2 publishes. Assert at least 1 with status "ok".
 	require.NotEmpty(t, responses)
 
 	var result model.AsyncJobResult

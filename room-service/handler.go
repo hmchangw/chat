@@ -141,7 +141,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 		return nil, errMissingRequestID
 	}
 	if !idgen.IsValidUUID(requestID) {
-		return nil, fmt.Errorf("invalid X-Request-ID format: %w", errMissingRequestID)
+		return nil, errInvalidRequestID
 	}
 
 	var req model.CreateRoomRequest
@@ -165,10 +165,14 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 		return nil, errInvalidUserData
 	}
 
-	// Self-DM detection BEFORE strip
-	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 &&
-		len(originalUsers) == 1 && originalUsers[0] == requesterAccount {
-		return nil, errSelfDM
+	// Self-DM detection BEFORE strip. Dedup first so payloads like
+	// {users: ["alice", "alice"]} from the requester "alice" are still classified
+	// as self-DM rather than collapsing to an empty channel via the post-strip check.
+	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 {
+		dedupedOriginal := dedup(originalUsers)
+		if len(dedupedOriginal) == 1 && dedupedOriginal[0] == requesterAccount {
+			return nil, errSelfDM
+		}
 	}
 
 	req.Users = stripAccount(dedup(req.Users), requesterAccount)
@@ -235,10 +239,24 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 	if err != nil {
 		return nil, fmt.Errorf("expand channels: %w", err)
 	}
+	// Bots from source channels must not leak into a new channel — channels disallow bots
+	// at creation time (see the .bot suffix check on req.Users above), and an expanded
+	// channel-ref account list can contain bots that the requester never explicitly named.
+	channelAccounts = filterBots(channelAccounts)
 	allOrgs := dedup(append(append([]string{}, req.Orgs...), channelOrgIDs...))
 	allUsers := stripAccount(dedup(append(append([]string{}, req.Users...), channelAccounts...)), requesterAccount)
 
-	if req.Name == "" && len(allUsers) == 0 && len(allOrgs) == 0 {
+	// If the request had no Name and no direct users/orgs (i.e. only channel refs), require
+	// at least one resolved member after expansion. Without this, a request like
+	// `{channels: [<all-bots-room>]}` would silently create an empty channel.
+	noDirectInput := req.Name == "" && len(req.Users) == 0 && len(req.Orgs) == 0
+	if noDirectInput && len(allUsers) == 0 && len(allOrgs) == 0 {
+		return nil, errEmptyCreateRequest
+	}
+	// Also reject the all-empty case explicitly even when Name was supplied — a channel
+	// with zero members other than the requester is degenerate and easier to error early
+	// than to clean up afterwards.
+	if len(allUsers) == 0 && len(allOrgs) == 0 && len(req.Channels) > 0 {
 		return nil, errEmptyCreateRequest
 	}
 

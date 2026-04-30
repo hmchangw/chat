@@ -4,9 +4,9 @@ import (
 	"errors"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomname"
 )
 
 // Sentinel errors for user-facing validation failures.
@@ -36,6 +36,7 @@ var (
 	errBotNotAvailable    = errors.New("bot not available")
 	errInvalidUserData    = errors.New("user is missing required name fields")
 	errMissingRequestID   = errors.New("missing X-Request-ID header")
+	errInvalidRequestID   = errors.New("invalid X-Request-ID format")
 	errUserNotFound       = errors.New("user not found")
 )
 
@@ -108,43 +109,18 @@ func (e *dmExistsError) Is(target error) bool {
 	return ok
 }
 
-// stripAccount returns a new slice with all occurrences of account removed.
+// stripAccount, truncateRunes, and composeAutoName are thin wrappers that delegate to
+// pkg/roomname so room-service and room-worker can never drift on these rules.
 func stripAccount(slice []string, account string) []string {
-	out := make([]string, 0, len(slice))
-	for _, s := range slice {
-		if s != account {
-			out = append(out, s)
-		}
-	}
-	return out
+	return roomname.StripAccount(slice, account)
 }
 
-// truncateRunes truncates s to at most max Unicode code points.
 func truncateRunes(s string, max int) string {
-	if utf8.RuneCountInString(s) <= max {
-		return s
-	}
-	out := make([]rune, 0, max)
-	for _, r := range s {
-		out = append(out, r)
-		if len(out) == max {
-			break
-		}
-	}
-	return string(out)
+	return roomname.TruncateRunes(s, max)
 }
 
-// composeAutoName joins users, orgs, and channel room IDs with ", " and
-// truncates the result to 100 runes for use as an auto-generated room name.
 func composeAutoName(users, orgs []string, channels []model.ChannelRef) string {
-	parts := make([]string, 0, len(users)+len(orgs)+len(channels))
-	parts = append(parts, users...)
-	parts = append(parts, orgs...)
-	for _, c := range channels {
-		parts = append(parts, c.RoomID)
-	}
-	joined := strings.Join(parts, ", ")
-	return truncateRunes(joined, 100)
+	return roomname.ComposeAutoName(users, orgs, channels)
 }
 
 // sanitizeError returns a user-safe error message for known error sentinels and approved patterns.
@@ -171,6 +147,7 @@ func sanitizeError(err error) string {
 		errors.Is(err, errBotNotAvailable),
 		errors.Is(err, errInvalidUserData),
 		errors.Is(err, errMissingRequestID),
+		errors.Is(err, errInvalidRequestID),
 		errors.Is(err, errUserNotFound),
 		errors.Is(err, &dmExistsError{}):
 		return err.Error()

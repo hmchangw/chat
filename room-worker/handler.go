@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -17,6 +16,7 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomname"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -70,7 +70,8 @@ func historySharedSincePtr(mode model.HistoryMode, timestamp int64, roomID strin
 }
 
 // publishAsyncJobResult publishes a success/failure event to the requester's reply subject; best-effort, never fails the job.
-func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, operation string, jobErr error) {
+// roomID is included in the result payload (omitted from JSON when empty).
+func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, operation, roomID string, jobErr error) {
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" || requesterAccount == "" {
 		return
@@ -78,18 +79,37 @@ func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, o
 	result := model.AsyncJobResult{
 		RequestID: requestID,
 		Operation: operation,
-		Status:    "ok",
+		Status:    model.AsyncJobStatusOK,
+		RoomID:    roomID,
 		Timestamp: time.Now().UTC().UnixMilli(),
 	}
 	if jobErr != nil {
-		result.Status = "error"
-		result.Error = "operation failed"
-		slog.Error("async room job failed", "error", jobErr, "operation", operation, "requestID", requestID)
+		result.Status = model.AsyncJobStatusError
+		result.Error = sanitizeAsyncJobError(jobErr)
+		slog.Error("async room job failed", "error", jobErr, "operation", operation, "requestID", requestID, "roomID", roomID)
 	}
 	data, _ := json.Marshal(result)
 	if err := h.publish(ctx, subject.UserResponse(requesterAccount, requestID), data, ""); err != nil {
 		slog.Warn("publish async job result failed", "error", err, "requestID", requestID)
 	}
+}
+
+// sanitizeAsyncJobError returns a user-safe error string. Permanent errors (validation,
+// not-found, etc.) are surfaced verbatim so clients can react; transient/internal errors
+// collapse to a generic message to avoid leaking internals.
+func sanitizeAsyncJobError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, errPermanent) {
+		// Strip the trailing ": permanent" wrapping so the message is clean.
+		msg := err.Error()
+		if idx := strings.LastIndex(msg, ": "+errPermanent.Error()); idx >= 0 {
+			msg = msg[:idx]
+		}
+		return msg
+	}
+	return "operation failed"
 }
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
@@ -215,7 +235,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	isSelfLeave := req.Requester == req.Account
 	// Defer the result publish covers all subsequent return paths.
 	defer func() {
-		h.publishAsyncJobResult(ctx, req.Requester, model.AsyncJobOpRoomMemberRemove, err)
+		h.publishAsyncJobResult(ctx, req.Requester, model.AsyncJobOpRoomMemberRemove, req.RoomID, err)
 	}()
 
 	user, err := h.store.GetUserWithMembership(ctx, req.RoomID, req.Account)
@@ -340,7 +360,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 	// Defer the result publish covers all subsequent return paths.
 	defer func() {
-		h.publishAsyncJobResult(ctx, req.Requester, model.AsyncJobOpRoomMemberRemoveOrg, err)
+		h.publishAsyncJobResult(ctx, req.Requester, model.AsyncJobOpRoomMemberRemoveOrg, req.RoomID, err)
 	}()
 
 	members, err := h.store.GetOrgMembersWithIndividualStatus(ctx, req.RoomID, req.OrgID)
@@ -486,7 +506,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 	// Now req is populated; defer the result publish covers all subsequent return paths.
 	defer func() {
-		h.publishAsyncJobResult(ctx, req.RequesterAccount, model.AsyncJobOpRoomMemberAdd, err)
+		h.publishAsyncJobResult(ctx, req.RequesterAccount, model.AsyncJobOpRoomMemberAdd, req.RoomID, err)
 	}()
 
 	room, err := h.store.GetRoom(ctx, req.RoomID)
@@ -807,43 +827,18 @@ func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 	}
 }
 
-// truncateRunes truncates s to at most max Unicode code points.
+// truncateRunes, composeAutoName, and stripAccount delegate to the shared pkg/roomname
+// so room-service and room-worker share a single normalization implementation.
 func truncateRunes(s string, max int) string {
-	if utf8.RuneCountInString(s) <= max {
-		return s
-	}
-	out := make([]rune, 0, max)
-	for _, r := range s {
-		out = append(out, r)
-		if len(out) == max {
-			break
-		}
-	}
-	return string(out)
+	return roomname.TruncateRunes(s, max)
 }
 
-// composeAutoName joins users, orgs, and channel room IDs with ", " and
-// truncates the result to 100 runes for use as an auto-generated room name.
 func composeAutoName(users, orgs []string, channels []model.ChannelRef) string {
-	parts := make([]string, 0, len(users)+len(orgs)+len(channels))
-	parts = append(parts, users...)
-	parts = append(parts, orgs...)
-	for _, c := range channels {
-		parts = append(parts, c.RoomID)
-	}
-	joined := strings.Join(parts, ", ")
-	return truncateRunes(joined, 100)
+	return roomname.ComposeAutoName(users, orgs, channels)
 }
 
-// stripAccount returns slice with all occurrences of account removed.
 func stripAccount(slice []string, account string) []string {
-	out := make([]string, 0, len(slice))
-	for _, s := range slice {
-		if s != account {
-			out = append(out, s)
-		}
-	}
-	return out
+	return roomname.StripAccount(slice, account)
 }
 
 func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error) {
@@ -867,7 +862,7 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 
 	// Defer the result publish covers all subsequent return paths.
 	defer func() {
-		h.publishAsyncJobResult(ctx, requester.Account, model.AsyncJobOpRoomCreate, err)
+		h.publishAsyncJobResult(ctx, requester.Account, model.AsyncJobOpRoomCreate, req.RoomID, err)
 	}()
 
 	roomType := determineRoomTypeFromPayload(&req)
@@ -961,11 +956,12 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, bot}, subs, requestID, now)
 }
 
+// bulkCreateSubsIdempotent is a thin wrapper that adds context to the store-level
+// error. The store implementation already absorbs mongo duplicate-key errors so
+// the operation is safe to replay under JetStream redelivery — re-checking the
+// duplicate sentinel here would mask any future change to that contract.
 func (h *Handler) bulkCreateSubsIdempotent(ctx context.Context, subs []*model.Subscription) error {
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return nil
-		}
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
 	return nil
@@ -1038,14 +1034,13 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	return h.finishCreateRoom(ctx, req, room, requester, allUsers, subs, requestID, now)
 }
 
+// bulkCreateMembersIdempotent is a thin wrapper around the store call — see
+// bulkCreateSubsIdempotent for why we no longer re-check IsDuplicateKeyError here.
 func (h *Handler) bulkCreateMembersIdempotent(ctx context.Context, members []*model.RoomMember) error {
 	if len(members) == 0 {
 		return nil
 	}
 	if err := h.store.BulkCreateRoomMembers(ctx, members); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return nil
-		}
 		return fmt.Errorf("bulk create room members: %w", err)
 	}
 	return nil
@@ -1107,7 +1102,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 			return fmt.Errorf("marshal room_created outbox payload: %w", err)
 		}
 		envelope := model.OutboxEvent{
-			Type:       model.MessageTypeRoomCreated,
+			Type:       model.OutboxTypeRoomCreated,
 			SiteID:     room.SiteID,
 			DestSiteID: destSiteID,
 			Payload:    pData,
@@ -1117,7 +1112,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 		if err != nil {
 			return fmt.Errorf("marshal outbox envelope: %w", err)
 		}
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, model.MessageTypeRoomCreated), eData, requestID+":"+destSiteID); err != nil {
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, model.OutboxTypeRoomCreated), eData, requestID+":"+destSiteID); err != nil {
 			return fmt.Errorf("publish room_created outbox to %s: %w", destSiteID, err)
 		}
 	}

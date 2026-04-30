@@ -22,12 +22,6 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-func TestHandler_CreateRoom(t *testing.T) {
-	// Skip: legacy 2-arg handleCreateRoom flow replaced by Phase 5c 3-arg implementation.
-	// New coverage is provided by TestHandleCreateRoom_* tests below.
-	t.Skip("legacy 2-arg flow; replaced by Phase 5c tests")
-}
-
 func TestHandler_UpdateRole_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
@@ -1825,19 +1819,6 @@ func TestWrappedCtx_NoHeaderReturnsCtxUnchanged(t *testing.T) {
 
 	assert.Empty(t, natsutil.RequestIDFromContext(got),
 		"missing inbound header → empty request ID on returned ctx")
-}
-
-func TestHandler_handleCreateRoom_ChannelAndDMIDFormats(t *testing.T) {
-	// Skip: legacy 2-arg handleCreateRoom flow replaced by Phase 5c 3-arg implementation.
-	// Room ID format correctness is verified end-to-end in TestHandleCreateRoom_DM_HappyPath
-	// and TestHandleCreateRoom_Channel_HappyPath.
-	t.Skip("legacy 2-arg flow; replaced by Phase 5c tests")
-}
-
-func TestHandler_handleCreateRoom_DMRequiresExactlyOneMember(t *testing.T) {
-	// Skip: legacy 2-arg handleCreateRoom flow replaced by Phase 5c 3-arg implementation.
-	// Shape-based room type inference is tested via TestDetermineRoomType in helper_test.go.
-	t.Skip("legacy 2-arg flow; replaced by Phase 5c tests")
 }
 
 // --- Phase 5c: handleCreateRoom (3-arg) tests ---

@@ -188,6 +188,13 @@ const (
 )
 
 const (
+	// OutboxTypeRoomCreated is the cross-site outbox event type emitted when a room is created.
+	// Distinct from MessageTypeRoomCreated (system-message type) so destination sites can
+	// route on event semantics without collision.
+	OutboxTypeRoomCreated = "room_created"
+)
+
+const (
 	// AsyncJobStatusOK indicates a successful async job result.
 	AsyncJobStatusOK = "ok"
 	// AsyncJobStatusError indicates a failed async job result.
