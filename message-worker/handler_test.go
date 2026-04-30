@@ -1030,6 +1030,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 
 func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	// Subscription's SiteID is the room's site (here, site-a — the local handler).
 	baseSub := &model.ThreadSubscription{
 		ID:              "sub-1",
 		ParentMessageID: "pm-1",
@@ -1037,26 +1038,12 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 		ThreadRoomID:    "tr-1",
 		UserID:          "u-bob",
 		UserAccount:     "bob",
-		SiteID:          "site-b",
+		SiteID:          "site-a",
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
 
 	t.Run("same site — no publish", func(t *testing.T) {
-		ctrl := gomock.NewController(t)
-		var called bool
-		h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl), "site-b",
-			func(_ context.Context, _ string, _ []byte, _ string) error {
-				called = true
-				return nil
-			})
-
-		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-1")
-		require.NoError(t, err)
-		assert.False(t, called, "publish must not be called when sub.SiteID == h.siteID")
-	})
-
-	t.Run("empty siteID — skip with warn, no publish", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		var called bool
 		h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl), "site-a",
@@ -1065,14 +1052,26 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				return nil
 			})
 
-		emptySub := *baseSub
-		emptySub.SiteID = ""
-		err := h.publishThreadSubOutboxIfRemote(context.Background(), &emptySub, "msg-1")
+		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-a", "msg-1")
 		require.NoError(t, err)
-		assert.False(t, called, "publish must not be called when sub.SiteID is empty")
+		assert.False(t, called, "publish must not be called when ownerSiteID == h.siteID")
 	})
 
-	t.Run("remote site — publishes with expected subject and dedup ID", func(t *testing.T) {
+	t.Run("empty ownerSiteID — skip with warn, no publish", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		var called bool
+		h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl), "site-a",
+			func(_ context.Context, _ string, _ []byte, _ string) error {
+				called = true
+				return nil
+			})
+
+		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "", "msg-1")
+		require.NoError(t, err)
+		assert.False(t, called, "publish must not be called when ownerSiteID is empty")
+	})
+
+	t.Run("remote owner — publishes with expected subject and dedup ID", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		var captured struct {
 			subj    string
@@ -1089,7 +1088,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				return nil
 			})
 
-		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-1")
+		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-1")
 		require.NoError(t, err)
 		require.Equal(t, 1, captured.callCnt)
 		assert.Equal(t, "outbox.site-a.to.site-b.thread_subscription_upserted", captured.subj)
@@ -1102,7 +1101,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				second = msgID
 				return nil
 			})
-		require.NoError(t, h2.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-1"))
+		require.NoError(t, h2.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-1"))
 		assert.Equal(t, captured.msgID, second, "dedup ID must be deterministic for the same (threadRoomID, userID, msgID) seed")
 
 		// Different msgID → different dedup ID.
@@ -1112,10 +1111,11 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				third = msgID
 				return nil
 			})
-		require.NoError(t, h3.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-2"))
+		require.NoError(t, h3.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-2"))
 		assert.NotEqual(t, captured.msgID, third)
 
-		// Payload is an OutboxEvent whose inner Payload decodes back to the ThreadSubscription.
+		// Payload is an OutboxEvent whose inner Payload decodes back to the ThreadSubscription
+		// — and the inner SiteID is unchanged (still the room's site, "site-a").
 		var outer model.OutboxEvent
 		require.NoError(t, json.Unmarshal(captured.data, &outer))
 		assert.Equal(t, model.OutboxThreadSubscriptionUpserted, outer.Type)
@@ -1126,6 +1126,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 		var inner model.ThreadSubscription
 		require.NoError(t, json.Unmarshal(outer.Payload, &inner))
 		assert.Equal(t, *baseSub, inner)
+		assert.Equal(t, "site-a", inner.SiteID, "inner SiteID stays as the room's site")
 	})
 
 	t.Run("publish error returned", func(t *testing.T) {
@@ -1136,7 +1137,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				return boom
 			})
 
-		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "msg-1")
+		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-1")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, boom)
 	})
@@ -1221,7 +1222,7 @@ func TestHandler_FirstReply_OutboxPublishes(t *testing.T) {
 				ThreadParentMessageID: "msg-parent",
 			}
 
-			err := h.handleFirstThreadReply(context.Background(), msg, "tr-1", replier, now)
+			err := h.handleFirstThreadReply(context.Background(), msg, "site-a", "tr-1", replier, now)
 			require.NoError(t, err)
 
 			gotByDest := map[string]int{}
@@ -1259,7 +1260,7 @@ func TestHandler_FirstReply_OutboxPublishError_NAKs(t *testing.T) {
 		ID: "msg-reply", RoomID: "r1", UserID: "u-replier", UserAccount: "replier",
 		CreatedAt: now, ThreadParentMessageID: "msg-parent",
 	}
-	err := h.handleFirstThreadReply(context.Background(), msg,
+	err := h.handleFirstThreadReply(context.Background(), msg, "site-a",
 		"tr-1", &model.User{ID: "u-replier", SiteID: "site-b"}, now)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, boom)
@@ -1290,7 +1291,7 @@ func TestHandler_FirstReply_ReplierOutboxPublishError_NAKs(t *testing.T) {
 		ID: "msg-reply", RoomID: "r1", UserID: "u-replier", UserAccount: "replier",
 		CreatedAt: now, ThreadParentMessageID: "msg-parent",
 	}
-	err := h.handleFirstThreadReply(context.Background(), msg,
+	err := h.handleFirstThreadReply(context.Background(), msg, "site-a",
 		"tr-1", &model.User{ID: "u-replier", Account: "replier", SiteID: "site-b"}, now)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, boom)
@@ -1376,7 +1377,7 @@ func TestHandler_SubsequentReply_OutboxPublishes(t *testing.T) {
 				ThreadParentMessageID: "msg-parent",
 			}
 
-			roomID, err := h.handleSubsequentThreadReply(context.Background(), msg, replier, now)
+			roomID, err := h.handleSubsequentThreadReply(context.Background(), msg, "site-a", replier, now)
 			require.NoError(t, err)
 			assert.Equal(t, "tr-existing", roomID)
 
@@ -1413,7 +1414,7 @@ func TestHandler_SubsequentReply_OutboxPublishError_NAKs(t *testing.T) {
 		ID: "msg-reply", RoomID: "r1", UserID: "u-replier", UserAccount: "replier",
 		CreatedAt: now, ThreadParentMessageID: "msg-parent",
 	}
-	_, err := h.handleSubsequentThreadReply(context.Background(), msg,
+	_, err := h.handleSubsequentThreadReply(context.Background(), msg, "site-a",
 		&model.User{ID: "u-replier", SiteID: "site-b"}, now)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, boom)
@@ -1566,7 +1567,7 @@ func TestHandler_MarkThreadMentions_HasMentionInPayload(t *testing.T) {
 	require.NoError(t, json.Unmarshal(outer.Payload, &sub))
 	assert.True(t, sub.HasMention, "outbox-emitted ThreadSubscription must carry HasMention=true")
 	assert.Equal(t, "u-bob", sub.UserID)
-	assert.Equal(t, "site-b", sub.SiteID)
+	assert.Equal(t, "site-a", sub.SiteID, "Subscription.SiteID is the room's site, not the mentionee's owner site")
 }
 
 // fakeJSMsg is a minimal jetstream.Msg test double that records whether Ack or

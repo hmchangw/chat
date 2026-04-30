@@ -206,9 +206,12 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	handler := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	// Subscription.SiteID is the room's home site (site-a). Bob's home is site-b
+	// (where this inbox-worker instance lives), inferred from the document being
+	// stored on this site rather than from the field.
 	sub := model.ThreadSubscription{
 		ID: "sub-1", ParentMessageID: "pm-1", RoomID: "r1", ThreadRoomID: "tr-1",
-		UserID: "u-bob", UserAccount: "bob", SiteID: "site-b",
+		UserID: "u-bob", UserAccount: "bob", SiteID: "site-a",
 		HasMention: false, CreatedAt: now, UpdatedAt: now,
 	}
 	subData, _ := json.Marshal(sub)
@@ -225,7 +228,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 		Decode(&got)
 	require.NoError(t, err)
 	assert.Equal(t, "sub-1", got.ID)
-	assert.Equal(t, "site-b", got.SiteID)
+	assert.Equal(t, "site-a", got.SiteID, "SiteID is the room's site, preserved across federation")
 	assert.False(t, got.HasMention)
 	assert.True(t, got.CreatedAt.Equal(now))
 	assert.True(t, got.UpdatedAt.Equal(now))
@@ -246,10 +249,10 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	handler := NewHandler(store)
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 
-	// First event: HasMention=true.
+	// First event: HasMention=true. Subscription.SiteID is the room's site (site-a).
 	mentionSub := model.ThreadSubscription{
 		ID: "sub-1", ParentMessageID: "pm-1", RoomID: "r1", ThreadRoomID: "tr-1",
-		UserID: "u-bob", UserAccount: "bob", SiteID: "site-b",
+		UserID: "u-bob", UserAccount: "bob", SiteID: "site-a",
 		HasMention: true, CreatedAt: now, UpdatedAt: now,
 	}
 	mentionData, _ := json.Marshal(mentionSub)

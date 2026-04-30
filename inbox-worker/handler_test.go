@@ -805,6 +805,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 	h := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	// SiteID is the room's home site (site-a), preserved across federation.
 	sub := model.ThreadSubscription{
 		ID:              "sub-1",
 		ParentMessageID: "pm-1",
@@ -812,7 +813,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 		ThreadRoomID:    "tr-1",
 		UserID:          "u-bob",
 		UserAccount:     "bob",
-		SiteID:          "site-b",
+		SiteID:          "site-a",
 		HasMention:      false,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -841,9 +842,10 @@ func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T
 	h := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	// SiteID is the room's home site (site-a), preserved across federation.
 	mentionSub := model.ThreadSubscription{
 		ID: "sub-1", ParentMessageID: "pm-1", RoomID: "r1", ThreadRoomID: "tr-1",
-		UserID: "u-bob", UserAccount: "bob", SiteID: "site-b",
+		UserID: "u-bob", UserAccount: "bob", SiteID: "site-a",
 		HasMention: true, CreatedAt: now, UpdatedAt: now,
 	}
 	mentionData, _ := json.Marshal(mentionSub)
@@ -889,7 +891,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_StoreError(t *testing.T) {
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	sub := model.ThreadSubscription{
-		ID: "sub-1", ThreadRoomID: "tr-1", UserID: "u-bob", SiteID: "site-b",
+		ID: "sub-1", ThreadRoomID: "tr-1", UserID: "u-bob", SiteID: "site-a",
 		CreatedAt: now, UpdatedAt: now,
 	}
 	subData, _ := json.Marshal(sub)
