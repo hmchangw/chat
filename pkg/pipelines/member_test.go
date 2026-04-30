@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -74,4 +75,38 @@ func TestGetNewMembersPipeline(t *testing.T) {
 		eqA := existingSub["$eq"].(bson.A)
 		assert.Len(t, eqA, 0, "compare against the empty array literal")
 	})
+}
+
+func TestGetNewMembersPipelineEmptyRoomID(t *testing.T) {
+	pipe := GetNewMembersPipeline([]string{"org-fx"}, []string{"bob"}, "")
+	require.NotEmpty(t, pipe)
+
+	hasLookup := false
+	for _, stage := range pipe {
+		m, ok := stage.(bson.M)
+		if !ok {
+			continue
+		}
+		if _, found := m["$lookup"]; found {
+			hasLookup = true
+		}
+	}
+	assert.False(t, hasLookup, "empty-roomID branch must drop the subscriptions $lookup")
+}
+
+func TestGetNewMembersPipelineWithRoomIDStillHasLookup(t *testing.T) {
+	pipe := GetNewMembersPipeline([]string{"org-fx"}, []string{"bob"}, "r1")
+	require.NotEmpty(t, pipe)
+
+	hasLookup := false
+	for _, stage := range pipe {
+		m, ok := stage.(bson.M)
+		if !ok {
+			continue
+		}
+		if _, found := m["$lookup"]; found {
+			hasLookup = true
+		}
+	}
+	assert.True(t, hasLookup, "non-empty roomID must keep the subscriptions $lookup")
 }
