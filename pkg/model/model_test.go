@@ -416,7 +416,7 @@ func TestSubscriptionJSON(t *testing.T) {
 	}
 }
 
-func TestSubscriptionJSON_NewFieldsOmitBehavior(t *testing.T) {
+func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
 	s := model.Subscription{
 		ID:       "s1",
 		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
