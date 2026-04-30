@@ -32,11 +32,10 @@ type SubscriptionStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
-	// ReconcileUserCount sets rooms.userCount to the current subscription count
-	// in one atomic $set. Idempotent under JetStream redelivery — unlike $inc,
-	// repeated calls converge to the correct value even if an earlier write
-	// succeeded but the ack was lost.
-	ReconcileUserCount(ctx context.Context, roomID string) error
+	// ReconcileMemberCounts recomputes Room.UserCount (non-bot subs) and
+	// Room.AppCount (bot subs) by scanning the subscriptions collection,
+	// then writes both back to the rooms collection in a single update.
+	ReconcileMemberCounts(ctx context.Context, roomID string) error
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	GetUser(ctx context.Context, account string) (*model.User, error)

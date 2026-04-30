@@ -234,8 +234,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("delete subscription: %w", err)
 	}
 
-	if err := h.store.ReconcileUserCount(ctx, req.RoomID); err != nil {
-		return fmt.Errorf("reconcile user count: %w", err)
+	if err := h.store.ReconcileMemberCounts(ctx, req.RoomID); err != nil {
+		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -361,8 +361,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		return fmt.Errorf("delete room member (org): %w", err)
 	}
 
-	if err := h.store.ReconcileUserCount(ctx, req.RoomID); err != nil {
-		return fmt.Errorf("reconcile user count: %w", err)
+	if err := h.store.ReconcileMemberCounts(ctx, req.RoomID); err != nil {
+		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -626,8 +626,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	// 6. Reconcile userCount. Idempotent $set converges to the correct value
 	// even under JetStream redelivery; an upstream log-and-continue would
 	// leave the counter drifted forever, so we propagate the error.
-	if err := h.store.ReconcileUserCount(ctx, req.RoomID); err != nil {
-		return fmt.Errorf("reconcile user count: %w", err)
+	if err := h.store.ReconcileMemberCounts(ctx, req.RoomID); err != nil {
+		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
 	for _, sub := range subs {

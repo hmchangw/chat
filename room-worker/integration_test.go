@@ -26,7 +26,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
-	// Seed a room for ReconcileUserCount and GetRoom
+	// Seed a room for ReconcileMemberCounts and GetRoom
 	db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r1", Name: "general", UserCount: 1})
 
 	// Test CreateSubscription
@@ -44,9 +44,9 @@ func TestMongoStore_Integration(t *testing.T) {
 		t.Errorf("got %+v", subs)
 	}
 
-	// Test ReconcileUserCount — sets userCount to the current subscription count.
-	if err := store.ReconcileUserCount(ctx, "r1"); err != nil {
-		t.Fatalf("ReconcileUserCount: %v", err)
+	// Test ReconcileMemberCounts — sets userCount to the current subscription count.
+	if err := store.ReconcileMemberCounts(ctx, "r1"); err != nil {
+		t.Fatalf("ReconcileMemberCounts: %v", err)
 	}
 	room, err := store.GetRoom(ctx, "r1")
 	if err != nil {
@@ -275,7 +275,7 @@ func TestMongoStore_DeleteSubscriptionsByAccounts_Integration(t *testing.T) {
 	assert.Equal(t, "carol", subs[0].User.Account)
 }
 
-func TestMongoStore_ReconcileUserCount_Integration(t *testing.T) {
+func TestMongoStore_ReconcileMemberCounts_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
@@ -293,14 +293,14 @@ func TestMongoStore_ReconcileUserCount_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, store.ReconcileUserCount(ctx, "r1"))
+	require.NoError(t, store.ReconcileMemberCounts(ctx, "r1"))
 
 	updated, err := store.GetRoom(ctx, "r1")
 	require.NoError(t, err)
 	assert.Equal(t, 3, updated.UserCount, "reconcile must set userCount to actual subscription count")
 
 	// Idempotency: running it again yields the same value.
-	require.NoError(t, store.ReconcileUserCount(ctx, "r1"))
+	require.NoError(t, store.ReconcileMemberCounts(ctx, "r1"))
 	updated, err = store.GetRoom(ctx, "r1")
 	require.NoError(t, err)
 	assert.Equal(t, 3, updated.UserCount, "reconcile must be idempotent")
@@ -340,6 +340,18 @@ func TestMongoStore_DeleteRoomMember_Integration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), count)
 	})
+}
+
+func mustInsertSub(t *testing.T, db *mongo.Database, sub *model.Subscription) {
+	t.Helper()
+	_, err := db.Collection("subscriptions").InsertOne(context.Background(), sub)
+	require.NoError(t, err)
+}
+
+func mustInsertRoom(t *testing.T, db *mongo.Database, r *model.Room) {
+	t.Helper()
+	_, err := db.Collection("rooms").InsertOne(context.Background(), r)
+	require.NoError(t, err)
 }
 
 func TestMongoStore_ListNewMembers_Integration(t *testing.T) {
@@ -387,4 +399,32 @@ func TestMongoStore_ListNewMembers_Integration(t *testing.T) {
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []string{"dave"}, got)
 	})
+}
+
+func TestReconcileMemberCountsSplitsBots(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	// Seed: 3 user subs and 1 bot sub for room r1.
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1",
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s2", User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1",
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s3", User: model.SubscriptionUser{Account: "carol"}, RoomID: "r1",
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s4", User: model.SubscriptionUser{Account: "weather.bot"}, RoomID: "r1",
+	})
+	mustInsertRoom(t, db, &model.Room{ID: "r1", Type: model.RoomTypeChannel})
+
+	require.NoError(t, store.ReconcileMemberCounts(ctx, "r1"))
+
+	got, err := store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
+	assert.Equal(t, 3, got.UserCount)
+	assert.Equal(t, 1, got.AppCount)
 }

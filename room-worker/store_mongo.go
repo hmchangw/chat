@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -46,18 +47,35 @@ func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Sub
 	return subs, nil
 }
 
-// ReconcileUserCount sets rooms.userCount to the current subscription count.
-// Using $set (not $inc) makes the write idempotent under JetStream
-// redelivery: running this after any add/remove converges to the correct
-// value, even if an earlier delivery already performed the underlying
-// subscription changes and we're seeing a retry.
-func (s *MongoStore) ReconcileUserCount(ctx context.Context, roomID string) error {
-	count, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID})
+// ReconcileMemberCounts counts the room's subscriptions, splitting on
+// the ".bot" account suffix to produce both UserCount (non-bot) and
+// AppCount (bot). Writes both fields to the rooms collection in a
+// single updateOne.
+func (s *MongoStore) ReconcileMemberCounts(ctx context.Context, roomID string) error {
+	userCount, err := s.subscriptions.CountDocuments(ctx, bson.M{
+		"roomId":    roomID,
+		"u.account": bson.M{"$not": bson.Regex{Pattern: `\.bot$`, Options: ""}},
+	})
 	if err != nil {
-		return fmt.Errorf("count subscriptions for room %q: %w", roomID, err)
+		return fmt.Errorf("count user subs: %w", err)
 	}
-	if _, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{"$set": bson.M{"userCount": count}}); err != nil {
-		return fmt.Errorf("reconcile userCount for room %q: %w", roomID, err)
+
+	appCount, err := s.subscriptions.CountDocuments(ctx, bson.M{
+		"roomId":    roomID,
+		"u.account": bson.Regex{Pattern: `\.bot$`, Options: ""},
+	})
+	if err != nil {
+		return fmt.Errorf("count app subs: %w", err)
+	}
+
+	if _, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{
+		"$set": bson.M{
+			"userCount": userCount,
+			"appCount":  appCount,
+			"updatedAt": time.Now().UTC(),
+		},
+	}); err != nil {
+		return fmt.Errorf("update room counts: %w", err)
 	}
 	return nil
 }
