@@ -159,3 +159,74 @@ git commit -m "perf(history-service): cache structScan field map per type"
 ```
 
 ---
+
+## Task 2: Migrate remaining `for i := 0; i < n; i++` loops to `for i := range n`
+
+**Why:** Project-wide consistency on the Go 1.22+ idiomatic counted-loop. After Task 1 only three c-style loops remain in `history-service/`, all in integration tests. Converting them now keeps the codebase consistent with the loop in `fieldMapFor` introduced in Task 1.
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/messages_by_room_integration_test.go:21`
+- Modify: `history-service/internal/cassrepo/thread_messages_integration_test.go:21,100`
+
+- [ ] **Step 1: Verify the exact set of remaining loops**
+
+Run:
+```bash
+grep -rEn "for [a-zA-Z]+ ?:= ?0; [a-zA-Z]+ ?<" history-service/ | grep -v /mocks/
+```
+Expected output: exactly the three integration-test loops listed above. If any new ones appear, convert them too.
+
+- [ ] **Step 2: Convert `messages_by_room_integration_test.go:21`**
+
+Replace:
+```go
+	for i := 0; i < count; i++ {
+```
+with:
+```go
+	for i := range count {
+```
+
+- [ ] **Step 3: Convert `thread_messages_integration_test.go:21`**
+
+Replace:
+```go
+	for i := 0; i < count; i++ {
+```
+with:
+```go
+	for i := range count {
+```
+
+- [ ] **Step 4: Convert `thread_messages_integration_test.go:100`**
+
+Replace:
+```go
+	for i := 0; i < len(page.Data)-1; i++ {
+```
+with:
+```go
+	for i := range len(page.Data) - 1 {
+```
+
+- [ ] **Step 5: Run integration tests to verify behavior is unchanged**
+
+Run: `make test-integration SERVICE=history-service`
+Expected: PASS — same tests as before, just spelled idiomatically.
+
+- [ ] **Step 6: Re-run the grep to confirm zero remaining matches**
+
+Run:
+```bash
+grep -rEn "for [a-zA-Z]+ ?:= ?0; [a-zA-Z]+ ?<" history-service/ | grep -v /mocks/
+```
+Expected output: no matches.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add history-service/internal/cassrepo/messages_by_room_integration_test.go history-service/internal/cassrepo/thread_messages_integration_test.go
+git commit -m "style(history-service): use idiomatic for-range counted loops"
+```
+
+---
