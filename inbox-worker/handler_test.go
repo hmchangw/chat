@@ -911,3 +911,40 @@ type errorThreadSubStore struct {
 func (s *errorThreadSubStore) UpsertThreadSubscription(_ context.Context, _ *model.ThreadSubscription) error {
 	return fmt.Errorf("boom")
 }
+
+func TestHandleMemberAddedSetsNameAndRoomType(t *testing.T) {
+	store := &stubInboxStore{
+		users: []model.User{
+			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
+		},
+	}
+	h := NewHandler(store)
+
+	change := model.MemberAddEvent{
+		Type:      "member_added",
+		RoomID:    "r1",
+		RoomName:  "deal team",
+		Accounts:  []string{"bob"},
+		SiteID:    "site-A",
+		JoinedAt:  1740000000000,
+		Timestamp: 1740000000000,
+	}
+	changeData, err := json.Marshal(change)
+	require.NoError(t, err)
+
+	evt := model.OutboxEvent{
+		Type:       "member_added",
+		SiteID:     "site-A",
+		DestSiteID: "site-B",
+		Payload:    changeData,
+	}
+	evtData, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	require.NoError(t, h.HandleEvent(context.Background(), evtData))
+
+	subs := store.getSubscriptions()
+	require.Len(t, subs, 1)
+	assert.Equal(t, "deal team", subs[0].Name)
+	assert.Equal(t, model.RoomTypeChannel, subs[0].RoomType)
+}
