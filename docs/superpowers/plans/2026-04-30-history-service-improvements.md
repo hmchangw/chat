@@ -1529,3 +1529,84 @@ git commit -m "build: add repo-root .dockerignore to slim build context"
 ```
 
 ---
+
+## Task 14: Document the package's in-process scope
+
+**Why:** Future contributors may be tempted to add cross-pod or cross-site shared state (a Redis-backed rate limiter, a cross-pod cache, etc.). The current architecture deliberately avoids that — every state-bearing dependency (Mongo, Cassandra, NATS) is per-site, and the natsrouter worker pool is per-pod. A short package-level doc comment makes that scope rule explicit so the next person reaches for the right hammer.
+
+**Files:**
+- Create: `history-service/internal/service/doc.go`
+
+- [ ] **Step 1: Create `doc.go`**
+
+Create `history-service/internal/service/doc.go` with:
+
+```go
+// Package service implements history-service's request handlers (NATS
+// request/reply) over Cassandra (message tables) and MongoDB (subscriptions
+// and thread rooms).
+//
+// Scope: every dependency this package binds to (the Cassandra cluster, the
+// Mongo cluster, the NATS connection, the in-process worker pool from
+// pkg/natsrouter) is per-pod and per-site. The package intentionally holds
+// no shared state across pods or sites — cross-site fan-out happens via the
+// OUTBOX/INBOX streams owned by the relay services, not from inside any
+// handler.
+//
+// Before adding a new dependency that would couple this service to other
+// pods or other sites (a shared Redis, a global cache, a coordination
+// service), reconsider: such a dependency would change the failure model
+// (one site's outage now affects others) and the deployment topology (a new
+// per-site cluster of that dependency) and is out of scope for the current
+// architecture.
+package service
+```
+
+- [ ] **Step 2: Verify the package still compiles**
+
+Run: `make test SERVICE=history-service`
+Expected: PASS — `doc.go` is a `package service` file; existing files compile against it unchanged.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add history-service/internal/service/doc.go
+git commit -m "docs(history-service): document service package's in-process scope"
+```
+
+---
+
+## Self-Review
+
+After all 14 tasks are complete:
+
+- [ ] Run the full quality gate
+  ```bash
+  make lint && make test SERVICE=history-service && make test-integration SERVICE=history-service && make build SERVICE=history-service
+  ```
+  Expected: all PASS.
+
+- [ ] Confirm the migration produced no new c-style for-loops by re-running:
+  ```bash
+  grep -rEn "for [a-zA-Z]+ ?:= ?0; [a-zA-Z]+ ?<" history-service/ pkg/cassutil/ pkg/model/cassandra/ | grep -v /mocks/
+  ```
+  Expected: no matches.
+
+- [ ] Confirm `GetMessagesByIDs` is fully removed:
+  ```bash
+  grep -rn "GetMessagesByIDs" history-service/ | grep -v /mocks/
+  ```
+  Expected: no matches.
+
+- [ ] Confirm `s.getAccessSince` and `s.subscriptions` are gone:
+  ```bash
+  grep -rn "getAccessSince\|s\.subscriptions" history-service/internal/service/ | grep -v _test.go
+  ```
+  Expected: no matches in non-test files.
+
+- [ ] Confirm the binary still runs end-to-end against `docker-local`:
+  ```bash
+  cd history-service/docker-local && docker compose up --build
+  ```
+  Expected: history-service comes up, registers handlers, logs `history-service running`, and replies to a smoke-test NATS request from another service or a manual `nats req`.
+
