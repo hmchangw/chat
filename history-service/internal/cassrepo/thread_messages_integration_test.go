@@ -279,7 +279,6 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 
 	// Scalars
 	assert.Equal(t, "u1", msg.VisibleTo)
-	assert.True(t, msg.Unread)
 	assert.True(t, msg.Deleted)
 	assert.Equal(t, "user_joined", msg.Type)
 	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)

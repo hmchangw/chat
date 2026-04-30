@@ -387,6 +387,7 @@ git commit -m "refactor(history-service): drop unread column from cassrepo SELEC
 - Modify: `docker-local/cassandra/init/11-table-thread_messages_by_room.cql`
 - Modify: `docker-local/cassandra/init/12-table-pinned_messages_by_room.cql`
 - Modify: `docker-local/cassandra/init/13-table-messages_by_id.cql`
+- Modify: `history-service/docker-local/docker-compose.yml` (inline DDL embedded in the `cassandra-init` shell command — two `unread BOOLEAN,` lines, byte-identical, removable via a single `replace_all` Edit on the surrounding `visible_to TEXT,` / `reactions MAP<…>,` block)
 
 **Context:** These `.cql` files are executed by the `cassandra-init` one-shot from `make deps-up` to create the local-dev keyspace + tables. They are **not** consulted by Go integration tests (those tests embed their own DDL — see Task 7). Production schema is owned by ops/IaC and is out of scope.
 
@@ -676,7 +677,7 @@ The trailing `true` is the value for the `unread` column. Change to:
 
 Sanity check: count the values in `insertArgs` before/after. Before the edit the slice has 23 items in column order; after the edit, 22. Each value must align positionally with a column name in the INSERT.
 
-#### 7C. `cassrepo/messages_by_id_integration_test.go` (1 INSERT)
+#### 7C. `cassrepo/messages_by_id_integration_test.go` (1 INSERT + 1 assert)
 
 - [ ] **Step 7.5: Drop `unread` from the `messages_by_id` INSERT**
 
@@ -705,6 +706,37 @@ The leading `true` is `tshow`; the trailing `true` (after `"u1"`) is `unread`. D
 ```
 
 Sanity check: positional alignment. `insertArgs` had 27 items; after the edit, 26.
+
+Then, in the same file (around line 159), drop the `assert.True(t, msg.Unread)` line. The surrounding assertions:
+
+```go
+	assert.Equal(t, "u1", msg.VisibleTo)
+	assert.True(t, msg.Unread)   // ← delete this line
+	assert.True(t, msg.Deleted)
+```
+
+After the edit:
+
+```go
+	assert.Equal(t, "u1", msg.VisibleTo)
+	assert.True(t, msg.Deleted)
+```
+
+This assert is gated by `//go:build integration`, so `make test` (unit only) does not catch the now-dangling `msg.Unread` reference; the integration build does. Run `go vet -tags integration ./history-service/...` after the edit — expected output: empty.
+
+#### 7C2. `cassrepo/thread_messages_integration_test.go` (1 assert)
+
+- [ ] **Step 7.5b: Drop `assert.True(t, msg.Unread)`**
+
+In `history-service/internal/cassrepo/thread_messages_integration_test.go` (around line 282), drop the `assert.True(t, msg.Unread)` line. Same shape as Step 7.5's assert delete — surrounded by `assert.Equal(t, "u1", msg.VisibleTo)` and `assert.True(t, msg.Deleted)`.
+
+After the edit:
+
+```go
+	// Scalars
+	assert.Equal(t, "u1", msg.VisibleTo)
+	assert.True(t, msg.Deleted)
+```
 
 #### 7D. `service/integration_test.go` (3 DDLs)
 
@@ -760,15 +792,22 @@ Run:
 
 ```bash
 grep -rn unread \
-  --include="*.go" --include="*.cql" --include="*.md" \
+  --include="*.go" --include="*.cql" --include="*.md" --include="*.yml" --include="*.yaml" \
   pkg/ history-service/ docker-local/ docs/ \
   | grep -v "docs/superpowers/plans/" \
   | grep -v "docs/superpowers/specs/"
 ```
 
+> **Note (added retroactively):** the original sweep filter omitted `*.yml`/`*.yaml`, which missed inline DDL embedded in `history-service/docker-local/docker-compose.yml`. The filter above includes them. Always include every file extension where DDL or column lists could appear.
+
 Expected: only matches in semantic prose (e.g., `mongorepo/pipelines.go` comment "Unread = subscribed AND lastMsgAt > lastSeenAt …", `mongorepo/threadroom.go` `fmt.Errorf("querying unread thread rooms: …")`, `models/thread_parent.go` `ThreadFilterUnread = "unread"`, `nats-subject-naming.md` discussing unread badges). No occurrences in DDL, INSERT, SELECT column lists, struct fields, or struct literals.
 
 > The grep filter excludes `docs/superpowers/plans/` and `docs/superpowers/specs/` because superseded plans (e.g. `2026-04-21-history-list-threads.md`, `2026-04-15-move-cassandra-message-to-pkg.md`) intentionally retain their original wording. Only operational artifacts must be `unread`-free after this task.
+
+- [ ] **Step 7.9b: Verify integration build compiles**
+
+Run: `go vet -tags integration ./history-service/...`
+Expected: empty output. This catches dangling `msg.Unread` field accesses that `make test` misses because they live behind `//go:build integration`.
 
 - [ ] **Step 7.10: Run unit tests**
 

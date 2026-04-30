@@ -156,7 +156,6 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	assert.Equal(t, "https://chat.example.com/r-full/m-quoted", msg.QuotedParentMessage.MessageLink)
 
 	assert.Equal(t, "u1", msg.VisibleTo)
-	assert.True(t, msg.Unread)
 	assert.True(t, msg.Deleted)
 	assert.Equal(t, "user_joined", msg.Type)
 	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)
