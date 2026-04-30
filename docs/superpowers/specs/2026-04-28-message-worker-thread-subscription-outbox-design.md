@@ -45,7 +45,7 @@ treatment, including the `hasMention=true` flag.
 
 A single new outbox event type:
 
-```
+```go
 const OutboxThreadSubscriptionUpserted OutboxEventType = "thread_subscription_upserted"
 ```
 
@@ -143,21 +143,21 @@ The handler unmarshals `evt.Payload` into a `ThreadSubscription` and calls
 
 The Mongo implementation:
 
-```
+```yaml
 filter:  { threadRoomId: sub.ThreadRoomID, userId: sub.UserID }
 update:
   $setOnInsert: { _id, parentMessageId, roomId, threadRoomId, userId,
                   userAccount, siteId, createdAt, lastSeenAt: null }
   $set:         { updatedAt }
-  $bit:         { hasMention: { or: <1 if sub.HasMention else 0> } }
+  $max:         { hasMention: sub.HasMention }
 opts:    upsert: true
 ```
 
-The `$bit:or` (or equivalent `$max` on a 0/1 int) makes the merge monotonic:
-once `hasMention` flips true at the destination, no later non-mention event can
-clear it. `_id` and `createdAt` come from `$setOnInsert` so the first event to
-land defines them; later events update only `updatedAt` (and possibly the
-mention bit).
+`$max` on a `bool` field makes the merge monotonic: BSON encodes
+`false (0x00) < true (0x01)`, so `$max(existing, incoming)` only ever flips
+`hasMention` from false→true and never clears a prior `true`. `_id` and
+`createdAt` come from `$setOnInsert` so the first event to land defines
+them; later events update only `updatedAt` (and possibly the mention bit).
 
 `LastSeenAt` is never written by inbox-worker (it's a per-user-action field
 owned by whatever path lets a user mark a thread as seen — out of scope here).

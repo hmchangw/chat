@@ -4,6 +4,17 @@
 
 **Goal:** Replicate `ThreadSubscription` writes (parent author, replier, mentionees) from message-worker on the room's home site to each affected user's home site via the existing OUTBOX/INBOX federation.
 
+> **⚠️ Post-implementation correction.** Task 5 below describes
+> `ThreadSubscription.SiteID` as the **owner's** home site. That is **wrong**:
+> `SiteID` is the **room's** home site (matching `Subscription.SiteID`),
+> preserved unchanged across federation. Owner-site routing is handled
+> transiently via an explicit `ownerSiteID` argument to
+> `publishThreadSubOutboxIfRemote` — never written onto the subscription.
+> Plan body is preserved as-written for traceability; canonical design lives
+> in [`../specs/2026-04-28-message-worker-thread-subscription-outbox-design.md`](../specs/2026-04-28-message-worker-thread-subscription-outbox-design.md).
+> Correction commit: `1c3915c`. See "Post-implementation correction" section
+> at the end for the full diff summary.
+
 **Architecture:** Mirror room-worker's pattern. Message-worker gains a `publish PublishFunc` field; after every local Insert/Upsert/MarkThreadSubscriptionMention it emits a `thread_subscription_upserted` outbox event when the subscription owner's site differs from the room's site. Inbox-worker dispatches the new event type to a new `UpsertThreadSubscription` store method that uses MongoDB `$max` on `hasMention` for monotonic mention-flag merge.
 
 **Tech Stack:** Go 1.25, NATS JetStream (`github.com/nats-io/nats.go/jetstream`), MongoDB (`go.mongodb.org/mongo-driver/v2`), `github.com/hmchangw/chat/pkg/{model,subject,idgen,mention,userstore,stream}`, `go.uber.org/mock`, `stretchr/testify`, `testcontainers-go`.
