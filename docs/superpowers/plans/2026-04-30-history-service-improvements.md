@@ -977,3 +977,95 @@ git commit -m "perf(history-service): hydrate thread parents from messages_by_ro
 ```
 
 ---
+
+## Task 7: Make `casMaxRetries` configurable on `cassrepo.Repository`
+
+**Why:** The 16-retry CAS bound is hardcoded in `cassrepo/write.go`. Under realistic concurrent-delete bursts on the same parent message, 16 may be tight or generous depending on cluster size and contention pattern. Making it a constructor option (with default 16) gives operators a tuning knob without exposing yet another env var. Per the brainstorming decision (option E), no design change — just lift the constant onto the struct.
+
+**Files:**
+- Modify: `history-service/internal/cassrepo/repository.go`
+- Modify: `history-service/internal/cassrepo/write.go` (use `r.casRetries` instead of the constant)
+
+- [ ] **Step 1: Replace `Repository` and `NewRepository` with a configurable shape**
+
+In `history-service/internal/cassrepo/repository.go`, replace the entire file content with:
+
+```go
+package cassrepo
+
+import (
+	"github.com/gocql/gocql"
+)
+
+// defaultCASMaxRetries bounds the CAS loop in casDecrement; 16 retries cover
+// realistic burst concurrency. Tunable per Repository via WithCASMaxRetries.
+const defaultCASMaxRetries = 16
+
+// Repository wraps a gocql session with the small set of message-table
+// operations history-service needs.
+type Repository struct {
+	session     *gocql.Session
+	casRetries  int
+}
+
+// Option configures a Repository on construction.
+type Option func(*Repository)
+
+// WithCASMaxRetries overrides the CAS-loop retry bound used by tcount
+// decrement. Useful for tuning under high concurrent-delete contention.
+func WithCASMaxRetries(n int) Option {
+	return func(r *Repository) {
+		if n > 0 {
+			r.casRetries = n
+		}
+	}
+}
+
+func NewRepository(session *gocql.Session, opts ...Option) *Repository {
+	r := &Repository{session: session, casRetries: defaultCASMaxRetries}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+```
+
+- [ ] **Step 2: Replace the constant in `write.go` with the per-instance field**
+
+In `history-service/internal/cassrepo/write.go`:
+
+Delete the existing `casMaxRetries` constant declaration:
+```go
+// casMaxRetries bounds the CAS loop; 16 retries cover realistic burst concurrency.
+const casMaxRetries = 16
+```
+
+Replace both occurrences of `casMaxRetries` (in `decrementParentTcount`, around lines 187 and 208) with `r.casRetries`:
+
+```go
+if err := casDecrement(r.casRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
+```
+
+- [ ] **Step 3: Run unit tests to verify the package still compiles**
+
+Run: `make test SERVICE=history-service`
+Expected: PASS — `cassrepo` compiles; existing tests unchanged because the default still resolves to 16.
+
+- [ ] **Step 4: Run integration tests**
+
+Run: `make test-integration SERVICE=history-service`
+Expected: PASS — CAS-decrement integration tests still verify the same behavior with the default retry count.
+
+- [ ] **Step 5: Verify `cmd/main.go` still compiles unchanged**
+
+Run: `make build SERVICE=history-service`
+Expected: PASS — `NewRepository(cassSession)` is still valid (variadic options means zero opts is fine).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add history-service/internal/cassrepo/repository.go history-service/internal/cassrepo/write.go
+git commit -m "refactor(history-service): make casMaxRetries configurable per repository"
+```
+
+---
