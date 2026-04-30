@@ -35,6 +35,9 @@ treatment, including the `hasMention=true` flag.
   current code; that path is out of scope.
 - **`@all` propagation.** `@all` is already filtered out at the thread level
   (see `markThreadMentions`), so it never produces an outbox event.
+- **Renaming `ThreadSubscription.SiteID` → `RoomSiteID`.** Considered during
+  review but skipped — `Subscription.SiteID` is unprefixed and the two should
+  stay consistent. The doc comment carries the semantic.
 
 ## Design
 
@@ -58,7 +61,7 @@ type ThreadSubscription struct {
     ThreadRoomID    string
     UserID          string
     UserAccount     string
-    SiteID          string     // owner's home site (see Semantic change below)
+    SiteID          string     // room's home site (see SiteID semantic below)
     LastSeenAt      *time.Time // always nil from message-worker
     HasMention      bool       // true only on mention-marked events
     CreatedAt       time.Time
@@ -66,21 +69,45 @@ type ThreadSubscription struct {
 }
 ```
 
-The destination site of the outbox is the user's home site. One outbox event
-per (reply, affected user) tuple.
+The destination site of the outbox is the **owner's** home site, resolved
+transiently at processing time and passed as a separate routing argument
+(see "Outbox routing" below). One outbox event per (reply, affected user) tuple.
 
-### Semantic change to `ThreadSubscription.SiteID`
+### `ThreadSubscription.SiteID` semantic
 
-Today `buildThreadSubscription` sets `SiteID = <message event siteID>` — i.e.
-the room's home site. For subscriptions to round-trip across sites cleanly, the
-field must reflect the **owner's** home site. The room context is already
-preserved by `RoomID`. This brings `ThreadSubscription.SiteID` in line with
-`Subscription.SiteID` and matches what inbox-worker stores when it consumes the
-event.
+`SiteID` is the **room's** home site — the same semantic as `Subscription.SiteID`
+in `pkg/model/subscription.go`. It is a back-reference to where the thread
+room originated, not a self-identifier of the owner. Across cross-site
+federation the field is constant: every replica of a given subscription has
+the same `SiteID`, regardless of which site stores the document. The owner's
+site is implicit (it's the site where the document lives after federation).
 
-Callers that don't currently have the owner's siteID in scope (the `markThreadMentions`
-loop, parent author lookup) gain a small lookup or piggyback on existing `User`
-data — see "Implementation" below.
+The owner's site information is needed at message-worker processing time to
+decide whether to publish a cross-site outbox event and where to route it,
+but is **not** stored on the subscription. It is resolved transiently:
+
+- **Replier:** `replier.SiteID` from the `*model.User` already looked up earlier
+  in `processMessage` (the message sender).
+- **Parent author:** `userStore.FindUserByID(parentSender.ID)` — a new call
+  introduced by `lookupOwnerSiteID` (warn-and-skip on `userstore.ErrUserNotFound`,
+  propagate other DB errors).
+- **Mentionees:** `Participant.SiteID`, populated by `mention.Resolve` from the
+  underlying `User` lookup (this spec adds the `SiteID` field to `Participant`).
+
+### Outbox routing
+
+`publishThreadSubOutboxIfRemote(ctx, sub, ownerSiteID, msgID)` decides whether
+to publish based on the explicit `ownerSiteID` parameter, not on `sub.SiteID`:
+
+- `ownerSiteID == ""` → log warn, skip (defensive — caller bug).
+- `ownerSiteID == h.siteID` → no-op (subscription owner is on the local site).
+- otherwise → marshal sub → wrap in `OutboxEvent{DestSiteID: ownerSiteID, ...}`
+  → publish to `subject.Outbox(h.siteID, ownerSiteID, "thread_subscription_upserted")`.
+
+The published payload carries `sub.SiteID = roomSiteID` unchanged. When the
+destination site's inbox-worker upserts it locally, the resulting document has
+`SiteID = roomSiteID` — preserved across federation, identical to how
+`Subscription.SiteID` round-trips through OUTBOX/INBOX today.
 
 ### Subject + dedup
 
@@ -187,39 +214,41 @@ type PublishFunc func(ctx context.Context, subj string, data []byte, msgID strin
 that calls `js.Publish(ctx, subj, data, jetstream.WithMsgID(msgID))` exactly as
 room-worker does.
 
-`buildThreadSubscription` keeps its parameter list but the `siteID` argument
-now means "**owner's** site", not the room's. The three callers update:
+`buildThreadSubscription` is called with the **room's** site at every call
+site (`SiteID: eventSiteID`), matching `Subscription.SiteID` semantics. The
+three callers compute the owner's site separately and pass it to the publish
+helper:
 
-1. **handleFirstThreadReply** — replier: pass the replier's `User.SiteID` (we
-   already have `User` from `processMessage`'s `userStore.FindUserByID`). Parent:
-   look up `userStore.FindUserByID(parentSender.ID)` to get parent's siteID.
-2. **handleSubsequentThreadReply** — same as above.
-3. **markThreadMentions** — mentionees: `mention.Resolve` returns
-   `[]Participant`, which today doesn't carry `SiteID`. Verified:
-   `mention.Resolve` already calls `LookupFunc` (= `userStore.FindUsersByAccounts`),
-   and that store query already projects `siteId`. So the `User` slice inside
-   `Resolve` already has the data — we just don't propagate it onto
-   `Participant`.
-
-   Add a `SiteID string \`json:"siteId,omitempty" bson:"siteId,omitempty"\``
-   field to `model.Participant` and populate it in `mention.Resolve` from
-   `users[i].SiteID`. The new field is `omitempty` and additive — existing
-   consumers that JSON-encode `Participant` (e.g. on `Message.Mentions`) emit
-   the extra field but otherwise behave identically. Update
-   `pkg/model/model_test.go` to round-trip `SiteID` on `Participant`.
+1. **handleFirstThreadReply** — replier: `replier.SiteID` from the `*model.User`
+   already in scope (the message sender). Parent: `lookupOwnerSiteID(parentSender.ID)`
+   resolves the parent's home site via `userStore.FindUserByID`, returning
+   `("", nil)` on `userstore.ErrUserNotFound` (warn-and-skip, parallels the
+   `errMessageNotFound` branch).
+2. **handleSubsequentThreadReply** — same as above on the upsert path.
+3. **markThreadMentions** — mentionees: `Participant.SiteID`, populated by
+   `mention.Resolve`. Verified: `mention.Resolve` already calls `LookupFunc`
+   (= `userStore.FindUsersByAccounts`) which projects `siteId`, so the `User`
+   slice inside `Resolve` already has the data. We add a
+   `SiteID string \`json:"siteId,omitempty" bson:"siteId,omitempty"\`` field
+   to `model.Participant` and populate it in the resolver. The field is
+   `omitempty` and additive — existing JSON consumers decode unchanged.
 
 After every `InsertThreadSubscription` / `UpsertThreadSubscription` /
 `MarkThreadSubscriptionMention` succeeds, call:
 
 ```go
-h.publishThreadSubOutboxIfRemote(ctx, sub, msg.ID)
+h.publishThreadSubOutboxIfRemote(ctx, sub, ownerSiteID, msg.ID)
 ```
 
 The helper:
 
 ```go
-func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model.ThreadSubscription, msgID string) error {
-    if sub.SiteID == h.siteID {
+func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model.ThreadSubscription, ownerSiteID, msgID string) error {
+    if ownerSiteID == "" {
+        slog.Warn("owner siteID empty, skipping outbox publish", ...)
+        return nil
+    }
+    if ownerSiteID == h.siteID {
         return nil
     }
     payload, err := json.Marshal(sub)
@@ -229,7 +258,7 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
     outbox := model.OutboxEvent{
         Type:       model.OutboxThreadSubscriptionUpserted,
         SiteID:     h.siteID,
-        DestSiteID: sub.SiteID,
+        DestSiteID: ownerSiteID,
         Payload:    payload,
         Timestamp:  time.Now().UTC().UnixMilli(),
     }
@@ -237,13 +266,18 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
     if err != nil {
         return fmt.Errorf("marshal outbox event: %w", err)
     }
-    dedupID := idgen.DeriveID(fmt.Sprintf("thread-sub-outbox:%s:%s:%s", sub.ThreadRoomID, sub.UserID, msgID))
-    if err := h.publish(ctx, subject.Outbox(h.siteID, sub.SiteID, model.OutboxThreadSubscriptionUpserted), data, dedupID); err != nil {
-        return fmt.Errorf("publish thread subscription outbox to %s: %w", sub.SiteID, err)
+    payloadSeed := fmt.Sprintf("thread-sub-outbox:%s:%s:%s", sub.ThreadRoomID, sub.UserID, msgID)
+    dedupID := outboxDedupID(ctx, ownerSiteID, payloadSeed)
+    if err := h.publish(ctx, subject.Outbox(h.siteID, ownerSiteID, model.OutboxThreadSubscriptionUpserted), data, dedupID); err != nil {
+        return fmt.Errorf("publish thread subscription outbox to %s: %w", ownerSiteID, err)
     }
     return nil
 }
 ```
+
+Note: `sub.SiteID` (the room's site) stays as-is in the published payload —
+the destination site's inbox-worker stores the same `SiteID` value, so all
+replicas of a subscription carry the same room-site identity.
 
 Errors propagate to `processMessage`, which propagates to `HandleJetStreamMsg`,
 which NAKs.
@@ -339,10 +373,11 @@ sites, and the `hasMention` OR-merge.
   data because `processMessage` re-runs `mention.Resolve` on every delivery,
   re-populating `Mentions` from the live userstore. Old persisted `Mentions`
   arrays in Cassandra are never re-emitted as outbox events.
-- **Defensive guard against empty `SiteID`.** The publish helper must skip +
-  log warn if `sub.SiteID == ""`. This prevents an upstream bug (e.g., a future
-  caller forgetting to set the field) from emitting an outbox to a `dest=""`
-  subject. The empty case is otherwise unreachable in the paths added here.
+- **Defensive guard against empty `ownerSiteID`.** The publish helper must skip +
+  log warn if the `ownerSiteID` argument is empty. This prevents an upstream bug
+  (e.g., a future caller forgetting to resolve the owner's site) from emitting
+  an outbox to a `dest=""` subject. The empty case is otherwise unreachable in
+  the paths added here.
 - **Parent user lookup may fail.** `GetMessageSender` already handles
   `errMessageNotFound` for the parent **message**. Adding
   `userStore.FindUserByID(parentSender.ID)` introduces a new "parent user

@@ -2112,3 +2112,36 @@ Plan complete and saved to `docs/superpowers/plans/2026-04-28-message-worker-thr
 2. **Inline Execution** — Execute tasks in this session using `superpowers:executing-plans`, batch execution with checkpoints.
 
 Which approach?
+
+---
+
+## Post-implementation correction (review feedback)
+
+After Task 5 landed, PR review (mliu33) flagged that `ThreadSubscription.SiteID`
+should follow the same semantic as `Subscription.SiteID` — **the room's home
+site**, a back-reference preserved across federation — not the owner's home
+site. This plan as written above (Task 5 in particular) describes the
+incorrect owner-site semantic.
+
+**Corrected design** is captured in the spec at
+`docs/superpowers/specs/2026-04-28-message-worker-thread-subscription-outbox-design.md`
+("`ThreadSubscription.SiteID` semantic" + "Outbox routing" sections).
+
+**Correction commit:** `1c3915c` — "ThreadSubscription.SiteID stays as room
+site; route by owner site separately". Summary of differences vs. the plan
+above:
+
+- `buildThreadSubscription` is called with the **room's** site at all three
+  call sites; `SiteID` field on the persisted document is the room's site.
+- `publishThreadSubOutboxIfRemote` gained an explicit `ownerSiteID` parameter
+  used only for the cross-site routing decision (`DestSiteID` + same-site
+  short-circuit). Owner-site is resolved transiently at processing time —
+  `replier.SiteID`, `lookupOwnerSiteID(parentSender.ID)`, or `Participant.SiteID`
+  — and never written onto the subscription.
+- `handleFirstThreadReply` / `handleSubsequentThreadReply` gain `eventSiteID`
+  arg; `markThreadMentions` no longer needs the empty-SiteID fallback (the
+  field on the sub is always the room's site).
+- Tests assert `sub.SiteID == roomSite` after round-trip, not `ownerSite`.
+
+The historical plan above stays as-written for traceability of how the work
+unfolded. New readers should treat the spec as the canonical design.
