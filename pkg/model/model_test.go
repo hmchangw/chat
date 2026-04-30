@@ -399,6 +399,8 @@ func TestSubscriptionJSON(t *testing.T) {
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		HasMention:         true,
+		ThreadUnread:       []string{"parent-1", "parent-2"},
+		Alert:              true,
 	}
 
 	data, err := json.Marshal(&s)
@@ -412,6 +414,36 @@ func TestSubscriptionJSON(t *testing.T) {
 	if !reflect.DeepEqual(s, dst) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
 	}
+}
+
+func TestSubscriptionJSON_NewFieldsOmitBehavior(t *testing.T) {
+	s := model.Subscription{
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		RoomType: model.RoomTypeChannel,
+		SiteID:   "site-a",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	data, err := json.Marshal(&s)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	_, hasThreadUnread := raw["threadUnread"]
+	assert.False(t, hasThreadUnread, "nil/empty ThreadUnread must be omitted from JSON")
+
+	alertVal, hasAlert := raw["alert"]
+	assert.True(t, hasAlert, "alert must be present in JSON even when false")
+	assert.Equal(t, false, alertVal)
+
+	var dst model.Subscription
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Nil(t, dst.ThreadUnread, "absent threadUnread must unmarshal to nil")
+	assert.False(t, dst.Alert)
 }
 
 func TestRoomTypeValues(t *testing.T) {
