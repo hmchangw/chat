@@ -699,3 +699,281 @@ git commit -m "fix(history-service): bound startup with 30s context deadline"
 ```
 
 ---
+
+## Task 6: Hydrate thread parents from `messages_by_room` via `MessageKey`
+
+**Why:** Today `GetThreadParentMessages` calls `GetMessagesByIDs(ctx, parentIDs)` which queries `messages_by_id` with `IN (?, ?, ...)`. Each ID lives on its own partition (partition key = `message_id`), so a 100-ID batch hits 100 partitions and pressures the coordinator. The thread-rooms MongoDB documents already store `ThreadParentCreatedAt` and `RoomID`, so the hydration query can target `messages_by_room` instead — `(room_id, (created_at, message_id) IN (...))` collapses to a single partition with multi-column-IN over clustering keys.
+
+**Trade-off:** `messages_by_room` lacks `pinned_at` / `pinned_by` columns (only present in `messages_by_id` and `pinned_messages_by_room`). Hydrated thread-parent messages will not include pin metadata. Acceptable — the thread-parent UI does not display pin status.
+
+**Files:**
+- Modify: `pkg/model/cassandra/message.go` (add `MessageKey` type)
+- Modify: `history-service/internal/cassrepo/messages_by_room.go` (add `GetMessagesByRoomAndKeys`)
+- Modify: `history-service/internal/cassrepo/messages_by_id.go` (delete `GetMessagesByIDs`)
+- Modify: `history-service/internal/cassrepo/messages_by_id_integration_test.go` (delete `GetMessagesByIDs` tests)
+- Create: integration test for `GetMessagesByRoomAndKeys` (append to `messages_by_room_integration_test.go`)
+- Modify: `history-service/internal/service/service.go` (`MessageReader` interface)
+- Modify: `history-service/internal/service/mocks/mock_repository.go` (regenerated)
+- Modify: `history-service/internal/service/threads.go` (call new method)
+- Modify: `history-service/internal/service/threads_test.go` (mock expectations)
+
+- [ ] **Step 1: Add `MessageKey` to `pkg/model/cassandra/message.go`**
+
+Append to `pkg/model/cassandra/message.go` (after the `Message` struct, before EOF):
+
+```go
+// MessageKey identifies a message within a known room — the clustering keys
+// of messages_by_room (and pinned_messages_by_room). Used by bulk-fetch
+// queries that look up N specific messages in one room with a single
+// partition-bound query.
+type MessageKey struct {
+	CreatedAt time.Time
+	MessageID string
+}
+```
+
+- [ ] **Step 2: Write the failing integration test for `GetMessagesByRoomAndKeys`**
+
+Append to `history-service/internal/cassrepo/messages_by_room_integration_test.go`:
+
+```go
+func TestRepository_GetMessagesByRoomAndKeys(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	ts1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC)
+	ts3 := time.Date(2026, 1, 1, 0, 10, 0, 0, time.UTC)
+
+	for _, fields := range []struct {
+		id string
+		ts time.Time
+	}{
+		{"m-key-1", ts1},
+		{"m-key-2", ts2},
+		{"m-key-3", ts3},
+	} {
+		require.NoError(t, session.Query(
+			`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg) VALUES (?, ?, ?, ?, ?)`,
+			"r1", fields.ts, fields.id, sender, "x",
+		).Exec())
+	}
+
+	keys := []models.MessageKey{
+		{CreatedAt: ts1, MessageID: "m-key-1"},
+		{CreatedAt: ts3, MessageID: "m-key-3"},
+	}
+	got, err := repo.GetMessagesByRoomAndKeys(ctx, "r1", keys)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	ids := []string{got[0].MessageID, got[1].MessageID}
+	assert.ElementsMatch(t, []string{"m-key-1", "m-key-3"}, ids)
+}
+
+func TestRepository_GetMessagesByRoomAndKeys_Empty(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	got, err := repo.GetMessagesByRoomAndKeys(ctx, "r1", nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestRepository_GetMessagesByRoomAndKeys_PartialMatch(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg) VALUES (?, ?, ?, ?, ?)`,
+		"r1", ts, "m-exists", sender, "hi",
+	).Exec())
+
+	keys := []models.MessageKey{
+		{CreatedAt: ts, MessageID: "m-exists"},
+		{CreatedAt: ts, MessageID: "m-missing"},
+	}
+	got, err := repo.GetMessagesByRoomAndKeys(ctx, "r1", keys)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "m-exists", got[0].MessageID)
+}
+```
+
+If `models` is not already aliased to `pkg/model/cassandra` in the test file's imports, check the existing imports — `messages_by_room_integration_test.go` already imports models from history-service's models (which re-exports cassandra types). Verify the `models.MessageKey` reference resolves; if not, add the import alias.
+
+- [ ] **Step 3: Run the new tests to verify they fail**
+
+Run: `make test-integration SERVICE=history-service`
+Expected: FAIL — `GetMessagesByRoomAndKeys` undefined.
+
+- [ ] **Step 4: Implement `GetMessagesByRoomAndKeys`**
+
+Append to `history-service/internal/cassrepo/messages_by_room.go`:
+
+```go
+// GetMessagesByRoomAndKeys fetches the messages identified by keys (clustering
+// coordinates within roomID) using a single multi-column-IN query against
+// messages_by_room. Empty keys returns an empty slice without hitting
+// Cassandra. Missing rows are silently omitted; result order is not
+// guaranteed (callers should re-sort using their own ordering).
+func (r *Repository) GetMessagesByRoomAndKeys(ctx context.Context, roomID string, keys []models.MessageKey) ([]models.Message, error) {
+	if len(keys) == 0 {
+		return []models.Message{}, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(messageByRoomQuery)
+	sb.WriteString(` WHERE room_id = ? AND (created_at, message_id) IN (`)
+	args := make([]interface{}, 0, 1+2*len(keys))
+	args = append(args, roomID)
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString("(?, ?)")
+		args = append(args, k.CreatedAt, k.MessageID)
+	}
+	sb.WriteString(")")
+
+	iter := r.session.Query(sb.String(), args...).WithContext(ctx).Iter()
+	messages := scanMsgsFromIter(iter)
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("querying messages by room and keys: %w", err)
+	}
+	return messages, nil
+}
+```
+
+Add `"strings"` to the file's import block if not already present.
+
+- [ ] **Step 5: Run the integration tests to verify they pass**
+
+Run: `make test-integration SERVICE=history-service`
+Expected: PASS — three new tests green; all existing tests still green.
+
+- [ ] **Step 6: Update `MessageReader` interface in `service.go`**
+
+In `history-service/internal/service/service.go`, replace the line:
+```go
+	GetMessagesByIDs(ctx context.Context, messageIDs []string) ([]models.Message, error)
+```
+with:
+```go
+	GetMessagesByRoomAndKeys(ctx context.Context, roomID string, keys []models.MessageKey) ([]models.Message, error)
+```
+
+(The line is in the `MessageReader` interface near line 24.)
+
+- [ ] **Step 7: Regenerate the mock**
+
+Run: `make generate SERVICE=history-service`
+Expected: `internal/service/mocks/mock_repository.go` regenerated. The `GetMessagesByIDs` method is removed; `GetMessagesByRoomAndKeys` is added.
+
+- [ ] **Step 8: Update `GetThreadParentMessages` to use the new method**
+
+In `history-service/internal/service/threads.go`, replace this block (around lines 121–137):
+
+```go
+	seenIDs := make(map[string]struct{}, len(threadPage.Data))
+	parentIDs := make([]string, 0, len(threadPage.Data))
+	for i := range threadPage.Data {
+		id := threadPage.Data[i].ParentMessageID
+		if _, dup := seenIDs[id]; dup {
+			continue
+		}
+		seenIDs[id] = struct{}{}
+		parentIDs = append(parentIDs, id)
+	}
+
+	cassMessages, err := s.msgReader.GetMessagesByIDs(c, parentIDs)
+	if err != nil {
+		slog.Error("hydrating thread parent messages from Cassandra", "error", err, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("failed to load thread parent messages")
+	}
+```
+
+with:
+
+```go
+	seenIDs := make(map[string]struct{}, len(threadPage.Data))
+	parentIDs := make([]string, 0, len(threadPage.Data))
+	keys := make([]cassmodel.MessageKey, 0, len(threadPage.Data))
+	for i := range threadPage.Data {
+		id := threadPage.Data[i].ParentMessageID
+		if _, dup := seenIDs[id]; dup {
+			continue
+		}
+		seenIDs[id] = struct{}{}
+		parentIDs = append(parentIDs, id)
+		keys = append(keys, cassmodel.MessageKey{
+			CreatedAt: threadPage.Data[i].ThreadParentCreatedAt,
+			MessageID: id,
+		})
+	}
+
+	cassMessages, err := s.msgReader.GetMessagesByRoomAndKeys(c, roomID, keys)
+	if err != nil {
+		slog.Error("hydrating thread parent messages from Cassandra", "error", err, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("failed to load thread parent messages")
+	}
+```
+
+Add the import `cassmodel "github.com/hmchangw/chat/pkg/model/cassandra"` to `threads.go`'s import block. The `models` package alias in this file points to `history-service/internal/models` which re-exports many cassandra types; using a `cassmodel` alias keeps the new type's origin explicit.
+
+- [ ] **Step 9: Update `threads_test.go` mock expectations**
+
+In `history-service/internal/service/threads_test.go`, replace every occurrence of:
+```go
+msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any())
+```
+with:
+```go
+msgs.EXPECT().GetMessagesByRoomAndKeys(gomock.Any(), gomock.Any(), gomock.Any())
+```
+
+Two occurrences are stricter (lines 432 and 623): they assert on a specific argument value:
+```go
+msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"p1"}).Return(...)
+msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"p-early"}).Return(...)
+```
+Update those to match by message ID inside the keys slice. Replace each with:
+```go
+msgs.EXPECT().GetMessagesByRoomAndKeys(gomock.Any(), gomock.Any(), gomock.Cond(func(v any) bool {
+    keys, ok := v.([]cassmodel.MessageKey)
+    return ok && len(keys) == 1 && keys[0].MessageID == "p1"
+})).Return(...)
+```
+(Use `"p-early"` for the other site.) Add the import `cassmodel "github.com/hmchangw/chat/pkg/model/cassandra"` to the test file.
+
+- [ ] **Step 10: Remove `GetMessagesByIDs` implementation**
+
+In `history-service/internal/cassrepo/messages_by_id.go`, delete the `GetMessagesByIDs` function and any unused imports it leaves behind. The file should retain only `GetMessageByID`.
+
+- [ ] **Step 11: Remove `GetMessagesByIDs` integration tests**
+
+In `history-service/internal/cassrepo/messages_by_id_integration_test.go`, delete the three tests `TestRepository_GetMessagesByIDs`, `TestRepository_GetMessagesByIDs_Empty`, `TestRepository_GetMessagesByIDs_MissingID` (lines 186–236).
+
+- [ ] **Step 12: Run full unit + integration test suite**
+
+Run: `make test SERVICE=history-service && make test-integration SERVICE=history-service`
+Expected: PASS — all existing thread tests still pass with the new mock expectations; new integration tests pass; removed tests no longer present.
+
+- [ ] **Step 13: Run lint to catch any unused imports or symbol drift**
+
+Run: `make lint`
+Expected: PASS.
+
+- [ ] **Step 14: Commit**
+
+```bash
+git add pkg/model/cassandra/message.go history-service/internal/cassrepo/ history-service/internal/service/
+git commit -m "perf(history-service): hydrate thread parents from messages_by_room"
+```
+
+---
