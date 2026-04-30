@@ -557,6 +557,39 @@ body {
   background: #ed4245;
 }
 
+.room-badge-remote {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 0.375rem;
+  background: #2f3a4a;
+  color: #8ab4f8;
+  border: 1px solid #3b5998;
+  flex-shrink: 0;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.room-item-remote .room-name {
+  font-style: italic;
+}
+
+.message-badge-remote {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 3px;
+  margin-left: 0.375rem;
+  background: #2f3a4a;
+  color: #8ab4f8;
+  border: 1px solid #3b5998;
+  vertical-align: middle;
+}
+
 /* Manage Members dialog */
 .manage-members-dialog {
   width: 480px;

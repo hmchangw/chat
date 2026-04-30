@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import RoomList from './RoomList'
 
@@ -6,7 +6,16 @@ vi.mock('../context/RoomEventsContext', () => ({
   useRoomSummaries: vi.fn(),
 }))
 
+vi.mock('../context/NatsContext', () => ({
+  useNats: vi.fn(),
+}))
+
 import { useRoomSummaries } from '../context/RoomEventsContext'
+import { useNats } from '../context/NatsContext'
+
+beforeEach(() => {
+  useNats.mockReturnValue({ user: { account: 'alice', siteId: 'site-A' } })
+})
 
 function summary(id, overrides = {}) {
   return {
@@ -66,6 +75,38 @@ describe('RoomList', () => {
     const { container } = render(<RoomList selectedRoomId={null} onSelectRoom={vi.fn()} />)
     expect(container.querySelector('.room-badge-mention-all')).toBeInTheDocument()
     expect(container.querySelector('.room-badge-mention')).not.toBeInTheDocument()
+  })
+
+  it('shows remote site badge when room.siteId !== user.siteId', () => {
+    useRoomSummaries.mockReturnValue({
+      summaries: [summary('a', { siteId: 'site-B' })],
+      setActiveRoom: vi.fn(),
+      error: null,
+    })
+    const { container } = render(<RoomList selectedRoomId={null} onSelectRoom={vi.fn()} />)
+    const badge = container.querySelector('.room-badge-remote')
+    expect(badge).toBeInTheDocument()
+    expect(badge.textContent).toContain('site-B')
+  })
+
+  it('does not show remote badge when room.siteId matches user.siteId', () => {
+    useRoomSummaries.mockReturnValue({
+      summaries: [summary('a', { siteId: 'site-A' })],
+      setActiveRoom: vi.fn(),
+      error: null,
+    })
+    const { container } = render(<RoomList selectedRoomId={null} onSelectRoom={vi.fn()} />)
+    expect(container.querySelector('.room-badge-remote')).not.toBeInTheDocument()
+  })
+
+  it('marks remote rooms with .room-item-remote class', () => {
+    useRoomSummaries.mockReturnValue({
+      summaries: [summary('a', { siteId: 'site-B' })],
+      setActiveRoom: vi.fn(),
+      error: null,
+    })
+    const { container } = render(<RoomList selectedRoomId={null} onSelectRoom={vi.fn()} />)
+    expect(container.querySelector('.room-item-remote')).toBeInTheDocument()
   })
 
   it('calls onSelectRoom on click', () => {

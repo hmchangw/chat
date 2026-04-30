@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useRoomEvents } from '../context/RoomEventsContext'
+import { useNats } from '../context/NatsContext'
 import { roomPrefix } from '../lib/roomFormat'
 
 function formatTime(dateStr) {
@@ -20,6 +21,9 @@ function messageContent(msg) {
 
 export default function MessageArea({ room }) {
   const { messages, hasLoadedHistory, historyError, loadHistory } = useRoomEvents(room?.id ?? null)
+  const { user } = useNats()
+  const userSiteId = user?.siteId
+  const isRoomRemote = room?.siteId && userSiteId && room.siteId !== userSiteId
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -45,18 +49,31 @@ export default function MessageArea({ room }) {
         <span className="message-area-room-name">
           {roomPrefix(room.type)}{room.name}
         </span>
+        {isRoomRemote && (
+          <span className="room-badge-remote" title={`Federated from ${room.siteId}`}>
+            {room.siteId}
+          </span>
+        )}
         <span className="message-area-members">{room.userCount} members</span>
       </div>
       <div className="message-list">
         {!hasLoadedHistory && !historyError && <div className="message-loading">Loading messages...</div>}
         {historyError && <div className="message-error">{historyError}</div>}
-        {messages.map((msg) => (
-          <div key={msg.id} className="message">
-            <span className="message-sender">{senderName(msg)}</span>
-            <span className="message-time">{formatTime(msg.createdAt)}</span>
-            <div className="message-content">{messageContent(msg)}</div>
-          </div>
-        ))}
+        {messages.map((msg) => {
+          const isMsgRemote = msg.siteId && userSiteId && msg.siteId !== userSiteId
+          return (
+            <div key={msg.id} className="message">
+              <span className="message-sender">{senderName(msg)}</span>
+              {isMsgRemote && (
+                <span className="message-badge-remote" title={`From ${msg.siteId}`}>
+                  {msg.siteId}
+                </span>
+              )}
+              <span className="message-time">{formatTime(msg.createdAt)}</span>
+              <div className="message-content">{messageContent(msg)}</div>
+            </div>
+          )
+        })}
         <div ref={bottomRef} />
       </div>
     </div>
