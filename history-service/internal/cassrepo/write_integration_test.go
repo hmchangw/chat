@@ -810,7 +810,7 @@ func TestRepository_SoftDeleteMessage_ThreadParent_SetsTypeRemoved(t *testing.T)
 		msgID, createdAt,
 	).Scan(&gotDeleted, &gotType))
 	assert.True(t, gotDeleted)
-	assert.Equal(t, "message_removed", gotType, "messages_by_id must have type='message_removed' for thread parent")
+	assert.Equal(t, MessageTypeRemoved, gotType, "messages_by_id must have type='message_removed' for thread parent")
 
 	// Verify messages_by_room: deleted = true AND type = 'message_removed'.
 	require.NoError(t, session.Query(
@@ -818,7 +818,7 @@ func TestRepository_SoftDeleteMessage_ThreadParent_SetsTypeRemoved(t *testing.T)
 		roomID, createdAt, msgID,
 	).Scan(&gotDeleted, &gotType))
 	assert.True(t, gotDeleted)
-	assert.Equal(t, "message_removed", gotType, "messages_by_room must have type='message_removed' for thread parent")
+	assert.Equal(t, MessageTypeRemoved, gotType, "messages_by_room must have type='message_removed' for thread parent")
 }
 
 // TestRepository_SoftDeleteMessage_NonThreadParent_NoTypeChange verifies that
@@ -916,12 +916,12 @@ func TestRepository_SoftDeleteMessage_ReplyThreadParent_SetsTypeRemoved(t *testi
 		`SELECT type FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
 		msgID, createdAt,
 	).Scan(&gotType))
-	assert.Equal(t, "message_removed", gotType, "messages_by_id must have type='message_removed'")
+	assert.Equal(t, MessageTypeRemoved, gotType, "messages_by_id must have type='message_removed'")
 
 	// Verify thread_messages_by_room: type = 'message_removed'.
 	require.NoError(t, session.Query(
 		`SELECT type FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`,
 		roomID, threadRoomID, createdAt, msgID,
 	).Scan(&gotType))
-	assert.Equal(t, "message_removed", gotType, "thread_messages_by_room must have type='message_removed'")
+	assert.Equal(t, MessageTypeRemoved, gotType, "thread_messages_by_room must have type='message_removed'")
 }

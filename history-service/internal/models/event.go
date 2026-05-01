@@ -8,14 +8,14 @@ import "encoding/json"
 // without a key (DM or key not yet provisioned), NewMsg carries the plaintext.
 // Per CLAUDE.md, every NATS event carries a Timestamp (event publish time).
 type MessageEditedEvent struct {
-	Type            string          `json:"type"`      // always "message_edited"
+	Type            string          `json:"type"`
 	Timestamp       int64           `json:"timestamp"` // UTC millis, event publish time
 	RoomID          string          `json:"roomId"`
 	MessageID       string          `json:"messageId"`
 	NewMsg          string          `json:"newMsg,omitempty"`          // plaintext; empty when EncryptedNewMsg is set
 	EncryptedNewMsg json.RawMessage `json:"encryptedNewMsg,omitempty"` // roomcrypto.EncryptedMessage JSON; set for encrypted rooms
-	EditedBy        string          `json:"editedBy"`                  // actor account
-	EditedAt        int64           `json:"editedAt"`                  // UTC millis, domain time
+	EditedBy        string          `json:"editedBy"`
+	EditedAt        int64           `json:"editedAt"` // UTC millis, domain time
 }
 
 // MessageDeletedEvent is the live event published to chat.room.{roomID}.event
