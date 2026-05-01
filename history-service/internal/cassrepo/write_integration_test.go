@@ -889,9 +889,10 @@ func TestRepository_SoftDeleteMessage_ReplyThreadParent_SetsTypeRemoved(t *testi
 	).Exec())
 
 	// Seed thread_messages_by_room (message is a reply in the parent's thread).
+	// Note: thread_messages_by_room has no tcount column — tcount only lives in messages_by_id.
 	require.NoError(t, session.Query(
-		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		roomID, threadRoomID, createdAt, msgID, sender, "nested thread parent", tcount, false,
+		`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, sender, msg, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		roomID, threadRoomID, createdAt, msgID, sender, "nested thread parent", false,
 	).Exec())
 
 	msg := &models.Message{

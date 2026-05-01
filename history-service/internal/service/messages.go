@@ -211,6 +211,9 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 // failure (no key, key fetch error, encode error) so the caller can fall back
 // to a plaintext event — the Cassandra write already succeeded.
 func (s *HistoryService) encryptEditMsg(c *natsrouter.Context, roomID, plaintext string) (string, json.RawMessage) {
+	if s.keyProvider == nil {
+		return plaintext, nil
+	}
 	key, err := s.keyProvider.Get(c, roomID)
 	if err != nil {
 		slog.Warn("edit: get room key failed, event will be plaintext", "error", err, "roomID", roomID)
