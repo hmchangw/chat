@@ -77,4 +77,41 @@ describe('MessageArea', () => {
 
     expect(screen.getByLabelText(/Search messages in room/i)).toBeInTheDocument()
   })
+
+  it('shows the jump-to-latest pill in historical mode and resets to live on click', () => {
+    const resetToLiveTail = vi.fn()
+    useRoomEvents.mockReturnValue({
+      messages: [],
+      hasLoadedHistory: true,
+      historyError: null,
+      loadHistory: vi.fn().mockResolvedValue(),
+      bufferMode: 'historical',
+      pendingCount: 3,
+      resetToLiveTail,
+    })
+
+    render(<MessageArea room={{ id: 'r1', name: 'general', type: 'channel', userCount: 2 }} />)
+
+    const pillButton = screen.getByRole('button', { name: /Jump to latest \(3 new\)/i })
+    expect(pillButton).toBeInTheDocument()
+
+    fireEvent.click(pillButton)
+    expect(resetToLiveTail).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the jump-to-latest pill when bufferMode is live', () => {
+    useRoomEvents.mockReturnValue({
+      messages: [],
+      hasLoadedHistory: true,
+      historyError: null,
+      loadHistory: vi.fn().mockResolvedValue(),
+      bufferMode: 'live',
+      pendingCount: 0,
+      resetToLiveTail: vi.fn(),
+    })
+
+    render(<MessageArea room={{ id: 'r1', name: 'general', type: 'channel', userCount: 2 }} />)
+
+    expect(screen.queryByRole('button', { name: /Jump to latest/i })).not.toBeInTheDocument()
+  })
 })
