@@ -1,44 +1,36 @@
-import { useState, useRef, useEffect } from 'react'
+import { useRef, useEffect, useCallback } from 'react'
 import { useNats } from '../context/NatsContext'
 import { searchMessages } from '../lib/subjects'
+import { useDebouncedSearch } from '../lib/useDebouncedSearch'
 
 export default function InRoomSearch({ roomId, onClose, onJumpToMessage }) {
   const { user, request } = useNats()
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState([])
-  const [, setLoading] = useState(false)
-  const debounceRef = useRef(null)
   const inputRef = useRef(null)
+
+  const fetcher = useCallback(
+    async (q) => {
+      const resp = await request(searchMessages(user.account), {
+        searchText: q,
+        roomIds: [roomId],
+        size: 20,
+      })
+      return resp.results ?? []
+    },
+    [request, user, roomId]
+  )
+
+  const { query, results, loading, onChange } = useDebouncedSearch({
+    delay: 300,
+    minLen: 2,
+    fetcher,
+  })
 
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
 
   const handleChange = (e) => {
-    const q = e.target.value
-    setQuery(q)
-    clearTimeout(debounceRef.current)
-
-    if (q.length < 2) {
-      setResults([])
-      return
-    }
-
-    debounceRef.current = setTimeout(async () => {
-      setLoading(true)
-      try {
-        const resp = await request(searchMessages(user.account), {
-          searchText: q,
-          roomIds: [roomId],
-          size: 20,
-        })
-        setResults(resp.results ?? [])
-      } catch {
-        setResults([])
-      } finally {
-        setLoading(false)
-      }
-    }, 300)
+    onChange(e.target.value)
   }
 
   const handleClick = (hit) => {
@@ -59,7 +51,9 @@ export default function InRoomSearch({ roomId, onClose, onJumpToMessage }) {
           aria-label="Search messages in room"
         />
         {query.length >= 2 && (
-          <span className="in-room-search-count">{results.length} results</span>
+          <span className="in-room-search-count">
+            {loading ? 'Searching...' : `${results.length} results`}
+          </span>
         )}
         <button
           type="button"

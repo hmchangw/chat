@@ -1,15 +1,32 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNats } from '../context/NatsContext'
 import { searchRooms } from '../lib/subjects'
+import { useDebouncedSearch } from '../lib/useDebouncedSearch'
+import { roomFromSearchHit, searchRoomPrefix } from '../lib/roomFormat'
 
 export default function SearchBar({ onSelectRoom, onEnterSearch }) {
   const { user, request } = useNats()
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState([])
-  const [, setLoading] = useState(false)
   const [activeIdx, setActiveIdx] = useState(0)
-  const debounceRef = useRef(null)
   const inputRef = useRef(null)
+
+  const fetcher = useCallback(
+    async (q) => {
+      const resp = await request(searchRooms(user.account), {
+        searchText: q,
+        scope: 'all',
+        size: 8,
+      })
+      setActiveIdx(0)
+      return resp.results ?? []
+    },
+    [request, user]
+  )
+
+  const { query, results, onChange, reset } = useDebouncedSearch({
+    delay: 250,
+    minLen: 2,
+    fetcher,
+  })
 
   // Ctrl+K / Cmd+K global shortcut
   useEffect(() => {
@@ -24,31 +41,7 @@ export default function SearchBar({ onSelectRoom, onEnterSearch }) {
   }, [])
 
   const handleChange = (e) => {
-    const q = e.target.value
-    setQuery(q)
-    clearTimeout(debounceRef.current)
-
-    if (q.length < 2) {
-      setResults([])
-      return
-    }
-
-    debounceRef.current = setTimeout(async () => {
-      setLoading(true)
-      try {
-        const resp = await request(searchRooms(user.account), {
-          searchText: q,
-          scope: 'all',
-          size: 8,
-        })
-        setResults(resp.results ?? [])
-      } catch {
-        setResults([])
-      } finally {
-        setLoading(false)
-      }
-      setActiveIdx(0)
-    }, 250)
+    onChange(e.target.value)
   }
 
   const handleKeyDown = (e) => {
@@ -62,21 +55,14 @@ export default function SearchBar({ onSelectRoom, onEnterSearch }) {
       e.preventDefault()
       if (query.length >= 2) onEnterSearch(query)
     } else if (e.key === 'Escape') {
-      setQuery('')
-      setResults([])
+      reset()
       inputRef.current?.blur()
     }
   }
 
   const handleClick = (hit) => {
-    onSelectRoom({
-      id: hit.roomId,
-      name: hit.roomName,
-      type: hit.roomType,
-      siteId: hit.siteId,
-    })
-    setQuery('')
-    setResults([])
+    onSelectRoom(roomFromSearchHit(hit))
+    reset()
   }
 
   return (
@@ -102,7 +88,7 @@ export default function SearchBar({ onSelectRoom, onEnterSearch }) {
               aria-selected={idx === activeIdx}
             >
               <div className="result-type">
-                {hit.roomType === 'c' ? '#' : '@'}
+                {searchRoomPrefix(hit.roomType)}
               </div>
               <div className="result-name">{hit.roomName}</div>
             </div>

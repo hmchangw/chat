@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRoomEvents } from '../context/RoomEventsContext'
+import { BUFFER_MODE } from '../lib/roomEventsReducer'
 import { roomPrefix } from '../lib/roomFormat'
 import InRoomSearch from './InRoomSearch'
 
@@ -41,12 +42,12 @@ export default function MessageArea({ room }) {
   }, [room, loadHistory])
 
   useEffect(() => {
-    if (bufferMode === 'historical') return
+    if (bufferMode === BUFFER_MODE.HISTORICAL) return
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, bufferMode])
 
   useEffect(() => {
-    if (bufferMode === 'live') {
+    if (bufferMode === BUFFER_MODE.LIVE) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [bufferMode])
@@ -63,7 +64,10 @@ export default function MessageArea({ room }) {
       el.classList.remove('flash-jump')
     }, 2000)
     return () => clearTimeout(timer)
-  }, [focusMessageId, messages])
+    // messages intentionally omitted: the focus effect should fire only when
+    // focusMessageId changes, not on every new live message render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusMessageId])
 
   useEffect(() => {
     if (!room) return
@@ -118,7 +122,7 @@ export default function MessageArea({ room }) {
         ))}
         <div ref={bottomRef} />
       </div>
-      {bufferMode === 'historical' && pendingCount > 0 && (
+      {bufferMode === BUFFER_MODE.HISTORICAL && pendingCount > 0 && (
         <div className="jump-latest-pill">
           <button type="button" onClick={() => resetToLiveTail()}>
             Jump to latest ({pendingCount} new)

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { NatsContext } from './NatsContext'
 import { RoomEventsProvider, useRoomEvents, useRoomSummaries } from './RoomEventsContext'
+import { BUFFER_MODE } from '../lib/roomEventsReducer'
 // jumpToMessage / resetToLiveTail tests — see suite below
 
 function mockNats({ request, subscribe, user = { account: 'alice', siteId: 'site-A' } } = {}) {
@@ -426,7 +427,7 @@ describe('RoomEventsProvider jumpToMessage / resetToLiveTail', () => {
       expect(screen.getByTestId('messages').textContent).toBe('m10,m11,m12')
     )
     expect(screen.getByTestId('focus').textContent).toBe('m11')
-    expect(screen.getByTestId('mode').textContent).toBe('historical')
+    expect(screen.getByTestId('mode').textContent).toBe(BUFFER_MODE.HISTORICAL)
   })
 
   it('exposes pendingCount when in historical mode and live messages arrive', async () => {
@@ -472,7 +473,7 @@ describe('RoomEventsProvider jumpToMessage / resetToLiveTail', () => {
       screen.getByText('jump').click()
       await Promise.resolve()
     })
-    await waitFor(() => expect(screen.getByTestId('mode').textContent).toBe('historical'))
+    await waitFor(() => expect(screen.getByTestId('mode').textContent).toBe(BUFFER_MODE.HISTORICAL))
 
     act(() => {
       handlers.get('chat.room.r1.event')({
@@ -491,7 +492,7 @@ describe('RoomEventsProvider jumpToMessage / resetToLiveTail', () => {
     act(() => {
       screen.getByText('reset').click()
     })
-    await waitFor(() => expect(screen.getByTestId('mode').textContent).toBe('live'))
+    await waitFor(() => expect(screen.getByTestId('mode').textContent).toBe(BUFFER_MODE.LIVE))
     expect(screen.getByTestId('messages').textContent).toBe('old,live1')
     expect(screen.getByTestId('pending').textContent).toBe('0')
   })

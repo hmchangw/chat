@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { initialState, roomEventsReducer } from './roomEventsReducer'
+import { BUFFER_MODE, initialState, roomEventsReducer } from './roomEventsReducer'
 
 function room(id, overrides = {}) {
   return {
@@ -314,7 +314,7 @@ describe('roomEventsReducer: buffer mode (jump-to-message)', () => {
       type: 'MESSAGE_RECEIVED',
       event: newMessageEvent(),
     })
-    expect(next.roomState.a.bufferMode).toBe('live')
+    expect(next.roomState.a.bufferMode).toBe(BUFFER_MODE.LIVE)
     expect(next.roomState.a.pendingLiveMessages).toEqual([])
     expect(next.roomState.a.focusMessageId).toBe(null)
   })
@@ -332,7 +332,7 @@ describe('roomEventsReducer: buffer mode (jump-to-message)', () => {
       focusMessageId: 'm11',
     })
     expect(next.roomState.a.messages.map((m) => m.id)).toEqual(['m10', 'm11', 'm12'])
-    expect(next.roomState.a.bufferMode).toBe('historical')
+    expect(next.roomState.a.bufferMode).toBe(BUFFER_MODE.HISTORICAL)
     expect(next.roomState.a.focusMessageId).toBe('m11')
     expect(next.roomState.a.hasLoadedHistory).toBe(true)
     expect(next.roomState.a.pendingLiveMessages).toEqual([])
@@ -356,7 +356,7 @@ describe('roomEventsReducer: buffer mode (jump-to-message)', () => {
     })
     expect(next.roomState.a.messages.map((m) => m.id)).toEqual(['m1'])
     expect(next.roomState.a.pendingLiveMessages.map((m) => m.id)).toEqual(['mLive'])
-    expect(next.roomState.a.bufferMode).toBe('historical')
+    expect(next.roomState.a.bufferMode).toBe(BUFFER_MODE.HISTORICAL)
   })
 
   it('MESSAGE_RECEIVED in historical mode dedupes pendingLiveMessages by id', () => {
@@ -400,7 +400,7 @@ describe('roomEventsReducer: buffer mode (jump-to-message)', () => {
     expect(next.roomState.a.messages.map((m) => m.id)).toEqual(['m1', 'mLive'])
     expect(next.roomState.a.pendingLiveMessages).toEqual([])
     expect(next.roomState.a.focusMessageId).toBe(null)
-    expect(next.roomState.a.bufferMode).toBe('live')
+    expect(next.roomState.a.bufferMode).toBe(BUFFER_MODE.LIVE)
   })
 
   it('RESET_TO_LIVE_TAIL dedupes pending vs existing messages', () => {
@@ -432,6 +432,6 @@ describe('roomEventsReducer: buffer mode (jump-to-message)', () => {
   it('RESET_TO_LIVE_TAIL on an unknown room is a safe no-op-ish', () => {
     const next = roomEventsReducer(initialState, { type: 'RESET_TO_LIVE_TAIL', roomId: 'missing' })
     // Either no change to state or an empty roomState.missing in live mode is acceptable.
-    expect(next.roomState.missing?.bufferMode ?? 'live').toBe('live')
+    expect(next.roomState.missing?.bufferMode ?? BUFFER_MODE.LIVE).toBe(BUFFER_MODE.LIVE)
   })
 })

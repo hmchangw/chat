@@ -1,5 +1,10 @@
 export const MAX_CACHED = 200
 
+export const BUFFER_MODE = {
+  LIVE: 'live',
+  HISTORICAL: 'historical',
+}
+
 export const initialState = {
   summaries: [],
   roomState: {},
@@ -39,7 +44,7 @@ function emptyRoomState() {
     mentionAll: false,
     lastMsgAt: null,
     lastMsgId: null,
-    bufferMode: 'live',
+    bufferMode: BUFFER_MODE.LIVE,
     pendingLiveMessages: [],
     focusMessageId: null,
   }
@@ -94,7 +99,7 @@ export function roomEventsReducer(state, action) {
       const roomId = evt.roomId
       const prev = state.roomState[roomId] ?? emptyRoomState()
       const isActive = state.activeRoomId === roomId
-      if (prev.bufferMode === 'historical') {
+      if (prev.bufferMode === BUFFER_MODE.HISTORICAL) {
         if (
           prev.messages.some((m) => m.id === evt.message.id) ||
           prev.pendingLiveMessages.some((m) => m.id === evt.message.id)
@@ -207,7 +212,7 @@ export function roomEventsReducer(state, action) {
             messages,
             hasLoadedHistory: true,
             historyError: null,
-            bufferMode: 'historical',
+            bufferMode: BUFFER_MODE.HISTORICAL,
             focusMessageId: action.focusMessageId ?? null,
             pendingLiveMessages: [],
           },
@@ -241,7 +246,7 @@ export function roomEventsReducer(state, action) {
             messages: bounded,
             pendingLiveMessages: [],
             focusMessageId: null,
-            bufferMode: 'live',
+            bufferMode: BUFFER_MODE.LIVE,
           },
         },
       }
