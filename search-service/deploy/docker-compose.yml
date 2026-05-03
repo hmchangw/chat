@@ -5,6 +5,7 @@ services:
     build:
       context: ../..
       dockerfile: search-service/deploy/Dockerfile
+    stop_grace_period: 2s
     environment:
       - NATS_URL=nats://nats:4222
       - NATS_CREDS_FILE=/etc/nats/backend.creds
@@ -19,6 +20,10 @@ services:
       - SEARCH_RECENT_WINDOW=8760h
       - SEARCH_REQUEST_TIMEOUT=10s
       - SEARCH_METRICS_ADDR=:9090
+      # Pin to the concrete site-suffixed indices written by
+      # search-sync-worker. Prod uses aliases owned by ops/IaC.
+      - SEARCH_USER_ROOM_INDEX=user-room-site-local
+      - SEARCH_SPOTLIGHT_INDEX=spotlight-site-local-v1-chat
     ports:
       # Expose /metrics so Prometheus / curl can scrape from the host
       # during local dev. The listener is bound on 0.0.0.0:9090 inside
