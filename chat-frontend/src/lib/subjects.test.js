@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { userRoomEvent, roomEvent, memberAdd, memberRemove, memberRoleUpdate, searchRooms } from './subjects'
+import {
+  userRoomEvent,
+  roomEvent,
+  memberAdd,
+  memberRemove,
+  memberRoleUpdate,
+  searchRooms,
+  searchMessages,
+} from './subjects'
 
 describe('subjects', () => {
   it('userRoomEvent builds the per-user room event subject', () => {
@@ -30,5 +38,9 @@ describe('subjects', () => {
 
   it('searchRooms builds the search rooms request subject', () => {
     expect(searchRooms('alice')).toBe('chat.user.alice.request.search.rooms')
+  })
+
+  it('searchMessages builds the search messages request subject', () => {
+    expect(searchMessages('alice')).toBe('chat.user.alice.request.search.messages')
   })
 })

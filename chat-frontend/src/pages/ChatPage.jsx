@@ -8,6 +8,7 @@ import CreateRoomDialog from '../components/CreateRoomDialog'
 import ManageMembersDialog from '../components/ManageMembersDialog'
 import LeaveRoomButton from '../components/LeaveRoomButton'
 import SearchBar from '../components/SearchBar'
+import SearchResultsPane from './SearchResultsPane'
 
 export default function ChatPage() {
   const { user, disconnect } = useNats()
@@ -79,7 +80,12 @@ export default function ChatPage() {
         </div>
         <div className="chat-main">
           {searchQuery ? (
-            <div>Search Results (to be implemented in Task 5)</div>
+            <SearchResultsPane
+              query={searchQuery}
+              onClose={() => setSearchQuery(null)}
+              onSelectRoom={handleSelectRoom}
+              onJumpToMessage={() => {}}
+            />
           ) : (
             <>
               <MessageArea room={selectedRoom} />

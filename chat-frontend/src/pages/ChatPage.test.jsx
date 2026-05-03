@@ -34,6 +34,13 @@ vi.mock('../components/SearchBar', () => ({
     />
   ),
 }))
+vi.mock('./SearchResultsPane', () => ({
+  default: ({ onClose }) => (
+    <div data-testid="search-results" onClick={() => onClose()}>
+      Search Results
+    </div>
+  ),
+}))
 
 import { useNats } from '../context/NatsContext'
 import { useRoomSummaries } from '../context/RoomEventsContext'
