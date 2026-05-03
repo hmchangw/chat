@@ -9,6 +9,10 @@ export function msgHistory(account, roomId, siteId) {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.history`
 }
 
+export function msgSurrounding(account, roomId, siteId) {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.surrounding`
+}
+
 export function roomEvent(roomId) {
   return `chat.room.${roomId}.event`
 }

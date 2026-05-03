@@ -39,6 +39,9 @@ function emptyRoomState() {
     mentionAll: false,
     lastMsgAt: null,
     lastMsgId: null,
+    bufferMode: 'live',
+    pendingLiveMessages: [],
+    focusMessageId: null,
   }
 }
 
@@ -90,9 +93,47 @@ export function roomEventsReducer(state, action) {
       const evt = action.event
       const roomId = evt.roomId
       const prev = state.roomState[roomId] ?? emptyRoomState()
+      const isActive = state.activeRoomId === roomId
+      if (prev.bufferMode === 'historical') {
+        if (
+          prev.messages.some((m) => m.id === evt.message.id) ||
+          prev.pendingLiveMessages.some((m) => m.id === evt.message.id)
+        ) {
+          return state
+        }
+        const pendingLiveMessages = [...prev.pendingLiveMessages, evt.message]
+        const nextRoomState = {
+          ...prev,
+          pendingLiveMessages,
+          lastMsgAt: evt.lastMsgAt ?? prev.lastMsgAt,
+          lastMsgId: evt.lastMsgId ?? prev.lastMsgId,
+          unreadCount: isActive ? prev.unreadCount : prev.unreadCount + 1,
+          hasMention: isActive ? false : prev.hasMention || !!evt.hasMention,
+          mentionAll: isActive ? false : prev.mentionAll || !!evt.mentionAll,
+        }
+        const summaries = state.summaries.some((r) => r.id === roomId)
+          ? sortByLastMsgDesc(
+              state.summaries.map((r) =>
+                r.id === roomId
+                  ? {
+                      ...r,
+                      lastMsgAt: nextRoomState.lastMsgAt ?? r.lastMsgAt,
+                      unreadCount: nextRoomState.unreadCount,
+                      hasMention: nextRoomState.hasMention,
+                      mentionAll: nextRoomState.mentionAll,
+                    }
+                  : r
+              )
+            )
+          : state.summaries
+        return {
+          ...state,
+          summaries,
+          roomState: { ...state.roomState, [roomId]: nextRoomState },
+        }
+      }
       if (prev.messages.some((m) => m.id === evt.message.id)) return state
       const messages = appendBounded(prev.messages, evt.message)
-      const isActive = state.activeRoomId === roomId
       const nextRoomState = {
         ...prev,
         messages,
@@ -151,6 +192,57 @@ export function roomEventsReducer(state, action) {
         roomState: {
           ...state.roomState,
           [action.roomId]: { ...prev, historyError: action.error },
+        },
+      }
+    }
+    case 'REPLACE_ROOM_BUFFER': {
+      const prev = state.roomState[action.roomId] ?? emptyRoomState()
+      const messages = action.messages ?? []
+      return {
+        ...state,
+        roomState: {
+          ...state.roomState,
+          [action.roomId]: {
+            ...prev,
+            messages,
+            hasLoadedHistory: true,
+            historyError: null,
+            bufferMode: 'historical',
+            focusMessageId: action.focusMessageId ?? null,
+            pendingLiveMessages: [],
+          },
+        },
+      }
+    }
+    case 'RESET_TO_LIVE_TAIL': {
+      const prev = state.roomState[action.roomId]
+      if (!prev) {
+        return {
+          ...state,
+          roomState: {
+            ...state.roomState,
+            [action.roomId]: emptyRoomState(),
+          },
+        }
+      }
+      const existingIds = new Set(prev.messages.map((m) => m.id))
+      const newPending = (prev.pendingLiveMessages ?? []).filter(
+        (m) => !existingIds.has(m.id)
+      )
+      const merged = [...prev.messages, ...newPending]
+      const bounded =
+        merged.length > MAX_CACHED ? merged.slice(merged.length - MAX_CACHED) : merged
+      return {
+        ...state,
+        roomState: {
+          ...state.roomState,
+          [action.roomId]: {
+            ...prev,
+            messages: bounded,
+            pendingLiveMessages: [],
+            focusMessageId: null,
+            bufferMode: 'live',
+          },
         },
       }
     }
