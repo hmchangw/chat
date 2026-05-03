@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -31,10 +33,17 @@ type Handler struct {
 	maxRoomSize      int
 	maxBatchSize     int
 	publishToStream  func(ctx context.Context, subj string, data []byte) error
+	// publishEvent is core-NATS for transient client notifications; nil-tolerant for tests.
+	publishEvent func(ctx context.Context, subj string, data []byte) error
 }
 
 func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, siteID string, maxRoomSize, maxBatchSize int, publishToStream func(context.Context, string, []byte) error) *Handler {
 	return &Handler{store: store, keyStore: keyStore, memberListClient: memberListClient, siteID: siteID, maxRoomSize: maxRoomSize, maxBatchSize: maxBatchSize, publishToStream: publishToStream}
+}
+
+func (h *Handler) WithEventPublisher(fn func(ctx context.Context, subj string, data []byte) error) *Handler {
+	h.publishEvent = fn
+	return h
 }
 
 // wrappedCtx returns m.Context() augmented with X-Request-ID from the inbound msg header; entry ctx for every nats* handler.
@@ -126,26 +135,40 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 			return nil, fmt.Errorf("DM requires exactly one other member, got %d", len(req.Members))
 		}
 		roomID = idgen.BuildDMRoomID(req.CreatedBy, req.Members[0])
-		// TODO(idgen-rework follow-up): persist a second Subscription for req.Members[0] so DMs are two-sided.
-		// DMs have no add-member/role-update flow, so the recipient is currently un-enrolled.
-		// Needs the recipient's Account (store lookup or extend CreateRoomRequest with MembersAccount). Also bump Room.UserCount to 2.
 	default:
 		return nil, fmt.Errorf("unsupported room type %q", req.Type)
 	}
 
+	userCount := 1
+	if req.Type == model.RoomTypeDM {
+		userCount = 2
+	}
 	room := model.Room{
 		ID:        roomID,
 		Name:      req.Name,
 		Type:      req.Type,
 		CreatedBy: req.CreatedBy,
 		SiteID:    req.SiteID,
-		UserCount: 1,
+		UserCount: userCount,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 
 	if err := h.store.CreateRoom(ctx, &room); err != nil {
 		return nil, fmt.Errorf("create room: %w", err)
+	}
+
+	// Mint the room key — broadcast-worker can't encrypt without it.
+	if h.keyStore != nil {
+		keyPriv, err := ecdh.P256().GenerateKey(rand.Reader)
+		if err != nil {
+			slog.Warn("generate room key failed", "error", err, "roomID", room.ID)
+		} else if _, err := h.keyStore.Set(ctx, room.ID, roomkeystore.RoomKeyPair{
+			PublicKey:  keyPriv.PublicKey().Bytes(),
+			PrivateKey: keyPriv.Bytes(),
+		}); err != nil {
+			slog.Warn("set room key failed", "error", err, "roomID", room.ID)
+		}
 	}
 
 	// Auto-create owner subscription
@@ -161,6 +184,78 @@ func (h *Handler) handleCreateRoom(ctx context.Context, data []byte) ([]byte, er
 	}
 	if err := h.store.CreateSubscription(ctx, &sub); err != nil {
 		slog.Warn("create owner subscription failed", "error", err)
+	}
+
+	// DM: enroll the recipient too, otherwise their reads hit "not subscribed".
+	// Dev convention: account == user.ID. Prod will need a real account → ID lookup.
+	if req.Type == model.RoomTypeDM {
+		recipientAccount := req.Members[0]
+		recipSub := model.Subscription{
+			ID:                 idgen.GenerateUUIDv7(),
+			User:               model.SubscriptionUser{ID: recipientAccount, Account: recipientAccount},
+			RoomID:             room.ID,
+			RoomType:           req.Type,
+			SiteID:             req.SiteID,
+			Roles:              []model.Role{model.RoleMember},
+			HistorySharedSince: &now,
+			JoinedAt:           now,
+		}
+		if err := h.store.CreateSubscription(ctx, &recipSub); err != nil {
+			slog.Warn("create recipient subscription failed", "error", err, "account", recipientAccount)
+		}
+	}
+
+	// Best-effort: notify the creator's frontend so the new room appears
+	// without a refresh; mirrors room-worker's subscription.update on add/role.
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID:       sub.User.ID,
+		Subscription: sub,
+		Action:       "added",
+		Timestamp:    now.UnixMilli(),
+	}
+	if h.publishEvent != nil {
+		if subEvtData, err := json.Marshal(subEvt); err != nil {
+			slog.Warn("marshal subscription update event failed", "error", err, "roomID", room.ID)
+		} else if err := h.publishEvent(ctx, subject.SubscriptionUpdate(req.CreatedByAccount), subEvtData); err != nil {
+			slog.Warn("publish subscription update failed", "error", err, "roomID", room.ID)
+		}
+	}
+
+	// Same-site member_added on INBOX so search-sync-worker indexes the
+	// auto-enrolled members; owner-add bypasses room-worker. Wire shape
+	// matches PR #145's spec. HSS=nil → unrestricted (spotlight skips
+	// restricted bulks for MVP). Best-effort.
+	if h.publishToStream != nil {
+		accounts := []string{req.CreatedByAccount}
+		if req.Type == model.RoomTypeDM {
+			accounts = append(accounts, req.Members[0])
+		}
+		inboxEvt := model.InboxMemberEvent{
+			RoomID:    room.ID,
+			RoomName:  room.Name,
+			RoomType:  room.Type,
+			SiteID:    h.siteID,
+			Accounts:  accounts,
+			JoinedAt:  now.UnixMilli(),
+			Timestamp: now.UnixMilli(),
+		}
+		inboxData, err := json.Marshal(inboxEvt)
+		if err != nil {
+			slog.Warn("marshal inbox member event failed", "error", err, "roomID", room.ID)
+		} else {
+			outboxEvt := model.OutboxEvent{
+				Type:       model.OutboxMemberAdded,
+				SiteID:     h.siteID,
+				DestSiteID: h.siteID,
+				Payload:    inboxData,
+				Timestamp:  now.UnixMilli(),
+			}
+			if outboxData, err := json.Marshal(outboxEvt); err != nil {
+				slog.Warn("marshal outbox event failed", "error", err, "roomID", room.ID)
+			} else if err := h.publishToStream(ctx, subject.InboxMemberAdded(h.siteID), outboxData); err != nil {
+				slog.Warn("publish owner member_added failed", "error", err, "roomID", room.ID)
+			}
+		}
 	}
 
 	return json.Marshal(room)
