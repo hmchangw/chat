@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNats } from '../context/NatsContext'
 import { searchRooms, searchMessages } from '../lib/subjects'
+import { roomFromSearchHit, searchRoomPrefix } from '../lib/roomFormat'
 
 export default function SearchResultsPane({
   query,
@@ -17,21 +18,31 @@ export default function SearchResultsPane({
   const [loading, setLoading] = useState(false)
   const [msgFetched, setMsgFetched] = useState(false)
 
-  // Fetch rooms on mount
+  // Fetch rooms on mount or when query changes
   useEffect(() => {
     if (!query || !user) return
+    let cancelled = false
     setLoading(true)
+    setMsgFetched(false)
+    setMsgResults([])
+    setMsgTotal(0)
     request(searchRooms(user.account), {
       searchText: query,
       scope: 'all',
       size: 50,
     })
       .then((resp) => {
+        if (cancelled) return
         setRoomResults(resp.results ?? [])
         setRoomTotal(resp.total ?? 0)
       })
       .catch(() => {})
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [query, user, request])
 
   // Fetch messages when tab clicked
@@ -54,12 +65,7 @@ export default function SearchResultsPane({
   }
 
   const handleRoomClick = (hit) => {
-    onSelectRoom({
-      id: hit.roomId,
-      name: hit.roomName,
-      type: hit.roomType,
-      siteId: hit.siteId,
-    })
+    onSelectRoom(roomFromSearchHit(hit))
     onClose()
   }
 
@@ -110,7 +116,7 @@ export default function SearchResultsPane({
                 onClick={() => handleRoomClick(hit)}
               >
                 <span className="result-type">
-                  {hit.roomType === 'c' ? '#' : '@'}
+                  {searchRoomPrefix(hit.roomType)}
                 </span>
                 <span className="result-name">{hit.roomName}</span>
               </div>

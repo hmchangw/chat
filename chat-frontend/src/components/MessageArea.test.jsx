@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import MessageArea from './MessageArea'
+import { BUFFER_MODE } from '../lib/roomEventsReducer'
 
 beforeEach(() => {
   window.HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -85,7 +86,7 @@ describe('MessageArea', () => {
       hasLoadedHistory: true,
       historyError: null,
       loadHistory: vi.fn().mockResolvedValue(),
-      bufferMode: 'historical',
+      bufferMode: BUFFER_MODE.HISTORICAL,
       pendingCount: 3,
       resetToLiveTail,
     })
@@ -105,7 +106,7 @@ describe('MessageArea', () => {
       hasLoadedHistory: true,
       historyError: null,
       loadHistory: vi.fn().mockResolvedValue(),
-      bufferMode: 'live',
+      bufferMode: BUFFER_MODE.LIVE,
       pendingCount: 0,
       resetToLiveTail: vi.fn(),
     })
@@ -124,7 +125,7 @@ describe('MessageArea', () => {
       hasLoadedHistory: true,
       historyError: null,
       loadHistory: vi.fn().mockResolvedValue(),
-      bufferMode: 'historical',
+      bufferMode: BUFFER_MODE.HISTORICAL,
       pendingCount: 0,
       focusMessageId: null,
       resetToLiveTail: vi.fn(),
@@ -149,7 +150,7 @@ describe('MessageArea', () => {
         hasLoadedHistory: true,
         historyError: null,
         loadHistory: vi.fn().mockResolvedValue(),
-        bufferMode: 'historical',
+        bufferMode: BUFFER_MODE.HISTORICAL,
         pendingCount: 0,
         focusMessageId: 'm-focus',
         resetToLiveTail: vi.fn(),
@@ -181,7 +182,7 @@ describe('MessageArea', () => {
       hasLoadedHistory: true,
       historyError: null,
       loadHistory: vi.fn().mockResolvedValue(),
-      bufferMode: 'historical',
+      bufferMode: BUFFER_MODE.HISTORICAL,
       pendingCount: 0,
       focusMessageId: null,
       resetToLiveTail: vi.fn(),

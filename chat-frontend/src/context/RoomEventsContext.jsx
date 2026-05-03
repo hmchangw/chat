@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react'
 import { useNats } from './NatsContext'
-import { initialState, roomEventsReducer } from '../lib/roomEventsReducer'
+import { BUFFER_MODE, initialState, roomEventsReducer } from '../lib/roomEventsReducer'
 import {
   msgHistory,
   msgSurrounding,
@@ -204,7 +204,7 @@ export function useRoomEvents(roomId) {
       hasLoadedHistory: !!room?.hasLoadedHistory,
       historyError: room?.historyError ?? null,
       loadHistory: load,
-      bufferMode: room?.bufferMode ?? 'live',
+      bufferMode: room?.bufferMode ?? BUFFER_MODE.LIVE,
       pendingCount: room?.pendingLiveMessages?.length ?? 0,
       focusMessageId: room?.focusMessageId ?? null,
       jumpToMessage: jump,
