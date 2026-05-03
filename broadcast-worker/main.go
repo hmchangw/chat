@@ -111,7 +111,7 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(store, us, publisher, keyStore)
+	handler := NewHandler(store, us, publisher, keyStore, true)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
