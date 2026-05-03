@@ -243,6 +243,27 @@ body {
   color: #f38ba8;
 }
 
+.jump-latest-pill {
+  padding: 0.75rem;
+  margin: 0.5rem;
+  background: #5865f2;
+  border-radius: 24px;
+  text-align: center;
+}
+
+.jump-latest-pill button {
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.jump-latest-pill button:hover {
+  text-decoration: underline;
+}
+
 /* Message Input */
 .message-input {
   display: flex;

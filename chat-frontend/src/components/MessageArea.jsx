@@ -20,7 +20,15 @@ function messageContent(msg) {
 }
 
 export default function MessageArea({ room }) {
-  const { messages, hasLoadedHistory, historyError, loadHistory } = useRoomEvents(room?.id ?? null)
+  const {
+    messages,
+    hasLoadedHistory,
+    historyError,
+    loadHistory,
+    bufferMode,
+    pendingCount,
+    resetToLiveTail,
+  } = useRoomEvents(room?.id ?? null)
   const bottomRef = useRef(null)
   const [ctrlFOpen, setCtrlFOpen] = useState(false)
 
@@ -32,6 +40,12 @@ export default function MessageArea({ room }) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  useEffect(() => {
+    if (bufferMode === 'live') {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [bufferMode])
 
   useEffect(() => {
     if (!room) return
@@ -86,6 +100,13 @@ export default function MessageArea({ room }) {
         ))}
         <div ref={bottomRef} />
       </div>
+      {bufferMode === 'historical' && pendingCount > 0 && (
+        <div className="jump-latest-pill">
+          <button type="button" onClick={() => resetToLiveTail()}>
+            Jump to latest ({pendingCount} new)
+          </button>
+        </div>
+      )}
     </div>
   )
 }
