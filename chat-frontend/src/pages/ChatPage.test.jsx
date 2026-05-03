@@ -24,6 +24,16 @@ vi.mock('../components/RoomList', () => ({
 vi.mock('../components/MessageArea', () => ({ default: () => <div data-testid="message-area" /> }))
 vi.mock('../components/MessageInput', () => ({ default: () => <div data-testid="message-input" /> }))
 vi.mock('../components/CreateRoomDialog', () => ({ default: () => null }))
+vi.mock('../components/SearchBar', () => ({
+  default: ({ onSelectRoom, onEnterSearch }) => (
+    <input
+      data-testid="search-bar"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') onEnterSearch('test-query')
+      }}
+    />
+  ),
+}))
 
 import { useNats } from '../context/NatsContext'
 import { useRoomSummaries } from '../context/RoomEventsContext'

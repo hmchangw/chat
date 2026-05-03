@@ -48,3 +48,7 @@ export function memberRemove(account, roomId, siteId) {
 export function memberRoleUpdate(account, roomId, siteId) {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.member.role-update`
 }
+
+export function searchRooms(account) {
+  return `chat.user.${account}.request.search.rooms`
+}

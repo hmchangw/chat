@@ -7,6 +7,7 @@ import MessageInput from '../components/MessageInput'
 import CreateRoomDialog from '../components/CreateRoomDialog'
 import ManageMembersDialog from '../components/ManageMembersDialog'
 import LeaveRoomButton from '../components/LeaveRoomButton'
+import SearchBar from '../components/SearchBar'
 
 export default function ChatPage() {
   const { user, disconnect } = useNats()
@@ -14,6 +15,7 @@ export default function ChatPage() {
   const [selectedRoom, setSelectedRoom] = useState(null)
   const [showCreateRoom, setShowCreateRoom] = useState(false)
   const [showMembers, setShowMembers] = useState(false)
+  const [searchQuery, setSearchQuery] = useState(null)
 
   // Clear selection and any open member dialog if the selected room disappears from summaries
   useEffect(() => {
@@ -28,6 +30,7 @@ export default function ChatPage() {
     setSelectedRoom(room)
     setActiveRoom(room?.id ?? null)
     setShowMembers(false)
+    setSearchQuery(null)
   }
 
   const isChannel = selectedRoom?.type === 'channel'
@@ -36,6 +39,12 @@ export default function ChatPage() {
     <div className="chat-layout">
       <div className="chat-header">
         <span className="chat-header-title">Chat</span>
+        <div className="chat-header-search">
+          <SearchBar
+            onSelectRoom={handleSelectRoom}
+            onEnterSearch={(q) => setSearchQuery(q)}
+          />
+        </div>
         {isChannel && (
           <>
             <button
@@ -69,8 +78,14 @@ export default function ChatPage() {
           </button>
         </div>
         <div className="chat-main">
-          <MessageArea room={selectedRoom} />
-          <MessageInput room={selectedRoom} />
+          {searchQuery ? (
+            <div>Search Results (to be implemented in Task 5)</div>
+          ) : (
+            <>
+              <MessageArea room={selectedRoom} />
+              <MessageInput room={selectedRoom} />
+            </>
+          )}
         </div>
       </div>
       {showCreateRoom && (
