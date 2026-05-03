@@ -287,12 +287,15 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	}
 	seed := messageDedupSeed(ctx, "processRemoveIndividual", req.RoomID,
 		fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp))
+	// UserID == UserAccount under dev convention; prod needs real account → ID lookup.
 	sysMsg := model.Message{
-		ID:         idgen.MessageIDFromRequestID(seed, "rmindiv"),
-		RoomID:     req.RoomID,
-		Type:       evtType,
-		SysMsgData: sysMsgData,
-		CreatedAt:  now,
+		ID:          idgen.MessageIDFromRequestID(seed, "rmindiv"),
+		RoomID:      req.RoomID,
+		UserID:      req.Requester,
+		UserAccount: req.Requester,
+		Type:        evtType,
+		SysMsgData:  sysMsgData,
+		CreatedAt:   now,
 	}
 	msgEvt := model.MessageEvent{
 		Message:   sysMsg,
@@ -412,11 +415,13 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	seed := messageDedupSeed(ctx, "processRemoveOrg", req.RoomID,
 		fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp))
 	sysMsg := model.Message{
-		ID:         idgen.MessageIDFromRequestID(seed, "rmorg"),
-		RoomID:     req.RoomID,
-		Type:       "member_removed",
-		SysMsgData: sysMsgPayload,
-		CreatedAt:  now,
+		ID:          idgen.MessageIDFromRequestID(seed, "rmorg"),
+		RoomID:      req.RoomID,
+		UserID:      req.Requester,
+		UserAccount: req.Requester,
+		Type:        "member_removed",
+		SysMsgData:  sysMsgPayload,
+		CreatedAt:   now,
 	}
 	msgEvt := model.MessageEvent{
 		Message:   sysMsg,
@@ -685,6 +690,43 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	msgEvtData, _ := json.Marshal(msgEvt)
 	if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData, sysMsg.ID); err != nil {
 		return fmt.Errorf("publish add-members system message: %w", err)
+	}
+
+	// 9b. Same-site INBOX member_added so search-sync-worker indexes local
+	// members. Cross-site keep going through OUTBOX below. PR #145 spec.
+	sameSiteAccounts := make([]string, 0, len(actualAccounts))
+	for _, account := range actualAccounts {
+		user, ok := userMap[account]
+		if !ok || user.SiteID != room.SiteID {
+			continue
+		}
+		sameSiteAccounts = append(sameSiteAccounts, account)
+	}
+	if len(sameSiteAccounts) > 0 {
+		inboxEvt := model.InboxMemberEvent{
+			RoomID:             room.ID,
+			RoomName:           room.Name,
+			RoomType:           room.Type,
+			SiteID:             room.SiteID,
+			Accounts:           sameSiteAccounts,
+			HistorySharedSince: historySharedSince,
+			JoinedAt:           req.Timestamp,
+			Timestamp:          now.UnixMilli(),
+		}
+		inboxData, _ := json.Marshal(inboxEvt)
+		outboxWrap := model.OutboxEvent{
+			Type:       model.OutboxMemberAdded,
+			SiteID:     room.SiteID,
+			DestSiteID: room.SiteID,
+			Payload:    inboxData,
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, _ := json.Marshal(outboxWrap)
+		payloadSeed := fmt.Sprintf("%s:%s:%d:local-added", req.RoomID, req.RequesterAccount, req.Timestamp)
+		dedupID := outboxDedupID(ctx, room.SiteID, payloadSeed)
+		if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), outboxData, dedupID); err != nil {
+			return fmt.Errorf("publish local inbox member_added: %w", err)
+		}
 	}
 
 	// 10. Outbox for cross-site members — batched by destination site
