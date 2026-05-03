@@ -40,7 +40,7 @@ type config struct {
 	UserCacheTTL         time.Duration    `env:"USER_CACHE_TTL"            envDefault:"5m"`
 	ValkeyAddr           string           `env:"VALKEY_ADDR"`
 	ValkeyPassword       string           `env:"VALKEY_PASSWORD"           envDefault:""`
-	ValkeyKeyGracePeriod time.Duration    `env:"VALKEY_KEY_GRACE_PERIOD"`
+	ValkeyKeyGracePeriod time.Duration    `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
 	Bootstrap            bootstrapConfig  `envPrefix:"BOOTSTRAP_"`
 	Encryption           encryptionConfig `envPrefix:"ENCRYPTION_"`
 }
@@ -80,7 +80,9 @@ func main() {
 	var keyStore roomkeystore.RoomKeyStore
 	if cfg.Encryption.Enabled {
 		if cfg.ValkeyAddr == "" || cfg.ValkeyKeyGracePeriod <= 0 {
-			slog.Error("encryption enabled but VALKEY_ADDR / VALKEY_KEY_GRACE_PERIOD missing")
+			slog.Error("encryption enabled but VALKEY_ADDR is empty or VALKEY_KEY_GRACE_PERIOD is not a positive duration",
+				"valkey_addr_set", cfg.ValkeyAddr != "",
+				"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
 			os.Exit(1)
 		}
 		keyStore, err = roomkeystore.NewValkeyStore(roomkeystore.Config{
