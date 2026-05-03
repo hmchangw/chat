@@ -52,8 +52,12 @@ type RoomStore interface {
 	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
 }
 
-// RoomKeyStore is the consumer-side interface for room encryption key lookups.
-// Only the methods room-service needs are declared here.
+// RoomKeyStore is the consumer-side interface for room encryption key lookups
+// and the create-on-room-create write. Only the methods room-service needs
+// are declared here. broadcast-worker requires a key for every room before
+// it can encrypt — Set is called from handleCreateRoom so newly created
+// rooms come with a key in place.
 type RoomKeyStore interface {
 	GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error)
+	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
 }

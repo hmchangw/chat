@@ -104,6 +104,11 @@ func main() {
 			return fmt.Errorf("publish to %q: %w", subj, err)
 		}
 		return nil
+	}).WithEventPublisher(func(ctx context.Context, subj string, data []byte) error {
+		if err := nc.PublishMsg(ctx, natsutil.NewMsg(ctx, subj, data)); err != nil {
+			return fmt.Errorf("publish event to %q: %w", subj, err)
+		}
+		return nil
 	})
 
 	if err := handler.RegisterCRUD(nc); err != nil {
