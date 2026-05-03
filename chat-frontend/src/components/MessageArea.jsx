@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRoomEvents } from '../context/RoomEventsContext'
 import { roomPrefix } from '../lib/roomFormat'
+import InRoomSearch from './InRoomSearch'
 
 function formatTime(dateStr) {
   const d = new Date(dateStr)
@@ -21,6 +22,7 @@ function messageContent(msg) {
 export default function MessageArea({ room }) {
   const { messages, hasLoadedHistory, historyError, loadHistory } = useRoomEvents(room?.id ?? null)
   const bottomRef = useRef(null)
+  const [ctrlFOpen, setCtrlFOpen] = useState(false)
 
   useEffect(() => {
     if (!room) return
@@ -30,6 +32,24 @@ export default function MessageArea({ room }) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  useEffect(() => {
+    if (!room) return
+    const handler = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        setCtrlFOpen(true)
+      } else if (e.key === 'Escape') {
+        setCtrlFOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [room])
+
+  const handleJumpToMessage = (_msgId) => {
+    // jump-to-message anchoring is handled elsewhere; close the strip on click.
+  }
 
   if (!room) {
     return (
@@ -47,6 +67,13 @@ export default function MessageArea({ room }) {
         </span>
         <span className="message-area-members">{room.userCount} members</span>
       </div>
+      {ctrlFOpen && (
+        <InRoomSearch
+          roomId={room.id}
+          onClose={() => setCtrlFOpen(false)}
+          onJumpToMessage={handleJumpToMessage}
+        />
+      )}
       <div className="message-list">
         {!hasLoadedHistory && !historyError && <div className="message-loading">Loading messages...</div>}
         {historyError && <div className="message-error">{historyError}</div>}
