@@ -27,9 +27,12 @@ export default function MessageArea({ room }) {
     loadHistory,
     bufferMode,
     pendingCount,
+    focusMessageId,
     resetToLiveTail,
+    jumpToMessage,
   } = useRoomEvents(room?.id ?? null)
   const bottomRef = useRef(null)
+  const listRef = useRef(null)
   const [ctrlFOpen, setCtrlFOpen] = useState(false)
 
   useEffect(() => {
@@ -38,14 +41,29 @@ export default function MessageArea({ room }) {
   }, [room, loadHistory])
 
   useEffect(() => {
+    if (bufferMode === 'historical') return
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, bufferMode])
 
   useEffect(() => {
     if (bufferMode === 'live') {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [bufferMode])
+
+  useEffect(() => {
+    if (!focusMessageId || !listRef.current) return
+    const el = listRef.current.querySelector(
+      `[data-message-id="${focusMessageId}"]`
+    )
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('flash-jump')
+    const timer = setTimeout(() => {
+      el.classList.remove('flash-jump')
+    }, 2000)
+    return () => clearTimeout(timer)
+  }, [focusMessageId, messages])
 
   useEffect(() => {
     if (!room) return
@@ -61,8 +79,8 @@ export default function MessageArea({ room }) {
     return () => window.removeEventListener('keydown', handler)
   }, [room])
 
-  const handleJumpToMessage = (_msgId) => {
-    // jump-to-message anchoring is handled elsewhere; close the strip on click.
+  const handleJumpToMessage = (msgId) => {
+    if (jumpToMessage) jumpToMessage(msgId)?.catch?.(() => {})
   }
 
   if (!room) {
@@ -88,11 +106,11 @@ export default function MessageArea({ room }) {
           onJumpToMessage={handleJumpToMessage}
         />
       )}
-      <div className="message-list">
+      <div className="message-list" ref={listRef}>
         {!hasLoadedHistory && !historyError && <div className="message-loading">Loading messages...</div>}
         {historyError && <div className="message-error">{historyError}</div>}
         {messages.map((msg) => (
-          <div key={msg.id} className="message">
+          <div key={msg.id} className="message" data-message-id={msg.id}>
             <span className="message-sender">{senderName(msg)}</span>
             <span className="message-time">{formatTime(msg.createdAt)}</span>
             <div className="message-content">{messageContent(msg)}</div>

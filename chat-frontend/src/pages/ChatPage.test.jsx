@@ -35,9 +35,10 @@ vi.mock('../components/SearchBar', () => ({
   ),
 }))
 vi.mock('./SearchResultsPane', () => ({
-  default: ({ onClose }) => (
-    <div data-testid="search-results" onClick={() => onClose()}>
-      Search Results
+  default: ({ onClose, onJumpToMessage }) => (
+    <div data-testid="search-results">
+      <button onClick={() => onJumpToMessage('r1', 'm-target')}>jump-to-msg</button>
+      <button onClick={() => onClose()}>close-search</button>
     </div>
   ),
 }))
@@ -59,6 +60,7 @@ beforeEach(() => {
       { id: 'r2', name: 'bob-dm', type: 'dm', siteId: 'site-A', userCount: 2, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false },
     ],
     setActiveRoom: vi.fn(),
+    jumpToMessage: vi.fn().mockResolvedValue(),
     error: null,
   })
 })
@@ -98,5 +100,31 @@ describe('ChatPage header buttons', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Members$/ }))
     fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
     expect(screen.queryByRole('heading', { name: /Manage Members/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('ChatPage jump-to-message wiring', () => {
+  it('jumping from search results selects the room, closes search, and calls jumpToMessage', () => {
+    const setActiveRoom = vi.fn()
+    const jumpToMessage = vi.fn().mockResolvedValue()
+    useRoomSummaries.mockReturnValue({
+      summaries: [
+        { id: 'r1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false },
+      ],
+      setActiveRoom,
+      jumpToMessage,
+      error: null,
+    })
+    render(<ChatPage />)
+    // Open search results pane via the SearchBar's Enter
+    fireEvent.keyDown(screen.getByTestId('search-bar'), { key: 'Enter' })
+    expect(screen.getByTestId('search-results')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('jump-to-msg'))
+
+    // Search pane is closed
+    expect(screen.queryByTestId('search-results')).not.toBeInTheDocument()
+    expect(setActiveRoom).toHaveBeenCalledWith('r1')
+    expect(jumpToMessage).toHaveBeenCalledWith('r1', 'm-target')
   })
 })

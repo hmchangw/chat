@@ -7,6 +7,7 @@ import {
   memberRoleUpdate,
   searchRooms,
   searchMessages,
+  msgSurrounding,
 } from './subjects'
 
 describe('subjects', () => {
@@ -42,5 +43,11 @@ describe('subjects', () => {
 
   it('searchMessages builds the search messages request subject', () => {
     expect(searchMessages('alice')).toBe('chat.user.alice.request.search.messages')
+  })
+
+  it('msgSurrounding builds the surrounding-messages request subject', () => {
+    expect(msgSurrounding('alice', 'r1', 'site-A')).toBe(
+      'chat.user.alice.request.room.r1.site-A.msg.surrounding'
+    )
   })
 })

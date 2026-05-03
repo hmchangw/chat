@@ -12,7 +12,7 @@ import SearchResultsPane from './SearchResultsPane'
 
 export default function ChatPage() {
   const { user, disconnect } = useNats()
-  const { summaries, setActiveRoom } = useRoomSummaries()
+  const { summaries, setActiveRoom, jumpToMessage } = useRoomSummaries()
   const [selectedRoom, setSelectedRoom] = useState(null)
   const [showCreateRoom, setShowCreateRoom] = useState(false)
   const [showMembers, setShowMembers] = useState(false)
@@ -32,6 +32,17 @@ export default function ChatPage() {
     setActiveRoom(room?.id ?? null)
     setShowMembers(false)
     setSearchQuery(null)
+  }
+
+  const handleJumpToMessage = (roomId, messageId) => {
+    const room = summaries.find((r) => r.id === roomId)
+    if (room) {
+      setSelectedRoom(room)
+      setActiveRoom(room.id)
+      setShowMembers(false)
+    }
+    setSearchQuery(null)
+    if (jumpToMessage) jumpToMessage(roomId, messageId)?.catch?.(() => {})
   }
 
   const isChannel = selectedRoom?.type === 'channel'
@@ -84,7 +95,7 @@ export default function ChatPage() {
               query={searchQuery}
               onClose={() => setSearchQuery(null)}
               onSelectRoom={handleSelectRoom}
-              onJumpToMessage={() => {}}
+              onJumpToMessage={handleJumpToMessage}
             />
           ) : (
             <>
