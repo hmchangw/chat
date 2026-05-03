@@ -1,4 +1,4 @@
-.PHONY: lint fmt test test-integration generate build deps-up deps-down up down
+.PHONY: lint fmt test test-integration generate build deps-up deps-down up up-rebuild down seed-users backfill-room-keys
 
 DEPS_COMPOSE     := docker-local/compose.deps.yaml
 SERVICES_COMPOSE := docker-local/compose.services.yaml
@@ -67,10 +67,23 @@ deps-up:
 deps-down:
 	docker compose -f $(DEPS_COMPOSE) down
 
-# Start microservices. With SERVICE=<name>, starts just that service's compose;
-# without, starts every service via compose.services.yaml. Foreground either way
-# so container logs stream to the terminal; Ctrl-C stops.
+# Start microservices in foreground. SERVICE=<name> for one, otherwise all.
+# `up` reuses images for fast boot; use `up-rebuild` after editing source.
 up:
+	@docker container inspect -f '{{.State.Running}}' $(NATS_CONTAINER) 2>/dev/null | grep -q true || { \
+	  echo "Deps are not running. Run 'make deps-up' first."; exit 1; \
+	}
+	@test -f $(NATS_CREDS) && test -f $(NATS_CONF) || { \
+	  echo "Missing $(NATS_CREDS) or $(NATS_CONF). Run './docker-local/setup.sh'."; exit 1; \
+	}
+ifdef SERVICE
+	docker compose -f $(SERVICE)/deploy/docker-compose.yml up
+else
+	docker compose -f $(SERVICES_COMPOSE) up
+endif
+
+# Same as `up` but rebuilds images first.
+up-rebuild:
 	@docker container inspect -f '{{.State.Running}}' $(NATS_CONTAINER) 2>/dev/null | grep -q true || { \
 	  echo "Deps are not running. Run 'make deps-up' first."; exit 1; \
 	}
@@ -82,6 +95,14 @@ ifdef SERVICE
 else
 	docker compose -f $(SERVICES_COMPOSE) up --build
 endif
+
+# Seed dev-mode users (alice, bob) into Mongo. Idempotent.
+seed-users:
+	./docker-local/seed-users.sh
+
+# Backfill Valkey room keys for rooms created before mint-on-create. Idempotent.
+backfill-room-keys:
+	./docker-local/backfill-room-keys.sh
 
 # Stop microservices. SERVICE=<name> stops one; otherwise stops every service.
 down:
