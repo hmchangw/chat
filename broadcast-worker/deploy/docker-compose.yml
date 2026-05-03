@@ -12,6 +12,7 @@ services:
     build:
       context: ../..
       dockerfile: broadcast-worker/deploy/Dockerfile
+    stop_grace_period: 2s
     environment:
       - NATS_URL=nats://nats:4222
       - NATS_CREDS_FILE=/etc/nats/backend.creds
@@ -25,6 +26,8 @@ services:
       - VALKEY_ADDR=valkey:6379
       - VALKEY_KEY_GRACE_PERIOD=24h
       - BOOTSTRAP_STREAMS=true
+      # Local dev only — bundles plaintext for no-crypto frontends. Never enable in prod.
+      - DEV_MODE=true
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     networks:

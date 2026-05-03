@@ -37,6 +37,9 @@ type Handler struct {
 	userStore userstore.UserStore
 	pub       Publisher
 	keyStore  RoomKeyProvider
+	// devMode bundles plaintext alongside the encrypted payload for local
+	// frontends without crypto. MUST stay false in prod.
+	devMode bool
 }
 
 func NewHandler(store Store, userStore userstore.UserStore, pub Publisher, keyStore RoomKeyProvider) *Handler {
@@ -108,7 +111,10 @@ func (h *Handler) publishChannelEvent(ctx context.Context, room *model.Room, cli
 		return fmt.Errorf("get room key for room %s: %w", room.ID, err)
 	}
 	if key == nil {
-		return fmt.Errorf("get room key for room %s: %w", room.ID, errNoCurrentKey)
+		// Permanent: ack-skip so we don't nak-loop forever.
+		slog.Warn("room missing encryption key — dropping live broadcast",
+			"roomID", room.ID, "messageID", clientMsg.ID, "err", errNoCurrentKey)
+		return nil
 	}
 
 	encrypted, err := roomcrypto.Encode(string(msgJSON), key.KeyPair.PublicKey, key.Version)
@@ -122,7 +128,9 @@ func (h *Handler) publishChannelEvent(ctx context.Context, room *model.Room, cli
 	}
 
 	evt.EncryptedMessage = json.RawMessage(encJSON)
-	evt.Message = nil
+	if !h.devMode {
+		evt.Message = nil
+	}
 
 	payload, err := json.Marshal(evt)
 	if err != nil {
