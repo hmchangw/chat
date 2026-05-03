@@ -37,7 +37,9 @@ type config struct {
 	ValkeyAddr           string          `env:"VALKEY_ADDR,required"`
 	ValkeyPassword       string          `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration   `env:"VALKEY_KEY_GRACE_PERIOD,required"`
-	Bootstrap            bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	// DevMode bundles plaintext for local frontends without crypto. MUST stay false in prod.
+	DevMode   bool            `env:"DEV_MODE"                  envDefault:"false"`
+	Bootstrap bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 }
 
 func main() {
@@ -112,6 +114,10 @@ func main() {
 
 	publisher := &natsPublisher{nc: nc}
 	handler := NewHandler(store, us, publisher, keyStore)
+	handler.devMode = cfg.DevMode
+	if cfg.DevMode {
+		slog.Warn("DEV_MODE enabled — plaintext message bundled in channel events; do NOT enable in production")
+	}
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
