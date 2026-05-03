@@ -5,6 +5,7 @@ services:
     build:
       context: ../..
       dockerfile: notification-worker/deploy/Dockerfile
+    stop_grace_period: 2s
     environment:
       - NATS_URL=nats://nats:4222
       - NATS_CREDS_FILE=/etc/nats/backend.creds
