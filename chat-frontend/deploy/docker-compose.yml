@@ -9,6 +9,12 @@ services:
       AUTH_URL: ${AUTH_URL:-http://localhost:8080}
       NATS_URL: ${NATS_URL:-ws://localhost:9222}
       DEFAULT_SITE_ID: ${DEFAULT_SITE_ID:-site-local}
+      # OIDC values are only consumed when DEV_MODE=false. The Keycloak
+      # realm at OIDC_ISSUER_URL must serve OIDC_CLIENT_ID with a redirect
+      # URI matching this frontend's /oidc-callback.
+      DEV_MODE: ${DEV_MODE:-false}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-http://localhost:8180/realms/chatapp}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-nats-chat}
     ports:
       - "3000:80"
     networks:
