@@ -74,8 +74,8 @@ export default function SearchBar({ onSelectRoom, onEnterSearch }) {
         value={query}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
-        placeholder="Search rooms..."
-        aria-label="Search rooms"
+        placeholder="Search..."
+        aria-label="Search rooms and messages"
       />
       {query.length >= 2 && results.length > 0 && (
         <div className="search-dropdown" role="listbox">

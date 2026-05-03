@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useRoomEvents } from '../context/RoomEventsContext'
 import { BUFFER_MODE } from '../lib/roomEventsReducer'
 import { roomPrefix } from '../lib/roomFormat'
-import InRoomSearch from './InRoomSearch'
 
 function formatTime(dateStr) {
   const d = new Date(dateStr)
@@ -34,7 +33,6 @@ export default function MessageArea({ room }) {
   } = useRoomEvents(room?.id ?? null)
   const bottomRef = useRef(null)
   const listRef = useRef(null)
-  const [ctrlFOpen, setCtrlFOpen] = useState(false)
 
   useEffect(() => {
     if (!room) return
@@ -69,24 +67,6 @@ export default function MessageArea({ room }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusMessageId])
 
-  useEffect(() => {
-    if (!room) return
-    const handler = (e) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
-        e.preventDefault()
-        setCtrlFOpen(true)
-      } else if (e.key === 'Escape') {
-        setCtrlFOpen(false)
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [room])
-
-  const handleJumpToMessage = (msgId) => {
-    if (jumpToMessage) jumpToMessage(msgId)?.catch?.(() => {})
-  }
-
   if (!room) {
     return (
       <div className="message-area">
@@ -103,13 +83,6 @@ export default function MessageArea({ room }) {
         </span>
         <span className="message-area-members">{room.userCount} members</span>
       </div>
-      {ctrlFOpen && (
-        <InRoomSearch
-          roomId={room.id}
-          onClose={() => setCtrlFOpen(false)}
-          onJumpToMessage={handleJumpToMessage}
-        />
-      )}
       <div className="message-list" ref={listRef}>
         {!hasLoadedHistory && !historyError && <div className="message-loading">Loading messages...</div>}
         {historyError && <div className="message-error">{historyError}</div>}

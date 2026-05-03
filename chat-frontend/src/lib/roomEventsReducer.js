@@ -96,6 +96,15 @@ export function roomEventsReducer(state, action) {
     }
     case 'MESSAGE_RECEIVED': {
       const evt = action.event
+      // Channel rooms broadcast encrypted-only events (Message zeroed,
+      // EncryptedMessage populated). Without client-side crypto we can't
+      // render those, so just skip them rather than crash on the missing
+      // .id below. DM rooms always carry a populated .message and proceed
+      // normally. The DEV_MODE plaintext fallback in broadcast-worker
+      // populates .message for channels too, so dev sees them.
+      if (!evt.message || !evt.message.id) {
+        return state
+      }
       const roomId = evt.roomId
       const prev = state.roomState[roomId] ?? emptyRoomState()
       const isActive = state.activeRoomId === roomId

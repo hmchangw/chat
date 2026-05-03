@@ -9,6 +9,7 @@ import ManageMembersDialog from '../components/ManageMembersDialog'
 import LeaveRoomButton from '../components/LeaveRoomButton'
 import SearchBar from '../components/SearchBar'
 import SearchResultsPane from './SearchResultsPane'
+import InRoomSearch from '../components/InRoomSearch'
 
 export default function ChatPage() {
   const { user, disconnect } = useNats()
@@ -17,6 +18,7 @@ export default function ChatPage() {
   const [showCreateRoom, setShowCreateRoom] = useState(false)
   const [showMembers, setShowMembers] = useState(false)
   const [searchQuery, setSearchQuery] = useState(null)
+  const [inRoomSearchOpen, setInRoomSearchOpen] = useState(false)
 
   // Clear selection and any open member dialog if the selected room disappears from summaries
   useEffect(() => {
@@ -24,14 +26,33 @@ export default function ChatPage() {
       setSelectedRoom(null)
       setActiveRoom(null)
       setShowMembers(false)
+      setInRoomSearchOpen(false)
     }
   }, [summaries, selectedRoom, setActiveRoom])
+
+  // Ctrl/Cmd-F opens the in-room search side panel; Esc closes it. Lives at
+  // ChatPage level so the panel sits as a sibling of MessageArea (Teams-
+  // style right rail) rather than overlaying inside the message list.
+  useEffect(() => {
+    if (!selectedRoom) return
+    const handler = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        setInRoomSearchOpen(true)
+      } else if (e.key === 'Escape') {
+        setInRoomSearchOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selectedRoom])
 
   const handleSelectRoom = (room) => {
     setSelectedRoom(room)
     setActiveRoom(room?.id ?? null)
     setShowMembers(false)
     setSearchQuery(null)
+    setInRoomSearchOpen(false)
   }
 
   const handleJumpToMessage = (roomId, messageId) => {
@@ -43,6 +64,12 @@ export default function ChatPage() {
     }
     setSearchQuery(null)
     if (jumpToMessage) jumpToMessage(roomId, messageId)?.catch?.(() => {})
+  }
+
+  const handleInRoomJump = (msgId) => {
+    if (selectedRoom && jumpToMessage) {
+      jumpToMessage(selectedRoom.id, msgId)?.catch?.(() => {})
+    }
   }
 
   const isChannel = selectedRoom?.type === 'channel'
@@ -98,10 +125,19 @@ export default function ChatPage() {
               onJumpToMessage={handleJumpToMessage}
             />
           ) : (
-            <>
-              <MessageArea room={selectedRoom} />
-              <MessageInput room={selectedRoom} />
-            </>
+            <div className="chat-main-with-side-panel">
+              <div className="chat-main-content">
+                <MessageArea room={selectedRoom} />
+                <MessageInput room={selectedRoom} />
+              </div>
+              {inRoomSearchOpen && selectedRoom && (
+                <InRoomSearch
+                  roomId={selectedRoom.id}
+                  onClose={() => setInRoomSearchOpen(false)}
+                  onJumpToMessage={handleInRoomJump}
+                />
+              )}
+            </div>
           )}
         </div>
       </div>
