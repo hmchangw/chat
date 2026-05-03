@@ -228,7 +228,7 @@ body {
   margin-top: 0.25rem;
   line-height: 1.4;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .message-loading,
@@ -817,14 +817,30 @@ body {
   flex-direction: column;
   gap: 0.2rem;
   padding: 0.6rem 0.75rem;
+  border: none;
   border-radius: 4px;
   cursor: pointer;
   color: #dbdee1;
   font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  background: transparent;
+  width: 100%;
 }
 
-.search-results-content .result-item:hover {
+.search-results-content .result-item:hover,
+.search-results-content .result-item:focus-visible {
   background: #404249;
+  outline: none;
+}
+
+.search-error {
+  padding: 1rem;
+  margin: 0.5rem;
+  border-radius: 4px;
+  color: #f38ba8;
+  background: rgba(243, 139, 168, 0.08);
+  font-size: 13px;
 }
 
 .search-results-content .room-results .result-item {
@@ -843,7 +859,7 @@ body {
 .search-results-content .msg-content {
   color: #f2f3f5;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .search-results-content .msg-meta {
@@ -977,7 +993,7 @@ body {
 .in-room-search-result-content {
   color: #f2f3f5;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;

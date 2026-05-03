@@ -34,7 +34,10 @@ export default function ChatPage() {
   // ChatPage level so the panel sits as a sibling of MessageArea (Teams-
   // style right rail) rather than overlaying inside the message list.
   useEffect(() => {
-    if (!selectedRoom) return
+    // Disable the in-room shortcut while the full-search pane is showing,
+    // otherwise the side panel can open invisibly behind it and pop back
+    // when the user closes global search.
+    if (!selectedRoom || searchQuery) return
     const handler = (e) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault()
@@ -45,7 +48,7 @@ export default function ChatPage() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedRoom])
+  }, [selectedRoom, searchQuery])
 
   const handleSelectRoom = (room) => {
     setSelectedRoom(room)
@@ -81,7 +84,10 @@ export default function ChatPage() {
         <div className="chat-header-search">
           <SearchBar
             onSelectRoom={handleSelectRoom}
-            onEnterSearch={(q) => setSearchQuery(q)}
+            onEnterSearch={(q) => {
+              setSearchQuery(q)
+              setInRoomSearchOpen(false)
+            }}
           />
         </div>
         {isChannel && (

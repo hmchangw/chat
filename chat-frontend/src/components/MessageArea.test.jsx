@@ -11,12 +11,7 @@ vi.mock('../context/RoomEventsContext', () => ({
   useRoomEvents: vi.fn(),
 }))
 
-vi.mock('../context/NatsContext', () => ({
-  useNats: vi.fn(),
-}))
-
 import { useRoomEvents } from '../context/RoomEventsContext'
-import { useNats } from '../context/NatsContext'
 
 describe('MessageArea', () => {
   it('shows the empty-state when no room is selected', () => {
@@ -59,24 +54,6 @@ describe('MessageArea', () => {
     })
     render(<MessageArea room={{ id: 'r1', name: 'general', type: 'channel', userCount: 2 }} />)
     expect(loadHistory).toHaveBeenCalled()
-  })
-
-  it('Ctrl+F opens the in-room search strip', () => {
-    useRoomEvents.mockReturnValue({
-      messages: [], hasLoadedHistory: true, historyError: null, loadHistory: vi.fn().mockResolvedValue(),
-    })
-    useNats.mockReturnValue({
-      user: { account: 'alice' },
-      request: vi.fn().mockResolvedValue({ results: [], total: 0 }),
-    })
-
-    render(<MessageArea room={{ id: 'r1', name: 'general', type: 'channel', userCount: 2 }} />)
-
-    expect(screen.queryByLabelText(/Search messages in room/i)).not.toBeInTheDocument()
-
-    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
-
-    expect(screen.getByLabelText(/Search messages in room/i)).toBeInTheDocument()
   })
 
   it('shows the jump-to-latest pill in historical mode and resets to live on click', () => {

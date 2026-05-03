@@ -17,17 +17,18 @@ export default function SearchResultsPane({
   const [msgTotal, setMsgTotal] = useState(0)
   const [roomsLoading, setRoomsLoading] = useState(false)
   const [msgsLoading, setMsgsLoading] = useState(false)
+  const [roomsError, setRoomsError] = useState(null)
+  const [msgsError, setMsgsError] = useState(null)
 
-  // Fire rooms + messages searches in parallel as soon as the pane opens
-  // (or the query changes). Previously messages were lazy-fetched on tab
-  // click, which meant the user saw "0 results" for messages until they
-  // clicked even when matches existed. Both totals are visible up front
-  // now so the tab badges reflect reality and switching is instant.
+  // Fire rooms + messages searches in parallel; errors are surfaced per tab
+  // so an outage doesn't render as an empty state.
   useEffect(() => {
     if (!query || !user) return
     let cancelled = false
     setRoomsLoading(true)
     setMsgsLoading(true)
+    setRoomsError(null)
+    setMsgsError(null)
 
     request(searchRooms(user.account), {
       searchText: query,
@@ -39,7 +40,9 @@ export default function SearchResultsPane({
         setRoomResults(resp.results ?? [])
         setRoomTotal(resp.total ?? 0)
       })
-      .catch(() => {})
+      .catch((err) => {
+        if (!cancelled) setRoomsError(err?.message || 'Search failed')
+      })
       .finally(() => {
         if (!cancelled) setRoomsLoading(false)
       })
@@ -53,7 +56,9 @@ export default function SearchResultsPane({
         setMsgResults(resp.results ?? [])
         setMsgTotal(resp.total ?? 0)
       })
-      .catch(() => {})
+      .catch((err) => {
+        if (!cancelled) setMsgsError(err?.message || 'Search failed')
+      })
       .finally(() => {
         if (!cancelled) setMsgsLoading(false)
       })
@@ -105,11 +110,15 @@ export default function SearchResultsPane({
         {activeTab === 'rooms' && (
           <div className="room-results">
             {roomsLoading && <div className="loading">Loading rooms...</div>}
-            {!roomsLoading && roomResults.length === 0 && (
+            {!roomsLoading && roomsError && (
+              <div className="search-error">Room search failed: {roomsError}</div>
+            )}
+            {!roomsLoading && !roomsError && roomResults.length === 0 && (
               <div className="empty">No rooms found</div>
             )}
             {roomResults.map((hit) => (
-              <div
+              <button
+                type="button"
                 key={hit.roomId}
                 className="result-item"
                 onClick={() => handleRoomClick(hit)}
@@ -118,7 +127,7 @@ export default function SearchResultsPane({
                   {searchRoomPrefix(hit.roomType)}
                 </span>
                 <span className="result-name">{hit.roomName}</span>
-              </div>
+              </button>
             ))}
           </div>
         )}
@@ -126,11 +135,15 @@ export default function SearchResultsPane({
         {activeTab === 'messages' && (
           <div className="message-results">
             {msgsLoading && <div className="loading">Loading messages...</div>}
-            {!msgsLoading && msgResults.length === 0 && (
+            {!msgsLoading && msgsError && (
+              <div className="search-error">Message search failed: {msgsError}</div>
+            )}
+            {!msgsLoading && !msgsError && msgResults.length === 0 && (
               <div className="empty">No messages found</div>
             )}
             {msgResults.map((hit) => (
-              <div
+              <button
+                type="button"
                 key={hit.messageId}
                 className="result-item"
                 onClick={() => handleMessageClick(hit)}
@@ -139,7 +152,7 @@ export default function SearchResultsPane({
                 <div className="msg-meta">
                   {hit.userAccount} · {new Date(hit.createdAt).toLocaleString()}
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         )}

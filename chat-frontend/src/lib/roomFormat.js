@@ -11,6 +11,9 @@ export function roomFromSearchHit(hit) {
   }
 }
 
+// Backend uses model.RoomType strings ("channel" / "dm" / ...). Same logic as
+// roomPrefix above but without the trailing space — search rows place the
+// prefix in its own span/div so spacing is handled by CSS, not the string.
 export function searchRoomPrefix(roomType) {
-  return roomType === 'c' ? '#' : '@'
+  return roomType === 'dm' ? '@' : '#'
 }

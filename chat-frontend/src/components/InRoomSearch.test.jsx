@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import InRoomSearch from './InRoomSearch'
 
@@ -11,14 +11,9 @@ import { useNats } from '../context/NatsContext'
 describe('InRoomSearch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.useFakeTimers({ shouldAdvanceTime: true })
   })
 
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
-  it('fetches message results after 300ms debounce, scoped to roomIds: [roomId]', async () => {
+  it('does not fetch on typing; fetches on Enter scoped to roomIds: [roomId]', async () => {
     const request = vi.fn().mockResolvedValue({ results: [], total: 0 })
     useNats.mockReturnValue({
       user: { account: 'alice' },
@@ -33,16 +28,17 @@ describe('InRoomSearch', () => {
       />
     )
 
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'hi' } })
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'hi' } })
 
     expect(request).not.toHaveBeenCalled()
 
-    vi.advanceTimersByTime(300)
+    fireEvent.keyDown(input, { key: 'Enter' })
 
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith(
         'chat.user.alice.request.search.messages',
-        { searchText: 'hi', roomIds: ['r1'], size: 20 }
+        { searchText: 'hi', roomIds: ['r1'], size: 50 }
       )
     })
   })
@@ -69,8 +65,9 @@ describe('InRoomSearch', () => {
       />
     )
 
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'hello' } })
-    vi.advanceTimersByTime(300)
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'hello' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
 
     await waitFor(() => {
       expect(screen.getByText('hello world')).toBeInTheDocument()

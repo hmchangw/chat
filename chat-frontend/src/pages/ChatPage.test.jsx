@@ -42,6 +42,11 @@ vi.mock('./SearchResultsPane', () => ({
     </div>
   ),
 }))
+vi.mock('../components/InRoomSearch', () => ({
+  default: ({ roomId }) => (
+    <div data-testid="in-room-search" data-room-id={roomId} />
+  ),
+}))
 
 import { useNats } from '../context/NatsContext'
 import { useRoomSummaries } from '../context/RoomEventsContext'
@@ -100,6 +105,35 @@ describe('ChatPage header buttons', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Members$/ }))
     fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
     expect(screen.queryByRole('heading', { name: /Manage Members/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('ChatPage Ctrl+F in-room search', () => {
+  it('opens the side panel when a room is selected', () => {
+    render(<ChatPage />)
+    fireEvent.click(screen.getByText('pick-channel'))
+    expect(screen.queryByTestId('in-room-search')).not.toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    expect(screen.getByTestId('in-room-search')).toHaveAttribute('data-room-id', 'r1')
+  })
+
+  it('Esc closes the side panel', () => {
+    render(<ChatPage />)
+    fireEvent.click(screen.getByText('pick-channel'))
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    expect(screen.getByTestId('in-room-search')).toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByTestId('in-room-search')).not.toBeInTheDocument()
+  })
+
+  it('does not open while the full-search pane is showing', () => {
+    render(<ChatPage />)
+    fireEvent.click(screen.getByText('pick-channel'))
+    // Open full-search via SearchBar Enter; the Ctrl+F shortcut should be gated.
+    fireEvent.keyDown(screen.getByTestId('search-bar'), { key: 'Enter' })
+    expect(screen.getByTestId('search-results')).toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    expect(screen.queryByTestId('in-room-search')).not.toBeInTheDocument()
   })
 })
 
