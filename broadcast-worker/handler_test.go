@@ -485,8 +485,10 @@ func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {
 
 		h := NewHandler(store, us, pub, keyStore)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
-		require.Error(t, err)
-		assert.ErrorIs(t, err, errNoCurrentKey)
+		// A keyless room is treated as a permanent broadcast failure: the
+		// handler logs and returns nil so the caller acks (avoiding the
+		// JetStream redelivery loop). The fan-out is dropped — no publish.
+		require.NoError(t, err)
 		assert.Empty(t, pub.records)
 	})
 
