@@ -20,6 +20,8 @@ type handlerConfig struct {
 	RecentWindow            time.Duration
 	RequestTimeout          time.Duration
 	UserRoomIndex           string
+	// SpotlightIndex falls back to the const when empty.
+	SpotlightIndex string
 }
 
 type handler struct {
@@ -136,7 +138,11 @@ func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsReques
 	}
 
 	observeESDone := observeES()
-	raw, err := h.store.Search(ctx, []string{SpotlightIndex}, body)
+	spotlightIndex := h.cfg.SpotlightIndex
+	if spotlightIndex == "" {
+		spotlightIndex = SpotlightIndex
+	}
+	raw, err := h.store.Search(ctx, []string{spotlightIndex}, body)
 	observeESDone()
 	if err != nil {
 		slog.Error("room search backend failed", "account", account, "error", err)
