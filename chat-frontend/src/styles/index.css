@@ -264,6 +264,20 @@ body {
   text-decoration: underline;
 }
 
+/* Jump-to-message flash highlight */
+@keyframes flash-jump {
+  0% {
+    background-color: rgba(88, 101, 242, 0.2);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.message.flash-jump {
+  animation: flash-jump 2s ease-out;
+}
+
 /* Message Input */
 .message-input {
   display: flex;
