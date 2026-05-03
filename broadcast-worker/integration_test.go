@@ -82,7 +82,7 @@ func TestBroadcastWorker_ChannelRoom_Integration(t *testing.T) {
 	pub := &recordingPublisher{}
 	key := testRoomKey(t)
 	keyStore := &fakeRoomKeyProvider{pair: key}
-	handler := NewHandler(store, us, pub, keyStore)
+	handler := NewHandler(store, us, pub, keyStore, true)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -127,7 +127,7 @@ func TestBroadcastWorker_ChannelRoom_MentionAll_Integration(t *testing.T) {
 	pub := &recordingPublisher{}
 	key := testRoomKey(t)
 	keyStore := &fakeRoomKeyProvider{pair: key}
-	handler := NewHandler(store, us, pub, keyStore)
+	handler := NewHandler(store, us, pub, keyStore, true)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -166,7 +166,7 @@ func TestBroadcastWorker_ChannelRoom_IndividualMention_Integration(t *testing.T)
 	pub := &recordingPublisher{}
 	key := testRoomKey(t)
 	keyStore := &fakeRoomKeyProvider{pair: key}
-	handler := NewHandler(store, us, pub, keyStore)
+	handler := NewHandler(store, us, pub, keyStore, true)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
@@ -215,7 +215,7 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
 	keyStore := &fakeRoomKeyProvider{pair: nil}
-	handler := NewHandler(store, us, pub, keyStore)
+	handler := NewHandler(store, us, pub, keyStore, true)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
