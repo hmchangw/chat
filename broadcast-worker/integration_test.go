@@ -307,4 +307,6 @@ func TestBroadcastWorker_ChannelRoom_EncryptionDisabled_Integration(t *testing.T
 	var room model.Room
 	require.NoError(t, db.Collection("rooms").FindOne(ctx, bson.M{"_id": "rNoEnc"}).Decode(&room))
 	assert.Equal(t, "mNoEnc", room.LastMsgID)
+	require.NotNil(t, room.LastMsgAt)
+	assert.WithinDuration(t, msgTime, *room.LastMsgAt, time.Millisecond)
 }
