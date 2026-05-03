@@ -11,3 +11,14 @@ export const NATS_URL =
 
 export const DEFAULT_SITE_ID =
   runtime.DEFAULT_SITE_ID || import.meta.env.VITE_DEFAULT_SITE_ID || 'site-local'
+
+export const DEV_MODE =
+  (runtime.DEV_MODE ?? import.meta.env.VITE_DEV_MODE ?? 'true') === 'true'
+
+export const OIDC_ISSUER_URL =
+  runtime.OIDC_ISSUER_URL ||
+  import.meta.env.VITE_OIDC_ISSUER_URL ||
+  'http://localhost:8180/realms/chatapp'
+
+export const OIDC_CLIENT_ID =
+  runtime.OIDC_CLIENT_ID || import.meta.env.VITE_OIDC_CLIENT_ID || 'nats-chat'
