@@ -16,21 +16,31 @@ export function NatsProvider({ children }) {
   const authUrl = AUTH_URL
   const natsUrl = NATS_URL
 
-  const connectToNats = useCallback(async (account, siteId) => {
+  // connectToNats accepts an opts object with one of two shapes:
+  //   { mode: 'dev', account, siteId } — dev login by account name
+  //   { mode: 'sso', ssoToken, siteId } — production login via OIDC access token
+  const connectToNats = useCallback(async (opts) => {
     setError(null)
+
+    const { mode, account, ssoToken, siteId } = opts || {}
 
     const nkey = createUser()
     const natsPublicKey = nkey.getPublicKey()
 
+    const body =
+      mode === 'sso'
+        ? { ssoToken, natsPublicKey }
+        : { account, natsPublicKey }
+
     const authResp = await fetch(`${authUrl}/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account, natsPublicKey }),
+      body: JSON.stringify(body),
     })
 
     if (!authResp.ok) {
-      const body = await authResp.json().catch(() => ({}))
-      throw new Error(body.error || `Auth failed: ${authResp.status}`)
+      const errBody = await authResp.json().catch(() => ({}))
+      throw new Error(errBody.error || `Auth failed: ${authResp.status}`)
     }
 
     const { natsJwt, user: userInfo } = await authResp.json()
