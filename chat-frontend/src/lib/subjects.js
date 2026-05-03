@@ -52,3 +52,7 @@ export function memberRoleUpdate(account, roomId, siteId) {
 export function searchRooms(account) {
   return `chat.user.${account}.request.search.rooms`
 }
+
+export function searchMessages(account) {
+  return `chat.user.${account}.request.search.messages`
+}
