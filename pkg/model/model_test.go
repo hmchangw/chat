@@ -32,14 +32,16 @@ func TestUserJSON(t *testing.T) {
 func TestRoomJSON(t *testing.T) {
 	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	lastMention := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	minSeen := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
 		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
-		LastMsgAt:        &lastMsg,
-		LastMsgID:        "m1",
-		LastMentionAllAt: &lastMention,
-		CreatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		LastMsgAt:         &lastMsg,
+		LastMsgID:         "m1",
+		LastMentionAllAt:  &lastMention,
+		MinUserLastSeenAt: &minSeen,
+		CreatedAt:         time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:         time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	roundTrip(t, &r, &model.Room{})
 }
@@ -63,10 +65,14 @@ func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
 	_, hasMention := raw["lastMentionAllAt"]
 	assert.False(t, hasMention, "nil LastMentionAllAt must be omitted from JSON")
 
+	_, hasMinSeen := raw["minUserLastSeenAt"]
+	assert.False(t, hasMinSeen, "nil MinUserLastSeenAt must be omitted from JSON")
+
 	var dst model.Room
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Nil(t, dst.LastMsgAt, "absent JSON field must unmarshal to nil pointer")
 	assert.Nil(t, dst.LastMentionAllAt, "absent JSON field must unmarshal to nil pointer")
+	assert.Nil(t, dst.MinUserLastSeenAt, "absent JSON field must unmarshal to nil pointer")
 }
 
 func TestThreadRoomJSON(t *testing.T) {
@@ -394,6 +400,8 @@ func TestSubscriptionJSON(t *testing.T) {
 		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		HasMention:         true,
+		ThreadUnread:       []string{"parent-1", "parent-2"},
+		Alert:              true,
 	}
 
 	data, err := json.Marshal(&s)
@@ -407,6 +415,36 @@ func TestSubscriptionJSON(t *testing.T) {
 	if !reflect.DeepEqual(s, dst) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
 	}
+}
+
+func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
+	s := model.Subscription{
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		RoomType: model.RoomTypeChannel,
+		SiteID:   "site-a",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	data, err := json.Marshal(&s)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	_, hasThreadUnread := raw["threadUnread"]
+	assert.False(t, hasThreadUnread, "nil/empty ThreadUnread must be omitted from JSON")
+
+	alertVal, hasAlert := raw["alert"]
+	assert.True(t, hasAlert, "alert must be present in JSON even when false")
+	assert.Equal(t, false, alertVal)
+
+	var dst model.Subscription
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Nil(t, dst.ThreadUnread, "absent threadUnread must unmarshal to nil")
+	assert.False(t, dst.Alert)
 }
 
 func TestRoomTypeValues(t *testing.T) {

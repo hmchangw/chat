@@ -45,7 +45,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
-		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT, unread BOOLEAN,
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
 		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
 		PRIMARY KEY ((room_id), created_at, message_id)
@@ -58,7 +58,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
-		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT, unread BOOLEAN,
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
 		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, created_at TIMESTAMP,
 		updated_at TIMESTAMP, pinned_at TIMESTAMP, pinned_by FROZEN<"Participant">,
@@ -72,7 +72,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		thread_parent_id TEXT,
-		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT, unread BOOLEAN,
+		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
 		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
 		PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)

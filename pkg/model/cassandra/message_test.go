@@ -156,7 +156,6 @@ func TestMessage_JSON(t *testing.T) {
 			CreatedAt: now.Add(-30 * time.Minute), Msg: "original",
 		},
 		VisibleTo:    "u1",
-		Unread:       true,
 		Reactions:    map[string][]Participant{"thumbsup": {{ID: "u2", Account: "bob"}}},
 		Deleted:      false,
 		Type:         "user_joined",
@@ -185,7 +184,6 @@ func TestMessage_JSON(t *testing.T) {
 	require.NotNil(t, got.QuotedParentMessage)
 	assert.Equal(t, "m-quoted", got.QuotedParentMessage.MessageID)
 	assert.Equal(t, "u1", got.VisibleTo)
-	assert.True(t, got.Unread)
 	assert.Len(t, got.Reactions["thumbsup"], 1)
 	assert.Equal(t, "user_joined", got.Type)
 	assert.Equal(t, "site-remote", got.SiteID)
@@ -221,7 +219,6 @@ func TestMessage_JSON_Minimal(t *testing.T) {
 	assert.Nil(t, got.QuotedParentMessage)
 	assert.Empty(t, got.ThreadParentID)
 	assert.False(t, got.TShow)
-	assert.False(t, got.Unread)
 	assert.False(t, got.Deleted)
 	assert.Empty(t, got.ThreadRoomID)
 	assert.Nil(t, got.PinnedAt)

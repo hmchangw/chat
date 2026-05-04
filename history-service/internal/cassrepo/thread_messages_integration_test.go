@@ -189,16 +189,16 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	insertCQL := `INSERT INTO thread_messages_by_room (
         room_id, thread_room_id, created_at, message_id, thread_parent_id,
         sender, target_user, msg, mentions, attachments, file, card, card_action,
-        quoted_parent_message, visible_to, unread, reactions, deleted,
+        quoted_parent_message, visible_to, reactions, deleted,
         type, sys_msg_data, site_id, edited_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
 		"r-thread-full", "tr-full", ts, "m-reply-full", "m-thread-parent",
 		sender, target, "thread reply body",
 		[]models.Participant{mentionUser},
 		[][]byte{[]byte("attach1"), []byte("attach2")},
 		file, card, cardAction,
-		quotedMsg, "u1", true,
+		quotedMsg, "u1",
 		map[string][]models.Participant{"thumbsup": {reactUser}},
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
@@ -279,7 +279,6 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 
 	// Scalars
 	assert.Equal(t, "u1", msg.VisibleTo)
-	assert.True(t, msg.Unread)
 	assert.True(t, msg.Deleted)
 	assert.Equal(t, "user_joined", msg.Type)
 	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)

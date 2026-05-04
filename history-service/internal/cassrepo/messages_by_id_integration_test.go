@@ -68,14 +68,14 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	pinnedAt := ts.Add(2 * time.Hour)
 	pinnedBy := models.Participant{ID: "u9", Account: "pinner"}
 
-	insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, unread, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at, thread_room_id, pinned_at, pinned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, target_user, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at, thread_room_id, pinned_at, pinned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
 		"r-full", ts, "m-full",
 		sender, target, "hello world",
 		[]models.Participant{mentionUser},
 		[][]byte{[]byte("attach1"), []byte("attach2")},
 		file, card, cardAction,
-		true, "m-parent", threadParent, quotedMsg, "u1", true,
+		true, "m-parent", threadParent, quotedMsg, "u1",
 		map[string][]models.Participant{"thumbsup": {reactUser}},
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
@@ -156,7 +156,6 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	assert.Equal(t, "https://chat.example.com/r-full/m-quoted", msg.QuotedParentMessage.MessageLink)
 
 	assert.Equal(t, "u1", msg.VisibleTo)
-	assert.True(t, msg.Unread)
 	assert.True(t, msg.Deleted)
 	assert.Equal(t, "user_joined", msg.Type)
 	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)
