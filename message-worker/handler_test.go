@@ -1722,7 +1722,9 @@ func TestHandler_ProcessMessage_Quote(t *testing.T) {
 				return nil
 			})
 
-		h := NewHandler(store, userStore, threadStore)
+		h := NewHandler(store, userStore, threadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
+			return nil
+		})
 		err := h.processMessage(context.Background(), quotedData)
 		require.NoError(t, err)
 	})
