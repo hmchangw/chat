@@ -1898,8 +1898,17 @@ func TestHandler_handleCreateRoom_ChannelAndDMIDFormats(t *testing.T) {
 			var capturedSub *model.Subscription
 			store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
 				DoAndReturn(func(_ context.Context, r *model.Room) error { capturedRoom = r; return nil })
+			// Channels create one subscription (creator); DMs create two
+			// (creator + recipient). AnyTimes covers both, and we only
+			// capture the first call so existing assertions on subID
+			// stay valid for the creator's subscription.
 			store.EXPECT().CreateSubscription(gomock.Any(), gomock.Any()).
-				DoAndReturn(func(_ context.Context, s *model.Subscription) error { capturedSub = s; return nil })
+				DoAndReturn(func(_ context.Context, s *model.Subscription) error {
+					if capturedSub == nil {
+						capturedSub = s
+					}
+					return nil
+				}).AnyTimes()
 
 			h := NewHandler(store, nil, nil, "site1", 100, 50, func(ctx context.Context, subj string, data []byte) error { return nil })
 

@@ -24,20 +24,22 @@ import (
 )
 
 type config struct {
-	NatsURL              string          `env:"NATS_URL"                  envDefault:"nats://localhost:4222"`
-	NatsCredsFile        string          `env:"NATS_CREDS_FILE"           envDefault:""`
-	SiteID               string          `env:"SITE_ID"                   envDefault:"default"`
-	MongoURI             string          `env:"MONGO_URI"                 envDefault:"mongodb://localhost:27017"`
-	MongoDB              string          `env:"MONGO_DB"                  envDefault:"chat"`
-	MongoUsername        string          `env:"MONGO_USERNAME"            envDefault:""`
-	MongoPassword        string          `env:"MONGO_PASSWORD"            envDefault:""`
-	MaxWorkers           int             `env:"MAX_WORKERS"               envDefault:"100"`
-	UserCacheSize        int             `env:"USER_CACHE_SIZE"           envDefault:"10000"`
-	UserCacheTTL         time.Duration   `env:"USER_CACHE_TTL"            envDefault:"5m"`
-	ValkeyAddr           string          `env:"VALKEY_ADDR,required"`
-	ValkeyPassword       string          `env:"VALKEY_PASSWORD"           envDefault:""`
-	ValkeyKeyGracePeriod time.Duration   `env:"VALKEY_KEY_GRACE_PERIOD,required"`
-	Bootstrap            bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	NatsURL              string        `env:"NATS_URL"                  envDefault:"nats://localhost:4222"`
+	NatsCredsFile        string        `env:"NATS_CREDS_FILE"           envDefault:""`
+	SiteID               string        `env:"SITE_ID"                   envDefault:"default"`
+	MongoURI             string        `env:"MONGO_URI"                 envDefault:"mongodb://localhost:27017"`
+	MongoDB              string        `env:"MONGO_DB"                  envDefault:"chat"`
+	MongoUsername        string        `env:"MONGO_USERNAME"            envDefault:""`
+	MongoPassword        string        `env:"MONGO_PASSWORD"            envDefault:""`
+	MaxWorkers           int           `env:"MAX_WORKERS"               envDefault:"100"`
+	UserCacheSize        int           `env:"USER_CACHE_SIZE"           envDefault:"10000"`
+	UserCacheTTL         time.Duration `env:"USER_CACHE_TTL"            envDefault:"5m"`
+	ValkeyAddr           string        `env:"VALKEY_ADDR,required"`
+	ValkeyPassword       string        `env:"VALKEY_PASSWORD"           envDefault:""`
+	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
+	// DevMode bundles plaintext for local frontends without crypto. MUST stay false in prod.
+	DevMode   bool            `env:"DEV_MODE"                  envDefault:"false"`
+	Bootstrap bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 }
 
 func main() {
@@ -112,6 +114,10 @@ func main() {
 
 	publisher := &natsPublisher{nc: nc}
 	handler := NewHandler(store, us, publisher, keyStore)
+	handler.devMode = cfg.DevMode
+	if cfg.DevMode {
+		slog.Warn("DEV_MODE enabled — plaintext message bundled in channel events; do NOT enable in production")
+	}
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {

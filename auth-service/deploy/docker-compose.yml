@@ -5,6 +5,7 @@ services:
     build:
       context: ../..
       dockerfile: auth-service/deploy/Dockerfile
+    stop_grace_period: 2s
     ports:
       - "8080:8080"
     env_file:
