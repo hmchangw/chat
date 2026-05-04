@@ -277,7 +277,7 @@ func (h *Handler) lookupOwnerSiteID(ctx context.Context, userID, role string) (s
 	user, err := h.userStore.FindUserByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, userstore.ErrUserNotFound) {
-			slog.Warn("owner user not found — skipping thread subscription",
+			slog.Warn("owner user not found — skipping cross-site outbox publish; local thread subscription insert/upsert continues",
 				"userID", userID, "role", role)
 			return "", nil
 		}

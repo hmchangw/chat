@@ -303,9 +303,11 @@ which NAKs.
 #### `inbox-worker/main.go`
 
 - Add `threadSubCol *mongo.Collection` to `mongoInboxStore`, initialized from
-  `db.Collection("threadSubscriptions")` (same collection name message-worker
-  uses).
-- Implement `UpsertThreadSubscription` with the `$setOnInsert` + `$set` + `$bit:or`
+  `db.Collection("thread_subscriptions")` (canonical snake_case name shared
+  with message-worker's `store_mongo.go` and history-service's
+  `mongorepo/threadroom.go`; the Go field name `threadSubCol` is camelCase but
+  the Mongo collection string is snake_case).
+- Implement `UpsertThreadSubscription` with the `$setOnInsert` + `$set` + `$max`
   shape described above. Filter is `{threadRoomId, userId}` to match the
   message-worker's natural key.
 
