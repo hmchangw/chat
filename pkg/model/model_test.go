@@ -388,33 +388,59 @@ func TestMessageEventJSON_WithEvent(t *testing.T) {
 }
 
 func TestSubscriptionJSON(t *testing.T) {
-	hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	s := model.Subscription{
-		ID:                 "s1",
-		User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID:             "r1",
-		RoomType:           model.RoomTypeChannel,
-		SiteID:             "site-a",
-		Roles:              []model.Role{model.RoleOwner},
-		HistorySharedSince: &hss,
-		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
-		HasMention:         true,
-		ThreadUnread:       []string{"parent-1", "parent-2"},
-		Alert:              true,
-	}
+	t.Run("with optional fields set", func(t *testing.T) {
+		hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		lsa := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+		s := model.Subscription{
+			ID:                 "s1",
+			User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:             "r1",
+			RoomType:           model.RoomTypeChannel,
+			SiteID:             "site-a",
+			Roles:              []model.Role{model.RoleOwner},
+			HistorySharedSince: &hss,
+			JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			LastSeenAt:         &lsa,
+			HasMention:         true,
+			ThreadUnread:       []string{"parent-1", "parent-2"},
+			Alert:              true,
+		}
 
-	data, err := json.Marshal(&s)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var dst model.Subscription
-	if err := json.Unmarshal(data, &dst); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if !reflect.DeepEqual(s, dst) {
-		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
-	}
+		data, err := json.Marshal(&s)
+		require.NoError(t, err)
+		var dst model.Subscription
+		require.NoError(t, json.Unmarshal(data, &dst))
+		if !reflect.DeepEqual(s, dst) {
+			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
+		}
+	})
+
+	t.Run("lastSeenAt omitted when nil", func(t *testing.T) {
+		s := model.Subscription{
+			ID:       "s1",
+			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:   "r1",
+			RoomType: model.RoomTypeChannel,
+			SiteID:   "site-a",
+			Roles:    []model.Role{model.RoleMember},
+			JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		}
+
+		data, err := json.Marshal(&s)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["lastSeenAt"]
+		assert.False(t, present, "lastSeenAt should be omitted when nil")
+
+		var dst model.Subscription
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Nil(t, dst.LastSeenAt)
+		if !reflect.DeepEqual(s, dst) {
+			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
+		}
+	})
 }
 
 func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
