@@ -405,14 +405,7 @@ func TestSubscriptionJSON(t *testing.T) {
 			ThreadUnread:       []string{"parent-1", "parent-2"},
 			Alert:              true,
 		}
-
-		data, err := json.Marshal(&s)
-		require.NoError(t, err)
-		var dst model.Subscription
-		require.NoError(t, json.Unmarshal(data, &dst))
-		if !reflect.DeepEqual(s, dst) {
-			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
-		}
+		roundTrip(t, &s, &model.Subscription{})
 	})
 
 	t.Run("lastSeenAt omitted when nil", func(t *testing.T) {
@@ -434,12 +427,7 @@ func TestSubscriptionJSON(t *testing.T) {
 		_, present := raw["lastSeenAt"]
 		assert.False(t, present, "lastSeenAt should be omitted when nil")
 
-		var dst model.Subscription
-		require.NoError(t, json.Unmarshal(data, &dst))
-		assert.Nil(t, dst.LastSeenAt)
-		if !reflect.DeepEqual(s, dst) {
-			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
-		}
+		roundTrip(t, &s, &model.Subscription{})
 	})
 }
 
