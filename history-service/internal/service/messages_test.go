@@ -796,54 +796,6 @@ func TestHistoryService_GetMessageByID_NotSubscribed(t *testing.T) {
 
 // --- EditMessage ---
 
-func TestHistoryService_EditMessage_Success(t *testing.T) {
-	svc, msgs, subs, pub, _, keys := newService(t, true)
-	c := testContext()
-
-	// Subscription check passes (accessSince nil means full history access, non-nil also fine)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
-
-	// Message lookup returns the user's own message in the expected room.
-	hydrated := &models.Message{
-		MessageID: "m-abc",
-		RoomID:    "r1",
-		Sender:    models.Participant{Account: "u1"},
-	}
-	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
-
-	// UPDATE succeeds. The handler passes the hydrated *Message directly.
-	msgs.EXPECT().
-		UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).
-		Return(nil)
-
-	// nil key → plaintext fallback.
-	keys.EXPECT().Get(gomock.Any(), "r1").Return(nil, nil)
-
-	// Publish succeeds. Validate the payload.
-	pub.EXPECT().
-		Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).
-		DoAndReturn(func(_ context.Context, subj string, data []byte) error {
-			var evt models.MessageEditedEvent
-			require.NoError(t, json.Unmarshal(data, &evt))
-			assert.Equal(t, "message_edited", evt.Type)
-			assert.Equal(t, "r1", evt.RoomID)
-			assert.Equal(t, "m-abc", evt.MessageID)
-			assert.Equal(t, "new content", evt.NewMsg)
-			assert.Equal(t, "u1", evt.EditedBy)
-			assert.NotZero(t, evt.Timestamp)
-			assert.NotZero(t, evt.EditedAt)
-			return nil
-		})
-
-	resp, err := svc.EditMessage(c, models.EditMessageRequest{
-		MessageID: "m-abc",
-		NewMsg:    "new content",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "m-abc", resp.MessageID)
-	assert.NotZero(t, resp.EditedAt)
-}
-
 func TestHistoryService_EditMessage_NotSubscribed(t *testing.T) {
 	svc, _, subs, _, _, _ := newService(t, true)
 	c := testContext()
@@ -1031,8 +983,9 @@ func TestHistoryService_EditMessage_PublishFails(t *testing.T) {
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
 	msgs.EXPECT().UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).Return(nil)
 
-	// nil key → plaintext fallback.
-	keys.EXPECT().Get(gomock.Any(), "r1").Return(nil, nil)
+	// Real key so encryption succeeds and the publish is attempted.
+	kp := generateTestKeyPair(t)
+	keys.EXPECT().Get(gomock.Any(), "r1").Return(kp, nil)
 
 	// Publisher fails, but handler must still return success (best-effort fan-out).
 	pub.EXPECT().Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).Return(fmt.Errorf("nats disconnected"))
@@ -1081,10 +1034,11 @@ func TestHistoryService_EditMessage_Success_EncryptedEvent(t *testing.T) {
 	assert.NotZero(t, resp.EditedAt)
 }
 
-// TestHistoryService_EditMessage_Success_KeyFetchError verifies that when the
-// key store returns an error the handler falls back to plaintext NewMsg and
-// still publishes the event (best-effort; the Cassandra write already succeeded).
-func TestHistoryService_EditMessage_Success_KeyFetchError(t *testing.T) {
+// TestHistoryService_EditMessage_SkipPublishOnKeyError verifies that when
+// encryption is enabled and the keystore returns an error, the handler skips
+// publishing the live event entirely (rather than leaking plaintext via the
+// MessageEditedEvent.NewMsg field). The Cassandra write already succeeded.
+func TestHistoryService_EditMessage_SkipPublishOnKeyError(t *testing.T) {
 	svc, msgs, subs, pub, _, keys := newService(t, true)
 	c := testContext()
 
@@ -1099,19 +1053,123 @@ func TestHistoryService_EditMessage_Success_KeyFetchError(t *testing.T) {
 
 	keys.EXPECT().Get(gomock.Any(), "r1").Return(nil, fmt.Errorf("valkey connection refused"))
 
+	// pub.EXPECT().Publish is intentionally NOT set — gomock's strict mode will
+	// fail the test if Publish is called.
+	_ = pub
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "some edit"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "m-abc", resp.MessageID)
+}
+
+// TestHistoryService_EditMessage_PlaintextWhenDisabled verifies that with
+// encryption disabled the handler publishes a plaintext MessageEditedEvent
+// (NewMsg set, EncryptedNewMsg empty) and does not consult the key provider.
+func TestHistoryService_EditMessage_PlaintextWhenDisabled(t *testing.T) {
+	svc, msgs, subs, pub, _, _ := newService(t, false)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().UpdateMessageContent(gomock.Any(), hydrated, "plain edit", gomock.Any()).Return(nil)
+
+	// No keys.EXPECT().Get — the disabled path must not consult the provider.
+
 	pub.EXPECT().
 		Publish(gomock.Any(), "chat.room.r1.event", gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ string, data []byte) error {
 			var evt models.MessageEditedEvent
 			require.NoError(t, json.Unmarshal(data, &evt))
-			assert.Equal(t, "some edit", evt.NewMsg, "must fall back to plaintext on key error")
+			assert.Equal(t, "plain edit", evt.NewMsg)
 			assert.Empty(t, evt.EncryptedNewMsg)
 			return nil
 		})
 
-	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "some edit"})
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "plain edit"})
 	require.NoError(t, err)
 	assert.Equal(t, "m-abc", resp.MessageID)
+}
+
+// TestHistoryService_EditMessage_SkipPublishOnNilKey verifies that when
+// encryption is enabled and the keystore returns (nil, nil), the handler
+// skips publishing the live event rather than falling back to plaintext.
+func TestHistoryService_EditMessage_SkipPublishOnNilKey(t *testing.T) {
+	svc, msgs, subs, pub, _, keys := newService(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	hydrated := &models.Message{
+		MessageID: "m-abc",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
+	msgs.EXPECT().UpdateMessageContent(gomock.Any(), hydrated, "secret", gomock.Any()).Return(nil)
+
+	keys.EXPECT().Get(gomock.Any(), "r1").Return(nil, nil)
+
+	// pub.EXPECT().Publish is intentionally NOT set.
+	_ = pub
+
+	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "secret"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "m-abc", resp.MessageID)
+}
+
+// TestHistoryService_encryptEditMsg covers the four return shapes of
+// encryptEditMsg directly (in addition to the EditMessage end-to-end tests).
+func TestHistoryService_encryptEditMsg(t *testing.T) {
+	t.Run("disabled returns plaintext", func(t *testing.T) {
+		svc, _, _, _, _, keys := newService(t, false)
+		_ = keys // intentionally not set up — must not be called
+		c := testContext()
+		plain, enc, err := svc.EncryptEditMsgForTest(c, "r1", "hello")
+		require.NoError(t, err)
+		assert.Equal(t, "hello", plain)
+		assert.Nil(t, enc)
+	})
+
+	t.Run("enabled with valid key returns encrypted JSON", func(t *testing.T) {
+		svc, _, _, _, _, keys := newService(t, true)
+		kp := generateTestKeyPair(t)
+		keys.EXPECT().Get(gomock.Any(), "r1").Return(kp, nil)
+		c := testContext()
+		plain, enc, err := svc.EncryptEditMsgForTest(c, "r1", "secret")
+		require.NoError(t, err)
+		assert.Empty(t, plain)
+		assert.NotEmpty(t, enc)
+		var decoded map[string]interface{}
+		require.NoError(t, json.Unmarshal(enc, &decoded))
+	})
+
+	t.Run("enabled with key fetch error returns error", func(t *testing.T) {
+		svc, _, _, _, _, keys := newService(t, true)
+		keys.EXPECT().Get(gomock.Any(), "r1").Return(nil, fmt.Errorf("valkey down"))
+		c := testContext()
+		plain, enc, err := svc.EncryptEditMsgForTest(c, "r1", "secret")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "valkey down")
+		assert.Empty(t, plain)
+		assert.Nil(t, enc)
+	})
+
+	t.Run("enabled with nil key returns error", func(t *testing.T) {
+		svc, _, _, _, _, keys := newService(t, true)
+		keys.EXPECT().Get(gomock.Any(), "r1").Return(nil, nil)
+		c := testContext()
+		plain, enc, err := svc.EncryptEditMsgForTest(c, "r1", "secret")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no current key")
+		assert.Empty(t, plain)
+		assert.Nil(t, enc)
+	})
 }
 
 // --- DeleteMessage ---
