@@ -81,7 +81,7 @@ func main() {
 	}
 
 	pub := publisher.New(nc)
-	svc := service.New(cassRepo, subRepo, pub, threadRoomRepo, keyStore)
+	svc := service.New(cassRepo, subRepo, pub, threadRoomRepo, keyStore, true)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
