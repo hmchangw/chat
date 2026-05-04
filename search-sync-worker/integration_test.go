@@ -197,7 +197,9 @@ func refreshIndex(t *testing.T, esURL, pattern string) {
 func countDocs(t *testing.T, esURL, pattern string) int {
 	t.Helper()
 	u := esURLFor(t, esURL, pattern, "_count")
-	resp, err := http.Get(u.String())
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -225,7 +227,9 @@ func waitForClusterGreen(t *testing.T, esURL string, timeout time.Duration) {
 	healthURL := u.String()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(healthURL)
+		req, err := http.NewRequest(http.MethodGet, healthURL, nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
 			var health struct {
 				Status string `json:"status"`
@@ -278,7 +282,9 @@ func overrideIndexSettings(body json.RawMessage) json.RawMessage {
 func getDoc(t *testing.T, esURL, index, docID string) map[string]any {
 	t.Helper()
 	u := esURLFor(t, esURL, index, "_doc", docID)
-	resp, err := http.Get(u.String())
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
