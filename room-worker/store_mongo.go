@@ -135,8 +135,8 @@ func (s *MongoStore) CreateRoom(ctx context.Context, room *model.Room) error {
 	return nil
 }
 
-func (s *MongoStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string) ([]string, error) {
-	pipe := pipelines.GetNewMembersPipeline(orgIDs, accounts, "")
+func (s *MongoStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error) {
+	pipe := pipelines.GetNewMembersPipeline(orgIDs, accounts, "", excludeAccount)
 	pipe = append(pipe, bson.M{"$group": bson.M{
 		"_id":      nil,
 		"accounts": bson.M{"$addToSet": "$account"},
@@ -389,7 +389,7 @@ func (s *MongoStore) ListNewMembers(ctx context.Context, orgIDs, directAccounts 
 		return nil, nil
 	}
 
-	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID)
+	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID, "")
 	pipeline = append(pipeline, bson.M{
 		"$group": bson.M{"_id": nil, "accounts": bson.M{"$addToSet": "$account"}},
 	})

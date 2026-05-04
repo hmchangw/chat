@@ -284,14 +284,17 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 		return nil, errEmptyCreateRequest
 	}
 
-	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, "")
+	// Pass requesterAccount as excludeAccount: the requester was stripped from
+	// allUsers but can still be re-added by org expansion (when their account
+	// is in any of the resolved orgs). Excluding them from the count lets us
+	// add exactly +1 below for the owner row without double-counting.
+	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, "", requesterAccount)
 	if err != nil {
 		return nil, fmt.Errorf("count new members: %w", err)
 	}
-	// Creator is added implicitly as the channel owner; the requester was
-	// stripped from allUsers earlier so they aren't in newCount. Count them in
-	// the capacity check so a maxRoomSize=N bound caps the materialized room
-	// at N members, not N+1.
+	// Creator is added implicitly as the channel owner. Count them in the
+	// capacity check so a maxRoomSize=N bound caps the materialized room at
+	// N members, not N+1.
 	totalMembers := 1 + newCount
 	if totalMembers > h.maxRoomSize {
 		return nil, fmt.Errorf("exceeds maximum capacity (%d): would create %d members", h.maxRoomSize, totalMembers)
@@ -635,7 +638,7 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	allUsers := dedup(append(req.Users, channelAccounts...))
 
 	// 7. Count net-new members (count-only — actual list materialized in room-worker)
-	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, roomID)
+	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, roomID, "")
 	if err != nil {
 		return nil, fmt.Errorf("count new members: %w", err)
 	}

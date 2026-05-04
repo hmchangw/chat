@@ -320,18 +320,18 @@ func (mr *MockSubscriptionStoreMockRecorder) ListNewMembers(ctx, orgIDs, directA
 }
 
 // ListNewMembersForNewRoom mocks base method.
-func (m *MockSubscriptionStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string) ([]string, error) {
+func (m *MockSubscriptionStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListNewMembersForNewRoom", ctx, orgIDs, accounts)
+	ret := m.ctrl.Call(m, "ListNewMembersForNewRoom", ctx, orgIDs, accounts, excludeAccount)
 	ret0, _ := ret[0].([]string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ListNewMembersForNewRoom indicates an expected call of ListNewMembersForNewRoom.
-func (mr *MockSubscriptionStoreMockRecorder) ListNewMembersForNewRoom(ctx, orgIDs, accounts any) *gomock.Call {
+func (mr *MockSubscriptionStoreMockRecorder) ListNewMembersForNewRoom(ctx, orgIDs, accounts, excludeAccount any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListNewMembersForNewRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).ListNewMembersForNewRoom), ctx, orgIDs, accounts)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListNewMembersForNewRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).ListNewMembersForNewRoom), ctx, orgIDs, accounts, excludeAccount)
 }
 
 // ReconcileMemberCounts mocks base method.

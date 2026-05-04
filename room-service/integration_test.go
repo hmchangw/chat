@@ -260,7 +260,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Fatalf("seed subscriptions: %v", err)
 	}
 
-	count, err := store.CountNewMembers(ctx, []string{"org1"}, nil, "r1")
+	count, err := store.CountNewMembers(ctx, []string{"org1"}, nil, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers org1: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 2 (bob, charlie; alice already subscribed; bots excluded), got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, nil, []string{"eve"}, "r1")
+	count, err = store.CountNewMembers(ctx, nil, []string{"eve"}, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers direct: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 1 (eve), got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, []string{"org2"}, []string{"dave"}, "r1")
+	count, err = store.CountNewMembers(ctx, []string{"org2"}, []string{"dave"}, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers dedup: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 1 (dave; deduped between org2 and direct), got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, nil, nil, "r1")
+	count, err = store.CountNewMembers(ctx, nil, nil, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers empty: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 0 for empty inputs, got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, nil, []string{"alice"}, "r1")
+	count, err = store.CountNewMembers(ctx, nil, []string{"alice"}, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers all existing: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 0 when all accounts already members, got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, nil, []string{"helper.bot", "p_webhook"}, "r1")
+	count, err = store.CountNewMembers(ctx, nil, []string{"helper.bot", "p_webhook"}, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers bots: %v", err)
 	}

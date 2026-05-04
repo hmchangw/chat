@@ -44,9 +44,13 @@ type RoomStore interface {
 	CountOwners(ctx context.Context, roomID string) (int, error)
 	// CountNewMembers returns the count of unique, non-bot, not-already-subscribed users
 	// that an add-members request would add to roomID for a given (orgIDs, directAccounts) tuple.
-	// Used by handleAddMembers for capacity validation. Delegates to
-	// pkg/pipelines.GetNewMembersPipeline + a $count terminal stage.
-	CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error)
+	// excludeAccount is empty string to disable, or an account that must be
+	// dropped from the candidate set. create-channel passes the requester's
+	// account so an org-expanded requester is not double-counted against the
+	// cap (the requester is added separately as the owner).
+	// Used by handleAddMembers and handleCreateRoomChannel for capacity validation.
+	// Delegates to pkg/pipelines.GetNewMembersPipeline + a $count terminal stage.
+	CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID, excludeAccount string) (int, error)
 	// ListRoomMembers returns the members of roomID. When enrich=true, the
 	// returned RoomMember.Member entries carry display fields populated via
 	// $lookup stages against users and subscriptions. When enrich=false,

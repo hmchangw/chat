@@ -2052,7 +2052,7 @@ func TestProcessCreateRoom_Channel_BuildsSubsAndMembers(t *testing.T) {
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	// orgs present → ListNewMembersForNewRoom returns bob+carol (alice already stripped by service)
-	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), []string{"org1"}, []string{"bob", "carol"}).
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), []string{"org1"}, []string{"bob", "carol"}, "alice").
 		Return([]string{"bob", "carol"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "carol"}).Return(invited, nil)
 
@@ -2121,7 +2121,7 @@ func TestProcessCreateRoom_Channel_NoOrgsSkipsRoomMembers(t *testing.T) {
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
-	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Nil(), []string{"bob"}).
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Nil(), []string{"bob"}, "alice").
 		Return([]string{"bob"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return(invited, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
@@ -2161,7 +2161,7 @@ func TestProcessCreateRoom_Channel_FiresSubscriptionUpdateForEverySub(t *testing
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
-	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(invited, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
@@ -2201,7 +2201,7 @@ func TestProcessCreateRoom_Channel_EmitsSysMessages(t *testing.T) {
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
-	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(invited, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
@@ -2250,7 +2250,7 @@ func TestProcessCreateRoom_Channel_SysMsgUsesLiteralRequest(t *testing.T) {
 	}
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
-	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return([]string{"bob", "carol", "dave"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "carol", "dave"}).Return(invited, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
@@ -2299,7 +2299,7 @@ func TestProcessCreateRoom_Channel_OutboxPerRemoteSite(t *testing.T) {
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
-	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(invited, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
@@ -2340,7 +2340,7 @@ func TestProcessCreateRoom_Channel_EmitsAsyncJobOk(t *testing.T) {
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
-	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
+	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"bob"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(invited, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)

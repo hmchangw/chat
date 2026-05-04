@@ -1852,7 +1852,8 @@ func TestAsyncJobResultShape(t *testing.T) {
 	assert.NotContains(t, string(data), `"success"`)
 
 	r2 := model.AsyncJobResult{Operation: model.AsyncJobOpRoomMemberAdd, Status: "error", Error: "failed"}
-	raw2, _ := json.Marshal(r2)
+	raw2, err := json.Marshal(r2)
+	require.NoError(t, err)
 	assert.NotContains(t, string(raw2), `"roomId"`)
 }
 

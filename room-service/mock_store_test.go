@@ -58,18 +58,18 @@ func (mr *MockRoomStoreMockRecorder) CountMembersAndOwners(ctx, roomID any) *gom
 }
 
 // CountNewMembers mocks base method.
-func (m *MockRoomStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error) {
+func (m *MockRoomStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID, excludeAccount string) (int, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CountNewMembers", ctx, orgIDs, directAccounts, roomID)
+	ret := m.ctrl.Call(m, "CountNewMembers", ctx, orgIDs, directAccounts, roomID, excludeAccount)
 	ret0, _ := ret[0].(int)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // CountNewMembers indicates an expected call of CountNewMembers.
-func (mr *MockRoomStoreMockRecorder) CountNewMembers(ctx, orgIDs, directAccounts, roomID any) *gomock.Call {
+func (mr *MockRoomStoreMockRecorder) CountNewMembers(ctx, orgIDs, directAccounts, roomID, excludeAccount any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountNewMembers", reflect.TypeOf((*MockRoomStore)(nil).CountNewMembers), ctx, orgIDs, directAccounts, roomID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountNewMembers", reflect.TypeOf((*MockRoomStore)(nil).CountNewMembers), ctx, orgIDs, directAccounts, roomID, excludeAccount)
 }
 
 // CountOwners mocks base method.

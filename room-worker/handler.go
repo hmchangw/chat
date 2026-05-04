@@ -847,20 +847,6 @@ func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 	}
 }
 
-// stripAccount returns slice with all occurrences of account removed (order preserved).
-// Mirror of room-service/helper.go's stripAccount — kept duplicated because each
-// service is its own `package main` and the project explicitly forbids a shared
-// "utils" package; a future cleanup could expose this from a domain-named pkg.
-func stripAccount(slice []string, account string) []string {
-	out := make([]string, 0, len(slice))
-	for _, s := range slice {
-		if s != account {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error) {
 	// Defer must cover early failures; populate requester/roomID as soon as we have them.
 	var (
@@ -998,11 +984,13 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 }
 
 func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
-	accounts, err := h.store.ListNewMembersForNewRoom(ctx, req.ResolvedOrgs, req.ResolvedUsers)
+	// Pass requester.Account as excludeAccount so org-expansion can't re-
+	// introduce the requester (who joins separately as owner). Mirrors the
+	// room-service capacity-check exclusion exactly.
+	accounts, err := h.store.ListNewMembersForNewRoom(ctx, req.ResolvedOrgs, req.ResolvedUsers, requester.Account)
 	if err != nil {
 		return fmt.Errorf("list new members: %w", err)
 	}
-	accounts = stripAccount(accounts, requester.Account)
 
 	users, err := h.store.FindUsersByAccounts(ctx, accounts)
 	if err != nil {

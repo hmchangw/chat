@@ -76,6 +76,9 @@ type SubscriptionStore interface {
 
 	// ListNewMembersForNewRoom is the empty-roomID variant of
 	// ListNewMembers — same dedup + bot filter, no "already-subscribed"
-	// pruning since the room doesn't exist yet.
-	ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string) ([]string, error)
+	// pruning since the room doesn't exist yet. excludeAccount drops one
+	// account from the candidate set; create-channel passes the requester's
+	// account so they aren't materialized as a regular member in addition to
+	// being added separately as the owner.
+	ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error)
 }

@@ -292,12 +292,12 @@ func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error
 	return int(count), nil
 }
 
-func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error) {
+func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID, excludeAccount string) (int, error) {
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return 0, nil
 	}
 
-	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID)
+	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID, excludeAccount)
 	pipeline = append(pipeline, bson.M{
 		"$count": "n",
 	})

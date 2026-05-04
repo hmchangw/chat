@@ -10,12 +10,12 @@ import (
 
 func TestGetNewMembersPipeline(t *testing.T) {
 	t.Run("three stages returned", func(t *testing.T) {
-		got := GetNewMembersPipeline([]string{"org1"}, []string{"alice"}, "room1")
+		got := GetNewMembersPipeline([]string{"org1"}, []string{"alice"}, "room1", "")
 		assert.Len(t, got, 3)
 	})
 
 	t.Run("$or filter with both orgIDs and directAccounts", func(t *testing.T) {
-		got := GetNewMembersPipeline([]string{"org1", "org2"}, []string{"alice"}, "room1")
+		got := GetNewMembersPipeline([]string{"org1", "org2"}, []string{"alice"}, "room1", "")
 		stage0 := got[0].(bson.M)
 		match := stage0["$match"].(bson.M)
 		orFilter := match["$or"].(bson.A)
@@ -26,7 +26,7 @@ func TestGetNewMembersPipeline(t *testing.T) {
 	})
 
 	t.Run("bot exclusion via $not regex", func(t *testing.T) {
-		got := GetNewMembersPipeline([]string{"org1"}, []string{"alice"}, "room1")
+		got := GetNewMembersPipeline([]string{"org1"}, []string{"alice"}, "room1", "")
 		stage0 := got[0].(bson.M)
 		match := stage0["$match"].(bson.M)
 
@@ -35,7 +35,7 @@ func TestGetNewMembersPipeline(t *testing.T) {
 	})
 
 	t.Run("$or filter contains orgIDs when provided", func(t *testing.T) {
-		got := GetNewMembersPipeline([]string{"org1"}, nil, "room1")
+		got := GetNewMembersPipeline([]string{"org1"}, nil, "room1", "")
 		stage0 := got[0].(bson.M)
 		match := stage0["$match"].(bson.M)
 		orFilter := match["$or"].(bson.A)
@@ -46,7 +46,7 @@ func TestGetNewMembersPipeline(t *testing.T) {
 	})
 
 	t.Run("$or filter contains directAccounts when provided", func(t *testing.T) {
-		got := GetNewMembersPipeline(nil, []string{"alice"}, "room1")
+		got := GetNewMembersPipeline(nil, []string{"alice"}, "room1", "")
 		stage0 := got[0].(bson.M)
 		match := stage0["$match"].(bson.M)
 		orFilter := match["$or"].(bson.A)
@@ -57,7 +57,7 @@ func TestGetNewMembersPipeline(t *testing.T) {
 	})
 
 	t.Run("$lookup stage correct", func(t *testing.T) {
-		got := GetNewMembersPipeline([]string{"org1"}, []string{"alice"}, "room1")
+		got := GetNewMembersPipeline([]string{"org1"}, []string{"alice"}, "room1", "")
 		stage1 := got[1].(bson.M)
 		lookup := stage1["$lookup"].(bson.M)
 
@@ -68,7 +68,7 @@ func TestGetNewMembersPipeline(t *testing.T) {
 	})
 
 	t.Run("$match stage filters empty existingSub array", func(t *testing.T) {
-		got := GetNewMembersPipeline([]string{"org1"}, []string{"alice"}, "room1")
+		got := GetNewMembersPipeline([]string{"org1"}, []string{"alice"}, "room1", "")
 		stage2 := got[2].(bson.M)
 		match := stage2["$match"].(bson.M)
 		existingSub := match["existingSub"].(bson.M)
@@ -78,7 +78,7 @@ func TestGetNewMembersPipeline(t *testing.T) {
 }
 
 func TestGetNewMembersPipelineEmptyRoomID(t *testing.T) {
-	pipe := GetNewMembersPipeline([]string{"org-fx"}, []string{"bob"}, "")
+	pipe := GetNewMembersPipeline([]string{"org-fx"}, []string{"bob"}, "", "")
 	require.NotEmpty(t, pipe)
 
 	hasLookup := false
@@ -95,7 +95,7 @@ func TestGetNewMembersPipelineEmptyRoomID(t *testing.T) {
 }
 
 func TestGetNewMembersPipelineWithRoomIDStillHasLookup(t *testing.T) {
-	pipe := GetNewMembersPipeline([]string{"org-fx"}, []string{"bob"}, "r1")
+	pipe := GetNewMembersPipeline([]string{"org-fx"}, []string{"bob"}, "r1", "")
 	require.NotEmpty(t, pipe)
 
 	hasLookup := false

@@ -885,7 +885,7 @@ func TestHandler_AddMembers_CapacityExceeded(t *testing.T) {
 		GetRoom(gomock.Any(), "r1").
 		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel, UserCount: 8}, nil)
 	store.EXPECT().
-		CountNewMembers(gomock.Any(), gomock.Any(), []string{"u1", "u2", "u3", "u4", "u5"}, "r1").
+		CountNewMembers(gomock.Any(), gomock.Any(), []string{"u1", "u2", "u3", "u4", "u5"}, "r1", gomock.Any()).
 		Return(5, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10,
@@ -914,7 +914,7 @@ func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Type: model.RoomTypeChannel, Restricted: true, UserCount: 1,
 	}, nil)
-	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1", gomock.Any()).
 		Return(1, nil)
 
 	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"bob"}}
@@ -941,7 +941,7 @@ func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Type: model.RoomTypeChannel, UserCount: 5,
 	}, nil)
-	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1", gomock.Any()).
 		Return(0, nil)
 
 	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"alice"}}
@@ -2089,7 +2089,7 @@ func TestHandleCreateRoom_Channel_HappyPath(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
-	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "").Return(2, nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "", gomock.Any()).Return(2, nil)
 
 	var publishedData []byte
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
@@ -2152,7 +2152,7 @@ func TestHandleCreateRoom_Channel_NameAtBoundary(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
-	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "").Return(2, nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "", gomock.Any()).Return(2, nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
 	}
@@ -2178,7 +2178,7 @@ func TestHandleCreateRoom_Channel_ExceedsCapacity(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
-	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "").Return(11, nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "", gomock.Any()).Return(11, nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10}
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Name: "big-room", Users: []string{"bob"}})
@@ -2193,7 +2193,7 @@ func TestHandleCreateRoom_Channel_RejectsWhenCreatorWouldOverflow(t *testing.T) 
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
-	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "").Return(10, nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "", gomock.Any()).Return(10, nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10}
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Name: "edge", Users: []string{"bob"}})
@@ -2208,7 +2208,7 @@ func TestHandleCreateRoom_Channel_AcceptsAtCreatorInclusiveCap(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
-	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "").Return(9, nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "", gomock.Any()).Return(9, nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10,
 		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil }}
 

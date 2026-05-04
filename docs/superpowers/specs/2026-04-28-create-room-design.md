@@ -9,7 +9,7 @@ Adds the ability for a user to create a new room. Three room types are supported
 
 - **`dm`** — exactly two human users.
 - **`botDM`** — one human user plus one bot user (account ends in `.bot`).
-- **`channel`** — any combination of users / orgs / source-channel members, optionally with a name.
+- **`channel`** — any combination of users / orgs / source-channel members. The client MUST supply a non-empty channel name (≤ 100 runes); the server preserves it verbatim and never auto-generates or truncates it.
 
 The room is always created on the requester's site. Cross-site members get their subscriptions written on their home sites via a single new `room_created` outbox event. Room and `room_members` documents live exclusively on the home site; they are not replicated. Subscriptions are replicated: the home site holds subs for everyone in the room (so room-scoped queries answer locally), and each remote site additionally holds subs for its own users (so user-scoped queries answer locally).
 
@@ -1271,23 +1271,24 @@ End state:
 
 ### Scenario C — Cross-site channel
 
-`alice@site-A` creates a channel with `users=["bob"], orgs=["org-fx"]`. `org-fx` resolves to local users carol, dave, frank, grace plus remote user ian on site-B. So site-B has bob and ian.
+`alice@site-A` creates a channel with `name="deal team", users=["bob"], orgs=["org-fx"]`. `org-fx` resolves to local users carol, dave, frank, grace plus remote user ian on site-B. So site-B has bob and ian. (The client supplies the channel name — there is no auto-generation.)
 
 ```
 room-service (site-A)
   - users post-strip = ["bob"], orgs = ["org-fx"], roomType = channel
-  - capacity check via CountNewMembers — passes
+  - name = "deal team" (client-supplied, validated non-empty ≤ 100 runes)
+  - capacity check via CountNewMembers(orgs, users, "", excludeAccount=alice)
+    + 1 (the owner) — passes
   - generates roomId = "r_chan1"
-  - publishes canonical event with users=["bob"], orgs=["org-fx"]
+  - publishes canonical event with name="deal team", users=["bob"], orgs=["org-fx"]
 
 room-worker (site-A)
-  step 4   Room{id:r_chan1, type:channel, name:"bob, org-fx" (auto)}
-  step 5   ListNewMembersForNewRoom(["org-fx"], ["bob"]) →
+  step 4   Room{id:r_chan1, type:channel, name:"deal team"} (verbatim from request)
+  step 5   ListNewMembersForNewRoom(["org-fx"], ["bob"], excludeAccount="alice") →
             ["bob","carol","dave","frank","grace","ian"]
-           strip alice → unchanged
            FindUsersByAccounts → bob:site-B, ian:site-B, others:site-A
            Build 6 member subs + 1 owner sub for alice
-           All subs.Name = "bob, org-fx", SidebarName = ""
+           All subs.Name = "deal team", SidebarName = ""
   step 6   BulkCreateSubscriptions (7 docs on site-A)
   step 7   RoomMembers (channel + orgs non-empty):
              6 individual entries + 1 org entry "org-fx" + 1 individual for alice
@@ -1298,7 +1299,7 @@ room-worker (site-A)
              Accounts on site-B: ["bob","ian"]
              outbox.site-A.to.site-B.room_created
              payload: {RoomID:"r_chan1", RoomType:"channel",
-                       RoomName:"bob, org-fx", HomeSiteID:"site-A",
+                       RoomName:"deal team", HomeSiteID:"site-A",
                        Accounts:["bob","ian"], RequesterAccount:"alice",
                        RequesterEngName:"Alice", RequesterChineseName:"爱丽丝",
                        Timestamp}
@@ -1691,7 +1692,7 @@ Existing `add-member` unit tests gain new assertions:
 - `room-worker/handler.go` create-room paths: ≥ 90%.
 - `inbox-worker/handler.go` `handleRoomCreated`: ≥ 90%.
 - `pkg/model` new field round-trips: 100%.
-- New helpers (`composeName`, `truncateRunes`, `stripAccount`, `subscriptionName`, `subscriptionSidebarName`, `subscriptionIsSubscribed`, `rolesForType`): ≥ 95% (pure functions). `composeAutoName` was removed when channels became required-name.
+- New helpers (`composeName`, `stripAccount`, `subscriptionName`, `subscriptionSidebarName`, `subscriptionIsSubscribed`, `rolesForType`): ≥ 95% (pure functions). `composeAutoName` and `truncateRunes` were removed when channels became required-name (the server preserves the client-supplied name verbatim).
 
 Use `go test -coverprofile=coverage.out` and `go tool cover -func=coverage.out` to verify per-package thresholds before merge.
 

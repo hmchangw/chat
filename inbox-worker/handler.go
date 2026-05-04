@@ -270,21 +270,34 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 	if err != nil {
 		return fmt.Errorf("find users by accounts: %w", err)
 	}
+	// FindUsersByAccounts can return a subset; treat any account in
+	// data.Accounts that didn't come back as a hard failure rather than
+	// silently materializing partial remote-side state with no retry signal.
+	userByAccount := make(map[string]model.User, len(users))
+	for i := range users {
+		userByAccount[users[i].Account] = users[i]
+	}
+	for _, account := range data.Accounts {
+		if _, ok := userByAccount[account]; !ok {
+			return fmt.Errorf("find users by accounts: missing account %q (room %s home %s)",
+				account, data.RoomID, data.HomeSiteID)
+		}
+	}
 
 	acceptedAt := time.UnixMilli(data.Timestamp).UTC()
-	subs := make([]*model.Subscription, 0, len(users))
-	for i := range users {
-		u := &users[i]
+	subs := make([]*model.Subscription, 0, len(data.Accounts))
+	for _, account := range data.Accounts {
+		u := userByAccount[account]
 		sub := &model.Subscription{
 			ID:           idgen.GenerateUUIDv7(),
 			User:         model.SubscriptionUser{ID: u.ID, Account: u.Account},
 			RoomID:       data.RoomID,
 			SiteID:       data.HomeSiteID,
 			Roles:        rolesForType(data.RoomType),
-			Name:         subscriptionName(&data, u),
+			Name:         subscriptionName(&data, &u),
 			RoomType:     data.RoomType,
-			SidebarName:  subscriptionSidebarName(&data, u),
-			IsSubscribed: subscriptionIsSubscribed(&data, u),
+			SidebarName:  subscriptionSidebarName(&data, &u),
+			IsSubscribed: subscriptionIsSubscribed(&data, &u),
 			JoinedAt:     acceptedAt,
 		}
 		subs = append(subs, sub)
