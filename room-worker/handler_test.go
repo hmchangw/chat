@@ -884,6 +884,11 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// New permanent-error contract: when ListNewMembers resolves a candidate
+// account that's no longer present in the users collection, processAddMembers
+// must NOT silently materialize a smaller membership. It returns errPermanent
+// so JetStream Acks (no infinite redelivery) and the requester sees an
+// async-job error event naming the missing account.
 func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
@@ -897,14 +902,8 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "ghost"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site-a"},
 	}, nil)
-	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, subs []*model.Subscription) error {
-			assert.Len(t, subs, 1, "ghost should be skipped")
-			assert.Equal(t, "bob", subs[0].User.Account)
-			return nil
-		})
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
-	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+	// BulkCreateSubscriptions / ReconcileMemberCounts / HasOrgRoomMembers
+	// MUST NOT be called once a missing account is detected.
 
 	req := model.AddMembersRequest{
 		RoomID:           "r1",
@@ -917,7 +916,10 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 
 	ctxUNF := natsutil.WithRequestID(context.Background(), "req-user-not-found-test")
 	err := h.processAddMembers(ctxUNF, reqData)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPermanent)
+	assert.Contains(t, err.Error(), "ghost")
+	assert.Contains(t, err.Error(), "r1")
 }
 
 func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
@@ -2420,4 +2422,58 @@ func TestSanitizeAsyncJobError_NonPermanentCollapsed(t *testing.T) {
 	err := fmt.Errorf("transient store error: %w", errors.New("connection reset"))
 	got := sanitizeAsyncJobError(err)
 	assert.Equal(t, "operation failed", got)
+}
+
+// Caller-supplied req.History.SharedSince must propagate identically to the
+// local subscription, the per-user SubscriptionUpdateEvent fan-out, and the
+// MemberAddEvent published locally — without it, the event would carry
+// req.Timestamp instead and remote-site sub creation would diverge from
+// home-site sub creation.
+func TestHandler_ProcessAddMembers_HistorySharedSinceWinsOverTimestamp(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	var published []publishedMsg
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}
+	h := NewHandler(store, "site-a", publish)
+
+	const sharedSince int64 = 500
+	const timestamp int64 = 1500
+	require.NotEqual(t, sharedSince, timestamp, "test premise: explicit cutoff must differ from acceptedAt")
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob"}, "r1").Return([]string{"bob"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
+		{ID: "u_bob", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑伯"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, subs []*model.Subscription) error {
+			require.Len(t, subs, 1)
+			require.NotNil(t, subs[0].HistorySharedSince, "explicit cutoff must reach sub")
+			assert.Equal(t, time.UnixMilli(sharedSince).UTC(), *subs[0].HistorySharedSince,
+				"sub HistorySharedSince must equal req.History.SharedSince, not req.Timestamp")
+			return nil
+		})
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	ss := sharedSince
+	req := model.AddMembersRequest{
+		RoomID:           "r1",
+		Users:            []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        timestamp,
+		History:          model.HistoryConfig{Mode: model.HistoryModeNone, SharedSince: &ss},
+	}
+	reqData, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "req-shared-since-precedence")
+	require.NoError(t, h.processAddMembers(ctx, reqData))
+
+	addEvt, _ := findMemberAddEvent(t, published, "r1")
+	require.NotNil(t, addEvt.HistorySharedSince, "MemberAddEvent must carry the explicit cutoff")
+	assert.Equal(t, sharedSince, *addEvt.HistorySharedSince,
+		"MemberAddEvent.HistorySharedSince must equal req.History.SharedSince, not req.Timestamp")
 }

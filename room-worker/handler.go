@@ -55,13 +55,24 @@ func messageDedupSeed(ctx context.Context, handler, roomID, payloadSeed string) 
 	return payloadSeed
 }
 
-// historySharedSincePtr returns &timestamp when mode is "none" with a positive timestamp; nil otherwise.
-func historySharedSincePtr(mode model.HistoryMode, timestamp int64, roomID string) *int64 {
-	if mode != model.HistoryModeNone {
+// historySharedSincePtr resolves the History.SharedSince value for an
+// add-member request. Mode != HistoryModeNone → nil (history is unrestricted).
+// Otherwise prefers the caller-supplied req.History.SharedSince when non-nil
+// and positive, falling back to req.Timestamp. This single source of truth
+// keeps the local subscription's HistorySharedSince consistent with the
+// MemberAddEvent published to the user's subject and the cross-site outbox
+// payload — without it, an explicit caller cutoff would be silently
+// overwritten with the request acceptance timestamp at fan-out time.
+func historySharedSincePtr(history model.HistoryConfig, timestamp int64, roomID string) *int64 {
+	if history.Mode != model.HistoryModeNone {
 		return nil
 	}
+	if history.SharedSince != nil && *history.SharedSince > 0 {
+		ss := *history.SharedSince
+		return &ss
+	}
 	if timestamp <= 0 {
-		slog.Error("restricted history with missing timestamp, emitting nil", "roomID", roomID, "mode", mode)
+		slog.Error("restricted history with missing timestamp, emitting nil", "roomID", roomID, "mode", history.Mode)
 		return nil
 	}
 	return &timestamp
@@ -558,6 +569,16 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	for i := range users {
 		userMap[users[i].Account] = users[i]
 	}
+	// `accounts` is the resolved set from ListNewMembers (which queries the
+	// users collection), so a missing entry here means the user was deleted
+	// between resolution and lookup — a hard data inconsistency that won't
+	// resolve via JetStream redelivery. Mirror the create-room contract and
+	// fail permanently rather than silently materializing partial membership.
+	for _, account := range accounts {
+		if _, ok := userMap[account]; !ok {
+			return newPermanent("user %s not found in room.member.add (room %s)", account, req.RoomID)
+		}
+	}
 
 	// acceptedAt is the stable request-acceptance time (set by room-service).
 	// It's used for every domain-level timestamp that must survive event replay
@@ -575,11 +596,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	actualAccounts := make([]string, 0, len(accounts))
 	resolvedAccountSet := make(map[string]struct{}, len(accounts))
 	for _, account := range accounts {
-		user, ok := userMap[account]
-		if !ok {
-			slog.Warn("user not found for account", "account", account)
-			continue
-		}
+		// Presence guaranteed by the userMap completeness check above.
+		user := userMap[account]
 		// RoomType is fixed to channel: room-service rejects member.add for
 		// any other room kind.
 		sub := &model.Subscription{
@@ -592,12 +610,12 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 			Roles:    []model.Role{model.RoleMember},
 			JoinedAt: acceptedAt,
 		}
-		if req.History.Mode == model.HistoryModeNone {
-			histTime := acceptedAt
-			if req.History.SharedSince != nil {
-				histTime = time.UnixMilli(*req.History.SharedSince).UTC()
-			}
-			sub.HistorySharedSince = &histTime
+		// Resolve once via the shared helper so the local sub, the per-user
+		// SubscriptionUpdateEvent fan-out, and the cross-site MemberAddEvent
+		// all carry the same HistorySharedSince value.
+		if ms := historySharedSincePtr(req.History, req.Timestamp, req.RoomID); ms != nil {
+			t := time.UnixMilli(*ms).UTC()
+			sub.HistorySharedSince = &t
 		}
 		subs = append(subs, sub)
 		actualAccounts = append(actualAccounts, user.Account)
@@ -708,7 +726,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 
 	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)
-	historySharedSince := historySharedSincePtr(req.History.Mode, req.Timestamp, req.RoomID)
+	historySharedSince := historySharedSincePtr(req.History, req.Timestamp, req.RoomID)
 	memberAddEvt := model.MemberAddEvent{
 		Type:               "member_added",
 		RoomID:             req.RoomID,
