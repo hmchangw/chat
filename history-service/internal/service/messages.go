@@ -9,6 +9,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/roomcrypto"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -205,6 +206,35 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 	return msg, nil
 }
 
+// encryptEditMsg attempts to encrypt plaintext using the room's current key.
+// Returns ("", encryptedJSON) on success. Returns (plaintext, nil) on any
+// failure (no key, key fetch error, encode error) so the caller can fall back
+// to a plaintext event — the Cassandra write already succeeded.
+func (s *HistoryService) encryptEditMsg(c *natsrouter.Context, roomID, plaintext string) (string, json.RawMessage) {
+	if s.keyProvider == nil {
+		return plaintext, nil
+	}
+	key, err := s.keyProvider.Get(c, roomID)
+	if err != nil {
+		slog.Warn("edit: get room key failed, event will be plaintext", "error", err, "roomID", roomID)
+		return plaintext, nil
+	}
+	if key == nil {
+		return plaintext, nil
+	}
+	encrypted, err := roomcrypto.Encode(plaintext, key.KeyPair.PublicKey, key.Version)
+	if err != nil {
+		slog.Warn("edit: encrypt failed, event will be plaintext", "error", err, "roomID", roomID)
+		return plaintext, nil
+	}
+	encJSON, err := json.Marshal(encrypted)
+	if err != nil {
+		slog.Warn("edit: marshal encrypted message failed, event will be plaintext", "error", err, "roomID", roomID)
+		return plaintext, nil
+	}
+	return "", json.RawMessage(encJSON)
+}
+
 // EditMessage handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit.
 // Sender-only auth. Writes to all applicable Cassandra tables via
 // UpdateMessageContent, then publishes a best-effort MessageEditedEvent to
@@ -251,14 +281,16 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, req models.EditMessa
 
 	// Publish live event (best-effort — publish failure is logged, not returned).
 	editedAtMs := editedAt.UnixMilli()
+	plainMsg, encMsg := s.encryptEditMsg(c, roomID, req.NewMsg)
 	evt := models.MessageEditedEvent{
-		Type:      "message_edited",
-		Timestamp: editedAtMs,
-		RoomID:    roomID,
-		MessageID: req.MessageID,
-		NewMsg:    req.NewMsg,
-		EditedBy:  account,
-		EditedAt:  editedAtMs,
+		Type:            "message_edited",
+		Timestamp:       editedAtMs,
+		RoomID:          roomID,
+		MessageID:       req.MessageID,
+		NewMsg:          plainMsg,
+		EncryptedNewMsg: encMsg,
+		EditedBy:        account,
+		EditedAt:        editedAtMs,
 	}
 	if payload, err := json.Marshal(evt); err == nil {
 		if pubErr := s.publisher.Publish(c, subject.RoomEvent(roomID), payload); pubErr != nil {

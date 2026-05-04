@@ -1,6 +1,11 @@
 name: history-service
 
 services:
+  valkey:
+    image: valkey/valkey:8-alpine
+    networks:
+      - chat-local
+
   history-service:
     build:
       context: ../..
@@ -13,6 +18,7 @@ services:
       - MONGO_DB=chat
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat
+      - VALKEY_ADDR=valkey:6379
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     networks:

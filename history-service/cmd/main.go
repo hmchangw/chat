@@ -16,6 +16,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
@@ -59,6 +60,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        cfg.Valkey.Addr,
+		Password:    cfg.Valkey.Password,
+		GracePeriod: 0, // history-service never rotates keys; grace period is irrelevant
+	})
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
+	}
+
 	cassRepo := cassrepo.NewRepository(cassSession)
 	db := mongoClient.Database(cfg.Mongo.DB)
 	subRepo := mongorepo.NewSubscriptionRepo(db)
@@ -70,7 +81,7 @@ func main() {
 	}
 
 	pub := publisher.New(nc)
-	svc := service.New(cassRepo, subRepo, pub, threadRoomRepo)
+	svc := service.New(cassRepo, subRepo, pub, threadRoomRepo, keyStore)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
@@ -83,6 +94,7 @@ func main() {
 		func(ctx context.Context) error { return router.Shutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(ctx context.Context) error { return keyStore.Close() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 	)
