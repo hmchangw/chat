@@ -1114,7 +1114,8 @@ func TestHistoryService_EditMessage_SkipPublishOnNilKey(t *testing.T) {
 
 	keys.EXPECT().Get(gomock.Any(), "r1").Return(nil, nil)
 
-	// pub.EXPECT().Publish is intentionally NOT set.
+	// pub.EXPECT().Publish is intentionally NOT set — gomock's strict mode will
+	// fail the test if Publish is called.
 	_ = pub
 
 	resp, err := svc.EditMessage(c, models.EditMessageRequest{MessageID: "m-abc", NewMsg: "secret"})
@@ -1167,6 +1168,25 @@ func TestHistoryService_encryptEditMsg(t *testing.T) {
 		plain, enc, err := svc.EncryptEditMsgForTest(c, "r1", "secret")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no current key")
+		assert.Empty(t, plain)
+		assert.Nil(t, enc)
+	})
+
+	t.Run("enabled with invalid public key returns error", func(t *testing.T) {
+		svc, _, _, _, _, keys := newService(t, true)
+		// Zero-length public key causes ecdh.P256().NewPublicKey to fail inside
+		// roomcrypto.Encode (P-256 expects a 65-byte uncompressed point).
+		invalidKey := &roomkeystore.VersionedKeyPair{
+			Version: 1,
+			KeyPair: roomkeystore.RoomKeyPair{
+				PublicKey: []byte{}, // wrong length: roomcrypto expects 65 bytes for P-256
+			},
+		}
+		keys.EXPECT().Get(gomock.Any(), "r1").Return(invalidKey, nil)
+		c := testContext()
+		plain, enc, err := svc.EncryptEditMsgForTest(c, "r1", "secret")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "encrypt edit message")
 		assert.Empty(t, plain)
 		assert.Nil(t, enc)
 	})
