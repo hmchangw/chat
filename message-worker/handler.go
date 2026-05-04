@@ -13,7 +13,6 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -369,26 +368,15 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
 	if err != nil {
 		return fmt.Errorf("marshal outbox event: %w", err)
 	}
-	payloadSeed := fmt.Sprintf("thread-sub-outbox:%s:%s:%s", sub.ThreadRoomID, sub.UserID, msgID)
-	dedupID := outboxDedupID(ctx, ownerSiteID, payloadSeed)
+	// Dedup ID format: {payloadSeed}:{destSiteID}, where payloadSeed encodes
+	// per-publish uniqueness (threadRoomID + userID + msg.ID). msg.ID is
+	// stable across MESSAGES_CANONICAL redeliveries → same publish always
+	// produces the same dedup ID. Different users on the same destination get
+	// different dedup IDs because their userIDs differ in the seed.
+	dedupID := fmt.Sprintf("thread-sub-outbox:%s:%s:%s:%s", sub.ThreadRoomID, sub.UserID, msgID, ownerSiteID)
 	subj := subject.Outbox(h.siteID, ownerSiteID, model.OutboxThreadSubscriptionUpserted)
 	if err := h.publish(ctx, subj, data, dedupID); err != nil {
 		return fmt.Errorf("publish thread subscription outbox to %s: %w", ownerSiteID, err)
 	}
 	return nil
-}
-
-// outboxDedupID composes Nats-Msg-Id as `{payloadSeed}:{destSiteID}`. The
-// payloadSeed must already encode per-publish uniqueness (here:
-// threadRoomID + userID + msg.ID) so that multiple subscriptions published
-// to the same destination from a single inbound message get distinct dedup
-// IDs. msg.ID is stable across MESSAGES_CANONICAL redeliveries, making the
-// dedup ID stable too. X-Request-ID isn't part of the result — payloadSeed
-// already gives per-publish entropy and per-redelivery stability.
-func outboxDedupID(ctx context.Context, destSiteID, payloadSeed string) string {
-	if natsutil.RequestIDFromContext(ctx) == "" {
-		slog.Warn("missing X-Request-ID; using payload-derived outbox dedup id",
-			"destSiteID", destSiteID)
-	}
-	return payloadSeed + ":" + destSiteID
 }

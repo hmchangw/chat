@@ -199,7 +199,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 		subCol:       db.Collection("subscriptions"),
 		roomCol:      db.Collection("rooms"),
 		userCol:      db.Collection("users"),
-		threadSubCol: db.Collection("threadSubscriptions"),
+		threadSubCol: db.Collection("thread_subscriptions"),
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
@@ -225,7 +225,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	require.NoError(t, handler.HandleEvent(ctx, evtData))
 
 	var got model.ThreadSubscription
-	require.NoError(t, db.Collection("threadSubscriptions").
+	require.NoError(t, db.Collection("thread_subscriptions").
 		FindOne(ctx, bson.M{"threadRoomId": "tr-1", "userId": "u-bob"}).
 		Decode(&got))
 	assert.Equal(t, "sub-1", got.ID)
@@ -243,7 +243,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 		subCol:       db.Collection("subscriptions"),
 		roomCol:      db.Collection("rooms"),
 		userCol:      db.Collection("users"),
-		threadSubCol: db.Collection("threadSubscriptions"),
+		threadSubCol: db.Collection("thread_subscriptions"),
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
@@ -280,7 +280,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	require.NoError(t, handler.HandleEvent(ctx, plainEvt))
 
 	var got model.ThreadSubscription
-	require.NoError(t, db.Collection("threadSubscriptions").
+	require.NoError(t, db.Collection("thread_subscriptions").
 		FindOne(ctx, bson.M{"threadRoomId": "tr-1", "userId": "u-bob"}).
 		Decode(&got))
 	assert.True(t, got.HasMention, "hasMention must remain true after a non-mention event")
@@ -303,7 +303,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	require.NoError(t, err)
 	require.NoError(t, handler.HandleEvent(ctx, thirdEvt))
 
-	require.NoError(t, db.Collection("threadSubscriptions").
+	require.NoError(t, db.Collection("thread_subscriptions").
 		FindOne(ctx, bson.M{"threadRoomId": "tr-1", "userId": "u-bob"}).
 		Decode(&got))
 	assert.True(t, got.HasMention)

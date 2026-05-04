@@ -116,7 +116,7 @@ func (s *mongoInboxStore) ensureIndexes(ctx context.Context) error {
 		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userId", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return fmt.Errorf("ensure threadSubscriptions (threadRoomId,userId) index: %w", err)
+		return fmt.Errorf("ensure thread_subscriptions (threadRoomId,userId) index: %w", err)
 	}
 	return nil
 }
@@ -184,7 +184,7 @@ func main() {
 		subCol:       db.Collection("subscriptions"),
 		roomCol:      db.Collection("rooms"),
 		userCol:      db.Collection("users"),
-		threadSubCol: db.Collection("threadSubscriptions"),
+		threadSubCol: db.Collection("thread_subscriptions"),
 	}
 	if err := store.ensureIndexes(ctx); err != nil {
 		slog.Error("ensure indexes failed", "error", err)
