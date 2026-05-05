@@ -468,7 +468,8 @@ Steps below are the canonical sequence. Each numbered step has explicit reject c
          newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, "")
        (Empty roomID skips the "already-subscribed" filter — the room doesn't
        exist yet — and just dedups + filters bots, returning the unique count.)
-       newCount > h.maxRoomSize → reject "exceeds maximum capacity".
+       (newCount + 1) > h.maxRoomSize → reject "exceeds maximum capacity".
+       // +1 accounts for the creator/owner subscription.
    7f. Generate channel roomID:
          req.RoomID = idgen.GenerateID()
        (Pre-generated here so the synchronous reply carries it.)
@@ -615,6 +616,7 @@ dmDedupIndex := mongo.IndexModel{
     },
     Options: options.Index().
         SetName("u_account_name_roomtype_idx").
+        SetUnique(true).
         SetPartialFilterExpression(bson.M{
             "roomType": bson.M{"$in": bson.A{"dm", "botDM"}},
         }),
@@ -1309,7 +1311,7 @@ room-worker (site-A)
 inbox-worker (site-B)
   - FindUsersByAccounts(["bob","ian"]) → 2 users
   - Build 2 subs:
-      bob's: name="bob, org-fx", sidebarName="", roles=[member], siteID=site-A
+      bob's: name="deal team", sidebarName="", roles=[member], siteID=site-A
       ian's: same shape
   - BulkCreateSubscriptions on site-B
 ```
