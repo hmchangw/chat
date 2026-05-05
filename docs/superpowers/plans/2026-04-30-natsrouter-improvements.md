@@ -263,8 +263,28 @@ func TestIntegration_BusyReplyOnSaturation(t *testing.T) {
 	r := natsrouter.New(nc, "integration-busy", natsrouter.WithMaxConcurrency(1))
 
 	gate := make(chan struct{})
+	// Safety net: if any assertion below fails before we close the gate,
+	// the spawned client and handler goroutines would block on `<-gate`
+	// forever (bounded only by nc.Request's 5s timeout). This idempotent
+	// closer guarantees release on every test exit path.
+	defer func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	}()
+
+	// Synchronize on real handler entry instead of polling: the handler
+	// signals `entered` before blocking on `gate`, so the busy-reply poll
+	// only starts once the slot is genuinely held.
+	entered := make(chan struct{}, 1)
 	natsrouter.Register(r, "busy.{id}",
 		func(c *natsrouter.Context, req echoReq) (*echoResp, error) {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
 			<-gate
 			return &echoResp{Seq: req.Seq}, nil
 		})
@@ -287,20 +307,20 @@ func TestIntegration_BusyReplyOnSaturation(t *testing.T) {
 		}{b, err}
 	}()
 
-	// Wait for the first handler to be in-flight.
-	require.Eventually(t, func() bool {
-		// A second request should now get busy because the slot is held.
-		data, _ := json.Marshal(echoReq{Seq: 2})
-		resp, err := nc.Request(context.Background(), "busy.2", data, 1*time.Second)
-		if err != nil {
-			return false
-		}
-		var re natsrouter.RouteError
-		if err := json.Unmarshal(resp.Data, &re); err != nil {
-			return false
-		}
-		return re.Code == natsrouter.CodeUnavailable
-	}, 5*time.Second, 50*time.Millisecond, "expected busy reply once slot is held")
+	// Wait for handler to actually be in the gate before polling for busy.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first handler never entered the chain")
+	}
+
+	// A second request must now get busy because the slot is held.
+	data, _ := json.Marshal(echoReq{Seq: 2})
+	resp, err := nc.Request(context.Background(), "busy.2", data, 2*time.Second)
+	require.NoError(t, err)
+	var re natsrouter.RouteError
+	require.NoError(t, json.Unmarshal(resp.Data, &re))
+	assert.Equal(t, natsrouter.CodeUnavailable, re.Code, "expected busy reply once slot is held")
 
 	// Release the gate; first request must complete normally.
 	close(gate)
@@ -310,7 +330,59 @@ func TestIntegration_BusyReplyOnSaturation(t *testing.T) {
 	require.NoError(t, json.Unmarshal(got.resp, &ok))
 	assert.Equal(t, 1, ok.Seq)
 }
+
+// TestRouter_replyBusy_NoReplySubject verifies that draft-and-forget
+// messages (empty Reply subject) trigger the silent-drop path with a
+// Warn log and no panic. In-package unit test — no NATS connection
+// required because replyBusy short-circuits before touching the wire.
+func TestRouter_replyBusy_NoReplySubject(t *testing.T) {
+	r := New(nil, "test")
+	msg := &nats.Msg{Subject: "void.subject", Reply: ""}
+	// Must not panic. Reply == "" hits the early-return path.
+	r.replyBusy(msg)
+}
+
+// TestIntegration_SpawnSitePanicBackstop verifies that a handler panic
+// without Recovery middleware is caught by the spawn-site backstop:
+// the process survives, the caller receives an "internal error" reply,
+// and subsequent requests still work (semaphore slot released, WG
+// decremented).
+func TestIntegration_SpawnSitePanicBackstop(t *testing.T) {
+	nc := setupNATS(t)
+	// Note: NO Recovery middleware installed. We're testing the spawn-site
+	// backstop, not the middleware path.
+	r := natsrouter.New(nc, "integration-panic-backstop", natsrouter.WithMaxConcurrency(2))
+
+	natsrouter.Register(r, "boom.{id}",
+		func(c *natsrouter.Context, req echoReq) (*echoResp, error) {
+			panic("intentional handler panic")
+		})
+
+	// Panicking request must receive a reply (not time out) and the
+	// reply must indicate an error.
+	data, _ := json.Marshal(echoReq{Seq: 1})
+	resp, err := nc.Request(context.Background(), "boom.1", data, 5*time.Second)
+	require.NoError(t, err, "panicking handler should still produce a reply via backstop")
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(resp.Data, &payload))
+	assert.Equal(t, "internal error", payload["error"], "expected internal error reply from backstop")
+
+	// Process survived: a follow-up normal request must succeed.
+	natsrouter.Register(r, "ok.{id}",
+		func(c *natsrouter.Context, req echoReq) (*echoResp, error) {
+			return &echoResp{Seq: req.Seq}, nil
+		})
+	data, _ = json.Marshal(echoReq{Seq: 2})
+	resp, err = nc.Request(context.Background(), "ok.42", data, 5*time.Second)
+	require.NoError(t, err)
+	var ok echoResp
+	require.NoError(t, json.Unmarshal(resp.Data, &ok))
+	assert.Equal(t, 2, ok.Seq)
+}
 ```
+
+Add `"github.com/nats-io/nats.go"` to the test file's imports if not already present (needed by `TestRouter_replyBusy_NoReplySubject`). That test belongs in `pkg/natsrouter/router_test.go` (package `natsrouter`, in-package, accesses unexported `replyBusy`); place it alongside the other `TestRouter_*` tests rather than in `integration_test.go`.
 
 - [ ] **Step 2: Run the new test to verify it fails**
 
@@ -323,17 +395,23 @@ Add to `pkg/natsrouter/router.go`, after the `New` constructor:
 
 ```go
 // replyBusy publishes an ErrUnavailable reply on m.Reply, used when the
-// router's admission control rejects a message. Best-effort — if the
-// caller did not set a reply subject, the publish is a no-op.
+// router's admission control rejects a message. For request/reply
+// messages the caller observes the busy code and can retry. For
+// fire-and-forget messages (empty Reply subject — typically
+// RegisterVoid routes) the message is silently dropped at this point;
+// we emit a Warn log so operators can correlate drops with the
+// busy-reply rate.
 func (r *Router) replyBusy(msg *nats.Msg) {
 	if msg.Reply == "" {
+		slog.Warn("natsrouter: dropped fire-and-forget message under saturation",
+			"subject", msg.Subject)
 		return
 	}
 	natsutil.ReplyJSON(msg, ErrUnavailable("service busy"))
 }
 ```
 
-Add the import `"github.com/hmchangw/chat/pkg/natsutil"` to the file.
+Add the imports `"github.com/hmchangw/chat/pkg/natsutil"` and `"log/slog"` to the file.
 
 - [ ] **Step 4: Rewrite the `natsHandler` closure inside `addRoute`**
 
@@ -369,7 +447,13 @@ with:
 			// and the deferred semaphore/WG cleanup below still runs.
 			defer func() {
 				if rec := recover(); rec != nil {
-					slog.Error("natsrouter: panic in handler",
+					// Warn, not Error: a hit here means Recovery middleware
+					// is misconfigured or absent (Recovery would have caught
+					// it earlier and produced a structured ErrInternal
+					// reply). The process survived, so the severity matches
+					// "operator should fix the middleware setup", not
+					// "production incident".
+					slog.Warn("natsrouter: panic in handler caught by spawn backstop",
 						"subject", m.Msg.Subject,
 						"panic", rec,
 						"stack", string(debug.Stack()))
