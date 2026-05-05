@@ -361,12 +361,39 @@ with:
 		go func() {
 			defer r.wg.Done()
 			defer func() { <-r.sem }()
+			// Process-safety backstop: catch any panic that bypassed
+			// user-installed Recovery middleware. Recovery middleware (when
+			// configured via r.Use) catches first and sends a structured
+			// reply; this defer only fires if Recovery is absent or if a
+			// panic somehow escapes it. Either way, the process survives
+			// and the deferred semaphore/WG cleanup below still runs.
+			defer func() {
+				if rec := recover(); rec != nil {
+					slog.Error("natsrouter: panic in handler",
+						"subject", m.Msg.Subject,
+						"panic", rec,
+						"stack", string(debug.Stack()))
+					if m.Msg.Reply != "" {
+						natsutil.ReplyError(m.Msg, "internal error")
+					}
+				}
+			}()
 			c := acquireContext(m.Context(), m.Msg, rt.extractParams(m.Msg.Subject), all)
+			defer releaseContext(c)
 			c.Next()
-			releaseContext(c)
 		}()
 	}
 ```
+
+Add the imports `"log/slog"` and `"runtime/debug"` to `pkg/natsrouter/router.go` if not already present.
+
+**Defer ordering note (LIFO):** on goroutine exit (normal return or panic), the defers fire in reverse-registration order:
+1. `releaseContext(c)` — chainState back to the pool.
+2. `recover()` — catches any panic, logs, optionally publishes "internal error" reply.
+3. `<-r.sem` — releases the admission slot.
+4. `r.wg.Done()` — decrements the shutdown WaitGroup.
+
+Recovery middleware (registered via `r.Use(Recovery())`) catches panics earlier in the chain and never lets them reach this defer; that's the intended path. The spawn-level recover is purely a process-safety net so a misconfigured service can't be crashed by a handler bug.
 
 - [ ] **Step 5: Update `TestIntegration_ConcurrentRequestsWithCopy` to opt into a higher cap**
 
@@ -759,6 +786,19 @@ Replace `pkg/natsrouter/doc.go` with:
 // Mongo conditional updates) to ensure correctness under concurrent
 // invocation.
 //
+// # Panic safety
+//
+// The router installs a process-safety backstop in every spawned
+// handler goroutine: an unrecovered panic is caught at the spawn
+// site, logged with stack trace, and (if the message has a Reply
+// subject) replied to with "internal error". This guarantees the
+// process cannot be crashed by a single bad handler regardless of
+// middleware configuration. Recovery middleware (registered via
+// r.Use(Recovery())) is still the recommended path because it
+// produces structured ErrInternal replies enriched with request-ID
+// and other middleware-set fields; the spawn-site backstop is
+// strictly a defense-in-depth catch.
+//
 // # Shutdown
 //
 // Router.Shutdown drains every subscription, waits for the dispatcher
@@ -828,6 +868,7 @@ After all 5 tasks are complete:
   - "publishes an ErrUnavailable reply" → `r.replyBusy(m.Msg)` in router.go
   - "WaitGroup tracks every spawned handler" → `r.wg.Add(1)` in addRoute, `r.wg.Wait()` in Shutdown
   - "fire-and-forget routes drop silently" → `if msg.Reply == "" { return }` early-return in `replyBusy`
+  - "process-safety backstop on panic" → `defer func() { if rec := recover(); rec != nil { ... } }()` in addRoute spawn closure
   - "Registrar contract is intentionally minimal" → `addRoute(pattern, handlers)` unchanged signature, ready for future Group composition
 
 - [ ] Verify a downstream service can adopt the new API in one line:
