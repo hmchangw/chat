@@ -676,3 +676,14 @@ func TestRouter_WithMaxConcurrency_IgnoresNonPositive(t *testing.T) {
 	r2 := New(nil, "test", WithMaxConcurrency(-1))
 	assert.Equal(t, defaultMaxConcurrency, cap(r2.sem))
 }
+
+// TestRouter_replyBusy_NoReplySubject verifies that fire-and-forget
+// messages (empty Reply subject) trigger the silent-drop path with a
+// Warn log and no panic. In-package unit test — no NATS connection
+// required because replyBusy short-circuits before touching the wire.
+func TestRouter_replyBusy_NoReplySubject(t *testing.T) {
+	r := New(nil, "test")
+	msg := &nats.Msg{Subject: "void.subject", Reply: ""}
+	// Must not panic. Reply == "" hits the early-return path.
+	r.replyBusy(msg)
+}

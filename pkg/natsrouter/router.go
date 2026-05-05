@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // defaultMaxConcurrency is the default per-pod handler concurrency cap. Sized
@@ -39,6 +43,9 @@ type Router struct {
 	// slot before running and releases it on return. cap(sem) is the
 	// per-pod concurrency ceiling. Configured by WithMaxConcurrency.
 	sem chan struct{}
+	// wg tracks in-flight handler goroutines so Shutdown can wait for
+	// them to finish.
+	wg sync.WaitGroup
 
 	mu   sync.Mutex
 	subs []*nats.Subscription
@@ -74,6 +81,22 @@ func New(nc *otelnats.Conn, queue string, opts ...Option) *Router {
 	return r
 }
 
+// replyBusy publishes an ErrUnavailable reply on m.Reply, used when the
+// router's admission control rejects a message. For request/reply
+// messages the caller observes the busy code and can retry. For
+// fire-and-forget messages (empty Reply subject — typically
+// RegisterVoid routes) the message is silently dropped at this point;
+// we emit a Warn log so operators can correlate drops with the
+// busy-reply rate.
+func (r *Router) replyBusy(msg *nats.Msg) {
+	if msg.Reply == "" {
+		slog.Warn("natsrouter: dropped fire-and-forget message under saturation",
+			"subject", msg.Subject)
+		return
+	}
+	natsutil.ReplyJSON(msg, ErrUnavailable("service busy"))
+}
+
 // Use appends middleware to the router's chain.
 func (r *Router) Use(mw ...HandlerFunc) {
 	r.middleware = append(r.middleware, mw...)
@@ -86,9 +109,43 @@ func (r *Router) addRoute(pattern string, handlers []HandlerFunc) {
 	all = append(all, handlers...)
 
 	natsHandler := func(m otelnats.Msg) {
-		c := acquireContext(m.Context(), m.Msg, rt.extractParams(m.Msg.Subject), all)
-		c.Next()
-		releaseContext(c)
+		select {
+		case r.sem <- struct{}{}:
+		default:
+			r.replyBusy(m.Msg)
+			return
+		}
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			defer func() { <-r.sem }()
+			// Process-safety backstop: catch any panic that bypassed
+			// user-installed Recovery middleware. Recovery middleware (when
+			// configured via r.Use) catches first and sends a structured
+			// reply; this defer only fires if Recovery is absent or if a
+			// panic somehow escapes it. Either way, the process survives
+			// and the deferred semaphore/WG cleanup below still runs.
+			defer func() {
+				if rec := recover(); rec != nil {
+					// Warn, not Error: a hit here means Recovery middleware
+					// is misconfigured or absent (Recovery would have caught
+					// it earlier and produced a structured ErrInternal
+					// reply). The process survived, so the severity matches
+					// "operator should fix the middleware setup", not
+					// "production incident".
+					slog.Warn("natsrouter: panic in handler caught by spawn backstop",
+						"subject", m.Msg.Subject,
+						"panic", rec,
+						"stack", string(debug.Stack()))
+					if m.Msg.Reply != "" {
+						natsutil.ReplyError(m.Msg, "internal error")
+					}
+				}
+			}()
+			c := acquireContext(m.Context(), m.Msg, rt.extractParams(m.Msg.Subject), all)
+			defer releaseContext(c)
+			c.Next()
+		}()
 	}
 
 	sub, err := r.nc.QueueSubscribe(rt.natsSubject, r.queue, natsHandler)
@@ -142,5 +199,20 @@ func (r *Router) Shutdown(ctx context.Context) error {
 			return errors.Join(errs...)
 		}
 	}
+
+	// Subscriptions are drained: no new natsHandler callbacks will fire.
+	// Wait for any in-flight handler goroutines that were already spawned
+	// before drain completed. Use a channel so we can select on ctx.Done().
+	wgDone := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(wgDone)
+	}()
+	select {
+	case <-wgDone:
+	case <-ctx.Done():
+		errs = append(errs, fmt.Errorf("waiting for in-flight handlers: %w", ctx.Err()))
+	}
+
 	return errors.Join(errs...)
 }
