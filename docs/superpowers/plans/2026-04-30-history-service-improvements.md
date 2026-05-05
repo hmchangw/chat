@@ -713,6 +713,7 @@ git commit -m "fix(history-service): bound startup with 30s context deadline"
 
 **Files:**
 - Modify: `pkg/model/cassandra/message.go` (add `MessageKey` type)
+- Modify: `history-service/internal/models/message.go` (re-export `MessageKey` as a type alias)
 - Modify: `history-service/internal/cassrepo/messages_by_room.go` (add `GetMessagesByRoomAndKeys`)
 - Modify: `history-service/internal/cassrepo/messages_by_id.go` (delete `GetMessagesByIDs`)
 - Modify: `history-service/internal/cassrepo/messages_by_id_integration_test.go` (delete `GetMessagesByIDs` tests)
@@ -722,7 +723,7 @@ git commit -m "fix(history-service): bound startup with 30s context deadline"
 - Modify: `history-service/internal/service/threads.go` (call new method)
 - Modify: `history-service/internal/service/threads_test.go` (mock expectations)
 
-- [ ] **Step 1: Add `MessageKey` to `pkg/model/cassandra/message.go`**
+- [ ] **Step 1a: Add `MessageKey` to `pkg/model/cassandra/message.go`**
 
 Append to `pkg/model/cassandra/message.go` (after the `Message` struct, before EOF):
 
@@ -735,6 +736,16 @@ type MessageKey struct {
 	CreatedAt time.Time
 	MessageID string
 }
+```
+
+- [ ] **Step 1b: Re-export `MessageKey` from `history-service/internal/models/message.go`**
+
+The local `models` package re-exports every Cassandra type used by handlers and tests (`Message`, `Participant`, `File`, etc.) via type aliases. The integration tests written in Step 2 reference `models.MessageKey`, so the alias must exist.
+
+In `history-service/internal/models/message.go`, alongside the existing aliases (after `type QuotedParentMessage = cassandra.QuotedParentMessage`), add:
+
+```go
+type MessageKey = cassandra.MessageKey
 ```
 
 - [ ] **Step 2: Write the failing integration test for `GetMessagesByRoomAndKeys`**
@@ -810,7 +821,7 @@ func TestRepository_GetMessagesByRoomAndKeys_PartialMatch(t *testing.T) {
 }
 ```
 
-If `models` is not already aliased to `pkg/model/cassandra` in the test file's imports, check the existing imports — `messages_by_room_integration_test.go` already imports models from history-service's models (which re-exports cassandra types). Verify the `models.MessageKey` reference resolves; if not, add the import alias.
+`models.MessageKey` resolves through the alias added in Step 1b. The existing test file already imports `models` from `history-service/internal/models`, so no import changes are needed.
 
 - [ ] **Step 3: Run the new tests to verify they fail**
 
@@ -882,7 +893,7 @@ Expected: `internal/service/mocks/mock_repository.go` regenerated. The `GetMessa
 
 - [ ] **Step 8: Update `GetThreadParentMessages` to use the new method**
 
-In `history-service/internal/service/threads.go`, replace this block (around lines 121–137):
+In `history-service/internal/service/threads.go`, replace this block (around lines 122–137):
 
 ```go
 	seenIDs := make(map[string]struct{}, len(threadPage.Data))
