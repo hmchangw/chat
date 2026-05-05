@@ -193,17 +193,47 @@ func New(nc *otelnats.Conn, queue string, opts ...Option) *Router {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 5: Tighten the `Registrar` doc comment to signal composition intent**
+
+This is forward-looking documentation only — no API change. The minimal interface is intentionally preserved so future wrappers (e.g. a route group that prepends a subject prefix and shared middleware) can implement `Registrar` and delegate to a parent without breaking changes.
+
+In `pkg/natsrouter/router.go`, replace the existing block:
+
+```go
+// Registrar is the interface for registering route handlers.
+type Registrar interface {
+	addRoute(pattern string, handlers []HandlerFunc)
+}
+```
+
+with:
+
+```go
+// Registrar is the interface that Register/RegisterNoBody/RegisterVoid use
+// to attach handlers. Implemented by *Router today.
+//
+// The contract is intentionally minimal so future wrappers (for example a
+// route-group type that prepends a shared subject prefix and shared
+// middleware) can compose by implementing the same interface and
+// delegating to a parent Registrar. addRoute receives the
+// fully-resolved subject pattern and the complete middleware-chain-plus-
+// handler slice; the implementation owns the NATS subscription lifecycle.
+type Registrar interface {
+	addRoute(pattern string, handlers []HandlerFunc)
+}
+```
+
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run: `go test ./pkg/natsrouter/...`
 Expected: PASS — three new router tests, two new errors tests, all existing tests still green.
 
-- [ ] **Step 6: Verify no service breaks (variadic options means existing call sites still compile)**
+- [ ] **Step 7: Verify no service breaks (variadic options means existing call sites still compile)**
 
 Run: `go build ./...` from repo root.
 Expected: PASS — every existing `natsrouter.New(nc, queue)` call still typechecks.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add pkg/natsrouter/errors.go pkg/natsrouter/errors_test.go pkg/natsrouter/router.go pkg/natsrouter/router_test.go
