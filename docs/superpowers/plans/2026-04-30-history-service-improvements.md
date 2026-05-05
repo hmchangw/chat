@@ -621,9 +621,9 @@ git commit -m "docs(history-service): document mirror-table consistency model on
 **Files:**
 - Modify: `history-service/cmd/main.go`
 
-- [ ] **Step 1: Add the constant and bounded context to `main()`**
+- [ ] **Step 1a: Add the package-level `startupTimeout` constant**
 
-In `history-service/cmd/main.go`, immediately after the existing `import` block, add the constant declaration:
+In `history-service/cmd/main.go`, add this constant declaration at package scope, between the closing `)` of the `import` block and `func main()`:
 
 ```go
 // startupTimeout bounds the time spent on tracer init, Mongo connect, and
@@ -632,7 +632,9 @@ In `history-service/cmd/main.go`, immediately after the existing `import` block,
 const startupTimeout = 30 * time.Second
 ```
 
-Then replace this section (around line 31):
+- [ ] **Step 1b: Derive the bounded `startupCtx` inside `main()`**
+
+Inside `func main()`, replace this section (around line 31):
 
 ```go
 	ctx := context.Background()
