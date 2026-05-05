@@ -13,7 +13,7 @@
 //   - On acquire success, the router spawns a goroutine that runs the
 //     middleware chain + handler, releasing the semaphore on return.
 //   - On acquire failure (semaphore full), the router publishes an
-//     ErrUnavailable reply (`{"code":"unavailable","error":"service busy"}`)
+//     ErrUnavailable reply (`{"error":"service busy","code":"unavailable"}`)
 //     immediately and returns. Callers should retry with backoff.
 //
 // Per-route concurrency overrides are not supported today. The Registrar
