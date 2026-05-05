@@ -191,12 +191,18 @@ func (r *Router) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	// Wait for each subscription's dispatcher to finish. On ctx expiry,
+	// record the error and stop waiting on remaining subscriptions — but
+	// DO NOT return early. We must fall through to the WaitGroup wait
+	// below so in-flight handler goroutines are not abandoned. The
+	// WaitGroup wait itself also respects ctx and will short-circuit.
+closeLoop:
 	for i, ch := range closed {
 		select {
 		case <-ch:
 		case <-ctx.Done():
 			errs = append(errs, fmt.Errorf("waiting for %q close: %w", subs[i].Subject, ctx.Err()))
-			return errors.Join(errs...)
+			break closeLoop
 		}
 	}
 
