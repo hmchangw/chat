@@ -561,7 +561,7 @@ git commit -m "feat(natsrouter): Shutdown waits for in-flight handler goroutines
 
 ---
 
-## Task 5: `HandlerTimeout` middleware
+## Task 4: `HandlerTimeout` middleware
 
 **Why:** Without a ceiling, a slow Cassandra/Mongo query can keep a handler running for the full driver timeout, holding a semaphore slot that turns away subsequent requests with `ErrUnavailable`. A router-level handler-timeout middleware sets a ceiling — once exceeded, the handler's `ctx.Done()` fires and downstream calls (gocql, mongo-driver) abort their in-flight queries. Services apply it via `Router.Use(HandlerTimeout(5 * time.Second))` alongside `Recovery` and `Logging`.
 
@@ -692,9 +692,9 @@ git commit -m "feat(natsrouter): HandlerTimeout middleware"
 
 ---
 
-## Task 6: Document the concurrency model and ordering trade-off
+## Task 5: Document the concurrency model and ordering trade-off
 
-**Why:** The behavior change introduced by Tasks 2–4 (semaphore admission, busy-reply, ordering loss) is invisible from the API surface. Document it in the package-level `doc.go` so adopters know what they're opting into.
+**Why:** The behavior change introduced by Tasks 2–3 (semaphore admission, busy-reply, ordering loss) is invisible from the API surface. Document it in the package-level `doc.go` so adopters know what they're opting into.
 
 **Files:**
 - Modify: `pkg/natsrouter/doc.go`
@@ -705,8 +705,8 @@ Replace `pkg/natsrouter/doc.go` with:
 
 ```go
 // Package natsrouter provides Gin-style pattern-based routing for NATS
-// request/reply services with typed handlers, middleware, route groups,
-// and automatic JSON marshal/unmarshal.
+// request/reply services with typed handlers, middleware, and automatic
+// JSON marshal/unmarshal.
 //
 // # Concurrency model
 //
@@ -722,11 +722,12 @@ Replace `pkg/natsrouter/doc.go` with:
 //     ErrUnavailable reply (`{"code":"unavailable","error":"service busy"}`)
 //     immediately and returns. Callers should retry with backoff.
 //
-// Per-route override: pass WithConcurrency(N) to Register/RegisterNoBody/
-// RegisterVoid to give a single route its own admission semaphore,
-// isolated from the router-wide pool. Use this for routes whose latency
-// or failure profile differs significantly from the rest, or when
-// bulkhead isolation against a noisy route is desired.
+// Per-route concurrency overrides are not supported today. The Registrar
+// interface is intentionally minimal so a future wrapper (e.g. a route
+// group that prepends a subject prefix and shared middleware, or a
+// bulkhead with its own admission semaphore) can be added without
+// breaking the existing API. Route-level isolation should wait until
+// real evidence of noisy-neighbor contention surfaces in production.
 //
 // # Fire-and-forget routes
 //
@@ -756,8 +757,7 @@ Replace `pkg/natsrouter/doc.go` with:
 // race; whichever wins the goroutine schedule runs first. Handlers must
 // be idempotent or use external coordination (e.g. Cassandra LWTs,
 // Mongo conditional updates) to ensure correctness under concurrent
-// invocation. To opt back into per-subject FIFO for a specific route,
-// register it with WithConcurrency(1).
+// invocation.
 //
 // # Shutdown
 //
