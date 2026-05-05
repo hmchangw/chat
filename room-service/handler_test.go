@@ -955,6 +955,78 @@ func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
 	assert.Equal(t, "accepted", status["status"])
 }
 
+func TestHandleAddMembers_RejectsDirectBot(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User:  model.SubscriptionUser{ID: "u1", Account: "alice"},
+		Roles: []model.Role{model.RoleOwner},
+	}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Type: model.RoomTypeChannel, UserCount: 1,
+	}, nil)
+
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+	body, _ := json.Marshal(model.AddMembersRequest{
+		Users: []string{"weather.bot"},
+	})
+	_, err := h.handleAddMembers(context.Background(), subject.MemberAdd("alice", "r1", "site-a"), body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errBotInChannel))
+}
+
+func TestHandleAddMembers_SilentlyFiltersBotsFromChannelRefs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	mc := NewMockMemberListClient(ctrl)
+
+	// requester subscription + target room.
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User:  model.SubscriptionUser{ID: "u1", Account: "alice"},
+		Roles: []model.Role{model.RoleOwner},
+	}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Type: model.RoomTypeChannel, UserCount: 1,
+	}, nil)
+
+	// Channel-ref expansion: same-site source channel returns a human + a bot.
+	srcRef := model.ChannelRef{RoomID: "r_src", SiteID: "site-a"}
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r_src").Return(&model.Subscription{}, nil)
+	store.EXPECT().ListRoomMembers(gomock.Any(), "r_src", gomock.Any(), nil, false).Return([]model.RoomMember{
+		{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "bob"}},
+		{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "weather.bot"}},
+	}, nil)
+
+	// CountNewMembers must be called with bob only — the bot is filtered before counting.
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(),
+		[]string{"bob"}, "r1", gomock.Any()).Return(1, nil)
+
+	var publishedPayload []byte
+	h := &Handler{
+		store: store, siteID: "site-a", maxRoomSize: 1000, memberListClient: mc,
+		publishToStream: func(_ context.Context, _ string, data []byte) error {
+			publishedPayload = data
+			return nil
+		},
+	}
+
+	body, _ := json.Marshal(model.AddMembersRequest{
+		Users:    []string{},
+		Channels: []model.ChannelRef{srcRef},
+	})
+	_, err := h.handleAddMembers(context.Background(), subject.MemberAdd("alice", "r1", "site-a"), body)
+	require.NoError(t, err)
+
+	var published model.AddMembersRequest
+	require.NoError(t, json.Unmarshal(publishedPayload, &published))
+	assert.NotContains(t, published.Users, "weather.bot",
+		"bot from channel-ref must be silently filtered before publishing")
+	assert.Contains(t, published.Users, "bob")
+}
+
 func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 	t.Run("same-site individuals only", func(t *testing.T) {
 		ctrl := gomock.NewController(t)

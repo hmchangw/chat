@@ -637,11 +637,23 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 		return nil, fmt.Errorf("invalid request: room ID mismatch")
 	}
 
+	// Reject direct bots up front — mirrors classifyAndValidate in
+	// create-channel: a client that explicitly lists a bot must see a hard
+	// error rather than a silent drop.
+	for _, a := range req.Users {
+		if isBot(a) {
+			return nil, errBotInChannel
+		}
+	}
+
 	// 5. Expand channels
 	channelOrgIDs, channelAccounts, err := h.expandChannelRefs(ctx, requester, req.Channels)
 	if err != nil {
 		return nil, fmt.Errorf("expand channels: %w", err)
 	}
+	// Strip bots from channel-ref expansion so a source channel can never
+	// silently inject a bot into this channel. Mirrors create-channel.
+	channelAccounts = filterBots(channelAccounts)
 
 	// 6. Dedup orgs and direct accounts
 	allOrgs := dedup(append(req.Orgs, channelOrgIDs...))
