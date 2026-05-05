@@ -468,6 +468,8 @@ Steps below are the canonical sequence. Each numbered step has explicit reject c
          newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, "", requesterAccount)
        (Empty roomID skips the "already-subscribed" filter — the room doesn't
        exist yet — and just dedups + filters bots, returning the unique count.)
+       newCount == 0 → reject errEmptyCreateRequest.
+       // Channel must have at least one member besides the creator.
        (newCount + 1) > h.maxRoomSize → reject "exceeds maximum capacity".
        // +1 accounts for the creator/owner subscription.
    7f. Generate channel roomID:
@@ -482,14 +484,10 @@ Steps below are the canonical sequence. Each numbered step has explicit reject c
    8a. otherUser, err := h.store.GetUser(ctx, req.Users[0])
        Not found → reject "user not found".
        EngName=="" or ChineseName=="" → reject errInvalidUserData.
-   8b. If roomType == botDM:
-         app, err := h.store.GetApp(ctx, otherUser.Account)
-         Not found → reject errBotNotAvailable.
-         app.Assistant == nil || !app.Assistant.Enabled → reject errBotNotAvailable.
-         req.AppName = app.Name
-   8c. Compute deterministic roomID:
+   8b. Compute deterministic roomID:
          req.RoomID = idgen.BuildDMRoomID(requester.ID, otherUser.ID)
-   8d. Dedup check:
+   8c. Dedup check (runs BEFORE GetApp so an existing botDM is returned
+       even if the bot was disabled later):
          existing, err := h.store.FindDMSubscription(
            ctx, requesterAccount, otherUser.Account)
        This is a new store method that performs
@@ -506,6 +504,11 @@ Steps below are the canonical sequence. Each numbered step has explicit reject c
 
        If found → reject errDMAlreadyExists with roomId = existing.RoomID.
        If ErrSubscriptionNotFound → proceed.
+   8d. If roomType == botDM (only reached when no existing sub was found):
+         app, err := h.store.GetApp(ctx, otherUser.Account)
+         Not found → reject errBotNotAvailable.
+         app.Assistant == nil || !app.Assistant.Enabled → reject errBotNotAvailable.
+         req.AppName = app.Name
 
 9. Populate server-side fields:
    req.RequesterID      = requester.ID
@@ -1115,7 +1118,7 @@ func subscriptionName(d model.RoomCreatedOutbox, u model.User) string {
         //     site's room-worker writes the human's sub locally on the home
         //     site even when the human is the requester. Cross-site for
         //     botDM only happens when the bot lives on a remote site.)
-        if strings.HasSuffix(u.Account, ".bot") {
+        if isBot(u.Account) {
             return d.RequesterAccount
         }
         // Defensive — should not happen given how home site segregates
@@ -1134,7 +1137,7 @@ func subscriptionSidebarName(d model.RoomCreatedOutbox, u model.User) string {
     case model.RoomTypeDM:
         return composeName(d.RequesterEngName, d.RequesterChineseName)
     case model.RoomTypeBotDM:
-        if strings.HasSuffix(u.Account, ".bot") {
+        if isBot(u.Account) {
             return composeName(d.RequesterEngName, d.RequesterChineseName)
         }
         return d.AppName
@@ -1142,15 +1145,19 @@ func subscriptionSidebarName(d model.RoomCreatedOutbox, u model.User) string {
     return ""
 }
 
+// isBot mirrors the home-site predicate (room-service/helper.go) so that
+// remote-side classification matches: both ".bot" suffix and "p_" prefix
+// (webhook-style bots) are treated as bots.
+func isBot(account string) bool {
+    return strings.HasSuffix(account, ".bot") || strings.HasPrefix(account, "p_")
+}
+
 func subscriptionIsSubscribed(d model.RoomCreatedOutbox, u model.User) bool {
     // Only the human's sub in a botDM has IsSubscribed = true.
     if d.RoomType != model.RoomTypeBotDM {
         return false
     }
-    if strings.HasSuffix(u.Account, ".bot") {
-        return false
-    }
-    return true
+    return !isBot(u.Account)
 }
 ```
 
