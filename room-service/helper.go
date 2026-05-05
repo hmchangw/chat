@@ -177,9 +177,8 @@ func sanitizeError(err error) string {
 		errors.Is(err, errRoomTypeGuard),
 		errors.Is(err, errTargetNotMember),
 		errors.Is(err, errInvalidOrg),
-		errors.Is(err, errPromoteRequiresIndividual):
-		return err.Error()
-	case errors.Is(err, errEmptyCreateRequest),
+		errors.Is(err, errPromoteRequiresIndividual),
+		errors.Is(err, errEmptyCreateRequest),
 		errors.Is(err, errSelfDM),
 		errors.Is(err, errBotInChannel),
 		errors.Is(err, errBotNotAvailable),

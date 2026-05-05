@@ -194,15 +194,20 @@ func classifyAndValidate(req *model.CreateRoomRequest, requesterAccount string) 
 		return "", errEmptyCreateRequest
 	}
 
-	// Dedup before the self-DM check so {users: ["alice","alice"]} from alice still hits.
+	// Single dedup + strip pass; capture the pre-strip dedup'd length so we
+	// can detect self-DM (originalUsers == [requesterAccount]) without a
+	// second pass.
+	deduped := dedup(req.Users)
+	req.Users = stripAccount(deduped, requesterAccount)
+
 	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 {
-		dedupedOriginal := dedup(req.Users)
-		if len(dedupedOriginal) == 1 && dedupedOriginal[0] == requesterAccount {
+		if len(deduped) == 1 && len(req.Users) == 0 {
+			// Pre-strip set was [requester] and post-strip is empty →
+			// self-DM.
 			return "", errSelfDM
 		}
 	}
 
-	req.Users = stripAccount(dedup(req.Users), requesterAccount)
 	roomType := determineRoomType(req)
 
 	if roomType == model.RoomTypeChannel {
@@ -234,7 +239,10 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 		}
 		return nil, fmt.Errorf("get counterpart: %w", err)
 	}
-	if other.EngName == "" || other.ChineseName == "" {
+	if roomType == model.RoomTypeDM && (other.EngName == "" || other.ChineseName == "") {
+		// botDMs counterpart is an app/bot whose users-collection record
+		// typically has empty name fields; the GetApp + Assistant.Enabled
+		// check below is the right validation for that case.
 		return nil, errInvalidUserData
 	}
 

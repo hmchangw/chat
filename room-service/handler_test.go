@@ -2043,6 +2043,39 @@ func TestHandleCreateRoom_BotDM_HappyPath(t *testing.T) {
 	assert.Equal(t, []string{"helper.bot"}, published.Users)
 }
 
+func TestHandleCreateRoom_BotDM_AppCounterpartNoNameFields(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	// Bot user record exists but has empty EngName/ChineseName — common
+	// for app/bot accounts in the users collection.
+	store.EXPECT().GetUser(gomock.Any(), "weather.bot").Return(&model.User{
+		ID: "u_wbot", Account: "weather.bot", SiteID: "site-a",
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "weather.bot").
+		Return(nil, model.ErrSubscriptionNotFound)
+	store.EXPECT().GetApp(gomock.Any(), "weather.bot").Return(&model.App{
+		ID:        "a_wbot",
+		Name:      "Weather Bot",
+		Assistant: &model.AppAssistant{Enabled: true, Name: "weather.bot"},
+	}, nil)
+
+	var published bool
+	h := &Handler{
+		store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			published = true
+			return nil
+		},
+	}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"weather.bot"}})
+	resp, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.NoError(t, err)
+	assert.True(t, published, "canonical event must publish for botDM with bot lacking name fields")
+	assert.Contains(t, string(resp), `"roomType":"botDM"`)
+}
+
 func TestHandleCreateRoom_BotDM_Disabled(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)

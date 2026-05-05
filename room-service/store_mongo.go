@@ -14,20 +14,20 @@ import (
 )
 
 type MongoStore struct {
-	db            *mongo.Database
 	rooms         *mongo.Collection
 	subscriptions *mongo.Collection
 	roomMembers   *mongo.Collection
 	users         *mongo.Collection
+	apps          *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{
-		db:            db,
 		rooms:         db.Collection("rooms"),
 		subscriptions: db.Collection("subscriptions"),
 		roomMembers:   db.Collection("room_members"),
 		users:         db.Collection("users"),
+		apps:          db.Collection("apps"),
 	}
 }
 
@@ -75,7 +75,7 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 		Keys:    bson.D{{Key: "assistant.name", Value: 1}},
 		Options: options.Index().SetName("assistant_name_idx"),
 	}
-	if _, err := s.db.Collection("apps").Indexes().CreateOne(ctx, appsIndex); err != nil {
+	if _, err := s.apps.Indexes().CreateOne(ctx, appsIndex); err != nil {
 		return fmt.Errorf("ensure apps index: %w", err)
 	}
 
@@ -613,7 +613,7 @@ func (s *MongoStore) GetUser(ctx context.Context, account string) (*model.User, 
 
 func (s *MongoStore) GetApp(ctx context.Context, botAccount string) (*model.App, error) {
 	var a model.App
-	err := s.db.Collection("apps").FindOne(ctx, bson.M{"assistant.name": botAccount}).Decode(&a)
+	err := s.apps.FindOne(ctx, bson.M{"assistant.name": botAccount}).Decode(&a)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, ErrAppNotFound
 	}
