@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -594,4 +595,91 @@ func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.
 		return nil, fmt.Errorf("list org members for %q: %w", orgID, errInvalidOrg)
 	}
 	return members, nil
+}
+
+// UpdateSubscriptionRead sets lastSeenAt and alert on the subscription
+// keyed by (roomID, account). Returns model.ErrSubscriptionNotFound when no
+// subscription matches.
+func (s *MongoStore) UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error {
+	res, err := s.subscriptions.UpdateOne(ctx,
+		bson.M{"roomId": roomID, "u.account": account},
+		bson.M{"$set": bson.M{"lastSeenAt": lastSeenAt, "alert": alert}},
+	)
+	if err != nil {
+		return fmt.Errorf("update subscription read for %q in room %q: %w", account, roomID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("update subscription read for %q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
+	}
+	return nil
+}
+
+// GetUserSiteID looks up users.siteId by account. Returns ("", nil) if no
+// user document exists.
+func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string, error) {
+	var doc struct {
+		SiteID string `bson:"siteId"`
+	}
+	err := s.users.FindOne(ctx, bson.M{"account": account},
+		options.FindOne().SetProjection(bson.M{"siteId": 1, "_id": 0})).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return "", nil
+		}
+		return "", fmt.Errorf("get user siteId for %q: %w", account, err)
+	}
+	return doc.SiteID, nil
+}
+
+// MinSubscriptionLastSeenByRoomID returns the minimum effective lastSeenAt
+// across the room's subscriptions, falling back to joinedAt for subs that
+// have never been read (lastSeenAt missing or equal to the BSON zero date).
+func (s *MongoStore) MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID string) (*time.Time, error) {
+	zeroTime := time.Time{}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": nil,
+			"min": bson.M{"$min": bson.M{"$cond": bson.A{
+				bson.M{"$or": bson.A{
+					bson.M{"$eq": bson.A{"$lastSeenAt", nil}},
+					bson.M{"$lte": bson.A{"$lastSeenAt", zeroTime}},
+				}},
+				"$joinedAt",
+				"$lastSeenAt",
+			}}},
+		}}},
+	}
+	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate min lastSeenAt for room %q: %w", roomID, err)
+	}
+	defer cursor.Close(ctx)
+	if !cursor.Next(ctx) {
+		if err := cursor.Err(); err != nil {
+			return nil, fmt.Errorf("iterate min lastSeenAt for room %q: %w", roomID, err)
+		}
+		return nil, nil
+	}
+	var result struct {
+		Min time.Time `bson:"min"`
+	}
+	if err := cursor.Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode min lastSeenAt for room %q: %w", roomID, err)
+	}
+	return &result.Min, nil
+}
+
+// UpdateRoomMinUserLastSeenAt sets or clears rooms.minUserLastSeenAt for roomID.
+func (s *MongoStore) UpdateRoomMinUserLastSeenAt(ctx context.Context, roomID string, t *time.Time) error {
+	var update bson.M
+	if t == nil {
+		update = bson.M{"$unset": bson.M{"minUserLastSeenAt": ""}}
+	} else {
+		update = bson.M{"$set": bson.M{"minUserLastSeenAt": *t}}
+	}
+	if _, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, update); err != nil {
+		return fmt.Errorf("update minUserLastSeenAt for room %q: %w", roomID, err)
+	}
+	return nil
 }

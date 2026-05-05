@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -50,6 +51,22 @@ type RoomStore interface {
 	// as OrgMember rows sorted by account ascending. Returns errInvalidOrg
 	// when no users match (treated as "orgId is not valid").
 	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
+	// UpdateSubscriptionRead sets lastSeenAt and alert on the subscription
+	// keyed by (roomID, account). Returns model.ErrSubscriptionNotFound
+	// (wrapped) when no subscription matches.
+	UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error
+	// GetUserSiteID returns the home site of a user looked up by account.
+	// Returns ("", nil) when the user is not found locally; callers treat
+	// that as "skip cross-site outbox".
+	GetUserSiteID(ctx context.Context, account string) (string, error)
+	// MinSubscriptionLastSeenByRoomID returns the minimum effective
+	// lastSeenAt across all subscriptions for roomID. Subscriptions whose
+	// lastSeenAt is the zero value contribute their joinedAt instead.
+	// Returns nil when there are no subscriptions for the room.
+	MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID string) (*time.Time, error)
+	// UpdateRoomMinUserLastSeenAt writes rooms.minUserLastSeenAt for roomID.
+	// A nil value clears the field via $unset; a non-nil value writes via $set.
+	UpdateRoomMinUserLastSeenAt(ctx context.Context, roomID string, t *time.Time) error
 }
 
 // RoomKeyStore is the consumer-side interface for room encryption key lookups.

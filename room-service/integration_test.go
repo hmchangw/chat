@@ -1190,3 +1190,107 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	assert.Nil(t, resp.Rooms[3].PrivateKey)
 	assert.Nil(t, resp.Rooms[3].KeyVersion)
 }
+
+func TestMongoStore_UpdateSubscriptionRead_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		SiteID:   "site-a",
+		JoinedAt: time.Now().UTC().Add(-time.Hour),
+		Alert:    true,
+	}))
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", now, false))
+
+	got, err := store.GetSubscription(ctx, "alice", "r1")
+	require.NoError(t, err)
+	assert.Equal(t, false, got.Alert)
+	assert.WithinDuration(t, now, got.LastSeenAt, time.Second)
+
+	err = store.UpdateSubscriptionRead(ctx, "r1", "missing", now, false)
+	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+}
+
+func TestMongoStore_GetUserSiteID_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	_, err := db.Collection("users").InsertOne(ctx, model.User{
+		ID:      "u1",
+		Account: "alice",
+		SiteID:  "site-b",
+	})
+	require.NoError(t, err)
+
+	got, err := store.GetUserSiteID(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, "site-b", got)
+
+	got, err = store.GetUserSiteID(ctx, "missing")
+	require.NoError(t, err)
+	assert.Equal(t, "", got)
+}
+
+func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	earliest := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	mid := earliest.Add(15 * time.Minute)
+	latest := earliest.Add(45 * time.Minute)
+
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", JoinedAt: earliest, LastSeenAt: latest,
+	}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: "r1", JoinedAt: mid, LastSeenAt: latest,
+	}))
+	// Sub with zero LastSeenAt — must contribute its joinedAt (mid).
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"},
+		RoomID: "r1", JoinedAt: mid,
+	}))
+
+	got, err := store.MinSubscriptionLastSeenByRoomID(ctx, "r1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.WithinDuration(t, mid, *got, time.Second)
+
+	// Empty room → nil.
+	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "empty")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestMongoStore_UpdateRoomMinUserLastSeenAt_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{
+		ID: "r1", Name: "x", Type: model.RoomTypeChannel, CreatedAt: now, UpdatedAt: now,
+	}))
+
+	require.NoError(t, store.UpdateRoomMinUserLastSeenAt(ctx, "r1", &now))
+	r, err := store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
+	require.NotNil(t, r.MinUserLastSeenAt)
+	assert.WithinDuration(t, now, *r.MinUserLastSeenAt, time.Second)
+
+	require.NoError(t, store.UpdateRoomMinUserLastSeenAt(ctx, "r1", nil))
+	r, err = store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
+	assert.Nil(t, r.MinUserLastSeenAt)
+}
