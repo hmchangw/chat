@@ -552,7 +552,9 @@ func TestProcessCreateRoomDMPersistsTwoSubsAndZeroMembers(t *testing.T) {
 	room, err := store.GetRoom(ctx, roomID)
 	require.NoError(t, err)
 	assert.Equal(t, model.RoomTypeDM, room.Type)
-	assert.Empty(t, room.CreatedBy)
+	// CreatedBy is the requester's User.ID for every room type, including
+	// DM/botDM (post-v2 cleanup; previously empty for DM/botDM).
+	assert.Equal(t, "u_alice", room.CreatedBy)
 }
 
 func TestProcessCreateRoomIdempotentRedelivery(t *testing.T) {
