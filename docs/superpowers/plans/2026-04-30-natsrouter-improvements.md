@@ -522,6 +522,8 @@ git commit -m "feat(natsrouter): spawn handlers with semaphore admission control
 
 **Why:** With handlers running in spawned goroutines, `sub.Drain()` followed by `SubscriptionClosed` only guarantees that the *dispatcher* has stopped — handler goroutines may still be running. Add a `WaitGroup` wait after the close signal so `Router.Shutdown` returns only when all spawned handlers have finished (or `ctx` expires).
 
+**Execution order requirement:** This task's failing-test phase ONLY produces the expected `FAIL` once Task 2 has been committed. Until Task 2 is in place, handlers run inline on the dispatcher and `sub.Drain()` naturally waits for them — the new test would pass by accident. Run the tasks sequentially: 1 → 2 → 3.
+
 **Files:**
 - Modify: `pkg/natsrouter/router.go` (extend `Shutdown` to wait on `r.wg`)
 - Modify: `pkg/natsrouter/shutdown_test.go` (add WG-wait assertion if not already covered)
@@ -543,6 +545,18 @@ func TestIntegration_ShutdownWaitsForSpawnedHandlers(t *testing.T) {
 	r := natsrouter.New(nc, "integration-shutdown-wg", natsrouter.WithMaxConcurrency(8))
 
 	gate := make(chan struct{})
+	// Safety net: any test failure before close(gate) below would pin
+	// the spawned client goroutines and the gated handler goroutines
+	// for up to nc.Request's 5s timeout. This idempotent closer
+	// guarantees release on every exit path (success, t.Fatal, or
+	// require failure).
+	defer func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	}()
 	var entered atomic.Int64
 	var completed atomic.Int64
 	natsrouter.Register(r, "wg.{id}",
