@@ -464,7 +464,10 @@ Steps below are the canonical sequence. Each numbered step has explicit reject c
 8. If roomType == dm or botDM:
    8a. otherUser, err := h.store.GetUser(ctx, req.Users[0])
        Not found → reject "user not found".
-       EngName=="" or ChineseName=="" → reject errInvalidUserData.
+       For DM only: EngName=="" or ChineseName=="" on otherUser → reject
+       errInvalidUserData. For botDM: skip — apps populate the `apps`
+       collection but typically have empty EngName/ChineseName in the
+       `users` collection (validated separately via GetApp + Assistant.Enabled).
    8b. Compute deterministic roomID:
          req.RoomID = idgen.BuildDMRoomID(requester.ID, otherUser.ID)
    8c. Dedup check (runs BEFORE GetApp so an existing botDM is returned
