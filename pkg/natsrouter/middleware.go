@@ -1,6 +1,7 @@
 package natsrouter
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
@@ -65,5 +66,40 @@ func Logging() HandlerFunc {
 		c.Next()
 		attrs := append(requestAttrs(c), "duration", time.Since(start))
 		slog.Info("nats request", attrs...)
+	}
+}
+
+// HandlerTimeout returns middleware that wraps the handler context with a
+// deadline of d. Downstream calls that respect context (Cassandra/Mongo
+// drivers, otelnats.Conn.Publish, etc.) will abort if the chain runs longer
+// than d. The deadline is released when the chain returns.
+//
+// Caveat — the timeout does NOT actively interrupt a running handler. A
+// handler doing pure CPU work or calling a non-context-aware library will
+// run to completion past the deadline, holding its admission slot the
+// whole time. Make sure handlers either propagate ctx into every blocking
+// call or are short by construction.
+//
+// Reply mapping — when a context-aware downstream call returns
+// context.DeadlineExceeded and the handler returns
+// `fmt.Errorf("...: %w", err)`, the router's replyErr path falls through
+// to `"internal error"` (no RouteError match). Recommended pattern: in
+// the handler, map the deadline-expired sentinel explicitly, e.g.
+//
+//	if errors.Is(err, context.DeadlineExceeded) {
+//	    return nil, natsrouter.ErrUnavailable("request timed out")
+//	}
+//
+// so the caller sees a structured "unavailable" code instead of a
+// generic internal error.
+//
+// Place this AFTER RequestID and BEFORE Logging so the duration logged by
+// Logging includes any time spent waiting for the deadline.
+func HandlerTimeout(d time.Duration) HandlerFunc {
+	return func(c *Context) {
+		ctx, cancel := context.WithTimeout(c.ctx, d)
+		defer cancel()
+		c.SetContext(ctx)
+		c.Next()
 	}
 }
