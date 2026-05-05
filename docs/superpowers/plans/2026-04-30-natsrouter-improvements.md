@@ -480,17 +480,23 @@ In `pkg/natsrouter/router.go`, locate the end of `Shutdown` (just before `return
 with:
 
 ```go
+	// Wait for each subscription's dispatcher to finish. On ctx expiry,
+	// record the error and stop waiting on remaining subscriptions — but
+	// DO NOT return early. We must fall through to the WaitGroup wait
+	// below so in-flight handler goroutines are not abandoned. The
+	// WaitGroup wait itself also respects ctx and will short-circuit.
+closeLoop:
 	for i, ch := range closed {
 		select {
 		case <-ch:
 		case <-ctx.Done():
 			errs = append(errs, fmt.Errorf("waiting for %q close: %w", subs[i].Subject, ctx.Err()))
-			return errors.Join(errs...)
+			break closeLoop
 		}
 	}
 
-	// Dispatcher has exited and no further handlers will be spawned. Wait
-	// for in-flight spawned handlers (admission-control model) to return.
+	// Wait for in-flight handler goroutines (admission-control model) to
+	// return. ctx-bounded so a wedged handler can't pin Shutdown forever.
 	handlersDone := make(chan struct{})
 	go func() {
 		r.wg.Wait()
@@ -503,6 +509,8 @@ with:
 	}
 	return errors.Join(errs...)
 ```
+
+**Important — why this matters:** the previous draft of this task used `return errors.Join(errs...)` inside the close-loop's `ctx.Done()` branch. That return would skip the `wg.Wait()` block below, abandoning in-flight handler goroutines if shutdown's deadline expired mid-drain. The labeled `break closeLoop` falls through correctly so abandoned goroutines are at least attempted-waited.
 
 - [ ] **Step 5: Run the integration tests to verify they pass**
 
