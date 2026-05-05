@@ -39,9 +39,6 @@ type Router struct {
 	// slot before running and releases it on return. cap(sem) is the
 	// per-pod concurrency ceiling. Configured by WithMaxConcurrency.
 	sem chan struct{}
-	// wg tracks in-flight handler goroutines so Shutdown can wait for
-	// them to finish.
-	wg sync.WaitGroup
 
 	mu   sync.Mutex
 	subs []*nats.Subscription
@@ -52,8 +49,10 @@ type Option func(*Router)
 
 // WithMaxConcurrency sets the maximum number of in-flight handler
 // invocations across all routes registered on this router. Defaults to
-// defaultMaxConcurrency. Non-positive values are ignored. Saturation
-// triggers a 503-style ErrUnavailable reply.
+// the constructor default. Non-positive values are ignored; the
+// constructor default applies in that case. If multiple
+// WithMaxConcurrency options are supplied, the last one takes effect.
+// Saturation triggers a 503-style ErrUnavailable reply.
 func WithMaxConcurrency(n int) Option {
 	return func(r *Router) {
 		if n > 0 {

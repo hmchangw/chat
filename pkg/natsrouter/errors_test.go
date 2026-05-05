@@ -12,6 +12,7 @@ func TestErrUnavailable_HasCodeAndMessage(t *testing.T) {
 	assert.Equal(t, "service busy", err.Message)
 }
 
-func TestCodeUnavailable_Constant(t *testing.T) {
-	assert.Equal(t, "unavailable", CodeUnavailable)
+func TestCodeUnavailable_UsedByErrUnavailable(t *testing.T) {
+	err := ErrUnavailable("any message")
+	assert.Equal(t, CodeUnavailable, err.Code)
 }
