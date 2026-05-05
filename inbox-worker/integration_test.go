@@ -190,3 +190,89 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 
 	// No publish — room-worker handles user notification via NATS supercluster.
 }
+
+func TestInbox_UpdateSubscriptionRead_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+
+	joined := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	_, err := store.subCol.InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", JoinedAt: joined,
+	})
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", now, true))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.WithinDuration(t, now, got.LastSeenAt, time.Second)
+	assert.True(t, got.Alert)
+}
+
+func TestInbox_UpdateSubscriptionRead_OutOfOrderSkipped(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+
+	t2 := time.Now().UTC().Truncate(time.Millisecond)
+	_, err := store.subCol.InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", JoinedAt: t2.Add(-time.Hour), LastSeenAt: t2, Alert: true,
+	})
+	require.NoError(t, err)
+
+	t1 := t2.Add(-time.Minute)
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", t1, false))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.WithinDuration(t, t2, got.LastSeenAt, time.Second) // unchanged
+	assert.True(t, got.Alert)                                 // unchanged
+}
+
+func TestInbox_UpdateSubscriptionRead_EqualTimestampSkipped(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+
+	t1 := time.Now().UTC().Truncate(time.Millisecond)
+	_, err := store.subCol.InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", JoinedAt: t1.Add(-time.Hour), LastSeenAt: t1, Alert: true,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", t1, false))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.True(t, got.Alert) // unchanged
+}
+
+func TestInbox_UpdateSubscriptionRead_MissingSubscriptionNoOp(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+
+	now := time.Now().UTC()
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "missing-room", "ghost", now, false))
+}

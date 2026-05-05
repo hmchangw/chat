@@ -22,6 +22,13 @@ type roleUpdate struct {
 	roles   []model.Role
 }
 
+type subRead struct {
+	roomID     string
+	account    string
+	lastSeenAt time.Time
+	alert      bool
+}
+
 type stubInboxStore struct {
 	mu                sync.Mutex
 	subscriptions     []model.Subscription
@@ -29,6 +36,7 @@ type stubInboxStore struct {
 	rooms             []model.Room
 	roleUpdates       []roleUpdate
 	users             []model.User
+	subReads          []subRead
 }
 
 func (s *stubInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -131,6 +139,7 @@ func (s *stubInboxStore) BulkCreateSubscriptions(_ context.Context, subs []*mode
 func (s *stubInboxStore) UpdateSubscriptionRead(_ context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.subReads = append(s.subReads, subRead{roomID, account, lastSeenAt, alert})
 	for i := range s.subscriptions {
 		if s.subscriptions[i].RoomID == roomID && s.subscriptions[i].User.Account == account {
 			// Order-safe: skip if stored lastSeenAt is not strictly earlier.
@@ -143,6 +152,14 @@ func (s *stubInboxStore) UpdateSubscriptionRead(_ context.Context, roomID, accou
 		}
 	}
 	return nil // missing-subscription → no-op
+}
+
+func (s *stubInboxStore) getSubReads() []subRead {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]subRead, len(s.subReads))
+	copy(cp, s.subReads)
+	return cp
 }
 
 // --- Tests ---
@@ -789,4 +806,45 @@ func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 	err := h.HandleEvent(context.Background(), outboxPayload)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delete subscriptions")
+}
+
+func TestHandler_HandleEvent_SubscriptionRead_HappyPath(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+
+	inner := model.SubscriptionReadEvent{
+		Account:    "alice",
+		RoomID:     "r1",
+		LastSeenAt: time.Now().UTC().UnixMilli(),
+		Alert:      true,
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}
+	innerData, err := json.Marshal(inner)
+	require.NoError(t, err)
+	evt := model.OutboxEvent{
+		Type:       model.OutboxSubscriptionRead,
+		SiteID:     "site-a",
+		DestSiteID: "site-b",
+		Payload:    innerData,
+		Timestamp:  inner.Timestamp,
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+
+	calls := store.getSubReads()
+	require.Len(t, calls, 1)
+	assert.Equal(t, "r1", calls[0].roomID)
+	assert.Equal(t, "alice", calls[0].account)
+	assert.True(t, calls[0].alert)
+	assert.Equal(t, time.UnixMilli(inner.LastSeenAt).UTC(), calls[0].lastSeenAt)
+}
+
+func TestHandler_HandleEvent_SubscriptionRead_MalformedPayload(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+	evt := model.OutboxEvent{Type: model.OutboxSubscriptionRead, Payload: []byte("not-json")}
+	data, _ := json.Marshal(evt)
+	require.Error(t, h.HandleEvent(context.Background(), data))
 }
