@@ -62,8 +62,11 @@ func TestFieldMapFor_ReturnsCachedSliceOnRepeatCall(t *testing.T) {
 	first := fieldMapFor(rt)
 	second := fieldMapFor(rt)
 	require.NotEmpty(t, first)
-	// Same backing array — cache hit, not a fresh build.
-	assert.Equal(t, &first[0], &second[0])
+	// Same backing array — cache hit, not a fresh build. assert.Same
+	// compares pointer identity directly, which is what we want here;
+	// assert.Equal would falsely pass for two separately-allocated
+	// slices whose first elements happened to be equal-valued.
+	assert.Same(t, &first[0], &second[0])
 }
 ```
 
