@@ -402,9 +402,11 @@ func TestIntegration_ShutdownWaitsForSpawnedHandlers(t *testing.T) {
 	r := natsrouter.New(nc, "integration-shutdown-wg", natsrouter.WithMaxConcurrency(8))
 
 	gate := make(chan struct{})
+	var entered atomic.Int64
 	var completed atomic.Int64
 	natsrouter.Register(r, "wg.{id}",
 		func(c *natsrouter.Context, req echoReq) (*echoResp, error) {
+			entered.Add(1)
 			<-gate
 			completed.Add(1)
 			return &echoResp{Seq: req.Seq}, nil
@@ -418,12 +420,13 @@ func TestIntegration_ShutdownWaitsForSpawnedHandlers(t *testing.T) {
 		}(i)
 	}
 
-	// Wait until all 4 handlers are blocked on `gate`.
+	// Synchronise on a real signal: every handler increments `entered` on
+	// arrival and then blocks on `gate`. Once entered==inflight, all four
+	// goroutines are inside the chain and Shutdown will have to wait on
+	// the WaitGroup for them.
 	require.Eventually(t, func() bool {
-		// Indirect signal: try a 5th request and confirm it succeeds (slot
-		// still available, since cap=8). Then assert nothing leaked yet.
-		return true // gate closure happens below; the assertion is on Shutdown timing.
-	}, 1*time.Second, 50*time.Millisecond)
+		return entered.Load() == int64(inflight)
+	}, 5*time.Second, 20*time.Millisecond, "all %d handlers must enter before Shutdown is called", inflight)
 
 	// Shutdown in a goroutine; it must NOT return before we close gate.
 	shutdownDone := make(chan error, 1)
@@ -449,7 +452,7 @@ func TestIntegration_ShutdownWaitsForSpawnedHandlers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Shutdown did not return after handlers completed")
 	}
-	assert.GreaterOrEqual(t, completed.Load(), int64(1), "at least one handler must have completed")
+	assert.Equal(t, int64(inflight), completed.Load(), "every gated handler must complete")
 }
 ```
 
