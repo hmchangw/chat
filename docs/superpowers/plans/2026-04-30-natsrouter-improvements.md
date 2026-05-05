@@ -800,7 +800,7 @@ git commit -m "docs(natsrouter): document concurrency model and ordering trade-o
 
 ## Self-Review
 
-After all 6 tasks are complete:
+After all 5 tasks are complete:
 
 - [ ] Run the full quality gate
   ```bash
@@ -819,15 +819,16 @@ After all 6 tasks are complete:
 
 - [ ] Confirm the public API surface added:
   ```bash
-  go doc ./pkg/natsrouter | grep -E "WithMaxConcurrency|WithConcurrency|HandlerTimeout|ErrUnavailable|CodeUnavailable"
+  go doc ./pkg/natsrouter | grep -E "WithMaxConcurrency|HandlerTimeout|ErrUnavailable|CodeUnavailable"
   ```
-  Expected: all five symbols visible.
+  Expected: all four symbols visible.
 
 - [ ] Verify the package's stated invariants by re-reading the new `doc.go` and tracing each claim through the code:
-  - "non-blocking acquire" → `select { case sem <- struct{}{}: default: ... }` in router.go
+  - "non-blocking acquire" → `select { case r.sem <- struct{}{}: default: ... }` in router.go
   - "publishes an ErrUnavailable reply" → `r.replyBusy(m.Msg)` in router.go
   - "WaitGroup tracks every spawned handler" → `r.wg.Add(1)` in addRoute, `r.wg.Wait()` in Shutdown
-  - "Per-route override" → `cfg.sem != nil` branch in addRoute
+  - "fire-and-forget routes drop silently" → `if msg.Reply == "" { return }` early-return in `replyBusy`
+  - "Registrar contract is intentionally minimal" → `addRoute(pattern, handlers)` unchanged signature, ready for future Group composition
 
 - [ ] Verify a downstream service can adopt the new API in one line:
   ```bash
