@@ -659,3 +659,20 @@ func TestRequestIDMiddleware_OtherCtxKeysStillReadable(t *testing.T) {
 	runChain(c, chain)
 	assert.True(t, called, "downstream handler must run")
 }
+
+func TestRouter_DefaultMaxConcurrency(t *testing.T) {
+	r := New(nil, "test")
+	assert.Equal(t, defaultMaxConcurrency, cap(r.sem))
+}
+
+func TestRouter_WithMaxConcurrency_Overrides(t *testing.T) {
+	r := New(nil, "test", WithMaxConcurrency(7))
+	assert.Equal(t, 7, cap(r.sem))
+}
+
+func TestRouter_WithMaxConcurrency_IgnoresNonPositive(t *testing.T) {
+	r := New(nil, "test", WithMaxConcurrency(0))
+	assert.Equal(t, defaultMaxConcurrency, cap(r.sem))
+	r2 := New(nil, "test", WithMaxConcurrency(-1))
+	assert.Equal(t, defaultMaxConcurrency, cap(r2.sem))
+}

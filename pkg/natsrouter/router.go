@@ -11,7 +11,20 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 )
 
-// Registrar is the interface for registering route handlers.
+// defaultMaxConcurrency is the default per-pod handler concurrency cap. Sized
+// to match the project-wide MAX_WORKERS convention used by JetStream worker
+// services. Override with WithMaxConcurrency.
+const defaultMaxConcurrency = 100
+
+// Registrar is the interface that Register/RegisterNoBody/RegisterVoid use
+// to attach handlers. Implemented by *Router today.
+//
+// The contract is intentionally minimal so future wrappers (for example a
+// route-group type that prepends a shared subject prefix and shared
+// middleware) can compose by implementing the same interface and
+// delegating to a parent Registrar. addRoute receives the
+// fully-resolved subject pattern and the complete middleware-chain-plus-
+// handler slice; the implementation owns the NATS subscription lifecycle.
 type Registrar interface {
 	addRoute(pattern string, handlers []HandlerFunc)
 }
@@ -22,13 +35,44 @@ type Router struct {
 	queue      string
 	middleware []HandlerFunc
 
+	// sem gates handler concurrency: every handler invocation acquires a
+	// slot before running and releases it on return. cap(sem) is the
+	// per-pod concurrency ceiling. Configured by WithMaxConcurrency.
+	sem chan struct{}
+	// wg tracks in-flight handler goroutines so Shutdown can wait for
+	// them to finish.
+	wg sync.WaitGroup
+
 	mu   sync.Mutex
 	subs []*nats.Subscription
 }
 
+// Option configures a Router on construction.
+type Option func(*Router)
+
+// WithMaxConcurrency sets the maximum number of in-flight handler
+// invocations across all routes registered on this router. Defaults to
+// defaultMaxConcurrency. Non-positive values are ignored. Saturation
+// triggers a 503-style ErrUnavailable reply.
+func WithMaxConcurrency(n int) Option {
+	return func(r *Router) {
+		if n > 0 {
+			r.sem = make(chan struct{}, n)
+		}
+	}
+}
+
 // New creates a Router with the given NATS connection and queue group.
-func New(nc *otelnats.Conn, queue string) *Router {
-	return &Router{nc: nc, queue: queue}
+func New(nc *otelnats.Conn, queue string, opts ...Option) *Router {
+	r := &Router{
+		nc:    nc,
+		queue: queue,
+		sem:   make(chan struct{}, defaultMaxConcurrency),
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Use appends middleware to the router's chain.
