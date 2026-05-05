@@ -61,7 +61,9 @@ The model layer must change before any service that imports it (otherwise the in
 2. Tasks 3–6 — room-worker downstream cleanups (resolves the compile errors from Task 1).
 3. Tasks 7–9 — inbox-worker downstream cleanups (parallel to Tasks 3–6, but listed sequentially).
 4. Tasks 10–13 — room-service cleanups (independent of model field drops; can interleave).
-5. Tasks 14–15 — final verification.
+5. Task 14 — MongoStore field refactor.
+6. Task 16 — add-member bot rejection parity (independent of model changes; only touches `room-service`).
+7. Task 15 — final verification + commit + push.
 
 Each task is self-contained and ends with a green `make lint && make test SERVICE=<service>` and a commit. Cross-service compile errors only span Tasks 1→6 — keep that window short.
 
@@ -1071,6 +1073,159 @@ EOF
 Run: `git push origin claude/implement-create-room-ePJUK`
 
 Expected: push succeeds. PR #142 remains in draft so no CI runs.
+
+---
+
+## Task 16: Add bot rejection parity to add-member
+
+**Files:**
+- Modify: `room-service/handler.go` — `handleAddMembers` (around lines 599–674).
+- Modify: `room-service/handler_test.go` — add bot-rejection tests for add-member.
+
+**Goal:** Match create-channel behavior — direct bots in `req.Users` produce a hard error; bots from channel-ref expansion are silently filtered out.
+
+- [ ] **Step 1: Locate the inbound-users handling in `handleAddMembers`**
+
+Run: `sed -n '620,645p' room-service/handler.go`
+
+Expected: lines around 625–641 unmarshal `req`, expand channels, dedup. No bot check today.
+
+- [ ] **Step 2: Write the failing test for direct-bot rejection**
+
+Add to `room-service/handler_test.go`:
+
+```go
+func TestHandleAddMembers_RejectsDirectBot(t *testing.T) {
+    ctrl := gomock.NewController(t)
+    store := NewMockRoomStore(ctrl)
+    // The handler is expected to short-circuit before any store call,
+    // but the room/sub lookup happens earlier — wire what's needed to
+    // reach the bot check. Mirror the existing add-member happy-path
+    // test setup for these calls.
+    setupAddMemberRoomAndSub(t, store, "r1", "alice", model.RoomTypeChannel)
+
+    h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
+    body, _ := json.Marshal(model.AddMembersRequest{
+        Users: []string{"weather.bot"},
+    })
+    _, err := h.handleAddMembers(ctxWithReqID(), addMemberSubj("alice", "site-a", "r1"), body)
+    require.Error(t, err)
+    assert.True(t, errors.Is(err, errBotInChannel))
+}
+```
+
+> `setupAddMemberRoomAndSub` and `addMemberSubj` are existing helpers in the file — search for an existing add-member test (e.g. `TestHandleAddMembers_HappyPath`) and copy the setup pattern exactly.
+
+- [ ] **Step 3: Run the test, confirm it FAILS**
+
+Run: `go test ./room-service/... -run TestHandleAddMembers_RejectsDirectBot -v -count=1`
+
+Expected: FAIL — current handler accepts bots.
+
+- [ ] **Step 4: Add the direct-bot check in `handleAddMembers`**
+
+Edit `room-service/handler.go`. Right after the `json.Unmarshal(data, &req)` block and the `roomID` consistency check (around line 631), insert:
+
+```go
+for _, a := range req.Users {
+    if isBot(a) {
+        return nil, errBotInChannel
+    }
+}
+```
+
+The block belongs **before** `expandChannelRefs` so a malformed request fails fast.
+
+- [ ] **Step 5: Run the test, confirm it PASSES**
+
+Run: `go test ./room-service/... -run TestHandleAddMembers_RejectsDirectBot -v -count=1`
+
+Expected: PASS.
+
+- [ ] **Step 6: Write the failing test for silent channel-ref bot filtering**
+
+Add to the same file:
+
+```go
+func TestHandleAddMembers_SilentlyFiltersBotsFromChannelRefs(t *testing.T) {
+    ctrl := gomock.NewController(t)
+    store := NewMockRoomStore(ctrl)
+    setupAddMemberRoomAndSub(t, store, "r1", "alice", model.RoomTypeChannel)
+
+    // expandChannelRefs returns a mix of human and bot accounts. The
+    // mock simulates a same-site source channel resolution.
+    setupChannelRefExpand(t, store, []model.ChannelRef{{RoomID: "r_src", SiteID: "site-a"}},
+        nil, []string{"bob", "weather.bot"})
+
+    // CountNewMembers expects bob only — the bot is filtered before counting.
+    store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(),
+        []string{"bob"}, "r1", gomock.Any()).Return(1, nil)
+
+    var publishedPayload []byte
+    h := &Handler{
+        store: store, siteID: "site-a", maxRoomSize: 1000,
+        publishToStream: func(_ context.Context, _ string, data []byte) error {
+            publishedPayload = data
+            return nil
+        },
+    }
+
+    body, _ := json.Marshal(model.AddMembersRequest{
+        Users:    []string{},
+        Channels: []model.ChannelRef{{RoomID: "r_src", SiteID: "site-a"}},
+    })
+    _, err := h.handleAddMembers(ctxWithReqID(), addMemberSubj("alice", "site-a", "r1"), body)
+    require.NoError(t, err)
+
+    var published model.AddMembersRequest
+    require.NoError(t, json.Unmarshal(publishedPayload, &published))
+    assert.NotContains(t, published.Users, "weather.bot",
+        "bot from channel-ref must be silently filtered before publishing")
+    assert.Contains(t, published.Users, "bob")
+}
+```
+
+> `setupChannelRefExpand` is also an existing helper — copy from any existing channel-ref add-member test.
+
+- [ ] **Step 7: Run the test, confirm it FAILS**
+
+Run: `go test ./room-service/... -run TestHandleAddMembers_SilentlyFiltersBotsFromChannelRefs -v -count=1`
+
+Expected: FAIL — `weather.bot` currently passes through.
+
+- [ ] **Step 8: Add `filterBots` after `expandChannelRefs`**
+
+Edit `room-service/handler.go`. Find the line `channelOrgIDs, channelAccounts, err := h.expandChannelRefs(...)` (around line 634) and immediately after the error check, add:
+
+```go
+// Strip bots from channel-ref expansion so a source channel can never
+// silently inject a bot into this channel. Mirrors create-channel.
+channelAccounts = filterBots(channelAccounts)
+```
+
+- [ ] **Step 9: Run both new tests, confirm PASS**
+
+Run: `go test ./room-service/... -run 'TestHandleAddMembers_RejectsDirectBot|TestHandleAddMembers_SilentlyFiltersBotsFromChannelRefs' -v -count=1`
+
+Expected: both PASS.
+
+- [ ] **Step 10: Run the full add-member test suite to confirm no regressions**
+
+Run: `go test ./room-service/... -run TestHandleAddMembers -count=1`
+
+Expected: PASS for every existing add-member test.
+
+- [ ] **Step 11: Verify `sanitizeError` already passes through `errBotInChannel`**
+
+Run: `grep -n "errBotInChannel" room-service/helper.go`
+
+Expected: a match on a `case errors.Is(err, ..., errBotInChannel, ...)` line. (Task 13 already includes it in the consolidated allowlist.) If for any reason it's missing, add it.
+
+- [ ] **Step 12: Stage**
+
+Run: `git add room-service/handler.go room-service/handler_test.go`
+
+> Task 15 (final commit + push) is updated implicitly to include these files; no separate commit here.
 
 ---
 

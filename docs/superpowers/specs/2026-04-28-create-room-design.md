@@ -1420,6 +1420,15 @@ Item 1 (drop `RequestID` field) is the only potentially breaking change. Mitigat
 
 Item 3 (extend `MemberAddEvent` with `RoomName`) is purely additive. Existing consumers ignore the field.
 
+### 6. Bot rejection parity with create-channel
+
+Add-member must enforce the same bot policy as create-channel:
+
+- A `.bot` / `p_` account in `req.Users` (the inbound payload) → reject with `errBotInChannel` at `room-service.handleAddMembers`. Hard error returned to the caller.
+- A bot account that comes back from `expandChannelRefs` (a source channel happens to contain a bot) → silently dropped via `filterBots(channelAccounts)` before merging into `allUsers`.
+
+This mirrors `room-service.classifyAndValidate` (direct check) and `room-service.handleCreateRoomChannel` (`filterBots` after expansion). Today, the `pkg/pipelines.GetNewMembersPipeline` regex (`\.bot$|^p_`) already drops bots at the DB layer when room-worker materializes membership, so bots never become subscribed. The retrofit makes the rejection **explicit** at the room-service boundary instead of silent at the worker, so a client that explicitly lists a bot gets a useful error rather than a silent acceptance.
+
 ## Error Handling
 
 ### Sentinel errors (room-service)
