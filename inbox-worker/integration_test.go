@@ -366,3 +366,45 @@ func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
 	assert.Equal(t, "site-A", bobSub.SiteID)
 	assert.Equal(t, model.RoomTypeChannel, bobSub.RoomType)
 }
+
+func TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
+		SiteID: "site-B", EngName: "Bob", ChineseName: "鲍勃"})
+
+	h := newIntegrationHandler(t, db, "site-B")
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	const roomID = "u_aliceu_bob"
+	payload, err := json.Marshal(model.RoomCreatedOutbox{
+		RoomID:           roomID,
+		RoomType:         model.RoomTypeDM,
+		RoomName:         "",
+		HomeSiteID:       "site-A",
+		Accounts:         []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), subCount)
+
+	roomCount, err := db.Collection("rooms").CountDocuments(ctx, bson.M{"_id": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), roomCount, "inbox-worker must not create room mirror")
+
+	var bobSub model.Subscription
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx,
+		bson.M{"roomId": roomID, "u.account": "bob"}).Decode(&bobSub))
+	assert.Equal(t, "bob", bobSub.User.Account)
+	assert.Equal(t, "alice", bobSub.Name, "DM Subscription.Name = counterpart account")
+	assert.Equal(t, "site-A", bobSub.SiteID, "sub SiteID is room's home, not this site")
+	assert.Equal(t, model.RoomTypeDM, bobSub.RoomType)
+	assert.Nil(t, bobSub.Roles, "DMs have no roles")
+	assert.False(t, bobSub.IsSubscribed, "DM does not set IsSubscribed=true")
+}
