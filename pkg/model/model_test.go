@@ -1698,7 +1698,7 @@ func TestMessage_QuotedParentMessage_JSON(t *testing.T) {
 }
 
 func TestSubscriptionNewFields(t *testing.T) {
-	t.Run("channel sub round-trips with empty SidebarName/IsSubscribed", func(t *testing.T) {
+	t.Run("channel sub round-trips with empty IsSubscribed", func(t *testing.T) {
 		sub := model.Subscription{
 			ID:       "s1",
 			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
@@ -1715,12 +1715,10 @@ func TestSubscriptionNewFields(t *testing.T) {
 		require.NoError(t, json.Unmarshal(raw, &dst))
 		assert.Equal(t, "deal team", dst.Name)
 		assert.Equal(t, model.RoomTypeChannel, dst.RoomType)
-		assert.Empty(t, dst.SidebarName)
 		assert.False(t, dst.IsSubscribed)
-		assert.NotContains(t, string(raw), "sidebarName")
 		assert.NotContains(t, string(raw), "isSubscribed")
 	})
-	t.Run("botDM human sub round-trips with all fields", func(t *testing.T) {
+	t.Run("botDM human sub round-trips", func(t *testing.T) {
 		sub := model.Subscription{
 			ID:           "s2",
 			User:         model.SubscriptionUser{ID: "u1", Account: "alice"},
@@ -1728,7 +1726,6 @@ func TestSubscriptionNewFields(t *testing.T) {
 			SiteID:       "site-A",
 			Name:         "weather.bot",
 			RoomType:     model.RoomTypeBotDM,
-			SidebarName:  "Weather Bot",
 			IsSubscribed: true,
 			JoinedAt:     time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC),
 		}
@@ -1738,11 +1735,25 @@ func TestSubscriptionNewFields(t *testing.T) {
 		require.NoError(t, json.Unmarshal(raw, &dst))
 		assert.Equal(t, "weather.bot", dst.Name)
 		assert.Equal(t, model.RoomTypeBotDM, dst.RoomType)
-		assert.Equal(t, "Weather Bot", dst.SidebarName)
 		assert.True(t, dst.IsSubscribed)
-		assert.Contains(t, string(raw), `"sidebarName":"Weather Bot"`)
 		assert.Contains(t, string(raw), `"isSubscribed":true`)
 	})
+}
+
+func TestSubscriptionJSON_NoSidebarName(t *testing.T) {
+	s := model.Subscription{
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		RoomType: model.RoomTypeChannel,
+		Name:     "deal team",
+	}
+	data, err := json.Marshal(&s)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, hasSidebar := raw["sidebarName"]
+	assert.False(t, hasSidebar, "sidebarName must not appear in Subscription JSON")
 }
 
 func TestCreateRoomRequestRoundtrip(t *testing.T) {
@@ -1754,7 +1765,6 @@ func TestCreateRoomRequestRoundtrip(t *testing.T) {
 		RoomID:           "r_xyz",
 		RequesterID:      "u_alice",
 		RequesterAccount: "alice",
-		AppName:          "",
 		Timestamp:        1740000000000,
 	}
 	var dst model.CreateRoomRequest
@@ -1766,31 +1776,15 @@ func TestCreateRoomRequestRoundtrip(t *testing.T) {
 	assert.Equal(t, int64(1740000000000), dst.Timestamp)
 }
 
-func TestCreateRoomRequestBotDMHasAppName(t *testing.T) {
-	req := model.CreateRoomRequest{
-		Users:            []string{"weather.bot"},
-		RoomID:           "u_aliceu_wbot",
-		RequesterID:      "u_alice",
-		RequesterAccount: "alice",
-		AppName:          "Weather Bot",
-		Timestamp:        1,
-	}
-	var dst model.CreateRoomRequest
-	roundTrip(t, &req, &dst)
-	assert.Equal(t, "Weather Bot", dst.AppName)
-}
-
 func TestRoomCreatedOutboxRoundtrip(t *testing.T) {
 	out := model.RoomCreatedOutbox{
-		RoomID:               "r1",
-		RoomType:             model.RoomTypeChannel,
-		RoomName:             "deal team",
-		HomeSiteID:           "site-A",
-		Accounts:             []string{"bob", "ian"},
-		RequesterAccount:     "alice",
-		RequesterEngName:     "Alice",
-		RequesterChineseName: "爱丽丝",
-		Timestamp:            1740000000000,
+		RoomID:           "r1",
+		RoomType:         model.RoomTypeChannel,
+		RoomName:         "deal team",
+		HomeSiteID:       "site-A",
+		Accounts:         []string{"bob", "ian"},
+		RequesterAccount: "alice",
+		Timestamp:        1740000000000,
 	}
 	data, err := json.Marshal(&out)
 	require.NoError(t, err)
@@ -1799,26 +1793,6 @@ func TestRoomCreatedOutboxRoundtrip(t *testing.T) {
 	assert.Equal(t, model.RoomTypeChannel, dst.RoomType)
 	assert.Equal(t, []string{"bob", "ian"}, dst.Accounts)
 	assert.NotContains(t, string(data), "appName")
-}
-
-func TestRoomCreatedOutboxBotDMHasAppName(t *testing.T) {
-	out := model.RoomCreatedOutbox{
-		RoomID:               "r2",
-		RoomType:             model.RoomTypeBotDM,
-		HomeSiteID:           "site-A",
-		Accounts:             []string{"weather.bot"},
-		RequesterAccount:     "alice",
-		RequesterEngName:     "Alice",
-		RequesterChineseName: "爱丽丝",
-		AppName:              "Weather Bot",
-		Timestamp:            1,
-	}
-	data, err := json.Marshal(&out)
-	require.NoError(t, err)
-	var dst model.RoomCreatedOutbox
-	require.NoError(t, json.Unmarshal(data, &dst))
-	assert.Equal(t, "Weather Bot", dst.AppName)
-	assert.Contains(t, string(data), `"appName":"Weather Bot"`)
 }
 
 func TestErrorResponseRoomIDOmitempty(t *testing.T) {

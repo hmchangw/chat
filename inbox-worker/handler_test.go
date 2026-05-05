@@ -935,27 +935,6 @@ func TestSubscriptionName(t *testing.T) {
 	assert.Equal(t, "alice", subscriptionName(&d, &model.User{Account: "weather.bot"}))
 }
 
-func TestSubscriptionSidebarName(t *testing.T) {
-	d := model.RoomCreatedOutbox{
-		RoomType:             model.RoomTypeChannel,
-		RequesterEngName:     "Alice",
-		RequesterChineseName: "爱丽丝",
-	}
-	assert.Empty(t, subscriptionSidebarName(&d, &model.User{Account: "bob"}))
-
-	d.RoomType = model.RoomTypeDM
-	assert.Equal(t, "Alice 爱丽丝", subscriptionSidebarName(&d, &model.User{Account: "bob"}))
-
-	d.RoomType = model.RoomTypeBotDM
-	d.AppName = "Weather Bot"
-	assert.Equal(t, "Alice 爱丽丝", subscriptionSidebarName(&d, &model.User{Account: "weather.bot"}))
-	assert.Equal(t, "Weather Bot", subscriptionSidebarName(&d, &model.User{Account: "alice"}))
-
-	// p_ webhook-style bots are bots too: their sidebar shows the human's
-	// display name (matching the .bot path).
-	assert.Equal(t, "Alice 爱丽丝", subscriptionSidebarName(&d, &model.User{Account: "p_webhook"}))
-}
-
 func TestSubscriptionIsSubscribed(t *testing.T) {
 	d := model.RoomCreatedOutbox{RoomType: model.RoomTypeChannel}
 	assert.False(t, subscriptionIsSubscribed(&d, &model.User{Account: "bob"}))
@@ -1005,15 +984,13 @@ func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	payload, _ := json.Marshal(model.RoomCreatedOutbox{
-		RoomID:               "u_aliceu_bob",
-		RoomType:             model.RoomTypeDM,
-		RoomName:             "u_aliceu_bob",
-		HomeSiteID:           "site-A",
-		Accounts:             []string{"bob"},
-		RequesterAccount:     "alice",
-		RequesterEngName:     "Alice",
-		RequesterChineseName: "爱丽丝",
-		Timestamp:            1740000000000,
+		RoomID:           "u_aliceu_bob",
+		RoomType:         model.RoomTypeDM,
+		RoomName:         "",
+		HomeSiteID:       "site-A",
+		Accounts:         []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        1740000000000,
 	})
 	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
 
@@ -1023,7 +1000,6 @@ func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 	assert.Equal(t, "u_aliceu_bob", subs[0].RoomID)
 	assert.Equal(t, "site-A", subs[0].SiteID)
 	assert.Equal(t, "alice", subs[0].Name)
-	assert.Equal(t, "Alice 爱丽丝", subs[0].SidebarName)
 	assert.Nil(t, subs[0].Roles)
 	assert.False(t, subs[0].IsSubscribed)
 	assert.Equal(t, model.RoomTypeDM, subs[0].RoomType)
@@ -1055,7 +1031,6 @@ func TestHandleRoomCreatedChannelBulkInsert(t *testing.T) {
 	require.Len(t, subs, 2)
 	for _, s := range subs {
 		assert.Equal(t, "deal team", s.Name)
-		assert.Empty(t, s.SidebarName)
 		assert.Equal(t, []model.Role{model.RoleMember}, s.Roles)
 		assert.Equal(t, model.RoomTypeChannel, s.RoomType)
 		assert.Equal(t, "site-A", s.SiteID)
@@ -1104,7 +1079,6 @@ func TestHandleRoomCreatedBotDMBuildsRemoteBotSub(t *testing.T) {
 	// (weather.bot) lives on site-B. The outbox event lands at site-B's
 	// inbox-worker, which must materialize the bot's sub with:
 	//   Name        = human's account ("alice")
-	//   SidebarName = human's eng+chinese name
 	//   IsSubscribed = false
 	//   Roles       = nil (no member role for botDM)
 	//   SiteID      = home site (site-A)
@@ -1118,16 +1092,13 @@ func TestHandleRoomCreatedBotDMBuildsRemoteBotSub(t *testing.T) {
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	payload, _ := json.Marshal(model.RoomCreatedOutbox{
-		RoomID:               "u_aliceu_weather",
-		RoomType:             model.RoomTypeBotDM,
-		RoomName:             "u_aliceu_weather",
-		HomeSiteID:           "site-A",
-		Accounts:             []string{"weather.bot"},
-		RequesterAccount:     "alice",
-		RequesterEngName:     "Alice",
-		RequesterChineseName: "爱丽丝",
-		AppName:              "Weather Bot",
-		Timestamp:            1740000000000,
+		RoomID:           "u_aliceu_weather",
+		RoomType:         model.RoomTypeBotDM,
+		RoomName:         "",
+		HomeSiteID:       "site-A",
+		Accounts:         []string{"weather.bot"},
+		RequesterAccount: "alice",
+		Timestamp:        1740000000000,
 	})
 	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
 
@@ -1137,7 +1108,6 @@ func TestHandleRoomCreatedBotDMBuildsRemoteBotSub(t *testing.T) {
 	assert.Equal(t, "u_aliceu_weather", subs[0].RoomID)
 	assert.Equal(t, "site-A", subs[0].SiteID, "bot's sub.siteID is the room's home site")
 	assert.Equal(t, "alice", subs[0].Name, "bot's sub.Name is the human account")
-	assert.Equal(t, "Alice 爱丽丝", subs[0].SidebarName, "bot's sub.SidebarName is the human display name")
 	assert.Nil(t, subs[0].Roles)
 	assert.False(t, subs[0].IsSubscribed)
 	assert.Equal(t, model.RoomTypeBotDM, subs[0].RoomType)

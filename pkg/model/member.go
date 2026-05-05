@@ -147,6 +147,5 @@ type CreateRoomRequest struct {
 	RoomID           string `json:"roomId"            bson:"roomId"`
 	RequesterID      string `json:"requesterId"       bson:"requesterId"`
 	RequesterAccount string `json:"requesterAccount"  bson:"requesterAccount"`
-	AppName          string `json:"appName,omitempty" bson:"appName,omitempty"`
 	Timestamp        int64  `json:"timestamp"         bson:"timestamp"`
 }

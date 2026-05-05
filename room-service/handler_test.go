@@ -2040,7 +2040,7 @@ func TestHandleCreateRoom_BotDM_HappyPath(t *testing.T) {
 
 	var published model.CreateRoomRequest
 	require.NoError(t, json.Unmarshal(publishedData, &published))
-	assert.Equal(t, "Helper", published.AppName)
+	assert.Equal(t, []string{"helper.bot"}, published.Users)
 }
 
 func TestHandleCreateRoom_BotDM_Disabled(t *testing.T) {

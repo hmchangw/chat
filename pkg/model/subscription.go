@@ -28,7 +28,6 @@ type Subscription struct {
 	Roles              []Role           `json:"roles" bson:"roles"`
 	Name               string           `json:"name"                    bson:"name"`
 	RoomType           RoomType         `json:"roomType"                bson:"roomType"`
-	SidebarName        string           `json:"sidebarName,omitempty"   bson:"sidebarName,omitempty"`
 	IsSubscribed       bool             `json:"isSubscribed,omitempty"  bson:"isSubscribed,omitempty"`
 	HistorySharedSince *time.Time       `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
 	JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`

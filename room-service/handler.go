@@ -264,7 +264,6 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 		if app.Assistant == nil || !app.Assistant.Enabled {
 			return nil, errBotNotAvailable
 		}
-		req.AppName = app.Name
 	}
 
 	return h.publishCreateRoom(ctx, req, requester, roomType)

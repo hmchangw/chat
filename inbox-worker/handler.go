@@ -194,16 +194,6 @@ func (h *Handler) handleThreadSubscriptionUpserted(ctx context.Context, evt *mod
 // errPermanent signals a non-retryable error; callers should Ack and move on.
 var errPermanent = errors.New("permanent")
 
-func composeName(eng, ch string) string {
-	if eng == "" || ch == "" {
-		return ""
-	}
-	if eng == ch {
-		return eng
-	}
-	return eng + " " + ch
-}
-
 func rolesForType(t model.RoomType) []model.Role {
 	if t == model.RoomTypeChannel {
 		return []model.Role{model.RoleMember}
@@ -226,21 +216,6 @@ func subscriptionName(d *model.RoomCreatedOutbox, u *model.User) string {
 // accounts ending in ".bot" or starting with "p_" (webhook-style bots).
 func isBot(account string) bool {
 	return strings.HasSuffix(account, ".bot") || strings.HasPrefix(account, "p_")
-}
-
-func subscriptionSidebarName(d *model.RoomCreatedOutbox, u *model.User) string {
-	switch d.RoomType {
-	case model.RoomTypeChannel, model.RoomTypeDiscussion:
-		return ""
-	case model.RoomTypeDM:
-		return composeName(d.RequesterEngName, d.RequesterChineseName)
-	case model.RoomTypeBotDM:
-		if isBot(u.Account) {
-			return composeName(d.RequesterEngName, d.RequesterChineseName)
-		}
-		return d.AppName
-	}
-	return ""
 }
 
 func subscriptionIsSubscribed(d *model.RoomCreatedOutbox, u *model.User) bool {
@@ -296,7 +271,6 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 			Roles:        rolesForType(data.RoomType),
 			Name:         subscriptionName(&data, &u),
 			RoomType:     data.RoomType,
-			SidebarName:  subscriptionSidebarName(&data, &u),
 			IsSubscribed: subscriptionIsSubscribed(&data, &u),
 			JoinedAt:     acceptedAt,
 		}

@@ -509,9 +509,12 @@ func TestProcessCreateRoomChannelPersistsAllState(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), subCount)
 
+	// Lite-mode: with no orgs in the request, room_members stays empty.
+	// Membership is implicit in `subscriptions` until an org joins and the
+	// add-member backfill loop tracks individuals in room_members.
 	rmCount, err := db.Collection("room_members").CountDocuments(ctx, bson.M{"rid": "r_xyz"})
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), rmCount)
+	assert.Equal(t, int64(0), rmCount)
 }
 
 func TestProcessCreateRoomDMPersistsTwoSubsAndZeroMembers(t *testing.T) {

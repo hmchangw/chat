@@ -1762,37 +1762,14 @@ func TestProcessAddMembers_PublishesAsyncJobOnSuccess(t *testing.T) {
 	assert.Equal(t, "ok", got.Status)
 }
 
-func TestComposeName(t *testing.T) {
-	tests := map[string]struct{ eng, ch, want string }{
-		"distinct":   {"Alice", "爱丽丝", "Alice 爱丽丝"},
-		"equal":      {"Alice", "Alice", "Alice"},
-		"empty eng":  {"", "爱丽丝", ""},
-		"empty ch":   {"Alice", "", ""},
-		"both empty": {"", "", ""},
-	}
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tc.want, composeName(tc.eng, tc.ch))
-		})
-	}
-}
-
-func TestComposeNameOrAccount(t *testing.T) {
-	u := &model.User{Account: "alice", EngName: "Alice", ChineseName: "爱丽丝"}
-	assert.Equal(t, "Alice 爱丽丝", composeNameOrAccount(u))
-
-	bare := &model.User{Account: "alice"}
-	assert.Equal(t, "alice", composeNameOrAccount(bare))
-}
-
 func TestResolveRoomName(t *testing.T) {
 	tests := map[string]struct {
 		req      model.CreateRoomRequest
 		roomType model.RoomType
 		want     string
 	}{
-		"dm uses roomID":     {model.CreateRoomRequest{RoomID: "u_a|u_b"}, model.RoomTypeDM, "u_a|u_b"},
-		"botDM uses roomID":  {model.CreateRoomRequest{RoomID: "u_a|u_w"}, model.RoomTypeBotDM, "u_a|u_w"},
+		"dm empty":           {model.CreateRoomRequest{RoomID: "u_a|u_b"}, model.RoomTypeDM, ""},
+		"botDM empty":        {model.CreateRoomRequest{RoomID: "u_a|u_w"}, model.RoomTypeBotDM, ""},
 		"channel given name": {model.CreateRoomRequest{Name: "deal team", RoomID: "r1"}, model.RoomTypeChannel, "deal team"},
 	}
 	for name, tc := range tests {
@@ -1802,19 +1779,13 @@ func TestResolveRoomName(t *testing.T) {
 	}
 }
 
-func TestCreatedByForType(t *testing.T) {
-	assert.Equal(t, "u_alice", createdByForType("u_alice", model.RoomTypeChannel))
-	assert.Empty(t, createdByForType("u_alice", model.RoomTypeDM))
-	assert.Empty(t, createdByForType("u_alice", model.RoomTypeBotDM))
-}
-
 func TestNewSubSetsAllFields(t *testing.T) {
 	user := &model.User{ID: "u1", Account: "alice"}
 	room := &model.Room{ID: "r1", SiteID: "site-A", Type: model.RoomTypeChannel}
 	now := time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC)
 
 	sub := newSub("s1", user, room, []model.Role{model.RoleOwner},
-		"deal team", "", false, now)
+		"deal team", false, now)
 
 	assert.Equal(t, "s1", sub.ID)
 	assert.Equal(t, "u1", sub.User.ID)
@@ -1824,7 +1795,6 @@ func TestNewSubSetsAllFields(t *testing.T) {
 	assert.Equal(t, []model.Role{model.RoleOwner}, sub.Roles)
 	assert.Equal(t, "deal team", sub.Name)
 	assert.Equal(t, model.RoomTypeChannel, sub.RoomType)
-	assert.Empty(t, sub.SidebarName)
 	assert.False(t, sub.IsSubscribed)
 	assert.Equal(t, now, sub.JoinedAt)
 }
@@ -1949,20 +1919,18 @@ func TestProcessCreateRoom_DM_BuildsTwoSubs(t *testing.T) {
 
 	require.Len(t, capturedSubs, 2)
 
-	// alice's sub: Name = other's account, SidebarName = other's display name
+	// alice's sub: Name = other's account
 	aliceSub := capturedSubs[0]
 	assert.Equal(t, "u_alice", aliceSub.User.ID)
 	assert.Equal(t, other.Account, aliceSub.Name)
-	assert.Equal(t, composeNameOrAccount(other), aliceSub.SidebarName)
 	assert.Nil(t, aliceSub.Roles)
 	assert.False(t, aliceSub.IsSubscribed)
 	assert.Equal(t, model.RoomTypeDM, aliceSub.RoomType)
 
-	// bob's sub: Name = requester's account, SidebarName = requester's display name
+	// bob's sub: Name = requester's account
 	bobSub := capturedSubs[1]
 	assert.Equal(t, "u_bob", bobSub.User.ID)
 	assert.Equal(t, requester.Account, bobSub.Name)
-	assert.Equal(t, composeNameOrAccount(requester), bobSub.SidebarName)
 	assert.Nil(t, bobSub.Roles)
 	assert.False(t, bobSub.IsSubscribed)
 
@@ -1994,7 +1962,7 @@ func TestProcessCreateRoom_DM_EmitsNoSysMessages(t *testing.T) {
 
 // ---- Task 33: botDM branch tests ----
 
-func TestProcessCreateRoom_BotDM_HasIsSubscribedAndAppName(t *testing.T) {
+func TestProcessCreateRoom_BotDM_HasIsSubscribed(t *testing.T) {
 	h, mockStore, getPublished := newCreateRoomTestHandler(t)
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
@@ -2015,25 +1983,23 @@ func TestProcessCreateRoom_BotDM_HasIsSubscribedAndAppName(t *testing.T) {
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID: "room-bot-1", RequesterAccount: "alice",
-		Users: []string{"helper.bot"}, AppName: "HelperBot",
+		Users:     []string{"helper.bot"},
 		Timestamp: time.Now().UnixMilli(),
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
 
 	require.Len(t, capturedSubs, 2)
 
-	// human side (alice): Name = bot's account, SidebarName = AppName, IsSubscribed = true
+	// human side (alice): Name = bot's account, IsSubscribed = true
 	humanSub := capturedSubs[0]
 	assert.Equal(t, "u_alice", humanSub.User.ID)
 	assert.Equal(t, bot.Account, humanSub.Name)
-	assert.Equal(t, "HelperBot", humanSub.SidebarName)
 	assert.True(t, humanSub.IsSubscribed)
 
-	// bot side: Name = requester's account, SidebarName = alice's display name, IsSubscribed = false
+	// bot side: Name = requester's account, IsSubscribed = false
 	botSub := capturedSubs[1]
 	assert.Equal(t, "u_bot", botSub.User.ID)
 	assert.Equal(t, requester.Account, botSub.Name)
-	assert.Equal(t, composeNameOrAccount(requester), botSub.SidebarName)
 	assert.False(t, botSub.IsSubscribed)
 
 	assert.Empty(t, messagesCanonical(getPublished(), "site-A"), "botDM must emit no sys-messages")
@@ -2081,14 +2047,14 @@ func TestProcessCreateRoom_Channel_BuildsSubsAndMembers(t *testing.T) {
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
 
-	// 3 subs: bob (member), carol (member), alice (owner — last)
+	// 3 subs: alice (owner — first), bob (member), carol (member)
 	require.Len(t, capturedSubs, 3)
-	ownerSub := capturedSubs[2]
+	ownerSub := capturedSubs[0]
 	assert.Equal(t, "u_alice", ownerSub.User.ID)
 	assert.Equal(t, []model.Role{model.RoleOwner}, ownerSub.Roles)
 	assert.Equal(t, "Deal Team", ownerSub.Name)
 
-	memberSub := capturedSubs[0]
+	memberSub := capturedSubs[1]
 	assert.Equal(t, []model.Role{model.RoleMember}, memberSub.Roles)
 
 	// 4 room_members: 2 individuals (bob+carol) + 1 org + 1 owner (alice)
@@ -2126,14 +2092,18 @@ func TestProcessCreateRoom_Channel_NoOrgsSkipsRoomMembers(t *testing.T) {
 	mockStore.EXPECT().ListNewMembersForNewRoom(gomock.Any(), gomock.Nil(), []string{"bob"}, "alice").
 		Return([]string{"bob"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return(invited, nil)
-	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 
-	var capturedMembers []*model.RoomMember
-	mockStore.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, members []*model.RoomMember) error {
-			capturedMembers = members
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
 			return nil
 		})
+	// Lite-mode: BulkCreateRoomMembers MUST NOT be called when no orgs are
+	// resolved. room_members stays empty until an org later joins, at which
+	// point the backfill loop in processAddMembers reads from subscriptions.
+	// (gomock fails the test on any unexpected call, so omitting the EXPECT
+	// is the assertion.)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-ch-2").Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
@@ -2144,10 +2114,9 @@ func TestProcessCreateRoom_Channel_NoOrgsSkipsRoomMembers(t *testing.T) {
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
 
-	// Only the owner room_member is written (no org expansion)
-	require.Len(t, capturedMembers, 1)
-	assert.Equal(t, model.RoomMemberIndividual, capturedMembers[0].Member.Type)
-	assert.Equal(t, "u_alice", capturedMembers[0].Member.ID)
+	// Owner + invited individual sub still land in `subscriptions` — that's
+	// the source of truth for who is in the room while in lite-mode.
+	require.Len(t, capturedSubs, 2)
 }
 
 // ---- Task 35: subscription.update fan-out ----

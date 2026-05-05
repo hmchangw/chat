@@ -344,11 +344,9 @@ func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
 	payload, err := json.Marshal(model.RoomCreatedOutbox{
 		RoomID: "r_xyz", RoomType: model.RoomTypeChannel,
 		RoomName: "deal team", HomeSiteID: "site-A",
-		Accounts:             []string{"bob", "ian"},
-		RequesterAccount:     "alice",
-		RequesterEngName:     "Alice",
-		RequesterChineseName: "爱丽丝",
-		Timestamp:            time.Now().UTC().UnixMilli(),
+		Accounts:         []string{"bob", "ian"},
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
 	})
 	require.NoError(t, err)
 	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))

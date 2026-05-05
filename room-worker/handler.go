@@ -811,46 +811,19 @@ func mustMarshal(v any) []byte {
 	return data
 }
 
-// composeName returns "eng ch" (or eng if equal, or "" if either empty).
-func composeName(eng, ch string) string {
-	if eng == "" || ch == "" {
-		return ""
-	}
-	if eng == ch {
-		return eng
-	}
-	return eng + " " + ch
-}
-
-// composeNameOrAccount returns the display name for u, falling back to u.Account.
-func composeNameOrAccount(u *model.User) string {
-	if name := composeName(u.EngName, u.ChineseName); name != "" {
-		return name
-	}
-	slog.Warn("composeNameOrAccount: missing eng/chinese name; falling back to account",
-		"account", u.Account)
-	return u.Account
-}
-
-// resolveRoomName: DM/BotDM use RoomID; channels use req.Name (room-service guarantees length and non-empty).
+// resolveRoomName: DM/botDM use empty string (per-subscriber name lives on
+// Subscription.Name); channels use req.Name verbatim (room-service has
+// already validated non-empty and ≤ 100 runes).
 func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) string {
-	if roomType == model.RoomTypeDM || roomType == model.RoomTypeBotDM {
-		return req.RoomID
-	}
-	return req.Name
-}
-
-// createdByForType returns the requesterID for channel rooms and "" for DM/BotDM.
-func createdByForType(requesterID string, roomType model.RoomType) string {
 	if roomType == model.RoomTypeChannel {
-		return requesterID
+		return req.Name
 	}
 	return ""
 }
 
 // newSub constructs a Subscription from its constituent parts.
 func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
-	name, sidebarName string, isSubscribed bool, joinedAt time.Time) *model.Subscription {
+	name string, isSubscribed bool, joinedAt time.Time) *model.Subscription {
 	return &model.Subscription{
 		ID:           id,
 		User:         model.SubscriptionUser{ID: user.ID, Account: user.Account},
@@ -859,7 +832,6 @@ func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 		Roles:        roles,
 		Name:         name,
 		RoomType:     room.Type,
-		SidebarName:  sidebarName,
 		IsSubscribed: isSubscribed,
 		JoinedAt:     joinedAt,
 	}
@@ -903,7 +875,7 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		ID:        req.RoomID,
 		Name:      resolveRoomName(&req, roomType),
 		Type:      roomType,
-		CreatedBy: createdByForType(requester.ID, roomType),
+		CreatedBy: requester.ID,
 		SiteID:    h.siteID,
 		CreatedAt: acceptedAt,
 		UpdatedAt: acceptedAt,
@@ -969,13 +941,11 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 	}
 
 	subs := []*model.Subscription{
-		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, composeNameOrAccount(other), false, acceptedAt),
-		newSub(idgen.GenerateUUIDv7(), other, room, nil, requester.Account, composeNameOrAccount(requester), false, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, false, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), other, room, nil, requester.Account, false, acceptedAt),
 	}
-	if len(subs) > 0 {
-		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-			return fmt.Errorf("bulk create subs: %w", err)
-		}
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return fmt.Errorf("bulk create subs: %w", err)
 	}
 	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, other}, subs, requestID, now)
 }
@@ -990,13 +960,13 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 	}
 
 	subs := []*model.Subscription{
-		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, req.AppName, true, acceptedAt),
-		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requester.Account, composeNameOrAccount(requester), false, acceptedAt),
+		// Human's sub: Name = bot account; IsSubscribed = true
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, true, acceptedAt),
+		// Bot's sub: Name = requester's account; IsSubscribed = false
+		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requester.Account, false, acceptedAt),
 	}
-	if len(subs) > 0 {
-		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-			return fmt.Errorf("bulk create subs: %w", err)
-		}
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return fmt.Errorf("bulk create subs: %w", err)
 	}
 	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, bot}, subs, requestID, now)
 }
@@ -1031,22 +1001,28 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 		}
 	}
 
-	subs := make([]*model.Subscription, 0, len(users)+1)
+	allUsers := make([]*model.User, 0, len(users)+1)
+	allUsers = append(allUsers, requester)
 	for i := range users {
-		u := &users[i]
-		subs = append(subs, newSub(idgen.GenerateUUIDv7(), u, room, []model.Role{model.RoleMember}, room.Name, "", false, acceptedAt))
+		allUsers = append(allUsers, &users[i])
 	}
-	subs = append(subs, newSub(idgen.GenerateUUIDv7(), requester, room, []model.Role{model.RoleOwner}, room.Name, "", false, acceptedAt))
 
-	if len(subs) > 0 {
-		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-			return fmt.Errorf("bulk create subs: %w", err)
+	subs := make([]*model.Subscription, 0, len(allUsers))
+	for _, u := range allUsers {
+		roles := []model.Role{model.RoleMember}
+		if u.ID == requester.ID {
+			roles = []model.Role{model.RoleOwner}
 		}
+		subs = append(subs, newSub(idgen.GenerateUUIDv7(), u, room, roles, room.Name, false, acceptedAt))
 	}
 
-	members := make([]*model.RoomMember, 0, len(subs)+len(req.ResolvedOrgs))
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return fmt.Errorf("bulk create subs: %w", err)
+	}
+
 	if len(req.ResolvedOrgs) > 0 {
-		for _, sub := range subs[:len(subs)-1] {
+		members := make([]*model.RoomMember, 0, len(subs)+len(req.ResolvedOrgs))
+		for _, sub := range subs {
 			members = append(members, &model.RoomMember{
 				ID:     idgen.GenerateUUIDv7(),
 				RoomID: room.ID,
@@ -1062,25 +1038,14 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 				Member: model.RoomMemberEntry{ID: org, Type: model.RoomMemberOrg},
 			})
 		}
-	}
-	members = append(members, &model.RoomMember{
-		ID:     idgen.GenerateUUIDv7(),
-		RoomID: room.ID,
-		Ts:     acceptedAt,
-		Member: model.RoomMemberEntry{ID: requester.ID, Type: model.RoomMemberIndividual, Account: requester.Account},
-	})
-
-	if len(members) > 0 {
 		if err := h.store.BulkCreateRoomMembers(ctx, members); err != nil {
 			return fmt.Errorf("bulk create room members: %w", err)
 		}
 	}
-
-	allUsers := make([]*model.User, 0, len(users)+1)
-	for i := range users {
-		allUsers = append(allUsers, &users[i])
-	}
-	allUsers = append(allUsers, requester)
+	// No-orgs lite-mode: room_members stays empty until an org joins.
+	// Membership is implicit in `subscriptions`; the first add-member that
+	// brings in an org will backfill existing accounts (including the owner)
+	// into `room_members`.
 
 	return h.finishCreateRoom(ctx, req, room, requester, allUsers, subs, requestID, now)
 }
@@ -1125,16 +1090,13 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 	}
 	for destSiteID, accounts := range remoteSiteAccounts {
 		payload := model.RoomCreatedOutbox{
-			RoomID:               room.ID,
-			RoomType:             room.Type,
-			RoomName:             room.Name,
-			HomeSiteID:           room.SiteID,
-			Accounts:             accounts,
-			RequesterAccount:     requester.Account,
-			RequesterEngName:     requester.EngName,
-			RequesterChineseName: requester.ChineseName,
-			AppName:              req.AppName,
-			Timestamp:            req.Timestamp,
+			RoomID:           room.ID,
+			RoomType:         room.Type,
+			RoomName:         room.Name,
+			HomeSiteID:       room.SiteID,
+			Accounts:         accounts,
+			RequesterAccount: requester.Account,
+			Timestamp:        req.Timestamp,
 		}
 		pData, err := json.Marshal(payload)
 		if err != nil {

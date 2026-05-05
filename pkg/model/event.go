@@ -213,14 +213,11 @@ const CreateRoomReplyAccepted = "accepted"
 
 // RoomCreatedOutbox is the cross-site payload (wrapped in OutboxEvent) when a remote member exists.
 type RoomCreatedOutbox struct {
-	RoomID               string   `json:"roomId"`
-	RoomType             RoomType `json:"roomType"`
-	RoomName             string   `json:"roomName"`
-	HomeSiteID           string   `json:"homeSiteId"`
-	Accounts             []string `json:"accounts"`
-	RequesterAccount     string   `json:"requesterAccount"`
-	RequesterEngName     string   `json:"requesterEngName"`
-	RequesterChineseName string   `json:"requesterChineseName"`
-	AppName              string   `json:"appName,omitempty"`
-	Timestamp            int64    `json:"timestamp"`
+	RoomID           string   `json:"roomId"`
+	RoomType         RoomType `json:"roomType"`
+	RoomName         string   `json:"roomName"`
+	HomeSiteID       string   `json:"homeSiteId"`
+	Accounts         []string `json:"accounts"`
+	RequesterAccount string   `json:"requesterAccount"`
+	Timestamp        int64    `json:"timestamp"`
 }
