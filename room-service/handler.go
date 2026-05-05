@@ -187,8 +187,13 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 }
 
 // classifyAndValidate runs all input-only validations in priority order
-// (empty → self-DM → channel-name → channel-name-length → bot-in-channel),
-// strips/dedups req.Users, and returns the classified room type. No DB calls.
+// (empty → self-DM → channel-name → channel-name-length → bot-in-channel)
+// and returns the classified room type. No DB calls.
+//
+// Dedup/strip of req.Users happens after the empty check and before
+// self-DM detection: the post-strip length, combined with the pre-strip
+// dedup'd length, lets us detect "users == [requester]" (self-DM) in
+// a single pass.
 func classifyAndValidate(req *model.CreateRoomRequest, requesterAccount string) (model.RoomType, error) {
 	if req.Name == "" && len(req.Users) == 0 && len(req.Orgs) == 0 && len(req.Channels) == 0 {
 		return "", errEmptyCreateRequest

@@ -955,7 +955,7 @@ func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
 	assert.Equal(t, "accepted", status["status"])
 }
 
-func TestHandleAddMembers_RejectsDirectBot(t *testing.T) {
+func TestHandler_AddMembers_RejectsDirectBot(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
@@ -978,7 +978,7 @@ func TestHandleAddMembers_RejectsDirectBot(t *testing.T) {
 	assert.True(t, errors.Is(err, errBotInChannel))
 }
 
-func TestHandleAddMembers_SilentlyFiltersBotsFromChannelRefs(t *testing.T) {
+func TestHandler_AddMembers_SilentlyFiltersBotsFromChannelRefs(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	mc := NewMockMemberListClient(ctrl)

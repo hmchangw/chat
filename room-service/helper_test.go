@@ -139,7 +139,7 @@ func TestSanitizeError_TransportFailureStillOpaque(t *testing.T) {
 func TestNewSentinelErrorsExist(t *testing.T) {
 	assert.Equal(t, "request must include at least one of users, orgs, channels, or name", errEmptyCreateRequest.Error())
 	assert.Equal(t, "cannot create a DM with yourself", errSelfDM.Error())
-	assert.Equal(t, "bots cannot be added to a channel during creation", errBotInChannel.Error())
+	assert.Equal(t, "bots cannot be added to a channel", errBotInChannel.Error())
 	assert.Equal(t, "bot not available", errBotNotAvailable.Error())
 	assert.Equal(t, "user is missing required name fields", errInvalidUserData.Error())
 	assert.Equal(t, "missing X-Request-ID header", errMissingRequestID.Error())

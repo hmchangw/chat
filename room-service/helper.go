@@ -33,7 +33,7 @@ var (
 	// Sentinels for create-room validation.
 	errEmptyCreateRequest  = errors.New("request must include at least one of users, orgs, channels, or name")
 	errSelfDM              = errors.New("cannot create a DM with yourself")
-	errBotInChannel        = errors.New("bots cannot be added to a channel during creation")
+	errBotInChannel        = errors.New("bots cannot be added to a channel")
 	errBotNotAvailable     = errors.New("bot not available")
 	errInvalidUserData     = errors.New("user is missing required name fields")
 	errMissingRequestID    = errors.New("missing X-Request-ID header")
