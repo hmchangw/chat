@@ -946,6 +946,27 @@ Replace `pkg/natsrouter/doc.go` with:
 // or failure profile differs significantly from the rest, or when
 // bulkhead isolation against a noisy route is desired.
 //
+// # Fire-and-forget routes
+//
+// RegisterVoid handlers have no NATS reply subject by definition. When a
+// fire-and-forget message arrives while the semaphore is saturated, the
+// router has no reply channel on which to publish ErrUnavailable, so the
+// message is SILENTLY DROPPED. Callers that publish to a void route via
+// nc.Publish (rather than nc.Request) get no signal that the message
+// was dropped. Size MaxConcurrency conservatively for services that
+// expose RegisterVoid endpoints, or front them with JetStream so
+// dropped messages can be redelivered.
+//
+// # Queue-group fairness under saturation
+//
+// NATS queue-group routing distributes messages among subscribers
+// without knowing whether any individual subscriber's process-level
+// admission control is full. A saturated pod will continue to receive
+// (and busy-reply) its share of messages even while other pods in the
+// queue group sit idle. Operators should monitor the per-pod
+// busy-reply rate (or set up server-side auto-scaling on it) rather
+// than assume queue-group routing alone provides load balancing.
+//
 // # Ordering
 //
 // Per-subject FIFO ordering is NOT preserved. Two messages that arrive
