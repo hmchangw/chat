@@ -2187,6 +2187,24 @@ func TestHandleCreateRoom_Channel_ExceedsCapacity(t *testing.T) {
 	assert.Contains(t, err.Error(), "exceeds maximum capacity")
 }
 
+// A referenced channel can expand to just the creator; reject as empty since
+// channels with only the owner are not allowed.
+func TestHandleCreateRoom_Channel_ChannelRefsExpandToCreatorOnly(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	// expandChannelRefs would resolve a same-site channel-ref where the only
+	// member is alice — after stripping the requester, allUsers/allOrgs are
+	// empty for the count call, returning 0.
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "", gomock.Any()).Return(0, nil)
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 10}
+
+	body, _ := json.Marshal(model.CreateRoomRequest{Name: "solo", Users: []string{"bob"}})
+	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errEmptyCreateRequest))
+}
+
 // Boundary case: with maxRoomSize=10, CountNewMembers=10 means the materialized
 // room would have 11 members (10 invitees + creator). Capacity check must reject.
 func TestHandleCreateRoom_Channel_RejectsWhenCreatorWouldOverflow(t *testing.T) {

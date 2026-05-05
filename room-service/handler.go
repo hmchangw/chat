@@ -292,6 +292,9 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 	if err != nil {
 		return nil, fmt.Errorf("count new members: %w", err)
 	}
+	if newCount == 0 {
+		return nil, errEmptyCreateRequest
+	}
 	// Creator is added implicitly as the channel owner. Count them in the
 	// capacity check so a maxRoomSize=N bound caps the materialized room at
 	// N members, not N+1.
