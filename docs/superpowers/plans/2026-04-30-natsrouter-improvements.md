@@ -752,7 +752,12 @@ func TestHandlerTimeout_DoneFiresAfterExpiry(t *testing.T) {
 	c.Next()
 }
 
-func TestHandlerTimeout_DoesNotLeakDeadlineToCallerAfterChainEnds(t *testing.T) {
+// TestHandlerTimeout_DoesNotCancelParentContext verifies that the
+// timeout middleware's defer-cancel only cancels its own derived ctx,
+// never the parent ctx supplied to the handler chain. The earlier
+// name ("DoesNotLeakDeadlineToCallerAfterChainEnds") was misleading
+// — what's actually being asserted is parent-ctx isolation.
+func TestHandlerTimeout_DoesNotCancelParentContext(t *testing.T) {
 	parent, parentCancel := context.WithCancel(context.Background())
 	defer parentCancel()
 	c := &Context{ctx: parent, chain: &chainState{index: -1}}
@@ -763,9 +768,9 @@ func TestHandlerTimeout_DoesNotLeakDeadlineToCallerAfterChainEnds(t *testing.T) 
 		},
 	}
 	c.Next()
-	// After Next() returns, the timeout-derived ctx has been cancel()'d via
-	// defer. We can't directly observe c.ctx (private), but we can verify
-	// the parent ctx was not affected.
+	// HandlerTimeout's `defer cancel()` only cancels the derived ctx it
+	// installed via SetContext. The parent supplied at acquireContext
+	// time must remain unaffected — verify that here.
 	select {
 	case <-parent.Done():
 		t.Fatal("parent context must not be cancelled by HandlerTimeout")
@@ -788,6 +793,23 @@ Append to `pkg/natsrouter/middleware.go`:
 // deadline of d. Downstream calls that respect context (Cassandra/Mongo
 // drivers, otelnats.Conn.Publish, etc.) will abort if the chain runs longer
 // than d. The deadline is released when the chain returns.
+//
+// Caveat — the timeout does NOT actively interrupt a running handler. A
+// handler doing pure CPU work or calling a non-context-aware library will
+// run to completion past the deadline, holding its admission slot the
+// whole time. Make sure handlers either propagate ctx into every blocking
+// call or are short by construction.
+//
+// Reply mapping — when a context-aware downstream call returns
+// context.DeadlineExceeded and the handler returns
+// `fmt.Errorf("...: %w", err)`, the router's replyErr path falls through
+// to `"internal error"` (no RouteError match). Recommended pattern: in
+// the handler, map the deadline-expired sentinel explicitly, e.g.
+//   if errors.Is(err, context.DeadlineExceeded) {
+//       return nil, natsrouter.ErrUnavailable("request timed out")
+//   }
+// so the caller sees a structured "unavailable" code instead of a
+// generic internal error.
 //
 // Place this AFTER RequestID and BEFORE Logging so the duration logged by
 // Logging includes any time spent waiting for the deadline.
