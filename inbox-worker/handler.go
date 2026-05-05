@@ -19,6 +19,12 @@ type InboxStore interface {
 	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
 	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
+	// UpdateSubscriptionRead sets lastSeenAt and alert on the subscription
+	// keyed by (roomID, account). Idempotent and order-safe: the write
+	// only applies when the stored lastSeenAt is missing or strictly
+	// earlier than the supplied value. Older or duplicate events are
+	// silent no-ops. Missing-subscription is also a silent no-op.
+	UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error
 }
 
 // Handler processes incoming cross-site OutboxEvent messages.

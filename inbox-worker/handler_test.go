@@ -128,6 +128,23 @@ func (s *stubInboxStore) BulkCreateSubscriptions(_ context.Context, subs []*mode
 	return nil
 }
 
+func (s *stubInboxStore) UpdateSubscriptionRead(_ context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.subscriptions {
+		if s.subscriptions[i].RoomID == roomID && s.subscriptions[i].User.Account == account {
+			// Order-safe: skip if stored lastSeenAt is not strictly earlier.
+			if !s.subscriptions[i].LastSeenAt.IsZero() && !s.subscriptions[i].LastSeenAt.Before(lastSeenAt) {
+				return nil
+			}
+			s.subscriptions[i].LastSeenAt = lastSeenAt
+			s.subscriptions[i].Alert = alert
+			return nil
+		}
+	}
+	return nil // missing-subscription → no-op
+}
+
 // --- Tests ---
 
 func TestHandleEvent_MemberAdded(t *testing.T) {
