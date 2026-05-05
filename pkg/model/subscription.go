@@ -34,3 +34,10 @@ type Subscription struct {
 	ThreadUnread       []string         `json:"threadUnread,omitempty" bson:"threadUnread,omitempty"`
 	Alert              bool             `json:"alert" bson:"alert"`
 }
+
+// MessageReadRequest is the body of a message.read RPC. The roomID is
+// validated against the subject; an empty body is treated as "trust the
+// subject".
+type MessageReadRequest struct {
+	RoomID string `json:"roomId"`
+}

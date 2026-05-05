@@ -79,9 +79,23 @@ type NotificationEvent struct {
 type OutboxEventType = string
 
 const (
-	OutboxMemberAdded   OutboxEventType = "member_added"
-	OutboxMemberRemoved OutboxEventType = "member_removed"
+	OutboxMemberAdded      OutboxEventType = "member_added"
+	OutboxMemberRemoved    OutboxEventType = "member_removed"
+	OutboxSubscriptionRead OutboxEventType = "subscription_read"
 )
+
+// SubscriptionReadEvent is the OutboxEvent.Payload for type
+// "subscription_read". Sent from a room's home site to the user's home site
+// when a user marks the room as read; the destination updates its local
+// subscription cache. LastSeenAt is UnixMilli (UTC) for cross-language wire
+// safety; Timestamp is the publish time.
+type SubscriptionReadEvent struct {
+	Account    string `json:"account"`
+	RoomID     string `json:"roomId"`
+	LastSeenAt int64  `json:"lastSeenAt"`
+	Alert      bool   `json:"alert"`
+	Timestamp  int64  `json:"timestamp"`
+}
 
 type OutboxEvent struct {
 	Type       OutboxEventType `json:"type"`

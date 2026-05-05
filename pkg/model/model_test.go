@@ -1589,3 +1589,37 @@ func roundTrip[T any](t *testing.T, src *T, dst *T) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", *dst, *src)
 	}
 }
+
+func TestSubscriptionReadEventJSON(t *testing.T) {
+	src := model.SubscriptionReadEvent{
+		Account:    "alice",
+		RoomID:     "r1",
+		LastSeenAt: 1735689600000,
+		Alert:      true,
+		Timestamp:  1735689600001,
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.SubscriptionReadEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
+
+func TestMessageReadRequestJSON(t *testing.T) {
+	src := model.MessageReadRequest{RoomID: "r1"}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.MessageReadRequest
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
+
+func TestOutboxSubscriptionReadConstant(t *testing.T) {
+	if model.OutboxSubscriptionRead != "subscription_read" {
+		t.Errorf("got %q, want %q", model.OutboxSubscriptionRead, "subscription_read")
+	}
+}
