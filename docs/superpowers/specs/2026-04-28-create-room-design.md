@@ -398,7 +398,7 @@ func (h *Handler) natsCreateRoom(m otelnats.Msg) {
 
 Steps below are the canonical sequence. Each numbered step has explicit reject conditions; passing all of them reaches step 9 (publish).
 
-```
+```text
 1. Parse subject → requesterAccount, expectedSiteID.
    Defensive: expectedSiteID must equal h.siteID. Mismatch → reject (internal error).
 
@@ -465,7 +465,7 @@ Steps below are the canonical sequence. Each numbered step has explicit reject c
        (We allow Name + at least one of users/orgs/channels — the latter
        is guaranteed by reaching this branch in step 6.)
    7e. Capacity check via the empty-roomID variant of CountNewMembers:
-         newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, "")
+         newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, "", requesterAccount)
        (Empty roomID skips the "already-subscribed" filter — the room doesn't
        exist yet — and just dedups + filters bots, returning the unique count.)
        (newCount + 1) > h.maxRoomSize → reject "exceeds maximum capacity".
@@ -585,7 +585,7 @@ type RoomStore interface {
     // CHANGED: signature unchanged but the empty-roomID branch is documented.
     // When roomID == "", skips the "not already subscribed" lookup and returns
     // the count of unique non-bot users (orgs + directs) that would result.
-    CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error)
+    CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID, excludeAccount string) (int, error)
 }
 ```
 
@@ -690,7 +690,7 @@ default:
 
 ### `processCreateRoom` outline (`room-worker/handler.go`)
 
-```
+```text
 1. Unmarshal CreateRoomRequest from data.
    requestID, _ := natsutil.RequestIDFromContext(ctx)
    if requestID == "" → return errPermanent (room-service is supposed to enforce
@@ -772,9 +772,8 @@ default:
    }
 
    --- channel branch ---
-   accounts, err := h.store.ListNewMembersForNewRoom(ctx, req.Orgs, req.Users)
+   accounts, err := h.store.ListNewMembersForNewRoom(ctx, req.Orgs, req.Users, req.RequesterAccount)
    // Empty-roomID variant (next section). Returns dedup'd, non-bot accounts.
-   accounts = stripAccount(accounts, req.RequesterAccount)
    users, err := h.store.FindUsersByAccounts(ctx, accounts)
    // Validate that every user has EngName and ChineseName populated. Any
    // missing field → wrap errInvalidUserData with errPermanent.
@@ -985,7 +984,7 @@ type Store interface {
 
     CreateRoom(ctx context.Context, room *model.Room) error                          // NEW (mirrors room-service)
     GetUser(ctx context.Context, account string) (*model.User, error)                // NEW (room-worker also needs this)
-    ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string) ([]string, error)  // NEW: empty-roomID variant
+    ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error)  // NEW: empty-roomID variant
     ReconcileMemberCounts(ctx context.Context, roomID string) error                  // REPLACES ReconcileUserCount
 }
 ```
@@ -1033,7 +1032,7 @@ default:
 
 ### `handleRoomCreated` outline
 
-```
+```text
 1. Unmarshal payload:
      var data model.RoomCreatedOutbox
      if err := json.Unmarshal(evt.Payload, &data); err != nil → return errPermanent.
@@ -1182,7 +1181,7 @@ Four end-to-end traces. All assume `X-Request-ID` is present at the entry point 
 
 `alice@site-A` creates a channel with users `bob, carol` and org `org-fx`. All members live on site-A. No cross-site traffic.
 
-```
+```text
 Client →  chat.user.alice.request.room.site-A.create
           payload: {name:"deal team", users:["bob","carol"], orgs:["org-fx"], channels:[]}
 
@@ -1213,7 +1212,7 @@ inbox-worker (site-A)  no inbox traffic — none of the outbox events apply
 
 `alice@site-A` creates a DM with `bob@site-B`.
 
-```
+```text
 Client → chat.user.alice.request.room.site-A.create
          payload: {name:"", users:["bob"], orgs:[], channels:[]}
 
@@ -1275,7 +1274,7 @@ End state:
 
 `alice@site-A` creates a channel with `name="deal team", users=["bob"], orgs=["org-fx"]`. `org-fx` resolves to local users carol, dave, frank, grace plus remote user ian on site-B. So site-B has bob and ian. (The client supplies the channel name — there is no auto-generation.)
 
-```
+```text
 room-service (site-A)
   - users post-strip = ["bob"], orgs = ["org-fx"], roomType = channel
   - name = "deal team" (client-supplied, validated non-empty ≤ 100 runes)
@@ -1325,7 +1324,7 @@ End state:
 
 `alice@site-A` creates a botDM with `weather.bot` (bot user lives on site-A).
 
-```
+```text
 Client → payload: {name:"", users:["weather.bot"], orgs:[], channels:[]}
 
 room-service (site-A)
