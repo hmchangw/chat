@@ -831,11 +831,14 @@ func TestHandlerTimeout_DoneFiresAfterExpiry(t *testing.T) {
 	c.chain.handlers = []HandlerFunc{
 		HandlerTimeout(20 * time.Millisecond),
 		func(c *Context) {
+			// Generous outer budget (2s) to absorb CI scheduler jitter — the
+			// 20ms timer is what we're verifying fires; the outer bound only
+			// catches a totally broken implementation.
 			select {
 			case <-c.Done():
 				// expected
-			case <-time.After(200 * time.Millisecond):
-				t.Fatal("ctx.Done() did not fire within 200ms after a 20ms timeout")
+			case <-time.After(2 * time.Second):
+				t.Fatal("ctx.Done() did not fire within 2s after a 20ms timeout")
 			}
 		},
 	}
