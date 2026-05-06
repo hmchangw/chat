@@ -1,9 +1,14 @@
 package cassrepo
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+
+	"github.com/gocql/gocql"
+
+	"github.com/hmchangw/chat/pkg/msgbucket"
 )
 
 // Bucket cursor wire format (then base64-encoded for transport):
@@ -52,4 +57,125 @@ func decodeBucketCursor(encoded string) (int64, []byte, error) {
 		copy(pageState, raw[bucketCursorHeaderBytes:bucketCursorHeaderBytes+psLen])
 	}
 	return bucket, pageState, nil
+}
+
+// walkDirection controls bucket traversal in fillPage.
+type walkDirection int //nolint:unused
+
+const (
+	walkDesc walkDirection = -1 //nolint:unused // Prev — newest to oldest
+	walkAsc  walkDirection = +1 //nolint:unused // Next — oldest to newest
+)
+
+// pageResult is fillPage's output. NextCursor is the empty string when the walk
+// has reached a terminal state (floor/ceiling crossed, or both page filled and
+// no more rows in current bucket).
+type pageResult[T any] struct { //nolint:unused
+	Rows       []T
+	NextCursor string
+	HasNext    bool
+}
+
+// bucketQueryFn returns a freshly-prepared gocql.Query bound to the given
+// bucket value. Implementations are produced by each public read function
+// (e.g. GetMessagesBefore creates a factory that interpolates bucket and
+// the per-call predicate into the SELECT statement).
+//
+// firstBucket is true on the first invocation only; the factory may use this
+// to apply a per-call predicate (e.g. created_at < before) only on the first
+// bucket walked. Later buckets are entirely on one side of the boundary and
+// do not need the predicate.
+type bucketQueryFn func(bucket int64, firstBucket bool) *gocql.Query //nolint:unused
+
+// fillPage walks buckets in the given direction starting at startBucket,
+// issuing one query per bucket and accumulating rows into out until pageSize
+// is reached or maxBuckets is exhausted. The first bucket may resume from a
+// caller-supplied gocql page state; later buckets always start fresh.
+//
+// scan must consume up to `remaining` rows from iter and return them; it is
+// responsible for stopping when full.
+//
+// floorBucket bounds the walk: DESC stops when bucket < floorBucket; ASC stops
+// when bucket > floorBucket. To disable floor-based termination, callers pass
+// math.MinInt64 (DESC) or math.MaxInt64 (ASC).
+func fillPage[T any]( //nolint:unused
+	ctx context.Context,
+	sizer msgbucket.Sizer,
+	direction walkDirection,
+	startBucket int64,
+	floorBucket int64,
+	maxBuckets int,
+	pageSize int,
+	initialPageState []byte,
+	queryFn bucketQueryFn,
+	scan func(iter *gocql.Iter, remaining int) []T,
+) (pageResult[T], error) {
+	out := make([]T, 0, pageSize)
+	bucket := startBucket
+	pageState := initialPageState
+	walked := 0
+
+	advance := func() {
+		if direction == walkDesc {
+			bucket = sizer.Prev(bucket)
+		} else {
+			bucket = sizer.Next(bucket)
+		}
+	}
+
+	floorCrossed := func(b int64) bool {
+		if direction == walkDesc {
+			return b < floorBucket
+		}
+		return b > floorBucket
+	}
+
+	for len(out) < pageSize && walked < maxBuckets {
+		if floorCrossed(bucket) {
+			return pageResult[T]{Rows: out, NextCursor: "", HasNext: false}, nil
+		}
+
+		q := queryFn(bucket, walked == 0).WithContext(ctx)
+		q = q.PageSize(pageSize - len(out))
+		if pageState != nil {
+			q = q.PageState(pageState)
+		}
+
+		iter := q.Iter()
+		rows := scan(iter, pageSize-len(out))
+		out = append(out, rows...)
+		nextPageState := iter.PageState()
+		if err := iter.Close(); err != nil {
+			return pageResult[T]{}, fmt.Errorf("scan bucket %d: %w", bucket, err)
+		}
+
+		if len(nextPageState) > 0 && len(out) < pageSize {
+			// Bucket has more rows but page wasn't filled yet — continue draining same bucket.
+			pageState = nextPageState
+			continue
+		}
+		if len(nextPageState) > 0 && len(out) >= pageSize {
+			// Page filled mid-bucket — return cursor pointing at this bucket so caller resumes here.
+			return pageResult[T]{
+				Rows:       out,
+				NextCursor: encodeBucketCursor(bucket, nextPageState),
+				HasNext:    true,
+			}, nil
+		}
+
+		// Bucket exhausted; advance.
+		pageState = nil
+		advance()
+		walked++
+	}
+
+	if floorCrossed(bucket) {
+		return pageResult[T]{Rows: out, NextCursor: "", HasNext: false}, nil
+	}
+	// maxBuckets reached or pageSize reached at bucket boundary — non-terminal cursor at next bucket.
+	return pageResult[T]{
+		Rows:       out,
+		NextCursor: encodeBucketCursor(bucket, nil),
+		HasNext:    true,
+	}, nil
 }
