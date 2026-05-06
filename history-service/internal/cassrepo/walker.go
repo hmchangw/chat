@@ -60,17 +60,17 @@ func decodeBucketCursor(encoded string) (int64, []byte, error) {
 }
 
 // walkDirection controls bucket traversal in fillPage.
-type walkDirection int //nolint:unused
+type walkDirection int
 
 const (
-	walkDesc walkDirection = -1 //nolint:unused // Prev — newest to oldest
-	walkAsc  walkDirection = +1 //nolint:unused // Next — oldest to newest
+	walkDesc walkDirection = -1 // Prev — newest to oldest
+	walkAsc  walkDirection = +1 // Next — oldest to newest
 )
 
 // pageResult is fillPage's output. NextCursor is the empty string when the walk
 // has reached a terminal state (floor/ceiling crossed, or both page filled and
 // no more rows in current bucket).
-type pageResult[T any] struct { //nolint:unused
+type pageResult[T any] struct {
 	Rows       []T
 	NextCursor string
 	HasNext    bool
@@ -85,7 +85,7 @@ type pageResult[T any] struct { //nolint:unused
 // to apply a per-call predicate (e.g. created_at < before) only on the first
 // bucket walked. Later buckets are entirely on one side of the boundary and
 // do not need the predicate.
-type bucketQueryFn func(bucket int64, firstBucket bool) *gocql.Query //nolint:unused
+type bucketQueryFn func(bucket int64, firstBucket bool) *gocql.Query
 
 // fillPage walks buckets in the given direction starting at startBucket,
 // issuing one query per bucket and accumulating rows into out until pageSize
@@ -98,7 +98,7 @@ type bucketQueryFn func(bucket int64, firstBucket bool) *gocql.Query //nolint:un
 // floorBucket bounds the walk: DESC stops when bucket < floorBucket; ASC stops
 // when bucket > floorBucket. To disable floor-based termination, callers pass
 // math.MinInt64 (DESC) or math.MaxInt64 (ASC).
-func fillPage[T any]( //nolint:unused
+func fillPage[T any](
 	ctx context.Context,
 	sizer msgbucket.Sizer,
 	direction walkDirection,

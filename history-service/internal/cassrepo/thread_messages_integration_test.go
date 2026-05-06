@@ -18,15 +18,31 @@ import (
 
 func seedThreadMessages(t *testing.T, session *gocql.Session, roomID, threadRoomID, parentID string, base time.Time, count int) {
 	t.Helper()
+	sizer := msgbucket.New(24 * time.Hour)
 	sender := models.Participant{ID: "u1", Account: "user1"}
 	for i := 0; i < count; i++ {
 		ts := base.Add(time.Duration(i) * time.Minute)
+		bucket := sizer.Of(ts)
 		err := session.Query(
-			`INSERT INTO thread_messages_by_room (room_id, thread_room_id, created_at, message_id, thread_parent_id, sender, msg) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			roomID, threadRoomID, ts, fmt.Sprintf("%s-reply-%d", threadRoomID, i), parentID, sender, fmt.Sprintf("reply-%d", i),
+			`INSERT INTO thread_messages_by_room (room_id, bucket, thread_room_id, created_at, message_id, thread_parent_id, sender, msg) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			roomID, bucket, threadRoomID, ts, fmt.Sprintf("%s-reply-%d", threadRoomID, i), parentID, sender, fmt.Sprintf("reply-%d", i),
 		).Exec()
 		require.NoError(t, err)
 	}
+}
+
+func seedThreadMessage(t *testing.T, session *gocql.Session, roomID, threadRoomID, messageID string, createdAt time.Time) {
+	t.Helper()
+	sizer := msgbucket.New(24 * time.Hour)
+	bucket := sizer.Of(createdAt)
+	err := session.Query(
+		`INSERT INTO thread_messages_by_room (room_id, bucket, thread_room_id, created_at, message_id, sender, msg, site_id, updated_at, type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, bucket, threadRoomID, createdAt, messageID,
+		map[string]interface{}{"id": "u1", "account": "alice"},
+		"m", "site-A", createdAt, "text",
+	).Exec()
+	require.NoError(t, err)
 }
 
 func TestRepository_GetThreadMessages_IsolatesByThreadRoomID(t *testing.T) {
@@ -41,7 +57,7 @@ func TestRepository_GetThreadMessages_IsolatesByThreadRoomID(t *testing.T) {
 	q, err := ParsePageRequest("", 100)
 	require.NoError(t, err)
 
-	page1, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", q)
+	page1, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
 	require.NoError(t, err)
 	assert.Len(t, page1.Data, 3)
 	for _, m := range page1.Data {
@@ -49,7 +65,7 @@ func TestRepository_GetThreadMessages_IsolatesByThreadRoomID(t *testing.T) {
 		assert.Equal(t, "m-parent-1", m.ThreadParentID)
 	}
 
-	page2, err := repo.GetThreadMessages(ctx, "r-A", "tr-2", q)
+	page2, err := repo.GetThreadMessages(ctx, "r-A", "tr-2", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
 	require.NoError(t, err)
 	assert.Len(t, page2.Data, 5)
 	for _, m := range page2.Data {
@@ -69,14 +85,14 @@ func TestRepository_GetThreadMessages_IsolatesByRoomID(t *testing.T) {
 	q, err := ParsePageRequest("", 100)
 	require.NoError(t, err)
 
-	pageA, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", q)
+	pageA, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
 	require.NoError(t, err)
 	assert.Len(t, pageA.Data, 2)
 	for _, m := range pageA.Data {
 		assert.Equal(t, "r-A", m.RoomID)
 	}
 
-	pageB, err := repo.GetThreadMessages(ctx, "r-B", "tr-1", q)
+	pageB, err := repo.GetThreadMessages(ctx, "r-B", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
 	require.NoError(t, err)
 	assert.Len(t, pageB.Data, 4)
 	for _, m := range pageB.Data {
@@ -95,7 +111,7 @@ func TestRepository_GetThreadMessages_OrdersDescByCreatedAt(t *testing.T) {
 	q, err := ParsePageRequest("", 100)
 	require.NoError(t, err)
 
-	page, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", q)
+	page, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
 	require.NoError(t, err)
 	require.Len(t, page.Data, 4)
 	for i := 0; i < len(page.Data)-1; i++ {
@@ -115,7 +131,7 @@ func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 	q, err := ParsePageRequest("", 3)
 	require.NoError(t, err)
 
-	page1, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", q)
+	page1, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
 	require.NoError(t, err)
 	assert.Len(t, page1.Data, 3)
 	assert.True(t, page1.HasNext)
@@ -123,13 +139,13 @@ func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 
 	q2, err := ParsePageRequest(page1.NextCursor, 3)
 	require.NoError(t, err)
-	page2, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", q2)
+	page2, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q2)
 	require.NoError(t, err)
 	assert.Len(t, page2.Data, 3)
 
 	q3, err := ParsePageRequest(page2.NextCursor, 3)
 	require.NoError(t, err)
-	page3, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", q3)
+	page3, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q3)
 	require.NoError(t, err)
 	assert.Len(t, page3.Data, 1)
 	assert.False(t, page3.HasNext)
@@ -158,7 +174,7 @@ func TestRepository_GetThreadMessages_EmptyWhenThreadUnknown(t *testing.T) {
 	q, err := ParsePageRequest("", 10)
 	require.NoError(t, err)
 
-	page, err := repo.GetThreadMessages(ctx, "r-A", "tr-nonexistent", q)
+	page, err := repo.GetThreadMessages(ctx, "r-A", "tr-nonexistent", time.Now().UTC().Add(time.Hour), time.Now().UTC().AddDate(-10, 0, 0), q)
 	require.NoError(t, err)
 	assert.Empty(t, page.Data)
 	assert.False(t, page.HasNext)
@@ -174,6 +190,9 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	editedAt := ts.Add(5 * time.Minute)
 	updatedAt := ts.Add(10 * time.Minute)
 
+	sizer := msgbucket.New(24 * time.Hour)
+	bucket := sizer.Of(ts)
+
 	sender := models.Participant{ID: "u1", EngName: "Alice", CompanyName: "Acme", AppID: "app1", AppName: "MyApp", IsBot: false, Account: "alice"}
 	target := models.Participant{ID: "u2", Account: "bob"}
 	mentionUser := models.Participant{ID: "u3", Account: "charlie"}
@@ -188,13 +207,13 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	}
 
 	insertCQL := `INSERT INTO thread_messages_by_room (
-        room_id, thread_room_id, created_at, message_id, thread_parent_id,
+        room_id, bucket, thread_room_id, created_at, message_id, thread_parent_id,
         sender, target_user, msg, mentions, attachments, file, card, card_action,
         quoted_parent_message, visible_to, reactions, deleted,
         type, sys_msg_data, site_id, edited_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
-		"r-thread-full", "tr-full", ts, "m-reply-full", "m-thread-parent",
+		"r-thread-full", bucket, "tr-full", ts, "m-reply-full", "m-thread-parent",
 		sender, target, "thread reply body",
 		[]models.Participant{mentionUser},
 		[][]byte{[]byte("attach1"), []byte("attach2")},
@@ -209,7 +228,7 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	q, err := ParsePageRequest("", 10)
 	require.NoError(t, err)
 
-	page, err := repo.GetThreadMessages(ctx, "r-thread-full", "tr-full", q)
+	page, err := repo.GetThreadMessages(ctx, "r-thread-full", "tr-full", ts.Add(time.Hour), ts.AddDate(-10, 0, 0), q)
 	require.NoError(t, err)
 	require.Len(t, page.Data, 1)
 	msg := page.Data[0]
@@ -302,4 +321,24 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	assert.Nil(t, msg.ThreadParentCreatedAt)
 	assert.Nil(t, msg.PinnedAt)
 	assert.Nil(t, msg.PinnedBy)
+}
+
+func TestGetThreadMessages_CrossBucketWalk(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	ctx := context.Background()
+
+	roomID := "room-thread-walk"
+	threadRoomID := "thread-1"
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 4; i++ {
+		seedThreadMessage(t, session, roomID, threadRoomID, fmt.Sprintf("t%d", i), base.AddDate(0, 0, -i))
+	}
+	floor := base.AddDate(0, 0, -10)
+
+	page, err := repo.GetThreadMessages(ctx, roomID, threadRoomID, base.Add(time.Second), floor, PageRequest{PageSize: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Data, 4)
+	assert.Equal(t, "t0", page.Data[0].MessageID)
+	assert.False(t, page.HasNext)
 }

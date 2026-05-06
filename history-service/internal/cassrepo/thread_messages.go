@@ -3,6 +3,7 @@ package cassrepo
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/gocql/gocql"
 
@@ -15,24 +16,38 @@ const threadMessageColumns = "room_id, thread_room_id, created_at, message_id, t
 	"quoted_parent_message, visible_to, reactions, deleted, " +
 	"type, sys_msg_data, site_id, edited_at, updated_at"
 
-// Partition + clustering key equality avoids ALLOW FILTERING.
-func (r *Repository) GetThreadMessages(ctx context.Context, roomID, threadRoomID string, pageReq PageRequest) (Page[models.Message], error) {
-	var messages []models.Message
-	nextCursor, err := NewQueryBuilder(r.session.Query(
-		"SELECT "+threadMessageColumns+` FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? ORDER BY created_at DESC`,
-		roomID, threadRoomID,
-	).WithContext(ctx)).
-		WithCursor(pageReq.Cursor).
-		WithPageSize(pageReq.PageSize).
-		Fetch(func(iter *gocql.Iter) {
-			messages = scanMsgsFromIter(iter)
-		})
+func (r *Repository) GetThreadMessages(
+	ctx context.Context, roomID, threadRoomID string,
+	before time.Time, floor time.Time,
+	pageReq PageRequest,
+) (Page[models.Message], error) {
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(before))
 	if err != nil {
-		return Page[models.Message]{}, fmt.Errorf("querying thread messages: %w", err)
+		return Page[models.Message]{}, err
 	}
-	return Page[models.Message]{
-		Data:       messages,
-		NextCursor: nextCursor,
-		HasNext:    nextCursor != "",
-	}, nil
+	floorBucket := r.bucket.Of(floor)
+
+	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
+		if firstBucket {
+			return r.session.Query(
+				"SELECT "+threadMessageColumns+
+					` FROM thread_messages_by_room WHERE room_id = ? AND bucket = ? AND thread_room_id = ? AND created_at < ? ORDER BY created_at DESC`,
+				roomID, bucket, threadRoomID, before,
+			)
+		}
+		return r.session.Query(
+			"SELECT "+threadMessageColumns+
+				` FROM thread_messages_by_room WHERE room_id = ? AND bucket = ? AND thread_room_id = ? ORDER BY created_at DESC`,
+			roomID, bucket, threadRoomID,
+		)
+	}
+
+	res, err := fillPage[models.Message](
+		ctx, r.bucket, walkDesc, startBucket, floorBucket, r.maxBuckets,
+		pageReq.PageSize, initialPageState, queryFn, scanMessagesUpTo,
+	)
+	if err != nil {
+		return Page[models.Message]{}, fmt.Errorf("get thread messages: %w", err)
+	}
+	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
 }

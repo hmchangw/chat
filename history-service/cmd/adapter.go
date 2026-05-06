@@ -57,7 +57,8 @@ func (a *repoAdapter) GetMessageByID(ctx context.Context, messageID string) (*mo
 }
 
 func (a *repoAdapter) GetThreadMessages(ctx context.Context, roomID, threadRoomID string, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
-	return a.r.GetThreadMessages(ctx, roomID, threadRoomID, pageReq)
+	// TODO(task-17): replace with resolved room times from resolveRoomTimes.
+	return a.r.GetThreadMessages(ctx, roomID, threadRoomID, time.Now().UTC().Add(time.Hour), time.Time{}, pageReq)
 }
 
 func (a *repoAdapter) GetMessagesByIDs(ctx context.Context, messageIDs []string) ([]models.Message, error) {
