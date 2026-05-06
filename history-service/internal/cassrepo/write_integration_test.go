@@ -11,11 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/pkg/atrest"
+	cassmodel "github.com/hmchangw/chat/pkg/model/cassandra"
 )
 
 func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -72,7 +74,7 @@ func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 
 func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -132,7 +134,7 @@ func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
 
 func TestRepository_UpdateMessageContent_Pinned(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -194,7 +196,7 @@ func TestRepository_UpdateMessageContent_Pinned(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -256,7 +258,7 @@ func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -337,7 +339,7 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -397,7 +399,7 @@ func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_DecrementsParentTcount(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -459,7 +461,7 @@ func TestRepository_SoftDeleteMessage_DecrementsParentTcount(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_TopLevelDoesNotTouchTcount(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -499,7 +501,7 @@ func TestRepository_SoftDeleteMessage_TopLevelDoesNotTouchTcount(t *testing.T) {
 
 func TestRepository_UpdateMessageContent_MissingThreadRoomID_ReturnsError(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -533,7 +535,7 @@ func TestRepository_UpdateMessageContent_MissingThreadRoomID_ReturnsError(t *tes
 
 func TestRepository_SoftDeleteMessage_MissingThreadRoomID_ReturnsError(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -571,7 +573,7 @@ func TestRepository_SoftDeleteMessage_MissingThreadRoomID_ReturnsError(t *testin
 // This is the load-bearing test for the IF deleted != true CAS gate.
 func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -665,7 +667,7 @@ func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
 // via the struct-scan read path (Tasks 1–2).
 func TestRepository_UpdateMessageContent_RoundTrip(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -705,7 +707,7 @@ func TestRepository_UpdateMessageContent_RoundTrip(t *testing.T) {
 // a top-level message, GetMessageByID returns deleted=true via struct scan.
 func TestRepository_SoftDeleteMessage_RoundTrip(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -748,7 +750,7 @@ func TestRepository_SoftDeleteMessage_RoundTrip(t *testing.T) {
 // a partial phantom row; the method must handle this gracefully.
 func TestRepository_SoftDeleteMessage_RowCreatedByLWT(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	msg := &models.Message{
@@ -768,7 +770,7 @@ func TestRepository_SoftDeleteMessage_RowCreatedByLWT(t *testing.T) {
 // atomically in messages_by_id and messages_by_room.
 func TestRepository_SoftDeleteMessage_ThreadParent_SetsTypeRemoved(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -825,7 +827,7 @@ func TestRepository_SoftDeleteMessage_ThreadParent_SetsTypeRemoved(t *testing.T)
 // deleting a regular message (TCount nil) does NOT set type = 'message_removed'.
 func TestRepository_SoftDeleteMessage_NonThreadParent_NoTypeChange(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -870,7 +872,7 @@ func TestRepository_SoftDeleteMessage_NonThreadParent_NoTypeChange(t *testing.T)
 // sets type = 'message_removed' in messages_by_id and thread_messages_by_room.
 func TestRepository_SoftDeleteMessage_ReplyThreadParent_SetsTypeRemoved(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -924,4 +926,112 @@ func TestRepository_SoftDeleteMessage_ReplyThreadParent_SetsTypeRemoved(t *testi
 		roomID, threadRoomID, createdAt, msgID,
 	).Scan(&gotType))
 	assert.Equal(t, MessageTypeRemoved, gotType, "thread_messages_by_room must have type='message_removed'")
+}
+
+// TestEditMessage_EncryptsBody verifies that when a cipher is configured, edits
+// re-encrypt the new body and null the legacy plaintext msg column.
+func TestEditMessage_EncryptsBody(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+	mongoDB := setupMongo(t)
+
+	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		// Best-effort: tests can't meaningfully act on a Close failure.
+		_ = loader.Close()
+	})
+
+	cipher := atrest.NewCipher(loader, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
+	repo := NewRepository(session, cipher)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	roomID := "r-edit-1"
+
+	// Pre-seed an encrypted row directly with CQL.
+	enc := atrest.EncryptedFields{Msg: "original body"}
+	payload, meta, err := cipher.Encrypt(ctx, roomID, enc)
+	require.NoError(t, err)
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, enc_payload, enc_meta, site_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		roomID, now, "m1", payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, "site-a",
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, enc_payload, enc_meta, site_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		"m1", now, roomID, payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, "site-a",
+	).Exec())
+
+	editedAt := now.Add(time.Minute)
+	require.NoError(t, repo.UpdateMessageContent(ctx, &models.Message{
+		RoomID: roomID, MessageID: "m1", CreatedAt: now,
+	}, "new body", editedAt))
+
+	// Direct CQL: msg column is null, enc_payload is non-nil and decrypts to "new body".
+	var (
+		msgCol     string
+		encPayload []byte
+		encNonce   []byte
+	)
+	require.NoError(t, session.Query(
+		`SELECT msg, enc_payload, enc_meta.nonce FROM messages_by_room WHERE room_id=? AND created_at=? AND message_id=? LIMIT 1`,
+		roomID, now, "m1",
+	).Scan(&msgCol, &encPayload, &encNonce))
+	assert.Empty(t, msgCol)
+	require.NotEmpty(t, encPayload)
+
+	plain, err := cipher.Decrypt(ctx, roomID, encPayload, atrest.EncMeta{Nonce: encNonce})
+	require.NoError(t, err)
+	assert.Equal(t, "new body", plain.Msg)
+}
+
+// TestDeleteMessage_NullsEncryptedColumns verifies that soft-deleting an
+// encrypted row also nulls enc_payload and enc_meta.
+func TestDeleteMessage_NullsEncryptedColumns(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+	mongoDB := setupMongo(t)
+
+	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = loader.Close()
+	})
+
+	cipher := atrest.NewCipher(loader, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
+	repo := NewRepository(session, cipher)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	roomID := "r-del-1"
+
+	// Pre-seed an encrypted row.
+	enc := atrest.EncryptedFields{Msg: "doomed body"}
+	payload, meta, err := cipher.Encrypt(ctx, roomID, enc)
+	require.NoError(t, err)
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, enc_payload, enc_meta, site_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		roomID, now, "m1", payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, "site-a",
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, enc_payload, enc_meta, site_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		"m1", now, roomID, payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, "site-a",
+	).Exec())
+
+	_, applied, err := repo.SoftDeleteMessage(ctx, &models.Message{
+		RoomID: roomID, MessageID: "m1", CreatedAt: now,
+	}, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, applied)
+
+	var (
+		deleted    bool
+		encPayload []byte
+	)
+	require.NoError(t, session.Query(
+		`SELECT deleted, enc_payload FROM messages_by_room WHERE room_id=? AND created_at=? AND message_id=? LIMIT 1`,
+		roomID, now, "m1",
+	).Scan(&deleted, &encPayload))
+	assert.True(t, deleted)
+	assert.Nil(t, encPayload)
 }

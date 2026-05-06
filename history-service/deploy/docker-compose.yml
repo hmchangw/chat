@@ -19,8 +19,11 @@ services:
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat
       - VALKEY_ADDR=valkey:6379
+      - ATREST_ENABLED=true
+      - ATREST_KEK_FILE=/etc/chat/keks.json
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+      - ../../message-worker/deploy/atrest-keks.json:/etc/chat/keks.json:ro
     networks:
       - chat-local
 

@@ -11,6 +11,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
 	"github.com/hmchangw/chat/history-service/internal/publisher"
 	"github.com/hmchangw/chat/history-service/internal/service"
+	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
@@ -70,7 +71,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	cassRepo := cassrepo.NewRepository(cassSession)
+	var (
+		cipher    atrest.Cipher
+		kekLoader atrest.KEKLoader
+	)
+	if cfg.Atrest.Enabled {
+		loader, err := atrest.NewFileKEKLoader(cfg.Atrest.KEKFile)
+		if err != nil {
+			slog.Error("failed to load KEK file", "path", cfg.Atrest.KEKFile, "error", err)
+			os.Exit(1)
+		}
+		kekLoader = loader
+		dekColl := mongoClient.Database(cfg.Mongo.DB).Collection(atrest.CollectionName)
+		cipher = atrest.NewCipher(loader, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
+	}
+
+	cassRepo := cassrepo.NewRepository(cassSession, cipher)
 	db := mongoClient.Database(cfg.Mongo.DB)
 	subRepo := mongorepo.NewSubscriptionRepo(db)
 	threadRoomRepo := mongorepo.NewThreadRoomRepo(db)
@@ -97,5 +113,11 @@ func main() {
 		func(ctx context.Context) error { return keyStore.Close() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
+		func(ctx context.Context) error {
+			if kekLoader != nil {
+				return kekLoader.Close()
+			}
+			return nil
+		},
 	)
 }

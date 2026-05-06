@@ -30,7 +30,7 @@ func seedThreadMessages(t *testing.T, session *gocql.Session, roomID, threadRoom
 
 func TestRepository_GetThreadMessages_IsolatesByThreadRoomID(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
@@ -58,7 +58,7 @@ func TestRepository_GetThreadMessages_IsolatesByThreadRoomID(t *testing.T) {
 
 func TestRepository_GetThreadMessages_IsolatesByRoomID(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
@@ -85,7 +85,7 @@ func TestRepository_GetThreadMessages_IsolatesByRoomID(t *testing.T) {
 
 func TestRepository_GetThreadMessages_OrdersDescByCreatedAt(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
@@ -105,7 +105,7 @@ func TestRepository_GetThreadMessages_OrdersDescByCreatedAt(t *testing.T) {
 
 func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
@@ -151,7 +151,7 @@ func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 
 func TestRepository_GetThreadMessages_EmptyWhenThreadUnknown(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	q, err := ParsePageRequest("", 10)
@@ -166,7 +166,7 @@ func TestRepository_GetThreadMessages_EmptyWhenThreadUnknown(t *testing.T) {
 
 func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	ts := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)

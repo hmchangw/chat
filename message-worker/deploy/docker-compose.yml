@@ -15,8 +15,11 @@ services:
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
       - BOOTSTRAP_STREAMS=true
+      - ATREST_ENABLED=true
+      - ATREST_KEK_FILE=/etc/chat/keks.json
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+      - ./atrest-keks.json:/etc/chat/keks.json:ro
     networks:
       - chat-local
 

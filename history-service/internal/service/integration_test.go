@@ -34,6 +34,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		cql(`CREATE TYPE IF NOT EXISTS %s."Card" (template TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s."EncMeta" (nonce BLOB)`),
 	} {
 		require.NoError(t, adminSession.Query(stmt).Exec())
 	}
@@ -48,6 +49,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
 		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
+		enc_payload BLOB, enc_meta FROZEN<"EncMeta">,
 		PRIMARY KEY ((room_id), created_at, message_id)
 	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`)).Exec())
 
@@ -62,6 +64,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, created_at TIMESTAMP,
 		updated_at TIMESTAMP, pinned_at TIMESTAMP, pinned_by FROZEN<"Participant">,
+		enc_payload BLOB, enc_meta FROZEN<"EncMeta">,
 		PRIMARY KEY (message_id, created_at)
 	) WITH CLUSTERING ORDER BY (created_at DESC)`)).Exec())
 
@@ -75,6 +78,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
 		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
+		enc_payload BLOB, enc_meta FROZEN<"EncMeta">,
 		PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
 	) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`)).Exec())
 
@@ -120,7 +124,7 @@ func (alwaysSubscribedRepo) GetHistorySharedSince(_ context.Context, _, _ string
 
 func TestEditMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session)
+	repo := cassrepo.NewRepository(session, nil)
 	pub := &recordingPublisher{}
 	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil)
 
@@ -182,7 +186,7 @@ func TestEditMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session)
+	repo := cassrepo.NewRepository(session, nil)
 	pub := &recordingPublisher{}
 	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil)
 
@@ -242,7 +246,7 @@ func TestDeleteMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session)
+	repo := cassrepo.NewRepository(session, nil)
 	pub := &recordingPublisher{}
 	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil)
 

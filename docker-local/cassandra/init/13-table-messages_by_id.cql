@@ -28,3 +28,6 @@ CREATE TABLE IF NOT EXISTS chat.messages_by_id (
   pinned_by                FROZEN<"Participant">,
   PRIMARY KEY (message_id, created_at)
 ) WITH CLUSTERING ORDER BY (created_at DESC);
+
+ALTER TABLE chat.messages_by_id ADD enc_payload BLOB;
+ALTER TABLE chat.messages_by_id ADD enc_meta FROZEN<"EncMeta">;

@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,11 +17,25 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
+
+// writeTestKEKFile writes a single-version KEK file under a tempdir and
+// returns its path. Used by tests that need a real atrest.Cipher.
+func writeTestKEKFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keks.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"current": 1,
+		"keys": {"1": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}
+	}`), 0o600))
+	return path
+}
 
 func setupCassandra(t *testing.T) *gocql.Session {
 	t.Helper()
@@ -33,6 +49,9 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			app_name     TEXT,
 			is_bot       BOOLEAN,
 			account      TEXT
+		)`, keyspace),
+		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."EncMeta" (
+			nonce BLOB
 		)`, keyspace),
 		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (
 			message_id               TEXT,
@@ -60,6 +79,8 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			type                  TEXT,
 			sys_msg_data          BLOB,
 			quoted_parent_message FROZEN<"QuotedParentMessage">,
+			enc_payload           BLOB,
+			enc_meta              FROZEN<"EncMeta">,
 			PRIMARY KEY ((room_id), created_at, message_id)
 		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`, keyspace),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.messages_by_id (
@@ -79,6 +100,8 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			type                     TEXT,
 			sys_msg_data             BLOB,
 			quoted_parent_message    FROZEN<"QuotedParentMessage">,
+			enc_payload              BLOB,
+			enc_meta                 FROZEN<"EncMeta">,
 			PRIMARY KEY (message_id, created_at)
 		) WITH CLUSTERING ORDER BY (created_at DESC)`, keyspace),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_room (
@@ -96,6 +119,8 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			type                  TEXT,
 			sys_msg_data          BLOB,
 			quoted_parent_message FROZEN<"QuotedParentMessage">,
+			enc_payload           BLOB,
+			enc_meta              FROZEN<"EncMeta">,
 			PRIMARY KEY ((room_id), thread_room_id, created_at, message_id)
 		) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`, keyspace),
 	}
@@ -121,7 +146,7 @@ func setupMongo(t *testing.T) *mongo.Database {
 
 func TestCassandraStore_SaveMessage(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -214,7 +239,7 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 
 func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -294,7 +319,7 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 
 func TestCassandraStore_GetMessageSender(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -346,7 +371,7 @@ func TestHandler_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	us := userstore.NewMongoStore(userCol)
 	threadStore := newThreadStoreMongo(mongoDB)
 	h := NewHandler(store, us, threadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
@@ -409,7 +434,7 @@ func TestHandler_Integration_ThreadReply(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	us := userstore.NewMongoStore(userCol)
 	ts := newThreadStoreMongo(db)
 	require.NoError(t, ts.EnsureIndexes(ctx))
@@ -533,7 +558,7 @@ func TestHandler_Integration_ThreadReplyWithMention(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	us := userstore.NewMongoStore(userCol)
 	ts := newThreadStoreMongo(db)
 	require.NoError(t, ts.EnsureIndexes(ctx))
@@ -848,7 +873,7 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 
 func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	ctx := context.Background()
 
 	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
@@ -955,7 +980,7 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 
 func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1028,7 +1053,7 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 
 func TestCassandraStore_SaveMessage_NilQuotedParent(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1057,7 +1082,7 @@ func TestCassandraStore_SaveMessage_NilQuotedParent(t *testing.T) {
 
 func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1105,4 +1130,52 @@ func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "parent-msg-uuid", got.MessageID)
 	})
+}
+
+func TestSaveMessage_EncryptsBody(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+	mongoDB := setupMongo(t)
+
+	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		// Best-effort: tests can't meaningfully act on a Close failure.
+		_ = loader.Close()
+	})
+
+	cipher := atrest.NewCipher(loader, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
+	store := NewCassandraStore(session, cipher)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sender := &cassParticipant{ID: "u-1", Account: "alice"}
+	msg := &model.Message{
+		ID:          "m-enc-1",
+		RoomID:      "r-enc-1",
+		UserID:      "u-1",
+		UserAccount: "alice",
+		Content:     "secret body",
+		CreatedAt:   now,
+	}
+	require.NoError(t, store.SaveMessage(ctx, msg, sender, "site-a"))
+
+	// Direct CQL: msg column is null, enc_payload is non-nil.
+	var (
+		msgCol     string
+		encPayload []byte
+		encNonce   []byte
+	)
+	require.NoError(t, session.Query(
+		`SELECT msg, enc_payload, enc_meta.nonce FROM messages_by_room WHERE room_id=? AND message_id=? LIMIT 1 ALLOW FILTERING`,
+		"r-enc-1", "m-enc-1",
+	).Scan(&msgCol, &encPayload, &encNonce))
+	assert.Empty(t, msgCol)
+	require.NotEmpty(t, encPayload)
+	require.Len(t, encNonce, 12)
+
+	// Decrypt confirms the body.
+	plain, err := cipher.Decrypt(ctx, "r-enc-1", encPayload, atrest.EncMeta{Nonce: encNonce})
+	require.NoError(t, err)
+	assert.Equal(t, "secret body", plain.Msg)
 }

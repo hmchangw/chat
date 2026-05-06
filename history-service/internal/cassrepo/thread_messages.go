@@ -10,11 +10,13 @@ import (
 const threadMessageColumns = "room_id, thread_room_id, created_at, message_id, thread_parent_id, " +
 	"sender, target_user, msg, mentions, attachments, file, card, card_action, " +
 	"quoted_parent_message, visible_to, reactions, deleted, " +
-	"type, sys_msg_data, site_id, edited_at, updated_at"
+	"type, sys_msg_data, site_id, edited_at, updated_at, " +
+	"enc_payload, enc_meta"
 
 // Partition + clustering key equality avoids ALLOW FILTERING.
 func (r *Repository) GetThreadMessages(ctx context.Context, roomID, threadRoomID string, pageReq PageRequest) (Page[models.Message], error) {
-	return fetchMessagesPage(
+	return r.fetchMessagesPage(
+		ctx,
 		r.session.Query(
 			"SELECT "+threadMessageColumns+` FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? ORDER BY created_at DESC`,
 			roomID, threadRoomID,

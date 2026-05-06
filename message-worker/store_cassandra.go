@@ -9,7 +9,9 @@ import (
 
 	"github.com/gocql/gocql"
 
+	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/model/cassandra"
 )
 
 // errMessageNotFound is returned by GetMessageSender when the message row is
@@ -53,16 +55,26 @@ func toMentionSet(mentions []model.Participant) []*cassParticipant {
 // CassandraStore implements Store using a Cassandra session.
 type CassandraStore struct {
 	cassSession *gocql.Session
+	cipher      atrest.Cipher // nil when ATREST_ENABLED=false
 }
 
-func NewCassandraStore(session *gocql.Session) *CassandraStore {
-	return &CassandraStore{cassSession: session}
+func NewCassandraStore(session *gocql.Session, cipher atrest.Cipher) *CassandraStore {
+	return &CassandraStore{cassSession: session, cipher: cipher}
 }
 
 // SaveMessage inserts msg into both messages_by_room and messages_by_id.
 // updated_at is set to msg.CreatedAt (equals created_at on first insert — not yet edited).
 // If either insert fails the error is returned immediately; JetStream will redeliver the message.
+//
+// When s.cipher is non-nil, the user-authored body fields (msg, sys_msg_data,
+// quoted_parent_message body) are encrypted into enc_payload + enc_meta and
+// the legacy plaintext columns are left null. When s.cipher is nil the
+// legacy plaintext INSERT runs unchanged.
 func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+	if s.cipher != nil {
+		return s.saveMessageEncrypted(ctx, msg, sender, siteID)
+	}
+
 	if err := s.cassSession.Query(
 		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, tshow, quoted_parent_message)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -82,7 +94,43 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 	return nil
 }
 
+// saveMessageEncrypted is the cipher-enabled counterpart to SaveMessage.
+// It encrypts the user-authored body fields once and binds the resulting
+// payload + nonce into both row INSERTs.
+func (s *CassandraStore) saveMessageEncrypted(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+	cm := buildCassandraMessage(msg)
+	enc := atrest.SplitForEncryption(&cm)
+	payload, meta, err := s.cipher.Encrypt(ctx, cm.RoomID, enc)
+	if err != nil {
+		return fmt.Errorf("encrypt message %s in room %s: %w", cm.MessageID, cm.RoomID, err)
+	}
+	atrest.StripEncryptedFields(&cm)
+	encMeta := &cassandra.EncMeta{Nonce: meta.Nonce}
+
+	if err := s.cassSession.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, site_id, updated_at, mentions, type, tshow, quoted_parent_message, enc_payload, enc_meta)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, msg.CreatedAt, msg.ID, sender, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.TShow, cm.QuotedParentMessage, payload, encMeta,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert messages_by_room %s: %w", msg.ID, err)
+	}
+
+	if err := s.cassSession.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, sender, site_id, updated_at, mentions, type, tshow, quoted_parent_message, enc_payload, enc_meta)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.TShow, cm.QuotedParentMessage, payload, encMeta,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
+	}
+
+	return nil
+}
+
 func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
+	if s.cipher != nil {
+		return s.saveThreadMessageEncrypted(ctx, msg, sender, siteID, threadRoomID)
+	}
+
 	if err := s.cassSession.Query(
 		`INSERT INTO messages_by_id
 		 (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
@@ -109,6 +157,69 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 	}
 
 	return nil
+}
+
+// saveThreadMessageEncrypted is the cipher-enabled counterpart to
+// SaveThreadMessage. The tcount increment at the end is shared with the
+// legacy path.
+func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
+	cm := buildCassandraMessage(msg)
+	enc := atrest.SplitForEncryption(&cm)
+	payload, meta, err := s.cipher.Encrypt(ctx, cm.RoomID, enc)
+	if err != nil {
+		return fmt.Errorf("encrypt message %s in room %s: %w", cm.MessageID, cm.RoomID, err)
+	}
+	atrest.StripEncryptedFields(&cm)
+	encMeta := &cassandra.EncMeta{Nonce: meta.Nonce}
+
+	if err := s.cassSession.Query(
+		`INSERT INTO messages_by_id
+		 (message_id, created_at, room_id, sender, site_id, updated_at, mentions,
+		  thread_room_id, thread_parent_id, thread_parent_created_at, type, tshow, quoted_parent_message, enc_payload, enc_meta)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.TShow, cm.QuotedParentMessage, payload, encMeta,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
+	}
+
+	if err := s.cassSession.Query(
+		`INSERT INTO thread_messages_by_room
+		 (room_id, thread_room_id, created_at, message_id, thread_parent_id, sender, site_id, updated_at, mentions, type, quoted_parent_message, enc_payload, enc_meta)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, threadRoomID, msg.CreatedAt, msg.ID, msg.ThreadParentMessageID,
+		sender, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, cm.QuotedParentMessage, payload, encMeta,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
+	}
+
+	if err := s.incrementParentTcount(ctx, msg); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// buildCassandraMessage projects the user-authored fields of msg into a
+// cassandra.Message. Only fields that participate in encryption (body
+// fields + the QuotedParentMessage container that holds them) need to be
+// populated; columns bound by SaveMessage directly are left out.
+//
+// The returned QuotedParentMessage is a fresh struct so that
+// StripEncryptedFields nulling its Msg/Attachments fields does not mutate
+// the caller's *model.Message.
+func buildCassandraMessage(msg *model.Message) cassandra.Message {
+	cm := cassandra.Message{
+		RoomID:     msg.RoomID,
+		MessageID:  msg.ID,
+		Msg:        msg.Content,
+		SysMsgData: msg.SysMsgData,
+	}
+	if msg.QuotedParentMessage != nil {
+		q := *msg.QuotedParentMessage
+		cm.QuotedParentMessage = &q
+	}
+	return cm
 }
 
 // casMaxRetries is the maximum number of CAS attempts per tcount increment.

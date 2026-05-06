@@ -13,6 +13,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -37,6 +38,7 @@ type config struct {
 	MongoUsername     string          `env:"MONGO_USERNAME"     envDefault:""`
 	MongoPassword     string          `env:"MONGO_PASSWORD"     envDefault:""`
 	Bootstrap         bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	Atrest            atrest.Config
 }
 
 func main() {
@@ -86,7 +88,22 @@ func main() {
 	db := mongoClient.Database(cfg.MongoDB)
 	us := userstore.NewMongoStore(db.Collection("users"))
 
-	store := NewCassandraStore(cassSession)
+	var (
+		cipher    atrest.Cipher
+		kekLoader atrest.KEKLoader
+	)
+	if cfg.Atrest.Enabled {
+		loader, err := atrest.NewFileKEKLoader(cfg.Atrest.KEKFile)
+		if err != nil {
+			slog.Error("failed to load KEK file", "path", cfg.Atrest.KEKFile, "error", err)
+			os.Exit(1)
+		}
+		kekLoader = loader
+		dekColl := db.Collection(atrest.CollectionName)
+		cipher = atrest.NewCipher(loader, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
+	}
+
+	store := NewCassandraStore(cassSession, cipher)
 	threadStore := newThreadStoreMongo(db)
 	if err := threadStore.EnsureIndexes(ctx); err != nil {
 		slog.Error("ensure thread store indexes failed", "error", err)
@@ -171,5 +188,11 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+		func(ctx context.Context) error {
+			if kekLoader != nil {
+				return kekLoader.Close()
+			}
+			return nil
+		},
 	)
 }
