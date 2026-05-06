@@ -124,7 +124,7 @@ func (alwaysSubscribedRepo) GetHistorySharedSince(_ context.Context, _, _ string
 
 func TestEditMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session)
+	repo := cassrepo.NewRepository(session, nil)
 	pub := &recordingPublisher{}
 	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil)
 
@@ -186,7 +186,7 @@ func TestEditMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session)
+	repo := cassrepo.NewRepository(session, nil)
 	pub := &recordingPublisher{}
 	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil)
 
@@ -246,7 +246,7 @@ func TestDeleteMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session)
+	repo := cassrepo.NewRepository(session, nil)
 	pub := &recordingPublisher{}
 	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil)
 

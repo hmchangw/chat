@@ -30,7 +30,7 @@ func seedMessages(t *testing.T, session *gocql.Session, roomID string, base time
 
 func TestRepository_GetMessagesBefore(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
@@ -46,7 +46,7 @@ func TestRepository_GetMessagesBefore(t *testing.T) {
 
 func TestRepository_GetMessagesBetweenDesc(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
@@ -62,7 +62,7 @@ func TestRepository_GetMessagesBetweenDesc(t *testing.T) {
 
 func TestRepository_GetMessagesAfter(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
@@ -78,7 +78,7 @@ func TestRepository_GetMessagesAfter(t *testing.T) {
 
 func TestRepository_GetAllMessagesAsc(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
@@ -95,7 +95,7 @@ func TestRepository_GetAllMessagesAsc(t *testing.T) {
 
 func TestRepository_GetMessagesBefore_ThreadRoomID(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session)
+	repo := NewRepository(session, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "user1"}

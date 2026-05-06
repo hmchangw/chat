@@ -1,6 +1,10 @@
 package config
 
-import "github.com/caarlos0/env/v11"
+import (
+	"github.com/caarlos0/env/v11"
+
+	"github.com/hmchangw/chat/pkg/atrest"
+)
 
 // CassandraConfig holds Cassandra connection settings.
 // Env vars: CASSANDRA_HOSTS, CASSANDRA_KEYSPACE, CASSANDRA_USERNAME, CASSANDRA_PASSWORD
@@ -41,6 +45,7 @@ type Config struct {
 	Mongo     MongoConfig     `envPrefix:"MONGO_"`
 	NATS      NATSConfig      `envPrefix:"NATS_"`
 	Valkey    ValkeyConfig    `envPrefix:"VALKEY_"`
+	Atrest    atrest.Config   // env vars are already prefixed ATREST_*
 }
 
 // Load parses environment variables into Config. Returns error if required vars are missing.
