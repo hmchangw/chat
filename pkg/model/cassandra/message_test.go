@@ -224,3 +224,18 @@ func TestMessage_JSON_Minimal(t *testing.T) {
 	assert.Nil(t, got.PinnedAt)
 	assert.Nil(t, got.PinnedBy)
 }
+
+func TestMessage_RoundTripEncrypted(t *testing.T) {
+	in := Message{
+		RoomID:     "r1",
+		MessageID:  "m1",
+		EncPayload: []byte{0xDE, 0xAD, 0xBE, 0xEF},
+		EncMeta:    &EncMeta{Nonce: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}},
+	}
+	roundTrip(t, in)
+}
+
+func TestEncMeta_JSON(t *testing.T) {
+	in := EncMeta{Nonce: []byte{1, 2, 3}}
+	roundTrip(t, in)
+}

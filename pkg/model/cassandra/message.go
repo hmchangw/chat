@@ -43,6 +43,16 @@ type CardAction struct {
 	Data        []byte `json:"data,omitempty"        cql:"data"`
 }
 
+// EncMeta maps to the Cassandra "EncMeta" UDT. nonce is the 12-byte
+// AES-256-GCM nonce used to encrypt the row's enc_payload column.
+//
+// This type is the gocql-binding sibling of atrest.EncMeta. The two
+// have identical content; conversion is a one-line struct literal at
+// the service boundaries (message-worker write, history-service read).
+type EncMeta struct {
+	Nonce []byte `json:"nonce" cql:"nonce"`
+}
+
 // QuotedParentMessage maps to the Cassandra "QuotedParentMessage" UDT.
 //
 // ThreadParentID and ThreadParentCreatedAt capture the parent message's
@@ -97,6 +107,8 @@ type Message struct {
 	SiteID                string                   `json:"siteId,omitempty"                cql:"site_id"`
 	EditedAt              *time.Time               `json:"editedAt,omitempty"              cql:"edited_at"`
 	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"             cql:"updated_at"`
+	EncPayload            []byte                   `json:"encPayload,omitempty"            cql:"enc_payload"`
+	EncMeta               *EncMeta                 `json:"encMeta,omitempty"               cql:"enc_meta"`
 	ThreadRoomID          string                   `json:"threadRoomId,omitempty"          cql:"thread_room_id"`
 	PinnedAt              *time.Time               `json:"pinnedAt,omitempty"              cql:"pinned_at"`
 	PinnedBy              *Participant             `json:"pinnedBy,omitempty"              cql:"pinned_by"`
