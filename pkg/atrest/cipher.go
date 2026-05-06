@@ -51,7 +51,7 @@ func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields Encrypte
 
 	span.SetAttributes(attribute.String("room_id", roomID))
 
-	dek, cacheHit, err := c.dekFor(ctx, roomID)
+	aead, cacheHit, err := c.dekFor(ctx, roomID)
 	if err != nil {
 		return nil, EncMeta{}, err
 	}
@@ -63,10 +63,11 @@ func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields Encrypte
 	}
 	span.SetAttributes(attribute.Int("plaintext_bytes", len(plaintext)))
 
-	ciphertext, nonce, err := encryptGCM(dek, plaintext, c.randReader)
-	if err != nil {
-		return nil, EncMeta{}, fmt.Errorf("encrypt payload: %w", err)
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(c.randReader, nonce); err != nil {
+		return nil, EncMeta{}, fmt.Errorf("nonce: %w", err)
 	}
+	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
 	span.SetAttributes(attribute.Int("ciphertext_bytes", len(ciphertext)))
 	return ciphertext, EncMeta{Nonce: nonce}, nil
 }
@@ -81,15 +82,15 @@ func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte,
 		attribute.Int("ciphertext_bytes", len(payload)),
 	)
 
-	dek, cacheHit, err := c.dekFor(ctx, roomID)
+	aead, cacheHit, err := c.dekFor(ctx, roomID)
 	if err != nil {
 		return EncryptedFields{}, err
 	}
 	span.SetAttributes(attribute.Bool("dek_cache_hit", cacheHit))
 
-	plain, err := decryptGCM(dek, payload, meta.Nonce)
+	plain, err := aead.Open(nil, meta.Nonce, payload, nil)
 	if err != nil {
-		return EncryptedFields{}, err
+		return EncryptedFields{}, fmt.Errorf("%w: %w", ErrAuthFailed, err)
 	}
 	span.SetAttributes(attribute.Int("plaintext_bytes", len(plain)))
 
@@ -100,37 +101,45 @@ func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte,
 	return decoded, nil
 }
 
-// dekFor returns the unwrapped DEK for roomID, creating one lazily if no
-// row exists yet. The second return value indicates whether the DEK was
-// served from the in-memory cache.
-func (c *cipherImpl) dekFor(ctx context.Context, roomID string) ([]byte, bool, error) {
-	if dek, ok := c.cache.get(roomID); ok {
+// dekFor returns the AEAD for roomID, creating a DEK lazily if no row
+// exists yet. The second return is whether the AEAD was served from the
+// in-memory cache.
+func (c *cipherImpl) dekFor(ctx context.Context, roomID string) (cipher.AEAD, bool, error) {
+	if aead, ok := c.cache.get(roomID); ok {
 		dekCacheHits.Inc()
-		return dek, true, nil
+		return aead, true, nil
 	}
 	dekCacheMisses.Inc()
-	row, err := c.store.Get(ctx, roomID)
+	dek, err := c.fetchOrCreateDEK(ctx, roomID)
 	if err != nil {
 		return nil, false, err
 	}
+	aead, err := newAEAD(dek)
+	if err != nil {
+		return nil, false, err
+	}
+	c.cache.set(roomID, aead)
+	return aead, false, nil
+}
+
+func (c *cipherImpl) fetchOrCreateDEK(ctx context.Context, roomID string) ([]byte, error) {
+	row, err := c.store.Get(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
 	if row == nil {
 		dek, _, err := c.createDEK(ctx, roomID)
-		if err != nil {
-			return nil, false, err
-		}
-		c.cache.set(roomID, dek)
-		return dek, false, nil
+		return dek, err
 	}
 	kek, ok := c.loader.ByVersion(row.KEKVersion)
 	if !ok {
-		return nil, false, fmt.Errorf("%w: version %d", ErrKEKVersionUnknown, row.KEKVersion)
+		return nil, fmt.Errorf("%w: version %d", ErrKEKVersionUnknown, row.KEKVersion)
 	}
 	dek, err := decryptGCM(kek, row.WrappedDEK, row.WrapNonce)
 	if err != nil {
-		return nil, false, fmt.Errorf("unwrap dek: %w", err)
+		return nil, fmt.Errorf("unwrap dek: %w", err)
 	}
-	c.cache.set(roomID, dek)
-	return dek, false, nil
+	return dek, nil
 }
 
 // createDEK generates and stores a fresh DEK. On a concurrent insert race,
@@ -155,7 +164,6 @@ func (c *cipherImpl) createDEK(ctx context.Context, roomID string) ([]byte, *Roo
 	if err := c.store.Upsert(ctx, row); err != nil {
 		return nil, nil, err
 	}
-	// Re-read to detect a concurrent insert that won the race.
 	stored, err := c.store.Get(ctx, roomID)
 	if err != nil {
 		return nil, nil, err
@@ -179,26 +187,8 @@ func (c *cipherImpl) createDEK(ctx context.Context, roomID string) ([]byte, *Roo
 	return dek, stored, nil
 }
 
-// encryptGCM seals plaintext with a fresh 12-byte random nonce. Returns
-// (ciphertext, nonce). The auth tag is appended to the ciphertext by GCM.
-func encryptGCM(key, plaintext []byte, r io.Reader) ([]byte, []byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, nil, fmt.Errorf("new cipher: %w", err)
-	}
-	g, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, nil, fmt.Errorf("new gcm: %w", err)
-	}
-	nonce := make([]byte, g.NonceSize())
-	if _, err := io.ReadFull(r, nonce); err != nil {
-		return nil, nil, fmt.Errorf("nonce: %w", err)
-	}
-	ct := g.Seal(nil, nonce, plaintext, nil)
-	return ct, nonce, nil
-}
-
-func decryptGCM(key, ciphertext, nonce []byte) ([]byte, error) {
+// newAEAD constructs the AES-256-GCM AEAD for a 32-byte key.
+func newAEAD(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("new cipher: %w", err)
@@ -206,6 +196,30 @@ func decryptGCM(key, ciphertext, nonce []byte) ([]byte, error) {
 	g, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, fmt.Errorf("new gcm: %w", err)
+	}
+	return g, nil
+}
+
+// encryptGCM seals plaintext with a fresh 12-byte random nonce. Used only
+// on the rare DEK-wrapping path; message encryption uses a cached AEAD.
+func encryptGCM(key, plaintext []byte, r io.Reader) ([]byte, []byte, error) {
+	g, err := newAEAD(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	nonce := make([]byte, g.NonceSize())
+	if _, err := io.ReadFull(r, nonce); err != nil {
+		return nil, nil, fmt.Errorf("nonce: %w", err)
+	}
+	return g.Seal(nil, nonce, plaintext, nil), nonce, nil
+}
+
+// decryptGCM is the inverse of encryptGCM, used on the rare DEK-unwrapping
+// path. Auth failures wrap ErrAuthFailed.
+func decryptGCM(key, ciphertext, nonce []byte) ([]byte, error) {
+	g, err := newAEAD(key)
+	if err != nil {
+		return nil, err
 	}
 	plain, err := g.Open(nil, nonce, ciphertext, nil)
 	if err != nil {

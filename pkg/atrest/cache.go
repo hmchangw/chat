@@ -2,14 +2,19 @@ package atrest
 
 import (
 	"container/list"
+	"crypto/cipher"
 	"sync"
 	"time"
 )
 
-// dekCache is an LRU keyed by roomID holding unwrapped DEK bytes.
-// Capacity is the primary cap; TTL is a soft retention bound for
-// cold rooms in long-lived processes. TTL is checked lazily on get;
-// expired entries persist in the index until accessed or evicted.
+// dekCache is an LRU keyed by roomID holding the AES-GCM AEAD constructed
+// from the unwrapped DEK. Caching the AEAD (not just the DEK bytes) lets
+// batch reads / writes for the same room skip the AES key schedule and
+// GHASH setup that NewCipher+NewGCM would otherwise repeat per call.
+//
+// Capacity is the primary cap; TTL is a soft retention bound for cold
+// rooms in long-lived processes. TTL is checked lazily on get; expired
+// entries persist in the index until accessed or evicted.
 type dekCache struct {
 	mu       sync.Mutex
 	capacity int
@@ -21,7 +26,7 @@ type dekCache struct {
 
 type dekEntry struct {
 	roomID    string
-	dek       []byte
+	aead      cipher.AEAD
 	expiresAt time.Time
 }
 
@@ -38,7 +43,7 @@ func newDEKCache(capacity int, ttl time.Duration) *dekCache {
 	}
 }
 
-func (c *dekCache) get(roomID string) ([]byte, bool) {
+func (c *dekCache) get(roomID string) (cipher.AEAD, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	el, ok := c.index[roomID]
@@ -52,23 +57,22 @@ func (c *dekCache) get(roomID string) ([]byte, bool) {
 		return nil, false
 	}
 	c.ll.MoveToFront(el)
-	return e.dek, true
+	return e.aead, true
 }
 
-// set stores dek under roomID, refreshing the TTL. The dek slice is stored
-// by reference; callers must not mutate it after passing it to set.
-func (c *dekCache) set(roomID string, dek []byte) {
+// set stores the AEAD under roomID, refreshing the TTL.
+func (c *dekCache) set(roomID string, aead cipher.AEAD) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	exp := c.now().Add(c.ttl)
 	if el, ok := c.index[roomID]; ok {
 		e := el.Value.(*dekEntry)
-		e.dek = dek
+		e.aead = aead
 		e.expiresAt = exp
 		c.ll.MoveToFront(el)
 		return
 	}
-	el := c.ll.PushFront(&dekEntry{roomID: roomID, dek: dek, expiresAt: exp})
+	el := c.ll.PushFront(&dekEntry{roomID: roomID, aead: aead, expiresAt: exp})
 	c.index[roomID] = el
 	if c.ll.Len() > c.capacity {
 		oldest := c.ll.Back()
