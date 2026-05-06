@@ -13,6 +13,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/msgbucket"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -28,6 +29,29 @@ func main() {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+
+	if cfg.MessageBucketHours < 1 {
+		slog.Error("invalid config", "MESSAGE_BUCKET_HOURS", cfg.MessageBucketHours)
+		os.Exit(1)
+	}
+	if cfg.MessageReadMaxBuckets < 1 {
+		slog.Error("invalid config", "MESSAGE_READ_MAX_BUCKETS", cfg.MessageReadMaxBuckets)
+		os.Exit(1)
+	}
+	if cfg.MessageHistoryFloorDays < 1 {
+		slog.Error("invalid config", "MESSAGE_HISTORY_FLOOR_DAYS", cfg.MessageHistoryFloorDays)
+		os.Exit(1)
+	}
+	slog.Info("message bucket configured",
+		"hours", cfg.MessageBucketHours,
+		"maxBuckets", cfg.MessageReadMaxBuckets,
+		"historyFloorDays", cfg.MessageHistoryFloorDays,
+	)
+
+	bucketSizer := msgbucket.New(time.Duration(cfg.MessageBucketHours) * time.Hour)
+	historyFloor := time.Duration(cfg.MessageHistoryFloorDays) * 24 * time.Hour
+	_ = bucketSizer  // consumed in later tasks
+	_ = historyFloor // consumed in later tasks
 
 	ctx := context.Background()
 
