@@ -975,6 +975,65 @@ See [Error envelope](#5-error-envelope-reference).
 
 ---
 
+#### Load Surrounding Messages
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.surrounding`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Fetches messages around a target message — useful for "jump to this message" navigation. Returns up to `limit` messages total, centered on `messageId`.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `messageId` | string | yes | The central message to center the window on. |
+| `limit`     | number | yes | Total number of messages to return (including the central one). |
+
+```json
+{
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "limit": 50
+}
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messages`   | array<Message> | Window of messages centered on `messageId`, oldest-first. See [Message schema](#message-schema). |
+| `moreBefore` | boolean        | `true` if more messages exist before the window. |
+| `moreAfter`  | boolean        | `true` if more messages exist after the window. |
+
+```json
+{
+  "messages": [
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "createdAt": "2026-05-06T07:55:00Z",
+      "messageId": "01970a4f8c2d7c9aQRST",
+      "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+      "msg": "morning team"
+    }
+  ],
+  "moreBefore": true,
+  "moreAfter": false
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.3 search-service
 
 _(filled in by Tasks 22–23)_
