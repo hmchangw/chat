@@ -1279,6 +1279,66 @@ See [Error envelope](#5-error-envelope-reference).
 
 ---
 
+#### Get Thread Parent Messages
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread.parent`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Lists the parent messages of threads the user has subscribed to (or all threads, depending on filter). Use this to drive a "Threads" tab in the client.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `filter` | string | yes | One of `"all"`, `"following"` (only threads the user is subscribed to), or `"unread"` (only threads with unread replies). |
+| `offset` | number | yes | For pagination. `0` for the first page. |
+| `limit`  | number | yes | Maximum number of thread parents to return. |
+
+```json
+{
+  "filter": "following",
+  "offset": 0,
+  "limit": 50
+}
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `parentMessages` | array<Message> | Thread parent messages, ordered by most-recent reply activity. See [Message schema](#message-schema). |
+| `total`          | number         | Raw count before access filtering. Use for pagination math only — `parentMessages.length` may be smaller. |
+
+```json
+{
+  "parentMessages": [
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "createdAt": "2026-05-06T07:55:00Z",
+      "messageId": "01970a4f8c2d7c9aQRST",
+      "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+      "msg": "let's discuss the rollout",
+      "tcount": 3
+    }
+  ],
+  "total": 42
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.3 search-service
 
 _(filled in by Tasks 22–23)_
