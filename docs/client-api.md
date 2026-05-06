@@ -312,6 +312,58 @@ See [Error envelope](#5-error-envelope-reference).
 
 ---
 
+#### Get Room
+
+**Subject:** `chat.user.{account}.request.rooms.get.{roomID}`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+The room ID is the last subject segment — there is no request body.
+
+##### Request body
+
+Empty. Send `{}` or no payload.
+
+```json
+{}
+```
+
+##### Success response
+
+A single `Room` object. See [Create Room](#create-room) for the `Room` schema.
+
+```json
+{
+  "id": "01970a4f8c2d7c9aQ",
+  "name": "engineering-announcements",
+  "type": "channel",
+  "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "siteId": "siteA",
+  "userCount": 12,
+  "lastMsgAt": "2026-05-06T07:55:00Z",
+  "lastMsgId": "01970a4f8c2d7c9aQRST",
+  "createdAt": "2026-05-01T10:00:00Z",
+  "updatedAt": "2026-05-06T07:55:00Z"
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+```json
+{ "error": "room not found" }
+```
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.2 history-service
 
 _(filled in by Tasks 14–21)_
