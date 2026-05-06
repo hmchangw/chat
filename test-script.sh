@@ -215,7 +215,6 @@ create_inbox_site_b_stream() {
   "sources": [
     {
       "name": "${SITE_B_OUTBOX_STREAM}",
-      "filter_subject": "outbox.${SITE_ID}.to.${SITE_B}.>",
       "subject_transforms": [
         {
           "src": "outbox.${SITE_ID}.to.${SITE_B}.>",
