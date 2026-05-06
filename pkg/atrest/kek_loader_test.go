@@ -42,3 +42,15 @@ func TestNewFileKEKLoader_FileMissing(t *testing.T) {
 	_, err := NewFileKEKLoader(filepath.Join("testdata", "does_not_exist.json"))
 	require.Error(t, err)
 }
+
+func TestNewFileKEKLoader_EmptyKeys(t *testing.T) {
+	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_empty.json"))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrKEKFileInvalid))
+}
+
+func TestNewFileKEKLoader_NonIntegerVersion(t *testing.T) {
+	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_noninteger_version.json"))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrKEKFileInvalid))
+}

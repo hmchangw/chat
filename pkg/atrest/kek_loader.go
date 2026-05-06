@@ -80,7 +80,7 @@ func loadKEKFile(path string) (map[int][]byte, int, error) {
 	}
 	var f fileFormat
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, 0, fmt.Errorf("%w: parse JSON: %v", ErrKEKFileInvalid, err)
+		return nil, 0, fmt.Errorf("%w: parse JSON: %w", ErrKEKFileInvalid, err)
 	}
 	if len(f.Keys) == 0 {
 		return nil, 0, fmt.Errorf("%w: keys is empty", ErrKEKFileInvalid)
@@ -94,7 +94,7 @@ func loadKEKFile(path string) (map[int][]byte, int, error) {
 		}
 		key, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
-			return nil, 0, fmt.Errorf("%w: version %d: base64 decode: %v", ErrKEKFileInvalid, v, err)
+			return nil, 0, fmt.Errorf("%w: version %d: base64 decode: %w", ErrKEKFileInvalid, v, err)
 		}
 		if len(key) != 32 {
 			return nil, 0, fmt.Errorf("%w: version %d: key is %d bytes, want 32", ErrKEKFileInvalid, v, len(key))
