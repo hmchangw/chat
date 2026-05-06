@@ -183,3 +183,54 @@ describe('ThemeProvider mutations', () => {
     }
   })
 })
+
+describe('ThemeProvider system-preference subscription', () => {
+  it('updates theme when system pref changes and source=system', () => {
+    const mql = setMatchMedia(false)
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>
+    )
+    expect(screen.getByTestId('theme').textContent).toBe('light')
+
+    act(() => {
+      mql.dispatchEvent({ matches: true })
+    })
+    expect(screen.getByTestId('theme').textContent).toBe('dark')
+  })
+
+  it('ignores system pref changes when source=user', () => {
+    localStorage.setItem('theme', 'light')
+    const mql = setMatchMedia(false)
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>
+    )
+    expect(screen.getByTestId('theme').textContent).toBe('light')
+
+    act(() => {
+      mql.dispatchEvent({ matches: true })
+    })
+    expect(screen.getByTestId('theme').textContent).toBe('light')
+  })
+
+  it('explicit setTheme makes subsequent system changes a no-op', () => {
+    const mql = setMatchMedia(false)
+    render(
+      <ThemeProvider>
+        <ToggleProbe />
+      </ThemeProvider>
+    )
+    expect(screen.getByTestId('theme').textContent).toBe('light')
+
+    act(() => {
+      screen.getByTestId('set-light').click()
+    })
+    act(() => {
+      mql.dispatchEvent({ matches: true })
+    })
+    expect(screen.getByTestId('theme').textContent).toBe('light')
+  })
+})
