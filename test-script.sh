@@ -194,6 +194,51 @@ build_inbox_worker_image() {
   (cd "$REPO_ROOT" && docker compose -f inbox-worker/deploy/docker-compose.yml build) >/dev/null
 }
 
+# Ensure OUTBOX_<SITE_ID> exists. No service in this codebase bootstraps it
+# (in production it's owned by ops/IaC), so a fresh dev stack has nothing
+# covering 'outbox.<siteID>.>' subjects — and js.PublishMsg from room-service
+# then fails with "no stream matched subject", surfacing as a generic
+# "internal error" reply. Idempotent: a re-add returns "stream name already
+# in use" (err_code 10058) which we treat as success. Not torn down on EXIT
+# because other services (room-worker etc.) publish to it.
+ensure_outbox_stream() {
+  local cfg
+  cfg=$(cat <<EOF
+{
+  "name": "${SITE_B_OUTBOX_STREAM}",
+  "subjects": ["outbox.${SITE_ID}.>"],
+  "retention": "limits",
+  "storage": "file",
+  "max_consumers": -1,
+  "max_msgs": -1,
+  "max_bytes": -1,
+  "max_age": 0,
+  "discard": "old",
+  "num_replicas": 1
+}
+EOF
+)
+  local resp
+  resp=$(nats_request '$JS.API.STREAM.CREATE.'"${SITE_B_OUTBOX_STREAM}" "$cfg") || {
+    fail "ensure OUTBOX request failed: ${NATS_LAST_STDERR}"
+    return 1
+  }
+  if [[ "$resp" == *'"err_code":10058'* ]] || [[ "$resp" == *"stream name already in use"* ]]; then
+    verbose "${SITE_B_OUTBOX_STREAM} already exists — reusing"
+    return 0
+  fi
+  if [[ "$resp" == *'"error"'* ]]; then
+    fail "JetStream rejected OUTBOX config: $resp"
+    return 1
+  fi
+  if [[ "$resp" != *'"type"'*'stream_create_response'* ]]; then
+    fail "unexpected ensure-OUTBOX reply: $resp"
+    return 1
+  fi
+  info "created ${SITE_B_OUTBOX_STREAM}"
+  return 0
+}
+
 # Create INBOX_site-b on the local NATS with Sources from OUTBOX_site-local.
 # JetStream applies the SubjectTransform on ingestion so messages published as
 # outbox.<src>.to.site-b.<event> land as chat.inbox.site-b.aggregate.<event>,
@@ -291,9 +336,8 @@ wait_for_site_b_inbox_worker() {
 
 setup_site_b_federation() {
   build_inbox_worker_image
-  if ! create_inbox_site_b_stream; then
-    return 1
-  fi
+  ensure_outbox_stream || return 1
+  create_inbox_site_b_stream || return 1
   start_site_b_inbox_worker || return 1
   wait_for_site_b_inbox_worker || return 1
   SITE_B_FEDERATION_READY=1
