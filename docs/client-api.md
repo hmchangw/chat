@@ -202,4 +202,18 @@ _(filled in by Task 24)_
 
 ## 5. Error envelope reference
 
-_(filled in by Task 5)_
+Every error response — over NATS reply subjects and HTTP — uses the same envelope:
+
+```json
+{ "error": "<human-readable reason>" }
+```
+
+| Field   | Type   | Notes |
+|---------|--------|-------|
+| `error` | string | Human-readable, sanitized at the service boundary. Do not parse or pattern-match against the text. |
+
+**NATS errors** are sent on the standard reply subject (`_INBOX.>` for §3 methods, `chat.user.{account}.response.{requestID}` for §4) via `natsutil.ReplyError`. The reply body is the JSON object above.
+
+**HTTP errors** (auth-service §2.2) use the same shape with an HTTP status code in the response line.
+
+Clients should rely on the presence/absence of the `error` field — and on context (HTTP status, or whether a reply parses as a success-shape) — rather than on the error text.
