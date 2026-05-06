@@ -151,12 +151,14 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 	err := store.SaveMessage(ctx, msg, sender, "site-a")
 	require.NoError(t, err)
 
+	b := msgbucket.New(24 * time.Hour).Of(now)
+
 	t.Run("messages_by_room row correct", func(t *testing.T) {
 		var gotMsg, gotSiteID string
 		var gotUpdatedAt time.Time
 		err := cassSession.Query(
-			`SELECT msg, site_id, updated_at FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
-			"r-1", now, "m-1",
+			`SELECT msg, site_id, updated_at FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+			"r-1", b, now, "m-1",
 		).Scan(&gotMsg, &gotSiteID, &gotUpdatedAt)
 		require.NoError(t, err)
 		assert.Equal(t, "hello @bob", gotMsg)
@@ -167,8 +169,8 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 	t.Run("messages_by_room mentions persisted", func(t *testing.T) {
 		var gotMentions []*cassParticipant
 		err := cassSession.Query(
-			`SELECT mentions FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
-			"r-1", now, "m-1",
+			`SELECT mentions FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+			"r-1", b, now, "m-1",
 		).Scan(&gotMentions)
 		require.NoError(t, err)
 		require.Len(t, gotMentions, 1)
@@ -377,8 +379,8 @@ func TestHandler_Integration(t *testing.T) {
 
 	var gotMsg string
 	err = cassSession.Query(
-		`SELECT msg FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
-		"r-2", now, "m-2",
+		`SELECT msg FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		"r-2", msgbucket.New(24*time.Hour).Of(now), now, "m-2",
 	).Scan(&gotMsg)
 	require.NoError(t, err)
 	assert.Equal(t, "integration test message", gotMsg)
@@ -891,8 +893,8 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	t.Run("tcount incremented to 1 in messages_by_room", func(t *testing.T) {
 		var tcount int
 		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
-			"tcount-room", parentCreatedAt, "tcount-parent",
+			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+			"tcount-room", msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, "tcount-parent",
 		).Scan(&tcount)
 		require.NoError(t, err)
 		assert.Equal(t, 1, tcount)
@@ -924,8 +926,8 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	t.Run("tcount incremented to 2 in messages_by_room after second reply", func(t *testing.T) {
 		var tcount int
 		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
-			"tcount-room", parentCreatedAt, "tcount-parent",
+			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+			"tcount-room", msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, "tcount-parent",
 		).Scan(&tcount)
 		require.NoError(t, err)
 		assert.Equal(t, 2, tcount)
@@ -995,8 +997,8 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 	t.Run("messages_by_room round-trips QuotedParentMessage including thread context", func(t *testing.T) {
 		var got cassandra.QuotedParentMessage
 		err := cassSession.Query(
-			`SELECT quoted_parent_message FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
-			"r-1", now, "m-quote-1",
+			`SELECT quoted_parent_message FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+			"r-1", msgbucket.New(24*time.Hour).Of(now), now, "m-quote-1",
 		).Scan(&got)
 		require.NoError(t, err)
 		assert.Equal(t, "parent-msg-uuid", got.MessageID)
