@@ -747,10 +747,31 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, data []byt
 		return nil, fmt.Errorf("update subscription read: %w", err)
 	}
 
-	userSiteID, err := h.store.GetUserSiteID(ctx, account)
-	if err != nil {
-		return nil, fmt.Errorf("get user siteId: %w", err)
+	var (
+		userSiteID string
+		room       *model.Room
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		s, err := h.store.GetUserSiteID(gctx, account)
+		if err != nil {
+			return fmt.Errorf("get user siteId: %w", err)
+		}
+		userSiteID = s
+		return nil
+	})
+	g.Go(func() error {
+		r, err := h.store.GetRoom(gctx, roomID)
+		if err != nil {
+			return fmt.Errorf("get room: %w", err)
+		}
+		room = r
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
+
 	switch {
 	case userSiteID == "":
 		slog.Warn("user not found locally; skipping cross-site outbox", "account", account)
@@ -782,10 +803,6 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, data []byt
 		}
 	}
 
-	room, err := h.store.GetRoom(ctx, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("get room: %w", err)
-	}
 	if room.LastMsgAt == nil || originalLastSeen.After(*room.LastMsgAt) {
 		return json.Marshal(map[string]string{"status": "accepted"})
 	}

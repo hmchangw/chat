@@ -2131,7 +2131,10 @@ func TestHandler_MessageRead_CrossSite_PublishFailureAborts(t *testing.T) {
 	}, nil)
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-b", nil)
-	// GetRoom must NOT be called after a publish failure.
+	// GetRoom may run concurrently with GetUserSiteID via errgroup; allow it.
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1"}, nil).AnyTimes()
+	// MinSubscriptionLastSeenByRoomID / UpdateRoomMinUserLastSeenAt must NOT run
+	// after the publish failure.
 
 	body, _ := json.Marshal(model.MessageReadRequest{RoomID: "r1"})
 	subj := subject.MessageRead("alice", "r1", "site-a")
@@ -2169,6 +2172,8 @@ func TestHandler_MessageRead_GetUserSiteIDError_Aborts(t *testing.T) {
 	}, nil)
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("", errors.New("mongo down"))
+	// GetRoom may run concurrently via errgroup; allow it.
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1"}, nil).AnyTimes()
 
 	body, _ := json.Marshal(model.MessageReadRequest{RoomID: "r1"})
 	subj := subject.MessageRead("alice", "r1", "site-a")

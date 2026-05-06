@@ -175,8 +175,9 @@ func (h *Handler) handleRoleUpdated(ctx context.Context, evt *model.OutboxEvent)
 	return nil
 }
 
-// handleSubscriptionRead applies a cross-site read receipt to the local
-// subscription cache. Idempotent and order-safe via the store's $lt guard.
+// handleSubscriptionRead is idempotent and order-safe — the store's $lt
+// guard rejects writes whose lastSeenAt is not strictly later than the
+// stored one, so out-of-order federated delivery cannot regress read state.
 func (h *Handler) handleSubscriptionRead(ctx context.Context, evt *model.OutboxEvent) error {
 	var e model.SubscriptionReadEvent
 	if err := json.Unmarshal(evt.Payload, &e); err != nil {
