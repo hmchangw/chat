@@ -662,44 +662,49 @@ scenario_9_cross_site_outbox() {
   assert_contains "reply" "$resp" '"status":"accepted"'
 
   # 4) Verify OUTBOX_<site-local> received the federation event (publish side).
-  # `stream get --last-by-subj` deterministically returns the most-recent
-  # message matching an exact subject. We grep the response for the test
-  # account to make sure we're not just seeing a stale message from a prior
-  # run that happened to share the subject.
+  # Use the stable JetStream API directly — older natscli versions in the
+  # natsio/nats-box image don't recognize `stream get --last-by-subj`. The
+  # API returns either {"message": {...subject, seq, data...}} or
+  # {"error": {...}}; grep both for the expected subject + the "subscription_read"
+  # type marker. The OutboxEvent's inner Payload is `[]byte` in Go which
+  # json-encodes as base64, so the test account name only appears base64'd —
+  # don't grep for it; rely on the exact-subject targeting instead.
   sleep 1
   local outbox_subject="outbox.${SITE_ID}.to.${SITE_B}.subscription_read"
   local outbox_msg
-  outbox_msg=$(nats_cmd stream get "${SITE_B_OUTBOX_STREAM}" --last-by-subj "$outbox_subject" 2>&1 || true)
-  verbose "OUTBOX last-by-subj:"
+  outbox_msg=$(nats_request '$JS.API.STREAM.MSG.GET.'"${SITE_B_OUTBOX_STREAM}" \
+              "{\"last_by_subj\":\"${outbox_subject}\"}" 2>&1 || true)
+  verbose "OUTBOX MSG.GET reply:"
   verbose "$(echo "$outbox_msg" | sed 's/^/    /')"
-  if [[ "$outbox_msg" == *"$account"* ]] && [[ "$outbox_msg" == *"subscription_read"* ]]; then
-    ok "${SITE_B_OUTBOX_STREAM} contains subscription_read event for ${account}"
+  if [[ "$outbox_msg" == *'"message"'* ]] && [[ "$outbox_msg" == *"$outbox_subject"* ]]; then
+    ok "${SITE_B_OUTBOX_STREAM} has a message at ${outbox_subject}"
   else
-    fail "subscription_read event for ${account} not in ${SITE_B_OUTBOX_STREAM}"
+    fail "no message at ${outbox_subject} in ${SITE_B_OUTBOX_STREAM}"
     log "  OUTBOX retrieve output:"
     log "$(echo "$outbox_msg" | sed 's/^/    /')"
     return
   fi
 
   # 5) Verify INBOX_site-b received the message via Sources + SubjectTransform.
-  # The transform rewrote outbox.<src>.to.site-b.subscription_read to
-  # chat.inbox.site-b.aggregate.subscription_read, so query that subject.
+  # Same JetStream API trick. Sources poll on a default ~1s interval, so the
+  # federated copy can take a moment to arrive — poll up to 5s.
   local inbox_subject="chat.inbox.${SITE_B}.aggregate.subscription_read"
   local inbox_msg=""
   local i
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.5
-    inbox_msg=$(nats_cmd stream get "${SITE_B_INBOX_STREAM}" --last-by-subj "$inbox_subject" 2>&1 || true)
-    if [[ "$inbox_msg" == *"$account"* ]]; then
+    inbox_msg=$(nats_request '$JS.API.STREAM.MSG.GET.'"${SITE_B_INBOX_STREAM}" \
+                "{\"last_by_subj\":\"${inbox_subject}\"}" 2>&1 || true)
+    if [[ "$inbox_msg" == *'"message"'* ]] && [[ "$inbox_msg" == *"$inbox_subject"* ]]; then
       break
     fi
   done
-  verbose "INBOX last-by-subj:"
+  verbose "INBOX MSG.GET reply:"
   verbose "$(echo "$inbox_msg" | sed 's/^/    /')"
-  if [[ "$inbox_msg" == *"$account"* ]] && [[ "$inbox_msg" == *"subscription_read"* ]]; then
-    ok "${SITE_B_INBOX_STREAM} sourced the event from ${SITE_B_OUTBOX_STREAM}"
+  if [[ "$inbox_msg" == *'"message"'* ]] && [[ "$inbox_msg" == *"$inbox_subject"* ]]; then
+    ok "${SITE_B_INBOX_STREAM} sourced a message at ${inbox_subject}"
   else
-    fail "${SITE_B_INBOX_STREAM} did not source the event for ${account} within 5s"
+    fail "${SITE_B_INBOX_STREAM} did not source a message at ${inbox_subject} within 5s"
     log "  INBOX retrieve output:"
     log "$(echo "$inbox_msg" | sed 's/^/    /')"
     return
