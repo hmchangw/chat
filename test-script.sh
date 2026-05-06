@@ -18,6 +18,7 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$SCRIPT_DIR"
 readonly NATS_CREDS_HOST="$SCRIPT_DIR/docker-local/backend.creds"
 readonly NETWORK="chat-local"
 readonly NATS_URL="nats://chat-local-nats:4222"
@@ -27,6 +28,20 @@ readonly MONGO_DB="chat"
 # you've changed the service's siteID.
 readonly SITE_ID="${SITE_ID:-site-local}"
 readonly TEST_PREFIX="e2e_msgread"
+
+# --- Site-b federation harness (used by scenario 9) ------------------------
+# To verify cross-site flow end-to-end, the script spins up a second
+# inbox-worker writing to a separate Mongo database, with a JetStream INBOX
+# stream that sources from the local OUTBOX. The same NATS server hosts both
+# streams (no leaf node needed) — federation routing is exercised by Sources +
+# SubjectTransforms inside JetStream.
+readonly SITE_B="site-b"
+readonly SITE_B_INBOX_STREAM="INBOX_${SITE_B}"
+readonly SITE_B_OUTBOX_STREAM="OUTBOX_${SITE_ID}"
+readonly SITE_B_MONGO_DB="chat_${SITE_B//-/_}"
+readonly SITE_B_INBOX_CONTAINER="${TEST_PREFIX}_inbox_b"
+readonly SITE_B_INBOX_IMAGE="inbox-worker-inbox-worker"
+SITE_B_FEDERATION_READY=0
 
 VERBOSE=0
 RUN_ONLY=""
@@ -168,7 +183,121 @@ cleanup_test_data() {
   mongo_delete "users"         "{ account: { \$regex: '^${TEST_PREFIX}' } }"
 }
 
-trap cleanup_test_data EXIT
+# --- site-b federation setup/teardown --------------------------------------
+
+# Build the inbox-worker docker image if it isn't cached locally.
+build_inbox_worker_image() {
+  if docker image inspect "$SITE_B_INBOX_IMAGE" >/dev/null 2>&1; then
+    return
+  fi
+  info "building $SITE_B_INBOX_IMAGE (one-time)..."
+  (cd "$REPO_ROOT" && docker compose -f inbox-worker/deploy/docker-compose.yml build) >/dev/null
+}
+
+# Create INBOX_site-b on the local NATS with Sources from OUTBOX_site-local.
+# JetStream applies the SubjectTransform on ingestion so messages published as
+# outbox.<src>.to.site-b.<event> land as chat.inbox.site-b.aggregate.<event>,
+# which is the shape inbox-worker's filter subjects expect.
+create_inbox_site_b_stream() {
+  local cfg
+  cfg=$(cat <<EOF
+{
+  "name": "${SITE_B_INBOX_STREAM}",
+  "subjects": ["chat.inbox.${SITE_B}.*", "chat.inbox.${SITE_B}.aggregate.>"],
+  "retention": "limits",
+  "storage": "file",
+  "max_consumers": -1,
+  "max_msgs": -1,
+  "max_bytes": -1,
+  "max_age": 0,
+  "discard": "old",
+  "num_replicas": 1,
+  "sources": [
+    {
+      "name": "${SITE_B_OUTBOX_STREAM}",
+      "filter_subject": "outbox.${SITE_ID}.to.${SITE_B}.>",
+      "subject_transforms": [
+        {
+          "src": "outbox.${SITE_ID}.to.${SITE_B}.>",
+          "dest": "chat.inbox.${SITE_B}.aggregate.>"
+        }
+      ]
+    }
+  ]
+}
+EOF
+)
+  local cfg_file
+  cfg_file=$(mktemp)
+  printf '%s\n' "$cfg" > "$cfg_file"
+
+  # Remove any prior copy so 'add' is idempotent across reruns. --force avoids
+  # the interactive confirmation prompt.
+  nats_cmd stream rm --force "$SITE_B_INBOX_STREAM" >/dev/null 2>&1 || true
+
+  docker run --rm -i \
+    --network "$NETWORK" \
+    -v "$NATS_CREDS_HOST:/creds:ro" \
+    -v "$cfg_file:/cfg.json:ro" \
+    natsio/nats-box:latest \
+    nats --server "$NATS_URL" --creds /creds stream add --config /cfg.json >/dev/null
+  rm -f "$cfg_file"
+}
+
+# Run an inbox-worker container connected to the local NATS but configured
+# with SITE_ID=site-b and a separate Mongo database. BOOTSTRAP_STREAMS=false
+# so the worker doesn't overwrite the Sources we just configured (its bootstrap
+# only knows the bare schema; ops/IaC owns federation, per CLAUDE.md).
+start_site_b_inbox_worker() {
+  docker rm -f "$SITE_B_INBOX_CONTAINER" >/dev/null 2>&1 || true
+  docker run -d \
+    --name "$SITE_B_INBOX_CONTAINER" \
+    --network "$NETWORK" \
+    -e NATS_URL=nats://chat-local-nats:4222 \
+    -e NATS_CREDS_FILE=/etc/nats/backend.creds \
+    -e SITE_ID="$SITE_B" \
+    -e MONGO_URI=mongodb://chat-local-mongodb:27017 \
+    -e MONGO_DB="$SITE_B_MONGO_DB" \
+    -e BOOTSTRAP_STREAMS=false \
+    -v "$NATS_CREDS_HOST:/etc/nats/backend.creds:ro" \
+    "$SITE_B_INBOX_IMAGE" >/dev/null
+}
+
+wait_for_site_b_inbox_worker() {
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    if docker logs "$SITE_B_INBOX_CONTAINER" 2>&1 | grep -qE 'inbox-worker started|consumer.*created'; then
+      return 0
+    fi
+    if ! docker ps --format '{{.Names}}' | grep -q "^${SITE_B_INBOX_CONTAINER}$"; then
+      warn "site-b inbox-worker exited early; tail of logs:"
+      docker logs --tail 30 "$SITE_B_INBOX_CONTAINER" 2>&1 | sed 's/^/    /' | head -40 || true
+      return 1
+    fi
+  done
+  warn "site-b inbox-worker didn't log readiness within 10s; continuing anyway"
+  return 0
+}
+
+setup_site_b_federation() {
+  build_inbox_worker_image
+  create_inbox_site_b_stream
+  start_site_b_inbox_worker
+  wait_for_site_b_inbox_worker || return 1
+  SITE_B_FEDERATION_READY=1
+  info "site-b federation harness ready (stream=${SITE_B_INBOX_STREAM}, db=${SITE_B_MONGO_DB})"
+}
+
+teardown_site_b_federation() {
+  if [[ $SITE_B_FEDERATION_READY -eq 1 ]] || docker ps -a --format '{{.Names}}' | grep -q "^${SITE_B_INBOX_CONTAINER}$"; then
+    docker rm -f "$SITE_B_INBOX_CONTAINER" >/dev/null 2>&1 || true
+    nats_cmd stream rm --force "$SITE_B_INBOX_STREAM" >/dev/null 2>&1 || true
+    docker exec -i "$MONGO_CONTAINER" mongosh --quiet "$SITE_B_MONGO_DB" --eval 'db.dropDatabase()' >/dev/null 2>&1 || true
+  fi
+}
+
+trap 'cleanup_test_data; teardown_site_b_federation' EXIT
 
 # --- scenario builders ------------------------------------------------------
 # All scenarios use roomId/account prefixed with TEST_PREFIX so cleanup is safe.
@@ -407,18 +536,39 @@ nats_cmd() {
     nats --server "$NATS_URL" --creds /creds "$@"
 }
 
-scenario_9_cross_site_outbox() {
-  current_scenario="9: cross-site user — outbox event published to OUTBOX_${SITE_ID}"
-  section "$current_scenario"
-  local room_id account dest_site
-  room_id=$(new_room_id); account="${TEST_PREFIX}_iris"; dest_site="site-b"
+# Read a field from the site-b Mongo (chat_b) database. Same null-safety as
+# mongo_get_field — uses ?? so falsy fields like alert=false survive.
+mongo_b_get_field() {
+  local collection="$1" filter="$2" field="$3"
+  docker exec -i "$MONGO_CONTAINER" mongosh --quiet "$SITE_B_MONGO_DB" \
+    --eval "JSON.stringify(((db.${collection}.findOne(${filter}) ?? {}).${field}) ?? null)" \
+    | tr -d '\n' \
+    | sed -e 's/^"//;s/"$//' -e 's/\\"/"/g'
+}
 
-  # Seed user with a foreign siteId so the handler publishes to outbox.
+scenario_9_cross_site_outbox() {
+  current_scenario="9: cross-site federation — site-b inbox-worker applies update via Sources"
+  section "$current_scenario"
+
+  if ! setup_site_b_federation; then
+    fail "site-b federation harness failed to start; skipping scenario"
+    return
+  fi
+
+  local room_id account dest_site one_h_ago thirty_m_ago fifteen_m_ago
+  room_id=$(new_room_id); account="${TEST_PREFIX}_iris"; dest_site="$SITE_B"
+  one_h_ago=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%S.%3NZ)
+  thirty_m_ago=$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-30M +%Y-%m-%dT%H:%M:%S.%3NZ)
+  fifteen_m_ago=$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-15M +%Y-%m-%dT%H:%M:%S.%3NZ)
+
+  # 1) Site A (room's home site) — seed the room, the user (with siteId=site-b
+  #    so the handler routes to outbox), and the local subscription that the
+  #    handler reads to validate membership.
   mongo_insert "users" "{ _id: '${account}_uid', account: '${account}', siteId: '${dest_site}' }"
   mongo_insert "rooms" "{
     _id: '${room_id}', name: 'e2e ${room_id}', type: 'channel',
     createdBy: '${account}_uid', siteId: '${SITE_ID}', userCount: 1,
-    lastMsgAt: ISODate('$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-15M +%Y-%m-%dT%H:%M:%S.%3NZ)'),
+    lastMsgAt: ISODate('${fifteen_m_ago}'),
     createdAt: ISODate('$(now_iso)'), updatedAt: ISODate('$(now_iso)')
   }"
   mongo_insert "subscriptions" "{
@@ -426,48 +576,91 @@ scenario_9_cross_site_outbox() {
     u: { _id: '${account}_uid', account: '${account}' },
     roomId: '${room_id}', roomType: 'channel', siteId: '${SITE_ID}',
     roles: ['member'],
-    joinedAt: ISODate('$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%S.%3NZ)'),
-    lastSeenAt: ISODate('$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-30M +%Y-%m-%dT%H:%M:%S.%3NZ)'),
+    joinedAt: ISODate('${one_h_ago}'),
+    lastSeenAt: ISODate('${thirty_m_ago}'),
     alert: false
   }"
 
-  # Trigger the RPC. The handler publishes to OUTBOX_${SITE_ID} via JetStream.
+  # 2) Site B (user's home site) — pre-seed the parallel subscription cache
+  #    that inbox-worker is supposed to maintain. Federation propagates the
+  #    update; without a pre-seeded row the inbox-worker's $lt-guarded
+  #    UpdateOne is a silent no-op (which is correct: missing-sub means the
+  #    member_added hasn't been processed yet).
+  local sub_b_initial_last_seen="$thirty_m_ago"
+  docker exec -i "$MONGO_CONTAINER" mongosh --quiet "$SITE_B_MONGO_DB" --eval "
+    db.subscriptions.insertOne({
+      _id: '${TEST_PREFIX}_sub_b_${RANDOM}',
+      u: { _id: '${account}_uid', account: '${account}' },
+      roomId: '${room_id}', roomType: 'channel', siteId: '${SITE_ID}',
+      roles: ['member'],
+      joinedAt: ISODate('${one_h_ago}'),
+      lastSeenAt: ISODate('${sub_b_initial_last_seen}'),
+      alert: true
+    })
+  " >/dev/null
+
+  # 3) Trigger the RPC against site A.
   local body resp
   body="{\"roomId\":\"${room_id}\"}"
   resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
   verbose "reply: $resp"
   assert_contains "reply" "$resp" '"status":"accepted"'
 
-  # Give JetStream a moment to commit the publish, then query the OUTBOX stream
-  # directly. This is reliable: the message is durably stored, no listener-
-  # timing window. We dump the last few stream entries and grep for the event
-  # type + the test account, which uniquely identifies our publish.
+  # 4) Verify OUTBOX_<site-local> received the federation event (publish side).
   sleep 1
-  local stream_dump
-  stream_dump=$(nats_cmd stream view "OUTBOX_${SITE_ID}" --since 30s 2>&1 || true)
-  verbose "stream dump (last 30s):"
-  verbose "$(echo "$stream_dump" | sed 's/^/    /')"
-
-  if [[ "$stream_dump" == *"subscription_read"* ]] && [[ "$stream_dump" == *"$account"* ]]; then
-    ok "OUTBOX_${SITE_ID} contains subscription_read event for ${account}"
+  local outbox_dump
+  outbox_dump=$(nats_cmd stream view "${SITE_B_OUTBOX_STREAM}" --since 30s 2>&1 || true)
+  verbose "OUTBOX dump:"
+  verbose "$(echo "$outbox_dump" | sed 's/^/    /')"
+  if [[ "$outbox_dump" == *"subscription_read"* ]] && [[ "$outbox_dump" == *"$account"* ]]; then
+    ok "${SITE_B_OUTBOX_STREAM} contains subscription_read event"
   else
-    fail "subscription_read event for ${account} not found in OUTBOX_${SITE_ID}"
-    log "  hint: dump the stream manually with:"
-    log "    docker run --rm --network ${NETWORK} -v ${NATS_CREDS_HOST}:/creds:ro \\"
-    log "      natsio/nats-box:latest nats --server ${NATS_URL} --creds /creds \\"
-    log "      stream view OUTBOX_${SITE_ID} --since 5m"
-    log "  if the message is present but the script can't see it, the room-service"
-    log "  may still be using a stale BOOTSTRAP_STREAMS=true config — restart it"
-    log "  with 'make down SERVICE=room-service && make up SERVICE=room-service'."
+    fail "subscription_read event not in ${SITE_B_OUTBOX_STREAM}"
+    return
   fi
 
-  # Verify the outbox subject in the dump matches the expected destination site.
-  local expected_subj="outbox.${SITE_ID}.to.${dest_site}.subscription_read"
-  if [[ "$stream_dump" == *"$expected_subj"* ]]; then
-    ok "outbox subject = ${expected_subj}"
+  # 5) Verify INBOX_site-b received the message via Sources + SubjectTransform.
+  local inbox_dump
+  inbox_dump=$(nats_cmd stream view "${SITE_B_INBOX_STREAM}" --since 30s 2>&1 || true)
+  verbose "INBOX dump:"
+  verbose "$(echo "$inbox_dump" | sed 's/^/    /')"
+  if [[ "$inbox_dump" == *"chat.inbox.${SITE_B}.aggregate.subscription_read"* ]] || [[ "$inbox_dump" == *"$account"* ]]; then
+    ok "${SITE_B_INBOX_STREAM} sourced the event from ${SITE_B_OUTBOX_STREAM}"
   else
-    warn "expected subject ${expected_subj} not found in stream dump"
+    fail "${SITE_B_INBOX_STREAM} did not source the event"
+    log "  inbox dump (last 30s):"
+    log "$(echo "$inbox_dump" | sed 's/^/    /')"
+    return
   fi
+
+  # 6) Poll site-b's Mongo for the inbox-worker's update. The propagation
+  #    latency is JetStream Source poll interval + worker consumer dispatch +
+  #    Mongo write — usually <1s but allow up to 10s.
+  local i b_last_seen b_alert applied=0
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    sleep 0.5
+    b_last_seen=$(mongo_b_get_field "subscriptions" \
+      "{ roomId: '${room_id}', 'u.account': '${account}' }" "lastSeenAt")
+    if [[ "$b_last_seen" != "null" ]] && [[ "$b_last_seen" != *"${sub_b_initial_last_seen%.*}"* ]]; then
+      applied=1
+      break
+    fi
+  done
+
+  if [[ $applied -eq 1 ]]; then
+    ok "site-b subscription.lastSeenAt updated by inbox-worker (now ${b_last_seen})"
+  else
+    fail "site-b subscription.lastSeenAt did not advance within 10s"
+    log "  inbox-worker logs (tail):"
+    docker logs --tail 40 "$SITE_B_INBOX_CONTAINER" 2>&1 | sed 's/^/    /' || true
+    return
+  fi
+
+  b_alert=$(mongo_b_get_field "subscriptions" \
+    "{ roomId: '${room_id}', 'u.account': '${account}' }" "alert")
+  # The handler computed newAlert = sub.Alert(true) && len(threadUnread)==0 → false.
+  # Site-b should converge on the same value.
+  assert_eq "site-b subscription.alert" "$b_alert" "false"
 }
 
 scenario_10_invalid_subject() {
