@@ -97,6 +97,8 @@ func main() {
 	db := mongoClient.Database(cfg.Mongo.DB)
 	subRepo := mongorepo.NewSubscriptionRepo(db)
 	threadRoomRepo := mongorepo.NewThreadRoomRepo(db)
+	roomRepo := mongorepo.NewRoomRepo(db)
+	_ = roomRepo // consumed in later tasks
 
 	if err := threadRoomRepo.EnsureIndexes(ctx); err != nil {
 		slog.Error("ensure thread_rooms indexes failed", "error", err)
