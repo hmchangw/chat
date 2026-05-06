@@ -100,12 +100,15 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
 	}
 
+	b := s.bucket.Of(msg.CreatedAt)
 	if err := s.cassSession.Query(
 		`INSERT INTO thread_messages_by_room
-		 (room_id, thread_room_id, created_at, message_id, thread_parent_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, threadRoomID, msg.CreatedAt, msg.ID, msg.ThreadParentMessageID,
-		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
+		 (room_id, bucket, thread_room_id, created_at, message_id, thread_parent_id, sender, msg,
+		  site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, b, threadRoomID, msg.CreatedAt, msg.ID, msg.ThreadParentMessageID,
+		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
 	}
