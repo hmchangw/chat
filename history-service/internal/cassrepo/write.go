@@ -72,56 +72,37 @@ func casDecrement(maxRetries int, initial *int, update func(newVal int, expected
 	return fmt.Errorf("cas decrement exceeded %d retries", maxRetries)
 }
 
-func (r *Repository) editInMessagesByID(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+// editOne runs the appropriate plaintext or encrypted UPDATE for one of
+// the four message tables. plainQ binds (newMsg, editedAt, editedAt,
+// whereArgs...); encQ binds (encPayload, encMeta, editedAt, editedAt,
+// whereArgs...).
+func (r *Repository) editOne(ctx context.Context, plainQ, encQ string, msg *models.Message, newMsg string, editedAt time.Time, whereArgs ...any) error {
 	if r.cipher == nil {
-		return r.session.Query(editMsgByID, newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt).WithContext(ctx).Exec()
+		args := append([]any{newMsg, editedAt, editedAt}, whereArgs...)
+		return r.session.Query(plainQ, args...).WithContext(ctx).Exec()
 	}
 	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, atrest.EncryptedFields{Msg: newMsg})
 	if err != nil {
 		return fmt.Errorf("encrypt edit body for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 	}
-	return r.session.Query(editMsgByIDEncrypted,
-		payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
-	).WithContext(ctx).Exec()
+	args := append([]any{payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt}, whereArgs...)
+	return r.session.Query(encQ, args...).WithContext(ctx).Exec()
+}
+
+func (r *Repository) editInMessagesByID(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
+	return r.editOne(ctx, editMsgByID, editMsgByIDEncrypted, msg, newMsg, editedAt, msg.MessageID, msg.CreatedAt)
 }
 
 func (r *Repository) editInMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	if r.cipher == nil {
-		return r.session.Query(editMsgByRoom, newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
-	}
-	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, atrest.EncryptedFields{Msg: newMsg})
-	if err != nil {
-		return fmt.Errorf("encrypt edit body for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
-	}
-	return r.session.Query(editMsgByRoomEncrypted,
-		payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
-	).WithContext(ctx).Exec()
+	return r.editOne(ctx, editMsgByRoom, editMsgByRoomEncrypted, msg, newMsg, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID)
 }
 
 func (r *Repository) editInThreadMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	if r.cipher == nil {
-		return r.session.Query(editThreadMsg, newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
-	}
-	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, atrest.EncryptedFields{Msg: newMsg})
-	if err != nil {
-		return fmt.Errorf("encrypt edit body for message %s in room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
-	}
-	return r.session.Query(editThreadMsgEncrypted,
-		payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
-	).WithContext(ctx).Exec()
+	return r.editOne(ctx, editThreadMsg, editThreadMsgEncrypted, msg, newMsg, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID)
 }
 
 func (r *Repository) editInPinnedMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	if r.cipher == nil {
-		return r.session.Query(editPinnedMsg, newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID).WithContext(ctx).Exec()
-	}
-	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, atrest.EncryptedFields{Msg: newMsg})
-	if err != nil {
-		return fmt.Errorf("encrypt edit body for pinned message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
-	}
-	return r.session.Query(editPinnedMsgEncrypted,
-		payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
-	).WithContext(ctx).Exec()
+	return r.editOne(ctx, editPinnedMsg, editPinnedMsgEncrypted, msg, newMsg, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID)
 }
 
 func (r *Repository) deleteInMessagesByRoom(ctx context.Context, q string, msg *models.Message, deletedAt time.Time) error {
