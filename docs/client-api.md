@@ -648,6 +648,85 @@ When the synchronous reply is an error envelope, no events follow. The async job
 
 ---
 
+#### List Members
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.list`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+##### Request body
+
+| Field    | Type    | Required | Notes |
+|----------|---------|----------|-------|
+| `limit`  | number  | no       | If set, must be `> 0`. Caps the number of members returned. |
+| `offset` | number  | no       | If set, must be `>= 0`. For pagination. |
+| `enrich` | boolean | no       | When `true`, populates the display fields (`engName`, `chineseName`, `isOwner`, `sectName`, `memberCount`) on each entry. Omitted-or-`false` returns the lean record only. |
+
+```json
+{ "limit": 50, "enrich": true }
+```
+
+##### Success response
+
+| Field     | Type              | Notes |
+|-----------|-------------------|-------|
+| `members` | array<RoomMember> | One entry per individual or org membership. |
+
+`RoomMember`:
+
+| Field    | Type   | Notes |
+|----------|--------|-------|
+| `id`     | string | Membership record ID (UUIDv7 hex). |
+| `rid`    | string | Room ID (note JSON key is `rid`, not `roomId`). |
+| `ts`     | string | RFC 3339 timestamp of when the membership was created. |
+| `member` | object | See `RoomMemberEntry` below. |
+
+`RoomMemberEntry`:
+
+| Field         | Type    | Notes |
+|---------------|---------|-------|
+| `id`          | string  | The user account or org ID. |
+| `type`        | string  | `"individual"` or `"org"`. |
+| `account`     | string  | Optional. Account name (set for individuals). |
+| `engName`     | string  | Optional. Populated only when request had `enrich: true`. |
+| `chineseName` | string  | Optional. Populated only when `enrich: true`. |
+| `isOwner`     | boolean | Optional. Populated only when `enrich: true`. |
+| `sectName`    | string  | Optional. Populated only when `enrich: true` and entry is an org. |
+| `memberCount` | number  | Optional. Populated only when `enrich: true` and entry is an org. |
+
+```json
+{
+  "members": [
+    {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+      "rid": "01970a4f8c2d7c9aQ",
+      "ts": "2026-05-01T10:00:00Z",
+      "member": {
+        "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+        "type": "individual",
+        "account": "alice",
+        "engName": "Alice",
+        "chineseName": "愛麗絲",
+        "isOwner": true
+      }
+    }
+  ]
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference). Common errors: `"not a member of this room"`, `"limit must be > 0"`, `"offset must be >= 0"`.
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.2 history-service
 
 _(filled in by Tasks 14–21)_
