@@ -565,6 +565,89 @@ When the asynchronous job fails after acceptance, the requester receives the `As
 
 ---
 
+#### Update Member Role
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.role-update`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+This is an **async-job RPC**. The synchronous reply confirms acceptance; the actual role change runs in `room-worker` and emits the event below. Unlike Add Members and Remove Member, `room-worker` does **not** publish an `AsyncJobResult` event for role updates — there is no `chat.user.{requesterAccount}.response.{requestID}` event for this RPC.
+
+##### Request body
+
+| Field     | Type   | Required | Notes |
+|-----------|--------|----------|-------|
+| `roomId`  | string | no       | Server derives from subject; non-matching values are rejected. |
+| `account` | string | yes      | The account of the user whose role is being changed. |
+| `newRole` | string | yes      | Either `"owner"` (promote) or `"member"` (demote). |
+
+The `timestamp` field on the Go `UpdateRoleRequest` is server-set — the client should omit it.
+
+```json
+{ "account": "bob", "newRole": "owner" }
+```
+
+##### Success response
+
+| Field    | Type   | Notes |
+|----------|--------|-------|
+| `status` | string | Always `"accepted"`. Confirms the request passed authorization and was queued for processing. |
+
+```json
+{ "status": "accepted" }
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference). Returned synchronously when validation or authorization fails. Common errors include:
+
+- Requester is not an owner of the room.
+- Target account is not a member of the room.
+- `newRole` is neither `"owner"` nor `"member"`.
+- Promote attempt when the target is already an owner.
+- Demote attempt when the target is not an owner.
+- Last-owner guard: an owner cannot demote themselves if they are the only owner.
+- Promote attempt on an org-only member (individual subscription required).
+
+```json
+{ "error": "only owners can update roles" }
+```
+
+##### Triggered events — success path
+
+**`chat.user.{targetAccount}.event.subscription.update`** — emitted once for the user whose role changed.
+
+Recipients: the target user (the account whose role was updated) only — not the requester, not other room members.
+
+| Field          | Type   | Notes |
+|----------------|--------|-------|
+| `userId`       | string | The target user's internal user ID. |
+| `subscription` | object | The full `Subscription` record reflecting the updated `roles` array. |
+| `action`       | string | `"role_updated"`. |
+| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "subscription": {
+    "_id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
+    "roomId": "01970a4f8c2d7c9aQ",
+    "roomType": "channel",
+    "siteId": "siteA",
+    "roles": ["owner", "member"],
+    "joinedAt": "2026-05-06T08:01:23Z"
+  },
+  "action": "role_updated",
+  "timestamp": 1746518483000
+}
+```
+
+##### Triggered events — error path
+
+When the synchronous reply is an error envelope, no events follow. The async job has no separate failure event for role updates — failures inside the worker are logged but no client-visible signal is emitted.
+
+---
+
 ### 3.2 history-service
 
 _(filled in by Tasks 14–21)_
