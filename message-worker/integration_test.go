@@ -1130,22 +1130,13 @@ func TestSaveThreadMessage_BindsBucket(t *testing.T) {
 	).Scan(&gotBucket))
 	assert.Equal(t, expectedReplyBucket, gotBucket)
 
-	// 2. The parent's tcount in messages_by_room should also be readable via the parent's bucket.
-	//    (This verifies that incrementParentTcount uses the parent's bucket — implemented in Task 6.)
-	//    Until Task 6 lands, the parent-tcount portion of this assertion will fail. To keep this
-	//    test green at the Task 5 commit, comment out the second assertion temporarily and
-	//    re-enable it in Task 6. If you choose to keep it commented, leave a clear `// TODO(task-6)`
-	//    marker so Task 6 picks it up. Alternatively, leave the assertion in place and accept that
-	//    this test will fail in CI until Task 6 lands.
-
-	// TODO(task-6): uncomment once incrementParentTcount binds parent bucket.
-	// var tcount int
-	// require.NoError(t, cassSession.Query(
-	//     `SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-	//     reply.RoomID, parentBucket, parentCreatedAt, parentID,
-	// ).Scan(&tcount))
-	// assert.Equal(t, 1, tcount)
-	_ = parentBucket
+	// Verify incrementParentTcount uses the parent's bucket (Task 6).
+	var tcount int
+	require.NoError(t, cassSession.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		reply.RoomID, parentBucket, parentCreatedAt, parentID,
+	).Scan(&tcount))
+	assert.Equal(t, 1, tcount)
 }
 
 func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {

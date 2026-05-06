@@ -163,8 +163,9 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 	}
 	parentID := msg.ThreadParentMessageID
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
+	parentBucket := s.bucket.Of(parentCreatedAt)
 
-	// CAS increment on messages_by_id.
+	// CAS increment on messages_by_id (no bucket — table unchanged).
 	var tcount *int
 	if err := s.cassSession.Query(
 		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
@@ -186,10 +187,10 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 		return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
 	}
 
-	// CAS increment on messages_by_room.
+	// CAS increment on messages_by_room (now includes bucket in the WHERE).
 	if err := s.cassSession.Query(
-		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-		msg.RoomID, parentCreatedAt, parentID,
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		msg.RoomID, parentBucket, parentCreatedAt, parentID,
 	).WithContext(ctx).Scan(&tcount); err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil
@@ -199,8 +200,8 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
 		var current *int
 		applied, err := s.cassSession.Query(
-			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
-			newVal, msg.RoomID, parentCreatedAt, parentID, expected,
+			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
+			newVal, msg.RoomID, parentBucket, parentCreatedAt, parentID, expected,
 		).WithContext(ctx).ScanCAS(&current)
 		return applied, current, err
 	}); err != nil {
@@ -213,6 +214,8 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 // IF EXISTS prevents phantom rows: without it a bare UPDATE on a missing row would
 // materialise a partial Cassandra row containing only thread_room_id.
 func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, parentMessageID, roomID string, parentCreatedAt time.Time, threadRoomID string) error {
+	parentBucket := s.bucket.Of(parentCreatedAt)
+
 	applied, err := s.cassSession.Query(
 		`UPDATE messages_by_id SET thread_room_id = ? WHERE message_id = ? AND created_at = ? IF EXISTS`,
 		threadRoomID, parentMessageID, parentCreatedAt,
@@ -225,8 +228,8 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 	}
 
 	applied, err = s.cassSession.Query(
-		`UPDATE messages_by_room SET thread_room_id = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF EXISTS`,
-		threadRoomID, roomID, parentCreatedAt, parentMessageID,
+		`UPDATE messages_by_room SET thread_room_id = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ? IF EXISTS`,
+		threadRoomID, roomID, parentBucket, parentCreatedAt, parentMessageID,
 	).WithContext(ctx).ScanCAS()
 	if err != nil {
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_room: %w", parentMessageID, err)
