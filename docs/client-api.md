@@ -1490,7 +1490,208 @@ See [Error envelope](#5-error-envelope-reference). Returns an error when `scope=
 
 ## 4. Message Send
 
-_(filled in by Task 24)_
+### Send Message
+
+**Subject:** `chat.user.{account}.room.{roomID}.{siteID}.msg.send`
+**Reply subject:** `chat.user.{account}.response.{requestID}` — the client must subscribe to `chat.user.{account}.>` (the user wildcard) to receive it. The `{requestID}` value is the `requestId` field from the request body.
+
+This RPC uses the **publish + async-reply** pattern, not the standard NATS request/reply. The client publishes to the `msg.send` subject (no `_INBOX.>` reply expected). `message-gatekeeper` validates the request, publishes the canonical message to `MESSAGES_CANONICAL`, and replies to `chat.user.{account}.response.{requestID}` with the persisted `Message` (or an error envelope on failure).
+
+The same subject and request body cover three send variants: plain message, thread reply, and quoted message. The variant is determined by which optional fields are set.
+
+#### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `id` | string | yes | The message's ID. Must be 20-char base62. The client generates this and uses it for client-side optimistic rendering. |
+| `content` | string | yes | The message body. Must be non-empty and ≤ 20 KiB. |
+| `requestId` | string | yes | A 36-char hyphenated UUIDv7 the client generates. The async reply will be published to `chat.user.{account}.response.{requestId}`. |
+| `threadParentMessageId` | string | no | Set when posting a thread reply. Must be a valid 20-char base62 message ID. Pair with `threadParentMessageCreatedAt`. |
+| `threadParentMessageCreatedAt` | number | no | Required when `threadParentMessageId` is set. Milliseconds since Unix epoch (UTC). |
+| `quotedParentMessageId` | string | no | Set when posting a quoted message. The gatekeeper fetches the parent and embeds a snapshot in the persisted message; the client does not send the snapshot itself. |
+
+##### Plain message
+
+```json
+{
+  "id": "01970a4f8c2d7c9aQRST",
+  "content": "morning team",
+  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+}
+```
+
+##### Thread reply
+
+```json
+{
+  "id": "01970a4f8c2d7c9aQUVW",
+  "content": "good morning",
+  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789a",
+  "threadParentMessageId": "01970a4f8c2d7c9aQRST",
+  "threadParentMessageCreatedAt": 1746518100000
+}
+```
+
+##### Quoted message
+
+```json
+{
+  "id": "01970a4f8c2d7c9aQXYZ",
+  "content": "agreed — adding context",
+  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789b",
+  "quotedParentMessageId": "01970a4f8c2d7c9aQRST"
+}
+```
+
+#### Success response
+
+Delivered on `chat.user.{account}.response.{requestId}`. The body is the persisted `Message`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string |       |
+| `roomId` | string |       |
+| `userId` | string | Sender's internal user ID. |
+| `userAccount` | string | Sender's account. |
+| `content` | string | The message body. |
+| `mentions` | array<Participant> | Optional. |
+| `createdAt` | string | RFC 3339. |
+| `threadParentMessageId` | string | Optional. Set for thread replies. |
+| `threadParentMessageCreatedAt` | string | Optional. RFC 3339. |
+| `tshow` | boolean | Optional. |
+| `type` | string | Optional. |
+| `sysMsgData` | string | Optional. Base64. |
+| `quotedParentMessage` | object | Optional. Snapshot of the quoted message. See [Message schema](#message-schema)'s `QuotedParentMessage` table. |
+
+```json
+{
+  "id": "01970a4f8c2d7c9aQRST",
+  "roomId": "01970a4f8c2d7c9aQ",
+  "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "userAccount": "alice",
+  "content": "morning team",
+  "createdAt": "2026-05-06T07:55:00Z"
+}
+```
+
+#### Error response
+
+Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#5-error-envelope-reference). Common errors: `"invalid message ID \"…\": must be a 20-char base62 string"`, `"content must not be empty"`, `"content exceeds maximum size of 20480 bytes"`, `"user alice is not subscribed to room …"`, `"validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set"`.
+
+```json
+{ "error": "content must not be empty" }
+```
+
+#### Triggered events — success path
+
+After a successful send, two downstream services fan out events. The set you receive depends on whether the room is a channel or a DM, and whether you're a mentioned user.
+
+**1. For channel rooms — `chat.room.{roomID}.event`**
+
+A `RoomEvent` published by `broadcast-worker`. Recipients: every client subscribed to the room (which includes the sender, since the sender is also a member).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"new_message"`. |
+| `roomId` | string |       |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `roomName` | string |       |
+| `roomType` | string | `channel`, `dm`, etc. |
+| `siteId` | string |       |
+| `userCount` | number |       |
+| `lastMsgAt` | string | RFC 3339. |
+| `lastMsgId` | string | The new message's ID. |
+| `mentions` | array<Participant> | Optional. |
+| `mentionAll` | boolean | Optional. `true` if the message mentioned `@all` or `@here`. |
+| `hasMention` | boolean | Optional. Per-recipient flag (DM event only). Always absent on channel events. |
+| `message` | object | Optional. The `ClientMessage` (see [Message schema](#message-schema) plus a `sender` Participant). Set for unencrypted rooms. |
+| `encryptedMessage` | object | Optional. Raw `roomcrypto.EncryptedMessage` JSON. Set for encrypted (channel) rooms. Use the room's current key to decrypt. |
+
+```json
+{
+  "type": "new_message",
+  "roomId": "01970a4f8c2d7c9aQ",
+  "timestamp": 1746518100123,
+  "roomName": "engineering-announcements",
+  "roomType": "channel",
+  "siteId": "siteA",
+  "userCount": 12,
+  "lastMsgAt": "2026-05-06T07:55:00Z",
+  "lastMsgId": "01970a4f8c2d7c9aQRST",
+  "encryptedMessage": {
+    "v": 3,
+    "ciphertext": "<base64>",
+    "nonce": "<base64>"
+  }
+}
+```
+
+**2. For DM rooms — `chat.user.{recipient}.event.room`**
+
+A `RoomEvent` (same struct as above) published by `broadcast-worker` per DM participant. Recipients: each user subscribed to the DM. The `hasMention` field is set per-recipient. DM events use `message` (plaintext); they do not use `encryptedMessage`.
+
+```json
+{
+  "type": "new_message",
+  "roomId": "alice___bob",
+  "timestamp": 1746518100123,
+  "roomName": "alice, bob",
+  "roomType": "dm",
+  "siteId": "siteA",
+  "userCount": 2,
+  "lastMsgAt": "2026-05-06T07:55:00Z",
+  "lastMsgId": "01970a4f8c2d7c9aQRST",
+  "hasMention": false,
+  "message": {
+    "id": "01970a4f8c2d7c9aQRST",
+    "roomId": "alice___bob",
+    "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+    "userAccount": "alice",
+    "content": "morning team",
+    "createdAt": "2026-05-06T07:55:00Z",
+    "sender": {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+      "account": "alice",
+      "engName": "Alice"
+    }
+  }
+}
+```
+
+**3. `chat.user.{recipient}.notification`** — for desktop banner notifications.
+
+A `NotificationEvent` published by `notification-worker`. Recipients: per the worker's policy — typically the DM partner for DMs, and any `@`-mentioned user for channel messages.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | `"new_message"`. |
+| `roomId` | string |       |
+| `message` | object | The full `Message`. See [Message schema](#message-schema). |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "type": "new_message",
+  "roomId": "alice___bob",
+  "message": {
+    "id": "01970a4f8c2d7c9aQRST",
+    "roomId": "alice___bob",
+    "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+    "userAccount": "alice",
+    "content": "morning team",
+    "createdAt": "2026-05-06T07:55:00Z"
+  },
+  "timestamp": 1746518100123
+}
+```
+
+#### Triggered events — error path
+
+When validation fails, the gatekeeper publishes the error envelope to `chat.user.{account}.response.{requestId}` and **no downstream events are emitted**. The client should display the error and offer a retry.
+
+```json
+{ "error": "content must not be empty" }
+```
 
 ---
 
