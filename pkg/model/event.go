@@ -91,11 +91,11 @@ const (
 // subscription cache. LastSeenAt is UnixMilli (UTC) for cross-language wire
 // safety; Timestamp is the publish time.
 type SubscriptionReadEvent struct {
-	Account    string `json:"account"`
-	RoomID     string `json:"roomId"`
-	LastSeenAt int64  `json:"lastSeenAt"`
-	Alert      bool   `json:"alert"`
-	Timestamp  int64  `json:"timestamp"`
+	Account    string `json:"account"    bson:"account"`
+	RoomID     string `json:"roomId"     bson:"roomId"`
+	LastSeenAt int64  `json:"lastSeenAt" bson:"lastSeenAt"`
+	Alert      bool   `json:"alert"      bson:"alert"`
+	Timestamp  int64  `json:"timestamp"  bson:"timestamp"`
 }
 
 type OutboxEvent struct {
