@@ -1,0 +1,75 @@
+/* Semantic color tokens. Light is the default on :root; the dark theme
+ * overrides via :root[data-theme="dark"]. Components reference roles
+ * (e.g. --bg-sidebar, --text-muted), never literal colors. */
+
+:root {
+  /* Surfaces */
+  --bg-app: #ffffff;
+  --bg-sidebar: #f5f7fa;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ebedf0;
+  --bg-input: #f0f2f5;
+  --bg-input-hover: #e8eaed;
+  --bg-hover: #ebedf0;
+  --bg-selected: #dbe2ea;
+
+  /* Text */
+  --text-primary: #1a1a1a;
+  --text-secondary: #4a4a4a;
+  --text-muted: #6b7280;
+  --text-on-accent: #ffffff;
+
+  /* Borders */
+  --border-subtle: #e4e6ea;
+  --border-strong: #cfd3d8;
+
+  /* Accent */
+  --accent: #4752c4;
+  --accent-hover: #3a44a8;
+  --accent-soft: rgba(71, 82, 196, 0.15);
+
+  /* Status */
+  --status-error: #b42318;
+  --status-error-bg: #fef3f2;
+  --status-success: #0f8a4f;
+  --status-success-bg: #ecfdf3;
+  --mention: #b45309;
+  --mention-all: #b42318;
+
+  /* Effects */
+  --shadow-dialog: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --scrim: rgba(15, 23, 42, 0.45);
+}
+
+:root[data-theme='dark'] {
+  --bg-app: #313338;
+  --bg-sidebar: #2b2d31;
+  --bg-surface: #313338;
+  --bg-elevated: #232529;
+  --bg-input: #383a40;
+  --bg-input-hover: #404249;
+  --bg-hover: #35373c;
+  --bg-selected: #404249;
+
+  --text-primary: #f2f3f5;
+  --text-secondary: #dbdee1;
+  --text-muted: #949ba4;
+  --text-on-accent: #ffffff;
+
+  --border-subtle: #3f4147;
+  --border-strong: #4e5058;
+
+  --accent: #5865f2;
+  --accent-hover: #4752c4;
+  --accent-soft: rgba(88, 101, 242, 0.20);
+
+  --status-error: #f38ba8;
+  --status-error-bg: rgba(243, 139, 168, 0.10);
+  --status-success: #43b581;
+  --status-success-bg: rgba(67, 181, 129, 0.12);
+  --mention: #faa61a;
+  --mention-all: #ed4245;
+
+  --shadow-dialog: 0 8px 24px rgba(0, 0, 0, 0.32);
+  --scrim: rgba(0, 0, 0, 0.6);
+}
