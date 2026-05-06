@@ -14,7 +14,8 @@ const threadMessageColumns = "room_id, thread_room_id, created_at, message_id, t
 
 // Partition + clustering key equality avoids ALLOW FILTERING.
 func (r *Repository) GetThreadMessages(ctx context.Context, roomID, threadRoomID string, pageReq PageRequest) (Page[models.Message], error) {
-	return fetchMessagesPage(
+	return r.fetchMessagesPage(
+		ctx,
 		r.session.Query(
 			"SELECT "+threadMessageColumns+` FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? ORDER BY created_at DESC`,
 			roomID, threadRoomID,
