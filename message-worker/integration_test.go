@@ -49,6 +49,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		)`, keyspace),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.messages_by_room (
 			room_id               TEXT,
+			bucket                BIGINT,
 			created_at            TIMESTAMP,
 			message_id            TEXT,
 			sender                FROZEN<"Participant">,
@@ -61,7 +62,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			type                  TEXT,
 			sys_msg_data          BLOB,
 			quoted_parent_message FROZEN<"QuotedParentMessage">,
-			PRIMARY KEY ((room_id), created_at, message_id)
+			PRIMARY KEY ((room_id, bucket), created_at, message_id)
 		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`, keyspace),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.messages_by_id (
 			message_id               TEXT,
@@ -154,7 +155,7 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 		var gotMsg, gotSiteID string
 		var gotUpdatedAt time.Time
 		err := cassSession.Query(
-			`SELECT msg, site_id, updated_at FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			`SELECT msg, site_id, updated_at FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
 			"r-1", now, "m-1",
 		).Scan(&gotMsg, &gotSiteID, &gotUpdatedAt)
 		require.NoError(t, err)
@@ -166,7 +167,7 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 	t.Run("messages_by_room mentions persisted", func(t *testing.T) {
 		var gotMentions []*cassParticipant
 		err := cassSession.Query(
-			`SELECT mentions FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			`SELECT mentions FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
 			"r-1", now, "m-1",
 		).Scan(&gotMentions)
 		require.NoError(t, err)
@@ -376,7 +377,7 @@ func TestHandler_Integration(t *testing.T) {
 
 	var gotMsg string
 	err = cassSession.Query(
-		`SELECT msg FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+		`SELECT msg FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
 		"r-2", now, "m-2",
 	).Scan(&gotMsg)
 	require.NoError(t, err)
@@ -890,7 +891,7 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	t.Run("tcount incremented to 1 in messages_by_room", func(t *testing.T) {
 		var tcount int
 		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
 			"tcount-room", parentCreatedAt, "tcount-parent",
 		).Scan(&tcount)
 		require.NoError(t, err)
@@ -923,7 +924,7 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	t.Run("tcount incremented to 2 in messages_by_room after second reply", func(t *testing.T) {
 		var tcount int
 		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
 			"tcount-room", parentCreatedAt, "tcount-parent",
 		).Scan(&tcount)
 		require.NoError(t, err)
@@ -994,7 +995,7 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 	t.Run("messages_by_room round-trips QuotedParentMessage including thread context", func(t *testing.T) {
 		var got cassandra.QuotedParentMessage
 		err := cassSession.Query(
-			`SELECT quoted_parent_message FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
+			`SELECT quoted_parent_message FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ? ALLOW FILTERING`,
 			"r-1", now, "m-quote-1",
 		).Scan(&got)
 		require.NoError(t, err)
@@ -1054,6 +1055,31 @@ func TestCassandraStore_SaveMessage_NilQuotedParent(t *testing.T) {
 	).Scan(&got)
 	require.NoError(t, err)
 	assert.Nil(t, got, "nil pointer must round-trip as null UDT")
+}
+
+func TestSaveMessage_BindsBucket(t *testing.T) {
+	cassSession := setupCassandra(t)
+	bucket := msgbucket.New(24 * time.Hour)
+	store := NewCassandraStore(cassSession, bucket)
+
+	msg := &model.Message{
+		ID:        "msg-bucket-1",
+		RoomID:    "room-bucket-1",
+		Content:   "hello",
+		CreatedAt: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		Type:      "text",
+	}
+	sender := &cassParticipant{ID: "u1", Account: "alice"}
+
+	require.NoError(t, store.SaveMessage(context.Background(), msg, sender, "site-A"))
+
+	expectedBucket := bucket.Of(msg.CreatedAt)
+	var gotBucket int64
+	require.NoError(t, cassSession.Query(
+		`SELECT bucket FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		msg.RoomID, expectedBucket, msg.CreatedAt, msg.ID,
+	).Scan(&gotBucket))
+	assert.Equal(t, expectedBucket, gotBucket)
 }
 
 func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {

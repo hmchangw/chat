@@ -65,10 +65,14 @@ func NewCassandraStore(session *gocql.Session, bucket msgbucket.Sizer) *Cassandr
 // updated_at is set to msg.CreatedAt (equals created_at on first insert — not yet edited).
 // If either insert fails the error is returned immediately; JetStream will redeliver the message.
 func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+	b := s.bucket.Of(msg.CreatedAt)
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, tshow, quoted_parent_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+		`INSERT INTO messages_by_room
+		   (room_id, bucket, created_at, message_id, sender, msg, site_id, updated_at,
+		    mentions, type, sys_msg_data, tshow, quoted_parent_message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, b, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
+		toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_room %s: %w", msg.ID, err)
 	}
