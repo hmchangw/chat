@@ -44,7 +44,10 @@ func TestIntegration_RoundTrip(t *testing.T) {
 
 	loader, err := NewFileKEKLoader(writeKEKFile(t, t.TempDir()))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = loader.Close() })
+	t.Cleanup(func() {
+		// Best-effort: tests can't meaningfully act on a Close failure.
+		_ = loader.Close()
+	})
 
 	c := NewCipher(loader, store, Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
 
@@ -68,7 +71,10 @@ func TestIntegration_ConcurrentFirstWriteRace(t *testing.T) {
 	store := NewMongoDEKStore(db.Collection(CollectionName))
 	loader, err := NewFileKEKLoader(writeKEKFile(t, t.TempDir()))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = loader.Close() })
+	t.Cleanup(func() {
+		// Best-effort: tests can't meaningfully act on a Close failure.
+		_ = loader.Close()
+	})
 
 	// One Cipher per goroutine to defeat the in-process cache.
 	const N = 16
@@ -117,7 +123,10 @@ func TestIntegration_KEKRotationReWrap(t *testing.T) {
 	}`), 0o600))
 	loader, err := newFileKEKLoaderWithInterval(path, 20*time.Millisecond)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = loader.Close() })
+	t.Cleanup(func() {
+		// Best-effort: tests can't meaningfully act on a Close failure.
+		_ = loader.Close()
+	})
 
 	c := NewCipher(loader, store, Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
 	payload, meta, err := c.Encrypt(ctx, "room-rot", EncryptedFields{Msg: "before"})
