@@ -364,6 +364,113 @@ See [Error envelope](#5-error-envelope-reference).
 
 ---
 
+#### Add Members
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.add`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual member adds run asynchronously in `room-worker`, which publishes the events listed under "Triggered events" below. To receive the `AsyncJobResult` event, the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
+
+##### Request body
+
+| Field      | Type            | Required | Notes |
+|------------|-----------------|----------|-------|
+| `roomId`   | string          | no       | Optional; the server derives the room ID from the subject and ignores any non-matching value. |
+| `users`    | string[]        | no       | Internal user IDs (or accounts) to add directly. |
+| `orgs`     | string[]        | no       | Org IDs to add (expanded server-side to all org members). |
+| `channels` | array<ChannelRef> | no     | Other channels to add as bulk sources. Each entry is `{ "roomId": string, "siteId": string }`. |
+| `history.mode` | string      | no       | `"none"` (default) or `"all"` — controls whether new members see history before they joined. |
+
+The fields `requesterId`, `requesterAccount`, and `timestamp` on the Go `AddMembersRequest` are server-set — the client should omit them.
+
+```json
+{
+  "users": ["bob"],
+  "orgs": [],
+  "channels": [
+    { "roomId": "01970a4f8c2d7c9aP", "siteId": "siteA" }
+  ],
+  "history": { "mode": "all" }
+}
+```
+
+##### Success response
+
+| Field    | Type   | Notes |
+|----------|--------|-------|
+| `status` | string | Always `"accepted"`. Confirms the request passed authorization and was queued for processing. |
+
+```json
+{ "status": "accepted" }
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner).
+
+```json
+{ "error": "room is at maximum capacity (200): cannot add 5 members to room with 198 existing" }
+```
+
+##### Triggered events — success path
+
+**1. `chat.user.{requesterAccount}.response.{requestID}`** — async job result delivered to the **requester** when the bulk add finishes.
+
+Recipients: the original requester. Only published if the client set `X-Request-ID` on the original request.
+
+| Field       | Type    | Notes |
+|-------------|---------|-------|
+| `requestId` | string  | Echoes the `X-Request-ID` value from the original request. |
+| `job`       | string  | `"add_members"`. |
+| `success`   | boolean | `true` if all members were added; `false` if the worker hit an error. |
+| `error`     | string  | Optional. Sanitized message; present only when `success=false`. |
+| `timestamp` | number  | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f",
+  "job": "add_members",
+  "success": true,
+  "timestamp": 1746518400123
+}
+```
+
+**2. `chat.user.{newMember}.event.subscription.update`** — one event per newly added member.
+
+Recipients: each new member (the freshly added user — not the requester, not existing members).
+
+| Field          | Type   | Notes |
+|----------------|--------|-------|
+| `userId`       | string | The new member's internal user ID. |
+| `subscription` | object | The full `Subscription` record (room ID, room type, roles, joinedAt, etc.). |
+| `action`       | string | `"added"`. |
+| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "subscription": {
+    "_id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+    "user": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
+    "roomId": "01970a4f8c2d7c9aQ",
+    "roomType": "channel",
+    "siteId": "siteA",
+    "roles": ["member"],
+    "joinedAt": "2026-05-06T08:01:23Z"
+  },
+  "action": "added",
+  "timestamp": 1746518483000
+}
+```
+
+##### Triggered events — error path
+
+When the synchronous reply is an error envelope, the request was rejected before publishing to the worker — no events follow.
+
+When the asynchronous job fails after acceptance, the requester receives the `AsyncJobResult` above with `success: false`. No `subscription.update` events are published in that case.
+
+---
+
 ### 3.2 history-service
 
 _(filled in by Tasks 14–21)_
