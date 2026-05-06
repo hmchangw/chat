@@ -8,7 +8,8 @@ import (
 
 // dekCache is an LRU keyed by roomID holding unwrapped DEK bytes.
 // Capacity is the primary cap; TTL is a soft retention bound for
-// cold rooms in long-lived processes.
+// cold rooms in long-lived processes. TTL is checked lazily on get;
+// expired entries persist in the index until accessed or evicted.
 type dekCache struct {
 	mu       sync.Mutex
 	capacity int
@@ -25,6 +26,9 @@ type dekEntry struct {
 }
 
 func newDEKCache(capacity int, ttl time.Duration) *dekCache {
+	if capacity <= 0 {
+		capacity = 1
+	}
 	return &dekCache{
 		capacity: capacity,
 		ttl:      ttl,
@@ -51,6 +55,8 @@ func (c *dekCache) get(roomID string) ([]byte, bool) {
 	return e.dek, true
 }
 
+// set stores dek under roomID, refreshing the TTL. The dek slice is stored
+// by reference; callers must not mutate it after passing it to set.
 func (c *dekCache) set(roomID string, dek []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

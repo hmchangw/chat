@@ -67,3 +67,24 @@ func TestDEKCache_Concurrent(t *testing.T) {
 	}
 	// No assertion beyond "no race": run with -race.
 }
+
+func TestDEKCache_CapacityOne(t *testing.T) {
+	c := newDEKCache(1, time.Hour)
+	c.set("a", []byte("A"))
+	c.set("b", []byte("B"))
+
+	_, okA := c.get("a")
+	_, okB := c.get("b")
+	assert.False(t, okA, "first entry should be evicted at capacity=1")
+	assert.True(t, okB, "second entry should remain")
+}
+
+func TestDEKCache_CapacityZeroNormalisesToOne(t *testing.T) {
+	// Non-positive capacities are normalised to 1 to avoid panics and
+	// silently-empty caches.
+	c := newDEKCache(0, time.Hour)
+	c.set("a", []byte("A"))
+	v, ok := c.get("a")
+	assert.True(t, ok)
+	assert.Equal(t, []byte("A"), v)
+}
