@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // KEKLoader exposes the in-memory key set parsed from the secret file.
@@ -28,25 +29,37 @@ type fileKEKLoader struct {
 	mu      sync.RWMutex
 	keys    map[int][]byte
 	current int
+	modTime time.Time
 
 	closeOnce sync.Once
 	stop      chan struct{}
 }
 
-// NewFileKEKLoader reads and validates path, returning a loader holding
-// the parsed key set in memory. Returns ErrKEKFileInvalid on schema or
-// content failure.
+// NewFileKEKLoader reads and validates path, then starts a background
+// goroutine that re-reads the file every 30 seconds. Reload failures
+// retain the previous in-memory key set.
 func NewFileKEKLoader(path string) (KEKLoader, error) {
+	return newFileKEKLoaderWithInterval(path, 30*time.Second)
+}
+
+func newFileKEKLoaderWithInterval(path string, interval time.Duration) (KEKLoader, error) {
 	keys, current, err := loadKEKFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return &fileKEKLoader{
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat KEK file: %w", err)
+	}
+	l := &fileKEKLoader{
 		path:    path,
 		keys:    keys,
 		current: current,
+		modTime: info.ModTime(),
 		stop:    make(chan struct{}),
-	}, nil
+	}
+	go l.reloadLoop(interval)
+	return l, nil
 }
 
 func (l *fileKEKLoader) Current() (int, []byte) {
@@ -65,6 +78,43 @@ func (l *fileKEKLoader) ByVersion(v int) ([]byte, bool) {
 func (l *fileKEKLoader) Close() error {
 	l.closeOnce.Do(func() { close(l.stop) })
 	return nil
+}
+
+func (l *fileKEKLoader) reloadLoop(interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-l.stop:
+			return
+		case <-t.C:
+			l.maybeReload()
+		}
+	}
+}
+
+func (l *fileKEKLoader) maybeReload() {
+	info, err := os.Stat(l.path)
+	if err != nil {
+		// File temporarily unreadable; retain prior state. Try again next tick.
+		return
+	}
+	l.mu.RLock()
+	prev := l.modTime
+	l.mu.RUnlock()
+	if !info.ModTime().After(prev) {
+		return
+	}
+	keys, current, err := loadKEKFile(l.path)
+	if err != nil {
+		// Validation failed; retain prior state.
+		return
+	}
+	l.mu.Lock()
+	l.keys = keys
+	l.current = current
+	l.modTime = info.ModTime()
+	l.mu.Unlock()
 }
 
 // fileFormat mirrors the on-disk JSON schema.
