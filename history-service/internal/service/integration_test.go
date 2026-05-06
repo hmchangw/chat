@@ -17,6 +17,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/service"
+	"github.com/hmchangw/chat/pkg/msgbucket"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/testutil"
 )
@@ -120,7 +121,7 @@ func (alwaysSubscribedRepo) GetHistorySharedSince(_ context.Context, _, _ string
 
 func TestEditMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	pub := &recordingPublisher{}
 	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil)
 
@@ -182,7 +183,7 @@ func TestEditMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	pub := &recordingPublisher{}
 	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil)
 
@@ -242,7 +243,7 @@ func TestDeleteMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	pub := &recordingPublisher{}
 	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil)
 
