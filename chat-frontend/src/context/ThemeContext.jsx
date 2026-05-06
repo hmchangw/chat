@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 const STORAGE_KEY = 'theme'
 const MEDIA_QUERY = '(prefers-color-scheme: dark)'
@@ -22,6 +22,14 @@ function resolveInitialTheme() {
   return { theme: 'light', source: 'system' }
 }
 
+function persistTheme(theme) {
+  try {
+    localStorage.setItem(STORAGE_KEY, theme)
+  } catch {
+    // tolerate private mode / quota errors
+  }
+}
+
 export function ThemeProvider({ children }) {
   const [state, setState] = useState(() => resolveInitialTheme())
   const sourceRef = useRef(state.source)
@@ -39,31 +47,35 @@ export function ThemeProvider({ children }) {
     const mql = window.matchMedia(MEDIA_QUERY)
     const handler = (event) => {
       if (sourceRef.current !== 'system') return
-      setState({ theme: event.matches ? 'dark' : 'light', source: 'system' })
+      const next = event.matches ? 'dark' : 'light'
+      setState((prev) => (prev.theme === next ? prev : { theme: next, source: 'system' }))
     }
     mql.addEventListener('change', handler)
     return () => mql.removeEventListener('change', handler)
   }, [])
 
-  function setTheme(next) {
+  const setTheme = useCallback((next) => {
     if (next !== 'light' && next !== 'dark') return
-    try {
-      localStorage.setItem(STORAGE_KEY, next)
-    } catch {
-      // tolerate private mode / quota errors
-    }
-    setState({ theme: next, source: 'user' })
-  }
+    persistTheme(next)
+    setState((prev) =>
+      prev.theme === next && prev.source === 'user' ? prev : { theme: next, source: 'user' },
+    )
+  }, [])
 
-  function toggleTheme() {
-    setTheme(state.theme === 'dark' ? 'light' : 'dark')
-  }
+  const toggleTheme = useCallback(() => {
+    setState((prev) => {
+      const next = prev.theme === 'dark' ? 'light' : 'dark'
+      persistTheme(next)
+      return { theme: next, source: 'user' }
+    })
+  }, [])
 
-  return (
-    <ThemeContext.Provider value={{ theme: state.theme, source: state.source, setTheme, toggleTheme }}>
-      {children}
-    </ThemeContext.Provider>
+  const value = useMemo(
+    () => ({ theme: state.theme, setTheme, toggleTheme }),
+    [state.theme, setTheme, toggleTheme],
   )
+
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }
 
 export function useTheme() {

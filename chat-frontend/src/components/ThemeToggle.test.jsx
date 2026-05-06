@@ -2,26 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { ThemeProvider } from '../context/ThemeContext'
 import ThemeToggle from './ThemeToggle'
+import { setMatchMedia, resetThemeState } from '../../test/themeTestUtils'
 
-function setMatchMedia(matches) {
-  const mql = {
-    matches,
-    media: '(prefers-color-scheme: dark)',
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  }
-  window.matchMedia = vi.fn().mockReturnValue(mql)
-  return mql
-}
-
-beforeEach(() => {
-  localStorage.clear()
-  document.documentElement.removeAttribute('data-theme')
-})
+beforeEach(resetThemeState)
 
 afterEach(() => {
-  localStorage.clear()
-  document.documentElement.removeAttribute('data-theme')
+  resetThemeState()
   vi.unstubAllGlobals()
 })
 

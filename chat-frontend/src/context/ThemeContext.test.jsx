@@ -1,47 +1,40 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { ThemeProvider, useTheme } from './ThemeContext'
+import { setMatchMedia, resetThemeState } from '../../test/themeTestUtils'
 
 function Probe() {
-  const { theme, source } = useTheme()
+  const { theme } = useTheme()
+  return <span data-testid="theme">{theme}</span>
+}
+
+function ToggleProbe() {
+  const { theme, toggleTheme, setTheme } = useTheme()
   return (
-    <div>
+    <>
       <span data-testid="theme">{theme}</span>
-      <span data-testid="source">{source}</span>
-    </div>
+      <button data-testid="toggle" onClick={toggleTheme}>
+        toggle
+      </button>
+      <button data-testid="set-dark" onClick={() => setTheme('dark')}>
+        set dark
+      </button>
+      <button data-testid="set-light" onClick={() => setTheme('light')}>
+        set light
+      </button>
+    </>
   )
 }
 
-function setMatchMedia(matches) {
-  const listeners = new Set()
-  const mql = {
-    matches,
-    media: '(prefers-color-scheme: dark)',
-    addEventListener: (_event, cb) => listeners.add(cb),
-    removeEventListener: (_event, cb) => listeners.delete(cb),
-    dispatchEvent: (event) => {
-      mql.matches = event.matches
-      listeners.forEach((cb) => cb(event))
-      return true
-    },
-  }
-  window.matchMedia = vi.fn().mockReturnValue(mql)
-  return mql
-}
-
-beforeEach(() => {
-  localStorage.clear()
-  document.documentElement.removeAttribute('data-theme')
-})
+beforeEach(resetThemeState)
 
 afterEach(() => {
-  localStorage.clear()
-  document.documentElement.removeAttribute('data-theme')
+  resetThemeState()
   vi.unstubAllGlobals()
 })
 
 describe('ThemeProvider initial state', () => {
-  it('uses stored "dark" from localStorage and marks source=user', () => {
+  it('uses stored "dark" from localStorage', () => {
     localStorage.setItem('theme', 'dark')
     setMatchMedia(false)
     render(
@@ -50,11 +43,10 @@ describe('ThemeProvider initial state', () => {
       </ThemeProvider>
     )
     expect(screen.getByTestId('theme').textContent).toBe('dark')
-    expect(screen.getByTestId('source').textContent).toBe('user')
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
   })
 
-  it('uses stored "light" from localStorage and marks source=user', () => {
+  it('uses stored "light" from localStorage even when system prefers dark', () => {
     localStorage.setItem('theme', 'light')
     setMatchMedia(true)
     render(
@@ -63,7 +55,6 @@ describe('ThemeProvider initial state', () => {
       </ThemeProvider>
     )
     expect(screen.getByTestId('theme').textContent).toBe('light')
-    expect(screen.getByTestId('source').textContent).toBe('user')
     expect(document.documentElement.getAttribute('data-theme')).toBe('light')
   })
 
@@ -75,7 +66,6 @@ describe('ThemeProvider initial state', () => {
       </ThemeProvider>
     )
     expect(screen.getByTestId('theme').textContent).toBe('dark')
-    expect(screen.getByTestId('source').textContent).toBe('system')
   })
 
   it('treats invalid localStorage value as absent', () => {
@@ -87,7 +77,6 @@ describe('ThemeProvider initial state', () => {
       </ThemeProvider>
     )
     expect(screen.getByTestId('theme').textContent).toBe('light')
-    expect(screen.getByTestId('source').textContent).toBe('system')
   })
 
   it('defaults to light when matchMedia is undefined', () => {
@@ -98,7 +87,6 @@ describe('ThemeProvider initial state', () => {
       </ThemeProvider>
     )
     expect(screen.getByTestId('theme').textContent).toBe('light')
-    expect(screen.getByTestId('source').textContent).toBe('system')
   })
 
   it('does not crash when localStorage.getItem throws on initial read', () => {
@@ -114,30 +102,11 @@ describe('ThemeProvider initial state', () => {
         </ThemeProvider>
       )
       expect(screen.getByTestId('theme').textContent).toBe('dark')
-      expect(screen.getByTestId('source').textContent).toBe('system')
     } finally {
       Storage.prototype.getItem = original
     }
   })
 })
-
-function ToggleProbe() {
-  const { theme, toggleTheme, setTheme } = useTheme()
-  return (
-    <div>
-      <span data-testid="theme">{theme}</span>
-      <button data-testid="toggle" onClick={toggleTheme}>
-        toggle
-      </button>
-      <button data-testid="set-dark" onClick={() => setTheme('dark')}>
-        set dark
-      </button>
-      <button data-testid="set-light" onClick={() => setTheme('light')}>
-        set light
-      </button>
-    </div>
-  )
-}
 
 describe('ThemeProvider mutations', () => {
   it('setTheme updates state, attribute, and localStorage', () => {
@@ -219,7 +188,7 @@ describe('ThemeProvider system-preference subscription', () => {
     expect(screen.getByTestId('theme').textContent).toBe('dark')
   })
 
-  it('ignores system pref changes when source=user', () => {
+  it('ignores system pref changes when an explicit choice was stored', () => {
     localStorage.setItem('theme', 'light')
     const mql = setMatchMedia(false)
     render(
@@ -235,7 +204,7 @@ describe('ThemeProvider system-preference subscription', () => {
     expect(screen.getByTestId('theme').textContent).toBe('light')
   })
 
-  it('explicit setTheme makes subsequent system changes a no-op', () => {
+  it('ignores system pref changes after an explicit setTheme', () => {
     const mql = setMatchMedia(false)
     render(
       <ThemeProvider>
