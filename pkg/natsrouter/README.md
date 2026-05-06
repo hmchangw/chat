@@ -11,13 +11,10 @@ nc, err := natsutil.Connect(natsURL, credsFile)
 if err != nil {
     log.Fatal(err)
 }
-router := natsrouter.New(nc, "my-service",
-    natsrouter.WithMaxConcurrency(100),
-)
-router.Use(natsrouter.Recovery())
-router.Use(natsrouter.RequestID())
+// Default pre-installs Recovery, RequestID, and Logging.
+router := natsrouter.Default(nc, "my-service")
+// Add HandlerTimeout explicitly — duration varies per service.
 router.Use(natsrouter.HandlerTimeout(5 * time.Second))
-router.Use(natsrouter.Logging())
 
 natsrouter.Register(router, "chat.user.{account}.msg.send", svc.SendMessage)
 
@@ -56,22 +53,21 @@ natsrouter is designed for **NATS request/reply** endpoints — a client sends a
 1. Subscribes to NATS subjects using **queue groups** (load balancing across instances)
 2. Converts `{param}` patterns to NATS wildcards at registration time
 3. Extracts params from incoming subjects at request time
-4. Enforces a **per-process concurrency cap** with admission control (default 100, override with `WithMaxConcurrency`)
-5. Spawns each accepted message into its own goroutine for parallel handler execution
-6. Runs the **middleware chain** (Gin-style `c.Next()` / `c.Abort()`)
-7. Unmarshals JSON request bodies into typed Go structs
-8. Calls your handler with a `*Context` (implements `context.Context`)
-9. Marshals the response back as JSON
-10. Tracks every spawned handler in a `WaitGroup` so `Shutdown` can wait for in-flight work
+4. Spawns each message into its own goroutine for parallel handler execution (unbounded by default; opt into a cap with `WithMaxConcurrency`)
+5. Runs the **middleware chain** (Gin-style `c.Next()` / `c.Abort()`)
+6. Unmarshals JSON request bodies into typed Go structs
+7. Calls your handler with a `*Context` (implements `context.Context`)
+8. Marshals the response back as JSON
+9. Tracks every spawned handler in a `WaitGroup` so `Shutdown` can wait for in-flight work
 
 ## Concurrency Model
 
-The router admits at most N concurrent handler invocations per process across all routes registered on it (default 100). Admission is enforced by a non-blocking acquire on a semaphore inside the per-subscription dispatcher callback:
+The router spawns one goroutine per incoming message. By default there is **no admission control** — the router behaves like `gin.Default()` over `net/http`: every accepted message gets its own handler goroutine, and backpressure flows from downstream timeouts (`HandlerTimeout` middleware, ctx-aware database drivers).
 
-- **Acquire success** → spawn a goroutine that runs the middleware chain + handler. The goroutine releases the semaphore on return.
-- **Acquire failure (saturated)** → publish an `ErrUnavailable` reply (`{"error":"service busy","code":"unavailable"}`) immediately and return. Callers should retry with exponential backoff and jitter (50–200 ms typically); queue-group routing will redistribute the retry across pods, often landing on a less-loaded one. NATS itself has no built-in retry semantics — the burden is entirely on the caller.
+For services that need a hard cap on in-flight handlers (memory-constrained pods, downstream pools that don't queue cleanly, etc.), opt into admission control with `WithMaxConcurrency(N)` at construction:
 
 ```go
+// Opt into a concurrency cap when your service needs one.
 // Tune per environment via env var:
 //   ROUTER_MAX_CONCURRENCY=200
 router := natsrouter.New(nc, "my-service",
@@ -79,19 +75,22 @@ router := natsrouter.New(nc, "my-service",
 )
 ```
 
-**Why default 100?** This matches the project-wide `MAX_WORKERS` convention used by JetStream worker services and aligns with the default Cassandra/Mongo connection pool sizes. If a handler never hits a connection pool (pure in-memory work), a higher ceiling is fine. If downstream pools are smaller, set `MaxConcurrency` to match the smallest pool to prevent goroutines from queueing behind pool exhaustion.
+When admission control is enabled, a non-blocking acquire on a semaphore inside the per-subscription dispatcher gates each spawn:
+
+- **Acquire success** → spawn a goroutine that runs the middleware chain + handler. The goroutine releases the semaphore on return.
+- **Acquire failure (cap reached)** → publish an `ErrUnavailable` reply (`{"error":"service busy","code":"unavailable"}`) immediately and return. Callers should retry with exponential backoff and jitter (50–200 ms typically); queue-group routing will redistribute the retry across pods, often landing on a less-loaded one. NATS itself has no built-in retry semantics — the burden is entirely on the caller.
 
 ### Important properties
 
-- **Per-route overrides are not supported today.** A single router-wide semaphore covers every route. The `Registrar` interface is intentionally minimal so a future wrapper (e.g. a route group with its own admission semaphore) can be added without breaking the existing API. Route-level isolation should wait until real evidence of noisy-neighbor contention surfaces in production.
+- **Per-route overrides are not supported today.** A single router-wide semaphore (when admission control is enabled) covers every route. The `Registrar` interface is intentionally minimal so a future wrapper (e.g. a route group with its own admission semaphore) can be added without breaking the existing API. Route-level isolation should wait until real evidence of noisy-neighbor contention surfaces in production.
 
 - **Per-subject FIFO ordering is NOT preserved.** Two messages that arrive on the same subscription are spawned into independent goroutines and race; whichever wins the goroutine schedule runs first. Handlers must be idempotent or use external coordination (Cassandra LWTs, Mongo conditional updates) to ensure correctness under concurrent invocation.
 
-- **`HandlerTimeout` does not free a slot early.** When a handler runs past its deadline, the goroutine is NOT interrupted — it continues holding its semaphore slot until it actually returns. CPU-bound code or non-context-aware libraries will run past the deadline and starve other requests of admission. Either propagate `ctx` into every blocking call so the timeout takes effect, or size `MaxConcurrency` accordingly.
+- **When admission control is enabled, `HandlerTimeout` does not free a slot early.** When a handler runs past its deadline, the goroutine is NOT interrupted — it continues holding its semaphore slot until it actually returns. CPU-bound code or non-context-aware libraries will run past the deadline and starve other requests of admission. Either propagate `ctx` into every blocking call so the timeout takes effect, or size `MaxConcurrency` accordingly.
 
-- **Fire-and-forget routes drop silently under saturation.** `RegisterVoid` handlers are designed for `nc.Publish` callers (no Reply subject). When a fire-and-forget message arrives while the semaphore is saturated, the router has no reply channel on which to publish `ErrUnavailable`, so the message is dropped with a `slog.Warn` log line keyed by subject. Size `MaxConcurrency` conservatively for services that expose `RegisterVoid` endpoints, or front them with JetStream so dropped messages can be redelivered. *Note:* if a caller publishes to a `RegisterVoid` route via `nc.Request` or `nc.PublishRequest` (supplying a reply subject), the saturated router DOES reply with `ErrUnavailable` to that subject — though under normal load the void handler still never replies, so the caller times out.
+- **When admission control is enabled, fire-and-forget routes drop silently under saturation.** `RegisterVoid` handlers are designed for `nc.Publish` callers (no Reply subject). When a fire-and-forget message arrives while the semaphore is saturated, the router has no reply channel on which to publish `ErrUnavailable`, so the message is dropped with a `slog.Warn` log line keyed by subject. Size `MaxConcurrency` conservatively for services that expose `RegisterVoid` endpoints, or front them with JetStream so dropped messages can be redelivered. *Note:* if a caller publishes to a `RegisterVoid` route via `nc.Request` or `nc.PublishRequest` (supplying a reply subject), the saturated router DOES reply with `ErrUnavailable` to that subject — though under normal load the void handler still never replies, so the caller times out.
 
-- **Queue-group fairness shifts under saturation.** NATS queue-group routing distributes messages among subscribers without knowing whether any individual subscriber's process-level admission control is full. A saturated pod will continue to receive (and busy-reply) its share of messages even while other pods sit idle. Monitor the per-pod busy-reply rate as a real SLI rather than assume queue-group routing alone provides load balancing.
+- **When admission control is enabled, NATS queue-group fairness shifts under saturation.** NATS queue-group routing distributes messages among subscribers without knowing whether any individual subscriber's process-level admission control is full. A saturated pod will continue to receive (and busy-reply) its share of messages even while other pods sit idle. Monitor the per-pod busy-reply rate as a real SLI rather than assume queue-group routing alone provides load balancing.
 
 ## API Reference
 
@@ -115,6 +114,16 @@ func (r *Router) Use(mw ...HandlerFunc)
 func (r *Router) Shutdown(ctx context.Context) error
 ```
 
+### Default Constructor
+
+```go
+// Default returns a Router pre-configured with the recommended middleware
+// stack — Recovery, RequestID, Logging — mirroring gin.Default(). Forwards
+// opts to New(). HandlerTimeout is intentionally omitted; add it
+// explicitly with r.Use(HandlerTimeout(d)) if your service needs one.
+func Default(nc *otelnats.Conn, queue string, opts ...Option) *Router
+```
+
 ### Options
 
 ```go
@@ -122,11 +131,12 @@ func (r *Router) Shutdown(ctx context.Context) error
 type Option func(*Router)
 
 // WithMaxConcurrency sets the maximum number of in-flight handler
-// invocations across all routes registered on this router. Defaults
-// to the constructor default (100). Non-positive values are ignored;
-// the constructor default applies in that case. If multiple
-// WithMaxConcurrency options are supplied, the last one takes effect.
-// Saturation triggers a 503-style ErrUnavailable reply.
+// invocations across all routes registered on this router. By default,
+// no admission control is applied (unbounded spawn). Calling
+// WithMaxConcurrency installs a semaphore of capacity N. Non-positive
+// values are ignored, leaving the router unbounded. If multiple
+// WithMaxConcurrency options are supplied, the last positive value takes
+// effect. Saturation triggers a 503-style ErrUnavailable reply.
 func WithMaxConcurrency(n int) Option
 ```
 

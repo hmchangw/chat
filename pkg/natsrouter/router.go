@@ -15,11 +15,6 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-// defaultMaxConcurrency is the default per-pod handler concurrency cap. Sized
-// to match the project-wide MAX_WORKERS convention used by JetStream worker
-// services. Override with WithMaxConcurrency.
-const defaultMaxConcurrency = 100
-
 // Registrar is the interface that Register/RegisterNoBody/RegisterVoid use
 // to attach handlers. Implemented by *Router today.
 //
@@ -55,11 +50,12 @@ type Router struct {
 type Option func(*Router)
 
 // WithMaxConcurrency sets the maximum number of in-flight handler
-// invocations across all routes registered on this router. Defaults to
-// the constructor default. Non-positive values are ignored; the
-// constructor default applies in that case. If multiple
-// WithMaxConcurrency options are supplied, the last one takes effect.
-// Saturation triggers a 503-style ErrUnavailable reply.
+// invocations across all routes registered on this router. By default,
+// no admission control is applied (unbounded spawn). Calling
+// WithMaxConcurrency installs a semaphore of capacity N. Non-positive
+// values are ignored, leaving the router unbounded. If multiple
+// WithMaxConcurrency options are supplied, the last positive value takes
+// effect. Saturation triggers a 503-style ErrUnavailable reply.
 func WithMaxConcurrency(n int) Option {
 	return func(r *Router) {
 		if n > 0 {
@@ -69,15 +65,32 @@ func WithMaxConcurrency(n int) Option {
 }
 
 // New creates a Router with the given NATS connection and queue group.
+// By default, the router spawns handlers unboundedly (no admission
+// control). Use WithMaxConcurrency to opt into a concurrency cap.
 func New(nc *otelnats.Conn, queue string, opts ...Option) *Router {
 	r := &Router{
 		nc:    nc,
 		queue: queue,
-		sem:   make(chan struct{}, defaultMaxConcurrency),
 	}
 	for _, opt := range opts {
 		opt(r)
 	}
+	return r
+}
+
+// Default returns a Router pre-configured with the recommended middleware
+// stack: Recovery, RequestID, Logging — mirroring gin.Default()'s shape.
+// Equivalent to:
+//
+//	r := New(nc, queue, opts...)
+//	r.Use(Recovery(), RequestID(), Logging())
+//
+// HandlerTimeout is intentionally omitted because the deadline duration
+// varies per service. Add it explicitly via r.Use(HandlerTimeout(d)) if
+// your service needs one.
+func Default(nc *otelnats.Conn, queue string, opts ...Option) *Router {
+	r := New(nc, queue, opts...)
+	r.Use(Recovery(), RequestID(), Logging())
 	return r
 }
 
@@ -109,16 +122,21 @@ func (r *Router) addRoute(pattern string, handlers []HandlerFunc) {
 	all = append(all, handlers...)
 
 	natsHandler := func(m otelnats.Msg) {
-		select {
-		case r.sem <- struct{}{}:
-		default:
-			r.replyBusy(m.Msg)
-			return
+		sem := r.sem
+		if sem != nil {
+			select {
+			case sem <- struct{}{}:
+			default:
+				r.replyBusy(m.Msg)
+				return
+			}
 		}
 		r.wg.Add(1)
 		go func() {
 			defer r.wg.Done()
-			defer func() { <-r.sem }()
+			if sem != nil {
+				defer func() { <-sem }()
+			}
 			// Process-safety backstop: catch any panic that bypassed
 			// user-installed Recovery middleware. Recovery middleware (when
 			// configured via r.Use) catches first and sends a structured

@@ -4,28 +4,32 @@
 //
 // # Concurrency model
 //
-// The router admits at most N concurrent handler invocations per process
-// across all routes registered on it (default 100, override with
-// WithMaxConcurrency at construction). Admission is enforced by a
-// non-blocking acquire on a semaphore inside the per-subscription
-// dispatcher callback:
+// The router spawns one goroutine per incoming message. By default
+// there is NO admission control — the router behaves like gin.Default()
+// over net/http: every accepted message gets its own handler goroutine,
+// and backpressure flows from downstream timeouts (HandlerTimeout
+// middleware, ctx-aware database drivers).
 //
-//   - On acquire success, the router spawns a goroutine that runs the
-//     middleware chain + handler, releasing the semaphore on return.
-//   - On acquire failure (semaphore full), the router publishes an
-//     ErrUnavailable reply (`{"error":"service busy","code":"unavailable"}`)
-//     immediately and returns. Callers should retry with backoff.
+// For services that need a hard cap on in-flight handlers (memory-
+// constrained pods, downstream pools that don't queue cleanly, etc.),
+// opt into admission control with WithMaxConcurrency(N) at construction.
+// When admission is on, a non-blocking acquire on a semaphore inside
+// the per-subscription dispatcher gates each spawn:
+//
+//   - On acquire success, the router spawns the handler goroutine.
+//   - On acquire failure (cap reached), the router publishes an
+//     ErrUnavailable reply ({"error":"service busy","code":"unavailable"})
+//     and returns. Callers should retry with backoff.
 //
 // Per-route concurrency overrides are not supported today. The Registrar
 // interface is intentionally minimal so a future wrapper (e.g. a route
-// group that prepends a subject prefix and shared middleware, or a
-// bulkhead with its own admission semaphore) can be added without
-// breaking the existing API. Route-level isolation should wait until
-// real evidence of noisy-neighbor contention surfaces in production.
+// group with its own admission semaphore) can be added without breaking
+// the existing API.
 //
 // # Fire-and-forget routes
 //
-// RegisterVoid handlers have no NATS reply subject by definition. When a
+// When admission control is enabled (WithMaxConcurrency), RegisterVoid
+// handlers have no NATS reply subject by definition. When a
 // fire-and-forget message arrives while the semaphore is saturated, the
 // router has no reply channel on which to publish ErrUnavailable, so the
 // message is SILENTLY DROPPED. Callers that publish to a void route via
@@ -36,10 +40,11 @@
 //
 // # Queue-group fairness under saturation
 //
-// NATS queue-group routing distributes messages among subscribers
-// without knowing whether any individual subscriber's process-level
-// admission control is full. A saturated pod will continue to receive
-// (and busy-reply) its share of messages even while other pods in the
+// When admission control is enabled (WithMaxConcurrency), NATS
+// queue-group routing distributes messages among subscribers without
+// knowing whether any individual subscriber's process-level admission
+// control is full. A saturated pod will continue to receive (and
+// busy-reply) its share of messages even while other pods in the
 // queue group sit idle. Operators should monitor the per-pod
 // busy-reply rate (or set up server-side auto-scaling on it) rather
 // than assume queue-group routing alone provides load balancing.

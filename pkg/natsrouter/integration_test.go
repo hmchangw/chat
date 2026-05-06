@@ -62,9 +62,11 @@ type echoResp struct {
 // against a real NATS server under heavy concurrency: context pool reuse,
 // middleware keys, and Copy() handed to an async goroutine that outlives
 // the handler. With -race, this must stay clean.
+// The unbounded default is sufficient for this test — no WithMaxConcurrency
+// override is needed.
 func TestIntegration_ConcurrentRequestsWithCopy(t *testing.T) {
 	nc := setupNATS(t)
-	r := natsrouter.New(nc, "integration-concurrent", natsrouter.WithMaxConcurrency(500))
+	r := natsrouter.New(nc, "integration-concurrent")
 	r.Use(natsrouter.RequestID())
 	r.Use(natsrouter.Recovery())
 	r.Use(natsrouter.Logging())

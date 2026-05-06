@@ -660,9 +660,9 @@ func TestRequestIDMiddleware_OtherCtxKeysStillReadable(t *testing.T) {
 	assert.True(t, called, "downstream handler must run")
 }
 
-func TestRouter_DefaultMaxConcurrency(t *testing.T) {
+func TestRouter_DefaultIsUnbounded(t *testing.T) {
 	r := New(nil, "test")
-	assert.Equal(t, defaultMaxConcurrency, cap(r.sem))
+	assert.Nil(t, r.sem, "default router has no admission semaphore (unbounded spawn)")
 }
 
 func TestRouter_WithMaxConcurrency_Overrides(t *testing.T) {
@@ -672,9 +672,9 @@ func TestRouter_WithMaxConcurrency_Overrides(t *testing.T) {
 
 func TestRouter_WithMaxConcurrency_IgnoresNonPositive(t *testing.T) {
 	r := New(nil, "test", WithMaxConcurrency(0))
-	assert.Equal(t, defaultMaxConcurrency, cap(r.sem))
+	assert.Nil(t, r.sem, "WithMaxConcurrency(0) leaves the router unbounded")
 	r2 := New(nil, "test", WithMaxConcurrency(-1))
-	assert.Equal(t, defaultMaxConcurrency, cap(r2.sem))
+	assert.Nil(t, r2.sem, "WithMaxConcurrency(-1) leaves the router unbounded")
 }
 
 // TestRouter_replyBusy_NoReplySubject verifies that fire-and-forget
@@ -686,4 +686,16 @@ func TestRouter_replyBusy_NoReplySubject(t *testing.T) {
 	msg := &nats.Msg{Subject: "void.subject", Reply: ""}
 	// Must not panic. Reply == "" hits the early-return path.
 	r.replyBusy(msg)
+}
+
+func TestDefault_PreInstallsMiddleware(t *testing.T) {
+	r := Default(nil, "test")
+	// Recovery, RequestID, Logging — three middleware functions.
+	assert.Len(t, r.middleware, 3, "Default should pre-install Recovery, RequestID, Logging")
+}
+
+func TestDefault_ForwardsOptions(t *testing.T) {
+	r := Default(nil, "test", WithMaxConcurrency(7))
+	require.NotNil(t, r.sem, "WithMaxConcurrency through Default must set the semaphore")
+	assert.Equal(t, 7, cap(r.sem))
 }
