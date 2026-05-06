@@ -9,6 +9,7 @@ import (
 
 	"github.com/gocql/gocql"
 
+	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -53,10 +54,11 @@ func toMentionSet(mentions []model.Participant) []*cassParticipant {
 // CassandraStore implements Store using a Cassandra session.
 type CassandraStore struct {
 	cassSession *gocql.Session
+	cipher      atrest.Cipher // nil when ATREST_ENABLED=false
 }
 
-func NewCassandraStore(session *gocql.Session) *CassandraStore {
-	return &CassandraStore{cassSession: session}
+func NewCassandraStore(session *gocql.Session, cipher atrest.Cipher) *CassandraStore {
+	return &CassandraStore{cassSession: session, cipher: cipher}
 }
 
 // SaveMessage inserts msg into both messages_by_room and messages_by_id.
