@@ -1341,7 +1341,150 @@ See [Error envelope](#5-error-envelope-reference).
 
 ### 3.3 search-service
 
-_(filled in by Tasks 22–23)_
+#### Search Messages
+
+**Subject:** `chat.user.{account}.request.search.messages`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Full-text search across messages the requester has access to. When `roomIds` is omitted (or empty), the search runs across all rooms the user can see; when set, it scopes to those rooms (the service still enforces per-user access).
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `searchText` | string   | yes | The query. |
+| `roomIds`    | string[] | no  | Optional scope. Empty means "search every room the user has access to". |
+| `size`       | number   | no  | Page size. |
+| `offset`     | number   | no  | Pagination offset. |
+
+```json
+{
+  "searchText": "rollout plan",
+  "size": 20
+}
+```
+
+##### Success response
+
+| Field   | Type                    | Notes |
+|---------|-------------------------|-------|
+| `total` | number                  | Total hits matching the query. |
+| `results` | array<MessageSearchHit> | Page of message hits. |
+
+`MessageSearchHit`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messageId` | string |       |
+| `roomId` | string |       |
+| `siteId` | string |       |
+| `userId` | string | Sender's internal user ID. |
+| `userAccount` | string | Sender's account. |
+| `content` | string | The message body. |
+| `createdAt` | string | RFC 3339. |
+| `threadParentMessageId` | string | Optional. |
+| `threadParentMessageCreatedAt` | string | Optional. RFC 3339. |
+
+```json
+{
+  "total": 42,
+  "results": [
+    {
+      "messageId": "01970a4f8c2d7c9aQRST",
+      "roomId": "01970a4f8c2d7c9aQ",
+      "siteId": "siteA",
+      "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+      "userAccount": "alice",
+      "content": "let's discuss the rollout plan tomorrow",
+      "createdAt": "2026-05-06T07:55:00Z"
+    }
+  ]
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
+#### Search Rooms
+
+**Subject:** `chat.user.{account}.request.search.rooms`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Full-text search across rooms the requester is a member of (spotlight search).
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `searchText` | string | yes | The query. |
+| `scope`      | string | no  | `"all"` (default), `"channel"`, or `"dm"`. The value `"app"` is reserved and currently rejected. |
+| `size`       | number | no  | Page size. |
+| `offset`     | number | no  | Pagination offset. |
+
+```json
+{
+  "searchText": "engineering",
+  "scope": "channel",
+  "size": 20
+}
+```
+
+##### Success response
+
+| Field   | Type                  | Notes |
+|---------|-----------------------|-------|
+| `total` | number                | Total hits. |
+| `results` | array<RoomSearchHit> | Page of room hits. |
+
+`RoomSearchHit`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `roomId` | string |       |
+| `roomName` | string |       |
+| `roomType` | string | The internal letter code: `p` (channel), `d` (DM), etc. — different from the request `scope` values. |
+| `userAccount` | string | The requester's account (echoed). |
+| `siteId` | string |       |
+| `joinedAt` | string | RFC 3339. When the requester joined this room. |
+
+```json
+{
+  "total": 3,
+  "results": [
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "roomName": "engineering-announcements",
+      "roomType": "p",
+      "userAccount": "alice",
+      "siteId": "siteA",
+      "joinedAt": "2026-05-01T10:00:00Z"
+    }
+  ]
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference). Returns an error when `scope=app` is used.
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
 
 ---
 
