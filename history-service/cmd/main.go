@@ -50,7 +50,6 @@ func main() {
 
 	bucketSizer := msgbucket.New(time.Duration(cfg.MessageBucketHours) * time.Hour)
 	historyFloor := time.Duration(cfg.MessageHistoryFloorDays) * 24 * time.Hour
-	_ = bucketSizer  // consumed in later tasks
 	_ = historyFloor // consumed in later tasks
 
 	ctx := context.Background()
@@ -94,7 +93,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cassRepo := cassrepo.NewRepository(cassSession)
+	cassRepo := cassrepo.NewRepository(cassSession, bucketSizer, cfg.MessageReadMaxBuckets)
 	db := mongoClient.Database(cfg.Mongo.DB)
 	subRepo := mongorepo.NewSubscriptionRepo(db)
 	threadRoomRepo := mongorepo.NewThreadRoomRepo(db)
