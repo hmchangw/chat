@@ -106,7 +106,8 @@ func main() {
 	}
 
 	pub := publisher.New(nc)
-	svc := service.New(cassRepo, subRepo, pub, threadRoomRepo, keyStore)
+	// TODO(task-15): pass cassRepo directly once service.MessageReader is updated to the new cassrepo signatures.
+	svc := service.New(newRepoAdapter(cassRepo), subRepo, pub, threadRoomRepo, keyStore)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())

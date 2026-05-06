@@ -2,6 +2,9 @@ package cassrepo
 
 import (
 	"context"
+	"fmt"
+
+	"github.com/gocql/gocql"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
 )
@@ -14,11 +17,22 @@ const threadMessageColumns = "room_id, thread_room_id, created_at, message_id, t
 
 // Partition + clustering key equality avoids ALLOW FILTERING.
 func (r *Repository) GetThreadMessages(ctx context.Context, roomID, threadRoomID string, pageReq PageRequest) (Page[models.Message], error) {
-	return fetchMessagesPage(
-		r.session.Query(
-			"SELECT "+threadMessageColumns+` FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? ORDER BY created_at DESC`,
-			roomID, threadRoomID,
-		).WithContext(ctx),
-		pageReq, "querying thread messages",
-	)
+	var messages []models.Message
+	nextCursor, err := NewQueryBuilder(r.session.Query(
+		"SELECT "+threadMessageColumns+` FROM thread_messages_by_room WHERE room_id = ? AND thread_room_id = ? ORDER BY created_at DESC`,
+		roomID, threadRoomID,
+	).WithContext(ctx)).
+		WithCursor(pageReq.Cursor).
+		WithPageSize(pageReq.PageSize).
+		Fetch(func(iter *gocql.Iter) {
+			messages = scanMsgsFromIter(iter)
+		})
+	if err != nil {
+		return Page[models.Message]{}, fmt.Errorf("querying thread messages: %w", err)
+	}
+	return Page[models.Message]{
+		Data:       messages,
+		NextCursor: nextCursor,
+		HasNext:    nextCursor != "",
+	}, nil
 }

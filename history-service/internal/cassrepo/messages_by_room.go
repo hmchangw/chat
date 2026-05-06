@@ -34,60 +34,147 @@ func scanMsgsFromIter(iter *gocql.Iter) []models.Message {
 	return messages
 }
 
-func fetchMessagesPage(q *gocql.Query, pageReq PageRequest, errMsg string) (Page[models.Message], error) {
-	var messages []models.Message
-	nextCursor, err := NewQueryBuilder(q).
-		WithCursor(pageReq.Cursor).
-		WithPageSize(pageReq.PageSize).
-		Fetch(func(iter *gocql.Iter) {
-			messages = scanMsgsFromIter(iter)
-		})
-	if err != nil {
-		return Page[models.Message]{}, fmt.Errorf("%s: %w", errMsg, err)
+// startBucketFromCursor returns the bucket to start the walk at, plus an
+// initial in-bucket pageState if the request carried a non-empty cursor.
+// When the cursor is empty, defaultBucket is used.
+func startBucketFromCursor(pageReq PageRequest, defaultBucket int64) (int64, []byte, error) {
+	if pageReq.Cursor == nil {
+		return defaultBucket, nil, nil
 	}
-	return Page[models.Message]{
-		Data:       messages,
-		NextCursor: nextCursor,
-		HasNext:    nextCursor != "",
-	}, nil
+	encoded := pageReq.Cursor.Encode()
+	if encoded == "" {
+		return defaultBucket, nil, nil
+	}
+	bucket, pageState, err := decodeBucketCursor(encoded)
+	if err != nil {
+		return 0, nil, fmt.Errorf("start bucket from cursor: %w", err)
+	}
+	return bucket, pageState, nil
 }
 
-func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, pageReq PageRequest) (Page[models.Message], error) {
-	return fetchMessagesPage(
-		r.session.Query(
-			messageByRoomQuery+` WHERE room_id = ? AND created_at < ? ORDER BY created_at DESC`,
-			roomID, before,
-		).WithContext(ctx),
-		pageReq, "querying messages before",
+// scanMessagesUpTo consumes up to remaining rows from iter via structScan.
+func scanMessagesUpTo(iter *gocql.Iter, remaining int) []models.Message {
+	out := make([]models.Message, 0, remaining)
+	for len(out) < remaining {
+		var m models.Message
+		if !structScan(iter, &m) {
+			break
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq PageRequest) (Page[models.Message], error) {
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(before))
+	if err != nil {
+		return Page[models.Message]{}, err
+	}
+	floorBucket := r.bucket.Of(floor)
+
+	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
+		if firstBucket {
+			return r.session.Query(
+				messageByRoomQuery+` WHERE room_id = ? AND bucket = ? AND created_at < ? ORDER BY created_at DESC`,
+				roomID, bucket, before,
+			)
+		}
+		return r.session.Query(
+			messageByRoomQuery+` WHERE room_id = ? AND bucket = ? ORDER BY created_at DESC`,
+			roomID, bucket,
+		)
+	}
+
+	res, err := fillPage[models.Message](
+		ctx, r.bucket, walkDesc, startBucket, floorBucket, r.maxBuckets,
+		pageReq.PageSize, initialPageState, queryFn, scanMessagesUpTo,
 	)
+	if err != nil {
+		return Page[models.Message]{}, fmt.Errorf("get messages before: %w", err)
+	}
+	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
 }
 
 func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, pageReq PageRequest) (Page[models.Message], error) {
-	return fetchMessagesPage(
-		r.session.Query(
-			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? AND created_at < ? ORDER BY created_at DESC`,
-			roomID, since, before,
-		).WithContext(ctx),
-		pageReq, "querying messages between desc",
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(before))
+	if err != nil {
+		return Page[models.Message]{}, err
+	}
+	floorBucket := r.bucket.Of(since)
+
+	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
+		if firstBucket {
+			return r.session.Query(
+				messageByRoomQuery+` WHERE room_id = ? AND bucket = ? AND created_at > ? AND created_at < ? ORDER BY created_at DESC`,
+				roomID, bucket, since, before,
+			)
+		}
+		return r.session.Query(
+			messageByRoomQuery+` WHERE room_id = ? AND bucket = ? ORDER BY created_at DESC`,
+			roomID, bucket,
+		)
+	}
+
+	res, err := fillPage[models.Message](
+		ctx, r.bucket, walkDesc, startBucket, floorBucket, r.maxBuckets,
+		pageReq.PageSize, initialPageState, queryFn, scanMessagesUpTo,
 	)
+	if err != nil {
+		return Page[models.Message]{}, fmt.Errorf("get messages between desc: %w", err)
+	}
+	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
 }
 
-func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, pageReq PageRequest) (Page[models.Message], error) {
-	return fetchMessagesPage(
-		r.session.Query(
-			messageByRoomQuery+` WHERE room_id = ? AND created_at > ? ORDER BY created_at ASC`,
-			roomID, after,
-		).WithContext(ctx),
-		pageReq, "querying messages after",
+func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, ceiling time.Time, pageReq PageRequest) (Page[models.Message], error) {
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(after))
+	if err != nil {
+		return Page[models.Message]{}, err
+	}
+	ceilingBucket := r.bucket.Of(ceiling)
+
+	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
+		if firstBucket {
+			return r.session.Query(
+				messageByRoomQuery+` WHERE room_id = ? AND bucket = ? AND created_at > ? ORDER BY created_at ASC`,
+				roomID, bucket, after,
+			)
+		}
+		return r.session.Query(
+			messageByRoomQuery+` WHERE room_id = ? AND bucket = ? ORDER BY created_at ASC`,
+			roomID, bucket,
+		)
+	}
+
+	res, err := fillPage[models.Message](
+		ctx, r.bucket, walkAsc, startBucket, ceilingBucket, r.maxBuckets,
+		pageReq.PageSize, initialPageState, queryFn, scanMessagesUpTo,
 	)
+	if err != nil {
+		return Page[models.Message]{}, fmt.Errorf("get messages after: %w", err)
+	}
+	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
 }
 
-func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, pageReq PageRequest) (Page[models.Message], error) {
-	return fetchMessagesPage(
-		r.session.Query(
-			messageByRoomQuery+` WHERE room_id = ? ORDER BY created_at ASC`,
-			roomID,
-		).WithContext(ctx),
-		pageReq, "querying all messages asc",
+func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, floor time.Time, ceiling time.Time, pageReq PageRequest) (Page[models.Message], error) {
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(floor))
+	if err != nil {
+		return Page[models.Message]{}, err
+	}
+	ceilingBucket := r.bucket.Of(ceiling)
+
+	queryFn := func(bucket int64, _ bool) *gocql.Query {
+		return r.session.Query(
+			messageByRoomQuery+` WHERE room_id = ? AND bucket = ? ORDER BY created_at ASC`,
+			roomID, bucket,
+		)
+	}
+
+	res, err := fillPage[models.Message](
+		ctx, r.bucket, walkAsc, startBucket, ceilingBucket, r.maxBuckets,
+		pageReq.PageSize, initialPageState, queryFn, scanMessagesUpTo,
 	)
+	if err != nil {
+		return Page[models.Message]{}, fmt.Errorf("get all messages asc: %w", err)
+	}
+	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
 }
