@@ -260,6 +260,58 @@ See [Error envelope](#5-error-envelope-reference).
 
 ---
 
+#### List Rooms
+
+**Subject:** `chat.user.{account}.request.rooms.list`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+##### Request body
+
+Empty. Send `{}` or no payload.
+
+```json
+{}
+```
+
+##### Success response
+
+| Field   | Type           | Notes |
+|---------|----------------|-------|
+| `rooms` | array<Room>    | All rooms the requester is subscribed to. See [Create Room](#create-room) for the `Room` schema. |
+
+```json
+{
+  "rooms": [
+    {
+      "id": "01970a4f8c2d7c9aQ",
+      "name": "engineering-announcements",
+      "type": "channel",
+      "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+      "siteId": "siteA",
+      "userCount": 12,
+      "lastMsgAt": "2026-05-06T07:55:00Z",
+      "lastMsgId": "01970a4f8c2d7c9aQRST",
+      "createdAt": "2026-05-01T10:00:00Z",
+      "updatedAt": "2026-05-06T07:55:00Z"
+    }
+  ]
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.2 history-service
 
 _(filled in by Tasks 14–21)_
