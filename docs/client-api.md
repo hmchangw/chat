@@ -86,7 +86,22 @@ All event payloads carry a top-level `timestamp` field that is **milliseconds si
 
 ### 2.1 NATS connection
 
-_(filled in by Task 3)_
+A client connects to NATS using a user NKey pair plus a signed JWT obtained from the auth-service (§2.2). The JWT scopes the client's permissions to:
+
+| Permission | Subject pattern | Why |
+|------------|-----------------|-----|
+| Publish    | `chat.user.{account}.>` | The client may publish only under its own user namespace. All RPC requests, the message-send subject, and any client-emitted event fall here. |
+| Publish    | `_INBOX.>`              | Required for the standard NATS request/reply pattern (the auto-generated reply inbox). |
+| Subscribe  | `chat.user.{account}.>` | Receives all responses, notifications, and per-user events. |
+| Subscribe  | `chat.room.>`           | Subscribes to per-room message streams and room events for any room the user belongs to. |
+| Subscribe  | `_INBOX.>`              | Required to receive replies to client-issued requests. |
+
+**Recommended baseline subscriptions on connect:**
+
+- `chat.user.{account}.>` — captures every personal event including async replies, notifications, and subscription updates.
+- `chat.room.{roomID}.stream.msg` for each room in the user's sidebar — receives new messages.
+
+The exact event subjects a client may receive as a result of an RPC are listed under each method's "Triggered events" sections in §2.2, §3, and §4.
 
 ### 2.2 HTTP — POST /auth
 
