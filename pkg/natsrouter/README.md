@@ -62,7 +62,17 @@ natsrouter is designed for **NATS request/reply** endpoints — a client sends a
 
 ## Concurrency Model
 
-The router spawns one goroutine per incoming message. By default there is **no admission control** — the router behaves like `gin.Default()` over `net/http`: every accepted message gets its own handler goroutine, and backpressure flows from downstream timeouts (`HandlerTimeout` middleware, ctx-aware database drivers).
+The router spawns one goroutine per incoming message. By default there is **no admission control** — the model is analogous to HTTP/2's per-stream goroutine model (one goroutine per request, not per connection). Backpressure flows from downstream timeouts (`HandlerTimeout` middleware, ctx-aware database drivers).
+
+Under the unbounded default, callers that hit a timeout receive a generic `{"error":"internal error"}` reply unless the handler maps `context.DeadlineExceeded` to `ErrUnavailable` explicitly:
+
+```go
+if errors.Is(err, context.DeadlineExceeded) {
+    return nil, natsrouter.ErrUnavailable("request timed out")
+}
+```
+
+Without that mapping there is no structured retry signal in the default path; opt into `WithMaxConcurrency(N)` if you want the router itself to emit `ErrUnavailable` on saturation.
 
 For services that need a hard cap on in-flight handlers (memory-constrained pods, downstream pools that don't queue cleanly, etc.), opt into admission control with `WithMaxConcurrency(N)` at construction:
 
@@ -133,10 +143,16 @@ type Option func(*Router)
 // WithMaxConcurrency sets the maximum number of in-flight handler
 // invocations across all routes registered on this router. By default,
 // no admission control is applied (unbounded spawn). Calling
-// WithMaxConcurrency installs a semaphore of capacity N. Non-positive
-// values are ignored, leaving the router unbounded. If multiple
-// WithMaxConcurrency options are supplied, the last positive value takes
-// effect. Saturation triggers a 503-style ErrUnavailable reply.
+// WithMaxConcurrency installs a semaphore of capacity n.
+//
+// Non-positive values are ignored AND emit a slog.Warn — a misconfigured
+// deployment (e.g. ROUTER_MAX_CONCURRENCY=0 from an unset env var) won't
+// silently disable admission control without a trace. Once a semaphore
+// is installed, a subsequent WithMaxConcurrency(0) does NOT remove it.
+//
+// If multiple WithMaxConcurrency options are supplied, the last call
+// with a positive n takes effect. Saturation triggers a 503-style
+// ErrUnavailable reply.
 func WithMaxConcurrency(n int) Option
 ```
 
@@ -318,7 +334,7 @@ Three handler shapes for three use cases:
 |----------|-------------|----------|----------|
 | `Register[Req, Resp]` | Yes | Yes | Standard request/reply (most endpoints) |
 | `RegisterNoBody[Resp]` | No | Yes | GET-style lookups where subject has all info |
-| `RegisterVoid[Req]` | Yes | No | Fire-and-forget events (dropped with a Warn log on saturation) |
+| `RegisterVoid[Req]` | Yes | No | Fire-and-forget events (under `WithMaxConcurrency` saturation: dropped with a Warn log; under unbounded default: always spawns) |
 
 ```go
 // Request/reply — the most common pattern.
@@ -468,13 +484,29 @@ func RequestIDMiddleware() natsrouter.HandlerFunc {
 
 ### Recommended Ordering
 
+Two equivalent setups, depending on whether you start from `Default()` or `New()`:
+
 ```go
-router.Use(natsrouter.Recovery())                       // first — catches panics from anything below
-router.Use(natsrouter.RequestID())                      // before HandlerTimeout so the timeout's logs/replies have IDs
-router.Use(natsrouter.HandlerTimeout(5 * time.Second))  // before Logging so logged duration includes timeout wait
-router.Use(natsrouter.Logging())                        // last — logs final duration
+// (a) Using Default — recommended. Simplest one-liner; HandlerTimeout
+// goes after Logging in the chain, but Logging still records the full
+// duration (Logging measures via time.Since(start) in its post-c.Next()
+// phase, regardless of position).
+router := natsrouter.Default(nc, "my-service")
+router.Use(natsrouter.HandlerTimeout(5 * time.Second))
+// Resulting chain: Recovery → RequestID → Logging → HandlerTimeout
+
+// (b) Using New + explicit Use — useful if you want HandlerTimeout
+// strictly before Logging (e.g., a custom Logging middleware that does
+// NOT measure in its post-c.Next() phase).
+router := natsrouter.New(nc, "my-service")
+router.Use(natsrouter.Recovery())
+router.Use(natsrouter.RequestID())
+router.Use(natsrouter.HandlerTimeout(5 * time.Second))
+router.Use(natsrouter.Logging())
 // custom middleware (auth, rate-limit, …) goes between RequestID and Logging
 ```
+
+Both produce the same observable behavior with the built-in `Logging` middleware. Pick (a) for brevity; pick (b) if you've replaced `Logging` with a variant that records timing in its pre-`c.Next()` phase.
 
 ### Execution Order
 

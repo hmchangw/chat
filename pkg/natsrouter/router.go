@@ -52,15 +52,26 @@ type Option func(*Router)
 // WithMaxConcurrency sets the maximum number of in-flight handler
 // invocations across all routes registered on this router. By default,
 // no admission control is applied (unbounded spawn). Calling
-// WithMaxConcurrency installs a semaphore of capacity N. Non-positive
-// values are ignored, leaving the router unbounded. If multiple
-// WithMaxConcurrency options are supplied, the last positive value takes
-// effect. Saturation triggers a 503-style ErrUnavailable reply.
+// WithMaxConcurrency installs a semaphore of capacity n.
+//
+// Non-positive values are ignored and emit a Warn log so a
+// misconfigured deployment (e.g. an env var defaulting to 0) doesn't
+// silently disable admission control without trace. Once a semaphore
+// is installed, a subsequent WithMaxConcurrency(0) does NOT remove it;
+// non-positive values are unconditionally no-ops.
+//
+// If multiple WithMaxConcurrency options are supplied, the last call
+// with a positive n takes effect. Saturation triggers a 503-style
+// ErrUnavailable reply.
 func WithMaxConcurrency(n int) Option {
 	return func(r *Router) {
 		if n > 0 {
 			r.sem = make(chan struct{}, n)
+			return
 		}
+		slog.Warn("natsrouter: WithMaxConcurrency ignored non-positive value; router remains in current admission state",
+			"n", n,
+			"sem_currently_installed", r.sem != nil)
 	}
 }
 
@@ -85,9 +96,17 @@ func New(nc *otelnats.Conn, queue string, opts ...Option) *Router {
 //	r := New(nc, queue, opts...)
 //	r.Use(Recovery(), RequestID(), Logging())
 //
+// Recovery is registered first (outermost) so it catches panics from
+// RequestID and Logging themselves, not just from the handler. This
+// differs from gin.Default(), which places Logger() first; gin's order
+// is fine for HTTP because gin's Logger doesn't panic, but our
+// outermost-Recovery posture is strictly stricter.
+//
 // HandlerTimeout is intentionally omitted because the deadline duration
-// varies per service. Add it explicitly via r.Use(HandlerTimeout(d)) if
-// your service needs one.
+// varies per service. Add it explicitly via r.Use(HandlerTimeout(d)).
+// Logging measures via time.Since(start) in its post-c.Next() phase, so
+// the logged duration captures the full chain regardless of where
+// HandlerTimeout sits relative to Logging in the chain.
 func Default(nc *otelnats.Conn, queue string, opts ...Option) *Router {
 	r := New(nc, queue, opts...)
 	r.Use(Recovery(), RequestID(), Logging())

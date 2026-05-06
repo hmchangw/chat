@@ -93,8 +93,11 @@ func Logging() HandlerFunc {
 // so the caller sees a structured "unavailable" code instead of a
 // generic internal error.
 //
-// Place this AFTER RequestID and BEFORE Logging so the duration logged by
-// Logging includes any time spent waiting for the deadline.
+// Place AFTER RequestID so the request ID is set before any
+// timeout-related downstream work runs. Position relative to Logging
+// does not affect what Logging records: Logging measures via
+// `time.Since(start)` in its post-`c.Next()` phase, which captures the
+// full chain duration regardless of where HandlerTimeout sits.
 func HandlerTimeout(d time.Duration) HandlerFunc {
 	return func(c *Context) {
 		ctx, cancel := context.WithTimeout(c.ctx, d)

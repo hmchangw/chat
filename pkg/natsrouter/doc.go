@@ -5,10 +5,21 @@
 // # Concurrency model
 //
 // The router spawns one goroutine per incoming message. By default
-// there is NO admission control — the router behaves like gin.Default()
-// over net/http: every accepted message gets its own handler goroutine,
-// and backpressure flows from downstream timeouts (HandlerTimeout
-// middleware, ctx-aware database drivers).
+// there is NO admission control — the model is analogous to HTTP/2's
+// per-stream goroutine model (one goroutine per request, not per
+// connection). Backpressure flows from downstream timeouts
+// (HandlerTimeout middleware, ctx-aware database drivers).
+//
+// Under the unbounded default, callers that hit a timeout receive a
+// generic {"error":"internal error"} reply unless the handler maps
+// context.DeadlineExceeded to ErrUnavailable explicitly:
+//
+//	if errors.Is(err, context.DeadlineExceeded) {
+//	    return nil, natsrouter.ErrUnavailable("request timed out")
+//	}
+//
+// Without that mapping there is no structured retry signal in the
+// default path.
 //
 // For services that need a hard cap on in-flight handlers (memory-
 // constrained pods, downstream pools that don't queue cleanly, etc.),
@@ -28,15 +39,20 @@
 //
 // # Fire-and-forget routes
 //
-// When admission control is enabled (WithMaxConcurrency), RegisterVoid
-// handlers have no NATS reply subject by definition. When a
-// fire-and-forget message arrives while the semaphore is saturated, the
-// router has no reply channel on which to publish ErrUnavailable, so the
-// message is SILENTLY DROPPED. Callers that publish to a void route via
-// nc.Publish (rather than nc.Request) get no signal that the message
-// was dropped. Size MaxConcurrency conservatively for services that
+// RegisterVoid handlers, by their typed shape, are designed for
+// callers that publish via nc.Publish — no Reply subject is set on the
+// message.
+//
+// When admission control is enabled (WithMaxConcurrency) and the
+// semaphore is saturated, such fire-and-forget messages are SILENTLY
+// DROPPED: the router has no reply channel on which to publish
+// ErrUnavailable, so callers get no signal that the message was
+// dropped (a slog.Warn log line is emitted server-side keyed by
+// subject). Size MaxConcurrency conservatively for services that
 // expose RegisterVoid endpoints, or front them with JetStream so
-// dropped messages can be redelivered.
+// dropped messages can be redelivered. Under the default unbounded
+// configuration this drop path is unreachable; every accepted message
+// spawns a handler goroutine.
 //
 // # Queue-group fairness under saturation
 //
