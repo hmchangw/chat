@@ -1153,6 +1153,71 @@ See [Error envelope](#5-error-envelope-reference). Common errors: `"only the sen
 
 ---
 
+#### Delete Message
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.delete`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Soft-deletes a message (sets `deleted=true` on the row; row is preserved for audit). Only the original sender may delete. Idempotent — re-deleting an already-deleted message returns success without re-publishing the event.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `messageId` | string | yes | The message to delete. |
+
+```json
+{ "messageId": "01970a4f8c2d7c9aQRST" }
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messageId` | string | Echoes the input. |
+| `deletedAt` | number | Milliseconds since Unix epoch (UTC). For an already-deleted message, this is the original deletion time. |
+
+```json
+{
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "deletedAt": 1746518800000
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference). Common errors: `"only the sender can delete"`, `"message not found"`, `"failed to delete message"`.
+
+##### Triggered events — success path
+
+**`chat.room.{roomID}.event`** — `MessageDeletedEvent`. Recipients: every client subscribed to the room. Not published when the request hits an already-deleted message or loses a concurrent-delete CAS.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"message_deleted"`. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `roomId` | string |       |
+| `messageId` | string | The deleted message's ID. |
+| `deletedBy` | string | The sender's account. |
+| `deletedAt` | number | Milliseconds since Unix epoch (UTC). Domain time of the delete. |
+
+```json
+{
+  "type": "message_deleted",
+  "timestamp": 1746518800123,
+  "roomId": "01970a4f8c2d7c9aQ",
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "deletedBy": "alice",
+  "deletedAt": 1746518800000
+}
+```
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.3 search-service
 
 _(filled in by Tasks 22–23)_
