@@ -54,7 +54,7 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleRoomSync(ctx, &evt)
 	case "role_updated":
 		return h.handleRoleUpdated(ctx, &evt)
-	case model.OutboxSubscriptionRead:
+	case "subscription_read":
 		return h.handleSubscriptionRead(ctx, &evt)
 	case "thread_subscription_upserted":
 		return h.handleThreadSubscriptionUpserted(ctx, &evt)
