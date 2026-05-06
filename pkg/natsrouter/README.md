@@ -7,11 +7,15 @@ Handles subject pattern matching, parameter extraction, JSON marshal/unmarshal, 
 ## Quick Start
 
 ```go
-nc, _ := natsutil.Connect(natsURL, credsFile)
+nc, err := natsutil.Connect(natsURL, credsFile)
+if err != nil {
+    log.Fatal(err)
+}
 router := natsrouter.New(nc, "my-service",
     natsrouter.WithMaxConcurrency(100),
 )
 router.Use(natsrouter.Recovery())
+router.Use(natsrouter.RequestID())
 router.Use(natsrouter.HandlerTimeout(5 * time.Second))
 router.Use(natsrouter.Logging())
 
@@ -65,7 +69,7 @@ natsrouter is designed for **NATS request/reply** endpoints — a client sends a
 The router admits at most N concurrent handler invocations per process across all routes registered on it (default 100). Admission is enforced by a non-blocking acquire on a semaphore inside the per-subscription dispatcher callback:
 
 - **Acquire success** → spawn a goroutine that runs the middleware chain + handler. The goroutine releases the semaphore on return.
-- **Acquire failure (saturated)** → publish an `ErrUnavailable` reply (`{"error":"service busy","code":"unavailable"}`) immediately and return. Callers should retry with backoff.
+- **Acquire failure (saturated)** → publish an `ErrUnavailable` reply (`{"error":"service busy","code":"unavailable"}`) immediately and return. Callers should retry with exponential backoff and jitter (50–200 ms typically); queue-group routing will redistribute the retry across pods, often landing on a less-loaded one. NATS itself has no built-in retry semantics — the burden is entirely on the caller.
 
 ```go
 // Tune per environment via env var:
@@ -75,13 +79,17 @@ router := natsrouter.New(nc, "my-service",
 )
 ```
 
+**Why default 100?** This matches the project-wide `MAX_WORKERS` convention used by JetStream worker services and aligns with the default Cassandra/Mongo connection pool sizes. If a handler never hits a connection pool (pure in-memory work), a higher ceiling is fine. If downstream pools are smaller, set `MaxConcurrency` to match the smallest pool to prevent goroutines from queueing behind pool exhaustion.
+
 ### Important properties
 
 - **Per-route overrides are not supported today.** A single router-wide semaphore covers every route. The `Registrar` interface is intentionally minimal so a future wrapper (e.g. a route group with its own admission semaphore) can be added without breaking the existing API. Route-level isolation should wait until real evidence of noisy-neighbor contention surfaces in production.
 
 - **Per-subject FIFO ordering is NOT preserved.** Two messages that arrive on the same subscription are spawned into independent goroutines and race; whichever wins the goroutine schedule runs first. Handlers must be idempotent or use external coordination (Cassandra LWTs, Mongo conditional updates) to ensure correctness under concurrent invocation.
 
-- **Fire-and-forget routes drop silently under saturation.** `RegisterVoid` handlers have no NATS reply subject. When a fire-and-forget message arrives while the semaphore is saturated, the router has no reply channel on which to publish `ErrUnavailable`, so the message is silently dropped (with a `slog.Warn` log line). Size `MaxConcurrency` conservatively for services that expose `RegisterVoid` endpoints, or front them with JetStream so dropped messages can be redelivered.
+- **`HandlerTimeout` does not free a slot early.** When a handler runs past its deadline, the goroutine is NOT interrupted — it continues holding its semaphore slot until it actually returns. CPU-bound code or non-context-aware libraries will run past the deadline and starve other requests of admission. Either propagate `ctx` into every blocking call so the timeout takes effect, or size `MaxConcurrency` accordingly.
+
+- **Fire-and-forget routes drop silently under saturation.** `RegisterVoid` handlers are designed for `nc.Publish` callers (no Reply subject). When a fire-and-forget message arrives while the semaphore is saturated, the router has no reply channel on which to publish `ErrUnavailable`, so the message is dropped with a `slog.Warn` log line keyed by subject. Size `MaxConcurrency` conservatively for services that expose `RegisterVoid` endpoints, or front them with JetStream so dropped messages can be redelivered. *Note:* if a caller publishes to a `RegisterVoid` route via `nc.Request` or `nc.PublishRequest` (supplying a reply subject), the saturated router DOES reply with `ErrUnavailable` to that subject — though under normal load the void handler still never replies, so the caller times out.
 
 - **Queue-group fairness shifts under saturation.** NATS queue-group routing distributes messages among subscribers without knowing whether any individual subscriber's process-level admission control is full. A saturated pod will continue to receive (and busy-reply) its share of messages even while other pods sit idle. Monitor the per-pod busy-reply rate as a real SLI rather than assume queue-group routing alone provides load balancing.
 
@@ -124,7 +132,7 @@ func WithMaxConcurrency(n int) Option
 
 ### Registration Functions
 
-All accept a `Registrar` (currently `*Router`).
+All accept a `Registrar` (currently `*Router`). They are free functions, not `*Router` methods, because Go's type-parameter rules (as of Go 1.22) do not permit type parameters on methods. `Register[Req, Resp]`'s typed handlers can only live on a free function.
 
 ```go
 // Request body + JSON response. The standard request/reply handler.
@@ -259,10 +267,11 @@ const (
 // Stores it via c.Set("requestID", id). Recovery and Logging include it automatically.
 func RequestID() HandlerFunc
 
-// Catches panics, logs them with request ID, replies with "internal error".
-// Recommended even though the router has its own spawn-site panic backstop —
-// Recovery produces structured replies enriched with middleware-set fields
-// (request ID, etc.); the spawn-site backstop is a defense-in-depth catch.
+// Catches panics, logs them at slog.Error with request ID + subject, replies
+// with `{"error":"internal error"}`. Recommended even though the router has
+// its own spawn-site panic backstop — Recovery's value over the backstop is
+// richer logging (request ID, subject) and louder severity (Error vs Warn);
+// the reply payload itself is identical.
 func Recovery() HandlerFunc
 
 // Logs subject, duration, and request ID for each request.
@@ -271,8 +280,9 @@ func Logging() HandlerFunc
 // Wraps the handler context with a deadline of d. Downstream calls that
 // respect context (Cassandra/Mongo drivers, otelnats.Conn.Publish, etc.)
 // will abort if the chain runs longer than d. The deadline is released
-// when the chain returns. Place AFTER Recovery + RequestID and BEFORE
-// Logging so the duration logged includes deadline-related wait.
+// when the chain returns. Place AFTER RequestID and BEFORE Logging so
+// the request ID is set before the timeout fires and so Logging's
+// recorded duration captures the full chain wall clock.
 //
 // Caveat — does NOT actively interrupt non-context-aware handlers; CPU-
 // bound code will run past the deadline. Recommended pattern when a
@@ -298,7 +308,7 @@ Three handler shapes for three use cases:
 |----------|-------------|----------|----------|
 | `Register[Req, Resp]` | Yes | Yes | Standard request/reply (most endpoints) |
 | `RegisterNoBody[Resp]` | No | Yes | GET-style lookups where subject has all info |
-| `RegisterVoid[Req]` | Yes | No | Fire-and-forget events (silent drop on saturation) |
+| `RegisterVoid[Req]` | Yes | No | Fire-and-forget events (dropped with a Warn log on saturation) |
 
 ```go
 // Request/reply — the most common pattern.
@@ -315,7 +325,7 @@ natsrouter.RegisterNoBody(router, "chat.user.{account}.rooms.get.{roomID}",
         return store.FindRoom(c, c.Param("roomID"))
     })
 
-// Fire-and-forget — no response sent. Silently dropped on router saturation.
+// Fire-and-forget — no response sent. Dropped with a Warn log on saturation.
 natsrouter.RegisterVoid(router, "chat.user.{account}.event.typing",
     func(c *natsrouter.Context, req TypingEvent) error {
         return broadcast(c, c.Param("account"), req)
@@ -344,7 +354,9 @@ If `HandlerTimeout` middleware is installed, `c` carries the timeout deadline an
 
 ### Using the Context in Goroutines
 
-Pass `c` (or any descendant `context.Context` derived via `context.WithTimeout` etc.) freely to anything that expects a `context.Context` — `http.NewRequestWithContext`, database drivers, async goroutines. The pool only recycles the middleware chain-state; every field you can observe on `*Context` (`ctx`, `Msg`, `Params`, `keys`) is set once at request entry, so a goroutine holding `c` after the handler returns cannot race pool reuse.
+Pass `c` (or any descendant `context.Context` derived via `context.WithTimeout` etc.) freely to anything that expects a `context.Context` — `http.NewRequestWithContext`, database drivers, async goroutines. The pool only recycles the middleware chain-state, and `*Context` itself is allocated fresh per request (never pooled), so its `Msg`, `Params`, and `keys` fields are stable for the lifetime of `*Context` regardless of whether the handler has returned.
+
+`c.ctx` is mutable but only inside the chain: middleware that calls `SetContext` does so before `c.Next()`, never concurrently with handler-spawned goroutines. Once the handler body executes, `c.ctx` is stable from that goroutine's perspective. The one exception is `HandlerTimeout`'s `defer cancel()` — it fires after the chain returns and cancels the timeout-derived ctx that was installed via `SetContext`. A goroutine retaining `*Context` past handler return that reads `c.Done()` or `c.Err()` will see a cancelled ctx (`DeadlineExceeded` or `Canceled`). This matches `gin.Context.Request.Context()` semantics. `c.Param`, `c.Get`, `c.Set` go through the `Params` / `keys` map — not `c.ctx` — and remain valid indefinitely.
 
 ```go
 func MetricsMiddleware() natsrouter.HandlerFunc {
@@ -360,7 +372,32 @@ func MetricsMiddleware() natsrouter.HandlerFunc {
 
 Rule of thumb: treat `*Context` exactly like a `*http.Request` — safe to pass to downstream ctx consumers, safe to capture in goroutines. Do not call `Respond` on `c.Msg` from a background goroutine once the handler has already replied; publish to a fresh subject instead.
 
-**One subtlety with `HandlerTimeout`:** the middleware's `defer cancel()` fires when the chain returns. A goroutine retaining `*Context` and reading `c.Done()` after handler return will see a cancelled context (`DeadlineExceeded` or `Canceled`). This matches `gin.Context.Request.Context()` semantics and is rarely a problem in practice — `c.Param`, `c.Get`, `c.Set` go through the params/keys map, not `c.ctx`, and remain valid.
+### Storing data in middleware
+
+Prefer `c.Set(key, value)` / `c.Get(key)` over wrapping the underlying context. The keys map is what natsrouter is built around and is safe to use from any middleware:
+
+```go
+func AuthMiddleware() natsrouter.HandlerFunc {
+    return func(c *natsrouter.Context) {
+        user := authenticate(c.Msg.Header.Get("Authorization"))
+        c.Set("user", user)
+        c.Next()
+    }
+}
+```
+
+If you specifically need to enrich the underlying `context.Context` (for downstream context-aware libraries that don't know about `c.Set`), call `SetContext` BEFORE `c.Next()` — but **never pass `c` itself** as the parent of the new context:
+
+```go
+// WRONG — c.Value(k) delegates to c.ctx.Value(k); passing c as the parent
+// creates a cycle in which any later c.Value(other) lookup loops forever.
+ctx := context.WithValue(c, myKey{}, value) // ⚠ broken
+c.SetContext(ctx)
+```
+
+The package's underlying `context.Context` field is unexported, so external middleware cannot derive from it directly. For external middleware that genuinely needs `context.WithValue` (e.g. propagating a span to a third-party library), derive from `context.Background()` and accept the trade-off (you lose any upstream-context values not migrated explicitly), or contribute a `Context.UnwrapContext()` accessor upstream.
+
+For most use cases, `c.Set` / `c.Get` is the intended mechanism and avoids the cycle entirely.
 
 ### Middleware Data Passing
 
@@ -386,6 +423,19 @@ func AuthMiddleware() natsrouter.HandlerFunc {
 func (s *Service) CreateRoom(c *natsrouter.Context, req CreateReq) (*Room, error) {
     user := c.MustGet("user").(User)
     // ...
+}
+```
+
+`c.MustGet` panics if the key is absent and the bare `.(User)` assertion panics if the value has the wrong type. Both panics will be caught by `Recovery` middleware (or the spawn-site backstop), but the request still fails with `internal error`. This pattern is fine when you fully control middleware ordering for a route — every handler that calls `MustGet("user")` must be registered behind `AuthMiddleware`. If your registration is split across files or handlers may be registered without the middleware, prefer the explicit form:
+
+```go
+v, ok := c.Get("user")
+if !ok {
+    return nil, natsrouter.ErrForbidden("authentication required")
+}
+user, ok := v.(User)
+if !ok {
+    return nil, natsrouter.ErrInternal("user value has unexpected type")
 }
 ```
 
@@ -489,21 +539,28 @@ Params:   {account: pos 2, roomID: pos 5, siteID: pos 6}
 
 At request time, the incoming subject is split by `.` and param values are extracted by position.
 
+### Limitations
+
+- The NATS multi-token wildcard `>` is **not** supported. Patterns must consist entirely of literal tokens and `{name}` single-token parameters. A pattern containing `>` will be subscribed to NATS as the literal string `>` token, and no real subject will match.
+- Each `{name}` placeholder consumes exactly one subject token. A multi-token tail must be modelled as multiple named parameters (`{a}.{b}.{c}`) or split into separate routes.
+
 ## Panic Safety
 
 The router installs a process-safety backstop in every spawned handler goroutine: an unrecovered panic is caught at the spawn site, logged with stack trace, and (if the message has a Reply subject) replied to with `"internal error"`. This guarantees the process cannot be crashed by a single bad handler regardless of middleware configuration.
 
-`Recovery()` middleware is still the recommended path because it produces structured `ErrInternal` replies enriched with request-ID and other middleware-set fields. The spawn-site backstop is strictly a defense-in-depth catch — it fires only when `Recovery` is absent or somehow bypassed, and logs at `Warn` (not `Error`) since the visible symptom is "operator should fix the middleware setup," not a production incident.
+`Recovery()` middleware is still the recommended path because it produces richer logs — keyed by request ID and subject — and uses `slog.Error` severity so panics page operators in the same way as other errors. The reply payload from `Recovery()` and from the spawn-site backstop is identical (`{"error":"internal error"}`); only the log line differs. The backstop fires only when `Recovery` is absent or somehow bypassed, and logs at `Warn` (not `Error`) since the visible symptom is "operator should fix the middleware setup," not a production incident.
+
+**Edge case to be aware of:** if `Recovery` is registered AFTER another middleware (e.g. `RequestID`) and that earlier middleware panics, the panic skips Recovery and falls through to the spawn-site backstop. The reply still says `"internal error"` but the log line carries no request ID (since RequestID never completed). Register Recovery FIRST in the middleware chain to avoid this gap.
 
 ## Shutdown
 
 `Router.Shutdown(ctx)` orchestrates a graceful stop:
 
-1. **Drain each subscription.** New messages stop arriving; pending callbacks finish executing.
-2. **Wait for `SubscriptionClosed`.** All dispatcher goroutines have exited; no more handler goroutines will be spawned.
+1. **Initiate drain on each subscription.** `Subscription.Drain()` is non-blocking — it signals the NATS server to stop routing new messages to this subscription and starts a background drain goroutine inside nats.go. New messages stop arriving immediately; pending messages in the subscription's internal queue continue to be delivered to the dispatcher.
+2. **Wait for `SubscriptionClosed`.** This is the actual blocking step — it fires after the per-subscription dispatcher loop has fully exited, meaning every callback that was ever going to run has already returned and no more handler goroutines will be spawned. (Implementation note: nats.go uses a non-blocking send on the status channel, then closes the channel unconditionally; the router synchronizes on channel close, not on guaranteed value delivery.)
 3. **Wait on the WaitGroup.** Block until every spawned handler goroutine returns — bounded by `ctx`. If `ctx` expires mid-drain, the function still falls through to step 3 (a labeled break, not an early return) so in-flight handlers are not abandoned.
 
-The function returns `nil` on full graceful shutdown. If `ctx` expired, the returned error is a `errors.Join` of every `context.DeadlineExceeded` (one per still-pending subscription, plus optionally one for the WG wait). `errors.Is(err, context.DeadlineExceeded)` works on the joined error.
+The function returns `nil` on full graceful shutdown. If `ctx` expired, the returned error is an `errors.Join` of at most two entries: one for the first subscription whose close-wait timed out (the loop breaks at that point and does not annotate the remaining subscriptions individually) and optionally one for the WaitGroup wait. `errors.Is(err, context.DeadlineExceeded)` works on the joined error.
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -514,7 +571,7 @@ if err := router.Shutdown(ctx); err != nil {
 nc.Drain() // close the NATS connection after the router has stopped routing
 ```
 
-Place `Shutdown` before `nc.Drain()` in the shutdown chain — the router needs the connection to publish in-flight replies.
+Place `Shutdown` before `nc.Drain()` in the shutdown chain — the router needs the connection to publish in-flight replies. (`router.Shutdown` drains only this router's subscriptions while leaving the connection open for other work; `nc.Drain` drains all remaining subscriptions and pending publishes and then closes the connection.)
 
 ## Testing
 
@@ -534,11 +591,13 @@ func TestLoadHistory(t *testing.T) {
 }
 ```
 
-Integration tests against a real NATS server live in `integration_test.go` (build tag `integration`) and use `testcontainers-go` to spin up a NATS container. Run them with:
+Integration tests against a real NATS server live in `integration_test.go` (build tag `integration`) and use `testcontainers-go` to spin up a NATS container. The repo's Makefile is the canonical entry point:
 
 ```bash
-go test -tags=integration -race ./pkg/natsrouter/...
+make test-integration SERVICE=pkg/natsrouter
 ```
+
+(or directly: `go test -tags=integration -race ./pkg/natsrouter/...` — same effect, but the Makefile is the supported path.)
 
 ## Scope and Limitations
 
