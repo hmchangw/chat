@@ -471,6 +471,100 @@ When the asynchronous job fails after acceptance, the requester receives the `As
 
 ---
 
+#### Remove Member
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.remove`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual member removal runs asynchronously in `room-worker`, which publishes the events listed under "Triggered events" below. To receive the `AsyncJobResult` event, the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
+
+##### Request body
+
+| Field     | Type   | Required | Notes |
+|-----------|--------|----------|-------|
+| `account` | string | no       | Remove a single user. Mutually exclusive with `orgId`. |
+| `orgId`   | string | no       | Remove all users in this org. Mutually exclusive with `account`. |
+| `roomId`  | string | no       | Server derives from subject; non-matching values are rejected. |
+
+Exactly one of `account` or `orgId` must be set. The fields `requester` and `timestamp` on the Go `RemoveMemberRequest` are server-set — the client should omit them.
+
+```json
+{ "account": "bob" }
+```
+
+##### Success response
+
+| Field    | Type   | Notes |
+|----------|--------|-------|
+| `status` | string | Always `"accepted"`. Confirms the request passed authorization and was queued for processing. |
+
+```json
+{ "status": "accepted" }
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. neither or both of `account`/`orgId` set, requester is not an owner, target is the last member, or org member cannot leave individually).
+
+```json
+{ "error": "exactly one of account or orgId must be set" }
+```
+
+##### Triggered events — success path
+
+**1. `chat.user.{requesterAccount}.response.{requestID}`** — async job result delivered to the **requester** when the removal finishes.
+
+Recipients: the original requester. Only published if the client set `X-Request-ID` on the original request.
+
+| Field       | Type    | Notes |
+|-------------|---------|-------|
+| `requestId` | string  | Echoes the `X-Request-ID` value from the original request. |
+| `job`       | string  | `"remove_member"` for single-account removal; `"remove_org"` for org removal. |
+| `success`   | boolean | `true` if removal succeeded; `false` if the worker hit an error. |
+| `error`     | string  | Optional. Sanitized message; present only when `success=false`. |
+| `timestamp` | number  | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f",
+  "job": "remove_member",
+  "success": true,
+  "timestamp": 1746518400123
+}
+```
+
+**2. `chat.user.{removedAccount}.event.subscription.update`** — one event per removed account.
+
+Recipients: each removed account (the user whose subscription was deleted).
+
+| Field          | Type   | Notes |
+|----------------|--------|-------|
+| `userId`       | string | The removed user's internal user ID. |
+| `subscription` | object | The `Subscription` record at the time of removal (room ID, room type, user info). |
+| `action`       | string | `"removed"`. |
+| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "subscription": {
+    "user": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
+    "roomId": "01970a4f8c2d7c9aQ",
+    "roomType": "channel"
+  },
+  "action": "removed",
+  "timestamp": 1746518483000
+}
+```
+
+##### Triggered events — error path
+
+When the synchronous reply is an error envelope, the request was rejected before publishing to the worker — no events follow.
+
+When the asynchronous job fails after acceptance, the requester receives the `AsyncJobResult` above with `success: false`. No `subscription.update` events are published in that case.
+
+---
+
 ### 3.2 history-service
 
 _(filled in by Tasks 14–21)_
