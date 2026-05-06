@@ -9,6 +9,8 @@ import (
 	"github.com/gocql/gocql"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/pkg/atrest"
+	cassmodel "github.com/hmchangw/chat/pkg/model/cassandra"
 )
 
 // casMaxRetries bounds the CAS loop; 16 retries cover realistic burst concurrency.
@@ -20,10 +22,15 @@ const (
 	editThreadMsg = `UPDATE thread_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
 	editPinnedMsg = `UPDATE pinned_messages_by_room SET msg = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
 
-	deleteMsgByIDCAS = `UPDATE messages_by_id SET deleted = true, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`
-	deleteMsgByRoom  = `UPDATE messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
-	deleteThreadMsg  = `UPDATE thread_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
-	deletePinnedMsg  = `UPDATE pinned_messages_by_room SET deleted = true, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+	editMsgByIDEncrypted   = `UPDATE messages_by_id SET enc_payload = ?, enc_meta = ?, msg = null, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`
+	editMsgByRoomEncrypted = `UPDATE messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+	editThreadMsgEncrypted = `UPDATE thread_messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
+	editPinnedMsgEncrypted = `UPDATE pinned_messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+
+	deleteMsgByIDCAS = `UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`
+	deleteMsgByRoom  = `UPDATE messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+	deleteThreadMsg  = `UPDATE thread_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
+	deletePinnedMsg  = `UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
 )
 
 // MessageTypeRemoved is the Cassandra type value written to thread parent messages
@@ -34,10 +41,10 @@ const MessageTypeRemoved = "message_removed"
 // Thread-parent delete queries — identical to the regular delete queries but also
 // set type = MessageTypeRemoved. Used when msg.TCount != nil && *msg.TCount > 0.
 const (
-	deleteThreadParentMsgByIDCAS = "UPDATE messages_by_id SET deleted = true, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true"
-	deleteThreadParentMsgByRoom  = "UPDATE messages_by_room SET deleted = true, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?"
-	deleteThreadParentThreadMsg  = "UPDATE thread_messages_by_room SET deleted = true, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?"
-	deleteThreadParentPinnedMsg  = "UPDATE pinned_messages_by_room SET deleted = true, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?"
+	deleteThreadParentMsgByIDCAS = "UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true"
+	deleteThreadParentMsgByRoom  = "UPDATE messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?"
+	deleteThreadParentThreadMsg  = "UPDATE thread_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?"
+	deleteThreadParentPinnedMsg  = "UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?"
 )
 
 // casDecrement atomically decrements a nullable INT toward zero (clamping at zero); mirrors message-worker/store_cassandra.go casIncrement.
@@ -66,19 +73,55 @@ func casDecrement(maxRetries int, initial *int, update func(newVal int, expected
 }
 
 func (r *Repository) editInMessagesByID(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return r.session.Query(editMsgByID, newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt).WithContext(ctx).Exec()
+	if r.cipher == nil {
+		return r.session.Query(editMsgByID, newMsg, editedAt, editedAt, msg.MessageID, msg.CreatedAt).WithContext(ctx).Exec()
+	}
+	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, atrest.EncryptedFields{Msg: newMsg})
+	if err != nil {
+		return fmt.Errorf("encrypt edit body for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+	}
+	return r.session.Query(editMsgByIDEncrypted,
+		payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt, msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Exec()
 }
 
 func (r *Repository) editInMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return r.session.Query(editMsgByRoom, newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+	if r.cipher == nil {
+		return r.session.Query(editMsgByRoom, newMsg, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+	}
+	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, atrest.EncryptedFields{Msg: newMsg})
+	if err != nil {
+		return fmt.Errorf("encrypt edit body for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+	}
+	return r.session.Query(editMsgByRoomEncrypted,
+		payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID,
+	).WithContext(ctx).Exec()
 }
 
 func (r *Repository) editInThreadMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return r.session.Query(editThreadMsg, newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+	if r.cipher == nil {
+		return r.session.Query(editThreadMsg, newMsg, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
+	}
+	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, atrest.EncryptedFields{Msg: newMsg})
+	if err != nil {
+		return fmt.Errorf("encrypt edit body for message %s in room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
+	}
+	return r.session.Query(editThreadMsgEncrypted,
+		payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID,
+	).WithContext(ctx).Exec()
 }
 
 func (r *Repository) editInPinnedMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return r.session.Query(editPinnedMsg, newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID).WithContext(ctx).Exec()
+	if r.cipher == nil {
+		return r.session.Query(editPinnedMsg, newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID).WithContext(ctx).Exec()
+	}
+	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, atrest.EncryptedFields{Msg: newMsg})
+	if err != nil {
+		return fmt.Errorf("encrypt edit body for pinned message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+	}
+	return r.session.Query(editPinnedMsgEncrypted,
+		payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID,
+	).WithContext(ctx).Exec()
 }
 
 func (r *Repository) deleteInMessagesByRoom(ctx context.Context, q string, msg *models.Message, deletedAt time.Time) error {
