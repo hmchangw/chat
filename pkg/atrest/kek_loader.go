@@ -17,7 +17,10 @@ type KEKLoader interface {
 	Current() (version int, key []byte)
 	// ByVersion looks up a KEK by version. ok is false if absent.
 	ByVersion(v int) (key []byte, ok bool)
-	// Close releases any resources.
+	// Close signals the background reload goroutine to stop. It does NOT
+	// block until the goroutine has exited; callers that need to ensure
+	// no further file reads after Close should arrange shutdown via
+	// context cancellation in their service main.
 	Close() error
 }
 
