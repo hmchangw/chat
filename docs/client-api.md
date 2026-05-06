@@ -105,7 +105,76 @@ The exact event subjects a client may receive as a result of an RPC are listed u
 
 ### 2.2 HTTP — POST /auth
 
-_(filled in by Task 4)_
+**Endpoint:** `POST /auth`
+**Reply:** synchronous HTTP response
+
+Exchanges an SSO token for a signed NATS user JWT. The returned JWT is what the client uses to connect to NATS (see §2.1).
+
+#### Request body
+
+| Field           | Type   | Required | Notes |
+|-----------------|--------|----------|-------|
+| `ssoToken`      | string | yes      | OIDC-issued SSO token. |
+| `natsPublicKey` | string | yes      | The client's NATS user public NKey (must pass `nkeys.IsValidPublicUserKey`). |
+
+```json
+{
+  "ssoToken": "<sso-token>",
+  "natsPublicKey": "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NLCNF4"
+}
+```
+
+#### Success response
+
+`HTTP 200`
+
+| Field               | Type   | Notes |
+|---------------------|--------|-------|
+| `natsJwt`           | string | Signed NATS user JWT. Use as the user JWT when connecting to NATS. |
+| `user.email`        | string | OIDC email claim. |
+| `user.account`      | string | The `{account}` value used in every NATS subject. Derived from `preferred_username` (falls back to `name`). |
+| `user.employeeId`   | string | Parsed from the SSO `description` claim. |
+| `user.engName`      | string | Parsed from the SSO `description` claim. |
+| `user.chineseName`  | string | Parsed from the SSO `description` claim. |
+| `user.deptName`     | string | OIDC dept-name claim. |
+| `user.deptId`       | string | OIDC dept-id claim. |
+
+```json
+{
+  "natsJwt": "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ...",
+  "user": {
+    "email": "alice@example.com",
+    "account": "alice",
+    "employeeId": "E12345",
+    "engName": "Alice",
+    "chineseName": "愛麗絲",
+    "deptName": "Engineering",
+    "deptId": "ENG"
+  }
+}
+```
+
+#### Error response
+
+See [Error envelope](#5-error-envelope-reference). HTTP statuses:
+
+| Status | Meaning | Example body |
+|--------|---------|--------------|
+| 400    | Missing or malformed fields, or invalid `natsPublicKey`. | `{ "error": "ssoToken and natsPublicKey are required" }` |
+| 401    | SSO token expired or invalid. | `{ "error": "SSO token has expired, please re-login" }` |
+| 500    | Server-side JWT signing failure. | `{ "error": "failed to generate NATS token" }` |
+
+#### Triggered events — success path
+
+`None — HTTP-only.`
+
+#### Triggered events — error path
+
+`None.`
+
+#### Dev mode
+
+When the auth-service is started with `DEV_MODE=true`, the request body schema is `{ "account": string, "natsPublicKey": string }` (no SSO token; the supplied account is trusted). This is local-development only and is **not** part of the production contract.
 
 ---
 
