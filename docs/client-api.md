@@ -914,6 +914,67 @@ See [Error envelope](#5-error-envelope-reference).
 
 ---
 
+#### Load Next Messages
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.next`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Fetches messages newer than a cursor — the forward-pagination counterpart to Load History.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `after`  | number | no  | Milliseconds since Unix epoch (UTC). Returns messages with `createdAt > after`. Omit for "no lower bound". |
+| `limit`  | number | yes | Maximum number of messages to return. |
+| `cursor` | string | yes | Pagination cursor returned by a previous response. Use empty string for the first page. |
+
+```json
+{
+  "after": 1746518400000,
+  "limit": 50,
+  "cursor": ""
+}
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messages`   | array<Message> | Oldest-first within the page. See [Message schema](#message-schema). |
+| `nextCursor` | string         | Optional. Opaque cursor to pass to the next call. Empty when `hasNext=false`. |
+| `hasNext`    | boolean        | `true` if more messages exist beyond this page. |
+
+```json
+{
+  "messages": [
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "createdAt": "2026-05-06T07:55:00Z",
+      "messageId": "01970a4f8c2d7c9aQRST",
+      "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+      "msg": "morning team"
+    }
+  ],
+  "nextCursor": "eyJ0cyI6MTc0NjUxODQwMDAwMH0=",
+  "hasNext": true
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.3 search-service
 
 _(filled in by Tasks 22–23)_
