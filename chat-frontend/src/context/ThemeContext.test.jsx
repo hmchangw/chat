@@ -101,3 +101,85 @@ describe('ThemeProvider initial state', () => {
     expect(screen.getByTestId('source').textContent).toBe('system')
   })
 })
+
+function ToggleProbe() {
+  const { theme, toggleTheme, setTheme } = useTheme()
+  return (
+    <div>
+      <span data-testid="theme">{theme}</span>
+      <button data-testid="toggle" onClick={toggleTheme}>
+        toggle
+      </button>
+      <button data-testid="set-dark" onClick={() => setTheme('dark')}>
+        set dark
+      </button>
+      <button data-testid="set-light" onClick={() => setTheme('light')}>
+        set light
+      </button>
+    </div>
+  )
+}
+
+describe('ThemeProvider mutations', () => {
+  it('setTheme updates state, attribute, and localStorage', () => {
+    setMatchMedia(false)
+    render(
+      <ThemeProvider>
+        <ToggleProbe />
+      </ThemeProvider>
+    )
+    expect(screen.getByTestId('theme').textContent).toBe('light')
+
+    act(() => {
+      screen.getByTestId('set-dark').click()
+    })
+
+    expect(screen.getByTestId('theme').textContent).toBe('dark')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(localStorage.getItem('theme')).toBe('dark')
+  })
+
+  it('toggleTheme flips light <-> dark and persists', () => {
+    setMatchMedia(false)
+    render(
+      <ThemeProvider>
+        <ToggleProbe />
+      </ThemeProvider>
+    )
+    expect(screen.getByTestId('theme').textContent).toBe('light')
+
+    act(() => {
+      screen.getByTestId('toggle').click()
+    })
+    expect(screen.getByTestId('theme').textContent).toBe('dark')
+    expect(localStorage.getItem('theme')).toBe('dark')
+
+    act(() => {
+      screen.getByTestId('toggle').click()
+    })
+    expect(screen.getByTestId('theme').textContent).toBe('light')
+    expect(localStorage.getItem('theme')).toBe('light')
+  })
+
+  it('does not crash when localStorage.setItem throws', () => {
+    setMatchMedia(false)
+    const original = Storage.prototype.setItem
+    Storage.prototype.setItem = vi.fn(() => {
+      throw new Error('quota exceeded')
+    })
+    try {
+      render(
+        <ThemeProvider>
+          <ToggleProbe />
+        </ThemeProvider>
+      )
+      act(() => {
+        screen.getByTestId('set-dark').click()
+      })
+      expect(screen.getByTestId('theme').textContent).toBe('dark')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    } finally {
+      Storage.prototype.setItem = original
+    }
+  })
+})
