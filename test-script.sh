@@ -227,21 +227,31 @@ create_inbox_site_b_stream() {
 }
 EOF
 )
-  local cfg_file
-  cfg_file=$(mktemp)
-  printf '%s\n' "$cfg" > "$cfg_file"
 
-  # Remove any prior copy so 'add' is idempotent across reruns. --force avoids
-  # the interactive confirmation prompt.
+  # Idempotent: remove any prior copy. --force avoids interactive confirmation.
   nats_cmd stream rm --force "$SITE_B_INBOX_STREAM" >/dev/null 2>&1 || true
 
-  docker run --rm -i \
-    --network "$NETWORK" \
-    -v "$NATS_CREDS_HOST:/creds:ro" \
-    -v "$cfg_file:/cfg.json:ro" \
-    natsio/nats-box:latest \
-    nats --server "$NATS_URL" --creds /creds stream add --config /cfg.json >/dev/null
-  rm -f "$cfg_file"
+  # Talk to the JetStream API directly. The CLI's `stream add --config` flag
+  # interpretation has shifted across natscli versions (some require YAML,
+  # some prompt for missing fields, some silently drop unknown keys). Sending
+  # a stream_create_request to $JS.API.STREAM.CREATE.<name> uses the stable
+  # wire format and returns either a stream_create_response or an error
+  # envelope, which we can grep deterministically.
+  local resp
+  resp=$(nats_request '$JS.API.STREAM.CREATE.'"${SITE_B_INBOX_STREAM}" "$cfg") || {
+    fail "JetStream create-stream request failed: ${NATS_LAST_STDERR}"
+    return 1
+  }
+  if [[ "$resp" == *'"error"'* ]]; then
+    fail "JetStream rejected stream config: $resp"
+    return 1
+  fi
+  if [[ "$resp" != *'"type"'*'stream_create_response'* ]]; then
+    fail "unexpected stream-create reply: $resp"
+    return 1
+  fi
+  verbose "stream create reply: $resp"
+  return 0
 }
 
 # Run an inbox-worker container connected to the local NATS but configured
@@ -282,8 +292,10 @@ wait_for_site_b_inbox_worker() {
 
 setup_site_b_federation() {
   build_inbox_worker_image
-  create_inbox_site_b_stream
-  start_site_b_inbox_worker
+  if ! create_inbox_site_b_stream; then
+    return 1
+  fi
+  start_site_b_inbox_worker || return 1
   wait_for_site_b_inbox_worker || return 1
   SITE_B_FEDERATION_READY=1
   info "site-b federation harness ready (stream=${SITE_B_INBOX_STREAM}, db=${SITE_B_MONGO_DB})"
