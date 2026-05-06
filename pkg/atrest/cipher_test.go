@@ -129,3 +129,81 @@ func (failingStore) Get(context.Context, string) (*RoomDataKey, error) {
 }
 func (failingStore) Upsert(context.Context, RoomDataKey) error  { return errors.New("nope") }
 func (failingStore) Replace(context.Context, RoomDataKey) error { return errors.New("nope") }
+
+func TestBytesEqual_LengthMismatch(t *testing.T) {
+	assert.False(t, bytesEqual([]byte{1, 2, 3}, []byte{1, 2}))
+	assert.False(t, bytesEqual(nil, []byte{1}))
+	assert.True(t, bytesEqual(nil, nil))
+	assert.True(t, bytesEqual([]byte{}, []byte{}))
+}
+
+// errReader returns the supplied error on every Read.
+type errReader struct{ err error }
+
+func (e errReader) Read(_ []byte) (int, error) { return 0, e.err }
+
+func TestEncryptGCM_NonceReadFails(t *testing.T) {
+	key := bytes32('k')
+	_, _, err := encryptGCM(key, []byte("hello"), errReader{err: errors.New("rng broken")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nonce")
+}
+
+func TestDecryptGCM_BadKeyLength(t *testing.T) {
+	// AES requires 16/24/32-byte keys. A 5-byte key fails NewCipher.
+	_, err := decryptGCM([]byte("short"), nil, nil)
+	require.Error(t, err)
+}
+
+// upsertFailStore makes Upsert fail and Get optionally fail; used to
+// exercise the early-return paths in createDEK.
+type upsertFailStore struct {
+	upsertErr error
+	getErr    error
+}
+
+func (s upsertFailStore) Get(context.Context, string) (*RoomDataKey, error) {
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	return nil, nil
+}
+func (s upsertFailStore) Upsert(context.Context, RoomDataKey) error  { return s.upsertErr }
+func (s upsertFailStore) Replace(context.Context, RoomDataKey) error { return nil }
+
+func TestCipher_CreateDEK_UpsertFails(t *testing.T) {
+	store := upsertFailStore{upsertErr: errors.New("mongo down")}
+	c := newTestCipher(t, store)
+	_, _, err := c.Encrypt(context.Background(), "room1", EncryptedFields{Msg: "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mongo down")
+}
+
+// upsertOKThenGetNilStore: Upsert succeeds but the post-Upsert Get
+// returns (nil, nil). createDEK treats this as a synthetic "row missing
+// after upsert" error.
+type upsertOKThenGetNilStore struct{}
+
+func (upsertOKThenGetNilStore) Get(context.Context, string) (*RoomDataKey, error) {
+	return nil, nil
+}
+func (upsertOKThenGetNilStore) Upsert(context.Context, RoomDataKey) error  { return nil }
+func (upsertOKThenGetNilStore) Replace(context.Context, RoomDataKey) error { return nil }
+
+func TestCipher_CreateDEK_PostUpsertGetReturnsNil(t *testing.T) {
+	c := newTestCipher(t, upsertOKThenGetNilStore{})
+	_, _, err := c.Encrypt(context.Background(), "room1", EncryptedFields{Msg: "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing after upsert")
+}
+
+// faultyRandCipher sets randReader to a faulty source so that DEK
+// generation fails inside createDEK.
+func TestCipher_CreateDEK_RandReaderFails(t *testing.T) {
+	store := newFakeDEKStore()
+	c := newTestCipher(t, store)
+	c.randReader = errReader{err: errors.New("rng dead")}
+	_, _, err := c.Encrypt(context.Background(), "room1", EncryptedFields{Msg: "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "generate DEK")
+}
