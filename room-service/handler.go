@@ -725,7 +725,7 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, data []byt
 		}
 	}
 	if req.RoomID != "" && req.RoomID != roomID {
-		return nil, fmt.Errorf("room ID mismatch")
+		return nil, fmt.Errorf("invalid request: room ID mismatch")
 	}
 
 	sub, err := h.store.GetSubscription(ctx, account, roomID)

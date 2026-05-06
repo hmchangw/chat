@@ -397,10 +397,20 @@ scenario_8_empty_body_trusts_subject() {
   assert_contains "reply" "$resp" '"status":"accepted"'
 }
 
+# Run a one-off `nats` CLI command against the local NATS using backend.creds.
+# Echoes stdout; errors go through the caller's redirection.
+nats_cmd() {
+  docker run --rm -i \
+    --network "$NETWORK" \
+    -v "$NATS_CREDS_HOST:/creds:ro" \
+    natsio/nats-box:latest \
+    nats --server "$NATS_URL" --creds /creds "$@"
+}
+
 scenario_9_cross_site_outbox() {
-  current_scenario="9: cross-site user — outbox event published"
+  current_scenario="9: cross-site user — outbox event published to OUTBOX_${SITE_ID}"
   section "$current_scenario"
-  local room_id account dest_site outbox_subject reply
+  local room_id account dest_site
   room_id=$(new_room_id); account="${TEST_PREFIX}_iris"; dest_site="site-b"
 
   # Seed user with a foreign siteId so the handler publishes to outbox.
@@ -421,39 +431,42 @@ scenario_9_cross_site_outbox() {
     alert: false
   }"
 
-  outbox_subject="outbox.${SITE_ID}.to.${dest_site}.subscription_read"
-
-  # Subscribe to the outbox subject in the background, capture one message.
-  local listener_log
-  listener_log=$(mktemp)
-  docker run --rm -d \
-    --name "${TEST_PREFIX}_listener" \
-    --network "$NETWORK" \
-    -v "$NATS_CREDS_HOST:/creds:ro" \
-    natsio/nats-box:latest \
-    nats --server "$NATS_URL" --creds /creds sub --count=1 --raw "$outbox_subject" >/dev/null
-  sleep 1
-
-  # Trigger the RPC (note: outbox is JetStream so the listener uses core sub
-  # against the OUTBOX stream's published subject, which JetStream mirrors).
+  # Trigger the RPC. The handler publishes to OUTBOX_${SITE_ID} via JetStream.
   local body resp
   body="{\"roomId\":\"${room_id}\"}"
-  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed: ${NATS_LAST_STDERR}"; docker rm -f "${TEST_PREFIX}_listener" >/dev/null 2>&1 || true; return; }
+  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
   verbose "reply: $resp"
-
-  # Give the listener a moment to receive.
-  sleep 1
-  local captured=""
-  captured=$(docker logs "${TEST_PREFIX}_listener" 2>&1 || true)
-  docker rm -f "${TEST_PREFIX}_listener" >/dev/null 2>&1 || true
-
   assert_contains "reply" "$resp" '"status":"accepted"'
-  if [[ "$captured" == *"subscription_read"* ]] || [[ "$captured" == *"\"type\":\"subscription_read\""* ]]; then
-    ok "outbox subject received subscription_read event"
+
+  # Give JetStream a moment to commit the publish, then query the OUTBOX stream
+  # directly. This is reliable: the message is durably stored, no listener-
+  # timing window. We dump the last few stream entries and grep for the event
+  # type + the test account, which uniquely identifies our publish.
+  sleep 1
+  local stream_dump
+  stream_dump=$(nats_cmd stream view "OUTBOX_${SITE_ID}" --since 30s 2>&1 || true)
+  verbose "stream dump (last 30s):"
+  verbose "$(echo "$stream_dump" | sed 's/^/    /')"
+
+  if [[ "$stream_dump" == *"subscription_read"* ]] && [[ "$stream_dump" == *"$account"* ]]; then
+    ok "OUTBOX_${SITE_ID} contains subscription_read event for ${account}"
   else
-    warn "could not capture outbox event via core sub — JetStream-mediated. Verify manually:"
-    warn "  nats stream view OUTBOX_${SITE_ID} --raw"
-    SKIP_COUNT=$((SKIP_COUNT+1))
+    fail "subscription_read event for ${account} not found in OUTBOX_${SITE_ID}"
+    log "  hint: dump the stream manually with:"
+    log "    docker run --rm --network ${NETWORK} -v ${NATS_CREDS_HOST}:/creds:ro \\"
+    log "      natsio/nats-box:latest nats --server ${NATS_URL} --creds /creds \\"
+    log "      stream view OUTBOX_${SITE_ID} --since 5m"
+    log "  if the message is present but the script can't see it, the room-service"
+    log "  may still be using a stale BOOTSTRAP_STREAMS=true config — restart it"
+    log "  with 'make down SERVICE=room-service && make up SERVICE=room-service'."
+  fi
+
+  # Verify the outbox subject in the dump matches the expected destination site.
+  local expected_subj="outbox.${SITE_ID}.to.${dest_site}.subscription_read"
+  if [[ "$stream_dump" == *"$expected_subj"* ]]; then
+    ok "outbox subject = ${expected_subj}"
+  else
+    warn "expected subject ${expected_subj} not found in stream dump"
   fi
 }
 
