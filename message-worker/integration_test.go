@@ -17,6 +17,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
+	"github.com/hmchangw/chat/pkg/msgbucket"
 	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -121,7 +122,7 @@ func setupMongo(t *testing.T) *mongo.Database {
 
 func TestCassandraStore_SaveMessage(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -214,7 +215,7 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 
 func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -294,7 +295,7 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 
 func TestCassandraStore_GetMessageSender(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -346,7 +347,7 @@ func TestHandler_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	us := userstore.NewMongoStore(userCol)
 	threadStore := newThreadStoreMongo(mongoDB)
 	h := NewHandler(store, us, threadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
@@ -409,7 +410,7 @@ func TestHandler_Integration_ThreadReply(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	us := userstore.NewMongoStore(userCol)
 	ts := newThreadStoreMongo(db)
 	require.NoError(t, ts.EnsureIndexes(ctx))
@@ -533,7 +534,7 @@ func TestHandler_Integration_ThreadReplyWithMention(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	us := userstore.NewMongoStore(userCol)
 	ts := newThreadStoreMongo(db)
 	require.NoError(t, ts.EnsureIndexes(ctx))
@@ -848,7 +849,7 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 
 func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	ctx := context.Background()
 
 	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
@@ -955,7 +956,7 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 
 func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1028,7 +1029,7 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 
 func TestCassandraStore_SaveMessage_NilQuotedParent(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1057,7 +1058,7 @@ func TestCassandraStore_SaveMessage_NilQuotedParent(t *testing.T) {
 
 func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
