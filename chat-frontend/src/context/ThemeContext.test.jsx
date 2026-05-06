@@ -100,6 +100,25 @@ describe('ThemeProvider initial state', () => {
     expect(screen.getByTestId('theme').textContent).toBe('light')
     expect(screen.getByTestId('source').textContent).toBe('system')
   })
+
+  it('does not crash when localStorage.getItem throws on initial read', () => {
+    const original = Storage.prototype.getItem
+    Storage.prototype.getItem = vi.fn(() => {
+      throw new Error('localStorage unavailable')
+    })
+    setMatchMedia(true)
+    try {
+      render(
+        <ThemeProvider>
+          <Probe />
+        </ThemeProvider>
+      )
+      expect(screen.getByTestId('theme').textContent).toBe('dark')
+      expect(screen.getByTestId('source').textContent).toBe('system')
+    } finally {
+      Storage.prototype.getItem = original
+    }
+  })
 })
 
 function ToggleProbe() {

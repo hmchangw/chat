@@ -6,7 +6,12 @@ const MEDIA_QUERY = '(prefers-color-scheme: dark)'
 const ThemeContext = createContext(null)
 
 function resolveInitialTheme() {
-  const stored = localStorage.getItem(STORAGE_KEY)
+  let stored = null
+  try {
+    stored = localStorage.getItem(STORAGE_KEY)
+  } catch {
+    // localStorage unavailable; treat as no stored value
+  }
   if (stored === 'light' || stored === 'dark') {
     return { theme: stored, source: 'user' }
   }
