@@ -662,29 +662,46 @@ scenario_9_cross_site_outbox() {
   assert_contains "reply" "$resp" '"status":"accepted"'
 
   # 4) Verify OUTBOX_<site-local> received the federation event (publish side).
+  # `stream get --last-by-subj` deterministically returns the most-recent
+  # message matching an exact subject. We grep the response for the test
+  # account to make sure we're not just seeing a stale message from a prior
+  # run that happened to share the subject.
   sleep 1
-  local outbox_dump
-  outbox_dump=$(nats_cmd stream view "${SITE_B_OUTBOX_STREAM}" --since 30s 2>&1 || true)
-  verbose "OUTBOX dump:"
-  verbose "$(echo "$outbox_dump" | sed 's/^/    /')"
-  if [[ "$outbox_dump" == *"subscription_read"* ]] && [[ "$outbox_dump" == *"$account"* ]]; then
-    ok "${SITE_B_OUTBOX_STREAM} contains subscription_read event"
+  local outbox_subject="outbox.${SITE_ID}.to.${SITE_B}.subscription_read"
+  local outbox_msg
+  outbox_msg=$(nats_cmd stream get "${SITE_B_OUTBOX_STREAM}" --last-by-subj "$outbox_subject" 2>&1 || true)
+  verbose "OUTBOX last-by-subj:"
+  verbose "$(echo "$outbox_msg" | sed 's/^/    /')"
+  if [[ "$outbox_msg" == *"$account"* ]] && [[ "$outbox_msg" == *"subscription_read"* ]]; then
+    ok "${SITE_B_OUTBOX_STREAM} contains subscription_read event for ${account}"
   else
-    fail "subscription_read event not in ${SITE_B_OUTBOX_STREAM}"
+    fail "subscription_read event for ${account} not in ${SITE_B_OUTBOX_STREAM}"
+    log "  OUTBOX retrieve output:"
+    log "$(echo "$outbox_msg" | sed 's/^/    /')"
     return
   fi
 
   # 5) Verify INBOX_site-b received the message via Sources + SubjectTransform.
-  local inbox_dump
-  inbox_dump=$(nats_cmd stream view "${SITE_B_INBOX_STREAM}" --since 30s 2>&1 || true)
-  verbose "INBOX dump:"
-  verbose "$(echo "$inbox_dump" | sed 's/^/    /')"
-  if [[ "$inbox_dump" == *"chat.inbox.${SITE_B}.aggregate.subscription_read"* ]] || [[ "$inbox_dump" == *"$account"* ]]; then
+  # The transform rewrote outbox.<src>.to.site-b.subscription_read to
+  # chat.inbox.site-b.aggregate.subscription_read, so query that subject.
+  local inbox_subject="chat.inbox.${SITE_B}.aggregate.subscription_read"
+  local inbox_msg=""
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.5
+    inbox_msg=$(nats_cmd stream get "${SITE_B_INBOX_STREAM}" --last-by-subj "$inbox_subject" 2>&1 || true)
+    if [[ "$inbox_msg" == *"$account"* ]]; then
+      break
+    fi
+  done
+  verbose "INBOX last-by-subj:"
+  verbose "$(echo "$inbox_msg" | sed 's/^/    /')"
+  if [[ "$inbox_msg" == *"$account"* ]] && [[ "$inbox_msg" == *"subscription_read"* ]]; then
     ok "${SITE_B_INBOX_STREAM} sourced the event from ${SITE_B_OUTBOX_STREAM}"
   else
-    fail "${SITE_B_INBOX_STREAM} did not source the event"
-    log "  inbox dump (last 30s):"
-    log "$(echo "$inbox_dump" | sed 's/^/    /')"
+    fail "${SITE_B_INBOX_STREAM} did not source the event for ${account} within 5s"
+    log "  INBOX retrieve output:"
+    log "$(echo "$inbox_msg" | sed 's/^/    /')"
     return
   fi
 
