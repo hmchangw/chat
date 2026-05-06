@@ -727,6 +727,69 @@ See [Error envelope](#5-error-envelope-reference). Common errors: `"not a member
 
 ---
 
+#### List Org Members
+
+**Subject:** `chat.user.{account}.request.orgs.{orgID}.members`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+The org ID is the second-to-last subject segment — there is no request body.
+
+##### Request body
+
+Empty. Send `{}` or no payload.
+
+```json
+{}
+```
+
+##### Success response
+
+| Field     | Type             | Notes |
+|-----------|------------------|-------|
+| `members` | array<OrgMember> | All individuals in the org. |
+
+`OrgMember`:
+
+| Field         | Type   | Notes |
+|---------------|--------|-------|
+| `id`          | string | Internal user ID. |
+| `account`     | string | Account name. |
+| `engName`     | string |       |
+| `chineseName` | string |       |
+| `siteId`      | string | The user's home site. |
+
+```json
+{
+  "members": [
+    {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+      "account": "alice",
+      "engName": "Alice",
+      "chineseName": "愛麗絲",
+      "siteId": "siteA"
+    }
+  ]
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+```json
+{ "error": "invalid org" }
+```
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.2 history-service
 
 _(filled in by Tasks 14–21)_
