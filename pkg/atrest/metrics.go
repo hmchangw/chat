@@ -5,6 +5,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+const (
+	resultOK    = "ok"
+	resultError = "error"
+)
+
+// resultLabel returns the metric label value matching err.
+func resultLabel(err error) string {
+	if err != nil {
+		return resultError
+	}
+	return resultOK
+}
+
 var (
 	encryptCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "atrest_encrypt_total",

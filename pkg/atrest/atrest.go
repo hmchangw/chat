@@ -39,11 +39,9 @@ type QuotedParentEncrypted struct {
 // kek_version is intentionally absent: the authoritative KEK version is on
 // the room's DEK row in MongoDB.
 //
-// Note: this is the crypto-API form of the type. There is also a
-// cassandra.EncMeta sibling type (added in a later task) carrying the
-// `cql:""` tags needed for gocql binding. The two have identical content
-// and are converted via a one-line struct literal at message-worker /
-// history-service boundaries.
+// This is the crypto-API form. The cql-tagged sibling for gocql binding
+// lives in pkg/model/cassandra; the two are converted via a one-line
+// struct literal at service boundaries.
 type EncMeta struct {
 	Nonce []byte `json:"nonce"`
 }

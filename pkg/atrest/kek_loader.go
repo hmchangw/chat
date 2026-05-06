@@ -25,8 +25,7 @@ type KEKLoader interface {
 	Close() error
 }
 
-// fileKEKLoader is the file-backed implementation. Reload is added in a
-// later task; this version reads once at construction.
+// fileKEKLoader is the file-backed implementation.
 type fileKEKLoader struct {
 	path string
 
@@ -103,7 +102,7 @@ func (l *fileKEKLoader) maybeReload() {
 	info, err := os.Stat(l.path)
 	if err != nil {
 		// File temporarily unreadable; retain prior state. Try again next tick.
-		kekReloadCounter.WithLabelValues("error").Inc()
+		kekReloadCounter.WithLabelValues(resultError).Inc()
 		slog.Error("atrest: KEK stat failed", "path", l.path, "err", err)
 		return
 	}
@@ -116,7 +115,7 @@ func (l *fileKEKLoader) maybeReload() {
 	keys, current, err := loadKEKFile(l.path)
 	if err != nil {
 		// Validation failed; retain prior state.
-		kekReloadCounter.WithLabelValues("error").Inc()
+		kekReloadCounter.WithLabelValues(resultError).Inc()
 		slog.Error("atrest: KEK reload failed", "path", l.path, "err", err)
 		return
 	}
@@ -125,7 +124,7 @@ func (l *fileKEKLoader) maybeReload() {
 	l.current = current
 	l.modTime = info.ModTime()
 	l.mu.Unlock()
-	kekReloadCounter.WithLabelValues("ok").Inc()
+	kekReloadCounter.WithLabelValues(resultOK).Inc()
 	kekCurrentVersion.Set(float64(current))
 	slog.Info("atrest: KEK reloaded", "path", l.path, "current", current, "versions", len(keys))
 }

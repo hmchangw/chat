@@ -43,12 +43,8 @@ type CardAction struct {
 	Data        []byte `json:"data,omitempty"        cql:"data"`
 }
 
-// EncMeta maps to the Cassandra "EncMeta" UDT. nonce is the 12-byte
+// EncMeta maps to the Cassandra "EncMeta" UDT. Nonce is the 12-byte
 // AES-256-GCM nonce used to encrypt the row's enc_payload column.
-//
-// This type is the gocql-binding sibling of atrest.EncMeta. The two
-// have identical content; conversion is a one-line struct literal at
-// the service boundaries (message-worker write, history-service read).
 type EncMeta struct {
 	Nonce []byte `json:"nonce" cql:"nonce"`
 }

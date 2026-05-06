@@ -1,6 +1,7 @@
 package atrest
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -46,13 +47,7 @@ type cipherImpl struct {
 func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields EncryptedFields) (out []byte, meta EncMeta, err error) { //nolint:gocritic // hugeParam: fields is passed by value to satisfy the Cipher interface
 	ctx, span := tracer.Start(ctx, "atrest.Encrypt")
 	defer span.End()
-	defer func() {
-		res := "ok"
-		if err != nil {
-			res = "error"
-		}
-		encryptCounter.WithLabelValues(res).Inc()
-	}()
+	defer func() { encryptCounter.WithLabelValues(resultLabel(err)).Inc() }()
 
 	span.SetAttributes(attribute.String("room_id", roomID))
 
@@ -79,13 +74,7 @@ func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields Encrypte
 func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte, meta EncMeta) (out EncryptedFields, err error) {
 	ctx, span := tracer.Start(ctx, "atrest.Decrypt")
 	defer span.End()
-	defer func() {
-		res := "ok"
-		if err != nil {
-			res = "error"
-		}
-		decryptCounter.WithLabelValues(res).Inc()
-	}()
+	defer func() { decryptCounter.WithLabelValues(resultLabel(err)).Inc() }()
 
 	span.SetAttributes(
 		attribute.String("room_id", roomID),
@@ -174,7 +163,7 @@ func (c *cipherImpl) createDEK(ctx context.Context, roomID string) ([]byte, *Roo
 	if stored == nil {
 		return nil, nil, errors.New("dek row missing after upsert")
 	}
-	if !bytesEqual(stored.WrappedDEK, wrapped) {
+	if !bytes.Equal(stored.WrappedDEK, wrapped) {
 		// Lost the race: another goroutine inserted first. Unwrap theirs.
 		kek2, ok := c.loader.ByVersion(stored.KEKVersion)
 		if !ok {
@@ -223,16 +212,4 @@ func decryptGCM(key, ciphertext, nonce []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %w", ErrAuthFailed, err)
 	}
 	return plain, nil
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

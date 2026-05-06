@@ -130,13 +130,6 @@ func (failingStore) Get(context.Context, string) (*RoomDataKey, error) {
 func (failingStore) Upsert(context.Context, RoomDataKey) error  { return errors.New("nope") }
 func (failingStore) Replace(context.Context, RoomDataKey) error { return errors.New("nope") }
 
-func TestBytesEqual_LengthMismatch(t *testing.T) {
-	assert.False(t, bytesEqual([]byte{1, 2, 3}, []byte{1, 2}))
-	assert.False(t, bytesEqual(nil, []byte{1}))
-	assert.True(t, bytesEqual(nil, nil))
-	assert.True(t, bytesEqual([]byte{}, []byte{}))
-}
-
 // errReader returns the supplied error on every Read.
 type errReader struct{ err error }
 
