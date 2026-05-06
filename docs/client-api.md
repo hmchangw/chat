@@ -792,7 +792,127 @@ See [Error envelope](#5-error-envelope-reference).
 
 ### 3.2 history-service
 
-_(filled in by Tasks 14–21)_
+#### Message schema
+
+Used by every history-service method that returns messages. Mirrors the Cassandra `Message` row.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `roomId` | string | |
+| `createdAt` | string | RFC 3339 timestamp. |
+| `messageId` | string | 17- or 20-char base62. |
+| `sender` | object | A `Participant` — see below. |
+| `msg` | string | The message body. |
+| `targetUser` | object | Optional. `Participant` — set for direct/system messages addressed to a specific user. |
+| `mentions` | array<Participant> | Optional. |
+| `attachments` | string[] | Optional. Each entry is base64-encoded bytes. |
+| `file` | object | Optional. `{id, name, type}`. |
+| `card` | object | Optional. `{template, data?}`. `data` is base64. |
+| `cardAction` | object | Optional. `{verb, text?, cardId?, displayText?, hideExecLog?, cardTmId?, data?}`. |
+| `tshow` | boolean | Optional. Whether a thread reply is also shown in the parent room. |
+| `tcount` | number | Optional. Number of replies on a thread parent. |
+| `threadParentId` | string | Optional. Set when this message is a thread reply. |
+| `threadParentCreatedAt` | string | Optional. RFC 3339. |
+| `quotedParentMessage` | object | Optional. Embedded snapshot — see below. |
+| `visibleTo` | string | Optional. Visibility scope. |
+| `reactions` | object | Optional. Map of `emoji → Participant[]`. |
+| `deleted` | boolean | Optional. `true` for tombstoned messages. |
+| `type` | string | Optional. System-message type when set (e.g. `"member_added"`); regular messages omit it. |
+| `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
+| `siteId` | string | Optional. The site that owns the message. |
+| `editedAt` | string | Optional. RFC 3339. Set after an edit. |
+| `updatedAt` | string | Optional. RFC 3339. Mirrors `editedAt` for edits, set on delete to record the deletion time. |
+| `threadRoomId` | string | Optional. The thread room ID when this is a thread message. |
+| `pinnedAt` | string | Optional. RFC 3339. |
+| `pinnedBy` | object | Optional. `Participant`. |
+
+`Participant`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Internal user (or app) ID. |
+| `engName` | string | Optional. |
+| `companyName` | string | Optional. |
+| `appId` | string | Optional. Set for bot messages. |
+| `appName` | string | Optional. |
+| `isBot` | boolean | Optional. |
+| `account` | string | Optional. |
+
+`QuotedParentMessage` (embedded snapshot of the quoted message at the time of quoting):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messageId` | string | |
+| `roomId` | string | |
+| `sender` | object | `Participant`. |
+| `createdAt` | string | RFC 3339. |
+| `msg` | string | Optional. Body snapshot. |
+| `mentions` | array<Participant> | Optional. |
+| `attachments` | string[] | Optional. |
+| `messageLink` | string | Optional. |
+| `threadParentId` | string | Optional. Set if the quoted message itself is a thread reply. |
+| `threadParentCreatedAt` | string | Optional. RFC 3339. |
+
+#### Load History
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `before` | number | no | Milliseconds since Unix epoch (UTC). Returns messages with `createdAt < before`. Omit (or `null`) for "now". |
+| `limit`  | number | yes | Maximum number of messages to return. |
+
+```json
+{
+  "before": 1746518400000,
+  "limit": 50
+}
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messages` | array<Message> | Most-recent first. See [Message schema](#message-schema). |
+
+```json
+{
+  "messages": [
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "createdAt": "2026-05-06T07:55:00Z",
+      "messageId": "01970a4f8c2d7c9aQRST",
+      "sender": {
+        "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+        "account": "alice",
+        "engName": "Alice"
+      },
+      "msg": "morning team"
+    }
+  ]
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+```json
+{ "error": "not subscribed to room" }
+```
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
 
 ### 3.3 search-service
 
