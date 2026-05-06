@@ -1218,6 +1218,67 @@ See [Error envelope](#5-error-envelope-reference). Common errors: `"only the sen
 
 ---
 
+#### Get Thread Messages
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Returns the replies in a thread. The thread parent's `messageId` is supplied in the request.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `threadMessageId` | string | yes | The top-level thread message ID. Must be a thread parent — not a reply. |
+| `cursor`          | string | no  | Pagination cursor returned by a previous response. Omit for the first page. |
+| `limit`           | number | yes | Maximum number of replies to return. |
+
+```json
+{
+  "threadMessageId": "01970a4f8c2d7c9aQRST",
+  "limit": 50
+}
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messages`   | array<Message> | Replies in the thread, oldest-first within the page. See [Message schema](#message-schema). |
+| `nextCursor` | string         | Optional. Opaque cursor for the next page. |
+| `hasNext`    | boolean        | `true` if more replies exist beyond this page. |
+
+```json
+{
+  "messages": [
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "createdAt": "2026-05-06T08:00:00Z",
+      "messageId": "01970a4f8c2d7c9aQUVW",
+      "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b", "account": "bob" },
+      "msg": "good morning",
+      "threadParentId": "01970a4f8c2d7c9aQRST",
+      "threadParentCreatedAt": "2026-05-06T07:55:00Z"
+    }
+  ],
+  "hasNext": false
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.3 search-service
 
 _(filled in by Tasks 22–23)_
