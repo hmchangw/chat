@@ -23,7 +23,9 @@ readonly NETWORK="chat-local"
 readonly NATS_URL="nats://chat-local-nats:4222"
 readonly MONGO_CONTAINER="chat-local-mongodb"
 readonly MONGO_DB="chat"
-readonly SITE_ID="default"
+# Matches SITE_ID in room-service/deploy/docker-compose.yml. Override via env if
+# you've changed the service's siteID.
+readonly SITE_ID="${SITE_ID:-site-local}"
 readonly TEST_PREFIX="e2e_msgread"
 
 VERBOSE=0
@@ -58,14 +60,34 @@ check_prereqs() {
   docker network inspect "$NETWORK" >/dev/null 2>&1 || { echo "docker network $NETWORK not found — run 'make deps-up'"; exit 2; }
   docker ps --format '{{.Names}}' | grep -q "^${MONGO_CONTAINER}$" || { echo "$MONGO_CONTAINER not running — run 'make deps-up'"; exit 2; }
   docker ps --format '{{.Names}}' | grep -q '^chat-local-room-service$' || warn "chat-local-room-service not running — run 'make up SERVICE=room-service' in another terminal"
+
+  # Probe that something is actually listening on the message-read wildcard for
+  # this site. Without this, every scenario reports "RPC failed" and it's not
+  # obvious whether the service is down or the SITE_ID is wrong.
+  info "probing room-service responder for siteID=${SITE_ID}..."
+  local probe_subj="chat.user.${TEST_PREFIX}_probe.request.room.${TEST_PREFIX}_nonexistent.${SITE_ID}.message.read"
+  local probe_resp
+  probe_resp=$(nats_request "$probe_subj" '{}' 2>/dev/null || true)
+  if [[ -z "$probe_resp" ]] && [[ "$NATS_LAST_STDERR" == *"no responders"* ]]; then
+    echo
+    echo "ERROR: no NATS responder for siteID=${SITE_ID}."
+    echo "  - confirm room-service is running (docker ps | grep room-service)"
+    echo "  - confirm its SITE_ID matches: docker exec chat-local-room-service printenv SITE_ID"
+    echo "  - override with: SITE_ID=<your-site> $0"
+    exit 2
+  fi
+  info "responder reachable"
 }
 
 # --- NATS request via ephemeral nats-box ------------------------------------
-# Sends a NATS request and prints the reply payload to stdout. Exits 1 on
-# transport error or no response. Captures stderr to a file in verbose mode.
+# Sends a NATS request and prints the reply payload to stdout. Returns non-zero
+# on transport error / no responders / timeout. The CLI's stderr (which carries
+# the diagnostic, e.g. "nats: no responders available for request") is captured
+# to NATS_LAST_STDERR so callers can include it in failure messages.
+NATS_LAST_STDERR=""
 nats_request() {
   local subject="$1" payload="$2"
-  local stderr_file
+  local stderr_file rc
   stderr_file="$(mktemp)"
   local out
   out=$(docker run --rm -i \
@@ -73,12 +95,11 @@ nats_request() {
         -v "$NATS_CREDS_HOST:/creds:ro" \
         natsio/nats-box:latest \
         nats --server "$NATS_URL" --creds /creds req \
-             --raw --timeout 5s "$subject" "$payload" 2>"$stderr_file") || {
-    verbose "nats stderr: $(cat "$stderr_file")"
-    rm -f "$stderr_file"
-    return 1
-  }
+             --raw --timeout 5s "$subject" "$payload" 2>"$stderr_file")
+  rc=$?
+  NATS_LAST_STDERR="$(cat "$stderr_file")"
   rm -f "$stderr_file"
+  [[ $rc -ne 0 ]] && return $rc
   printf '%s' "$out"
 }
 
@@ -101,10 +122,12 @@ mongo_delete() {
 }
 
 # Returns the value of a single field from a single document (best-effort
-# JSON for nested types). Empty string if no doc / no field.
+# JSON for nested types). Returns the literal string "null" if doc/field is
+# absent. Uses ?? (nullish coalescing) so falsy values like `false` or `0`
+# round-trip correctly — `||` would collapse them to "null".
 mongo_get_field() {
   local collection="$1" filter="$2" field="$3"
-  mongo_eval "JSON.stringify((db.${collection}.findOne(${filter}) || {}).${field} || null)" \
+  mongo_eval "JSON.stringify(((db.${collection}.findOne(${filter}) ?? {}).${field}) ?? null)" \
     | tr -d '\n' \
     | sed -e 's/^"//;s/"$//' -e 's/\\"/"/g'
 }
@@ -152,8 +175,10 @@ trap cleanup_test_data EXIT
 new_room_id()    { echo "${TEST_PREFIX}_$(date +%s%N)_$RANDOM"; }
 now_iso()        { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 
-# Seed a basic local-site (room siteId == handler siteId == user siteId == "default")
-# subscription. Args: roomId, account, lastSeenAtIsoOrEmpty, alert, threadUnreadJsonOrEmpty.
+# Seed a basic local-site subscription (room siteId == handler siteId ==
+# user siteId == $SITE_ID).
+# Args: roomId, account, lastSeenAtIsoOrEmpty, alert, threadUnreadJsonOrEmpty,
+#       lastMsgAtIsoOrEmpty.
 seed_basic() {
   local room_id="$1" account="$2" last_seen="$3" alert="$4" thread_unread="$5" last_msg_at="$6"
 
@@ -213,7 +238,7 @@ scenario_1_happy_alert_clears() {
     "$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-15M +%Y-%m-%dT%H:%M:%S.%3NZ)"
 
   body="{\"roomId\":\"${room_id}\"}"
-  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed"; return; }
+  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
   verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"status":"accepted"'
@@ -242,7 +267,7 @@ scenario_2_alert_persists_with_thread_unread() {
     "$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-15M +%Y-%m-%dT%H:%M:%S.%3NZ)"
 
   body="{\"roomId\":\"${room_id}\"}"
-  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed"; return; }
+  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
   verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"status":"accepted"'
@@ -263,7 +288,7 @@ scenario_3_never_read_falls_back_to_joined_at() {
     "$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%S.%3NZ)"
 
   body="{\"roomId\":\"${room_id}\"}"
-  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed"; return; }
+  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
   verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"status":"accepted"'
@@ -287,7 +312,7 @@ scenario_4_room_never_messaged() {
   seed_basic "$room_id" "$account" "" "false" "" ""  # no lastMsgAt
 
   body="{\"roomId\":\"${room_id}\"}"
-  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed"; return; }
+  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
   verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"status":"accepted"'
@@ -309,7 +334,7 @@ scenario_5_already_up_to_date() {
     "$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-30M +%Y-%m-%dT%H:%M:%S.%3NZ)"
 
   body="{\"roomId\":\"${room_id}\"}"
-  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed"; return; }
+  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
   verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"status":"accepted"'
@@ -366,7 +391,7 @@ scenario_8_empty_body_trusts_subject() {
     "false" "" \
     "$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u -v-15M +%Y-%m-%dT%H:%M:%S.%3NZ)"
 
-  resp=$(send_read "$account" "$room_id" "{}") || { fail "RPC failed"; return; }
+  resp=$(send_read "$account" "$room_id" "{}") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
   verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"status":"accepted"'
@@ -413,7 +438,7 @@ scenario_9_cross_site_outbox() {
   # against the OUTBOX stream's published subject, which JetStream mirrors).
   local body resp
   body="{\"roomId\":\"${room_id}\"}"
-  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed"; docker rm -f "${TEST_PREFIX}_listener" >/dev/null 2>&1 || true; return; }
+  resp=$(send_read "$account" "$room_id" "$body") || { fail "RPC failed: ${NATS_LAST_STDERR}"; docker rm -f "${TEST_PREFIX}_listener" >/dev/null 2>&1 || true; return; }
   verbose "reply: $resp"
 
   # Give the listener a moment to receive.
