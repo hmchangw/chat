@@ -388,33 +388,47 @@ func TestMessageEventJSON_WithEvent(t *testing.T) {
 }
 
 func TestSubscriptionJSON(t *testing.T) {
-	hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	s := model.Subscription{
-		ID:                 "s1",
-		User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID:             "r1",
-		RoomType:           model.RoomTypeChannel,
-		SiteID:             "site-a",
-		Roles:              []model.Role{model.RoleOwner},
-		HistorySharedSince: &hss,
-		JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		LastSeenAt:         time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
-		HasMention:         true,
-		ThreadUnread:       []string{"parent-1", "parent-2"},
-		Alert:              true,
-	}
+	t.Run("with optional fields set", func(t *testing.T) {
+		hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		lsa := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+		s := model.Subscription{
+			ID:                 "s1",
+			User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:             "r1",
+			RoomType:           model.RoomTypeChannel,
+			SiteID:             "site-a",
+			Roles:              []model.Role{model.RoleOwner},
+			HistorySharedSince: &hss,
+			JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			LastSeenAt:         &lsa,
+			HasMention:         true,
+			ThreadUnread:       []string{"parent-1", "parent-2"},
+			Alert:              true,
+		}
+		roundTrip(t, &s, &model.Subscription{})
+	})
 
-	data, err := json.Marshal(&s)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var dst model.Subscription
-	if err := json.Unmarshal(data, &dst); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if !reflect.DeepEqual(s, dst) {
-		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, s)
-	}
+	t.Run("lastSeenAt omitted when nil", func(t *testing.T) {
+		s := model.Subscription{
+			ID:       "s1",
+			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:   "r1",
+			RoomType: model.RoomTypeChannel,
+			SiteID:   "site-a",
+			Roles:    []model.Role{model.RoleMember},
+			JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		}
+
+		data, err := json.Marshal(&s)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["lastSeenAt"]
+		assert.False(t, present, "lastSeenAt should be omitted when nil")
+
+		roundTrip(t, &s, &model.Subscription{})
+	})
 }
 
 func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
@@ -617,6 +631,31 @@ func TestParticipantJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &dst))
 		assert.Equal(t, p, dst)
 	})
+
+	t.Run("with siteID round-trips", func(t *testing.T) {
+		p := model.Participant{
+			UserID:      "u1",
+			Account:     "alice",
+			SiteID:      "site-a",
+			ChineseName: "愛麗絲",
+			EngName:     "Alice Wang",
+		}
+		roundTrip(t, &p, &model.Participant{})
+	})
+
+	t.Run("siteID omitted when empty", func(t *testing.T) {
+		p := model.Participant{
+			UserID:  "u1",
+			Account: "alice",
+			EngName: "Alice Wang",
+		}
+		data, err := json.Marshal(p)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasSiteID := raw["siteId"]
+		assert.False(t, hasSiteID, "siteId should be omitted when empty")
+	})
 }
 
 func TestClientMessageJSON(t *testing.T) {
@@ -729,6 +768,27 @@ func TestOutboxEventJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &dst))
 	if !reflect.DeepEqual(src, dst) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+}
+
+func TestOutboxEventJSON_ThreadSubscriptionUpserted(t *testing.T) {
+	src := model.OutboxEvent{
+		Type:       model.OutboxThreadSubscriptionUpserted,
+		SiteID:     "site-a",
+		DestSiteID: "site-b",
+		Payload:    []byte(`{"id":"sub-1","threadRoomId":"tr-1"}`),
+		Timestamp:  1735689600000,
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+
+	var dst model.OutboxEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+	if dst.Type != "thread_subscription_upserted" {
+		t.Errorf("Type = %q, want thread_subscription_upserted", dst.Type)
 	}
 }
 

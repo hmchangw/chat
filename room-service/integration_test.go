@@ -1212,7 +1212,8 @@ func TestMongoStore_UpdateSubscriptionRead_Integration(t *testing.T) {
 	got, err := store.GetSubscription(ctx, "alice", "r1")
 	require.NoError(t, err)
 	assert.Equal(t, false, got.Alert)
-	assert.WithinDuration(t, now, got.LastSeenAt, time.Second)
+	require.NotNil(t, got.LastSeenAt)
+	assert.WithinDuration(t, now, *got.LastSeenAt, time.Second)
 
 	err = store.UpdateSubscriptionRead(ctx, "r1", "missing", now, false)
 	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
@@ -1250,11 +1251,11 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
 
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", JoinedAt: earliest, LastSeenAt: latest,
+		RoomID: "r1", JoinedAt: earliest, LastSeenAt: &latest,
 	}))
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
 		ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
-		RoomID: "r1", JoinedAt: mid, LastSeenAt: latest,
+		RoomID: "r1", JoinedAt: mid, LastSeenAt: &latest,
 	}))
 	// Sub with zero LastSeenAt — must contribute its joinedAt (mid).
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{

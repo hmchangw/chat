@@ -48,10 +48,10 @@ The handler validates that `req.RoomID == roomID` parsed from the subject (misma
 ### 2.3 Response body
 
 ```json
-{"status": "ok"}
+{"status": "accepted"}
 ```
 
-`ok` (not `accepted`) reflects that the work is performed synchronously by the handler — there is no downstream worker chain.
+The status string matches the convention used by sibling membership-mutating RPCs (`member.add`, `member.remove`, `member.role-update`). The work is performed synchronously by the handler; there is no downstream worker chain.
 
 ## 3. Handler logic
 
@@ -71,7 +71,7 @@ Flow:
    - `errors.Is(err, model.ErrSubscriptionNotFound)` → return `errNotRoomMember` (existing sentinel).
    - other error → wrap with `fmt.Errorf("get subscription: %w", err)`.
 4. **Compute `newAlert`:** `newAlert := sub.Alert && len(sub.ThreadUnread) > 0`.
-5. **Compute `originalLastSeen`:** `if sub.LastSeenAt.IsZero() { originalLastSeen = sub.JoinedAt } else { originalLastSeen = sub.LastSeenAt }`.
+5. **Compute `originalLastSeen`:** `originalLastSeen := sub.JoinedAt; if sub.LastSeenAt != nil { originalLastSeen = *sub.LastSeenAt }`. (`Subscription.LastSeenAt` is `*time.Time`; `nil` means "never read".)
 6. **Compute `now`:** `now := time.Now().UTC()`.
 7. **Persist subscription update** via `store.UpdateSubscriptionRead(ctx, roomID, account, now, newAlert)`. Errors wrap.
 8. **Cross-site outbox publish** (always, regardless of whether the room recompute will run):
@@ -83,12 +83,12 @@ Flow:
      - Publish to `subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionRead)` via `h.publishToStream`. Errors wrap and abort the rest of the handler.
 9. **Load room** via `store.GetRoom(ctx, roomID)`. Wrap errors.
 10. **Decide on room recompute:**
-    - If `room.LastMsgAt == nil` → return `{"status":"ok"}`. (Defensive: if the room has never had a message, there is no `MinUserLastSeenAt` to update.)
-    - If `originalLastSeen.After(*room.LastMsgAt)` → return `{"status":"ok"}`. (The user was already up-to-date before this read; the floor cannot have moved.)
+    - If `room.LastMsgAt == nil` → return `{"status":"accepted"}`. (Defensive: if the room has never had a message, there is no `MinUserLastSeenAt` to update.)
+    - If `originalLastSeen.After(*room.LastMsgAt)` → return `{"status":"accepted"}`. (The user was already up-to-date before this read; the floor cannot have moved.)
 11. **Recompute room min-last-seen:**
     - `minTime, err := store.MinSubscriptionLastSeenByRoomID(ctx, roomID)`.
     - `store.UpdateRoomMinUserLastSeenAt(ctx, roomID, minTime)` (`nil` clears the field via `$unset`).
-12. **Return** `{"status":"ok"}`.
+12. **Return** `{"status":"accepted"}`.
 
 ### 3.1 Step ordering rationale
 

@@ -737,9 +737,9 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, data []byt
 	}
 
 	newAlert := sub.Alert && len(sub.ThreadUnread) > 0
-	originalLastSeen := sub.LastSeenAt
-	if originalLastSeen.IsZero() {
-		originalLastSeen = sub.JoinedAt
+	originalLastSeen := sub.JoinedAt
+	if sub.LastSeenAt != nil {
+		originalLastSeen = *sub.LastSeenAt
 	}
 	now := time.Now().UTC()
 
@@ -787,7 +787,7 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, data []byt
 		return nil, fmt.Errorf("get room: %w", err)
 	}
 	if room.LastMsgAt == nil || originalLastSeen.After(*room.LastMsgAt) {
-		return json.Marshal(map[string]string{"status": "ok"})
+		return json.Marshal(map[string]string{"status": "accepted"})
 	}
 
 	minTime, err := h.store.MinSubscriptionLastSeenByRoomID(ctx, roomID)
@@ -798,5 +798,5 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, data []byt
 		return nil, fmt.Errorf("update room minUserLastSeenAt: %w", err)
 	}
 
-	return json.Marshal(map[string]string{"status": "ok"})
+	return json.Marshal(map[string]string{"status": "accepted"})
 }

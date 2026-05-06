@@ -264,7 +264,8 @@ func TestMongoStore_UpdateSubscriptionRead(t *testing.T) {
 	got, err := store.GetSubscription(ctx, "alice", "r1")
 	require.NoError(t, err)
 	assert.Equal(t, false, got.Alert)
-	assert.WithinDuration(t, now, got.LastSeenAt, time.Second)
+	require.NotNil(t, got.LastSeenAt)
+	assert.WithinDuration(t, now, *got.LastSeenAt, time.Second)
 
 	err = store.UpdateSubscriptionRead(ctx, "r1", "missing", now, false)
 	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
@@ -302,11 +303,11 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID(t *testing.T) {
 
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", JoinedAt: earliest, LastSeenAt: latest,
+		RoomID: "r1", JoinedAt: earliest, LastSeenAt: &latest,
 	}))
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
 		ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
-		RoomID: "r1", JoinedAt: mid, LastSeenAt: latest,
+		RoomID: "r1", JoinedAt: mid, LastSeenAt: &latest,
 	}))
 	// Sub with zero LastSeenAt — must contribute its joinedAt (mid).
 	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
@@ -587,7 +588,7 @@ func TestHandler_MessageRead_HappyLocal_AlertClears(t *testing.T) {
 
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", SiteID: "site-a", JoinedAt: joined, LastSeenAt: lastSeen,
+		RoomID: "r1", SiteID: "site-a", JoinedAt: joined, LastSeenAt: &lastSeen,
 		Alert: true, ThreadUnread: nil,
 	}, nil)
 	f.store.EXPECT().
@@ -606,7 +607,7 @@ func TestHandler_MessageRead_HappyLocal_AlertClears(t *testing.T) {
 
 	var got map[string]string
 	require.NoError(t, json.Unmarshal(resp, &got))
-	assert.Equal(t, "ok", got["status"])
+	assert.Equal(t, "accepted", got["status"])
 	assert.Equal(t, 0, f.publishCalls)
 }
 
@@ -617,7 +618,7 @@ func TestHandler_MessageRead_AlertStaysTrueWithThreadUnread(t *testing.T) {
 	lastMsg := lastSeen.Add(30 * time.Minute)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", SiteID: "site-a", JoinedAt: joined, LastSeenAt: lastSeen,
+		RoomID: "r1", SiteID: "site-a", JoinedAt: joined, LastSeenAt: &lastSeen,
 		Alert: true, ThreadUnread: []string{"t1"},
 	}, nil)
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), true).Return(nil)
@@ -674,7 +675,7 @@ func TestHandler_MessageRead_CrossSite_PublishesOutbox(t *testing.T) {
 	lastMsg := lastSeen.Add(30 * time.Minute)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", SiteID: "site-a", JoinedAt: joined, LastSeenAt: lastSeen,
+		RoomID: "r1", SiteID: "site-a", JoinedAt: joined, LastSeenAt: &lastSeen,
 		Alert: true, ThreadUnread: []string{"t1"},
 	}, nil)
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), true).Return(nil)
@@ -729,7 +730,7 @@ func TestHandler_MessageRead_GetUserSiteIDEmpty_NoPublish(t *testing.T) {
 	lastMsg := lastSeen.Add(30 * time.Minute)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
-		JoinedAt: joined, LastSeenAt: lastSeen,
+		JoinedAt: joined, LastSeenAt: &lastSeen,
 	}, nil)
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("", nil)
@@ -767,7 +768,7 @@ func TestHandler_MessageRead_MinNil_ClearsRoomField(t *testing.T) {
 	lastMsg := lastSeen.Add(30 * time.Minute)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
-		JoinedAt: joined, LastSeenAt: lastSeen,
+		JoinedAt: joined, LastSeenAt: &lastSeen,
 	}, nil)
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
@@ -820,7 +821,7 @@ func TestHandler_MessageRead_MinSubscriptionError(t *testing.T) {
 	lastMsg := lastSeen.Add(30 * time.Minute)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
-		JoinedAt: joined, LastSeenAt: lastSeen,
+		JoinedAt: joined, LastSeenAt: &lastSeen,
 	}, nil)
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
@@ -840,7 +841,7 @@ func TestHandler_MessageRead_UpdateRoomMinError(t *testing.T) {
 	lastMsg := lastSeen.Add(30 * time.Minute)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
-		JoinedAt: joined, LastSeenAt: lastSeen,
+		JoinedAt: joined, LastSeenAt: &lastSeen,
 	}, nil)
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
@@ -910,9 +911,9 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, data []byt
 	}
 
 	newAlert := sub.Alert && len(sub.ThreadUnread) > 0
-	originalLastSeen := sub.LastSeenAt
-	if originalLastSeen.IsZero() {
-		originalLastSeen = sub.JoinedAt
+	originalLastSeen := sub.JoinedAt
+	if sub.LastSeenAt != nil {
+		originalLastSeen = *sub.LastSeenAt
 	}
 	now := time.Now().UTC()
 
@@ -960,7 +961,7 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, data []byt
 		return nil, fmt.Errorf("get room: %w", err)
 	}
 	if room.LastMsgAt == nil || originalLastSeen.After(*room.LastMsgAt) {
-		return json.Marshal(map[string]string{"status": "ok"})
+		return json.Marshal(map[string]string{"status": "accepted"})
 	}
 
 	minTime, err := h.store.MinSubscriptionLastSeenByRoomID(ctx, roomID)
@@ -971,7 +972,7 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, data []byt
 		return nil, fmt.Errorf("update room minUserLastSeenAt: %w", err)
 	}
 
-	return json.Marshal(map[string]string{"status": "ok"})
+	return json.Marshal(map[string]string{"status": "accepted"})
 }
 ```
 
@@ -1004,7 +1005,7 @@ Synchronous handler that:
 7. Otherwise recomputes Room.MinUserLastSeenAt across all
    subscriptions for the room
 
-Returns {\"status\":\"ok\"} on success.
+Returns {\"status\":\"accepted\"} on success.
 
 https://claude.ai/code/session_01G2qCzHCqcLBUPVExe7XzZq"
 ```
@@ -1064,10 +1065,11 @@ func (s *stubInboxStore) UpdateSubscriptionRead(_ context.Context, roomID, accou
 	for i := range s.subscriptions {
 		if s.subscriptions[i].RoomID == roomID && s.subscriptions[i].User.Account == account {
 			// Order-safe: skip if stored lastSeenAt is not strictly earlier.
-			if !s.subscriptions[i].LastSeenAt.IsZero() && !s.subscriptions[i].LastSeenAt.Before(lastSeenAt) {
+			if s.subscriptions[i].LastSeenAt != nil && !s.subscriptions[i].LastSeenAt.Before(lastSeenAt) {
 				return nil
 			}
-			s.subscriptions[i].LastSeenAt = lastSeenAt
+			ls := lastSeenAt
+			s.subscriptions[i].LastSeenAt = &ls
 			s.subscriptions[i].Alert = alert
 			return nil
 		}
@@ -1136,10 +1138,11 @@ func (s *stubInboxStore) UpdateSubscriptionRead(_ context.Context, roomID, accou
 	s.subReads = append(s.subReads, subRead{roomID, account, lastSeenAt, alert})
 	for i := range s.subscriptions {
 		if s.subscriptions[i].RoomID == roomID && s.subscriptions[i].User.Account == account {
-			if !s.subscriptions[i].LastSeenAt.IsZero() && !s.subscriptions[i].LastSeenAt.Before(lastSeenAt) {
+			if s.subscriptions[i].LastSeenAt != nil && !s.subscriptions[i].LastSeenAt.Before(lastSeenAt) {
 				return nil
 			}
-			s.subscriptions[i].LastSeenAt = lastSeenAt
+			ls := lastSeenAt
+			s.subscriptions[i].LastSeenAt = &ls
 			s.subscriptions[i].Alert = alert
 			return nil
 		}
@@ -1264,7 +1267,8 @@ func TestInbox_UpdateSubscriptionRead_HappyPath(t *testing.T) {
 
 	var got model.Subscription
 	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
-	assert.WithinDuration(t, now, got.LastSeenAt, time.Second)
+	require.NotNil(t, got.LastSeenAt)
+	assert.WithinDuration(t, now, *got.LastSeenAt, time.Second)
 	assert.True(t, got.Alert)
 }
 
@@ -1276,7 +1280,7 @@ func TestInbox_UpdateSubscriptionRead_OutOfOrderSkipped(t *testing.T) {
 	t2 := time.Now().UTC().Truncate(time.Millisecond)
 	_, err := store.subCol.InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", JoinedAt: t2.Add(-time.Hour), LastSeenAt: t2, Alert: true,
+		RoomID: "r1", JoinedAt: t2.Add(-time.Hour), LastSeenAt: &t2, Alert: true,
 	})
 	require.NoError(t, err)
 
@@ -1285,7 +1289,8 @@ func TestInbox_UpdateSubscriptionRead_OutOfOrderSkipped(t *testing.T) {
 
 	var got model.Subscription
 	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
-	assert.WithinDuration(t, t2, got.LastSeenAt, time.Second) // unchanged
+	require.NotNil(t, got.LastSeenAt)
+	assert.WithinDuration(t, t2, *got.LastSeenAt, time.Second) // unchanged
 	assert.True(t, got.Alert)                                  // unchanged
 }
 
@@ -1297,7 +1302,7 @@ func TestInbox_UpdateSubscriptionRead_EqualTimestampSkipped(t *testing.T) {
 	t1 := time.Now().UTC().Truncate(time.Millisecond)
 	_, err := store.subCol.InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", JoinedAt: t1.Add(-time.Hour), LastSeenAt: t1, Alert: true,
+		RoomID: "r1", JoinedAt: t1.Add(-time.Hour), LastSeenAt: &t1, Alert: true,
 	})
 	require.NoError(t, err)
 
