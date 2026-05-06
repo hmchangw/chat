@@ -10,7 +10,12 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
+
+var tracer = otel.Tracer("github.com/hmchangw/chat/pkg/atrest")
 
 // Cipher is the public API used by services to encrypt/decrypt message
 // payloads. Its concrete implementation composes a KEKLoader, a DEKStore
@@ -38,66 +43,105 @@ type cipherImpl struct {
 	randReader io.Reader
 }
 
-func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields EncryptedFields) ([]byte, EncMeta, error) { //nolint:gocritic // hugeParam: fields is passed by value to satisfy the Cipher interface
-	dek, err := c.dekFor(ctx, roomID)
+func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields EncryptedFields) (out []byte, meta EncMeta, err error) { //nolint:gocritic // hugeParam: fields is passed by value to satisfy the Cipher interface
+	ctx, span := tracer.Start(ctx, "atrest.Encrypt")
+	defer span.End()
+	defer func() {
+		res := "ok"
+		if err != nil {
+			res = "error"
+		}
+		encryptCounter.WithLabelValues(res).Inc()
+	}()
+
+	span.SetAttributes(attribute.String("room_id", roomID))
+
+	dek, cacheHit, err := c.dekFor(ctx, roomID)
 	if err != nil {
 		return nil, EncMeta{}, err
 	}
+	span.SetAttributes(attribute.Bool("dek_cache_hit", cacheHit))
+
 	plaintext, err := json.Marshal(fields)
 	if err != nil {
 		return nil, EncMeta{}, fmt.Errorf("marshal payload: %w", err)
 	}
+	span.SetAttributes(attribute.Int("plaintext_bytes", len(plaintext)))
+
 	ciphertext, nonce, err := encryptGCM(dek, plaintext, c.randReader)
 	if err != nil {
 		return nil, EncMeta{}, fmt.Errorf("encrypt payload: %w", err)
 	}
+	span.SetAttributes(attribute.Int("ciphertext_bytes", len(ciphertext)))
 	return ciphertext, EncMeta{Nonce: nonce}, nil
 }
 
-func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte, meta EncMeta) (EncryptedFields, error) {
-	dek, err := c.dekFor(ctx, roomID)
+func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte, meta EncMeta) (out EncryptedFields, err error) {
+	ctx, span := tracer.Start(ctx, "atrest.Decrypt")
+	defer span.End()
+	defer func() {
+		res := "ok"
+		if err != nil {
+			res = "error"
+		}
+		decryptCounter.WithLabelValues(res).Inc()
+	}()
+
+	span.SetAttributes(
+		attribute.String("room_id", roomID),
+		attribute.Int("ciphertext_bytes", len(payload)),
+	)
+
+	dek, cacheHit, err := c.dekFor(ctx, roomID)
 	if err != nil {
 		return EncryptedFields{}, err
 	}
+	span.SetAttributes(attribute.Bool("dek_cache_hit", cacheHit))
+
 	plain, err := decryptGCM(dek, payload, meta.Nonce)
 	if err != nil {
 		return EncryptedFields{}, err
 	}
-	var out EncryptedFields
-	if err := json.Unmarshal(plain, &out); err != nil {
+	span.SetAttributes(attribute.Int("plaintext_bytes", len(plain)))
+
+	var decoded EncryptedFields
+	if err := json.Unmarshal(plain, &decoded); err != nil {
 		return EncryptedFields{}, fmt.Errorf("%w: %w", ErrPayloadMalformed, err)
 	}
-	return out, nil
+	return decoded, nil
 }
 
 // dekFor returns the unwrapped DEK for roomID, creating one lazily if no
-// row exists yet.
-func (c *cipherImpl) dekFor(ctx context.Context, roomID string) ([]byte, error) {
+// row exists yet. The second return value indicates whether the DEK was
+// served from the in-memory cache.
+func (c *cipherImpl) dekFor(ctx context.Context, roomID string) ([]byte, bool, error) {
 	if dek, ok := c.cache.get(roomID); ok {
-		return dek, nil
+		dekCacheHits.Inc()
+		return dek, true, nil
 	}
+	dekCacheMisses.Inc()
 	row, err := c.store.Get(ctx, roomID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if row == nil {
 		dek, _, err := c.createDEK(ctx, roomID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		c.cache.set(roomID, dek)
-		return dek, nil
+		return dek, false, nil
 	}
 	kek, ok := c.loader.ByVersion(row.KEKVersion)
 	if !ok {
-		return nil, fmt.Errorf("%w: version %d", ErrKEKVersionUnknown, row.KEKVersion)
+		return nil, false, fmt.Errorf("%w: version %d", ErrKEKVersionUnknown, row.KEKVersion)
 	}
 	dek, err := decryptGCM(kek, row.WrappedDEK, row.WrapNonce)
 	if err != nil {
-		return nil, fmt.Errorf("unwrap dek: %w", err)
+		return nil, false, fmt.Errorf("unwrap dek: %w", err)
 	}
 	c.cache.set(roomID, dek)
-	return dek, nil
+	return dek, false, nil
 }
 
 // createDEK generates and stores a fresh DEK. On a concurrent insert race,
@@ -142,6 +186,7 @@ func (c *cipherImpl) createDEK(ctx context.Context, roomID string) ([]byte, *Roo
 		}
 		return dek2, stored, nil
 	}
+	dekCreations.Inc()
 	return dek, stored, nil
 }
 

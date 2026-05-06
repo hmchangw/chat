@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strconv"
@@ -61,6 +62,8 @@ func newFileKEKLoaderWithInterval(path string, interval time.Duration) (KEKLoade
 		modTime: info.ModTime(),
 		stop:    make(chan struct{}),
 	}
+	kekCurrentVersion.Set(float64(current))
+	slog.Info("atrest: KEK loaded", "path", path, "current", current, "versions", len(keys))
 	go l.reloadLoop(interval)
 	return l, nil
 }
@@ -100,6 +103,8 @@ func (l *fileKEKLoader) maybeReload() {
 	info, err := os.Stat(l.path)
 	if err != nil {
 		// File temporarily unreadable; retain prior state. Try again next tick.
+		kekReloadCounter.WithLabelValues("error").Inc()
+		slog.Error("atrest: KEK stat failed", "path", l.path, "err", err)
 		return
 	}
 	l.mu.RLock()
@@ -111,6 +116,8 @@ func (l *fileKEKLoader) maybeReload() {
 	keys, current, err := loadKEKFile(l.path)
 	if err != nil {
 		// Validation failed; retain prior state.
+		kekReloadCounter.WithLabelValues("error").Inc()
+		slog.Error("atrest: KEK reload failed", "path", l.path, "err", err)
 		return
 	}
 	l.mu.Lock()
@@ -118,6 +125,9 @@ func (l *fileKEKLoader) maybeReload() {
 	l.current = current
 	l.modTime = info.ModTime()
 	l.mu.Unlock()
+	kekReloadCounter.WithLabelValues("ok").Inc()
+	kekCurrentVersion.Set(float64(current))
+	slog.Info("atrest: KEK reloaded", "path", l.path, "current", current, "versions", len(keys))
 }
 
 // fileFormat mirrors the on-disk JSON schema.
