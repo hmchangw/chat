@@ -1081,6 +1081,78 @@ See [Error envelope](#5-error-envelope-reference).
 
 ---
 
+#### Edit Message
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Only the original sender may edit a message.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `messageId` | string | yes | The message to edit. |
+| `newMsg`    | string | yes | The new content. Must be non-empty and within the size limit. |
+
+```json
+{
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "newMsg": "morning team — updated"
+}
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messageId` | string | Echoes the input. |
+| `editedAt`  | number | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "editedAt": 1746518700000
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference). Common errors: `"only the sender can edit"`, `"message not found"`, `"newMsg must not be empty"`, `"newMsg exceeds maximum size"`, `"failed to edit message"`.
+
+##### Triggered events — success path
+
+**`chat.room.{roomID}.event`** — `MessageEditedEvent`. Recipients: every client subscribed to the room.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"message_edited"`. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `roomId` | string |       |
+| `messageId` | string | The edited message's ID. |
+| `newMsg` | string | Optional. New plaintext content. Set for rooms without a key (DMs). Empty for encrypted rooms — see `encryptedNewMsg`. |
+| `encryptedNewMsg` | object | Optional. The `roomcrypto.EncryptedMessage` JSON object for encrypted (channel) rooms. Empty for DMs. |
+| `editedBy` | string | The sender's account. |
+| `editedAt` | number | Milliseconds since Unix epoch (UTC). Domain time of the edit. |
+
+```json
+{
+  "type": "message_edited",
+  "timestamp": 1746518700123,
+  "roomId": "01970a4f8c2d7c9aQ",
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "newMsg": "morning team — updated",
+  "editedBy": "alice",
+  "editedAt": 1746518700000
+}
+```
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 ### 3.3 search-service
 
 _(filled in by Tasks 22–23)_
