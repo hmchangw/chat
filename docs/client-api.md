@@ -182,7 +182,83 @@ When the auth-service is started with `DEV_MODE=true`, the request body schema i
 
 ### 3.1 room-service
 
-_(filled in by Tasks 6–13)_
+#### Create Room
+
+**Subject:** `chat.user.{account}.request.rooms.create`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+##### Request body
+
+| Field              | Type     | Required | Notes |
+|--------------------|----------|----------|-------|
+| `name`             | string   | yes      | Room name. |
+| `type`             | string   | yes      | One of `channel`, `dm`, `botDM`, `discussion`. |
+| `createdBy`        | string   | yes      | Internal user ID of the creator. |
+| `createdByAccount` | string   | yes      | Account name of the creator. Used for the owner subscription. |
+| `siteId`           | string   | yes      | The site that will own this room. |
+| `members`          | string[] | no       | Required exactly **one** entry when `type=dm` (the other user's ID); ignored otherwise. |
+
+```json
+{
+  "name": "engineering-announcements",
+  "type": "channel",
+  "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "createdByAccount": "alice",
+  "siteId": "siteA"
+}
+```
+
+##### Success response
+
+The created `Room` object.
+
+| Field               | Type    | Notes |
+|---------------------|---------|-------|
+| `id`                | string  | Room ID. 17-char base62 for channels; sorted concat of two accounts for DMs. |
+| `name`              | string  |       |
+| `type`              | string  | Same values as request. |
+| `createdBy`         | string  |       |
+| `siteId`            | string  |       |
+| `userCount`         | number  | `1` immediately after creation (the owner). |
+| `lastMsgAt`         | string  | Optional. RFC 3339 timestamp; absent until first message. |
+| `lastMsgId`         | string  | Empty until first message. |
+| `lastMentionAllAt`  | string  | Optional. RFC 3339 timestamp. |
+| `minUserLastSeenAt` | string  | Optional. RFC 3339 timestamp. |
+| `createdAt`         | string  | RFC 3339 timestamp. |
+| `updatedAt`         | string  | RFC 3339 timestamp. |
+| `restricted`        | boolean | Optional. |
+
+```json
+{
+  "id": "01970a4f8c2d7c9aQ",
+  "name": "engineering-announcements",
+  "type": "channel",
+  "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "siteId": "siteA",
+  "userCount": 1,
+  "lastMsgId": "",
+  "createdAt": "2026-05-06T08:00:00Z",
+  "updatedAt": "2026-05-06T08:00:00Z"
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference).
+
+```json
+{ "error": "DM requires exactly one other member, got 0" }
+```
+
+##### Triggered events — success path
+
+`None — reply only.` Member additions are a separate RPC (Add Members); creating a room only enrolls the owner.
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
 
 ### 3.2 history-service
 
