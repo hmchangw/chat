@@ -254,6 +254,33 @@ func TestHistoryService_LoadHistory_RoomReadError_DegradesGracefully(t *testing.
 	assert.Nil(t, resp.MinUserLastSeenAt)
 }
 
+func TestHistoryService_LoadNextMessages_DoesNotReadRoom(t *testing.T) {
+	svc, msgs, subs, rooms, _, _, _ := newServiceWithRoomMock(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetMessagesAfter(gomock.Any(), "r1", gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+	rooms.EXPECT().GetMinUserLastSeenAt(gomock.Any(), gomock.Any()).Times(0)
+
+	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
+	require.NoError(t, err)
+}
+
+func TestHistoryService_LoadSurroundingMessages_DoesNotReadRoom(t *testing.T) {
+	svc, msgs, subs, rooms, _, _, _ := newServiceWithRoomMock(t, true)
+	c := testContext()
+
+	central := models.Message{MessageID: "mC", RoomID: "r1", CreatedAt: joinTime.Add(2 * time.Minute)}
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "mC").Return(&central, nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, central.CreatedAt, gomock.Any()).Return(makePage(nil, false), nil)
+	msgs.EXPECT().GetMessagesAfter(gomock.Any(), "r1", central.CreatedAt, gomock.Any()).Return(makePage(nil, false), nil)
+	rooms.EXPECT().GetMinUserLastSeenAt(gomock.Any(), gomock.Any()).Times(0)
+
+	_, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{MessageID: "mC", Limit: 10})
+	require.NoError(t, err)
+}
+
 // --- LoadNextMessages ---
 
 func TestHistoryService_LoadNextMessages_BothAfterAndHSS(t *testing.T) {
