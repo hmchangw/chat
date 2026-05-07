@@ -499,6 +499,9 @@ func TestRoleValues(t *testing.T) {
 	if model.RoleOwner != "owner" {
 		t.Errorf("RoleOwner = %q", model.RoleOwner)
 	}
+	if model.RoleAdmin != "admin" {
+		t.Errorf("RoleAdmin = %q", model.RoleAdmin)
+	}
 	if model.RoleMember != "member" {
 		t.Errorf("RoleMember = %q", model.RoleMember)
 	}
