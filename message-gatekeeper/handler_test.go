@@ -727,3 +727,33 @@ func TestIsBot(t *testing.T) {
 		})
 	}
 }
+
+func TestCanBypassLargeRoomCap(t *testing.T) {
+	cases := []struct {
+		name    string
+		roles   []model.Role
+		account string
+		want    bool
+	}{
+		{name: "owner role bypasses", roles: []model.Role{model.RoleOwner}, account: "alice", want: true},
+		{name: "admin role bypasses", roles: []model.Role{model.RoleAdmin}, account: "alice", want: true},
+		{name: "member role does not bypass", roles: []model.Role{model.RoleMember}, account: "alice", want: false},
+		{name: "owner + member bypasses", roles: []model.Role{model.RoleMember, model.RoleOwner}, account: "alice", want: true},
+		{name: "admin + member bypasses", roles: []model.Role{model.RoleMember, model.RoleAdmin}, account: "alice", want: true},
+		{name: "empty roles, plain account", roles: nil, account: "alice", want: false},
+		{name: "bot account .bot suffix bypasses regardless of roles", roles: []model.Role{model.RoleMember}, account: "helper.bot", want: true},
+		{name: "bot account p_ prefix bypasses regardless of roles", roles: []model.Role{model.RoleMember}, account: "p_scheduler", want: true},
+		{name: "bot account with empty roles bypasses", roles: nil, account: "p_webhook", want: true},
+		{name: "unknown role string with plain account", roles: []model.Role{"superuser"}, account: "alice", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sub := &model.Subscription{
+				User:  model.SubscriptionUser{Account: tc.account},
+				Roles: tc.roles,
+			}
+			got := canBypassLargeRoomCap(sub)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

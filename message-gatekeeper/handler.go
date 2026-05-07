@@ -229,3 +229,18 @@ func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, sit
 		return snap, nil
 	}
 }
+
+// canBypassLargeRoomCap reports whether the subscriber is exempt from the
+// large-room post restriction. Owners, admins, and bots bypass.
+//
+// "Bot" is detected by account-name pattern (\.bot$|^p_) — see helper.go.
+// This single function is the edit point if/when the bypass policy changes
+// (e.g. promoting isBot to a shared package, adding new roles, etc.).
+func canBypassLargeRoomCap(sub *model.Subscription) bool {
+	for _, r := range sub.Roles {
+		if r == model.RoleOwner || r == model.RoleAdmin {
+			return true
+		}
+	}
+	return isBot(sub.User.Account)
+}
