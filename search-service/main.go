@@ -152,8 +152,14 @@ func main() {
 	)
 
 	shutdown.Wait(ctx, 25*time.Second,
-		// Drain NATS first so no new requests are accepted while metrics
-		// keep recording the in-flight ones.
+		// Stop accepting new requests AND wait for in-flight handler
+		// goroutines to finish. Required ahead of nc.Drain() because
+		// natsrouter spawns handlers into goroutines that can outlive
+		// nc.Drain(); without this step those goroutines could touch
+		// Valkey or the tracer after they have been torn down.
+		func(ctx context.Context) error { return router.Shutdown(ctx) },
+		// Drain NATS so no further callbacks fire and remaining replies
+		// flush to the wire.
 		func(ctx context.Context) error { return nc.Drain() },
 		// tracerShutdown + valkey disconnect: internal plumbing, any order.
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
