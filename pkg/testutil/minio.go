@@ -58,17 +58,8 @@ func ensureMinIOClient() (*minio.Client, error) {
 	return minioClient, minioInitErr
 }
 
-// MinIO returns a connected MinIO client + a per-test bucket name. The
-// bucket is created on entry and removed on t.Cleanup. The bucket name
-// is derived from t.Name() with a stable fnv hash so parallel subtests
-// can't collide; the prefix lets callers namespace by package
-// (e.g. "minioutil"). Bucket names are valid S3 identifiers
-// (3-63 chars, lowercase, digits, hyphens only).
-//
-// Prefix requirements: 3-46 chars, lowercase letters/digits/hyphens
-// only, must NOT start or end with a hyphen. The helper does not
-// validate -- callers passing invalid prefixes get an InvalidBucketName
-// error from MinIO at MakeBucket time.
+// MinIO returns a shared client + per-test bucket (fnv-hashed from t.Name(); cleaned up via t.Cleanup).
+// Prefix must be S3-valid (3-46 lowercase chars/digits/hyphens, no leading/trailing hyphen); not validated.
 func MinIO(t *testing.T, prefix string) (*minio.Client, string) {
 	t.Helper()
 	c, err := ensureMinIOClient()

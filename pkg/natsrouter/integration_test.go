@@ -300,9 +300,11 @@ func TestIntegration_SpawnSitePanicBackstop(t *testing.T) {
 	resp, err := nc.Request(context.Background(), "boom.1", data, 5*time.Second)
 	require.NoError(t, err, "panicking handler should still produce a reply via backstop")
 
-	var payload map[string]any
+	var payload struct {
+		Error string `json:"error"`
+	}
 	require.NoError(t, json.Unmarshal(resp.Data, &payload))
-	assert.Equal(t, "internal error", payload["error"], "expected internal error reply from backstop")
+	assert.Equal(t, "internal error", payload.Error, "expected internal error reply from backstop")
 
 	// Process survived: a follow-up normal request must succeed.
 	natsrouter.Register(r, "ok.{id}",
@@ -348,10 +350,16 @@ func TestIntegration_ShutdownWaitsForSpawnedHandlers(t *testing.T) {
 		})
 
 	const inflight = 4
+	var clientsWG sync.WaitGroup
+	reqErrCh := make(chan error, inflight)
 	for i := 0; i < inflight; i++ {
+		clientsWG.Add(1)
 		go func(i int) {
+			defer clientsWG.Done()
 			data, _ := json.Marshal(echoReq{Seq: i})
-			_, _ = nc.Request(context.Background(), fmt.Sprintf("wg.%d", i), data, 5*time.Second)
+			if _, err := nc.Request(context.Background(), fmt.Sprintf("wg.%d", i), data, 5*time.Second); err != nil {
+				reqErrCh <- fmt.Errorf("wg.%d request failed: %w", i, err)
+			}
 		}(i)
 	}
 
@@ -388,6 +396,13 @@ func TestIntegration_ShutdownWaitsForSpawnedHandlers(t *testing.T) {
 		t.Fatal("Shutdown did not return after handlers completed")
 	}
 	assert.Equal(t, int64(inflight), completed.Load(), "every gated handler must complete")
+
+	// Join client goroutines and surface any nc.Request errors.
+	clientsWG.Wait()
+	close(reqErrCh)
+	for err := range reqErrCh {
+		require.NoError(t, err)
+	}
 }
 
 // TestIntegration_MultipleRouterInstances simulates multiple service pods

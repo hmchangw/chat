@@ -7,8 +7,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-// BulkResult mirrors mongo.BulkWriteResult.
-// Empty-input contract: bulk methods return (nil, nil); InsertMany returns (0, nil).
+// BulkResult mirrors mongo.BulkWriteResult; bulk methods return (nil, nil) on empty input.
 type BulkResult struct {
 	Matched      int64
 	Modified     int64
@@ -19,11 +18,11 @@ type BulkResult struct {
 	Acknowledged bool
 }
 
-func UpsertModel(filter, update any) mongo.WriteModel {
+func UpsertModel(filter, update any) *mongo.UpdateOneModel {
 	return mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update).SetUpsert(true)
 }
 
-func DeleteModel(filter any) mongo.WriteModel {
+func DeleteModel(filter any) *mongo.DeleteOneModel {
 	return mongo.NewDeleteOneModel().SetFilter(filter)
 }
 

@@ -13,11 +13,9 @@ func TestUpsertModel_BuildsUpdateOneModelWithUpsert(t *testing.T) {
 	filter := bson.M{"_id": "x"}
 	update := bson.M{"$set": bson.M{"name": "alice"}}
 
-	m := UpsertModel(filter, update)
-	require.NotNil(t, m)
+	uo := UpsertModel(filter, update)
+	require.NotNil(t, uo)
 
-	uo, ok := m.(*mongo.UpdateOneModel)
-	require.True(t, ok, "UpsertModel must return *UpdateOneModel")
 	assert.Equal(t, filter, uo.Filter)
 	assert.Equal(t, update, uo.Update)
 	require.NotNil(t, uo.Upsert)
@@ -27,11 +25,9 @@ func TestUpsertModel_BuildsUpdateOneModelWithUpsert(t *testing.T) {
 func TestDeleteModel_BuildsDeleteOneModel(t *testing.T) {
 	filter := bson.M{"_id": "x"}
 
-	m := DeleteModel(filter)
-	require.NotNil(t, m)
+	d := DeleteModel(filter)
+	require.NotNil(t, d)
 
-	d, ok := m.(*mongo.DeleteOneModel)
-	require.True(t, ok, "DeleteModel must return *DeleteOneModel")
 	assert.Equal(t, filter, d.Filter)
 }
 
