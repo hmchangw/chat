@@ -706,3 +706,24 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 		})
 	}
 }
+
+func TestIsBot(t *testing.T) {
+	cases := []struct {
+		name    string
+		account string
+		want    bool
+	}{
+		{name: ".bot suffix", account: "helper.bot", want: true},
+		{name: "p_ prefix", account: "p_scheduler", want: true},
+		{name: "another bot suffix", account: "scheduler.bot", want: true},
+		{name: "another p_ prefix", account: "p_webhook", want: true},
+		{name: "plain account", account: "alice", want: false},
+		{name: "contains bot but not suffix", account: "botmaster", want: false},
+		{name: "empty string", account: "", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isBot(tc.account))
+		})
+	}
+}
