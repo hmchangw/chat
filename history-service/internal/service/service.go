@@ -13,7 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,EventPublisher,ThreadRoomRepository,RoomKeyProvider
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,EventPublisher,ThreadRoomRepository,RoomKeyProvider,RoomTimeResolver
 
 type MessageReader interface {
 	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
@@ -63,6 +63,13 @@ type RoomKeyProvider interface {
 	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
 }
 
+// RoomTimeResolver returns the last-message and creation timestamps for a room.
+// Implemented by *mongorepo.RoomRepo; defined here to keep the dependency
+// contract narrow — only GetRoomTimes is used by history-service.
+type RoomTimeResolver interface {
+	GetRoomTimes(ctx context.Context, roomID string) (lastMsgAt, createdAt time.Time, err error)
+}
+
 // HistoryService handles message history queries and mutations. Transport-agnostic.
 type HistoryService struct {
 	msgReader     MessageReader
@@ -71,10 +78,20 @@ type HistoryService struct {
 	publisher     EventPublisher
 	threadRooms   ThreadRoomRepository
 	keyProvider   RoomKeyProvider
+	roomTimes     RoomTimeResolver
+	historyFloor  time.Duration // from MESSAGE_HISTORY_FLOOR_DAYS
 }
 
 // New creates a HistoryService with the given repositories and event publisher.
-func New(msgs MessageRepository, subs SubscriptionRepository, pub EventPublisher, threadRooms ThreadRoomRepository, keyProvider RoomKeyProvider) *HistoryService {
+func New(
+	msgs MessageRepository,
+	subs SubscriptionRepository,
+	pub EventPublisher,
+	threadRooms ThreadRoomRepository,
+	keyProvider RoomKeyProvider,
+	roomTimes RoomTimeResolver,
+	historyFloor time.Duration,
+) *HistoryService {
 	return &HistoryService{
 		msgReader:     msgs,
 		msgWriter:     msgs,
@@ -82,6 +99,8 @@ func New(msgs MessageRepository, subs SubscriptionRepository, pub EventPublisher
 		publisher:     pub,
 		threadRooms:   threadRooms,
 		keyProvider:   keyProvider,
+		roomTimes:     roomTimes,
+		historyFloor:  historyFloor,
 	}
 }
 

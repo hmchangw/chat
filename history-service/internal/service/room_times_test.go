@@ -1,0 +1,60 @@
+package service
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/history-service/internal/service/mocks"
+)
+
+func TestResolveRoomTimes(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	last := time.Date(2026, 4, 30, 8, 0, 0, 0, time.UTC)
+	created := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	future := now.Add(2 * time.Hour) // beyond +1h skew tolerance
+
+	tsPtr := func(t time.Time) *int64 {
+		ms := t.UnixMilli()
+		return &ms
+	}
+	msPtr := func(ms int64) *int64 { return &ms }
+
+	tests := []struct {
+		name        string
+		hints       *models.RoomHints
+		mongoCalls  int
+		wantLast    time.Time
+		wantCreated time.Time
+	}{
+		{name: "no hints → mongo fallback", hints: nil, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "both hints valid → no mongo", hints: &models.RoomHints{LastMsgAt: tsPtr(last), CreatedAt: tsPtr(created)}, mongoCalls: 0, wantLast: last, wantCreated: created},
+		{name: "lastMsgAt missing → mongo fallback for both", hints: &models.RoomHints{CreatedAt: tsPtr(created)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "createdAt missing → mongo fallback for both", hints: &models.RoomHints{LastMsgAt: tsPtr(last)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "lastMsgAt too far in future → ignored", hints: &models.RoomHints{LastMsgAt: tsPtr(future), CreatedAt: tsPtr(created)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "createdAt in future → ignored", hints: &models.RoomHints{LastMsgAt: tsPtr(last), CreatedAt: tsPtr(future)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "implausibly old values (pre-2020) → ignored", hints: &models.RoomHints{LastMsgAt: msPtr(0), CreatedAt: msPtr(0)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			mockResolver := mocks.NewMockRoomTimeResolver(ctrl)
+			mockResolver.EXPECT().
+				GetRoomTimes(gomock.Any(), "room-1").
+				Return(last, created, nil).
+				Times(tc.mongoCalls)
+
+			s := &HistoryService{roomTimes: mockResolver}
+			gotLast, gotCreated, err := s.resolveRoomTimes(context.Background(), "room-1", tc.hints, now)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantLast.UTC(), gotLast.UTC())
+			assert.Equal(t, tc.wantCreated.UTC(), gotCreated.UTC())
+		})
+	}
+}

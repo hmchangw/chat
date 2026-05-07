@@ -56,8 +56,31 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	// TODO(task-17): replace placeholder bounds with resolved room times from resolveRoomTimes.
-	page, err := s.msgReader.GetThreadMessages(c, roomID, msg.ThreadRoomID, time.Now().UTC().Add(time.Hour), time.Time{}, pageReq)
+	now := time.Now().UTC()
+	lastMsgAt, createdAt, err := s.resolveRoomTimes(c, roomID, req.Hints, now)
+	if err != nil {
+		slog.Error("resolve room times", "error", err, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("failed to resolve room metadata")
+	}
+
+	// Ceiling for thread DESC walk: lastMsgAt+1ms, or now+1h if unknown.
+	ceiling := lastMsgAt
+	if ceiling.IsZero() {
+		ceiling = now.Add(time.Hour)
+	} else {
+		ceiling = ceiling.Add(time.Millisecond)
+	}
+
+	// Floor: room.createdAt for full-access, or max(createdAt, accessSince) for restricted.
+	floor := createdAt
+	if accessSince != nil && accessSince.After(floor) {
+		floor = *accessSince
+	}
+	if floor.IsZero() {
+		floor = now.Add(-s.historyFloor)
+	}
+
+	page, err := s.msgReader.GetThreadMessages(c, roomID, msg.ThreadRoomID, ceiling, floor, pageReq)
 	if err != nil {
 		slog.Error("loading thread messages", "error", err, "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
 		return nil, natsrouter.ErrInternal("failed to load thread messages")

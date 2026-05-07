@@ -49,6 +49,13 @@ func generateTestKeyPair(t *testing.T) *roomkeystore.VersionedKeyPair {
 	}
 }
 
+// defaultRoomLastMsgAt is used as the default GetRoomTimes return value in newService.
+// It is far enough past joinTime that no test fixture's "before" gets capped unexpectedly.
+var defaultRoomLastMsgAt = joinTime.Add(24 * time.Hour)
+
+// defaultRoomCreatedAt is well before joinTime so the floor never clips test fixtures.
+var defaultRoomCreatedAt = joinTime.Add(-30 * 24 * time.Hour)
+
 func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockEventPublisher, *mocks.MockThreadRoomRepository, *mocks.MockRoomKeyProvider) {
 	ctrl := gomock.NewController(t)
 	msgs := mocks.NewMockMessageRepository(ctrl)
@@ -56,7 +63,16 @@ func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageReposi
 	pub := mocks.NewMockEventPublisher(ctrl)
 	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
 	keys := mocks.NewMockRoomKeyProvider(ctrl)
-	return service.New(msgs, subs, pub, threadRooms, keys), msgs, subs, pub, threadRooms, keys
+	roomTimes := mocks.NewMockRoomTimeResolver(ctrl)
+	// Default: allow any number of GetRoomTimes calls and return sensible values.
+	// Tests that specifically test resolver behaviour can add more-specific expectations.
+	roomTimes.EXPECT().
+		GetRoomTimes(gomock.Any(), gomock.Any()).
+		Return(defaultRoomLastMsgAt, defaultRoomCreatedAt, nil).
+		AnyTimes()
+	// historyFloor: 90 days — long enough that the floor never clips test fixtures.
+	const historyFloor = 90 * 24 * time.Hour
+	return service.New(msgs, subs, pub, threadRooms, keys, roomTimes, historyFloor), msgs, subs, pub, threadRooms, keys
 }
 
 func assertInternalErr(t *testing.T, err error, wantMsg string) {

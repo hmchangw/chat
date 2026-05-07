@@ -50,7 +50,6 @@ func main() {
 
 	bucketSizer := msgbucket.New(time.Duration(cfg.MessageBucketHours) * time.Hour)
 	historyFloor := time.Duration(cfg.MessageHistoryFloorDays) * 24 * time.Hour
-	_ = historyFloor // consumed in later tasks
 
 	ctx := context.Background()
 
@@ -98,7 +97,6 @@ func main() {
 	subRepo := mongorepo.NewSubscriptionRepo(db)
 	threadRoomRepo := mongorepo.NewThreadRoomRepo(db)
 	roomRepo := mongorepo.NewRoomRepo(db)
-	_ = roomRepo // consumed in later tasks
 
 	if err := threadRoomRepo.EnsureIndexes(ctx); err != nil {
 		slog.Error("ensure thread_rooms indexes failed", "error", err)
@@ -106,7 +104,7 @@ func main() {
 	}
 
 	pub := publisher.New(nc)
-	svc := service.New(cassRepo, subRepo, pub, threadRoomRepo, keyStore)
+	svc := service.New(cassRepo, subRepo, pub, threadRoomRepo, keyStore, roomRepo, historyFloor)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
