@@ -13,6 +13,23 @@ import (
 // errNotSubscribed is returned when the user is not subscribed to the room.
 var errNotSubscribed = errors.New("not subscribed")
 
+// codedError pairs a stable wire code with a user-safe message. Returned by
+// validation paths that want the reply to carry a machine-readable code.
+type codedError struct {
+	Code    string
+	Message string
+}
+
+func (e *codedError) Error() string { return e.Message }
+
+// errLargeRoomPostRestricted is returned when a non-owner attempts to post a
+// top-level message in a room whose userCount exceeds the configured
+// threshold.
+var errLargeRoomPostRestricted = &codedError{
+	Code:    "large_room_post_restricted",
+	Message: "only owners can post in this room",
+}
+
 type Store interface {
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)

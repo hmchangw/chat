@@ -757,3 +757,34 @@ func TestCanBypassLargeRoomCap(t *testing.T) {
 		})
 	}
 }
+
+func TestHandler_marshalErrorReply(t *testing.T) {
+	h := &Handler{}
+
+	t.Run("plain error produces uncoded reply", func(t *testing.T) {
+		data := h.marshalErrorReply(errors.New("user alice is not subscribed to room R"))
+		var got model.ErrorResponse
+		require.NoError(t, json.Unmarshal(data, &got))
+		assert.Equal(t, "user alice is not subscribed to room R", got.Error)
+		assert.Empty(t, got.Code)
+		// omitempty: the wire bytes must not contain a "code" key.
+		assert.NotContains(t, string(data), `"code"`)
+	})
+
+	t.Run("codedError produces coded reply", func(t *testing.T) {
+		data := h.marshalErrorReply(errLargeRoomPostRestricted)
+		var got model.ErrorResponse
+		require.NoError(t, json.Unmarshal(data, &got))
+		assert.Equal(t, "only owners can post in this room", got.Error)
+		assert.Equal(t, "large_room_post_restricted", got.Code)
+	})
+
+	t.Run("wrapped codedError still dispatches", func(t *testing.T) {
+		wrapped := fmt.Errorf("context: %w", errLargeRoomPostRestricted)
+		data := h.marshalErrorReply(wrapped)
+		var got model.ErrorResponse
+		require.NoError(t, json.Unmarshal(data, &got))
+		assert.Equal(t, "only owners can post in this room", got.Error)
+		assert.Equal(t, "large_room_post_restricted", got.Code)
+	})
+}

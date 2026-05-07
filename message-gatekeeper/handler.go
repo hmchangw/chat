@@ -83,7 +83,7 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 			}
 		} else {
 			// Validation error: reply with error and ack.
-			h.sendReply(ctx, account, msg.Data(), natsutil.MarshalError(err.Error()))
+			h.sendReply(ctx, account, msg.Data(), h.marshalErrorReply(err))
 			if err := msg.Ack(); err != nil {
 				slog.Error("failed to ack message", "error", err)
 			}
@@ -243,4 +243,15 @@ func canBypassLargeRoomCap(sub *model.Subscription) bool {
 		}
 	}
 	return isBot(sub.User.Account)
+}
+
+// marshalErrorReply produces the JSON reply payload for a validation error.
+// If the error is (or wraps) a *codedError, the reply carries the code;
+// otherwise the reply is the legacy uncoded shape.
+func (h *Handler) marshalErrorReply(err error) []byte {
+	var ce *codedError
+	if errors.As(err, &ce) {
+		return natsutil.MarshalErrorWithCode(ce.Message, ce.Code)
+	}
+	return natsutil.MarshalError(err.Error())
 }
