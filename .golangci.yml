@@ -9,6 +9,7 @@ linters:
     - nilerr
     - bodyclose
     - exhaustive
+    - gosec
   settings:
     exhaustive:
       default-signifies-exhaustive: true
@@ -16,6 +17,13 @@ linters:
       enabled-tags:
         - diagnostic
         - performance
+    gosec:
+      # Narrowly scoped to G402 (TLS InsecureSkipVerify) so the existing
+      # //nolint:gosec annotations in pkg/oidc and pkg/searchengine are
+      # actually suppressing a real rule, and any new unannotated
+      # InsecureSkipVerify is rejected at lint time.
+      includes:
+        - G402
   exclusions:
     presets:
       - std-error-handling

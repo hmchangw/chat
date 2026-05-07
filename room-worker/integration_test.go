@@ -752,9 +752,9 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	})
 	// Owner sub.
 	mustInsertSub(t, db, &model.Subscription{
-		ID:       idgen.GenerateUUIDv7(),
-		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
-		RoomID:   roomID, SiteID: "site-A", Name: roomName, RoomType: model.RoomTypeChannel,
+		ID:     idgen.GenerateUUIDv7(),
+		User:   model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID: roomID, SiteID: "site-A", Name: roomName, RoomType: model.RoomTypeChannel,
 		Roles:    []model.Role{model.RoleOwner},
 		JoinedAt: time.Now().UTC(),
 	})
@@ -872,9 +872,9 @@ func TestProcessAddMembers_PublishesLocalInbox_Integration(t *testing.T) {
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	})
 	mustInsertSub(t, db, &model.Subscription{
-		ID:       idgen.GenerateUUIDv7(),
-		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
-		RoomID:   roomID, SiteID: "site-A", Name: roomName, RoomType: model.RoomTypeChannel,
+		ID:     idgen.GenerateUUIDv7(),
+		User:   model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID: roomID, SiteID: "site-A", Name: roomName, RoomType: model.RoomTypeChannel,
 		Roles:    []model.Role{model.RoleOwner},
 		JoinedAt: time.Now().UTC(),
 	})
@@ -933,7 +933,7 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 	mustInsertSub(t, db, &model.Subscription{
 		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u_bob", Account: "bob"},
 		RoomID: roomID, SiteID: "site-A", Name: "fed-room", RoomType: model.RoomTypeChannel,
-		Roles:  []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
+		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
 	})
 	_, err := db.Collection("room_members").InsertOne(ctx, model.RoomMember{
 		ID: idgen.GenerateUUIDv7(), RoomID: roomID, Ts: time.Now().UTC(),
