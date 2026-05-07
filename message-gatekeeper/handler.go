@@ -164,6 +164,30 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		return nil, &infraError{cause: fmt.Errorf("get subscription for user %s in room %s: %w", account, roomID, err)}
 	}
 
+	// Large-room post restriction: in rooms with more than the configured
+	// threshold of members, only owners, admins, and bots may send top-level
+	// messages. Thread replies are exempt regardless of room size; bypass-eligible
+	// senders (owner/admin role, or bot account name) are exempt regardless of
+	// room size. Both bypasses skip the Room fetch entirely (approach B —
+	// owner fast-path generalized).
+	isThreadReply := req.ThreadParentMessageID != ""
+	if !isThreadReply && !canBypassLargeRoomCap(sub) {
+		room, err := h.store.GetRoom(ctx, roomID)
+		if err != nil {
+			return nil, &infraError{cause: fmt.Errorf("get room %s for cap check: %w", roomID, err)}
+		}
+		if room.UserCount > h.largeRoomThreshold {
+			slog.Info("send blocked",
+				"reason", "large_room_post_restricted",
+				"account", account,
+				"roomID", roomID,
+				"userCount", room.UserCount,
+				"threshold", h.largeRoomThreshold,
+			)
+			return nil, errLargeRoomPostRestricted
+		}
+	}
+
 	// Build Message
 	now := time.Now().UTC()
 

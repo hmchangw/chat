@@ -62,6 +62,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		setupPub    func() (publishFunc, *[]publishedMsg)
 		wantErr     bool
 		wantInfra   bool
+		threshold   int                                                       // 0 → use 500
+		checkErr    func(t *testing.T, err error)                             // optional; called on wantErr cases
 		checkResult func(t *testing.T, data []byte, published []publishedMsg)
 	}{
 		{
@@ -78,6 +80,9 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				s.EXPECT().
 					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(sub, nil)
+				s.EXPECT().
+					GetRoom(gomock.Any(), validRoomID).
+					Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
@@ -274,6 +279,9 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				s.EXPECT().
 					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(sub, nil)
+				s.EXPECT().
+					GetRoom(gomock.Any(), validRoomID).
+					Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				return makePublishFunc(nil, fmt.Errorf("nats publish error")), nil
@@ -313,6 +321,284 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantErr:   true,
 			wantInfra: false,
 		},
+		{
+			name:    "owner sends in big room — fast-path skips GetRoom",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleOwner},
+					}, nil)
+				// No GetRoom expectation: owners must skip the fetch entirely.
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr: false,
+		},
+		{
+			name:    "admin sends in big room — fast-path skips GetRoom",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleAdmin},
+					}, nil)
+				// No GetRoom expectation: admins must skip the fetch entirely.
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr: false,
+		},
+		{
+			name:    "bot account in big room with member role — fast-path skips GetRoom",
+			account: "helper.bot",
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), "helper.bot", validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u-bot", Account: "helper.bot"},
+						Roles: []model.Role{model.RoleMember},
+					}, nil)
+				// No GetRoom expectation: bot accounts must skip the fetch entirely.
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr: false,
+		},
+		{
+			name:    "member sends in big room — rejected with codedError",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleMember},
+					}, nil)
+				s.EXPECT().
+					GetRoom(gomock.Any(), validRoomID).
+					Return(&model.Room{ID: validRoomID, UserCount: 600}, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr:   true,
+			wantInfra: false,
+			checkErr: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, errLargeRoomPostRestricted)
+			},
+		},
+		{
+			name:    "member sends in small room — allowed",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleMember},
+					}, nil)
+				s.EXPECT().
+					GetRoom(gomock.Any(), validRoomID).
+					Return(&model.Room{ID: validRoomID, UserCount: 50}, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr: false,
+		},
+		{
+			name:    "boundary: count == threshold — allowed (strict greater-than)",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleMember},
+					}, nil)
+				s.EXPECT().
+					GetRoom(gomock.Any(), validRoomID).
+					Return(&model.Room{ID: validRoomID, UserCount: 500}, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr: false,
+		},
+		{
+			name:    "boundary: count == threshold + 1 — rejected",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleMember},
+					}, nil)
+				s.EXPECT().
+					GetRoom(gomock.Any(), validRoomID).
+					Return(&model.Room{ID: validRoomID, UserCount: 501}, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr:   true,
+			wantInfra: false,
+			checkErr: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, errLargeRoomPostRestricted)
+			},
+		},
+		{
+			name:    "member thread reply in big room — fast-path skips GetRoom",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				parentID := idgen.GenerateMessageID()
+				parentMillis := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC).UnixMilli()
+				return []byte(fmt.Sprintf(
+					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d}`,
+					idgen.GenerateMessageID(), validContent, parentID, parentMillis,
+				))
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleMember},
+					}, nil)
+				// No GetRoom expectation: thread replies must skip the fetch entirely.
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr: false,
+		},
+		{
+			name:    "GetRoom infra failure — wrapped as infraError",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleMember},
+					}, nil)
+				s.EXPECT().
+					GetRoom(gomock.Any(), validRoomID).
+					Return(nil, errors.New("mongo unreachable"))
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				return makePublishFunc(nil, nil), nil
+			},
+			wantErr:   true,
+			wantInfra: true,
+		},
+		{
+			name:    "custom threshold (env=2), 3-person room — rejected",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleMember},
+					}, nil)
+				s.EXPECT().
+					GetRoom(gomock.Any(), validRoomID).
+					Return(&model.Room{ID: validRoomID, UserCount: 3}, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			threshold: 2,
+			wantErr:   true,
+			wantInfra: false,
+			checkErr: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, errLargeRoomPostRestricted)
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -323,11 +609,15 @@ func TestHandler_ProcessMessage(t *testing.T) {
 
 			pub, publishedPtr := tc.setupPub()
 
+			threshold := tc.threshold
+			if threshold == 0 {
+				threshold = 500
+			}
 			h := &Handler{
 				store:              store,
 				publish:            pub,
 				siteID:             validSiteID,
-				largeRoomThreshold: 500,
+				largeRoomThreshold: threshold,
 			}
 
 			data, err := h.processMessage(context.Background(), tc.account, tc.roomID, tc.siteID, tc.buildData())
@@ -340,6 +630,9 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				} else {
 					var ie *infraError
 					assert.False(t, errors.As(err, &ie), "expected non-infra error, got infraError: %v", err)
+				}
+				if tc.checkErr != nil {
+					tc.checkErr(t, err)
 				}
 			} else {
 				require.NoError(t, err)
@@ -384,6 +677,8 @@ func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing
 	store := NewMockStore(ctrl)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "room-1").
+		Return(&model.Room{ID: "room-1", UserCount: 1}, nil)
 
 	var capturedHeader nats.Header
 	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
@@ -478,6 +773,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
@@ -510,6 +806,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
@@ -561,6 +858,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
@@ -623,6 +921,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				// no EXPECT — gomock will fail the test if FetchQuotedParent is called
@@ -648,6 +947,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
