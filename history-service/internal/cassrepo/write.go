@@ -72,37 +72,103 @@ func casDecrement(maxRetries int, initial *int, update func(newVal int, expected
 	return fmt.Errorf("cas decrement exceeded %d retries", maxRetries)
 }
 
+// editPayload is the shared, pre-prepared edit payload passed to each
+// per-table UPDATE. It carries either the new plaintext body (cipher
+// disabled) or a pre-encrypted bundle (cipher enabled). Building it once
+// and reusing it across the 2-3 mirror-table UPDATEs avoids repeated
+// encryption and preserves any other encrypted fields that already
+// existed on the row (attachments, sysMsgData, quoted parent body).
+type editPayload struct {
+	plain   string
+	payload []byte             // nil when cipher is disabled
+	meta    *cassmodel.EncMeta // nil when cipher is disabled
+}
+
+// buildEditPayload prepares the payload for an edit. When the cipher is
+// enabled, it reads the existing encrypted row from messages_by_id,
+// decrypts it, replaces only Msg with newMsg, and re-encrypts so that
+// previously-encrypted fields (attachments, card, sysMsgData, quoted
+// parent body) are preserved. Editing a legacy plaintext row produces a
+// fresh bundle containing just Msg.
+func (r *Repository) buildEditPayload(ctx context.Context, msg *models.Message, newMsg string) (editPayload, error) {
+	if r.cipher == nil {
+		return editPayload{plain: newMsg}, nil
+	}
+	fields, err := r.readEncryptedFields(ctx, msg)
+	if err != nil {
+		return editPayload{}, err
+	}
+	fields.Msg = newMsg
+	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, fields)
+	if err != nil {
+		return editPayload{}, fmt.Errorf("encrypt edit body for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+	}
+	return editPayload{
+		plain:   newMsg,
+		payload: payload,
+		meta:    &cassmodel.EncMeta{Nonce: meta.Nonce},
+	}, nil
+}
+
+// readEncryptedFields fetches the existing enc_payload from messages_by_id
+// and decrypts it. Legacy plaintext rows (no enc_payload) return a zero
+// EncryptedFields — there's nothing prior to preserve.
+func (r *Repository) readEncryptedFields(ctx context.Context, msg *models.Message) (atrest.EncryptedFields, error) {
+	var (
+		encPayload []byte
+		encMeta    *cassmodel.EncMeta
+	)
+	err := r.session.Query(
+		`SELECT enc_payload, enc_meta FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msg.MessageID, msg.CreatedAt,
+	).WithContext(ctx).Scan(&encPayload, &encMeta)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return atrest.EncryptedFields{}, nil
+		}
+		return atrest.EncryptedFields{}, fmt.Errorf("read existing enc_payload for message %s: %w", msg.MessageID, err)
+	}
+	if len(encPayload) == 0 {
+		return atrest.EncryptedFields{}, nil
+	}
+	meta := atrest.EncMeta{}
+	if encMeta != nil {
+		meta.Nonce = encMeta.Nonce
+	}
+	fields, err := r.cipher.Decrypt(ctx, msg.RoomID, encPayload, meta)
+	if err != nil {
+		return atrest.EncryptedFields{}, fmt.Errorf("decrypt existing enc_payload for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+	}
+	return fields, nil
+}
+
 // editOne runs the appropriate plaintext or encrypted UPDATE for one of
 // the four message tables. plainQ binds (newMsg, editedAt, editedAt,
 // whereArgs...); encQ binds (encPayload, encMeta, editedAt, editedAt,
 // whereArgs...).
-func (r *Repository) editOne(ctx context.Context, plainQ, encQ string, msg *models.Message, newMsg string, editedAt time.Time, whereArgs ...any) error {
-	if r.cipher == nil {
-		args := append([]any{newMsg, editedAt, editedAt}, whereArgs...)
+func (r *Repository) editOne(ctx context.Context, plainQ, encQ string, ep editPayload, editedAt time.Time, whereArgs ...any) error {
+	if ep.payload == nil {
+		args := append([]any{ep.plain, editedAt, editedAt}, whereArgs...)
 		return r.session.Query(plainQ, args...).WithContext(ctx).Exec()
 	}
-	payload, meta, err := r.cipher.Encrypt(ctx, msg.RoomID, atrest.EncryptedFields{Msg: newMsg})
-	if err != nil {
-		return fmt.Errorf("encrypt edit body for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
-	}
-	args := append([]any{payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, editedAt, editedAt}, whereArgs...)
+	args := append([]any{ep.payload, ep.meta, editedAt, editedAt}, whereArgs...)
 	return r.session.Query(encQ, args...).WithContext(ctx).Exec()
 }
 
-func (r *Repository) editInMessagesByID(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return r.editOne(ctx, editMsgByID, editMsgByIDEncrypted, msg, newMsg, editedAt, msg.MessageID, msg.CreatedAt)
+func (r *Repository) editInMessagesByID(ctx context.Context, msg *models.Message, ep editPayload, editedAt time.Time) error {
+	return r.editOne(ctx, editMsgByID, editMsgByIDEncrypted, ep, editedAt, msg.MessageID, msg.CreatedAt)
 }
 
-func (r *Repository) editInMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return r.editOne(ctx, editMsgByRoom, editMsgByRoomEncrypted, msg, newMsg, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID)
+func (r *Repository) editInMessagesByRoom(ctx context.Context, msg *models.Message, ep editPayload, editedAt time.Time) error {
+	return r.editOne(ctx, editMsgByRoom, editMsgByRoomEncrypted, ep, editedAt, msg.RoomID, msg.CreatedAt, msg.MessageID)
 }
 
-func (r *Repository) editInThreadMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return r.editOne(ctx, editThreadMsg, editThreadMsgEncrypted, msg, newMsg, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID)
+func (r *Repository) editInThreadMessagesByRoom(ctx context.Context, msg *models.Message, ep editPayload, editedAt time.Time) error {
+	return r.editOne(ctx, editThreadMsg, editThreadMsgEncrypted, ep, editedAt, msg.RoomID, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID)
 }
 
-func (r *Repository) editInPinnedMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return r.editOne(ctx, editPinnedMsg, editPinnedMsgEncrypted, msg, newMsg, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID)
+func (r *Repository) editInPinnedMessagesByRoom(ctx context.Context, msg *models.Message, ep editPayload, editedAt time.Time) error {
+	return r.editOne(ctx, editPinnedMsg, editPinnedMsgEncrypted, ep, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID)
 }
 
 func (r *Repository) deleteInMessagesByRoom(ctx context.Context, q string, msg *models.Message, deletedAt time.Time) error {
@@ -122,22 +188,27 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 		return fmt.Errorf("edit thread message %s: ThreadParentID %q is set but ThreadRoomID is empty", msg.MessageID, msg.ThreadParentID)
 	}
 
-	if err := r.editInMessagesByID(ctx, msg, newMsg, editedAt); err != nil {
+	ep, err := r.buildEditPayload(ctx, msg, newMsg)
+	if err != nil {
+		return fmt.Errorf("prepare edit payload for message %s: %w", msg.MessageID, err)
+	}
+
+	if err := r.editInMessagesByID(ctx, msg, ep, editedAt); err != nil {
 		return fmt.Errorf("update messages_by_id for message %s: %w", msg.MessageID, err)
 	}
 
 	if msg.ThreadParentID == "" {
-		if err := r.editInMessagesByRoom(ctx, msg, newMsg, editedAt); err != nil {
+		if err := r.editInMessagesByRoom(ctx, msg, ep, editedAt); err != nil {
 			return fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
 	} else {
-		if err := r.editInThreadMessagesByRoom(ctx, msg, newMsg, editedAt); err != nil {
+		if err := r.editInThreadMessagesByRoom(ctx, msg, ep, editedAt); err != nil {
 			return fmt.Errorf("update thread_messages_by_room for message %s room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
 		}
 	}
 
 	if msg.PinnedAt != nil {
-		if err := r.editInPinnedMessagesByRoom(ctx, msg, newMsg, editedAt); err != nil {
+		if err := r.editInPinnedMessagesByRoom(ctx, msg, ep, editedAt); err != nil {
 			return fmt.Errorf("update pinned_messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
 	}

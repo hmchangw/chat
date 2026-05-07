@@ -67,12 +67,14 @@ func TestFakeDEKStore_RoundTrip(t *testing.T) {
 
 	// Upsert with same _id is a no-op.
 	require.NoError(t, s.Upsert(ctx, RoomDataKey{ID: "room1", WrappedDEK: []byte("other"), KEKVersion: 9}))
-	got, _ = s.Get(ctx, "room1")
+	got, err = s.Get(ctx, "room1")
+	require.NoError(t, err)
 	assert.Equal(t, []byte("wrapped"), got.WrappedDEK)
 
 	// Replace overwrites.
 	require.NoError(t, s.Replace(ctx, RoomDataKey{ID: "room1", WrappedDEK: []byte("re"), KEKVersion: 2}))
-	got, _ = s.Get(ctx, "room1")
+	got, err = s.Get(ctx, "room1")
+	require.NoError(t, err)
 	assert.Equal(t, []byte("re"), got.WrappedDEK)
 	assert.Equal(t, 2, got.KEKVersion)
 }

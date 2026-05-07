@@ -164,12 +164,18 @@ version that wraps a room's DEK is authoritative on the
 per-message would denormalize a value that changes whenever the rotation
 worker re-wraps the DEK, with no decryption benefit.
 
-Two new columns on each of the three message tables (`messages_by_room`,
-`messages_by_id`, `thread_messages_by_room`):
+Two new columns on each of the four message tables (`messages_by_room`,
+`messages_by_id`, `thread_messages_by_room`, `pinned_messages_by_room`):
 
 ```cql
-ALTER TABLE messages_by_room ADD enc_payload blob;
-ALTER TABLE messages_by_room ADD enc_meta    frozen<enc_meta>;
+ALTER TABLE messages_by_room          ADD enc_payload blob;
+ALTER TABLE messages_by_room          ADD enc_meta    frozen<enc_meta>;
+ALTER TABLE messages_by_id            ADD enc_payload blob;
+ALTER TABLE messages_by_id            ADD enc_meta    frozen<enc_meta>;
+ALTER TABLE thread_messages_by_room   ADD enc_payload blob;
+ALTER TABLE thread_messages_by_room   ADD enc_meta    frozen<enc_meta>;
+ALTER TABLE pinned_messages_by_room   ADD enc_payload blob;
+ALTER TABLE pinned_messages_by_room   ADD enc_meta    frozen<enc_meta>;
 ```
 
 The legacy plaintext columns (`msg`, `attachments`, `card`, `card_action`,
@@ -381,16 +387,22 @@ parsed via `caarlos0/env`:
 
 ```go
 type AtrestConfig struct {
-    Enabled       bool          `env:"ATREST_ENABLED"        envDefault:"true"`
-    KEKFile       string        `env:"ATREST_KEK_FILE"       envDefault:"/etc/chat/keks.json"`
-    DEKCacheSize  int           `env:"ATREST_DEK_CACHE_SIZE" envDefault:"10000"`
-    DEKCacheTTL   time.Duration `env:"ATREST_DEK_CACHE_TTL"  envDefault:"1h"`
+    Enabled      bool          `env:"ATREST_ENABLED"          envDefault:"true"`
+    KEKFile      string        `env:"ATREST_KEK_FILE"         envDefault:"/etc/chat/keks.json"`
+    DEKCacheSize int           `env:"ATREST_DEK_CACHE_SIZE"   envDefault:"10000"`
+    DEKCacheTTL  time.Duration `env:"ATREST_DEK_CACHE_TTL"    envDefault:"1h"`
+    ReloadEvery  time.Duration `env:"ATREST_KEK_RELOAD_EVERY" envDefault:"30s"`
 }
 ```
 
-When `Enabled=false`, the cipher is wired as a no-op pass-through that
-takes the legacy write/read path. Tests that do not exercise crypto can
-either inject a no-op cipher or set `ATREST_ENABLED=false` in the test
+`ReloadEvery` controls how often the KEK loader re-reads the secret file
+to pick up rotation changes; the default 30s is short enough to surface
+new keys quickly without flooding the filesystem.
+
+When `Enabled=false`, the cipher is left `nil` and the store/repo branch
+on `s.cipher == nil` to take the legacy plaintext write/read path. Tests
+that do not exercise crypto either inject a real cipher (against a test
+Mongo and a tempdir KEK file) or set `ATREST_ENABLED=false` in the test
 environment.
 
 A misconfigured deploy with `Enabled=true` and a missing or invalid

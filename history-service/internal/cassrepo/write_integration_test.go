@@ -935,7 +935,7 @@ func TestEditMessage_EncryptsBody(t *testing.T) {
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
 
-	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t))
+	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t), 0)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		// Best-effort: tests can't meaningfully act on a Close failure.
@@ -985,6 +985,63 @@ func TestEditMessage_EncryptsBody(t *testing.T) {
 	assert.Equal(t, "new body", plain.Msg)
 }
 
+// TestEditMessage_PreservesOtherEncryptedFields verifies that editing a
+// message's body re-encrypts a bundle that still contains the original
+// non-Msg user-authored fields (here, SysMsgData). Without the
+// decrypt-mutate-encrypt cycle in buildEditPayload these fields would be
+// silently dropped on edit.
+func TestEditMessage_PreservesOtherEncryptedFields(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+	mongoDB := setupMongo(t)
+
+	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t), 0)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		// Best-effort: tests can't meaningfully act on a Close failure.
+		_ = loader.Close()
+	})
+
+	cipher := atrest.NewCipher(loader, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
+	repo := NewRepository(session, cipher)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	roomID := "r-edit-pres-1"
+
+	originalSysMsgData := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	enc := atrest.EncryptedFields{Msg: "original body", SysMsgData: originalSysMsgData}
+	payload, meta, err := cipher.Encrypt(ctx, roomID, enc)
+	require.NoError(t, err)
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, created_at, message_id, enc_payload, enc_meta, site_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		roomID, now, "m1", payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, "site-a",
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, enc_payload, enc_meta, site_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		"m1", now, roomID, payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, "site-a",
+	).Exec())
+
+	editedAt := now.Add(time.Minute)
+	require.NoError(t, repo.UpdateMessageContent(ctx, &models.Message{
+		RoomID: roomID, MessageID: "m1", CreatedAt: now,
+	}, "new body", editedAt))
+
+	var (
+		encPayload []byte
+		encNonce   []byte
+	)
+	require.NoError(t, session.Query(
+		`SELECT enc_payload, enc_meta.nonce FROM messages_by_room WHERE room_id=? AND created_at=? AND message_id=? LIMIT 1`,
+		roomID, now, "m1",
+	).Scan(&encPayload, &encNonce))
+
+	plain, err := cipher.Decrypt(ctx, roomID, encPayload, atrest.EncMeta{Nonce: encNonce})
+	require.NoError(t, err)
+	assert.Equal(t, "new body", plain.Msg)
+	assert.Equal(t, originalSysMsgData, plain.SysMsgData, "non-Msg encrypted fields must survive an edit")
+}
+
 // TestDeleteMessage_NullsEncryptedColumns verifies that soft-deleting an
 // encrypted row also nulls enc_payload and enc_meta.
 func TestDeleteMessage_NullsEncryptedColumns(t *testing.T) {
@@ -992,7 +1049,7 @@ func TestDeleteMessage_NullsEncryptedColumns(t *testing.T) {
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
 
-	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t))
+	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t), 0)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = loader.Close()

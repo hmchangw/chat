@@ -76,7 +76,7 @@ func main() {
 		kekLoader atrest.KEKLoader
 	)
 	if cfg.Atrest.Enabled {
-		loader, err := atrest.NewFileKEKLoader(cfg.Atrest.KEKFile)
+		loader, err := atrest.NewFileKEKLoader(cfg.Atrest.KEKFile, cfg.Atrest.ReloadEvery)
 		if err != nil {
 			slog.Error("failed to load KEK file", "path", cfg.Atrest.KEKFile, "error", err)
 			os.Exit(1)

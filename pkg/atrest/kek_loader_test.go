@@ -12,7 +12,7 @@ import (
 )
 
 func TestNewFileKEKLoader_Valid(t *testing.T) {
-	l, err := NewFileKEKLoader(filepath.Join("testdata", "valid_keks.json"))
+	l, err := NewFileKEKLoader(filepath.Join("testdata", "valid_keks.json"), 0)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = l.Close() })
 
@@ -29,30 +29,30 @@ func TestNewFileKEKLoader_Valid(t *testing.T) {
 }
 
 func TestNewFileKEKLoader_ShortKey(t *testing.T) {
-	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_short_key.json"))
+	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_short_key.json"), 0)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrKEKFileInvalid))
 }
 
 func TestNewFileKEKLoader_MissingCurrent(t *testing.T) {
-	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_missing_current.json"))
+	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_missing_current.json"), 0)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrKEKFileInvalid))
 }
 
 func TestNewFileKEKLoader_FileMissing(t *testing.T) {
-	_, err := NewFileKEKLoader(filepath.Join("testdata", "does_not_exist.json"))
+	_, err := NewFileKEKLoader(filepath.Join("testdata", "does_not_exist.json"), 0)
 	require.Error(t, err)
 }
 
 func TestNewFileKEKLoader_EmptyKeys(t *testing.T) {
-	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_empty.json"))
+	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_empty.json"), 0)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrKEKFileInvalid))
 }
 
 func TestNewFileKEKLoader_NonIntegerVersion(t *testing.T) {
-	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_noninteger_version.json"))
+	_, err := NewFileKEKLoader(filepath.Join("testdata", "bad_keks_noninteger_version.json"), 0)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrKEKFileInvalid))
 }

@@ -30,9 +30,11 @@ type mongoDEKStore struct {
 	coll *mongo.Collection
 }
 
-// NewMongoDEKStore returns a DEKStore backed by the given collection.
-// Callers typically pass db.Collection(CollectionName).
-func NewMongoDEKStore(coll *mongo.Collection) DEKStore {
+// NewMongoDEKStore returns a Mongo-backed DEKStore implementation.
+// Callers typically pass db.Collection(CollectionName) and assign the
+// result to a DEKStore-typed variable. The concrete return type follows
+// the project convention "accept interfaces, return structs".
+func NewMongoDEKStore(coll *mongo.Collection) *mongoDEKStore { //nolint:revive // unexported return is intentional: callers consume via the DEKStore interface
 	return &mongoDEKStore{coll: coll}
 }
 

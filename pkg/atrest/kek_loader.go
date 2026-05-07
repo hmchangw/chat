@@ -38,11 +38,20 @@ type fileKEKLoader struct {
 	stop      chan struct{}
 }
 
+// DefaultKEKReloadInterval is the fallback used when a caller passes a
+// non-positive interval to NewFileKEKLoader (e.g. an unconfigured Config
+// in a test). Production services pass cfg.Atrest.ReloadEvery.
+const DefaultKEKReloadInterval = 30 * time.Second
+
 // NewFileKEKLoader reads and validates path, then starts a background
-// goroutine that re-reads the file every 30 seconds. Reload failures
-// retain the previous in-memory key set.
-func NewFileKEKLoader(path string) (KEKLoader, error) {
-	return newFileKEKLoaderWithInterval(path, 30*time.Second)
+// goroutine that re-reads the file every reloadEvery. Reload failures
+// retain the previous in-memory key set. A non-positive reloadEvery
+// falls back to DefaultKEKReloadInterval.
+func NewFileKEKLoader(path string, reloadEvery time.Duration) (KEKLoader, error) {
+	if reloadEvery <= 0 {
+		reloadEvery = DefaultKEKReloadInterval
+	}
+	return newFileKEKLoaderWithInterval(path, reloadEvery)
 }
 
 func newFileKEKLoaderWithInterval(path string, interval time.Duration) (KEKLoader, error) {

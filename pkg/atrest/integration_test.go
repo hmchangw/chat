@@ -42,7 +42,7 @@ func TestIntegration_RoundTrip(t *testing.T) {
 	db := testutil.MongoDB(t, "atrest_test")
 	store := NewMongoDEKStore(db.Collection(CollectionName))
 
-	loader, err := NewFileKEKLoader(writeKEKFile(t, t.TempDir()))
+	loader, err := NewFileKEKLoader(writeKEKFile(t, t.TempDir()), 0)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		// Best-effort: tests can't meaningfully act on a Close failure.
@@ -69,7 +69,7 @@ func TestIntegration_ConcurrentFirstWriteRace(t *testing.T) {
 	ctx := context.Background()
 	db := testutil.MongoDB(t, "atrest_test")
 	store := NewMongoDEKStore(db.Collection(CollectionName))
-	loader, err := NewFileKEKLoader(writeKEKFile(t, t.TempDir()))
+	loader, err := NewFileKEKLoader(writeKEKFile(t, t.TempDir()), 0)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		// Best-effort: tests can't meaningfully act on a Close failure.
@@ -80,6 +80,7 @@ func TestIntegration_ConcurrentFirstWriteRace(t *testing.T) {
 	const N = 16
 	results := make([][]byte, N)
 	metas := make([]EncMeta, N)
+	errs := make([]error, N)
 	var wg sync.WaitGroup
 	for i := 0; i < N; i++ {
 		wg.Add(1)
@@ -87,12 +88,18 @@ func TestIntegration_ConcurrentFirstWriteRace(t *testing.T) {
 			defer wg.Done()
 			c := NewCipher(loader, store, Config{DEKCacheSize: 1, DEKCacheTTL: time.Hour})
 			p, m, err := c.Encrypt(ctx, "room-race", EncryptedFields{Msg: "x"})
-			require.NoError(t, err)
+			if err != nil {
+				errs[i] = err
+				return
+			}
 			results[i] = p
 			metas[i] = m
 		}(i)
 	}
 	wg.Wait()
+	for i, e := range errs {
+		require.NoErrorf(t, e, "goroutine %d encrypt failed", i)
+	}
 
 	// Exactly one DEK row exists.
 	cur, err := db.Collection(CollectionName).Find(ctx, bson.M{"_id": "room-race"})

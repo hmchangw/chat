@@ -120,7 +120,7 @@ func TestHybridRead_LegacyAndEncrypted(t *testing.T) {
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
 
-	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t))
+	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t), 0)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		// Best-effort: tests can't meaningfully act on a Close failure.
