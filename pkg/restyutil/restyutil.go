@@ -1,4 +1,4 @@
-// Package restyutil constructs a resty client wired with codebase defaults: OTel transport, slog response logging, 30s timeout.
+// Package restyutil constructs a resty client with codebase defaults: OTel transport, slog request/response logging, 30s timeout.
 package restyutil
 
 import (
@@ -8,8 +8,11 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
+// 30s suits arbitrary downstream HTTP, distinct from the 5s probe in mongoutil/valkeyutil.
 const defaultTimeout = 30 * time.Second
 
 type Option func(*resty.Client)
@@ -26,11 +29,9 @@ func WithBearerToken(token string) Option {
 	return func(c *resty.Client) { c.SetAuthToken(token) }
 }
 
-// WithRetries configures n retries with exponential backoff between wait and max.
-func WithRetries(n int, wait, max time.Duration) Option {
-	return func(c *resty.Client) {
-		c.SetRetryCount(n).SetRetryWaitTime(wait).SetRetryMaxWaitTime(max)
-	}
+// WithTransport replaces the default transport; OTel is wrapped on for you.
+func WithTransport(rt http.RoundTripper) Option {
+	return func(c *resty.Client) { c.SetTransport(otelhttp.NewTransport(rt)) }
 }
 
 func New(baseURL string, opts ...Option) *resty.Client {
@@ -39,18 +40,47 @@ func New(baseURL string, opts ...Option) *resty.Client {
 		SetTimeout(defaultTimeout).
 		SetTransport(otelhttp.NewTransport(http.DefaultTransport))
 
-	c.OnAfterResponse(func(_ *resty.Client, resp *resty.Response) error {
-		slog.Debug("http response",
-			"method", resp.Request.Method,
-			"url", resp.Request.URL,
-			"status", resp.StatusCode(),
-			"duration_ms", resp.Time().Milliseconds(),
-		)
-		return nil
-	})
+	c.OnAfterResponse(logResponse)
+	c.OnError(logError)
 
 	for _, opt := range opts {
 		opt(c)
 	}
 	return c
+}
+
+func logResponse(_ *resty.Client, resp *resty.Response) error {
+	slog.Debug("http response", logFields(resp.Request, resp.StatusCode(), resp.Time(), nil)...)
+	return nil
+}
+
+func logError(req *resty.Request, err error) {
+	slog.Debug("http error", logFields(req, 0, time.Since(req.Time), err)...)
+}
+
+func logFields(req *resty.Request, status int, dur time.Duration, err error) []any {
+	// Strip RawQuery from URL — query strings can carry tokens (CLAUDE.md: never log tokens).
+	host, path := "", req.URL
+	if rr := req.RawRequest; rr != nil && rr.URL != nil {
+		host = rr.URL.Host
+		path = rr.URL.Path
+	}
+	fields := []any{
+		"method", req.Method,
+		"host", host,
+		"path", path,
+		"duration_ms", dur.Milliseconds(),
+	}
+	if rr := req.RawRequest; rr != nil {
+		if id := natsutil.RequestIDFromContext(rr.Context()); id != "" {
+			fields = append(fields, "request_id", id)
+		}
+	}
+	if status > 0 {
+		fields = append(fields, "status", status)
+	}
+	if err != nil {
+		fields = append(fields, "error", err.Error())
+	}
+	return fields
 }

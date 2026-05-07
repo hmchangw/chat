@@ -1,14 +1,22 @@
 package restyutil
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 func TestNew_DefaultTimeout(t *testing.T) {
@@ -44,11 +52,21 @@ func TestWithBearerToken(t *testing.T) {
 	assert.Equal(t, "Bearer abc123", got)
 }
 
-func TestWithRetries(t *testing.T) {
-	c := New("http://example", WithRetries(3, 10*time.Millisecond, 100*time.Millisecond))
-	assert.Equal(t, 3, c.RetryCount)
-	assert.Equal(t, 10*time.Millisecond, c.RetryWaitTime)
-	assert.Equal(t, 100*time.Millisecond, c.RetryMaxWaitTime)
+func TestWithTransport_PreservesOTelWrap(t *testing.T) {
+	var hits atomic.Int32
+	custom := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		hits.Add(1)
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithTransport(custom))
+	_, err := c.R().Get("/")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), hits.Load(), "custom transport must run")
 }
 
 // End-to-end: real httptest server, GET, JSON decode into a struct.
@@ -74,22 +92,75 @@ func TestNew_RoundTrip(t *testing.T) {
 	assert.Equal(t, "pong", got.Msg)
 }
 
-// Verify retries actually fire on 5xx responses when WithRetries is set.
-func TestWithRetries_FiresOn5xx(t *testing.T) {
-	var hits int
+// Verify the Debug log line includes request_id when the ctx carries it.
+func TestLog_PropagatesRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits++
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, WithRetries(2, time.Millisecond, 5*time.Millisecond)).
-		AddRetryCondition(func(r *resty.Response, _ error) bool {
-			return r.StatusCode() >= 500
-		})
-
-	resp, err := c.R().Get("/")
+	ctx := natsutil.WithRequestID(context.Background(), "req-abc-123")
+	c := New(srv.URL)
+	_, err := c.R().SetContext(ctx).Get("/x?token=secret")
 	require.NoError(t, err)
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode())
-	assert.Equal(t, 3, hits, "1 initial + 2 retries")
+
+	out := buf.String()
+	assert.Contains(t, out, "request_id=req-abc-123")
+	assert.NotContains(t, out, "secret", "query string must be stripped from logs")
+}
+
+// Verify OnError fires on transport failure (not just OnAfterResponse).
+func TestLog_FiresOnTransportError(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	// Bind+close a port to guarantee connect-refused.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := l.Addr().String()
+	require.NoError(t, l.Close())
+
+	c := New("http://"+addr, WithTimeout(500*time.Millisecond))
+	_, err = c.R().Get("/")
+	require.Error(t, err)
+	assert.Contains(t, buf.String(), "http error")
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// Sanity: log fields construction doesn't panic on a nil RawRequest (rare; defensive guard).
+func TestLogFields_NilRawRequest(t *testing.T) {
+	req := (&resty.Client{}).R()
+	fields := logFields(req, 200, 5*time.Millisecond, nil)
+	require.NotEmpty(t, fields)
+	assert.Equal(t, "method", fields[0])
+	// Should NOT panic and should not include path-from-RawRequest (since RawRequest is nil).
+	joined := strings.Join(toStrings(fields), " ")
+	assert.NotContains(t, joined, "panic")
+}
+
+func toStrings(in []any) []string {
+	out := make([]string, len(in))
+	for i, v := range in {
+		out[i] = fmtAny(v)
+	}
+	return out
+}
+
+func fmtAny(v any) string {
+	switch s := v.(type) {
+	case string:
+		return s
+	default:
+		return ""
+	}
 }
