@@ -42,16 +42,24 @@ type publishFunc func(ctx context.Context, msg *nats.Msg, opts ...jetstream.Publ
 // Handler processes messages from the MESSAGES stream and validates them
 // before publishing to MESSAGES_CANONICAL.
 type Handler struct {
-	store         Store
-	publish       publishFunc
-	reply         replyFunc
-	siteID        string
-	parentFetcher ParentMessageFetcher
+	store              Store
+	publish            publishFunc
+	reply              replyFunc
+	siteID             string
+	parentFetcher      ParentMessageFetcher
+	largeRoomThreshold int
 }
 
 // NewHandler constructs a new Handler with the given dependencies.
-func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string, parentFetcher ParentMessageFetcher) *Handler {
-	return &Handler{store: store, publish: publish, reply: reply, siteID: siteID, parentFetcher: parentFetcher}
+func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string, parentFetcher ParentMessageFetcher, largeRoomThreshold int) *Handler {
+	return &Handler{
+		store:              store,
+		publish:            publish,
+		reply:              reply,
+		siteID:             siteID,
+		parentFetcher:      parentFetcher,
+		largeRoomThreshold: largeRoomThreshold,
+	}
 }
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.

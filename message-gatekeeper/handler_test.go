@@ -324,9 +324,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			pub, publishedPtr := tc.setupPub()
 
 			h := &Handler{
-				store:   store,
-				publish: pub,
-				siteID:  validSiteID,
+				store:              store,
+				publish:            pub,
+				siteID:             validSiteID,
+				largeRoomThreshold: 500,
 			}
 
 			data, err := h.processMessage(context.Background(), tc.account, tc.roomID, tc.siteID, tc.buildData())
@@ -363,7 +364,7 @@ func TestHandler_processMessage_RejectsInvalidThreadParentMessageID(t *testing.T
 		return &jetstream.PubAck{}, nil
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, pub, reply, "site1", nil)
+	h := NewHandler(store, pub, reply, "site1", nil, 500)
 
 	parentTs := int64(1000)
 	req := model.SendMessageRequest{
@@ -391,7 +392,7 @@ func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
 
-	h := NewHandler(store, pub, reply, "site1", nil)
+	h := NewHandler(store, pub, reply, "site1", nil, 500)
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-mg-test-id")
 	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello"}
@@ -671,10 +672,11 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			pub, publishedPtr := tc.setupPub()
 
 			h := &Handler{
-				store:         store,
-				publish:       pub,
-				siteID:        validSiteID,
-				parentFetcher: fetcher,
+				store:              store,
+				publish:            pub,
+				siteID:             validSiteID,
+				parentFetcher:      fetcher,
+				largeRoomThreshold: 500,
 			}
 
 			data, err := h.processMessage(context.Background(), validAccount, validRoomID, validSiteID, tc.buildData())
