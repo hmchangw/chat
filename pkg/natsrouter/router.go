@@ -256,32 +256,40 @@ func (r *Router) Shutdown(ctx context.Context) error {
 	}
 
 	// Wait for each subscription's dispatcher to finish. On ctx expiry,
-	// record the error and stop waiting on remaining subscriptions — but
-	// DO NOT return early. We must fall through to the WaitGroup wait
-	// below so in-flight handler goroutines are not abandoned. The
-	// WaitGroup wait itself also respects ctx and will short-circuit.
+	// record the error and stop waiting. allClosed tracks whether every
+	// subscription confirmed close; if not, we MUST NOT enter r.wg.Wait()
+	// below -- a still-draining subscription can fire natsHandler, which
+	// calls r.wg.Add(1) concurrently with our Wait(). Per sync.WaitGroup
+	// docs that's an Add+Wait race (panic if counter was 0 when Wait
+	// started). When ctx expires we instead surface the error and let the
+	// caller's deadline take precedence: any remaining handler goroutines
+	// continue in the background until process exit.
+	allClosed := true
 closeLoop:
 	for i, ch := range closed {
 		select {
 		case <-ch:
 		case <-ctx.Done():
 			errs = append(errs, fmt.Errorf("waiting for %q close: %w", subs[i].Subject, ctx.Err()))
+			allClosed = false
 			break closeLoop
 		}
 	}
 
-	// Subscriptions are drained: no new natsHandler callbacks will fire.
-	// Wait for any in-flight handler goroutines that were already spawned
-	// before drain completed. Use a channel so we can select on ctx.Done().
-	wgDone := make(chan struct{})
-	go func() {
-		r.wg.Wait()
-		close(wgDone)
-	}()
-	select {
-	case <-wgDone:
-	case <-ctx.Done():
-		errs = append(errs, fmt.Errorf("waiting for in-flight handlers: %w", ctx.Err()))
+	// Subscriptions are drained: no new natsHandler callbacks will fire,
+	// so r.wg counter is now stable and Wait() is race-free. Skip this
+	// block when allClosed is false (see comment above).
+	if allClosed {
+		wgDone := make(chan struct{})
+		go func() {
+			r.wg.Wait()
+			close(wgDone)
+		}()
+		select {
+		case <-wgDone:
+		case <-ctx.Done():
+			errs = append(errs, fmt.Errorf("waiting for in-flight handlers: %w", ctx.Err()))
+		}
 	}
 
 	return errors.Join(errs...)

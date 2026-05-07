@@ -36,6 +36,9 @@ func ensureMinIOClient() (*minio.Client, error) {
 		// already (no scheme). No TrimPrefix needed.
 		endpoint, err := container.ConnectionString(ctx)
 		if err != nil {
+			// Best-effort: the primary error is what callers need to see;
+			// a Terminate failure during init-failure cleanup is noise.
+			// Docker will reap the container on test-process exit either way.
 			_ = container.Terminate(ctx)
 			minioInitErr = fmt.Errorf("get minio endpoint: %w", err)
 			return
@@ -45,6 +48,7 @@ func ensureMinIOClient() (*minio.Client, error) {
 			Secure: false,
 		})
 		if err != nil {
+			// Best-effort cleanup; see comment above.
 			_ = container.Terminate(ctx)
 			minioInitErr = fmt.Errorf("connect minio: %w", err)
 			return

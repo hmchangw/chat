@@ -281,7 +281,13 @@ func TestIntegration_SpawnSitePanicBackstop(t *testing.T) {
 	nc := setupNATS(t)
 	// Note: NO Recovery middleware installed. We're testing the spawn-site
 	// backstop, not the middleware path.
-	r := natsrouter.New(nc, "integration-panic-backstop", natsrouter.WithMaxConcurrency(2))
+	//
+	// MaxConcurrency=1 is load-bearing: with cap=1, a leaked semaphore slot
+	// would block every subsequent request. cap=2 (or higher) would let
+	// the follow-up "ok" request acquire a slot even if cleanup were
+	// broken, masking the regression. cap=1 forces the test to actually
+	// observe slot release.
+	r := natsrouter.New(nc, "integration-panic-backstop", natsrouter.WithMaxConcurrency(1))
 
 	natsrouter.Register(r, "boom.{id}",
 		func(c *natsrouter.Context, req echoReq) (*echoResp, error) {
