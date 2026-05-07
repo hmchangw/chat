@@ -13,7 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,EventPublisher,ThreadRoomRepository,RoomKeyProvider
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository,RoomKeyProvider
 
 type MessageReader interface {
 	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
@@ -42,6 +42,12 @@ type MessageRepository interface {
 
 type SubscriptionRepository interface {
 	GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error)
+}
+
+// RoomRepository reads room metadata used by history-service.
+// Implemented by *mongorepo.RoomRepo.
+type RoomRepository interface {
+	GetMinUserLastSeenAt(ctx context.Context, roomID string) (*time.Time, error)
 }
 
 // EventPublisher publishes live events to a NATS subject. Implemented by a
