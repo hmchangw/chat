@@ -1788,7 +1788,8 @@ import (
 // follow-up. Custom TLS (custom CA, mTLS, skip-verify) is not
 // configurable via Connect; for those cases callers can construct
 // *minio.Client directly using minio.New with a custom Transport.
-func Connect(ctx context.Context, endpoint string, useSSL bool, accessKey, secretKey string) (*minio.Client, error) {
+// ctx parameter is retained for signature symmetry with valkeyutil.Connect; currently unused.
+func Connect(_ context.Context, endpoint string, useSSL bool, accessKey, secretKey string) (*minio.Client, error) {
 	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: useSSL,
@@ -1796,15 +1797,12 @@ func Connect(ctx context.Context, endpoint string, useSSL bool, accessKey, secre
 	if err != nil {
 		return nil, fmt.Errorf("minioutil connect: %w", err)
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if _, err := client.ListBuckets(probeCtx); err != nil {
-		return nil, fmt.Errorf("minioutil ping (ListBuckets): %w", err)
-	}
 	slog.Info("connected to MinIO", "endpoint", endpoint, "useSSL", useSSL)
 	return client, nil
 }
 ```
+
+**Note (post-implementation):** the `ListBuckets` startup probe was removed because it requires `s3:ListAllMyBuckets` (account-wide IAM), which is broader than the bucket-scoped `s3:ListBucket` permission `NewBucket`'s `BucketExists` probe needs. Drop the `"time"` import too — the probe was its only use. See the spec's "Post-merge amendments" section for the full rationale.
 
 - [ ] **Step 3: Verify the package compiles**
 
@@ -2559,16 +2557,16 @@ func TestIntegration_List_DefaultCap(t *testing.T) {
 	assert.Len(t, keys, 5)
 }
 
-// TestIntegration_List_MaxKeysCap verifies maxKeys caps the result AND
-// that the early break does not leak the underlying minio-go listing
-// goroutine. Uses goleak.VerifyNone(t) which knows to ignore Go's
-// runtime / HTTP transport keepalive goroutines and reports only the
-// new leaked goroutines spawned during the test. The -race flag does
-// NOT detect goroutine leaks, so this is the only real guarantee that
-// `defer cancel()` is doing its job.
+// TestIntegration_List_MaxKeysCap verifies maxKeys caps the result AND that
+// the early break does not leak the minio-go listing goroutine. Uses
+// goleak.IgnoreCurrent() snapshotted before the operation under test:
+// minio-go's HTTP keepalive goroutines (IdleConnTimeout=60s) are NOT in
+// goleak's default ignore list and would false-positive on a plain
+// goleak.VerifyNone. The IgnoreCurrent baseline ignores goroutines that
+// already existed (including keepalives from the prior Puts) so only NEW
+// goroutines spawned by List get reported. The -race flag does NOT detect
+// goroutine leaks, so this is the only real guarantee `defer cancel()` does its job.
 func TestIntegration_List_MaxKeysCap(t *testing.T) {
-	defer goleak.VerifyNone(t)
-
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
@@ -2580,10 +2578,12 @@ func TestIntegration_List_MaxKeysCap(t *testing.T) {
 		require.NoError(t, b.Put(ctx, fmt.Sprintf("k-%02d", i), doc{V: i}))
 	}
 
+	preList := goleak.IgnoreCurrent()
 	keys, err := b.List(ctx, "k-", 3)
 	require.NoError(t, err)
 	require.Len(t, keys, 3)
 	assert.Equal(t, []string{"k-00", "k-01", "k-02"}, keys)
+	goleak.VerifyNone(t, preList)
 }
 
 // TestIntegration_List_EmptyResult verifies an empty (non-nil) slice is

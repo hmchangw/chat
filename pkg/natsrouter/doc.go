@@ -32,10 +32,7 @@
 //     ErrUnavailable reply ({"error":"service busy","code":"unavailable"})
 //     and returns. Callers should retry with backoff.
 //
-// Per-route concurrency overrides are not supported today. The Registrar
-// interface is intentionally minimal so a future wrapper (e.g. a route
-// group with its own admission semaphore) can be added without breaking
-// the existing API.
+// Per-route concurrency overrides are not supported today.
 //
 // # Fire-and-forget routes
 //

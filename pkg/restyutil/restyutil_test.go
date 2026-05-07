@@ -96,7 +96,7 @@ func TestNew_RoundTrip(t *testing.T) {
 func TestLog_PropagatesRequestID(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	defer slog.SetDefault(prev)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -110,7 +110,7 @@ func TestLog_PropagatesRequestID(t *testing.T) {
 	require.NoError(t, err)
 
 	out := buf.String()
-	assert.Contains(t, out, "request_id=req-abc-123")
+	assert.Contains(t, out, `"request_id":"req-abc-123"`)
 	assert.NotContains(t, out, "secret", "query string must be stripped from logs")
 }
 
@@ -118,7 +118,7 @@ func TestLog_PropagatesRequestID(t *testing.T) {
 func TestLog_FiresOnTransportError(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	defer slog.SetDefault(prev)
 
 	// Bind+close a port to guarantee connect-refused.
@@ -130,7 +130,7 @@ func TestLog_FiresOnTransportError(t *testing.T) {
 	c := New("http://"+addr, WithTimeout(500*time.Millisecond))
 	_, err = c.R().Get("/")
 	require.Error(t, err)
-	assert.Contains(t, buf.String(), "http error")
+	assert.Contains(t, buf.String(), `"msg":"http error"`)
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 
 	"github.com/nats-io/nats.go"
 
@@ -14,19 +15,6 @@ import (
 
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
-
-// Registrar is the interface that Register/RegisterNoBody/RegisterVoid use
-// to attach handlers. Implemented by *Router today.
-//
-// The contract is intentionally minimal so future wrappers (for example a
-// route-group type that prepends a shared subject prefix and shared
-// middleware) can compose by implementing the same interface and
-// delegating to a parent Registrar. addRoute receives the
-// fully-resolved subject pattern and the complete middleware-chain-plus-
-// handler slice; the implementation owns the NATS subscription lifecycle.
-type Registrar interface {
-	addRoute(pattern string, handlers []HandlerFunc)
-}
 
 // Router manages NATS subscriptions with pattern-based routing and middleware.
 type Router struct {
@@ -41,6 +29,11 @@ type Router struct {
 	// wg tracks in-flight handler goroutines so Shutdown can wait for
 	// them to finish.
 	wg sync.WaitGroup
+	// stopping gates the dispatch path; set by Shutdown before any drain
+	// step. Late callbacks (subscription mid-drain, NATS internal buffer)
+	// hit replyBusy instead of starting new handler goroutines that
+	// would race teardown of caller-owned dependencies.
+	stopping atomic.Bool
 
 	mu   sync.Mutex
 	subs []*nats.Subscription
@@ -173,6 +166,12 @@ func (r *Router) addRoute(pattern string, handlers []HandlerFunc) {
 	all = append(all, handlers...)
 
 	natsHandler := func(m otelnats.Msg) {
+		// Stopping gate: reject before admit so Shutdown's contract holds
+		// even if a callback fires mid-drain or after Shutdown's ctx expired.
+		if r.stopping.Load() {
+			r.replyBusy(m.Msg)
+			return
+		}
 		admitted, release := r.admit()
 		if !admitted {
 			r.replyBusy(m.Msg)
@@ -233,6 +232,10 @@ func (r *Router) addRoute(pattern string, handlers []HandlerFunc) {
 // Returns ctx.Err() if handlers were still running when the deadline expired,
 // combined with any error reported by Subscription.Drain().
 func (r *Router) Shutdown(ctx context.Context) error {
+	// Set stopping FIRST so any callback fired between now and full drain
+	// (or after ctx expires) hits the rejection path in natsHandler.
+	r.stopping.Store(true)
+
 	r.mu.Lock()
 	subs := r.subs
 	r.subs = nil
