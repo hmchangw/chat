@@ -57,10 +57,9 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	}
 
 	now := time.Now().UTC()
-	lastMsgAt, createdAt, err := s.resolveRoomTimes(c, roomID, req.Hints, now)
+	lastMsgAt, createdAt, err := s.resolveRoomTimesOrError(c, roomID, req.Hints, now)
 	if err != nil {
-		slog.Error("resolve room times", "error", err, "roomID", roomID)
-		return nil, natsrouter.ErrInternal("failed to resolve room metadata")
+		return nil, err
 	}
 
 	// Ceiling for thread DESC walk: lastMsgAt+1ms, or now+1h if unknown.

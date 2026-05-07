@@ -48,8 +48,8 @@ func decodeBucketCursor(encoded string) (int64, []byte, error) {
 	}
 	bucket := int64(binary.BigEndian.Uint64(raw[0:8]))
 	psLen := int(binary.BigEndian.Uint16(raw[8:10]))
-	if bucketCursorHeaderBytes+psLen > len(raw) {
-		return 0, nil, fmt.Errorf("decode bucket cursor: pageState length %d exceeds available %d", psLen, len(raw)-bucketCursorHeaderBytes)
+	if bucketCursorHeaderBytes+psLen != len(raw) {
+		return 0, nil, fmt.Errorf("decode bucket cursor: declared pageState length %d does not match available %d", psLen, len(raw)-bucketCursorHeaderBytes)
 	}
 	var pageState []byte
 	if psLen > 0 {

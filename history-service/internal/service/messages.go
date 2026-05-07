@@ -32,10 +32,9 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 	}
 
 	now := time.Now().UTC()
-	lastMsgAt, createdAt, err := s.resolveRoomTimes(c, roomID, req.Hints, now)
+	lastMsgAt, createdAt, err := s.resolveRoomTimesOrError(c, roomID, req.Hints, now)
 	if err != nil {
-		slog.Error("resolve room times", "error", err, "roomID", roomID)
-		return nil, natsrouter.ErrInternal("failed to resolve room metadata")
+		return nil, err
 	}
 
 	before := millisToTime(req.Before)
@@ -63,10 +62,12 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 	var page cassrepo.Page[models.Message]
 	if accessSince == nil {
 		// GetMessagesBetweenDesc uses *accessSince as its own floor; floor is only
-		// needed for the unrestricted GetMessagesBefore path.
+		// needed for the unrestricted GetMessagesBefore path. Clamp createdAt to
+		// historyFloor so a client hint can't push the walk further back.
+		historyFloor := now.Add(-s.historyFloor)
 		floor := createdAt
-		if floor.IsZero() {
-			floor = now.Add(-s.historyFloor)
+		if floor.IsZero() || floor.Before(historyFloor) {
+			floor = historyFloor
 		}
 		page, err = s.msgReader.GetMessagesBefore(c, roomID, before, floor, pageReq)
 	} else {
@@ -91,10 +92,9 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 	}
 
 	now := time.Now().UTC()
-	lastMsgAt, createdAt, err := s.resolveRoomTimes(c, roomID, req.Hints, now)
+	lastMsgAt, createdAt, err := s.resolveRoomTimesOrError(c, roomID, req.Hints, now)
 	if err != nil {
-		slog.Error("resolve room times", "error", err, "roomID", roomID)
-		return nil, natsrouter.ErrInternal("failed to resolve room metadata")
+		return nil, err
 	}
 
 	ceiling, floor := s.walkBounds(lastMsgAt, createdAt, now)
@@ -153,10 +153,9 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	}
 
 	now := time.Now().UTC()
-	lastMsgAt, createdAt, err := s.resolveRoomTimes(c, roomID, req.Hints, now)
+	lastMsgAt, createdAt, err := s.resolveRoomTimesOrError(c, roomID, req.Hints, now)
 	if err != nil {
-		slog.Error("resolve room times", "error", err, "roomID", roomID)
-		return nil, natsrouter.ErrInternal("failed to resolve room metadata")
+		return nil, err
 	}
 
 	ceiling, floor := s.walkBounds(lastMsgAt, createdAt, now)

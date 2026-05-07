@@ -36,8 +36,13 @@ func scanMsgsFromIter(iter *gocql.Iter) []models.Message {
 
 // startBucketFromCursor returns the bucket to start the walk at, plus an
 // initial in-bucket pageState if the request carried a non-empty cursor.
-// When the cursor is empty, defaultBucket is used.
-func startBucketFromCursor(pageReq PageRequest, defaultBucket int64) (int64, []byte, error) {
+// When the cursor is empty, defaultBucket is used. A cursor bucket outside
+// [floorBucket, defaultBucket] (DESC) or [defaultBucket, floorBucket] (ASC)
+// is rejected as a fresh start with an empty pageState — this prevents a
+// tampered cursor from pushing the walk into empty partitions far outside
+// the legitimate data window, which would otherwise consume up to maxBuckets
+// empty Cassandra round-trips.
+func startBucketFromCursor(pageReq PageRequest, direction walkDirection, defaultBucket, floorBucket int64) (int64, []byte, error) {
 	if pageReq.Cursor == nil {
 		return defaultBucket, nil, nil
 	}
@@ -48,6 +53,19 @@ func startBucketFromCursor(pageReq PageRequest, defaultBucket int64) (int64, []b
 	bucket, pageState, err := decodeBucketCursor(encoded)
 	if err != nil {
 		return 0, nil, fmt.Errorf("start bucket from cursor: %w", err)
+	}
+	switch direction {
+	case walkDesc:
+		// Legitimate range: floorBucket <= bucket <= defaultBucket.
+		if bucket > defaultBucket || bucket < floorBucket {
+			return defaultBucket, nil, nil
+		}
+	case walkAsc:
+		// Legitimate range: defaultBucket <= bucket <= floorBucket (ASC's
+		// "floor" is the ceiling).
+		if bucket < defaultBucket || bucket > floorBucket {
+			return defaultBucket, nil, nil
+		}
 	}
 	return bucket, pageState, nil
 }
@@ -66,11 +84,11 @@ func scanMessagesUpTo(iter *gocql.Iter, remaining int) []models.Message {
 }
 
 func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq PageRequest) (Page[models.Message], error) {
-	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(before))
+	floorBucket := r.bucket.Of(floor)
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkDesc, r.bucket.Of(before), floorBucket)
 	if err != nil {
 		return Page[models.Message]{}, err
 	}
-	floorBucket := r.bucket.Of(floor)
 
 	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
 		if firstBucket {
@@ -96,11 +114,11 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, befor
 }
 
 func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, pageReq PageRequest) (Page[models.Message], error) {
-	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(before))
+	floorBucket := r.bucket.Of(since)
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkDesc, r.bucket.Of(before), floorBucket)
 	if err != nil {
 		return Page[models.Message]{}, err
 	}
-	floorBucket := r.bucket.Of(since)
 
 	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
 		if firstBucket {
@@ -126,11 +144,11 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 }
 
 func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, ceiling time.Time, pageReq PageRequest) (Page[models.Message], error) {
-	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(after))
+	ceilingBucket := r.bucket.Of(ceiling)
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkAsc, r.bucket.Of(after), ceilingBucket)
 	if err != nil {
 		return Page[models.Message]{}, err
 	}
-	ceilingBucket := r.bucket.Of(ceiling)
 
 	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
 		if firstBucket {
@@ -156,11 +174,11 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 }
 
 func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, floor time.Time, ceiling time.Time, pageReq PageRequest) (Page[models.Message], error) {
-	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(floor))
+	ceilingBucket := r.bucket.Of(ceiling)
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkAsc, r.bucket.Of(floor), ceilingBucket)
 	if err != nil {
 		return Page[models.Message]{}, err
 	}
-	ceilingBucket := r.bucket.Of(ceiling)
 
 	queryFn := func(bucket int64, _ bool) *gocql.Query {
 		return r.session.Query(

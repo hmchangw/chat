@@ -2,11 +2,38 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/mongo"
+
 	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/pkg/natsrouter"
 )
+
+// resolveRoomTimesOrError invokes resolveRoomTimes and translates the result
+// into a natsrouter error suitable for handler return: a wrapped
+// mongo.ErrNoDocuments becomes ErrNotFound (the room genuinely does not
+// exist), anything else becomes ErrInternal. The raw error is logged
+// server-side; only the sanitized RouteError is returned to clients.
+func (s *HistoryService) resolveRoomTimesOrError(
+	ctx context.Context,
+	roomID string,
+	hints *models.RoomHints,
+	now time.Time,
+) (lastMsgAt, createdAt time.Time, err error) {
+	lastMsgAt, createdAt, err = s.resolveRoomTimes(ctx, roomID, hints, now)
+	if err == nil {
+		return lastMsgAt, createdAt, nil
+	}
+	slog.Error("resolve room times", "error", err, "roomID", roomID)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return time.Time{}, time.Time{}, natsrouter.ErrNotFound("room not found")
+	}
+	return time.Time{}, time.Time{}, natsrouter.ErrInternal("failed to resolve room metadata")
+}
 
 // clockSkewTolerance allows clients with mildly out-of-sync clocks to still
 // have their LastMsgAt hint accepted. Anything further out is treated as
@@ -20,16 +47,20 @@ var minPlausibleEpoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // walkBounds derives the (ceiling, floor) bucket bounds used by ASC and
 // surrounding-walk handlers from the resolved lastMsgAt/createdAt. Falls back
-// to now+clockSkewTolerance for the ceiling and now-historyFloor for the floor
-// when the resolved values are zero.
+// to now+clockSkewTolerance for the ceiling when lastMsgAt is zero. The floor
+// is clamped to be no older than now-historyFloor: a client-supplied or
+// MongoDB-stored createdAt that predates the history-floor cap would otherwise
+// allow a single read to walk further back than configured, amplifying empty-
+// partition queries on year-old rooms.
 func (s *HistoryService) walkBounds(lastMsgAt, createdAt, now time.Time) (ceiling, floor time.Time) {
 	ceiling = lastMsgAt
 	if ceiling.IsZero() {
 		ceiling = now.Add(clockSkewTolerance)
 	}
+	historyFloor := now.Add(-s.historyFloor)
 	floor = createdAt
-	if floor.IsZero() {
-		floor = now.Add(-s.historyFloor)
+	if floor.IsZero() || floor.Before(historyFloor) {
+		floor = historyFloor
 	}
 	return ceiling, floor
 }
@@ -65,6 +96,9 @@ func (s *HistoryService) resolveRoomTimes(
 	return *last, *created, nil
 }
 
+// sanitizeLastMsgAt allows up to now+clockSkewTolerance because clients with
+// slightly fast clocks may legitimately have a more recent lastMsgAt than the
+// server's "now" — the actual message could already exist on disk.
 func sanitizeLastMsgAt(ms *int64, now time.Time) *time.Time {
 	if ms == nil {
 		return nil
@@ -79,6 +113,8 @@ func sanitizeLastMsgAt(ms *int64, now time.Time) *time.Time {
 	return &t
 }
 
+// sanitizeCreatedAt rejects any future value (no skew tolerance): a room
+// cannot legitimately be created in the future, even with clock drift.
 func sanitizeCreatedAt(ms *int64, now time.Time) *time.Time {
 	if ms == nil {
 		return nil

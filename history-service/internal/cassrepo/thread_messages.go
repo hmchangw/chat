@@ -21,11 +21,11 @@ func (r *Repository) GetThreadMessages(
 	before time.Time, floor time.Time,
 	pageReq PageRequest,
 ) (Page[models.Message], error) {
-	startBucket, initialPageState, err := startBucketFromCursor(pageReq, r.bucket.Of(before))
+	floorBucket := r.bucket.Of(floor)
+	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkDesc, r.bucket.Of(before), floorBucket)
 	if err != nil {
 		return Page[models.Message]{}, err
 	}
-	floorBucket := r.bucket.Of(floor)
 
 	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
 		if firstBucket {
