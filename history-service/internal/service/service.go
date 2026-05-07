@@ -74,6 +74,7 @@ type HistoryService struct {
 	msgReader     MessageReader
 	msgWriter     MessageWriter
 	subscriptions SubscriptionRepository
+	rooms         RoomRepository
 	publisher     EventPublisher
 	threadRooms   ThreadRoomRepository
 	keyProvider   RoomKeyProvider
@@ -81,11 +82,12 @@ type HistoryService struct {
 }
 
 // New creates a HistoryService with the given repositories and event publisher.
-func New(msgs MessageRepository, subs SubscriptionRepository, pub EventPublisher, threadRooms ThreadRoomRepository, keyProvider RoomKeyProvider, encrypt bool) *HistoryService {
+func New(msgs MessageRepository, subs SubscriptionRepository, rooms RoomRepository, pub EventPublisher, threadRooms ThreadRoomRepository, keyProvider RoomKeyProvider, encrypt bool) *HistoryService {
 	return &HistoryService{
 		msgReader:     msgs,
 		msgWriter:     msgs,
 		subscriptions: subs,
+		rooms:         rooms,
 		publisher:     pub,
 		threadRooms:   threadRooms,
 		keyProvider:   keyProvider,
@@ -105,5 +107,6 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MsgThreadParentPattern(siteID), s.GetThreadParentMessages)
 }
 
-// Compile-time check: *cassrepo.Repository must satisfy MessageRepository.
+// Compile-time checks.
 var _ MessageRepository = (*cassrepo.Repository)(nil)
+var _ RoomRepository = (*mongorepo.RoomRepo)(nil)

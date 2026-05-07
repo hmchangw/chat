@@ -50,13 +50,24 @@ func generateTestKeyPair(t *testing.T) *roomkeystore.VersionedKeyPair {
 }
 
 func newService(t *testing.T, encrypt bool) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockEventPublisher, *mocks.MockThreadRoomRepository, *mocks.MockRoomKeyProvider) {
+	svc, msgs, subs, rooms, pub, threadRooms, keys := newServiceWithRoomMock(t, encrypt)
+	// Permissive default: existing tests don't care about the room read.
+	rooms.EXPECT().GetMinUserLastSeenAt(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	return svc, msgs, subs, pub, threadRooms, keys
+}
+
+// newServiceWithRoomMock returns the same fixtures plus the room mock so a test
+// can set its own expectations. No default expectation is registered on the
+// room mock — the caller MUST set one.
+func newServiceWithRoomMock(t *testing.T, encrypt bool) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockRoomRepository, *mocks.MockEventPublisher, *mocks.MockThreadRoomRepository, *mocks.MockRoomKeyProvider) {
 	ctrl := gomock.NewController(t)
 	msgs := mocks.NewMockMessageRepository(ctrl)
 	subs := mocks.NewMockSubscriptionRepository(ctrl)
+	rooms := mocks.NewMockRoomRepository(ctrl)
 	pub := mocks.NewMockEventPublisher(ctrl)
 	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
 	keys := mocks.NewMockRoomKeyProvider(ctrl)
-	return service.New(msgs, subs, pub, threadRooms, keys, encrypt), msgs, subs, pub, threadRooms, keys
+	return service.New(msgs, subs, rooms, pub, threadRooms, keys, encrypt), msgs, subs, rooms, pub, threadRooms, keys
 }
 
 func assertInternalErr(t *testing.T, err error, wantMsg string) {
