@@ -93,6 +93,24 @@ func (s *HistoryService) resolveRoomTimes(
 		}
 	}
 
+	// Mixed sources can produce inconsistent values (e.g. a stale hint LastMsgAt
+	// older than a Mongo-fetched CreatedAt). When the merged pair is internally
+	// inconsistent — created > last — refetch both from Mongo to get a coherent
+	// snapshot. If Mongo still reports created > last (genuinely empty room
+	// where lastMsgAt is unset and stays zero), normalise last = created so
+	// downstream walks see a non-empty range collapsed to the creation moment.
+	if !last.IsZero() && created.After(*last) {
+		l, c, gerr := s.roomTimes.GetRoomTimes(ctx, roomID)
+		if gerr != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("resolve room times for %s (consistency refetch): %w", roomID, gerr)
+		}
+		last = &l
+		created = &c
+		if !last.IsZero() && created.After(*last) {
+			last = created
+		}
+	}
+
 	return *last, *created, nil
 }
 

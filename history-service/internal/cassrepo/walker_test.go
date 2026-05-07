@@ -20,7 +20,8 @@ func TestBucketCursor_RoundTrip(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			encoded := encodeBucketCursor(tc.bucket, tc.pageState)
+			encoded, err := encodeBucketCursor(tc.bucket, tc.pageState)
+			require.NoError(t, err)
 			require.NotEmpty(t, encoded, "encoded cursor must not be empty")
 
 			gotBucket, gotPageState, err := decodeBucketCursor(encoded)
@@ -38,11 +39,10 @@ func TestBucketCursor_EmptyEncoded_IsFreshWalk(t *testing.T) {
 	assert.Nil(t, pageState)
 }
 
-func TestBucketCursor_RejectsOversize(t *testing.T) {
-	big := make([]byte, maxCursorBytes+1)
-	encoded := encodeBucketCursor(0, big)
-	_, _, err := decodeBucketCursor(encoded)
-	require.Error(t, err)
+func TestBucketCursor_EncodeRejectsOversize(t *testing.T) {
+	big := make([]byte, maxEncodedPageState+1)
+	_, err := encodeBucketCursor(0, big)
+	require.Error(t, err, "encode must refuse pageState that won't fit in maxCursorBytes")
 }
 
 func TestBucketCursor_RejectsCorruptBase64(t *testing.T) {
@@ -51,8 +51,9 @@ func TestBucketCursor_RejectsCorruptBase64(t *testing.T) {
 }
 
 func TestBucketCursor_RejectsTruncatedFraming(t *testing.T) {
-	// Valid base64 but only 4 bytes (< 8-byte bucket header).
-	encoded := encodeBucketCursor(0, nil)[:6]
-	_, _, err := decodeBucketCursor(encoded)
+	// Valid base64 but only a few bytes (< 8-byte bucket header).
+	encoded, err := encodeBucketCursor(0, nil)
+	require.NoError(t, err)
+	_, _, err = decodeBucketCursor(encoded[:6])
 	require.Error(t, err)
 }

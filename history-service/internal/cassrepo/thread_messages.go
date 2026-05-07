@@ -24,7 +24,7 @@ func (r *Repository) GetThreadMessages(
 	floorBucket := r.bucket.Of(floor)
 	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkDesc, r.bucket.Of(before), floorBucket)
 	if err != nil {
-		return Page[models.Message]{}, err
+		return Page[models.Message]{}, fmt.Errorf("get thread messages: %w", err)
 	}
 
 	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {

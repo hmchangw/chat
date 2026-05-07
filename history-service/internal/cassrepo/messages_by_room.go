@@ -121,16 +121,33 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 	}
 
 	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
-		if firstBucket {
+		atFloor := bucket == floorBucket
+		switch {
+		case firstBucket && atFloor:
+			// Single-bucket walk: both upper (before) and lower (since) bounds apply.
 			return r.session.Query(
 				messageByRoomQuery+` WHERE room_id = ? AND bucket = ? AND created_at > ? AND created_at < ? ORDER BY created_at DESC`,
 				roomID, bucket, since, before,
 			)
+		case firstBucket:
+			// Top of walk: upper bound only.
+			return r.session.Query(
+				messageByRoomQuery+` WHERE room_id = ? AND bucket = ? AND created_at < ? ORDER BY created_at DESC`,
+				roomID, bucket, before,
+			)
+		case atFloor:
+			// Bottom of walk: lower bound only — without this, rows with
+			// created_at <= since in the floor bucket would leak through.
+			return r.session.Query(
+				messageByRoomQuery+` WHERE room_id = ? AND bucket = ? AND created_at > ? ORDER BY created_at DESC`,
+				roomID, bucket, since,
+			)
+		default:
+			return r.session.Query(
+				messageByRoomQuery+` WHERE room_id = ? AND bucket = ? ORDER BY created_at DESC`,
+				roomID, bucket,
+			)
 		}
-		return r.session.Query(
-			messageByRoomQuery+` WHERE room_id = ? AND bucket = ? ORDER BY created_at DESC`,
-			roomID, bucket,
-		)
 	}
 
 	res, err := fillPage[models.Message](

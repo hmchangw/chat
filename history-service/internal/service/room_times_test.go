@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -57,4 +58,22 @@ func TestResolveRoomTimes(t *testing.T) {
 			assert.Equal(t, tc.wantCreated.UTC(), gotCreated.UTC())
 		})
 	}
+}
+
+func TestResolveRoomTimes_MongoError(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	wantErr := errors.New("mongo down")
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockResolver := mocks.NewMockRoomTimeResolver(ctrl)
+	mockResolver.EXPECT().
+		GetRoomTimes(gomock.Any(), "room-1").
+		Return(time.Time{}, time.Time{}, wantErr).
+		Times(1)
+
+	s := &HistoryService{roomTimes: mockResolver}
+	_, _, err := s.resolveRoomTimes(context.Background(), "room-1", nil, now)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, wantErr, "wrapped mongo error must propagate via errors.Is")
 }

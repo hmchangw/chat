@@ -21,12 +21,21 @@ import (
 // own startBucket when the cursor is empty.
 const bucketCursorHeaderBytes = 8 + 2
 
-func encodeBucketCursor(bucket int64, pageState []byte) string {
+// maxEncodedPageState is the largest pageState that fits inside maxCursorBytes
+// once the framing header is accounted for. It also doubles as the math.MaxUint16
+// safety bound: maxCursorBytes (512) - bucketCursorHeaderBytes (10) = 502, well
+// below 65535, so the uint16 length field is sufficient.
+const maxEncodedPageState = maxCursorBytes - bucketCursorHeaderBytes
+
+func encodeBucketCursor(bucket int64, pageState []byte) (string, error) {
+	if len(pageState) > maxEncodedPageState {
+		return "", fmt.Errorf("encode bucket cursor: pageState length %d exceeds maximum %d", len(pageState), maxEncodedPageState)
+	}
 	buf := make([]byte, bucketCursorHeaderBytes+len(pageState))
 	binary.BigEndian.PutUint64(buf[0:8], uint64(bucket))
 	binary.BigEndian.PutUint16(buf[8:10], uint16(len(pageState)))
 	copy(buf[bucketCursorHeaderBytes:], pageState)
-	return base64.StdEncoding.EncodeToString(buf)
+	return base64.StdEncoding.EncodeToString(buf), nil
 }
 
 func decodeBucketCursor(encoded string) (int64, []byte, error) {
@@ -161,9 +170,13 @@ func fillPage[T any](
 		}
 		if len(nextPageState) > 0 && len(out) >= pageSize {
 			// Page filled mid-bucket — return cursor pointing at this bucket so caller resumes here.
+			cursor, encErr := encodeBucketCursor(bucket, nextPageState)
+			if encErr != nil {
+				return pageResult[T]{}, fmt.Errorf("encode resume cursor at bucket %d: %w", bucket, encErr)
+			}
 			return pageResult[T]{
 				Rows:       out,
-				NextCursor: encodeBucketCursor(bucket, nextPageState),
+				NextCursor: cursor,
 				HasNext:    true,
 			}, nil
 		}
@@ -178,9 +191,13 @@ func fillPage[T any](
 		return pageResult[T]{Rows: out, NextCursor: "", HasNext: false}, nil
 	}
 	// maxBuckets reached or pageSize reached at bucket boundary — non-terminal cursor at next bucket.
+	cursor, encErr := encodeBucketCursor(bucket, nil)
+	if encErr != nil {
+		return pageResult[T]{}, fmt.Errorf("encode resume cursor at bucket %d: %w", bucket, encErr)
+	}
 	return pageResult[T]{
 		Rows:       out,
-		NextCursor: encodeBucketCursor(bucket, nil),
+		NextCursor: cursor,
 		HasNext:    true,
 	}, nil
 }
