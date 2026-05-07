@@ -9,6 +9,7 @@ require (
 	github.com/docker/docker v27.1.1+incompatible
 	github.com/elastic/go-elasticsearch/v8 v8.19.3
 	github.com/gin-gonic/gin v1.12.0
+	github.com/go-resty/resty/v2 v2.17.2
 	github.com/gocql/gocql v1.7.0
 	github.com/google/uuid v1.6.0
 	github.com/minio/minio-go/v7 v7.1.0
@@ -25,6 +26,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/mongodb v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/nats v0.42.0
 	go.mongodb.org/mongo-driver/v2 v2.5.0
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.65.0
@@ -130,7 +132,6 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
