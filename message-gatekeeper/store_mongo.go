@@ -13,10 +13,14 @@ import (
 
 type MongoStore struct {
 	subscriptions *mongo.Collection
+	rooms         *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
-	return &MongoStore{subscriptions: db.Collection("subscriptions")}
+	return &MongoStore{
+		subscriptions: db.Collection("subscriptions"),
+		rooms:         db.Collection("rooms"),
+	}
 }
 
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
@@ -29,4 +33,16 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 		return nil, fmt.Errorf("find subscription for user %s in room %s: %w", account, roomID, err)
 	}
 	return &sub, nil
+}
+
+// GetRoom fetches a room document by its ID. Any error (including
+// mongo.ErrNoDocuments) is wrapped and returned — the handler treats every
+// failure here as an infrastructure error, since reaching this call already
+// implies a subscription for the room exists.
+func (s *MongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
+	var room model.Room
+	if err := s.rooms.FindOne(ctx, bson.M{"_id": roomID}).Decode(&room); err != nil {
+		return nil, fmt.Errorf("find room %q: %w", roomID, err)
+	}
+	return &room, nil
 }
