@@ -19,6 +19,7 @@ type MongoStore struct {
 	subscriptions *mongo.Collection
 	roomMembers   *mongo.Collection
 	users         *mongo.Collection
+	apps          *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
@@ -27,6 +28,7 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		subscriptions: db.Collection("subscriptions"),
 		roomMembers:   db.Collection("room_members"),
 		users:         db.Collection("users"),
+		apps:          db.Collection("apps"),
 	}
 }
 
@@ -68,6 +70,36 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 		Keys: bson.D{{Key: "sectId", Value: 1}, {Key: "account", Value: 1}},
 	}); err != nil {
 		return fmt.Errorf("ensure users (sectId,account) index: %w", err)
+	}
+	// Lookup index for botDM creation: GetApp filters by assistant.name.
+	appsIndex := mongo.IndexModel{
+		Keys:    bson.D{{Key: "assistant.name", Value: 1}},
+		Options: options.Index().SetName("assistant_name_idx"),
+	}
+	if _, err := s.apps.Indexes().CreateOne(ctx, appsIndex); err != nil {
+		return fmt.Errorf("ensure apps index: %w", err)
+	}
+
+	// Partial UNIQUE index for FindDMSubscription, restricted to DM/botDM subs.
+	// Uniqueness is the database-layer enforcement of the create-room contract:
+	// concurrent CreateRoom requests racing to insert the same DM/botDM pair
+	// will see one succeed and the others receive a duplicate-key error, which
+	// the worker treats as "open existing" via the GetRoom lookup branch.
+	dmDedupIndex := mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "u.account", Value: 1},
+			{Key: "name", Value: 1},
+			{Key: "roomType", Value: 1},
+		},
+		Options: options.Index().
+			SetName("u_account_name_roomtype_dm_idx").
+			SetUnique(true).
+			SetPartialFilterExpression(bson.M{
+				"roomType": bson.M{"$in": bson.A{model.RoomTypeDM, model.RoomTypeBotDM}},
+			}),
+	}
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, dmDedupIndex); err != nil {
+		return fmt.Errorf("ensure dm-dedup subscription index: %w", err)
 	}
 	return nil
 }
@@ -261,12 +293,12 @@ func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error
 	return int(count), nil
 }
 
-func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) (int, error) {
+func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID, excludeAccount string) (int, error) {
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return 0, nil
 	}
 
-	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID)
+	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID, excludeAccount)
 	pipeline = append(pipeline, bson.M{
 		"$count": "n",
 	})
@@ -568,6 +600,46 @@ func (s *MongoStore) attachUserDisplayNames(ctx context.Context, roomID string, 
 	return nil
 }
 
+func (s *MongoStore) GetUser(ctx context.Context, account string) (*model.User, error) {
+	var u model.User
+	err := s.users.FindOne(ctx, bson.M{"account": account}).Decode(&u)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user %q: %w", account, err)
+	}
+	return &u, nil
+}
+
+func (s *MongoStore) GetApp(ctx context.Context, botAccount string) (*model.App, error) {
+	var a model.App
+	err := s.apps.FindOne(ctx, bson.M{"assistant.name": botAccount}).Decode(&a)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrAppNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get app for bot %q: %w", botAccount, err)
+	}
+	return &a, nil
+}
+
+func (s *MongoStore) FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error) {
+	var sub model.Subscription
+	err := s.subscriptions.FindOne(ctx, bson.M{
+		"u.account": account,
+		"name":      targetName,
+		"roomType":  bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}},
+	}).Decode(&sub)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, model.ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find dm subscription: %w", err)
+	}
+	return &sub, nil
+}
+
 // ListOrgMembers returns all users whose sectId equals orgID, projected as
 // OrgMember rows sorted by account ascending. Returns errInvalidOrg when the
 // query matches no users.
@@ -631,23 +703,27 @@ func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string,
 	return doc.SiteID, nil
 }
 
-// MinSubscriptionLastSeenByRoomID returns the minimum effective lastSeenAt
-// across the room's subscriptions, falling back to joinedAt for subs that
-// have never been read (lastSeenAt missing or equal to the BSON zero date).
+// MinSubscriptionLastSeenByRoomID returns the minimum lastSeenAt across the
+// room's subscriptions, considering only subscriptions that have a non-nil,
+// non-zero lastSeenAt. Subscriptions whose lastSeenAt has never been written
+// (e.g. the user was invited but has never opened the room) are excluded
+// entirely. Returns nil when no subscription has a usable lastSeenAt — the
+// caller should then $unset rooms.minUserLastSeenAt rather than pinning the
+// floor to a value that doesn't represent any real read activity.
 func (s *MongoStore) MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID string) (*time.Time, error) {
 	zeroTime := time.Time{}
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
+		// $gt:zeroTime excludes both missing/null lastSeenAt and the BSON
+		// zero date that legacy documents may carry. MongoDB's $gt against
+		// a missing field is false, so this filter naturally drops never-read
+		// subs without an explicit existence check.
+		{{Key: "$match", Value: bson.M{
+			"roomId":     roomID,
+			"lastSeenAt": bson.M{"$gt": zeroTime},
+		}}},
 		{{Key: "$group", Value: bson.M{
 			"_id": nil,
-			"min": bson.M{"$min": bson.M{"$cond": bson.A{
-				bson.M{"$or": bson.A{
-					bson.M{"$eq": bson.A{"$lastSeenAt", nil}},
-					bson.M{"$lte": bson.A{"$lastSeenAt", zeroTime}},
-				}},
-				"$joinedAt",
-				"$lastSeenAt",
-			}}},
+			"min": bson.M{"$min": "$lastSeenAt"},
 		}}},
 	}
 	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)

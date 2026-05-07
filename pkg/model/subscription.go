@@ -24,20 +24,15 @@ type Subscription struct {
 	ID                 string           `json:"id" bson:"_id"`
 	User               SubscriptionUser `json:"u" bson:"u"`
 	RoomID             string           `json:"roomId" bson:"roomId"`
-	RoomType           RoomType         `json:"roomType" bson:"roomType"`
 	SiteID             string           `json:"siteId" bson:"siteId"`
 	Roles              []Role           `json:"roles" bson:"roles"`
+	Name               string           `json:"name"                    bson:"name"`
+	RoomType           RoomType         `json:"roomType"                bson:"roomType"`
+	IsSubscribed       bool             `json:"isSubscribed,omitempty"  bson:"isSubscribed,omitempty"`
 	HistorySharedSince *time.Time       `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
 	JoinedAt           time.Time        `json:"joinedAt" bson:"joinedAt"`
 	LastSeenAt         *time.Time       `json:"lastSeenAt,omitempty" bson:"lastSeenAt,omitempty"`
 	HasMention         bool             `json:"hasMention" bson:"hasMention"`
 	ThreadUnread       []string         `json:"threadUnread,omitempty" bson:"threadUnread,omitempty"`
 	Alert              bool             `json:"alert" bson:"alert"`
-}
-
-// MessageReadRequest is the body of a message.read RPC. The roomID is
-// validated against the subject; an empty body is treated as "trust the
-// subject".
-type MessageReadRequest struct {
-	RoomID string `json:"roomId"`
 }

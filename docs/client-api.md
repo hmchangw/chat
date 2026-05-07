@@ -736,13 +736,7 @@ This is a **synchronous RPC** — `room-service` performs all writes inline befo
 
 ##### Request body
 
-| Field    | Type   | Required | Notes |
-|----------|--------|----------|-------|
-| `roomId` | string | no       | Server derives from subject. If supplied, must match the subject's `roomID`; mismatches are rejected. |
-
-```json
-{ "roomId": "01970a4f8c2d7c9aQ" }
-```
+The subject already carries `account` and `roomID`, so no body fields are required. Clients may send `{}` or omit the body entirely; any body content is ignored by the handler.
 
 ##### Success response
 
@@ -759,7 +753,6 @@ This is a **synchronous RPC** — `room-service` performs all writes inline befo
 See [Error envelope](#5-error-envelope-reference). Common errors:
 
 - `"only room members can list members"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
-- `"room ID mismatch"` — the body's `roomId` doesn't match the subject.
 - `"invalid message-read subject: …"` — the subject is malformed.
 
 ```json
@@ -769,8 +762,8 @@ See [Error envelope](#5-error-envelope-reference). Common errors:
 ##### Behaviour notes
 
 - **Alert recomputation:** new `alert = oldSub.alert && len(oldSub.threadUnread) > 0`. Reading the room clears the alert when there are no unread thread mentions; it stays set when thread-level unreads remain.
-- **`originalLastSeen` resolution:** the handler uses `subscription.lastSeenAt` if present, otherwise falls back to `subscription.joinedAt` (newly-joined rooms have never been read).
-- **Room-floor recompute (`Room.MinUserLastSeenAt`):** skipped when `room.lastMsgAt` is `null` or when `originalLastSeen > room.lastMsgAt` (the user was already up-to-date — the floor cannot have moved). Otherwise the handler computes the new floor as `MIN(lastSeenAt OR joinedAt)` across the room's subscriptions and writes it to `rooms.minUserLastSeenAt` (or unsets the field if the aggregate is empty).
+- **No `JoinedAt` fallback for the early-return:** if `subscription.lastSeenAt` is null (the user was invited but has never opened the room), the handler does **not** treat `joinedAt` as a synthetic read position — being invited isn't reading. The room-floor recompute runs in this case so that a newly-invited member's joinedAt cannot keep `room.minUserLastSeenAt` pinned to a stale value.
+- **Room-floor recompute (`Room.MinUserLastSeenAt`):** skipped when `room.lastMsgAt` is `null` or when `subscription.lastSeenAt` is non-null and already strictly greater than `room.lastMsgAt` (the user had a recorded read past all content — the floor cannot have moved). Otherwise the handler computes the new floor as `MIN(lastSeenAt)` across only those subscriptions whose `lastSeenAt` is set; subscriptions that have never been read are excluded entirely. If no subscription has a usable `lastSeenAt`, `rooms.minUserLastSeenAt` is `$unset`.
 - **Cross-site federation:** if the user's home site (`users.siteId`) differs from the handler's site, a `subscription_read` event is published to `outbox.{handlerSite}.to.{userSite}.subscription_read` with payload `{account, roomId, lastSeenAt, alert, timestamp}` (timestamps as `int64` UnixMilli). The destination `inbox-worker` applies the write with an `$lt` order-safety guard so out-of-order delivery cannot regress `lastSeenAt`. The outbox publish happens **before** the room-floor recompute so the user's home site receives every read receipt — even ones that don't move the room floor.
 - **No system message, no fan-out events:** read receipts are silent; only the requester receives the `accepted` reply.
 
