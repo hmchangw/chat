@@ -415,28 +415,38 @@ func TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub(t *testing.T) {
 	assert.False(t, bobSub.IsSubscribed, "DM does not set IsSubscribed=true")
 }
 
-// TestInboxWorker_FilterScoping_Integration verifies the consumer filters
-// out the local lane: a local-lane publish stays unreachable to inbox-worker.
-func TestInboxWorker_FilterScoping_Integration(t *testing.T) {
-	const siteID = "site-filter"
-
+// setupNATS starts a NATS container with JetStream enabled and returns a
+// JetStream client tied to the test's lifetime.
+func setupNATS(t *testing.T) (context.Context, jetstream.JetStream) {
+	t.Helper()
 	ctx := context.Background()
-	natsContainer, err := natsmod.Run(ctx, testimages.NATS)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = natsContainer.Terminate(ctx) })
 
-	natsURL, err := natsContainer.ConnectionString(ctx)
+	c, err := natsmod.Run(ctx, testimages.NATS)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Terminate(ctx) })
+
+	url, err := c.ConnectionString(ctx)
 	require.NoError(t, err)
 
-	nc, err := nats.Connect(natsURL)
+	nc, err := nats.Connect(url)
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 
+	return ctx, js
+}
+
+// TestInboxWorker_FilterScoping_Integration verifies the consumer filters
+// out the local lane: a local-lane publish stays unreachable to inbox-worker.
+func TestInboxWorker_FilterScoping_Integration(t *testing.T) {
+	const siteID = "site-filter"
+
+	ctx, js := setupNATS(t)
+
 	inboxCfg := stream.Inbox(siteID)
-	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     inboxCfg.Name,
 		Subjects: inboxCfg.Subjects,
 	})
