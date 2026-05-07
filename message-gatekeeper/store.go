@@ -22,11 +22,16 @@ type codedError struct {
 
 func (e *codedError) Error() string { return e.Message }
 
+// codeLargeRoomPostRestricted is the wire code emitted when a non-bypass
+// sender hits the cap. Shared between the error sentinel and the slog
+// "reason" field so log queries and the wire payload stay aligned.
+const codeLargeRoomPostRestricted = "large_room_post_restricted"
+
 // errLargeRoomPostRestricted is returned when a non-owner attempts to post a
 // top-level message in a room whose userCount exceeds the configured
 // threshold.
 var errLargeRoomPostRestricted = &codedError{
-	Code:    "large_room_post_restricted",
+	Code:    codeLargeRoomPostRestricted,
 	Message: "only owners can post in this room",
 }
 

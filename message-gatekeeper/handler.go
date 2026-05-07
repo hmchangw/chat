@@ -178,7 +178,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		}
 		if room.UserCount > h.largeRoomThreshold {
 			slog.Info("send blocked",
-				"reason", "large_room_post_restricted",
+				"reason", codeLargeRoomPostRestricted,
 				"account", account,
 				"roomID", roomID,
 				"userCount", room.UserCount,
