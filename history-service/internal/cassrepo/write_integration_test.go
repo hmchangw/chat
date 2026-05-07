@@ -65,7 +65,7 @@ func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 	// thread_messages_by_room must NOT have a phantom row for this message
 	var threadCount int
 	require.NoError(t, session.Query(
-		`SELECT COUNT(*) FROM thread_messages_by_room WHERE room_id = ? AND bucket = ? ALLOW FILTERING`,
+		`SELECT COUNT(*) FROM thread_messages_by_room WHERE room_id = ? AND bucket = ?`,
 		roomID, msgbucket.New(24*time.Hour).Of(createdAt),
 	).Scan(&threadCount))
 	assert.Equal(t, 0, threadCount, "top-level edit must not write to thread_messages_by_room")
@@ -125,7 +125,7 @@ func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
 	// messages_by_room must NOT have a phantom row for this thread reply
 	var roomCount int
 	require.NoError(t, session.Query(
-		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND bucket = ? ALLOW FILTERING`,
+		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND bucket = ?`,
 		roomID, msgbucket.New(24*time.Hour).Of(createdAt),
 	).Scan(&roomCount))
 	assert.Equal(t, 0, roomCount, "thread-reply edit must not write to messages_by_room")
@@ -249,7 +249,7 @@ func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
 	// thread_messages_by_room must have no phantom row
 	var threadCount int
 	require.NoError(t, session.Query(
-		`SELECT COUNT(*) FROM thread_messages_by_room WHERE room_id = ? AND bucket = ? ALLOW FILTERING`,
+		`SELECT COUNT(*) FROM thread_messages_by_room WHERE room_id = ? AND bucket = ?`,
 		roomID, msgbucket.New(24*time.Hour).Of(createdAt),
 	).Scan(&threadCount))
 	assert.Equal(t, 0, threadCount, "top-level soft-delete must not write to thread_messages_by_room")
@@ -322,7 +322,7 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 	// messages_by_room must NOT have a phantom row for this thread reply
 	var roomCount int
 	require.NoError(t, session.Query(
-		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND bucket = ? ALLOW FILTERING`,
+		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND bucket = ?`,
 		roomID, msgbucket.New(24*time.Hour).Of(replyCreatedAt),
 	).Scan(&roomCount))
 	assert.Equal(t, 0, roomCount, "thread-reply soft-delete must not write to messages_by_room")
