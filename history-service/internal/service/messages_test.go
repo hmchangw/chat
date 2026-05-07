@@ -204,6 +204,56 @@ func TestHistoryService_LoadHistory_WithBeforeTimestamp(t *testing.T) {
 	assert.Len(t, resp.Messages, 2)
 }
 
+func TestHistoryService_LoadHistory_ReturnsMinUserLastSeenAt(t *testing.T) {
+	svc, msgs, subs, rooms, _, _, _ := newServiceWithRoomMock(t, true)
+	c := testContext()
+
+	floor := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+	rooms.EXPECT().GetMinUserLastSeenAt(gomock.Any(), "r1").Return(&floor, nil)
+
+	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, resp.MinUserLastSeenAt)
+	assert.Equal(t, floor.UTC().UnixMilli(), *resp.MinUserLastSeenAt)
+}
+
+func TestHistoryService_LoadHistory_NoMinUserLastSeenAt(t *testing.T) {
+	svc, msgs, subs, rooms, _, _, _ := newServiceWithRoomMock(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+	rooms.EXPECT().GetMinUserLastSeenAt(gomock.Any(), "r1").Return(nil, nil)
+
+	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
+	require.NoError(t, err)
+	assert.Nil(t, resp.MinUserLastSeenAt)
+
+	// omitempty must keep the field out of the JSON.
+	raw, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "minUserLastSeenAt")
+}
+
+func TestHistoryService_LoadHistory_RoomReadError_DegradesGracefully(t *testing.T) {
+	svc, msgs, subs, rooms, _, _, _ := newServiceWithRoomMock(t, true)
+	c := testContext()
+
+	pageMessages := []models.Message{
+		{MessageID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(time.Minute)},
+	}
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
+	rooms.EXPECT().GetMinUserLastSeenAt(gomock.Any(), "r1").Return(nil, fmt.Errorf("mongo down"))
+
+	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 1)
+	assert.Nil(t, resp.MinUserLastSeenAt)
+}
+
 // --- LoadNextMessages ---
 
 func TestHistoryService_LoadNextMessages_BothAfterAndHSS(t *testing.T) {

@@ -58,8 +58,19 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 		return nil, natsrouter.ErrInternal("failed to load message history")
 	}
 
+	var minMs *int64
+	if t, mErr := s.rooms.GetMinUserLastSeenAt(c, roomID); mErr != nil {
+		slog.Warn("loading minUserLastSeenAt", "error", mErr, "roomID", roomID)
+	} else if t != nil {
+		ms := t.UTC().UnixMilli()
+		minMs = &ms
+	}
+
 	redactUnavailableQuotes(page.Data, accessSince)
-	return &models.LoadHistoryResponse{Messages: page.Data}, nil
+	return &models.LoadHistoryResponse{
+		Messages:          page.Data,
+		MinUserLastSeenAt: minMs,
+	}, nil
 }
 
 func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
