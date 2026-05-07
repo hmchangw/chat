@@ -1851,6 +1851,24 @@ func TestAddMembersRequestNoRequestIDField(t *testing.T) {
 	assert.NotContains(t, string(body), "requestId")
 }
 
+func TestErrorResponseJSON(t *testing.T) {
+	t.Run("without code, omitempty hides the field", func(t *testing.T) {
+		src := model.ErrorResponse{Error: "boom"}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"error":"boom"}`, string(data))
+		roundTrip(t, &src, &model.ErrorResponse{})
+	})
+
+	t.Run("with code, both fields present", func(t *testing.T) {
+		src := model.ErrorResponse{Error: "blocked", Code: "large_room_post_restricted"}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"error":"blocked","code":"large_room_post_restricted"}`, string(data))
+		roundTrip(t, &src, &model.ErrorResponse{})
+	})
+}
+
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T any](t *testing.T, src *T, dst *T) {
 	t.Helper()
