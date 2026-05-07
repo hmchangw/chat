@@ -2,6 +2,7 @@ package mongorepo
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -30,7 +31,7 @@ func (r *RoomRepo) GetMinUserLastSeenAt(ctx context.Context, roomID string) (*ti
 		WithProjection(bson.M{"minUserLastSeenAt": 1, "_id": 0}),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get room %s minUserLastSeenAt: %w", roomID, err)
 	}
 	if room == nil {
 		return nil, nil

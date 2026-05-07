@@ -17,7 +17,6 @@ Add a `minUserLastSeenAt` field to the `LoadHistory` response, sourced directly 
 - Adding the field to `LoadNextMessages`, `LoadSurroundingMessages`, or any other history-service RPC.
 - Caching the value in history-service (a single projected `findOne` per call is cheap enough; revisit only if profiling shows it matters).
 - Changing how `room-service` computes or persists `minUserLastSeenAt`.
-- Parallelizing the new Mongo read with the existing Cassandra page read; if it turns out to matter, that's a localized follow-up that does not change the wire contract.
 
 ## Wire contract
 
@@ -116,14 +115,41 @@ Pass `roomRepo` as the new argument to `service.New(...)`. No new env vars, no n
 
 ### Modified: `LoadHistory` handler in `history-service/internal/service/messages.go`
 
-Insert the new read after the existing Cassandra page read, before the existing `redactUnavailableQuotes` call:
+After the existing subscription gate, the Cassandra page read and the new rooms `findOne` run **concurrently** via `errgroup.WithContext`. The room read goroutine never propagates its error to the group — it logs and returns nil so a Mongo blip cannot fail the history-load:
 
 ```go
+var (
+    page  cassrepo.Page[models.Message]
+    floor *time.Time
+)
+g, gctx := errgroup.WithContext(c)
+g.Go(func() error {
+    var pErr error
+    if accessSince == nil {
+        page, pErr = s.msgReader.GetMessagesBefore(gctx, roomID, before, pageReq)
+    } else {
+        page, pErr = s.msgReader.GetMessagesBetweenDesc(gctx, roomID, *accessSince, before, pageReq)
+    }
+    return pErr
+})
+g.Go(func() error {
+    // Non-fatal: client treats absence as "no floor".
+    t, rErr := s.rooms.GetMinUserLastSeenAt(gctx, roomID)
+    if rErr != nil {
+        slog.Warn("loading minUserLastSeenAt", "error", rErr, "roomID", roomID)
+        return nil
+    }
+    floor = t
+    return nil
+})
+if err := g.Wait(); err != nil {
+    slog.Error("loading history", "error", err, "roomID", roomID)
+    return nil, natsrouter.ErrInternal("failed to load message history")
+}
+
 var minMs *int64
-if t, err := s.rooms.GetMinUserLastSeenAt(c, roomID); err != nil {
-    slog.Warn("loading minUserLastSeenAt", "error", err, "roomID", roomID)
-} else if t != nil {
-    ms := t.UTC().UnixMilli()
+if floor != nil {
+    ms := floor.UTC().UnixMilli()
     minMs = &ms
 }
 
@@ -134,8 +160,8 @@ return &models.LoadHistoryResponse{
 }, nil
 ```
 
-- Sequential, not parallel. The handler is already two sequential I/Os (subscription, then Cassandra page); adding a third PK-projected Mongo read keeps the code linear and trivially readable. Profiling can drive a later parallelization if needed; the wire contract does not change.
-- Error severity is `Warn`, not `Error`: this is a degraded — not failed — path. The messages still load, the field just stays nil.
+- **Concurrent**, via `errgroup`: end-to-end latency is `max(cassandra, mongo)` instead of `cassandra + mongo`. Both reads are independent — `redactUnavailableQuotes` only consumes `page.Data` and the rooms read is metadata-only.
+- Error model: only the Cassandra page read can fail the RPC. The rooms goroutine catches its own error, logs at `Warn`, and returns nil to the group; `floor` stays nil and the response field is omitted.
 - No changes to `LoadNextMessages`, `LoadSurroundingMessages`, `GetMessageByID`, `EditMessage`, `DeleteMessage`, `GetThreadMessages`, or `GetThreadParentMessages`.
 
 ## Data flow
@@ -201,7 +227,6 @@ Project minimum: 80%. The repo has one method and three test cases (set, unset, 
 
 ## Out of scope / follow-ups
 
-- Parallelizing the rooms read with the Cassandra page read inside `LoadHistory`.
 - Extending the same field to `LoadNextMessages` / `LoadSurroundingMessages` if a client use case appears.
 - Caching `minUserLastSeenAt` in history-service.
 - Pushing the field on the room-event subject so live updates don't require another LoadHistory call.
