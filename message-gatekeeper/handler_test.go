@@ -62,8 +62,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 		setupPub    func() (publishFunc, *[]publishedMsg)
 		wantErr     bool
 		wantInfra   bool
-		threshold   int                                                       // 0 → use 500
-		checkErr    func(t *testing.T, err error)                             // optional; called on wantErr cases
+		threshold   int                           // 0 → use 500
+		checkErr    func(t *testing.T, err error) // optional; called on wantErr cases
 		checkResult func(t *testing.T, data []byte, published []publishedMsg)
 	}{
 		{
