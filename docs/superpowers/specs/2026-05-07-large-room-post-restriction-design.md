@@ -6,11 +6,11 @@
 
 ## Summary
 
-In rooms with more than 500 members, only owners may send top-level messages.
-Thread replies are exempt regardless of room size. Edits and deletes are
-unaffected (author-only rule in `history-service` stands). The check is added
-to `message-gatekeeper` as an admission gate before publishing to
-`MESSAGES_CANONICAL`.
+In rooms with more than 500 members, only owners, admins, and bots may send
+top-level messages. Thread replies are exempt regardless of room size. Edits
+and deletes are unaffected (author-only rule in `history-service` stands).
+The check is added to `message-gatekeeper` as an admission gate before
+publishing to `MESSAGES_CANONICAL`.
 
 ## Rule
 
@@ -19,7 +19,10 @@ A new top-level message is rejected when **all** of the following hold:
 1. The send is **not** a thread reply (`req.ThreadParentMessageID == ""`).
 2. The room's `userCount` is **strictly greater** than the configured
    threshold (default `500`).
-3. The sender's subscription does **not** carry `model.RoleOwner`.
+3. The sender does **not** qualify for bypass — none of:
+   - subscription carries `model.RoleOwner`, OR
+   - subscription carries `model.RoleAdmin`, OR
+   - sender's account matches the bot naming pattern (`\.bot$|^p_`).
 
 When rejected, the user receives a coded error and no message is published to
 `MESSAGES_CANONICAL`.
@@ -79,16 +82,75 @@ if !isThreadReply && !canBypassLargeRoomCap(sub) {
 ```
 
 The bypass predicate is a small named function — the single edit point for
-the future bot phase:
+the bypass policy:
 
 ```go
 // canBypassLargeRoomCap reports whether the subscriber is exempt from the
-// large-room post restriction. Today: owners only. Bots will be added in a
-// future phase.
+// large-room post restriction. Owners, admins, and bots bypass.
 func canBypassLargeRoomCap(sub *model.Subscription) bool {
-    return hasRole(sub.Roles, model.RoleOwner)
+    for _, r := range sub.Roles {
+        if r == model.RoleOwner || r == model.RoleAdmin {
+            return true
+        }
+    }
+    return isBot(sub.User.Account)
 }
 ```
+
+### Bot detection — inline regex (drift acknowledged)
+
+Bot identification reuses the convention defined by `room-service/helper.go:32`:
+
+```go
+var botPattern = regexp.MustCompile(`\.bot$|^p_`)
+
+func isBot(account string) bool { return botPattern.MatchString(account) }
+```
+
+This is **duplicated inline** in `message-gatekeeper/helper.go` rather than
+imported from `room-service` (which is internal to that service) or extracted
+to a shared `pkg/botid` package. The duplication is intentional and
+short-term:
+
+- `room-service` is owned by another developer and we cannot refactor it on
+  this PR's timeline.
+- Any drift between the two regexes would be a real bug — if the bot-naming
+  convention changes, both copies must be updated. **Mitigation:** the test
+  suite `TestIsBot` in `message-gatekeeper` mirrors the cases in
+  `room-service/helper_test.go:72-99`, so a divergence should manifest as a
+  test difference even before reaching production.
+- **Future cleanup:** when the third caller appears (or when ownership lines
+  permit), promote `isBot` to `pkg/botid`. Both services would then import
+  `botid.IsBot(account)`. This is a single-PR refactor and is explicitly out
+  of scope for the current spec.
+
+### Admin role — constant + bypass only
+
+`pkg/model/subscription.go` gains a new `RoleAdmin` constant:
+
+```go
+const (
+    RoleOwner  Role = "owner"
+    RoleAdmin  Role = "admin"  // NEW
+    RoleMember Role = "member"
+)
+```
+
+What this PR does **not** do:
+- Wire up admin support in `room-service`'s role-update RPC validation
+  (currently `errInvalidRole = "must be owner or member"`).
+- Add admin-aware logic to `errCannotDemoteLast`, `errPromoteRequiresIndividual`,
+  or any other role-management invariants.
+- Update frontend role-display logic.
+
+Those changes are owned by other developers and tracked separately. The
+gatekeeper bypass clause for admin is therefore live as soon as
+`Subscription.Roles` contains `"admin"` — whether that arrives via a future
+role-update RPC change, a direct DB write, an admin tooling path, or
+otherwise. Until then, the admin clause is dormant.
+
+The role enum's existing consumers iterate via range or use defaults in their
+switches, so adding a new value is safe.
 
 ### Cost matrix
 
@@ -96,10 +158,13 @@ func canBypassLargeRoomCap(sub *model.Subscription) bool {
 |---|---|---|
 | Thread reply (any role, any room size) | Allowed | none |
 | Top-level send by an owner | Allowed | none |
-| Top-level send by a non-owner, room ≤ threshold | Allowed | +1 `findOne` |
-| Top-level send by a non-owner, room > threshold | Rejected | +1 `findOne` |
+| Top-level send by an admin | Allowed | none |
+| Top-level send by a bot account (any role) | Allowed | none |
+| Top-level send by a regular member, room ≤ threshold | Allowed | +1 `findOne` |
+| Top-level send by a regular member, room > threshold | Rejected | +1 `findOne` |
 
-Two of the four cases pay zero new cost — and they are the common-case paths.
+Four of the six cases pay zero new cost — and they cover the common paths
+(thread replies, owners, admins, and any bot account).
 
 ### Error classification
 
@@ -252,9 +317,11 @@ slog.Info("send blocked",
 TDD per `CLAUDE.md` Section 4. Three layers:
 
 ### `pkg/model`
-Round-trip tests for `ErrorResponse` covering both shapes (with and without
-`Code`), asserting `omitempty` keeps the wire format identical for the
-no-code case.
+- Round-trip tests for `ErrorResponse` covering both shapes (with and without
+  `Code`), asserting `omitempty` keeps the wire format identical for the
+  no-code case.
+- Extend `TestRoleValues` to assert `RoleAdmin == "admin"` alongside the
+  existing `RoleOwner` / `RoleMember` checks.
 
 ### `pkg/natsutil`
 Unit test for `MarshalErrorWithCode` mirroring the existing `MarshalError`
@@ -264,19 +331,21 @@ test style.
 Extend the existing table-driven `TestHandler_ProcessMessage` with the cases
 below. Regenerate mocks first (`make generate SERVICE=message-gatekeeper`).
 
-| Case | Roles | Room.UserCount | ThreadParent | GetRoom expected? | Outcome |
-|---|---|---|---|---|---|
-| owner sends in big room | `[owner]` | 600 | "" | no (fast-path) | success |
-| owner sends in small room | `[owner]` | 50 | "" | no | success |
-| member sends in small room | `[member]` | 50 | "" | yes | success |
-| member sends in big room | `[member]` | 600 | "" | yes | reject `large_room_post_restricted`, no canonical publish |
-| boundary: count == threshold | `[member]` | 500 | "" | yes | success (strict `>`) |
-| boundary: count == threshold+1 | `[member]` | 501 | "" | yes | reject |
-| member thread reply in big room | `[member]` | 600 | non-empty | no | success |
-| owner thread reply in big room | `[owner]` | 600 | non-empty | no | success |
-| GetRoom returns Mongo error | `[member]` | n/a | "" | yes (returns err) | infraError → NACK |
-| GetRoom returns ErrNoDocuments | `[member]` | n/a | "" | yes | infraError → NACK |
-| Custom threshold (env=2), 3-person room | `[member]` | 3 | "" | yes | reject |
+| Case | Roles | Account | Room.UserCount | ThreadParent | GetRoom expected? | Outcome |
+|---|---|---|---|---|---|---|
+| owner sends in big room | `[owner]` | `alice` | 600 | "" | no (fast-path) | success |
+| **admin sends in big room** | `[admin]` | `alice` | 600 | "" | no (fast-path) | success |
+| **bot account in big room (any role)** | `[member]` | `helper.bot` | 600 | "" | no (fast-path) | success |
+| owner sends in small room | `[owner]` | `alice` | 50 | "" | no | success |
+| member sends in small room | `[member]` | `alice` | 50 | "" | yes | success |
+| member sends in big room | `[member]` | `alice` | 600 | "" | yes | reject `large_room_post_restricted`, no canonical publish |
+| boundary: count == threshold | `[member]` | `alice` | 500 | "" | yes | success (strict `>`) |
+| boundary: count == threshold+1 | `[member]` | `alice` | 501 | "" | yes | reject |
+| member thread reply in big room | `[member]` | `alice` | 600 | non-empty | no | success |
+| owner thread reply in big room | `[owner]` | `alice` | 600 | non-empty | no | success |
+| GetRoom returns Mongo error | `[member]` | `alice` | n/a | "" | yes (returns err) | infraError → NACK |
+| GetRoom returns ErrNoDocuments | `[member]` | `alice` | n/a | "" | yes | infraError → NACK |
+| Custom threshold (env=2), 3-person room | `[member]` | `alice` | 3 | "" | yes | reject |
 
 Reject-case assertions check the wire payload:
 ```go
@@ -291,12 +360,23 @@ Negative assertions on fast-paths:
 
 ### Predicate unit test
 
-```go
-func TestCanBypassLargeRoomCap(t *testing.T) { /* table over role combinations */ }
-```
+`TestCanBypassLargeRoomCap` tables over a `Subscription` (roles + account)
+and asserts the boolean. Cases must cover:
+- `[owner]` → `true`
+- `[admin]` → `true`
+- `[member]`, plain account → `false`
+- `[member]`, bot account (`helper.bot`, `p_scheduler`) → `true`
+- `[]` (empty roles), bot account → `true`
+- `[]` (empty roles), plain account → `false`
+- combinations: `[owner, member]`, `[admin, member]` → `true`
+- unknown role string (e.g. `"superuser"`), plain account → `false`
 
-When the bot phase lands, this test grows by one or two cases — the entire
-test diff for the rule extension.
+### `TestIsBot`
+
+Mirrors `room-service/helper_test.go:72-99` so divergence in the
+duplicated regex is detectable. Cases: `helper.bot` true, `p_scheduler`
+true, `alice` false, `botmaster` (contains "bot" but not as suffix) false,
+empty string false.
 
 ### Integration tests
 Not added. The rule has no real Mongo/NATS dependency that requires
@@ -311,23 +391,31 @@ integration coverage; unit tests with mocked store cover all branches.
 |---|---|
 | Edit & delete authorization | Q3 — author-only rule in `history-service` stands. |
 | System-message admission | Q4 — `room-worker` writes directly to `MESSAGES_CANONICAL`. |
-| Bot identification / `RoleBot` / promoting `isBot` to `pkg/` | Separate phase. Gatekeeper is role-only here. |
-| Admin role | `RoleAdmin` does not exist in the codebase today. |
+| Promoting `isBot` to a shared `pkg/botid` package | Other-team-owned refactor; duplicated inline in gatekeeper for now. |
+| Admin role-update RPC support in `room-service` | Other-team-owned; this PR adds only the `RoleAdmin` constant and the bypass clause. Role assignment via the RPC remains rejected by `errInvalidRole`. |
+| Admin-aware role-promotion / demotion invariants (`errCannotDemoteLast` etc.) | Same — owned separately. |
+| Frontend role-display for admin | Owned by other developers. |
 | `Room.UserCount` lifecycle | Maintained by `room-worker.ReconcileUserCount`; this spec only reads. |
 | Per-room threshold override | YAGNI; single env-var threshold. |
 | Federation outbox/inbox flow | Q6 — gate runs on the room's home site by subject routing. |
 | Cross-service refactor of error handling | New `Code` field on `model.ErrorResponse` is the only shared change. |
 | Prometheus metrics | Q8 — logs only with structured `reason` label. |
 | Frontend UX changes | Backward-compatible; existing clients keep reading `error`. |
-| Schema migrations | None — uses existing `Subscription.Roles` and `Room.UserCount`. |
+| Schema migrations | None — uses existing `Subscription.Roles` and `Room.UserCount`. The new `RoleAdmin` constant is an enum value addition, not a schema change. |
 | Stream / subject / event schema | Unchanged. |
 | Production rollout audit | Q10 — pre-production. |
 
 ## Future follow-ups this spec sets up for
 
-- **Bot-phase integration**: `canBypassLargeRoomCap(sub)` is the single edit
-  point. Adding `RoleBot` to `pkg/model/subscription.go`'s `Role` constants is
-  trivially supported by the existing `Roles []Role` field.
+- **`pkg/botid` consolidation**: when ownership lines permit, lift `isBot` and
+  the `\.bot$|^p_` regex into a shared `pkg/botid` package and switch both
+  `room-service` and `message-gatekeeper` to import it. Single source of truth
+  for the bot-naming convention.
+- **Admin role wiring in `room-service`**: when the other team is ready, add
+  `"admin"` to the role-update RPC's accepted set, decide promotion/demotion
+  semantics, and update the failing tests that currently treat `"admin"` as
+  the negative case. The gatekeeper bypass clause already handles admin once
+  it can be assigned.
 - **Edit/delete extension** (re-opening Q3): the `codedError` shape and
   `large_room_post_restricted` code are reusable from `history-service`. The
   check would live in `EditMessage` / `DeleteMessage`, not gatekeeper.

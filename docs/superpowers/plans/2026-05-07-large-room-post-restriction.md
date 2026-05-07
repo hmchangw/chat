@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Reject top-level message sends in `message-gatekeeper` when the room has more than 500 members (env-tunable) and the sender is not an owner. Thread replies and owners bypass the rule entirely. Edits and deletes are unaffected.
+**Goal:** Reject top-level message sends in `message-gatekeeper` when the room has more than 500 members (env-tunable) and the sender is not an owner, admin, or bot. Thread replies and bypass-eligible senders skip the new room fetch entirely. Edits and deletes are unaffected.
 
-**Architecture:** Single change point in `message-gatekeeper`. Sub-skill: a backward-compatible `Code` field added to `model.ErrorResponse` for typed wire errors. Approach **B** ("owner fast-path"): the role-bypass test runs before the new `Room` lookup, so owners and thread replies pay zero added Mongo cost.
+**Architecture:** Single change point in `message-gatekeeper` plus two small shared additions. A backward-compatible `Code` field added to `model.ErrorResponse` for typed wire errors. A new `RoleAdmin` constant added to `pkg/model/subscription.go` (constant only — assignment wiring in `room-service` is owned by another team). Approach **B** ("owner fast-path") generalized: the bypass test (owner/admin/bot) runs before the new `Room` lookup, so all bypass-eligible senders pay zero added Mongo cost.
 
 **Tech Stack:** Go 1.25, `caarlos0/env`, `go.mongodb.org/mongo-driver/v2`, `nats.go/jetstream`, `go.uber.org/mock`, `stretchr/testify`, `log/slog`.
 
@@ -14,18 +14,20 @@
 
 ## File map
 
-**New behavior**
+**Shared model & helpers**
 - Modify: `pkg/model/error.go` — add `Code string \`json:"code,omitempty"\`` field to `ErrorResponse`.
-- Modify: `pkg/model/model_test.go` — add round-trip test for `ErrorResponse` covering both shapes.
+- Modify: `pkg/model/model_test.go` — add round-trip test for `ErrorResponse` covering both shapes; extend `TestRoleValues` with admin assertion.
+- Modify: `pkg/model/subscription.go` — add `RoleAdmin Role = "admin"` constant.
 - Modify: `pkg/natsutil/reply.go` — add `MarshalErrorWithCode(errMsg, code string) []byte`.
 - Modify: `pkg/natsutil/reply_test.go` — add `TestMarshalErrorWithCode`.
 
 **Gatekeeper internals**
+- Create: `message-gatekeeper/helper.go` — `botPattern` regex + `isBot(account string) bool` (duplicates `room-service/helper.go:32` inline; promotion to shared `pkg/botid` is a future cleanup).
 - Modify: `message-gatekeeper/store.go` — add `GetRoom` to `Store` interface, add `codedError` type, add `errLargeRoomPostRestricted` sentinel.
 - Modify: `message-gatekeeper/store_mongo.go` — add `rooms` collection field to `MongoStore`, implement `GetRoom`.
 - Modify: `message-gatekeeper/main.go` — add `LargeRoomThreshold` to `Config`, pass into `NewHandler`.
 - Modify: `message-gatekeeper/handler.go` — add `largeRoomThreshold` field to `Handler`, update `NewHandler` constructor, add the rule check in `processMessage`, add `canBypassLargeRoomCap` predicate, add `marshalErrorReply` dispatch helper, update validation-error branch of `HandleJetStreamMsg`.
-- Modify: `message-gatekeeper/handler_test.go` — extend the table test, fix `NewHandler` call sites, add `TestCanBypassLargeRoomCap`, add `TestHandler_marshalErrorReply`.
+- Modify: `message-gatekeeper/handler_test.go` — extend the table test, fix `NewHandler` call sites, add `TestCanBypassLargeRoomCap`, add `TestIsBot`, add `TestHandler_marshalErrorReply`.
 - Regenerate: `message-gatekeeper/mock_store_test.go` — via `make generate SERVICE=message-gatekeeper`.
 
 ---
@@ -402,6 +404,191 @@ git commit -m "feat(message-gatekeeper): add LargeRoomThreshold config (no behav
 
 ---
 
+## Task 4a: Add `RoleAdmin` constant to `pkg/model/subscription.go`
+
+**Files:**
+- Modify: `pkg/model/subscription.go`
+- Test: `pkg/model/model_test.go`
+
+Constant only — no role-update RPC support, no role-promotion logic, no
+admin-aware invariants. The bypass clause in Task 5 will reference this.
+
+- [ ] **Step 4a.1: Write the failing assertion**
+
+In `pkg/model/model_test.go`, find the existing `TestRoleValues` function (currently around line 465):
+
+```go
+func TestRoleValues(t *testing.T) {
+	if model.RoleOwner != "owner" {
+		t.Errorf("RoleOwner = %q", model.RoleOwner)
+	}
+	if model.RoleMember != "member" {
+		t.Errorf("RoleMember = %q", model.RoleMember)
+	}
+}
+```
+
+Replace its body with:
+
+```go
+func TestRoleValues(t *testing.T) {
+	if model.RoleOwner != "owner" {
+		t.Errorf("RoleOwner = %q", model.RoleOwner)
+	}
+	if model.RoleAdmin != "admin" {
+		t.Errorf("RoleAdmin = %q", model.RoleAdmin)
+	}
+	if model.RoleMember != "member" {
+		t.Errorf("RoleMember = %q", model.RoleMember)
+	}
+}
+```
+
+- [ ] **Step 4a.2: Run the test and verify it fails**
+
+```bash
+cd /home/user/chat && go test ./pkg/model/ -run TestRoleValues -v
+```
+
+Expected: FAIL — `undefined: model.RoleAdmin`.
+
+- [ ] **Step 4a.3: Add the constant**
+
+In `pkg/model/subscription.go`, replace the existing `Role` const block:
+
+```go
+const (
+	RoleOwner  Role = "owner"
+	RoleMember Role = "member"
+)
+```
+
+with:
+
+```go
+const (
+	RoleOwner  Role = "owner"
+	RoleAdmin  Role = "admin"
+	RoleMember Role = "member"
+)
+```
+
+- [ ] **Step 4a.4: Run the test and verify it passes**
+
+```bash
+cd /home/user/chat && go test ./pkg/model/ -run TestRoleValues -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 4a.5: Run the full `pkg/model` package**
+
+```bash
+cd /home/user/chat && go test ./pkg/model/ -race
+```
+
+Expected: PASS — adding an enum value should not break any existing test
+(callers iterate roles via range; no closed switches in `pkg/model` tests).
+
+- [ ] **Step 4a.6: Commit**
+
+```bash
+git add pkg/model/subscription.go pkg/model/model_test.go
+git commit -m "feat(model): add RoleAdmin constant (assignment wiring tracked separately)"
+```
+
+---
+
+## Task 4b: Add `isBot` helper to `message-gatekeeper`
+
+**Files:**
+- Create: `message-gatekeeper/helper.go`
+- Test: `message-gatekeeper/handler_test.go`
+
+This duplicates `room-service/helper.go:32-45` inline. Promotion to a shared
+`pkg/botid` is a future cleanup tracked in the spec's "Future follow-ups" —
+not on this PR's path.
+
+- [ ] **Step 4b.1: Write the failing test**
+
+Append to `message-gatekeeper/handler_test.go`:
+
+```go
+func TestIsBot(t *testing.T) {
+	cases := []struct {
+		name    string
+		account string
+		want    bool
+	}{
+		{name: ".bot suffix", account: "helper.bot", want: true},
+		{name: "p_ prefix", account: "p_scheduler", want: true},
+		{name: "another bot suffix", account: "scheduler.bot", want: true},
+		{name: "another p_ prefix", account: "p_webhook", want: true},
+		{name: "plain account", account: "alice", want: false},
+		{name: "contains bot but not suffix", account: "botmaster", want: false},
+		{name: "empty string", account: "", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isBot(tc.account))
+		})
+	}
+}
+```
+
+- [ ] **Step 4b.2: Run the test and verify it fails**
+
+```bash
+cd /home/user/chat && go test ./message-gatekeeper/ -run TestIsBot -v
+```
+
+Expected: FAIL — `undefined: isBot`.
+
+- [ ] **Step 4b.3: Create the helper file**
+
+Create new file `message-gatekeeper/helper.go` with the following contents:
+
+```go
+package main
+
+import "regexp"
+
+// botPattern matches account names treated as bots. Mirrors
+// room-service/helper.go:32. Promotion to a shared pkg/botid is a future
+// cleanup — keep both copies in sync if this regex changes here, since the
+// other copy is owned by a separate developer.
+var botPattern = regexp.MustCompile(`\.bot$|^p_`)
+
+// isBot returns true if an account name matches the bot naming pattern
+// (suffix `.bot` or prefix `p_`).
+func isBot(account string) bool { return botPattern.MatchString(account) }
+```
+
+- [ ] **Step 4b.4: Run the test and verify it passes**
+
+```bash
+cd /home/user/chat && go test ./message-gatekeeper/ -run TestIsBot -v
+```
+
+Expected: PASS for all subtests.
+
+- [ ] **Step 4b.5: Run the full gatekeeper test suite**
+
+```bash
+cd /home/user/chat && go test ./message-gatekeeper/ -race
+```
+
+Expected: PASS.
+
+- [ ] **Step 4b.6: Commit**
+
+```bash
+git add message-gatekeeper/helper.go message-gatekeeper/handler_test.go
+git commit -m "feat(message-gatekeeper): add inline isBot helper (duplicates room-service convention)"
+```
+
+---
+
 ## Task 5: Add `canBypassLargeRoomCap` predicate
 
 **Files:**
@@ -415,19 +602,29 @@ Append to `message-gatekeeper/handler_test.go`:
 ```go
 func TestCanBypassLargeRoomCap(t *testing.T) {
 	cases := []struct {
-		name  string
-		roles []model.Role
-		want  bool
+		name    string
+		roles   []model.Role
+		account string
+		want    bool
 	}{
-		{name: "owner only", roles: []model.Role{model.RoleOwner}, want: true},
-		{name: "member only", roles: []model.Role{model.RoleMember}, want: false},
-		{name: "member and owner", roles: []model.Role{model.RoleMember, model.RoleOwner}, want: true},
-		{name: "empty roles", roles: nil, want: false},
-		{name: "unknown role string", roles: []model.Role{"admin"}, want: false},
+		{name: "owner role bypasses", roles: []model.Role{model.RoleOwner}, account: "alice", want: true},
+		{name: "admin role bypasses", roles: []model.Role{model.RoleAdmin}, account: "alice", want: true},
+		{name: "member role does not bypass", roles: []model.Role{model.RoleMember}, account: "alice", want: false},
+		{name: "owner + member bypasses", roles: []model.Role{model.RoleMember, model.RoleOwner}, account: "alice", want: true},
+		{name: "admin + member bypasses", roles: []model.Role{model.RoleMember, model.RoleAdmin}, account: "alice", want: true},
+		{name: "empty roles, plain account", roles: nil, account: "alice", want: false},
+		{name: "bot account .bot suffix bypasses regardless of roles", roles: []model.Role{model.RoleMember}, account: "helper.bot", want: true},
+		{name: "bot account p_ prefix bypasses regardless of roles", roles: []model.Role{model.RoleMember}, account: "p_scheduler", want: true},
+		{name: "bot account with empty roles bypasses", roles: nil, account: "p_webhook", want: true},
+		{name: "unknown role string with plain account", roles: []model.Role{"superuser"}, account: "alice", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := canBypassLargeRoomCap(&model.Subscription{Roles: tc.roles})
+			sub := &model.Subscription{
+				User:  model.SubscriptionUser{Account: tc.account},
+				Roles: tc.roles,
+			}
+			got := canBypassLargeRoomCap(sub)
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -448,16 +645,18 @@ Append to the bottom of `message-gatekeeper/handler.go`:
 
 ```go
 // canBypassLargeRoomCap reports whether the subscriber is exempt from the
-// large-room post restriction. Today: owners only. Bots will be added in a
-// future phase — extending this function (and TestCanBypassLargeRoomCap) is
-// the single edit point for that change.
+// large-room post restriction. Owners, admins, and bots bypass.
+//
+// "Bot" is detected by account-name pattern (\.bot$|^p_) — see helper.go.
+// This single function is the edit point if/when the bypass policy changes
+// (e.g. promoting isBot to a shared package, adding new roles, etc.).
 func canBypassLargeRoomCap(sub *model.Subscription) bool {
 	for _, r := range sub.Roles {
-		if r == model.RoleOwner {
+		if r == model.RoleOwner || r == model.RoleAdmin {
 			return true
 		}
 	}
-	return false
+	return isBot(sub.User.Account)
 }
 ```
 
@@ -816,6 +1015,56 @@ Inside the `tests := []struct{...}{` literal in `TestHandler_ProcessMessage`, ju
     wantErr: false,
 },
 {
+    name:    "admin sends in big room — fast-path skips GetRoom",
+    account: validAccount,
+    roomID:  validRoomID,
+    siteID:  validSiteID,
+    buildData: func() []byte {
+        req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+        data, _ := json.Marshal(req)
+        return data
+    },
+    setupStore: func(s *MockStore) {
+        s.EXPECT().
+            GetSubscription(gomock.Any(), validAccount, validRoomID).
+            Return(&model.Subscription{
+                User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+                Roles: []model.Role{model.RoleAdmin},
+            }, nil)
+        // No GetRoom expectation: admins must skip the fetch entirely.
+    },
+    setupPub: func() (publishFunc, *[]publishedMsg) {
+        var published []publishedMsg
+        return makePublishFunc(&published, nil), &published
+    },
+    wantErr: false,
+},
+{
+    name:    "bot account in big room with member role — fast-path skips GetRoom",
+    account: "helper.bot",
+    roomID:  validRoomID,
+    siteID:  validSiteID,
+    buildData: func() []byte {
+        req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+        data, _ := json.Marshal(req)
+        return data
+    },
+    setupStore: func(s *MockStore) {
+        s.EXPECT().
+            GetSubscription(gomock.Any(), "helper.bot", validRoomID).
+            Return(&model.Subscription{
+                User:  model.SubscriptionUser{ID: "u-bot", Account: "helper.bot"},
+                Roles: []model.Role{model.RoleMember},
+            }, nil)
+        // No GetRoom expectation: bot accounts must skip the fetch entirely.
+    },
+    setupPub: func() (publishFunc, *[]publishedMsg) {
+        var published []publishedMsg
+        return makePublishFunc(&published, nil), &published
+    },
+    wantErr: false,
+},
+{
     name:    "member sends in big room — rejected with codedError",
     account: validAccount,
     roomID:  validRoomID,
@@ -1149,7 +1398,10 @@ Expected: clean push. Branch already exists on remote (the spec was pushed earli
 
 ## Cross-task notes
 
-- **Task 3 vs Task 4 ordering matters:** the mock regen (3.3) must precede the `largeRoomThreshold` plumbing (Task 4) only because the mocks reference the `Store` interface — Task 4 doesn't change the interface, so as long as Task 3 is fully complete first, Task 4 can proceed without mock issues.
-- **Task 5 (predicate) is order-independent of Task 6 (codedError + dispatch).** Either can come first. The order in this plan keeps the predicate isolated and easy to test before bringing in the wire format.
+- **Task ordering for predicate dependencies:** Task 5 (`canBypassLargeRoomCap`) references both `model.RoleAdmin` (added in Task 4a) and `isBot` (added in Task 4b). Both must complete before Task 5 starts.
+- **Task 3 vs Task 4 ordering:** the mock regen (3.3) must precede the `largeRoomThreshold` plumbing (Task 4) only because the mocks reference the `Store` interface — Task 4 doesn't change the interface, so as long as Task 3 is fully complete first, Task 4 can proceed without mock issues.
+- **Task 4a / 4b vs the rest:** Task 4a (`RoleAdmin` constant) only modifies `pkg/model`; Task 4b (`isBot` helper) only modifies `message-gatekeeper`. Both are fully independent of each other and could be reordered; the chosen sequence keeps the model change before the gatekeeper additions.
+- **Task 5 vs Task 6 ordering:** the predicate (Task 5) is order-independent of Task 6 (codedError + dispatch). Either can come first. The order in this plan keeps the predicate isolated and easy to test before bringing in the wire format.
 - **Don't skip the `make generate` step (3.3).** Without it, Task 7's `MockStore.EXPECT().GetRoom(...)` calls will fail to compile.
+- **Bot regex drift:** `botPattern` in `message-gatekeeper/helper.go` (Task 4b) is a deliberate copy of `room-service/helper.go:32`. If you change the regex here, the spec's "Future follow-ups" section calls out promotion to `pkg/botid` as the eventual fix — but is owned by another team. Keep the test cases aligned with `room-service/helper_test.go:72-99` so divergence is detectable.
 - **The `slog.Info` log line is emitted on the rejection path only.** No test asserts on the log line itself (capturing slog output in unit tests is brittle); the log content is reviewed during execution by tailing test output if curiosity strikes. The behavior under test is the error and reply payload.
