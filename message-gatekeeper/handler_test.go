@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -53,18 +54,19 @@ func TestHandler_ProcessMessage(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		account     string
-		roomID      string
-		siteID      string
-		buildData   func() []byte
-		setupStore  func(s *MockStore)
-		setupPub    func() (publishFunc, *[]publishedMsg)
-		wantErr     bool
-		wantInfra   bool
-		threshold   int                           // 0 → use 500
-		checkErr    func(t *testing.T, err error) // optional; called on wantErr cases
-		checkResult func(t *testing.T, data []byte, published []publishedMsg)
+		name          string
+		account       string
+		roomID        string
+		siteID        string
+		buildData     func() []byte
+		setupStore    func(s *MockStore)
+		setupPub      func() (publishFunc, *[]publishedMsg)
+		wantErr       bool
+		wantInfra     bool
+		threshold     int                           // 0 → use 500
+		checkErr      func(t *testing.T, err error) // optional; called on wantErr cases
+		wantNoPublish bool                          // assert published slice is empty on wantErr
+		checkResult   func(t *testing.T, data []byte, published []publishedMsg)
 	}{
 		{
 			name:    "happy path",
@@ -426,6 +428,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			checkErr: func(t *testing.T, err error) {
 				assert.ErrorIs(t, err, errLargeRoomPostRestricted)
 			},
+			wantNoPublish: true,
 		},
 		{
 			name:    "member sends in small room — allowed",
@@ -511,6 +514,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			checkErr: func(t *testing.T, err error) {
 				assert.ErrorIs(t, err, errLargeRoomPostRestricted)
 			},
+			wantNoPublish: true,
 		},
 		{
 			name:    "member thread reply in big room — fast-path skips GetRoom",
@@ -568,6 +572,39 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantInfra: true,
 		},
 		{
+			// Distinct from the generic-error case above: GetRoom returns
+			// ErrNoDocuments (wrapped, mirroring MongoStore.GetRoom). The
+			// handler must still classify this as infraError — unlike
+			// GetSubscription, GetRoom does not convert ErrNoDocuments to a
+			// user-facing error, since reaching this call already implies a
+			// subscription for the room exists.
+			name:    "GetRoom returns ErrNoDocuments — wrapped as infraError",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().
+					GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{
+						User:  model.SubscriptionUser{ID: "u1", Account: validAccount},
+						Roles: []model.Role{model.RoleMember},
+					}, nil)
+				s.EXPECT().
+					GetRoom(gomock.Any(), validRoomID).
+					Return(nil, fmt.Errorf("find room %q: %w", validRoomID, mongo.ErrNoDocuments))
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				return makePublishFunc(nil, nil), nil
+			},
+			wantErr:   true,
+			wantInfra: true,
+		},
+		{
 			name:    "custom threshold (env=2), 3-person room — rejected",
 			account: validAccount,
 			roomID:  validRoomID,
@@ -598,6 +635,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			checkErr: func(t *testing.T, err error) {
 				assert.ErrorIs(t, err, errLargeRoomPostRestricted)
 			},
+			wantNoPublish: true,
 		},
 	}
 
@@ -633,6 +671,9 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				}
 				if tc.checkErr != nil {
 					tc.checkErr(t, err)
+				}
+				if tc.wantNoPublish && publishedPtr != nil {
+					assert.Empty(t, *publishedPtr, "no canonical publish should occur on rejection")
 				}
 			} else {
 				require.NoError(t, err)
