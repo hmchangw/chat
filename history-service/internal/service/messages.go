@@ -48,7 +48,8 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 
 	var page cassrepo.Page[models.Message]
 	if accessSince == nil {
-		page, err = s.msgReader.GetMessagesBefore(c, roomID, before, pageReq)
+		// TODO(task-17): replace time.Time{} with resolved room floor from resolveRoomTimes.
+		page, err = s.msgReader.GetMessagesBefore(c, roomID, before, time.Time{}, pageReq)
 	} else {
 		page, err = s.msgReader.GetMessagesBetweenDesc(c, roomID, *accessSince, before, pageReq)
 	}
@@ -89,9 +90,11 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 
 	var page cassrepo.Page[models.Message]
 	if lowerBound.IsZero() {
-		page, err = s.msgReader.GetAllMessagesAsc(c, roomID, pageReq)
+		// TODO(task-17): replace placeholder bounds with resolved room times from resolveRoomTimes.
+		page, err = s.msgReader.GetAllMessagesAsc(c, roomID, time.Time{}, time.Now().UTC().Add(time.Hour), pageReq)
 	} else {
-		page, err = s.msgReader.GetMessagesAfter(c, roomID, lowerBound, pageReq)
+		// TODO(task-17): replace time.Now().UTC().Add(time.Hour) with resolved room ceiling from resolveRoomTimes.
+		page, err = s.msgReader.GetMessagesAfter(c, roomID, lowerBound, time.Now().UTC().Add(time.Hour), pageReq)
 	}
 	if err != nil {
 		slog.Error("loading next messages", "error", err, "roomID", roomID)
@@ -153,7 +156,8 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 
 	var beforePage cassrepo.Page[models.Message]
 	if accessSince == nil {
-		beforePage, err = s.msgReader.GetMessagesBefore(c, roomID, centralMsg.CreatedAt, beforePageReq)
+		// TODO(task-17): replace time.Time{} with resolved room floor from resolveRoomTimes.
+		beforePage, err = s.msgReader.GetMessagesBefore(c, roomID, centralMsg.CreatedAt, time.Time{}, beforePageReq)
 	} else {
 		beforePage, err = s.msgReader.GetMessagesBetweenDesc(c, roomID, *accessSince, centralMsg.CreatedAt, beforePageReq)
 	}
@@ -162,7 +166,8 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
 	}
 
-	afterPage, err := s.msgReader.GetMessagesAfter(c, roomID, centralMsg.CreatedAt, afterPageReq)
+	// TODO(task-17): replace time.Now().UTC().Add(time.Hour) with resolved room ceiling from resolveRoomTimes.
+	afterPage, err := s.msgReader.GetMessagesAfter(c, roomID, centralMsg.CreatedAt, time.Now().UTC().Add(time.Hour), afterPageReq)
 	if err != nil {
 		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "after")
 		return nil, natsrouter.ErrInternal("failed to load surrounding messages")

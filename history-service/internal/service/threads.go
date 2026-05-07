@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
@@ -55,7 +56,8 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	page, err := s.msgReader.GetThreadMessages(c, roomID, msg.ThreadRoomID, pageReq)
+	// TODO(task-17): replace placeholder bounds with resolved room times from resolveRoomTimes.
+	page, err := s.msgReader.GetThreadMessages(c, roomID, msg.ThreadRoomID, time.Now().UTC().Add(time.Hour), time.Time{}, pageReq)
 	if err != nil {
 		slog.Error("loading thread messages", "error", err, "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
 		return nil, natsrouter.ErrInternal("failed to load thread messages")
