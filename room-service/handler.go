@@ -927,9 +927,7 @@ func (h *Handler) natsMessageRead(m otelnats.Msg) {
 }
 
 func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) ([]byte, error) {
-	// The subject already carries account + roomID — there's no useful body
-	// payload, so the request body is ignored entirely. Clients can send {}
-	// or omit it.
+	
 	account, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
 		return nil, fmt.Errorf("invalid message-read subject: %s", subj)
@@ -1007,11 +1005,7 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) 
 	}
 
 	// Skip the room-floor recompute when the room has no content, or when
-	// this user already had a recorded read past the latest message. A nil
-	// sub.LastSeenAt means the user has never opened the room (e.g. they
-	// were just invited) — they cannot have been past content, so we must
-	// recompute. We deliberately do NOT fall back to sub.JoinedAt: being
-	// invited isn't reading.
+	// this user already had a recorded read past the latest message
 	if room.LastMsgAt == nil {
 		return json.Marshal(map[string]string{"status": "accepted"})
 	}
