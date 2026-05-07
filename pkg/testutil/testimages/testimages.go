@@ -36,4 +36,8 @@ const (
 	// Valkey is the Redis-compatible cache used by room-service and
 	// pkg/roomkeystore.
 	Valkey = "valkey/valkey:8"
+
+	// Vault is the HashiCorp Vault image for pkg/atrest's KeyWrapper
+	// integration tests (transit secrets engine).
+	Vault = "hashicorp/vault:1.18"
 )

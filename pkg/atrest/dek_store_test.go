@@ -57,7 +57,7 @@ func TestFakeDEKStore_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got)
 
-	row := RoomDataKey{ID: "room1", WrappedDEK: []byte("wrapped"), WrapNonce: []byte("nonce"), KEKVersion: 1, CreatedAt: time.Now()}
+	row := RoomDataKey{ID: "room1", WrappedDEK: []byte("wrapped"), CreatedAt: time.Now()}
 	require.NoError(t, s.Upsert(ctx, row))
 
 	got, err = s.Get(ctx, "room1")
@@ -66,15 +66,14 @@ func TestFakeDEKStore_RoundTrip(t *testing.T) {
 	assert.Equal(t, row.WrappedDEK, got.WrappedDEK)
 
 	// Upsert with same _id is a no-op.
-	require.NoError(t, s.Upsert(ctx, RoomDataKey{ID: "room1", WrappedDEK: []byte("other"), KEKVersion: 9}))
+	require.NoError(t, s.Upsert(ctx, RoomDataKey{ID: "room1", WrappedDEK: []byte("other")}))
 	got, err = s.Get(ctx, "room1")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("wrapped"), got.WrappedDEK)
 
 	// Replace overwrites.
-	require.NoError(t, s.Replace(ctx, RoomDataKey{ID: "room1", WrappedDEK: []byte("re"), KEKVersion: 2}))
+	require.NoError(t, s.Replace(ctx, RoomDataKey{ID: "room1", WrappedDEK: []byte("re")}))
 	got, err = s.Get(ctx, "room1")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("re"), got.WrappedDEK)
-	assert.Equal(t, 2, got.KEKVersion)
 }

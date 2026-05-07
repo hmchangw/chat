@@ -1,8 +1,12 @@
 package atrest
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -10,26 +14,58 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// staticKEKLoader is a non-reloading KEKLoader for unit tests.
-type staticKEKLoader struct {
-	keys    map[int][]byte
-	current int
+// staticKeyWrapper is a deterministic in-memory KeyWrapper for unit
+// tests. It uses AES-256-GCM under a fixed key to wrap/unwrap, with a
+// single random nonce per Wrap call.
+type staticKeyWrapper struct {
+	aead cipher.AEAD
+	rng  io.Reader
 }
 
-func (s *staticKEKLoader) Current() (int, []byte) { return s.current, s.keys[s.current] }
-func (s *staticKEKLoader) ByVersion(v int) ([]byte, bool) {
-	k, ok := s.keys[v]
-	return k, ok
+func newStaticKeyWrapper(t *testing.T) *staticKeyWrapper {
+	t.Helper()
+	key := bytes32('k')
+	block, err := aes.NewCipher(key)
+	require.NoError(t, err)
+	g, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	return &staticKeyWrapper{aead: g, rng: deterministicRand{seed: 'r'}}
 }
-func (s *staticKEKLoader) Close() error { return nil }
+
+func (w *staticKeyWrapper) Wrap(_ context.Context, dek []byte) ([]byte, error) {
+	nonce := make([]byte, w.aead.NonceSize())
+	if _, err := io.ReadFull(w.rng, nonce); err != nil {
+		return nil, err
+	}
+	ct := w.aead.Seal(nonce, nonce, dek, nil)
+	return ct, nil
+}
+
+func (w *staticKeyWrapper) Unwrap(_ context.Context, ciphertext []byte) ([]byte, error) {
+	if len(ciphertext) < w.aead.NonceSize() {
+		return nil, errors.New("ciphertext too short")
+	}
+	nonce := ciphertext[:w.aead.NonceSize()]
+	ct := ciphertext[w.aead.NonceSize():]
+	return w.aead.Open(nil, nonce, ct, nil)
+}
+
+// deterministicRand returns the same byte over and over so the static
+// wrapper is reproducible in tests; the real Vault wrapper uses Vault's
+// own randomness.
+type deterministicRand struct{ seed byte }
+
+func (d deterministicRand) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = d.seed
+	}
+	return len(p), nil
+}
 
 func newTestCipher(t *testing.T, store DEKStore) *cipherImpl {
 	t.Helper()
-	loader := &staticKEKLoader{
-		keys:    map[int][]byte{1: bytes32('a'), 2: bytes32('b')},
-		current: 2,
-	}
-	return newCipher(loader, store, newDEKCache(100, time.Hour)).(*cipherImpl)
+	wrapper := newStaticKeyWrapper(t)
+	return newCipher(wrapper, store, newDEKCache(100, time.Hour)).(*cipherImpl)
 }
 
 func bytes32(b byte) []byte {
@@ -71,8 +107,7 @@ func TestCipher_LazyDEKCreation(t *testing.T) {
 	row, err = store.Get(ctx, "room1")
 	require.NoError(t, err)
 	require.NotNil(t, row)
-	assert.Equal(t, 2, row.KEKVersion) // current
-	assert.Len(t, row.WrapNonce, 12)
+	assert.NotEmpty(t, row.WrappedDEK)
 }
 
 func TestCipher_TamperedCiphertextRejected(t *testing.T) {
@@ -89,22 +124,26 @@ func TestCipher_TamperedCiphertextRejected(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrAuthFailed))
 }
 
-func TestCipher_KEKVersionUnknown(t *testing.T) {
+// failingWrapper makes Unwrap fail; used to verify error propagation
+// when a stored row's WrappedDEK can't be unwrapped.
+type failingWrapper struct{ err error }
+
+func (f failingWrapper) Wrap(context.Context, []byte) ([]byte, error)   { return nil, f.err }
+func (f failingWrapper) Unwrap(context.Context, []byte) ([]byte, error) { return nil, f.err }
+
+func TestCipher_UnwrapFails(t *testing.T) {
 	store := newFakeDEKStore()
-	c := newTestCipher(t, store)
-	ctx := context.Background()
-
-	// Hand-craft a DEK row wrapped under a non-existent KEK version.
-	require.NoError(t, store.Upsert(ctx, RoomDataKey{
+	// Pre-seed a row whose ciphertext can't be unwrapped under the test
+	// wrapper (any non-empty bytes; failingWrapper rejects all).
+	require.NoError(t, store.Upsert(context.Background(), RoomDataKey{
 		ID:         "room1",
-		WrappedDEK: []byte("garbage"),
-		WrapNonce:  make([]byte, 12),
-		KEKVersion: 999,
+		WrappedDEK: []byte("not-a-real-vault-blob"),
 	}))
+	c := newCipher(failingWrapper{err: errors.New("vault down")}, store, newDEKCache(100, time.Hour)).(*cipherImpl)
 
-	_, _, err := c.Encrypt(ctx, "room1", EncryptedFields{Msg: "x"})
+	_, _, err := c.Encrypt(context.Background(), "room1", EncryptedFields{Msg: "x"})
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrKEKVersionUnknown))
+	assert.Contains(t, err.Error(), "vault down")
 }
 
 func TestCipher_CacheHitAvoidsStore(t *testing.T) {
@@ -135,30 +174,13 @@ type errReader struct{ err error }
 
 func (e errReader) Read(_ []byte) (int, error) { return 0, e.err }
 
-func TestEncryptGCM_NonceReadFails(t *testing.T) {
-	key := bytes32('k')
-	_, _, err := encryptGCM(key, []byte("hello"), errReader{err: errors.New("rng broken")})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "nonce")
-}
-
-func TestDecryptGCM_BadKeyLength(t *testing.T) {
-	// AES requires 16/24/32-byte keys. A 5-byte key fails NewCipher.
-	_, err := decryptGCM([]byte("short"), nil, nil)
-	require.Error(t, err)
-}
-
-// upsertFailStore makes Upsert fail and Get optionally fail; used to
-// exercise the early-return paths in createDEK.
+// upsertFailStore makes Upsert fail; used to exercise the early-return
+// path in createDEK.
 type upsertFailStore struct {
 	upsertErr error
-	getErr    error
 }
 
 func (s upsertFailStore) Get(context.Context, string) (*RoomDataKey, error) {
-	if s.getErr != nil {
-		return nil, s.getErr
-	}
 	return nil, nil
 }
 func (s upsertFailStore) Upsert(context.Context, RoomDataKey) error  { return s.upsertErr }
@@ -190,8 +212,8 @@ func TestCipher_CreateDEK_PostUpsertGetReturnsNil(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing after upsert")
 }
 
-// faultyRandCipher sets randReader to a faulty source so that DEK
-// generation fails inside createDEK.
+// TestCipher_CreateDEK_RandReaderFails verifies that DEK generation
+// failures inside createDEK propagate cleanly.
 func TestCipher_CreateDEK_RandReaderFails(t *testing.T) {
 	store := newFakeDEKStore()
 	c := newTestCipher(t, store)
@@ -199,4 +221,16 @@ func TestCipher_CreateDEK_RandReaderFails(t *testing.T) {
 	_, _, err := c.Encrypt(context.Background(), "room1", EncryptedFields{Msg: "x"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "generate DEK")
+}
+
+// staticKeyWrapper Wrap/Unwrap symmetry self-check (independent of
+// Cipher) — guards against accidental regressions in the test fake.
+func TestStaticKeyWrapper_RoundTrip(t *testing.T) {
+	w := newStaticKeyWrapper(t)
+	dek := bytes32('d')
+	ct, err := w.Wrap(context.Background(), dek)
+	require.NoError(t, err)
+	got, err := w.Unwrap(context.Background(), ct)
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(dek, got))
 }

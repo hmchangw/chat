@@ -935,14 +935,8 @@ func TestEditMessage_EncryptsBody(t *testing.T) {
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
 
-	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t), 0)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		// Best-effort: tests can't meaningfully act on a Close failure.
-		_ = loader.Close()
-	})
-
-	cipher := atrest.NewCipher(loader, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+	wrapper := newTestVaultWrapper(t, ctx)
+	cipher := atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
 		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
 	repo := NewRepository(session, cipher)
 
@@ -995,14 +989,8 @@ func TestEditMessage_PreservesOtherEncryptedFields(t *testing.T) {
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
 
-	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t), 0)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		// Best-effort: tests can't meaningfully act on a Close failure.
-		_ = loader.Close()
-	})
-
-	cipher := atrest.NewCipher(loader, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+	wrapper := newTestVaultWrapper(t, ctx)
+	cipher := atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
 		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
 	repo := NewRepository(session, cipher)
 
@@ -1049,13 +1037,8 @@ func TestDeleteMessage_NullsEncryptedColumns(t *testing.T) {
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
 
-	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t), 0)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = loader.Close()
-	})
-
-	cipher := atrest.NewCipher(loader, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+	wrapper := newTestVaultWrapper(t, ctx)
+	cipher := atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
 		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
 	repo := NewRepository(session, cipher)
 

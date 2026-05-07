@@ -58,8 +58,6 @@ func (s *mongoDEKStore) Upsert(ctx context.Context, key RoomDataKey) error { //n
 		bson.M{"_id": key.ID},
 		bson.M{"$setOnInsert": bson.M{
 			"wrappedDEK": key.WrappedDEK,
-			"wrapNonce":  key.WrapNonce,
-			"kekVersion": key.KEKVersion,
 			"createdAt":  key.CreatedAt,
 		}},
 		options.UpdateOne().SetUpsert(true),

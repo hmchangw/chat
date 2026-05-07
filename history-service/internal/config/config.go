@@ -40,12 +40,13 @@ type ValkeyConfig struct {
 
 // Config is the top-level configuration for history-service.
 type Config struct {
-	SiteID    string          `env:"SITE_ID" envDefault:"site-local"`
-	Cassandra CassandraConfig `envPrefix:"CASSANDRA_"`
-	Mongo     MongoConfig     `envPrefix:"MONGO_"`
-	NATS      NATSConfig      `envPrefix:"NATS_"`
-	Valkey    ValkeyConfig    `envPrefix:"VALKEY_"`
-	Atrest    atrest.Config   // env vars are already prefixed ATREST_*
+	SiteID    string             `env:"SITE_ID" envDefault:"site-local"`
+	Cassandra CassandraConfig    `envPrefix:"CASSANDRA_"`
+	Mongo     MongoConfig        `envPrefix:"MONGO_"`
+	NATS      NATSConfig         `envPrefix:"NATS_"`
+	Valkey    ValkeyConfig       `envPrefix:"VALKEY_"`
+	Atrest    atrest.Config      // env vars are already prefixed ATREST_*
+	Vault     atrest.VaultConfig // env vars are already prefixed (VAULT_*, ATREST_VAULT_*)
 }
 
 // Load parses environment variables into Config. Returns error if required vars are missing.

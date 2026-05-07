@@ -15,11 +15,13 @@ content in Cassandra using **envelope encryption**:
 
 - Each room has a single 256-bit **Data Encryption Key (DEK)** used to
   encrypt the message payload with AES-256-GCM.
-- Every DEK is itself encrypted ("wrapped") with a versioned **Key
-  Encryption Key (KEK)** before being stored in MongoDB.
-- The KEK material lives in a Kubernetes Secret mounted as a JSON file.
-  Multiple KEK versions are supported simultaneously to enable online KEK
-  rotation.
+- Every DEK is itself wrapped by HashiCorp Vault's **transit secrets
+  engine** before being stored in MongoDB. The plaintext KEK never
+  leaves the Vault server.
+- Vault's transit engine handles key versioning and rotation natively
+  via its `rotate` API; ciphertext blobs are self-describing
+  (`vault:vN:...`) so older versions decrypt automatically until the
+  operator advances `min_decryption_version`.
 
 The existing broadcast-side encryption is unchanged and continues to operate
 as a separate layer.
@@ -47,7 +49,7 @@ as a separate layer.
 | 3 | DEK rotation | One DEK per room, no rotation |
 | 4 | DEK store location | New dedicated MongoDB collection `room_data_keys` |
 | 5 | Search index | Out of scope (future spec) |
-| 6 | KEK delivery | JSON file mounted from k8s Secret |
+| 6 | KEK delivery | HashiCorp Vault transit secrets engine (Kubernetes auth in prod, static token for local dev) |
 | 7 | Legacy plaintext rows | Hybrid read path; no backfill in this spec |
 | 8 | Cassandra column layout | Single bundled `enc_payload` blob plus `enc_meta` UDT |
 | 9 | Default rollout posture | `ATREST_ENABLED=true` by default; explicit opt-out only |
@@ -56,16 +58,16 @@ as a separate layer.
 
 ```
                      ┌──────────────────────────┐
-                     │   k8s Secret (mounted)   │
-                     │   /etc/chat/keks.json    │
-                     │   { current: 3, keys:    │
-                     │     {1:..,2:..,3:..} }   │
+                     │  HashiCorp Vault         │
+                     │  transit/encrypt/<key>   │
+                     │  transit/decrypt/<key>   │
+                     │  (KEK never leaves)      │
                      └────────────┬─────────────┘
-                                  │ load + watch
+                                  │ HTTPS, k8s-auth or token
                                   ▼
                      ┌──────────────────────────┐
-                     │  pkg/atrest (new)        │
-                     │  - KEKLoader (file)      │
+                     │  pkg/atrest              │
+                     │  - KeyWrapper (Vault)    │
                      │  - DEKStore (Mongo)      │
                      │  - Cipher (encrypt/      │
                      │    decrypt msg payloads) │
@@ -97,49 +99,37 @@ Key invariants:
 
 ## Data shapes
 
-### KEK secret file
+### Vault transit key
 
-Mounted at the path configured by `ATREST_KEK_FILE` (default
-`/etc/chat/keks.json`):
+The KEK is a Vault transit key (default `chat-kek` under the `transit/`
+mount). The transit engine handles AES-256-GCM internally; the wrapped
+DEK is the opaque "vault:vN:..." string that Vault returns from
+`transit/encrypt/<key>`. Older key versions remain decryptable until
+the operator advances the key's `min_decryption_version`, so
+operational rotation is a single API call (`vault write -f
+transit/keys/chat-kek/rotate`) — no application code changes required.
 
-```json
-{
-  "current": 3,
-  "keys": {
-    "1": "<base64 32-byte AES key>",
-    "2": "<base64 32-byte AES key>",
-    "3": "<base64 32-byte AES key>"
-  }
-}
-```
-
-`KEKLoader` validates on every load:
-
-- File parses as JSON with the schema above.
-- At least one entry in `keys`.
-- Every value in `keys` decodes to exactly 32 bytes.
-- `current` is present in `keys`.
-
-A fail on any of these aborts the load. The loader keeps the previous
-in-memory map on a reload failure and emits a metric/log; on initial load
-failure the service exits.
+Vault is reached over HTTPS. Production services authenticate via
+**Kubernetes auth**: a Vault role is bound to the service's
+ServiceAccount, and the wrapper exchanges the projected SA token for a
+short-lived Vault token at startup, renewing it via Vault's
+`LifetimeWatcher`. Local docker-compose passes a static `VAULT_TOKEN`
+instead.
 
 ### MongoDB collection `room_data_keys`
 
 ```go
 type RoomDataKey struct {
     ID         string    `bson:"_id"`         // roomID
-    WrappedDEK []byte    `bson:"wrappedDEK"`  // AES-GCM ciphertext + 16-byte tag
-    WrapNonce  []byte    `bson:"wrapNonce"`   // 12 bytes, GCM nonce for the wrap
-    KEKVersion int       `bson:"kekVersion"`  // KEK version that wrapped this DEK
+    WrappedDEK []byte    `bson:"wrappedDEK"`  // Vault transit ciphertext (e.g. "vault:v1:...")
     CreatedAt  time.Time `bson:"createdAt"`
 }
 ```
 
 One row per room. `_id = roomID`, so DEK creation is naturally idempotent
-via `$setOnInsert`. Rows are never deleted in normal operation; KEK
-rotation rewrites `WrappedDEK`, `WrapNonce`, and `KEKVersion` in place via
-`Replace`, leaving `_id` and `CreatedAt` unchanged.
+via `$setOnInsert`. Rows are never deleted in normal operation. The
+KEK version is encoded inside `WrappedDEK` itself (as the "vN" prefix in
+the Vault ciphertext), so no version field is stored alongside.
 
 ### Cassandra schema additions
 
@@ -232,35 +222,41 @@ check.
 
 ```
 pkg/atrest/
-    atrest.go            // public types: EncryptedFields, EncMeta, RoomDataKey, errors
-    kek_loader.go        // KEKLoader implementation with fsnotify
-    kek_loader_test.go
+    atrest.go            // public types: EncryptedFields, EncMeta, RoomDataKey, Config, errors
+    keywrapper.go        // KeyWrapper / KeyWrapperCloser interfaces
+    vault_wrapper.go     // Vault transit-engine implementation (k8s + token auth)
     dek_store.go         // DEKStore interface + Mongo implementation
     dek_store_test.go
     cipher.go            // Cipher implementation with cache
     cipher_test.go
-    cache.go             // unexported LRU
-    integration_test.go  // testcontainers Mongo + real fsnotify
-    testdata/
+    cache.go             // unexported LRU (caches cipher.AEAD per room)
+    metrics.go           // prometheus counters
+    split.go             // SplitForEncryption / Strip / Apply helpers
+    integration_test.go  // testcontainers Mongo + Vault
 ```
 
-### KEKLoader
+### KeyWrapper
 
 ```go
-type KEKLoader interface {
-    Current() (version int, key []byte)
-    ByVersion(v int) ([]byte, bool)
-    Close() error
+type KeyWrapper interface {
+    Wrap(ctx context.Context, dek []byte) ([]byte, error)
+    Unwrap(ctx context.Context, ciphertext []byte) ([]byte, error)
+}
+
+type KeyWrapperCloser interface {
+    KeyWrapper
+    io.Closer
 }
 ```
 
-- Construction reads the file once and validates. Failure is fatal at
-  startup.
-- `Watch` (started internally) uses `fsnotify` to re-read on file
-  modification. On a successful reload the in-memory map is swapped
-  atomically. On a failed reload the previous map is retained and a metric
-  is incremented.
-- Returned key bytes must not be mutated by callers.
+- The blob format is implementation-specific and opaque to callers
+  (Vault returns `vault:vN:...` strings).
+- The Vault implementation logs in via Kubernetes auth when
+  `VAULT_K8S_ROLE` is set; otherwise it falls back to a static
+  `VAULT_TOKEN`. The k8s path renews its token via `LifetimeWatcher`
+  in a background goroutine which `Close` stops.
+- Encryption boundary: the plaintext KEK never enters the Go process —
+  Wrap and Unwrap are network calls to Vault.
 
 ### DEKStore
 
@@ -268,7 +264,7 @@ type KEKLoader interface {
 type DEKStore interface {
     Get(ctx context.Context, roomID string) (*RoomDataKey, error)  // nil if absent
     Upsert(ctx context.Context, key RoomDataKey) error              // $setOnInsert semantics
-    Replace(ctx context.Context, key RoomDataKey) error             // for KEK rotation
+    Replace(ctx context.Context, key RoomDataKey) error             // reserved for future use; not invoked on the Vault rotation path
 }
 ```
 
@@ -279,8 +275,9 @@ The Mongo implementation uses:
 - `Upsert`: `UpdateOne({_id: roomID}, {$setOnInsert: {...}}, upsert=true)`.
   Race-safe: concurrent first writers all converge on the row inserted by
   the winner.
-- `Replace`: `ReplaceOne({_id: roomID}, full doc)`. Used by the rotation
-  worker.
+- `Replace`: `ReplaceOne({_id: roomID}, full doc)`. Reserved for future
+  use (e.g. moving wrapped DEKs between Vault keys); not invoked on the
+  in-place Vault transit rotation path.
 
 The interface is defined in the consumer (`pkg/atrest`) per project
 convention (interfaces in consumer, not implementer).
@@ -296,43 +293,48 @@ type Cipher interface {
 
 Encrypt logic:
 
-1. Look up unwrapped DEK in cache by `roomID`.
+1. Look up cached `cipher.AEAD` by `roomID`.
 2. On cache miss: `DEKStore.Get`. If absent, generate a new 32-byte DEK,
-   wrap it with the current KEK, `DEKStore.Upsert`. If `Upsert` indicates a
-   concurrent insert won the race, re-`Get` and use that wrapped DEK.
-   Unwrap with `KEKLoader.ByVersion(kekVersion)`. Cache the unwrapped DEK.
+   call `KeyWrapper.Wrap(ctx, dek)`, then `DEKStore.Upsert`. A re-`Get`
+   detects a concurrent winner — if our wrapped bytes don't match, the
+   winner's `WrappedDEK` is unwrapped via `KeyWrapper.Unwrap` instead.
+   Build an AES-256-GCM AEAD around the unwrapped DEK and cache it.
 3. Marshal `fields` to JSON.
-4. Encrypt with AES-256-GCM under the unwrapped DEK using a fresh 12-byte
-   random nonce.
+4. `aead.Seal` with a fresh 12-byte random nonce.
 5. Return `(ciphertext, EncMeta{Nonce: nonce})`.
 
 Decrypt logic:
 
-1. Look up unwrapped DEK in cache (same as encrypt).
-2. Decrypt `encPayload` with AES-256-GCM under the unwrapped DEK using
-   `encMeta.Nonce`. GCM auth tag failure returns a typed error.
+1. Look up cached AEAD (same as encrypt).
+2. `aead.Open` with `encMeta.Nonce`. Auth tag failure returns
+   `ErrAuthFailed`.
 3. Unmarshal JSON into `EncryptedFields`. Return.
 
 ### DEK cache
 
 - Unexported, owned by the Cipher implementation.
-- LRU keyed by `roomID` holding the unwrapped DEK bytes.
+- LRU keyed by `roomID` holding the constructed `cipher.AEAD` so batch
+  reads/writes for the same room skip the AES key schedule + GHASH
+  setup that `aes.NewCipher` + `cipher.NewGCM` would otherwise repeat.
 - Capacity from `ATREST_DEK_CACHE_SIZE` (default 10_000).
 - TTL from `ATREST_DEK_CACHE_TTL` (default 1h). Since the DEK bytes never
   change for the lifetime of a room, TTL is not required for correctness;
   it exists only as a defensive bound on memory retention for cold rooms
   in long-lived processes. LRU eviction is the primary cap.
-- KEK rotation does not invalidate cache entries — it changes only the
-  wrap stored in MongoDB; the unwrapped DEK is unchanged.
+- Vault key rotation does not invalidate cache entries — Vault rotates
+  the KEK, not the DEK. The application's unwrapped DEK is unchanged
+  across rotations.
 
 ### Errors
 
 Typed sentinel errors exported from the package, including:
 
-- `ErrKEKVersionUnknown` — wrap references a KEK version not in the
-  loaded set.
 - `ErrAuthFailed` — GCM tag mismatch on decrypt (tampering or wrong key).
 - `ErrPayloadMalformed` — JSON unmarshal failure after decrypt.
+
+Vault errors (network, auth, missing key) propagate through `Wrap` /
+`Unwrap` wrapped with `vault transit encrypt:` / `vault transit
+decrypt:` context.
 
 All wrap-style errors from internal sources are wrapped per project
 convention (`fmt.Errorf("short description: %w", err)`).
@@ -382,32 +384,39 @@ into a `cassandra.Message` struct via a `structScan` helper.
 
 ### Configuration
 
-Both message-worker and history-service get an identical config block
+Both message-worker and history-service get two identical config blocks
 parsed via `caarlos0/env`:
 
 ```go
-type AtrestConfig struct {
-    Enabled      bool          `env:"ATREST_ENABLED"          envDefault:"true"`
-    KEKFile      string        `env:"ATREST_KEK_FILE"         envDefault:"/etc/chat/keks.json"`
-    DEKCacheSize int           `env:"ATREST_DEK_CACHE_SIZE"   envDefault:"10000"`
-    DEKCacheTTL  time.Duration `env:"ATREST_DEK_CACHE_TTL"    envDefault:"1h"`
-    ReloadEvery  time.Duration `env:"ATREST_KEK_RELOAD_EVERY" envDefault:"30s"`
+type Config struct {
+    Enabled      bool          `env:"ATREST_ENABLED"        envDefault:"true"`
+    DEKCacheSize int           `env:"ATREST_DEK_CACHE_SIZE" envDefault:"10000"`
+    DEKCacheTTL  time.Duration `env:"ATREST_DEK_CACHE_TTL"  envDefault:"1h"`
+}
+
+type VaultConfig struct {
+    Address      string `env:"VAULT_ADDR"                envDefault:""`
+    TransitMount string `env:"ATREST_VAULT_TRANSIT_MOUNT" envDefault:"transit"`
+    TransitKey   string `env:"ATREST_VAULT_TRANSIT_KEY"  envDefault:"chat-kek"`
+    K8sRole      string `env:"VAULT_K8S_ROLE"            envDefault:""`
+    K8sAuthPath  string `env:"VAULT_K8S_AUTH_PATH"       envDefault:"kubernetes"`
+    Token        string `env:"VAULT_TOKEN"               envDefault:""`
 }
 ```
 
-`ReloadEvery` controls how often the KEK loader re-reads the secret file
-to pick up rotation changes; the default 30s is short enough to surface
-new keys quickly without flooding the filesystem.
+When `K8sRole` is set the wrapper authenticates via Kubernetes auth and
+renews its Vault token in the background; otherwise it uses `Token`
+directly. Local docker-compose passes `VAULT_TOKEN=dev-only-token`;
+production sets `VAULT_K8S_ROLE` instead and leaves `Token` empty.
 
-When `Enabled=false`, the cipher is left `nil` and the store/repo branch
-on `s.cipher == nil` to take the legacy plaintext write/read path. Tests
+When `Enabled=false`, the cipher is left `nil` and the store/repo
+branches on `s.cipher == nil` to take the legacy plaintext path. Tests
 that do not exercise crypto either inject a real cipher (against a test
-Mongo and a tempdir KEK file) or set `ATREST_ENABLED=false` in the test
-environment.
+Mongo and the shared dev Vault container) or set `ATREST_ENABLED=false`.
 
-A misconfigured deploy with `Enabled=true` and a missing or invalid
-`keks.json` fails closed: the service exits at startup. This is the
-intended behavior — better than silently writing plaintext.
+A misconfigured deploy with `Enabled=true` and an unreachable Vault
+fails closed: the service exits at startup. Better than silently writing
+plaintext.
 
 ## Rollout
 
@@ -423,31 +432,32 @@ One PR per step, each independently revertable:
    Add `enc_payload`/`enc_meta` to its store layer.
 4. Wire decrypt into history-service read path. Add re-encrypt to edit
    and delete paths.
-5. Provision the k8s Secret in each environment (one entry, version `1`)
-   and the volume mount. Confirm new messages are stored encrypted in
-   staging Cassandra.
+5. Provision Vault in each environment: enable the transit engine,
+   create the `chat-kek` named key, configure a Kubernetes auth role
+   bound to each service's ServiceAccount with `decrypt` and `encrypt`
+   capabilities on `transit/encrypt/chat-kek` and
+   `transit/decrypt/chat-kek`. Confirm new messages are stored
+   encrypted in staging Cassandra.
 6. (Future, separate spec.) Backfill of legacy plaintext rows.
 
 ## KEK rotation
 
-Operational procedure (no code in this spec besides the optional rotation
-worker):
+Vault's transit engine handles rotation natively — no application code
+or DEK row changes required:
 
-1. Add a new key version to the k8s Secret, leaving `current` at the old
-   version. Wait for file watchers to pick it up across all pods.
-2. Flip `current` to the new version. Subsequent DEK creations and
-   re-wraps use the new version.
-3. Run the rotation worker (one-shot) to re-wrap existing DEK rows: scan
-   `room_data_keys` for `kekVersion != current`, unwrap with the prior
-   KEK, re-wrap with the current KEK, call `DEKStore.Replace`. Idempotent
-   and resumable.
-4. Once all rows are re-wrapped, the old KEK version may be removed from
-   the Secret.
-
-The rotation worker is a small `cmd/atrest-rotator` binary at the repo
-root, deployable as a Kubernetes Job. It is operational rather than core
-to the at-rest goal and may be landed as a follow-up PR after step 4 of
-the rollout.
+1. `vault write -f transit/keys/chat-kek/rotate` produces a new key
+   version. Subsequent `transit/encrypt/chat-kek` calls return
+   ciphertext tagged with the new version (`vault:vN+1:...`).
+2. Older ciphertext blobs continue to decrypt because Vault retains
+   prior versions until `min_decryption_version` advances.
+3. To remove an old version from service, advance
+   `min_decryption_version` (`vault write transit/keys/chat-kek/config
+   min_decryption_version=N+1`). Any DEK row still wrapped under an
+   older version becomes undecryptable; in practice operators run a
+   one-shot re-wrap job before advancing — implementing that job is
+   straightforward (read each `room_data_keys` row, call
+   `transit/rewrap/chat-kek`, `Replace` the row) but out of scope for
+   this spec.
 
 ## Observability
 
@@ -458,32 +468,33 @@ the rollout.
   - `atrest_encrypt_total{result}` and `atrest_decrypt_total{result}`
   - `atrest_dek_cache_hits_total`, `atrest_dek_cache_misses_total`
   - `atrest_dek_creations_total`
-  - `atrest_kek_reload_total{result}`
-  - `atrest_kek_current_version` (gauge)
-- **Logs:** structured `log/slog`. Plaintext content, full DEK bytes, and
-  full KEK bytes are never logged. Decrypt failures log `roomID`,
-  `messageID`, `kekVersion`, and the error class.
+  - `atrest_kek_wrap_total{result}` (Vault Wrap calls)
+  - `atrest_kek_unwrap_total{result}` (Vault Unwrap calls)
+- **Logs:** structured `log/slog`. Plaintext content and DEK bytes are
+  never logged. Decrypt failures log `roomID`, `messageID`, and the
+  error class.
 
 ## Testing
 
 ### `pkg/atrest` unit tests
 
-- **KEKLoader:** valid file, malformed JSON, missing `current`, wrong-
-  length keys, hot reload via `fsnotify` simulated by writing to a temp
-  file, reload with invalid contents leaves prior map intact.
-- **Cipher** (with fakes for KEKLoader and DEKStore): round-trip
-  encrypt/decrypt, missing-DEK lazy creation, KEK-version-not-found,
-  tampered ciphertext rejected (`ErrAuthFailed`), cache hit reuses
-  unwrapped DEK without re-fetching from store.
+- **Cipher** (with a deterministic in-memory `staticKeyWrapper` and the
+  in-memory fake DEKStore): round-trip encrypt/decrypt, missing-DEK
+  lazy creation, tampered ciphertext rejected (`ErrAuthFailed`), cache
+  hit reuses cached AEAD without re-fetching from store, Vault errors
+  propagate via wrapped errors.
 
 ### `pkg/atrest` integration tests (`//go:build integration`)
 
-- testcontainers MongoDB. End-to-end round-trip with real Mongo.
+- testcontainers MongoDB + testcontainers HashiCorp Vault (dev mode,
+  transit engine pre-configured). End-to-end round-trip with real
+  Vault wrap/unwrap.
 - Concurrent first-write race: N goroutines call `Encrypt` for the same
   roomID; assert exactly one DEK row exists and all goroutines decrypt
   each other's output.
-- KEK rotation: write rows under KEK v1, run the rotation worker, verify
-  rows still decrypt and that `room_data_keys` now show `kekVersion=2`.
+- Vault key rotation: write a row, call
+  `transit/keys/chat-kek/rotate`, verify the existing payload still
+  decrypts under a fresh Cipher (cleared cache).
 
 ### Service-level tests
 
@@ -498,21 +509,26 @@ the rollout.
 
 - ≥ 90% for `pkg/atrest` (security-critical core).
 - ≥ 80% elsewhere, per project rules.
-- Coverage must include error paths: GCM auth failure, KEK version
-  unknown, DEK store errors, malformed payload after decrypt.
+- Coverage must include error paths: GCM auth failure, Vault unwrap
+  failure, DEK store errors, malformed payload after decrypt.
 
 ## Risks
 
-- **Lost KEK = unrecoverable data.** The KEK file is the root of the
-  encryption hierarchy; losing all copies of all KEK versions makes every
-  DEK — and therefore every encrypted message — permanently unreadable.
-  Mitigation: KEK material is stored as a Kubernetes Secret backed by the
-  cluster's secret-management runbook, which owns its backup story. This
-  spec calls the invariant out as the single most important operational
-  property.
+- **Lost Vault KEK = unrecoverable data.** The Vault transit key is the
+  root of the encryption hierarchy; losing all of its versions makes
+  every DEK — and therefore every encrypted message — permanently
+  unreadable. Mitigation: Vault's storage backend (Raft / Consul /
+  cloud KMS) owns the backup story per the cluster's runbook, and the
+  transit engine retains all key versions until an operator explicitly
+  deletes them. This spec calls the invariant out as the single most
+  important operational property.
+- **Vault unavailability = service unavailability.** First-encrypt /
+  cache-miss paths require a live Vault. Mitigation: the in-process DEK
+  cache amortizes most calls; Vault HA + autopilot are operational
+  responsibilities.
 - **Default-on means a misconfigured deploy fails closed.** A pod with
-  `ATREST_ENABLED=true` and a missing or invalid `keks.json` exits at
-  startup. This is intentional: failing closed is preferable to silently
+  `ATREST_ENABLED=true` and unreachable Vault exits at startup.
+  This is intentional: failing closed is preferable to silently
   storing plaintext.
 - **DEK cache thrash under high room cardinality.** With more active
   rooms than the cache size, every encrypt/decrypt round-trips to Mongo

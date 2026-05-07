@@ -39,6 +39,7 @@ type config struct {
 	MongoPassword     string          `env:"MONGO_PASSWORD"     envDefault:""`
 	Bootstrap         bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 	Atrest            atrest.Config
+	Vault             atrest.VaultConfig
 }
 
 func main() {
@@ -89,18 +90,18 @@ func main() {
 	us := userstore.NewMongoStore(db.Collection("users"))
 
 	var (
-		cipher    atrest.Cipher
-		kekLoader atrest.KEKLoader
+		cipher       atrest.Cipher
+		vaultWrapper atrest.KeyWrapperCloser
 	)
 	if cfg.Atrest.Enabled {
-		loader, err := atrest.NewFileKEKLoader(cfg.Atrest.KEKFile, cfg.Atrest.ReloadEvery)
+		w, err := atrest.NewVaultKeyWrapper(ctx, cfg.Vault)
 		if err != nil {
-			slog.Error("failed to load KEK file", "path", cfg.Atrest.KEKFile, "error", err)
+			slog.Error("failed to construct Vault key wrapper", "addr", cfg.Vault.Address, "error", err)
 			os.Exit(1)
 		}
-		kekLoader = loader
+		vaultWrapper = w
 		dekColl := db.Collection(atrest.CollectionName)
-		cipher = atrest.NewCipher(loader, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
+		cipher = atrest.NewCipher(w, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
 	}
 
 	store := NewCassandraStore(cassSession, cipher)
@@ -189,8 +190,8 @@ func main() {
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error {
-			if kekLoader != nil {
-				return kekLoader.Close()
+			if vaultWrapper != nil {
+				return vaultWrapper.Close()
 			}
 			return nil
 		},

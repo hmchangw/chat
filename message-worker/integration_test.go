@@ -6,8 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -24,17 +22,24 @@ import (
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
-// writeTestKEKFile writes a single-version KEK file under a tempdir and
-// returns its path. Used by tests that need a real atrest.Cipher.
-func writeTestKEKFile(t *testing.T) string {
+// newTestVaultWrapper constructs an atrest.KeyWrapper backed by the
+// shared dev Vault container (started once per test process) and
+// registers cleanup. Used by tests that need a real atrest.Cipher.
+func newTestVaultWrapper(t *testing.T, ctx context.Context) atrest.KeyWrapper {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "keks.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{
-		"current": 1,
-		"keys": {"1": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}
-	}`), 0o600))
-	return path
+	v := testutil.Vault(t, ctx)
+	w, err := atrest.NewVaultKeyWrapper(ctx, atrest.VaultConfig{
+		Address:      v.Address,
+		TransitMount: v.TransitMount,
+		TransitKey:   v.TransitKey,
+		Token:        v.Token,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		// Best-effort: tests can't meaningfully act on a Close failure.
+		_ = w.Close()
+	})
+	return w
 }
 
 func setupCassandra(t *testing.T) *gocql.Session {
@@ -1137,14 +1142,8 @@ func TestSaveMessage_EncryptsBody(t *testing.T) {
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
 
-	loader, err := atrest.NewFileKEKLoader(writeTestKEKFile(t), 0)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		// Best-effort: tests can't meaningfully act on a Close failure.
-		_ = loader.Close()
-	})
-
-	cipher := atrest.NewCipher(loader, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+	wrapper := newTestVaultWrapper(t, ctx)
+	cipher := atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
 		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
 	store := NewCassandraStore(session, cipher)
 

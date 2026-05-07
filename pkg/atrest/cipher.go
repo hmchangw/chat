@@ -19,7 +19,7 @@ import (
 var tracer = otel.Tracer("github.com/hmchangw/chat/pkg/atrest")
 
 // Cipher is the public API used by services to encrypt/decrypt message
-// payloads. Its concrete implementation composes a KEKLoader, a DEKStore
+// payloads. Its concrete implementation composes a KeyWrapper, a DEKStore
 // and an LRU cache of unwrapped DEKs.
 type Cipher interface {
 	Encrypt(ctx context.Context, roomID string, fields EncryptedFields) ([]byte, EncMeta, error)
@@ -27,18 +27,18 @@ type Cipher interface {
 }
 
 // NewCipher composes a Cipher from its dependencies.
-func NewCipher(loader KEKLoader, store DEKStore, cfg Config) Cipher {
-	return newCipher(loader, store, newDEKCache(cfg.DEKCacheSize, cfg.DEKCacheTTL))
+func NewCipher(wrapper KeyWrapper, store DEKStore, cfg Config) Cipher {
+	return newCipher(wrapper, store, newDEKCache(cfg.DEKCacheSize, cfg.DEKCacheTTL))
 }
 
-func newCipher(loader KEKLoader, store DEKStore, cache *dekCache) Cipher {
-	return &cipherImpl{loader: loader, store: store, cache: cache, randReader: rand.Reader}
+func newCipher(wrapper KeyWrapper, store DEKStore, cache *dekCache) Cipher {
+	return &cipherImpl{wrapper: wrapper, store: store, cache: cache, randReader: rand.Reader}
 }
 
 // cipherImpl is the concrete Cipher. The unexported name avoids colliding
 // with the imported `crypto/cipher` package.
 type cipherImpl struct {
-	loader     KEKLoader
+	wrapper    KeyWrapper
 	store      DEKStore
 	cache      *dekCache
 	randReader io.Reader
@@ -53,7 +53,7 @@ func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields Encrypte
 
 	aead, cacheHit, err := c.dekFor(ctx, roomID)
 	if err != nil {
-		return nil, EncMeta{}, err
+		return nil, EncMeta{}, fmt.Errorf("acquire DEK for room %s: %w", roomID, err)
 	}
 	span.SetAttributes(attribute.Bool("dek_cache_hit", cacheHit))
 
@@ -84,7 +84,7 @@ func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte,
 
 	aead, cacheHit, err := c.dekFor(ctx, roomID)
 	if err != nil {
-		return EncryptedFields{}, err
+		return EncryptedFields{}, fmt.Errorf("acquire DEK for room %s: %w", roomID, err)
 	}
 	span.SetAttributes(attribute.Bool("dek_cache_hit", cacheHit))
 
@@ -116,7 +116,7 @@ func (c *cipherImpl) dekFor(ctx context.Context, roomID string) (cipher.AEAD, bo
 	}
 	aead, err := newAEAD(dek)
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("build AEAD: %w", err)
 	}
 	c.cache.set(roomID, aead)
 	return aead, false, nil
@@ -125,59 +125,50 @@ func (c *cipherImpl) dekFor(ctx context.Context, roomID string) (cipher.AEAD, bo
 func (c *cipherImpl) fetchOrCreateDEK(ctx context.Context, roomID string) ([]byte, error) {
 	row, err := c.store.Get(ctx, roomID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get DEK row: %w", err)
 	}
 	if row == nil {
 		dek, _, err := c.createDEK(ctx, roomID)
 		return dek, err
 	}
-	kek, ok := c.loader.ByVersion(row.KEKVersion)
-	if !ok {
-		return nil, fmt.Errorf("%w: version %d", ErrKEKVersionUnknown, row.KEKVersion)
-	}
-	dek, err := decryptGCM(kek, row.WrappedDEK, row.WrapNonce)
+	dek, err := c.wrapper.Unwrap(ctx, row.WrappedDEK)
 	if err != nil {
 		return nil, fmt.Errorf("unwrap dek: %w", err)
 	}
 	return dek, nil
 }
 
-// createDEK generates and stores a fresh DEK. On a concurrent insert race,
-// it re-Gets and uses the winner's row.
+// createDEK generates a fresh DEK, asks the KeyWrapper to wrap it, and
+// upserts the row. A re-Get after Upsert detects a concurrent winner
+// (Mongo's $setOnInsert keeps the first row inserted). On a lost race
+// the winner's DEK is unwrapped and returned instead.
 func (c *cipherImpl) createDEK(ctx context.Context, roomID string) ([]byte, *RoomDataKey, error) {
 	dek := make([]byte, 32)
 	if _, err := io.ReadFull(c.randReader, dek); err != nil {
 		return nil, nil, fmt.Errorf("generate DEK: %w", err)
 	}
-	kekVersion, kek := c.loader.Current()
-	wrapped, nonce, err := encryptGCM(kek, dek, c.randReader)
+	wrapped, err := c.wrapper.Wrap(ctx, dek)
 	if err != nil {
 		return nil, nil, fmt.Errorf("wrap DEK: %w", err)
 	}
 	row := RoomDataKey{
 		ID:         roomID,
 		WrappedDEK: wrapped,
-		WrapNonce:  nonce,
-		KEKVersion: kekVersion,
 		CreatedAt:  time.Now().UTC(),
 	}
 	if err := c.store.Upsert(ctx, row); err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("upsert DEK row: %w", err)
 	}
 	stored, err := c.store.Get(ctx, roomID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("re-read DEK row after upsert: %w", err)
 	}
 	if stored == nil {
 		return nil, nil, errors.New("dek row missing after upsert")
 	}
 	if !bytes.Equal(stored.WrappedDEK, wrapped) {
 		// Lost the race: another goroutine inserted first. Unwrap theirs.
-		kek2, ok := c.loader.ByVersion(stored.KEKVersion)
-		if !ok {
-			return nil, nil, fmt.Errorf("%w: version %d", ErrKEKVersionUnknown, stored.KEKVersion)
-		}
-		dek2, err := decryptGCM(kek2, stored.WrappedDEK, stored.WrapNonce)
+		dek2, err := c.wrapper.Unwrap(ctx, stored.WrappedDEK)
 		if err != nil {
 			return nil, nil, fmt.Errorf("unwrap winner DEK: %w", err)
 		}
@@ -198,32 +189,4 @@ func newAEAD(key []byte) (cipher.AEAD, error) {
 		return nil, fmt.Errorf("new gcm: %w", err)
 	}
 	return g, nil
-}
-
-// encryptGCM seals plaintext with a fresh 12-byte random nonce. Used only
-// on the rare DEK-wrapping path; message encryption uses a cached AEAD.
-func encryptGCM(key, plaintext []byte, r io.Reader) ([]byte, []byte, error) {
-	g, err := newAEAD(key)
-	if err != nil {
-		return nil, nil, err
-	}
-	nonce := make([]byte, g.NonceSize())
-	if _, err := io.ReadFull(r, nonce); err != nil {
-		return nil, nil, fmt.Errorf("nonce: %w", err)
-	}
-	return g.Seal(nil, nonce, plaintext, nil), nonce, nil
-}
-
-// decryptGCM is the inverse of encryptGCM, used on the rare DEK-unwrapping
-// path. Auth failures wrap ErrAuthFailed.
-func decryptGCM(key, ciphertext, nonce []byte) ([]byte, error) {
-	g, err := newAEAD(key)
-	if err != nil {
-		return nil, err
-	}
-	plain, err := g.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrAuthFailed, err)
-	}
-	return plain, nil
 }

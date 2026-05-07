@@ -44,13 +44,13 @@ var (
 		Help: "Lazy DEK creations.",
 	})
 
-	kekReloadCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "atrest_kek_reload_total",
-		Help: "KEK file reload attempts, by result.",
+	kekWrapCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "atrest_kek_wrap_total",
+		Help: "KeyWrapper wrap operations, by result.",
 	}, []string{"result"})
 
-	kekCurrentVersion = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "atrest_kek_current_version",
-		Help: "Current KEK version in memory.",
-	})
+	kekUnwrapCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "atrest_kek_unwrap_total",
+		Help: "KeyWrapper unwrap operations, by result.",
+	}, []string{"result"})
 )
