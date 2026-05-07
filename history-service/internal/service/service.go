@@ -44,8 +44,6 @@ type SubscriptionRepository interface {
 	GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error)
 }
 
-// RoomRepository reads room metadata used by history-service.
-// Implemented by *mongorepo.RoomRepo.
 type RoomRepository interface {
 	GetMinUserLastSeenAt(ctx context.Context, roomID string) (*time.Time, error)
 }

@@ -118,8 +118,6 @@ func (alwaysSubscribedRepo) GetHistorySharedSince(_ context.Context, _, _ string
 	return nil, true, nil
 }
 
-// nilRoomRepo stubs RoomRepository — these integration tests don't exercise
-// the room read; LoadHistory is the only consumer and is tested elsewhere.
 type nilRoomRepo struct{}
 
 func (nilRoomRepo) GetMinUserLastSeenAt(_ context.Context, _ string) (*time.Time, error) {
