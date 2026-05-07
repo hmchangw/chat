@@ -116,8 +116,7 @@ type countResult struct {
 	Count int64 `bson:"count"`
 }
 
-// BulkWrite executes models with SetOrdered(false). Empty input -> (nil, nil).
-// On partial failure returns (*BulkResult, wrapped err); use errors.As(&mongo.BulkWriteException{}).
+// BulkWrite executes models unordered. Partial failure returns (*BulkResult, err); empty input -> (nil, nil).
 func (c *Collection[T]) BulkWrite(ctx context.Context, models []mongo.WriteModel) (*BulkResult, error) {
 	if len(models) == 0 {
 		return nil, nil
@@ -130,11 +129,8 @@ func (c *Collection[T]) BulkWrite(ctx context.Context, models []mongo.WriteModel
 	return mapped, nil
 }
 
-// BulkUpsert sends {$set: item} per item with _id stripped (immutable in Mongo).
-// $set is MERGE not REPLACE: stored fields not in T are preserved.
-// omitempty caveat: zero-valued fields are dropped from $set.
-// createdAt-style fields are rewritten on every call — use BulkWrite with $setOnInsert if that matters.
-// Empty input -> (nil, nil); callers must nil-check.
+// BulkUpsert sends $set per item (MERGE not REPLACE) with _id stripped; createdAt-style fields are rewritten every call.
+// Empty input -> (nil, nil).
 func (c *Collection[T]) BulkUpsert(ctx context.Context, items []T, filter func(T) any) (*BulkResult, error) {
 	if len(items) == 0 {
 		return nil, nil
@@ -151,16 +147,13 @@ func (c *Collection[T]) BulkUpsert(ctx context.Context, items []T, filter func(T
 }
 
 // BulkUpsertByID is BulkUpsert with bson.M{"_id": idFn(item)} as the filter.
-// Cheapest possible upsert pattern (_id is always indexed).
 func (c *Collection[T]) BulkUpsertByID(ctx context.Context, items []T, idFn func(T) string) (*BulkResult, error) {
 	return c.BulkUpsert(ctx, items, func(item T) any {
 		return bson.M{"_id": idFn(item)}
 	})
 }
 
-// InsertMany sends docs unordered. Returns count of successful inserts (from len(InsertedIDs)).
-// Detect duplicate-key collisions with mongo.IsDuplicateKeyError(err).
-// Empty input -> (0, nil).
+// InsertMany unordered. Returns count of successes; detect collisions with mongo.IsDuplicateKeyError.
 func (c *Collection[T]) InsertMany(ctx context.Context, items []T) (int64, error) {
 	if len(items) == 0 {
 		return 0, nil

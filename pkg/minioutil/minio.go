@@ -77,8 +77,7 @@ func (b *Bucket[T]) Get(ctx context.Context, key string) (*T, error) {
 
 const defaultListCap = 1000
 
-// List returns up to maxKeys keys with the given prefix; maxKeys<=0 defaults to 1000.
-// Pass math.MaxInt to drain (held in memory; use Raw() for huge buckets).
+// List returns up to maxKeys keys with the prefix; maxKeys<=0 -> 1000. Use Raw() for unbounded scans.
 func (b *Bucket[T]) List(ctx context.Context, prefix string, maxKeys int) ([]string, error) {
 	if maxKeys <= 0 {
 		maxKeys = defaultListCap
@@ -111,9 +110,7 @@ func (b *Bucket[T]) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// Connect does NOT probe at startup -- ListBuckets needs account-wide IAM
-// (s3:ListAllMyBuckets) which least-privilege deployments don't grant.
-// NewBucket carries the bucket-scoped probe.
+// Connect does not probe; NewBucket's BucketExists is the bucket-scoped fail-fast hook.
 func Connect(_ context.Context, endpoint string, useSSL bool, accessKey, secretKey string) (*minio.Client, error) {
 	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
