@@ -88,6 +88,111 @@ func TestDeleteMessageResponse_JSON(t *testing.T) {
 	assert.Equal(t, resp, decoded)
 }
 
+func TestRoomHints_JSONRoundTrip(t *testing.T) {
+	last := int64(1234567890123)
+	created := int64(1234567000000)
+	cases := []struct {
+		name string
+		in   RoomHints
+	}{
+		{name: "both fields", in: RoomHints{LastMsgAt: &last, CreatedAt: &created}},
+		{name: "only LastMsgAt", in: RoomHints{LastMsgAt: &last}},
+		{name: "only CreatedAt", in: RoomHints{CreatedAt: &created}},
+		{name: "empty", in: RoomHints{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.in)
+			require.NoError(t, err)
+			var got RoomHints
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, tc.in, got)
+		})
+	}
+}
+
+func TestLoadHistoryRequest_WithHints_Roundtrip(t *testing.T) {
+	last := int64(1234567890123)
+	cases := []struct {
+		name string
+		in   LoadHistoryRequest
+	}{
+		{name: "hints nil", in: LoadHistoryRequest{Limit: 50}},
+		{name: "hints populated", in: LoadHistoryRequest{Limit: 50, Hints: &RoomHints{LastMsgAt: &last}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.in)
+			require.NoError(t, err)
+			var got LoadHistoryRequest
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, tc.in, got)
+		})
+	}
+}
+
+func TestLoadNextMessagesRequest_WithHints_Roundtrip(t *testing.T) {
+	last := int64(1234567890123)
+	created := int64(1234567000000)
+	cases := []struct {
+		name string
+		in   LoadNextMessagesRequest
+	}{
+		{name: "hints nil", in: LoadNextMessagesRequest{Limit: 25, Cursor: "cur1"}},
+		{name: "hints populated", in: LoadNextMessagesRequest{Limit: 25, Cursor: "cur1", Hints: &RoomHints{LastMsgAt: &last, CreatedAt: &created}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.in)
+			require.NoError(t, err)
+			var got LoadNextMessagesRequest
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, tc.in, got)
+		})
+	}
+}
+
+func TestLoadSurroundingMessagesRequest_WithHints_Roundtrip(t *testing.T) {
+	created := int64(1234567000000)
+	cases := []struct {
+		name string
+		in   LoadSurroundingMessagesRequest
+	}{
+		{name: "hints nil", in: LoadSurroundingMessagesRequest{MessageID: "m-abc", Limit: 20}},
+		{name: "hints populated", in: LoadSurroundingMessagesRequest{MessageID: "m-abc", Limit: 20, Hints: &RoomHints{CreatedAt: &created}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.in)
+			require.NoError(t, err)
+			var got LoadSurroundingMessagesRequest
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, tc.in, got)
+		})
+	}
+}
+
+func TestGetThreadMessagesRequest_WithHints_Roundtrip(t *testing.T) {
+	last := int64(1234567890123)
+	created := int64(1234567000000)
+	cases := []struct {
+		name string
+		in   GetThreadMessagesRequest
+	}{
+		{name: "hints nil", in: GetThreadMessagesRequest{ThreadMessageID: "t-abc", Limit: 10}},
+		{name: "hints populated", in: GetThreadMessagesRequest{ThreadMessageID: "t-abc", Limit: 10, Hints: &RoomHints{LastMsgAt: &last, CreatedAt: &created}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.in)
+			require.NoError(t, err)
+			var got GetThreadMessagesRequest
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, tc.in, got)
+		})
+	}
+}
+
 func TestMessageDeletedEvent_JSON(t *testing.T) {
 	evt := MessageDeletedEvent{
 		Type:      "message_deleted",

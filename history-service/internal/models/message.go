@@ -9,9 +9,18 @@ type Card = cassandra.Card
 type CardAction = cassandra.CardAction
 type QuotedParentMessage = cassandra.QuotedParentMessage
 
+// RoomHints carry client-cached room metadata so the server can skip a Mongo
+// lookup. Both fields are optional and individually validated server-side
+// (LastMsgAt > now+1h and CreatedAt > now are ignored, falling back to Mongo).
+type RoomHints struct {
+	LastMsgAt *int64 `json:"lastMsgAt,omitempty"` // UTC millis
+	CreatedAt *int64 `json:"createdAt,omitempty"` // UTC millis
+}
+
 type LoadHistoryRequest struct {
-	Before *int64 `json:"before,omitempty"` // UTC millis; nil = now
-	Limit  int    `json:"limit"`
+	Before *int64     `json:"before,omitempty"` // UTC millis; nil = now
+	Limit  int        `json:"limit"`
+	Hints  *RoomHints `json:"hints,omitempty"`
 }
 
 type LoadHistoryResponse struct {
@@ -19,9 +28,10 @@ type LoadHistoryResponse struct {
 }
 
 type LoadNextMessagesRequest struct {
-	After  *int64 `json:"after,omitempty"` // UTC millis; nil = no lower bound
-	Limit  int    `json:"limit"`
-	Cursor string `json:"cursor"` // pagination cursor from previous response
+	After  *int64     `json:"after,omitempty"` // UTC millis; nil = no lower bound
+	Limit  int        `json:"limit"`
+	Cursor string     `json:"cursor"` // pagination cursor from previous response
+	Hints  *RoomHints `json:"hints,omitempty"`
 }
 
 type LoadNextMessagesResponse struct {
@@ -31,8 +41,9 @@ type LoadNextMessagesResponse struct {
 }
 
 type LoadSurroundingMessagesRequest struct {
-	MessageID string `json:"messageId"` // central message ID
-	Limit     int    `json:"limit"`     // total messages including central
+	MessageID string     `json:"messageId"` // central message ID
+	Limit     int        `json:"limit"`     // total messages including central
+	Hints     *RoomHints `json:"hints,omitempty"`
 }
 
 type LoadSurroundingMessagesResponse struct {
@@ -65,9 +76,10 @@ type DeleteMessageResponse struct {
 }
 
 type GetThreadMessagesRequest struct {
-	ThreadMessageID string `json:"threadMessageId"` // must be a top-level thread message ID, not a reply
-	Cursor          string `json:"cursor,omitempty"`
-	Limit           int    `json:"limit"`
+	ThreadMessageID string     `json:"threadMessageId"` // must be a top-level thread message ID, not a reply
+	Cursor          string     `json:"cursor,omitempty"`
+	Limit           int        `json:"limit"`
+	Hints           *RoomHints `json:"hints,omitempty"`
 }
 
 type GetThreadMessagesResponse struct {
