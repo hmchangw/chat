@@ -341,6 +341,21 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		slog.Error("member event publish failed", "error", err, "roomID", req.RoomID)
 	}
 
+	// Wrapper Type collapses to member_removed even for self-leave so
+	// search-sync-worker dispatches on one MV op; inner Type is preserved.
+	inboxOutbox := model.OutboxEvent{
+		Type:       "member_removed",
+		SiteID:     h.siteID,
+		DestSiteID: h.siteID,
+		Payload:    memberEvtData,
+		Timestamp:  now.UnixMilli(),
+	}
+	inboxData, _ := json.Marshal(inboxOutbox)
+	inboxSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp)
+	if err := h.publish(ctx, subject.InboxMemberRemoved(h.siteID), inboxData, outboxDedupID(ctx, h.siteID, inboxSeed)); err != nil {
+		slog.Error("local inbox member_removed publish failed", "error", err, "roomID", req.RoomID)
+	}
+
 	// System message
 	sysMsgUser := model.SysMsgUser{
 		Account:     user.Account,
@@ -468,6 +483,19 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		memberEvtData, _ := json.Marshal(memberEvt)
 		if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData, ""); err != nil {
 			slog.Error("member event publish failed", "error", err, "roomID", req.RoomID)
+		}
+
+		inboxOutbox := model.OutboxEvent{
+			Type:       "member_removed",
+			SiteID:     h.siteID,
+			DestSiteID: h.siteID,
+			Payload:    memberEvtData,
+			Timestamp:  now.UnixMilli(),
+		}
+		inboxData, _ := json.Marshal(inboxOutbox)
+		inboxSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)
+		if err := h.publish(ctx, subject.InboxMemberRemoved(h.siteID), inboxData, outboxDedupID(ctx, h.siteID, inboxSeed)); err != nil {
+			slog.Error("local inbox member_removed publish failed", "error", err, "roomID", req.RoomID)
 		}
 	}
 
@@ -739,6 +767,21 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	memberAddData, _ := json.Marshal(memberAddEvt)
 	if err := h.publish(ctx, subject.RoomMemberEvent(req.RoomID), memberAddData, ""); err != nil {
 		slog.Error("member add event publish failed", "error", err, "roomID", req.RoomID)
+	}
+
+	if len(actualAccounts) > 0 {
+		inboxOutbox := model.OutboxEvent{
+			Type:       "member_added",
+			SiteID:     room.SiteID,
+			DestSiteID: room.SiteID,
+			Payload:    memberAddData,
+			Timestamp:  now.UnixMilli(),
+		}
+		inboxData, _ := json.Marshal(inboxOutbox)
+		inboxSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
+		if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), inboxData, outboxDedupID(ctx, room.SiteID, inboxSeed)); err != nil {
+			slog.Error("local inbox member_added publish failed", "error", err, "roomID", req.RoomID)
+		}
 	}
 
 	membersAdded := model.MembersAdded{

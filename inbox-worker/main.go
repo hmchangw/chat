@@ -21,6 +21,7 @@ import (
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type config struct {
@@ -210,9 +211,11 @@ func main() {
 
 	inboxCfg := stream.Inbox(cfg.SiteID)
 
+	// Local lane is reserved for search-sync-worker; scope to aggregate.> only.
 	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, jetstream.ConsumerConfig{
-		Durable:   "inbox-worker",
-		AckPolicy: jetstream.AckExplicitPolicy,
+		Durable:        "inbox-worker",
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		FilterSubjects: []string{subject.InboxAggregateAll(cfg.SiteID)},
 	})
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)

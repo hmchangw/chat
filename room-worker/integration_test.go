@@ -851,3 +851,123 @@ func TestProcessCreateRoomIdempotentRedelivery(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), subCount, "redelivery must not create duplicate subs")
 }
+
+func TestProcessAddMembers_PublishesLocalInbox_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝"})
+	mustInsertUser(t, db, &model.User{ID: "u_charlie", Account: "charlie", SiteID: "site-A",
+		EngName: "Charlie", ChineseName: "查理"})
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob", SiteID: "site-B",
+		EngName: "Bob", ChineseName: "鲍勃"})
+
+	roomID := idgen.GenerateID()
+	const roomName = "federated-room"
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Name: roomName, Type: model.RoomTypeChannel,
+		SiteID: "site-A", CreatedBy: "u_alice",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID:       idgen.GenerateUUIDv7(),
+		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID:   roomID, SiteID: "site-A", Name: roomName, RoomType: model.RoomTypeChannel,
+		Roles:    []model.Role{model.RoleOwner},
+		JoinedAt: time.Now().UTC(),
+	})
+
+	cap := &publishCapture{}
+	h := NewHandler(store, "site-A", cap.fn())
+	const reqID = "0193abcd-0193-7abc-89ab-aaaa00000001"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	now := time.Now().UTC().UnixMilli()
+	body, err := json.Marshal(model.AddMembersRequest{
+		RoomID:           roomID,
+		Users:            []string{"charlie", "bob"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
+		Timestamp:        now,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processAddMembers(ctx, body))
+
+	pubs := cap.outboxOnPrefix(subject.InboxMemberAdded("site-A"))
+	require.Len(t, pubs, 1, "exactly one local INBOX member_added publish per add-members call")
+
+	var outboxEvt model.OutboxEvent
+	require.NoError(t, json.Unmarshal(pubs[0].data, &outboxEvt))
+	assert.Equal(t, "member_added", outboxEvt.Type)
+	assert.Equal(t, "site-A", outboxEvt.SiteID)
+	assert.Equal(t, "site-A", outboxEvt.DestSiteID, "self-loop: dest must equal origin")
+
+	var inner model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
+	assert.Equal(t, "member_added", inner.Type)
+	assert.Equal(t, roomID, inner.RoomID)
+	assert.Equal(t, "site-A", inner.SiteID)
+	assert.ElementsMatch(t, []string{"charlie", "bob"}, inner.Accounts,
+		"local INBOX must carry full add set — same-site (charlie) + remote (bob)")
+	assert.Equal(t, reqID+":site-A", pubs[0].msgID,
+		"Nats-Msg-Id must be outboxDedupID(ctx, originSite, payloadSeed) so JetStream dedups self-loop replays")
+}
+
+func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice", SiteID: "site-A"})
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob", SiteID: "site-B",
+		EngName: "Bob", ChineseName: "鲍勃"})
+
+	roomID := idgen.GenerateID()
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Name: "fed-room", Type: model.RoomTypeChannel, SiteID: "site-A",
+		CreatedBy: "u_alice", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u_bob", Account: "bob"},
+		RoomID: roomID, SiteID: "site-A", Name: "fed-room", RoomType: model.RoomTypeChannel,
+		Roles:  []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
+	})
+	_, err := db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, Ts: time.Now().UTC(),
+		Member: model.RoomMemberEntry{ID: "u_bob", Type: model.RoomMemberIndividual, Account: "bob"},
+	})
+	require.NoError(t, err)
+
+	cap := &publishCapture{}
+	h := NewHandler(store, "site-A", cap.fn())
+	const reqID = "0193abcd-0193-7abc-89ab-aaaa00000002"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.RemoveMemberRequest{
+		RoomID:    roomID,
+		Requester: "alice",
+		Account:   "bob",
+		Timestamp: time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processRemoveMember(ctx, body))
+
+	pubs := cap.outboxOnPrefix(subject.InboxMemberRemoved("site-A"))
+	require.Len(t, pubs, 1)
+
+	var outboxEvt model.OutboxEvent
+	require.NoError(t, json.Unmarshal(pubs[0].data, &outboxEvt))
+	assert.Equal(t, "member_removed", outboxEvt.Type)
+	assert.Equal(t, "site-A", outboxEvt.SiteID)
+	assert.Equal(t, "site-A", outboxEvt.DestSiteID)
+
+	var inner model.MemberRemoveEvent
+	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
+	assert.Equal(t, "member_removed", inner.Type, "admin-remove: inner type is member_removed")
+	assert.Equal(t, roomID, inner.RoomID)
+	assert.Equal(t, []string{"bob"}, inner.Accounts)
+	assert.Equal(t, reqID+":site-A", pubs[0].msgID)
+}
