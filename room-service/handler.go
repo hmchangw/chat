@@ -927,7 +927,7 @@ func (h *Handler) natsMessageRead(m otelnats.Msg) {
 }
 
 func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) ([]byte, error) {
-	
+
 	account, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
 		return nil, fmt.Errorf("invalid message-read subject: %s", subj)
