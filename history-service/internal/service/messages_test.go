@@ -64,12 +64,13 @@ func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageReposi
 	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
 	keys := mocks.NewMockRoomKeyProvider(ctrl)
 	roomTimes := mocks.NewMockRoomTimeResolver(ctrl)
-	// Default: allow any number of GetRoomTimes calls and return sensible values.
-	// Tests that specifically test resolver behaviour can add more-specific expectations.
+	// Default: zero or more GetRoomTimes calls returning sensible values. Tests that
+	// assert resolver invocation should override with a stricter Times(N) expectation
+	// rather than relying on this fallback. (See room_times_test.go for examples.)
 	roomTimes.EXPECT().
 		GetRoomTimes(gomock.Any(), gomock.Any()).
 		Return(defaultRoomLastMsgAt, defaultRoomCreatedAt, nil).
-		AnyTimes()
+		MinTimes(0)
 	// historyFloor: 90 days — long enough that the floor never clips test fixtures.
 	const historyFloor = 90 * 24 * time.Hour
 	return service.New(msgs, subs, pub, threadRooms, keys, roomTimes, historyFloor), msgs, subs, pub, threadRooms, keys
@@ -655,6 +656,8 @@ func TestHistoryService_LoadSurroundingMessages_BeforePageError(t *testing.T) {
 	centralMsg := &models.Message{MessageID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m5").Return(centralMsg, nil)
 	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(cassrepo.Page[models.Message]{}, fmt.Errorf("db error"))
+	// before- and after-walks run in parallel, so the after-walk may also be invoked.
+	msgs.EXPECT().GetMessagesAfter(gomock.Any(), "r1", centralMsg.CreatedAt, gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil).MaxTimes(1)
 
 	_, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{
 		MessageID: "m5", Limit: 6,
@@ -671,6 +674,8 @@ func TestHistoryService_LoadSurroundingMessages_BeforePageError_NoHSS(t *testing
 	centralMsg := &models.Message{MessageID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m5").Return(centralMsg, nil)
 	msgs.EXPECT().GetMessagesBefore(gomock.Any(), "r1", centralMsg.CreatedAt, gomock.Any(), gomock.Any()).Return(cassrepo.Page[models.Message]{}, fmt.Errorf("db error"))
+	// before- and after-walks run in parallel, so the after-walk may also be invoked.
+	msgs.EXPECT().GetMessagesAfter(gomock.Any(), "r1", centralMsg.CreatedAt, gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil).MaxTimes(1)
 
 	_, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{
 		MessageID: "m5", Limit: 6,

@@ -76,6 +76,11 @@ type pageResult[T any] struct {
 	HasNext    bool
 }
 
+// toPage projects the walker's pageResult into the cassrepo public Page[T] type.
+func (r pageResult[T]) toPage() Page[T] {
+	return Page[T]{Data: r.Rows, NextCursor: r.NextCursor, HasNext: r.HasNext}
+}
+
 // bucketQueryFn returns a freshly-prepared gocql.Query bound to the given
 // bucket value. Implementations are produced by each public read function
 // (e.g. GetMessagesBefore creates a factory that interpolates bucket and

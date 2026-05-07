@@ -92,7 +92,7 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, befor
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get messages before: %w", err)
 	}
-	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
+	return res.toPage(), nil
 }
 
 func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, pageReq PageRequest) (Page[models.Message], error) {
@@ -122,7 +122,7 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get messages between desc: %w", err)
 	}
-	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
+	return res.toPage(), nil
 }
 
 func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after time.Time, ceiling time.Time, pageReq PageRequest) (Page[models.Message], error) {
@@ -152,7 +152,7 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get messages after: %w", err)
 	}
-	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
+	return res.toPage(), nil
 }
 
 func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, floor time.Time, ceiling time.Time, pageReq PageRequest) (Page[models.Message], error) {
@@ -176,5 +176,5 @@ func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, floor
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get all messages asc: %w", err)
 	}
-	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
+	return res.toPage(), nil
 }

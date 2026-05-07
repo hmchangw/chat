@@ -66,7 +66,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	// Ceiling for thread DESC walk: lastMsgAt+1ms, or now+1h if unknown.
 	ceiling := lastMsgAt
 	if ceiling.IsZero() {
-		ceiling = now.Add(time.Hour)
+		ceiling = now.Add(clockSkewTolerance)
 	} else {
 		ceiling = ceiling.Add(time.Millisecond)
 	}

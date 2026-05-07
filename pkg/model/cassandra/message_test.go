@@ -137,7 +137,6 @@ func TestMessage_JSON(t *testing.T) {
 
 	msg := Message{
 		RoomID:                "r1",
-		Bucket:                86_400_000,
 		CreatedAt:             now,
 		MessageID:             "m1",
 		Sender:                Participant{ID: "u1", Account: "alice", IsBot: false},

@@ -18,6 +18,22 @@ const clockSkewTolerance = time.Hour
 // does NOT match time.UnixMilli(0) — the latter is unix epoch, a real time.
 var minPlausibleEpoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// walkBounds derives the (ceiling, floor) bucket bounds used by ASC and
+// surrounding-walk handlers from the resolved lastMsgAt/createdAt. Falls back
+// to now+clockSkewTolerance for the ceiling and now-historyFloor for the floor
+// when the resolved values are zero.
+func (s *HistoryService) walkBounds(lastMsgAt, createdAt, now time.Time) (ceiling, floor time.Time) {
+	ceiling = lastMsgAt
+	if ceiling.IsZero() {
+		ceiling = now.Add(clockSkewTolerance)
+	}
+	floor = createdAt
+	if floor.IsZero() {
+		floor = now.Add(-s.historyFloor)
+	}
+	return ceiling, floor
+}
+
 // resolveRoomTimes returns lastMsgAt and createdAt for roomID. Client-supplied
 // hints are trusted after sanity checks; missing or invalid hints fall back to
 // Mongo via the RoomTimeResolver. now is injected for deterministic testing.

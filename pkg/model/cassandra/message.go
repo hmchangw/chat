@@ -74,7 +74,7 @@ type QuotedParentMessage struct {
 // positional scan maintenance.
 type Message struct {
 	RoomID                string                   `json:"roomId"                          cql:"room_id"`
-	Bucket                int64                    `json:"bucket,omitempty"                cql:"bucket"`
+	Bucket                int64                    `json:"-"                                cql:"bucket"`
 	CreatedAt             time.Time                `json:"createdAt"                       cql:"created_at"`
 	MessageID             string                   `json:"messageId"                       cql:"message_id"`
 	Sender                Participant              `json:"sender"                          cql:"sender"`

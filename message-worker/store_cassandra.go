@@ -187,7 +187,6 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 		return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
 	}
 
-	// CAS increment on messages_by_room (now includes bucket in the WHERE).
 	if err := s.cassSession.Query(
 		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
 		msg.RoomID, parentBucket, parentCreatedAt, parentID,

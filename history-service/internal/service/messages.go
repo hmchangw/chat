@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/pkg/natsrouter"
@@ -46,15 +48,6 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 		before = lastMsgAt.Add(time.Millisecond)
 	}
 
-	// Floor: room.createdAt for full-access subscribers; max(createdAt, accessSince) for restricted.
-	floor := createdAt
-	if accessSince != nil && accessSince.After(floor) {
-		floor = *accessSince
-	}
-	if floor.IsZero() {
-		floor = now.Add(-s.historyFloor)
-	}
-
 	limit := req.Limit
 	if limit <= 0 {
 		limit = defaultPageSize
@@ -69,6 +62,12 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 
 	var page cassrepo.Page[models.Message]
 	if accessSince == nil {
+		// GetMessagesBetweenDesc uses *accessSince as its own floor; floor is only
+		// needed for the unrestricted GetMessagesBefore path.
+		floor := createdAt
+		if floor.IsZero() {
+			floor = now.Add(-s.historyFloor)
+		}
 		page, err = s.msgReader.GetMessagesBefore(c, roomID, before, floor, pageReq)
 	} else {
 		page, err = s.msgReader.GetMessagesBetweenDesc(c, roomID, *accessSince, before, pageReq)
@@ -98,18 +97,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 		return nil, natsrouter.ErrInternal("failed to resolve room metadata")
 	}
 
-	// Ceiling: lastMsgAt from room metadata. Fall back to now+1h to cover any
-	// clock-skew edge case where the last message hasn't propagated yet.
-	ceiling := lastMsgAt
-	if ceiling.IsZero() {
-		ceiling = now.Add(time.Hour)
-	}
-
-	// Floor from createdAt (used for GetAllMessagesAsc when there is no lower bound).
-	floor := createdAt
-	if floor.IsZero() {
-		floor = now.Add(-s.historyFloor)
-	}
+	ceiling, floor := s.walkBounds(lastMsgAt, createdAt, now)
 
 	after := millisToTime(req.After)
 
@@ -171,17 +159,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, natsrouter.ErrInternal("failed to resolve room metadata")
 	}
 
-	// Ceiling for the after-walk.
-	ceiling := lastMsgAt
-	if ceiling.IsZero() {
-		ceiling = now.Add(time.Hour)
-	}
-
-	// Floor for the before-walk when there is no accessSince restriction.
-	floor := createdAt
-	if floor.IsZero() {
-		floor = now.Add(-s.historyFloor)
-	}
+	ceiling, floor := s.walkBounds(lastMsgAt, createdAt, now)
 
 	limit := req.Limit
 	if limit <= 0 {
@@ -211,20 +189,33 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, err
 	}
 
-	var beforePage cassrepo.Page[models.Message]
-	if accessSince == nil {
-		beforePage, err = s.msgReader.GetMessagesBefore(c, roomID, centralMsg.CreatedAt, floor, beforePageReq)
-	} else {
-		beforePage, err = s.msgReader.GetMessagesBetweenDesc(c, roomID, *accessSince, centralMsg.CreatedAt, beforePageReq)
-	}
-	if err != nil {
-		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "before")
-		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
-	}
-
-	afterPage, err := s.msgReader.GetMessagesAfter(c, roomID, centralMsg.CreatedAt, ceiling, afterPageReq)
-	if err != nil {
-		slog.Error("loading surrounding messages", "error", err, "roomID", roomID, "direction", "after")
+	// before- and after-walks are independent — issue both in parallel.
+	var (
+		beforePage cassrepo.Page[models.Message]
+		afterPage  cassrepo.Page[models.Message]
+	)
+	g, gctx := errgroup.WithContext(c)
+	g.Go(func() error {
+		var berr error
+		if accessSince == nil {
+			beforePage, berr = s.msgReader.GetMessagesBefore(gctx, roomID, centralMsg.CreatedAt, floor, beforePageReq)
+		} else {
+			beforePage, berr = s.msgReader.GetMessagesBetweenDesc(gctx, roomID, *accessSince, centralMsg.CreatedAt, beforePageReq)
+		}
+		if berr != nil {
+			slog.Error("loading surrounding messages", "error", berr, "roomID", roomID, "direction", "before")
+		}
+		return berr
+	})
+	g.Go(func() error {
+		var aerr error
+		afterPage, aerr = s.msgReader.GetMessagesAfter(gctx, roomID, centralMsg.CreatedAt, ceiling, afterPageReq)
+		if aerr != nil {
+			slog.Error("loading surrounding messages", "error", aerr, "roomID", roomID, "direction", "after")
+		}
+		return aerr
+	})
+	if err := g.Wait(); err != nil {
 		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
 	}
 

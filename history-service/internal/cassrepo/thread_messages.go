@@ -49,5 +49,5 @@ func (r *Repository) GetThreadMessages(
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get thread messages: %w", err)
 	}
-	return Page[models.Message]{Data: res.Rows, NextCursor: res.NextCursor, HasNext: res.HasNext}, nil
+	return res.toPage(), nil
 }
