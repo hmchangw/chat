@@ -115,10 +115,7 @@ func main() {
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
-		Durable:   "broadcast-worker",
-		AckPolicy: jetstream.AckExplicitPolicy,
-	})
+	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig())
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -202,4 +199,13 @@ func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte
 		return fmt.Errorf("publish to %q: %w", subject, err)
 	}
 	return nil
+}
+
+// buildConsumerConfig returns the durable consumer config for
+// broadcast-worker. Centralized so it is unit-testable without NATS.
+func buildConsumerConfig() jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults()
+	cc.Durable = "broadcast-worker"
+	cc.MaxAckPending = 1000
+	return cc
 }
