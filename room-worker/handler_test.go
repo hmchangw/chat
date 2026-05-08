@@ -2587,11 +2587,9 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
-	rawReply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
-
-	var reply model.SyncCreateDMReply
-	require.NoError(t, json.Unmarshal(rawReply, &reply))
+	require.NotNil(t, reply)
 	assert.True(t, reply.Success)
 	assert.Equal(t, "canonical-alice-sub", reply.Subscription.ID)
 
@@ -2639,11 +2637,9 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
 	data := marshalReq(t, req)
-	rawReply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
-
-	var reply model.SyncCreateDMReply
-	require.NoError(t, json.Unmarshal(rawReply, &reply))
+	require.NotNil(t, reply)
 	assert.True(t, reply.Subscription.IsSubscribed)
 	assert.Equal(t, "alice", reply.Subscription.User.Account)
 
@@ -2675,11 +2671,9 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
-	rawReply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
-
-	var reply model.SyncCreateDMReply
-	require.NoError(t, json.Unmarshal(rawReply, &reply))
+	require.NotNil(t, reply)
 	assert.Equal(t, "canonical-sub", reply.Subscription.ID)
 }
 

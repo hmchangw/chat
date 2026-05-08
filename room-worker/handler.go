@@ -1256,7 +1256,7 @@ func sanitizeSyncDMError(err error) string {
 }
 
 // handleSyncCreateDM creates a DM/botDM room + 2 subs and returns the requester's sub.
-func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, error) {
+func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.SyncCreateDMReply, error) {
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" {
 		return nil, errMissingRequestID
@@ -1360,14 +1360,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		return nil, fmt.Errorf("publish room_created outbox: %w", err)
 	}
 
-	reply, err := json.Marshal(model.SyncCreateDMReply{
-		Success:      true,
-		Subscription: *requesterSub,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal reply: %w", err)
-	}
-	return reply, nil
+	return &model.SyncCreateDMReply{Success: true, Subscription: *requesterSub}, nil
 }
 
 func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
@@ -1454,7 +1447,5 @@ func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
 		natsutil.ReplyError(m.Msg, sanitizeSyncDMError(err))
 		return
 	}
-	if err := m.Msg.Respond(reply); err != nil {
-		slog.Error("sync DM: reply failed", "error", err, "subject", m.Msg.Subject)
-	}
+	natsutil.ReplyJSON(m.Msg, reply)
 }

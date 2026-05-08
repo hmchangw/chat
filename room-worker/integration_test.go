@@ -994,11 +994,9 @@ func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data, _ := json.Marshal(req)
-	reply, err := handler.handleSyncCreateDM(ctx, data)
+	got, err := handler.handleSyncCreateDM(ctx, data)
 	require.NoError(t, err)
-
-	var got model.SyncCreateDMReply
-	require.NoError(t, json.Unmarshal(reply, &got))
+	require.NotNil(t, got)
 	assert.True(t, got.Success)
 	assert.Equal(t, "alice", got.Subscription.User.Account)
 
@@ -1064,11 +1062,9 @@ func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	r2, err := handler.handleSyncCreateDM(ctx, data)
 	require.NoError(t, err)
-
-	var rep1, rep2 model.SyncCreateDMReply
-	require.NoError(t, json.Unmarshal(r1, &rep1))
-	require.NoError(t, json.Unmarshal(r2, &rep2))
-	assert.Equal(t, rep1.Subscription.RoomID, rep2.Subscription.RoomID)
+	require.NotNil(t, r1)
+	require.NotNil(t, r2)
+	assert.Equal(t, r1.Subscription.RoomID, r2.Subscription.RoomID)
 
 	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
 	room, err := store.GetRoom(ctx, roomID)
