@@ -23,7 +23,23 @@ type Range struct {
 	Max int
 }
 
+// historyRequestKind enumerates the history-service request handlers
+// exercised by the `history-read` preset.
+type historyRequestKind int
+
+const (
+	HistoryLoadHistory historyRequestKind = iota
+	HistoryGetMessageByID
+	HistoryLoadSurrounding
+	HistoryGetThreadMessages
+)
+
 // Preset is a named, fully deterministic workload specification.
+//
+// Fixture-shaping fields (Users / Rooms / *Dist / ContentBytes / *Rate)
+// drive seeding. Read-scenario fields (HistoryMix) are populated only for
+// presets that exercise natsrouter request/reply handlers; they are nil
+// for the messaging-pipeline presets.
 type Preset struct {
 	Name         string
 	Users        int
@@ -33,6 +49,11 @@ type Preset struct {
 	ContentBytes Range
 	MentionRate  float64
 	ThreadRate   float64
+
+	// HistoryMix is the integer-weighted request-type mix for the
+	// `history-read` scenario. Keys are exhaustive over historyRequestKind;
+	// values are non-negative and conventionally sum to 100.
+	HistoryMix map[historyRequestKind]int
 }
 
 var builtinPresets = map[string]Preset{
@@ -57,6 +78,17 @@ var builtinPresets = map[string]Preset{
 		ContentBytes: Range{Min: 50, Max: 2000},
 		MentionRate:  0.10,
 		ThreadRate:   0.05,
+	},
+	"history-read": {
+		Name: "history-read", Users: 10, Rooms: 5,
+		RoomSizeDist: DistUniform, SenderDist: DistUniform,
+		ContentBytes: Range{Min: 200, Max: 200},
+		HistoryMix: map[historyRequestKind]int{
+			HistoryLoadHistory:       60,
+			HistoryGetMessageByID:    20,
+			HistoryLoadSurrounding:   10,
+			HistoryGetThreadMessages: 10,
+		},
 	},
 }
 

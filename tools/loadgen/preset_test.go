@@ -122,6 +122,28 @@ func TestBuildFixtures_FewerUsersThanRooms_PadsToTwoMembers(t *testing.T) {
 	}
 }
 
+func TestBuiltinPreset_HistoryRead(t *testing.T) {
+	p, ok := BuiltinPreset("history-read")
+	require.True(t, ok, "preset \"history-read\" must exist")
+	assert.Equal(t, "history-read", p.Name)
+
+	small, _ := BuiltinPreset("small")
+	assert.Equal(t, small.Users, p.Users, "history-read seeds the small population")
+	assert.Equal(t, small.Rooms, p.Rooms, "history-read seeds the small population")
+
+	require.NotNil(t, p.HistoryMix, "history-read carries a request-type weight map")
+	assert.Equal(t, 60, p.HistoryMix[HistoryLoadHistory])
+	assert.Equal(t, 20, p.HistoryMix[HistoryGetMessageByID])
+	assert.Equal(t, 10, p.HistoryMix[HistoryLoadSurrounding])
+	assert.Equal(t, 10, p.HistoryMix[HistoryGetThreadMessages])
+
+	var sum int
+	for _, w := range p.HistoryMix {
+		sum += w
+	}
+	assert.Equal(t, 100, sum, "history-read weights sum to 100")
+}
+
 func TestSampleWithoutReplacement_CapsAtUserCount(t *testing.T) {
 	// Requesting more samples than users available silently caps at len(users).
 	r := rand.New(rand.NewSource(1))
