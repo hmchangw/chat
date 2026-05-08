@@ -123,12 +123,24 @@ mongo-a:
   ...
 ```
 
-In-house port creates a gitignored `docker-local/e2e/.env` overriding any subset:
+### Bootstrap ergonomics
+
+A fresh clone runs `make e2e` with **zero manual setup**. The mechanism:
+
+- `docker-local/e2e/.env.example` is checked in. It enumerates every `E2E_*_IMAGE` var with the upstream-default value, so the file is both documentation and a working config.
+- `docker-local/e2e/.env` is gitignored.
+- The `e2e-up` Makefile target copies `.env.example` → `.env` if (and only if) `.env` is missing. Idempotent — re-running never overwrites a customized file.
+- Compose v2 and v1 both auto-load `.env` from the compose file's directory, so no `--env-file` flag is needed.
+
+**Internal port flow (one time, per dev box):** edit the auto-created `docker-local/e2e/.env` — change the image refs to point at the internal registry mirror — and `make e2e` keeps using those overrides forever after. No script to run, no manual file creation, no documentation step beyond "edit .env if your registry is different".
 
 ```
+# docker-local/e2e/.env (auto-created from .env.example, then edited internally)
 E2E_NATS_IMAGE=internal-registry.acme.com/mirror/nats:2.11-alpine
 E2E_MONGO_IMAGE=internal-registry.acme.com/mirror/mongo:8.0.4
 ```
+
+For a fully scripted setup (e.g. an internal onboarding tool), `scripts/e2e-bootstrap.sh` is provided as a thin wrapper that copies `.env.example` and applies an internal-registry prefix via `sed`. Optional — most devs just edit the file once.
 
 Service env variables (`NATS_URL`, `SITE_ID`, `MONGO_URL`, `BOOTSTRAP_STREAMS`, etc.) are explicit in each compose block — site A services point at `nats-a`, site B services at `nats-b`. `BOOTSTRAP_STREAMS=true` per-service so each service stands up its own streams against the fresh NATS.
 
@@ -144,7 +156,9 @@ e2e/
     stack.go                 # Compose up/down, health waits
     federation.go            # Cross-site stream wiring
     images.go                # E2E_*_IMAGE env defaults
-    auth.go                  # Keycloak JWT acquisition for test users
+    auth.go                  # Wraps pkg/testutil/keycloak.Client with per-site
+                             #   Keycloak base URLs and the e2e realm; mints
+                             #   JWTs for test users on demand.
     clients.go               # Per-site NATS/Mongo/Cassandra/HTTP client factories
     ids.go                   # Per-test siteID/roomID/userID minting
     logs.go                  # Per-test service log capture
@@ -252,21 +266,32 @@ testcontainers-go embeds compose v2; no separate CLI install. The `make e2e` tar
 ## Makefile targets
 
 ```makefile
-e2e:
+E2E_DIR := docker-local/e2e
+E2E_COMPOSE := $(E2E_DIR)/compose.e2e.yaml
+E2E_ENV := $(E2E_DIR)/.env
+
+# Auto-create .env from .env.example on first run; idempotent.
+$(E2E_ENV):
+	@cp $(E2E_DIR)/.env.example $@
+	@echo "Created $@ from .env.example. Edit it to override image refs (e.g. internal registry)."
+
+e2e: $(E2E_ENV)
 	go test -tags e2e -race -count=1 ./e2e/...
 
 e2e-only:
 	E2E_REUSE_STACK=1 go test -tags e2e -race -count=1 ./e2e/...
 
-e2e-up:
-	docker compose -f docker-local/e2e/compose.e2e.yaml up -d --wait
+e2e-up: $(E2E_ENV)
+	docker compose -f $(E2E_COMPOSE) up -d --wait
 
 e2e-down:
-	docker compose -f docker-local/e2e/compose.e2e.yaml down -v
+	docker compose -f $(E2E_COMPOSE) down -v
 
 e2e-logs:
-	docker compose -f docker-local/e2e/compose.e2e.yaml logs -f $(SERVICE)
+	docker compose -f $(E2E_COMPOSE) logs -f $(SERVICE)
 ```
+
+`make e2e` is the single user-facing command. The `$(E2E_ENV)` prerequisite is what makes "fresh clone, zero setup" work — `.env` is auto-created from the checked-in template before anything else runs.
 
 `make e2e` is the user-facing target. `e2e-up` / `e2e-down` / `e2e-only` exist for the iteration loop. `e2e-logs SERVICE=msg-gk-a` for debugging.
 
@@ -276,6 +301,17 @@ Adding to `go.mod`:
 - `github.com/testcontainers/testcontainers-go/modules/compose` — already on `testcontainers-go` indirectly via `pkg/testutil`; this adds the compose subpackage explicitly.
 
 No other new dependencies. Keycloak JWT acquisition uses Resty (already a project dep). NATS/Mongo/Cassandra/Resty all reuse existing pinned versions.
+
+## Pre-work: extracting the Keycloak helper
+
+A small precursor change lands in the same PR as the spec, ahead of the harness scaffolding:
+
+- New package `pkg/testutil/keycloak/` with a `Client` exposing `PasswordGrant`, `AccessToken`, and `Refresh` over Keycloak's `/realms/{realm}/protocol/openid-connect/token` endpoint.
+- Sentinel errors (`ErrInvalidCredentials`, `ErrUnknownClient`, `ErrRealmNotFound`) plus a structured `*Error` for everything else, with `errors.Is` integration so callers can branch on category without parsing strings.
+- Built on `pkg/restyutil` so it inherits OTel + slog instrumentation + the project's standard timeout.
+- Unit tests via `httptest` cover request shape, success parsing, every sentinel category, generic errors, refresh, context cancellation, base-URL normalization, and the option override (`WithHTTPClient`). 97% statement coverage.
+
+This package is consumed by `e2e/harness/auth.go`, but is independent enough that any future per-service integration test that wants Keycloak-backed auth uses the same client. Keeps the e2e harness thin and avoids a one-off JWT-acquisition implementation buried inside `e2e/`.
 
 ## Open questions
 
