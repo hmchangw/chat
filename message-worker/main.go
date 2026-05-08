@@ -31,7 +31,6 @@ type config struct {
 	CassandraUsername string          `env:"CASSANDRA_USERNAME" envDefault:""`
 	CassandraPassword string          `env:"CASSANDRA_PASSWORD" envDefault:""`
 	MaxWorkers        int             `env:"MAX_WORKERS"        envDefault:"100"`
-	MaxRedeliver      int             `env:"MAX_REDELIVER"      envDefault:"5"`
 	MongoURI          string          `env:"MONGO_URI,required"`
 	MongoDB           string          `env:"MONGO_DB"           envDefault:"chat"`
 	MongoUsername     string          `env:"MONGO_USERNAME"     envDefault:""`
@@ -112,11 +111,7 @@ func main() {
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
-		Durable:    "message-worker",
-		AckPolicy:  jetstream.AckExplicitPolicy,
-		MaxDeliver: cfg.MaxRedeliver + 1, // initial delivery + MaxRedeliver retries
-	})
+	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig())
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -172,4 +167,13 @@ func main() {
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
+}
+
+// buildConsumerConfig returns the durable consumer config for
+// message-worker. Centralized so it is unit-testable without NATS.
+func buildConsumerConfig() jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults()
+	cc.Durable = "message-worker"
+	cc.MaxAckPending = 500
+	return cc
 }
