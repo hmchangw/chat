@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
@@ -78,9 +81,39 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		return nil, fmt.Errorf("get counterpart: %w", errUserLookupFailed)
 	}
 
+	acceptedAt := time.Now().UTC()
+	roomID := idgen.BuildDMRoomID(requester.ID, other.ID)
+
+	room := &model.Room{
+		ID:        roomID,
+		Name:      "",
+		Type:      req.RoomType,
+		CreatedBy: requester.ID,
+		SiteID:    h.siteID,
+		CreatedAt: acceptedAt,
+		UpdatedAt: acceptedAt,
+	}
+	if err := h.store.CreateRoom(ctx, room); err != nil {
+		if !mongo.IsDuplicateKeyError(err) {
+			return nil, fmt.Errorf("create room: %w", err)
+		}
+		existing, fetchErr := h.store.GetRoom(ctx, room.ID)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("fetch room on duplicate-key: %w", fetchErr)
+		}
+		if existing.Type != room.Type ||
+			existing.SiteID != room.SiteID ||
+			existing.Name != room.Name ||
+			existing.CreatedBy != room.CreatedBy {
+			return nil, errRoomIDCollision
+		}
+		room = existing
+		acceptedAt = existing.CreatedAt
+	}
+
 	_ = requestID
-	_, _ = requester, other
-	return nil, errInvalidSyncDMRequest // placeholder — replaced in Task 8
+	_, _ = room, acceptedAt
+	return nil, errInvalidSyncDMRequest // placeholder — replaced in Task 9
 }
 
 func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
