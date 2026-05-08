@@ -2,12 +2,15 @@
 
 **Date:** 2026-05-07
 **Status:** scoping (this PR proposes the design; implementation lands in a follow-up)
+**Phase 2 (added 2026-05-08):** scope expanded to cover every service in the codebase except `auth-service` (HTTP, deferred) and `inbox-worker` (federation, deferred). See "Phase 2 — additional services" near the end of this document.
 
 ## Goal
 
 Add read-side load-test scenarios to the existing `tools/loadgen` harness that exercise the **NATS request/reply services built on `pkg/natsrouter`** under sustained load, with the same Prometheus-driven reporting the messaging-pipeline scenario already produces.
 
 Today only two services use natsrouter: **history-service** and **search-service**. Both are read-heavy, request/reply, and share a seed population (users / rooms / subscriptions) with the messaging-pipeline preset, so adding both is a single coherent change with one shared compose stack.
+
+**Phase 2 broadens this** to also cover `room-service` (NATS RPC, non-natsrouter — the chassis is transport-agnostic) plus consumer-lag samplers for the remaining stream-only workers (`room-worker`, `notification-worker`, `search-sync-worker`). The Phase 2 scope is detailed at the bottom of this document.
 
 ## Background
 
