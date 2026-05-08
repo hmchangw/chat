@@ -36,8 +36,7 @@ func sanitizeSyncDMError(err error) string {
 		errors.Is(err, errInvalidRequestID),
 		errors.Is(err, errInvalidSyncDMRequest),
 		errors.Is(err, errUserLookupFailed),
-		errors.Is(err, errCrossSiteRequester),
-		errors.Is(err, errRoomIDCollision):
+		errors.Is(err, errCrossSiteRequester):
 		return err.Error()
 	default:
 		return "internal error"
@@ -105,6 +104,12 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 			existing.SiteID != room.SiteID ||
 			existing.Name != room.Name ||
 			existing.CreatedBy != room.CreatedBy {
+			slog.Error("sync DM: room ID collision",
+				"roomID", room.ID,
+				"existingType", existing.Type, "wantType", room.Type,
+				"existingSiteID", existing.SiteID, "wantSiteID", room.SiteID,
+				"existingCreatedBy", existing.CreatedBy, "wantCreatedBy", room.CreatedBy,
+				"requestID", requestID)
 			return nil, errRoomIDCollision
 		}
 		room = existing
@@ -231,10 +236,13 @@ func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
 	ctx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
 	reply, err := h.handleSyncCreateDM(ctx, m.Msg.Data)
 	if err != nil {
+		slog.Error("sync DM: handler failed",
+			"error", err, "subject", m.Msg.Subject,
+			"requestID", natsutil.RequestIDFromContext(ctx))
 		natsutil.ReplyError(m.Msg, sanitizeSyncDMError(err))
 		return
 	}
 	if err := m.Msg.Respond(reply); err != nil {
-		slog.Error("sync DM: reply failed", "error", err)
+		slog.Error("sync DM: reply failed", "error", err, "subject", m.Msg.Subject)
 	}
 }

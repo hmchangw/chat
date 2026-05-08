@@ -24,6 +24,38 @@ func newRequestCtx() context.Context {
 	return natsutil.WithRequestID(context.Background(), "01970a4f-8c2d-7c9a-abcd-e0123456789f")
 }
 
+// dmCapturedPublish + dmPublishCapture are unit-test-local equivalents of the
+// integration_test.go types; same shape under a different name to avoid collision
+// when both files compile together under the `integration` build tag.
+type dmCapturedPublish struct {
+	subject string
+	data    []byte
+	msgID   string
+}
+
+type dmPublishCapture struct {
+	mu       sync.Mutex
+	captured []dmCapturedPublish
+}
+
+func (c *dmPublishCapture) fn(_ context.Context, subj string, data []byte, msgID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.captured = append(c.captured, dmCapturedPublish{subject: subj, data: append([]byte(nil), data...), msgID: msgID})
+	return nil
+}
+
+// newSyncDMTestHandler builds a Handler wired to a fresh mock store + capture.
+// Mirrors newAddMembersTestHandler's shape for consistency.
+func newSyncDMTestHandler(t *testing.T) (*Handler, *MockSubscriptionStore, *dmPublishCapture) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	capture := &dmPublishCapture{}
+	h := &Handler{siteID: "site-a", store: store, publish: capture.fn}
+	return h, store, capture
+}
+
 func TestSanitizeSyncDMError(t *testing.T) {
 	cases := []struct {
 		name string
@@ -36,7 +68,7 @@ func TestSanitizeSyncDMError(t *testing.T) {
 		{"invalid sync DM request surfaced", errInvalidSyncDMRequest, "invalid sync DM request"},
 		{"user lookup failed surfaced", errUserLookupFailed, "user lookup failed"},
 		{"cross-site requester surfaced", errCrossSiteRequester, "requester is not on this site"},
-		{"room ID collision surfaced", errRoomIDCollision, "room ID collision (existing room metadata mismatch)"},
+		{"room ID collision masked as internal", errRoomIDCollision, "internal error"},
 		{"unknown error masked as internal", errors.New("mongo: connection refused"), "internal error"},
 	}
 	for _, tc := range cases {
@@ -102,10 +134,7 @@ func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
 }
 
 func TestHandleSyncCreateDM_RequesterNotFound(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{siteID: "site-a", store: store}
+	h, store, _ := newSyncDMTestHandler(t)
 
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(nil, ErrUserNotFound)
 
@@ -120,10 +149,7 @@ func TestHandleSyncCreateDM_RequesterNotFound(t *testing.T) {
 }
 
 func TestHandleSyncCreateDM_OtherNotFound(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{siteID: "site-a", store: store}
+	h, store, _ := newSyncDMTestHandler(t)
 
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "bob").Return(nil, ErrUserNotFound)
@@ -139,10 +165,7 @@ func TestHandleSyncCreateDM_OtherNotFound(t *testing.T) {
 }
 
 func TestHandleSyncCreateDM_CrossSiteRequester(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{siteID: "site-a", store: store}
+	h, store, _ := newSyncDMTestHandler(t)
 
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-b"}, nil)
 
@@ -157,10 +180,7 @@ func TestHandleSyncCreateDM_CrossSiteRequester(t *testing.T) {
 }
 
 func TestHandleSyncCreateDM_RoomCollisionMismatch(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{siteID: "site-a", store: store}
+	h, store, _ := newSyncDMTestHandler(t)
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
@@ -307,30 +327,12 @@ func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
 	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
 }
 
-type dmCapturedPublish struct {
-	subject string
-	data    []byte
-	msgID   string
-}
-
-type dmPublishCapturer struct {
-	mu       sync.Mutex
-	captured []dmCapturedPublish
-}
-
-func (c *dmPublishCapturer) fn(_ context.Context, subj string, data []byte, msgID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.captured = append(c.captured, dmCapturedPublish{subject: subj, data: append([]byte(nil), data...), msgID: msgID})
-	return nil
-}
-
 func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
-	cap := &dmPublishCapturer{}
-	h := &Handler{siteID: "site-a", store: store, publish: cap.fn}
+	capture := &dmPublishCapture{}
+	h := &Handler{siteID: "site-a", store: store, publish: capture.fn}
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
@@ -349,7 +351,7 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 	require.NoError(t, err)
 
 	subjects := map[string]int{}
-	for _, p := range cap.captured {
+	for _, p := range capture.captured {
 		subjects[p.subject]++
 	}
 	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("alice")])
@@ -360,8 +362,8 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
-	cap := &dmPublishCapturer{}
-	h := &Handler{siteID: "site-a", store: store, publish: cap.fn}
+	capture := &dmPublishCapture{}
+	h := &Handler{siteID: "site-a", store: store, publish: capture.fn}
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}
@@ -380,9 +382,9 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	require.NoError(t, err)
 
 	var outbox *dmCapturedPublish
-	for i := range cap.captured {
-		if cap.captured[i].subject == subject.Outbox("site-a", "site-b", model.OutboxTypeRoomCreated) {
-			outbox = &cap.captured[i]
+	for i := range capture.captured {
+		if capture.captured[i].subject == subject.Outbox("site-a", "site-b", model.OutboxTypeRoomCreated) {
+			outbox = &capture.captured[i]
 			break
 		}
 	}
@@ -408,8 +410,8 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
-	cap := &dmPublishCapturer{}
-	h := &Handler{siteID: "site-a", store: store, publish: cap.fn}
+	capture := &dmPublishCapture{}
+	h := &Handler{siteID: "site-a", store: store, publish: capture.fn}
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
@@ -427,7 +429,7 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
 
-	for _, p := range cap.captured {
+	for _, p := range capture.captured {
 		assert.NotContains(t, p.subject, "outbox.", "no outbox publish expected for same-site DM")
 	}
 }
