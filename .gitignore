@@ -48,3 +48,6 @@ bin/
 # Frontend
 node_modules/
 chat-frontend/dist/
+
+# Build artifacts at repo root (from "go build ./tools/loadgen")
+/loadgen
