@@ -19,6 +19,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -1446,4 +1447,38 @@ func TestMongoStore_UpdateRoomMinUserLastSeenAt_Integration(t *testing.T) {
 	r, err = store.GetRoom(ctx, "r1")
 	require.NoError(t, err)
 	assert.Nil(t, r.MinUserLastSeenAt)
+}
+
+func TestMongoStore_ListReadReceipts_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	_, err := db.Collection("users").InsertMany(ctx, []any{
+		bson.M{"_id": "uA", "account": "alice", "chineseName": "愛麗絲", "engName": "Alice"},
+		bson.M{"_id": "uB", "account": "bob", "chineseName": "鮑勃", "engName": "Bob"},
+		bson.M{"_id": "uC", "account": "carol", "chineseName": "卡羅", "engName": "Carol"},
+	})
+	require.NoError(t, err)
+
+	msgTime := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	_, err = db.Collection("subscriptions").InsertMany(ctx, []any{
+		bson.M{"_id": "sA", "roomId": "r1", "u": bson.M{"_id": "uA", "account": "alice"}, "lastSeenAt": msgTime.Add(time.Hour)},
+		bson.M{"_id": "sB", "roomId": "r1", "u": bson.M{"_id": "uB", "account": "bob"}, "lastSeenAt": msgTime.Add(time.Minute)},
+		bson.M{"_id": "sC", "roomId": "r1", "u": bson.M{"_id": "uC", "account": "carol"}, "lastSeenAt": msgTime.Add(-time.Minute)},
+	})
+	require.NoError(t, err)
+
+	rows, err := store.ListReadReceipts(ctx, "r1", msgTime, "alice", 100)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "uB", rows[0].UserID)
+	require.Equal(t, "bob", rows[0].Account)
+	require.Equal(t, "鮑勃", rows[0].ChineseName)
+	require.Equal(t, "Bob", rows[0].EngName)
+
+	rows, err = store.ListReadReceipts(ctx, "r1", msgTime.Add(2*time.Hour), "alice", 100)
+	require.NoError(t, err)
+	require.Empty(t, rows)
 }
