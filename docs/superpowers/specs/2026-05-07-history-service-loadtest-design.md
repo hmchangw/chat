@@ -373,3 +373,31 @@ When triggered, the generator stops, the report tags the run as `status="saturat
 - The "sustained" requirement is important — momentary spikes are normal, what matters is sustained degradation.
 
 **Pairs naturally with §3.4.** A ramped run with `--abort-on-p99-ms=1000` walks the rate curve until the knee, then stops. The final summary reports the rate at which the threshold was breached — that IS the capacity number.
+
+### 3.6 Per-tenant connection multiplexing
+
+**Problem.** Today loadgen opens **one** NATS connection regardless of `--rate` or fixture count. Real client populations open thousands. NATS resource limits (subscription tables, slow-consumer detection, per-connection memory) only become visible when there's connection-level fan-out.
+
+**Solution.** A `--connections=N` flag (default 1, matching today's behavior). When `> 1`, loadgen:
+
+1. Opens N NATS connections at startup, all sharing the same NKeys/JWT credentials.
+2. Partitions the user fixtures across them (`user_i → connection_i mod N`).
+3. Each generator tick picks a user, looks up that user's connection, and publishes/requests via that connection.
+4. Reply / broadcast subscriptions remain on a single shared "observer" connection — no need to fan-out the reply path; the observation is loadgen-side, not server-side.
+
+**What this surfaces.**
+- Server-side per-connection state (NATS subscription table sizes, slow-consumer disconnects).
+- Connection-pool exhaustion paths in services that open per-request resources.
+- More realistic queue-group distribution: with one connection, every published message goes to the same queue-group member; with N connections, the distribution is closer to real-world.
+
+**What this does NOT do.**
+- It doesn't simulate per-user authentication. All connections share the same JWT. That's a separate (deferred) feature; today even production-realistic loadgen would re-use a service-level JWT.
+- It doesn't simulate per-user reply subscriptions. The shared observer connection sees all replies; in production each client connection has its own reply mailbox. That gap is acceptable for capacity testing — fixing it would require N reply-correlation maps and 2N connections, more complexity than value for v1.
+
+**Implementation.**
+- New `connpool.go` with a `ConnPool` type carrying `[]*nats.Conn` plus a `For(userID string) *nats.Conn` selector.
+- `natsCorePublisher` and `natsRequester` take a `ConnPool` instead of a single `*nats.Conn`. Choosing the connection per-call is a hash + index, not a round-robin (so the same user always uses the same connection — easier to interpret).
+- The shared observer connection lives on `ConnPool.Observer()`, used by the E1/E2 reply subscribers and consumer samplers.
+- All N data connections drained on shutdown; observer drained last.
+
+**Default stays at 1** so existing scripts and the default smoke run are unchanged. Bumping `--connections=10` is a deliberate "I want connection-level fan-out" decision.
