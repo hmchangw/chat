@@ -1064,18 +1064,37 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 		)
 	}
 
-	if _, err := h.store.GetSubscription(ctx, requesterAccount, roomID); err != nil {
-		if errors.Is(err, model.ErrSubscriptionNotFound) {
+	var (
+		msgRoomID    string
+		msgCreatedAt time.Time
+		msgSender    string
+		msgFound     bool
+		subErr       error
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		_, err := h.store.GetSubscription(gctx, requesterAccount, roomID)
+		subErr = err
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		msgRoomID, msgCreatedAt, msgSender, msgFound, err = h.msgReader.GetMessageRoomAndCreatedAt(gctx, req.MessageID)
+		if err != nil {
+			return fmt.Errorf("get message: %w", err)
+		}
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	if subErr != nil {
+		if errors.Is(subErr, model.ErrSubscriptionNotFound) {
 			return nil, errNotRoomMember
 		}
-		return nil, fmt.Errorf("get subscription: %w", err)
+		return nil, fmt.Errorf("get subscription: %w", subErr)
 	}
-
-	msgRoomID, msgCreatedAt, msgSender, found, err := h.msgReader.GetMessageRoomAndCreatedAt(ctx, req.MessageID)
-	if err != nil {
-		return nil, fmt.Errorf("get message: %w", err)
-	}
-	if !found {
+	if !msgFound {
 		return nil, errMessageNotFound
 	}
 	if msgRoomID != roomID {
@@ -1099,14 +1118,6 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 			EngName:     r.EngName,
 		}
 	}
-
-	slog.Info("message read-receipt handled",
-		"siteId", h.siteID,
-		"roomId", roomID,
-		"messageId", req.MessageID,
-		"requester", requesterAccount,
-		"readerCount", len(entries),
-	)
 
 	return json.Marshal(model.ReadReceiptResponse{Readers: entries})
 }

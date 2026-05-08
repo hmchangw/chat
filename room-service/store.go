@@ -33,8 +33,6 @@ type RoomCounts struct {
 	OwnerCount  int
 }
 
-// ReadReceiptRow is the per-user projection returned by ListReadReceipts.
-// UserID maps to the projected user._id under the document root.
 type ReadReceiptRow struct {
 	UserID      string `bson:"_id"`
 	Account     string `bson:"account"`
@@ -89,9 +87,6 @@ type RoomStore interface {
 	// A nil value clears the field via $unset; a non-nil value writes via $set.
 	UpdateRoomMinUserLastSeenAt(ctx context.Context, roomID string, t *time.Time) error
 
-	// ListReadReceipts returns subscribers of roomID whose lastSeenAt is at or
-	// after `since`, joined with their users record for display fields.
-	// excludeAccount is filtered out at the $match stage. limit caps results.
 	ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]ReadReceiptRow, error)
 
 	// GetUser returns the user by account, or ErrUserNotFound.
@@ -108,10 +103,7 @@ type RoomKeyStore interface {
 	GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error)
 }
 
-// MessageReader is the read-only Cassandra accessor used by
-// handleMessageReadReceipt to look up a message's room and creation time.
-// found=false (with err=nil) signals "no row matched"; on driver failures
-// err is non-nil and the other return values are unset.
+// MessageReader looks up a message by ID. found=false with err=nil means no row matched.
 type MessageReader interface {
 	GetMessageRoomAndCreatedAt(ctx context.Context, messageID string) (
 		roomID string, createdAt time.Time, senderAccount string, found bool, err error,

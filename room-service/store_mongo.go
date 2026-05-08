@@ -757,21 +757,19 @@ func (s *MongoStore) ListReadReceipts(
 			"u.account":  bson.M{"$ne": excludeAccount},
 		}}},
 		{{Key: "$lookup", Value: bson.M{
-			"from":         "users",
-			"localField":   "u._id",
-			"foreignField": "_id",
-			"as":           "user",
+			"from": "users",
+			"let":  bson.M{"uid": "$u._id"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$eq": []any{"$_id", "$$uid"}}}},
+				bson.M{"$project": bson.M{"_id": 1, "account": 1, "chineseName": 1, "engName": 1}},
+			},
+			"as": "user",
 		}}},
 		{{Key: "$unwind", Value: bson.M{
 			"path":                       "$user",
 			"preserveNullAndEmptyArrays": false,
 		}}},
-		{{Key: "$project", Value: bson.M{
-			"_id":         "$user._id",
-			"account":     "$user.account",
-			"chineseName": "$user.chineseName",
-			"engName":     "$user.engName",
-		}}},
+		{{Key: "$replaceWith", Value: "$user"}},
 		{{Key: "$limit", Value: int64(limit)}},
 	}
 	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)

@@ -2838,6 +2838,8 @@ func TestHandler_handleMessageReadReceipt(t *testing.T) {
 			prep: func(s setup) {
 				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
 					Return(nil, model.ErrSubscriptionNotFound)
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return(roomID, createdAt, account, true, nil).AnyTimes()
 			},
 			wantErr: errNotRoomMember,
 		},
@@ -2884,6 +2886,8 @@ func TestHandler_handleMessageReadReceipt(t *testing.T) {
 			prep: func(s setup) {
 				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
 					Return(nil, fmt.Errorf("db down"))
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return(roomID, createdAt, account, true, nil).AnyTimes()
 			},
 			wantSubst: "db down",
 		},
