@@ -26,9 +26,7 @@ var (
 	errRoomIDCollision      = errors.New("room ID collision (existing room metadata mismatch)")
 )
 
-// sanitizeSyncDMError maps a handler error to a user-displayable string.
-// Known sentinels surface their literal message; anything else becomes "internal error"
-// to avoid leaking raw error text (e.g. mongo or NATS internals).
+// sanitizeSyncDMError surfaces sentinel messages; masks anything else as "internal error".
 func sanitizeSyncDMError(err error) string {
 	if err == nil {
 		return ""
@@ -46,8 +44,7 @@ func sanitizeSyncDMError(err error) string {
 	}
 }
 
-// handleSyncCreateDM is the business logic for the sync DM endpoint. It takes the inbound
-// request bytes and returns either the marshalled SyncCreateDMReply payload or an error.
+// handleSyncCreateDM creates a DM/botDM room + 2 subs and returns the requester's sub.
 func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, error) {
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" {
@@ -151,9 +148,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 	return reply, nil
 }
 
-// persistSyncDMSubs inserts both subs. On a duplicate-key race (concurrent caller or retry),
-// it falls back to fetching the requester's existing sub via FindDMSubscription and returns
-// that — preserving idempotent behavior.
+// persistSyncDMSubs inserts both subs; on duplicate-key race falls back to FindDMSubscription.
 func (h *Handler) persistSyncDMSubs(ctx context.Context, requester, other *model.User,
 	subs []*model.Subscription,
 ) (*model.Subscription, error) {
@@ -252,8 +247,7 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 	)
 }
 
-// natsServerCreateDM is the NATS-side entry point for chat.server.request.room.{siteID}.create.dm.
-// It builds the handler context, invokes handleSyncCreateDM, and replies via natsutil.
+// natsServerCreateDM is the NATS entry point for chat.server.request.room.{siteID}.create.dm.
 func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
 	ctx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
 	reply, err := h.handleSyncCreateDM(ctx, m.Msg.Data)

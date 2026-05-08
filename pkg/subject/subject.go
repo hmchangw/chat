@@ -193,8 +193,6 @@ func RoomsInfoBatch(siteID string) string {
 }
 
 // RoomCreateDMSync is the server-to-server request subject for synchronous DM/botDM creation.
-// Subscribed by room-worker with queue group "room-worker"; requires server credentials per the
-// chat.server.> NATS callout policy.
 func RoomCreateDMSync(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.create.dm", siteID)
 }

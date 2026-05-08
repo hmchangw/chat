@@ -55,9 +55,7 @@ func messageDedupSeed(ctx context.Context, handler, roomID, payloadSeed string) 
 	return payloadSeed
 }
 
-// historySharedSincePtr resolves the per-subscription HistorySharedSince cutoff for an
-// add-member request. Mode != HistoryModeNone → nil (history is unrestricted).
-// Otherwise returns req.Timestamp (the request acceptance time).
+// historySharedSincePtr returns nil for unrestricted history; req.Timestamp under HistoryModeNone.
 func historySharedSincePtr(history model.HistoryConfig, timestamp int64, roomID string) *int64 {
 	if history.Mode != model.HistoryModeNone {
 		return nil
@@ -855,8 +853,7 @@ func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) stri
 	return ""
 }
 
-// buildDMSubs returns the two subscriptions for a DM: requester's sub names the other,
-// other's sub names the requester. Both have IsSubscribed=false (matches existing behavior).
+// buildDMSubs returns the two DM subs (each names the counterpart, IsSubscribed=false).
 func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
 	return []*model.Subscription{
 		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, false, acceptedAt),
@@ -864,8 +861,7 @@ func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time
 	}
 }
 
-// buildBotDMSubs returns the two subscriptions for a botDM. Human's sub: Name=bot.Account,
-// IsSubscribed=true. Bot's sub: Name=requester.Account, IsSubscribed=false.
+// buildBotDMSubs returns the two botDM subs (human IsSubscribed=true, bot IsSubscribed=false).
 func buildBotDMSubs(requester, bot *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
 	return []*model.Subscription{
 		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, true, acceptedAt),
