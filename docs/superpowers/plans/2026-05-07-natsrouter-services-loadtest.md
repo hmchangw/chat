@@ -91,6 +91,8 @@ Each task is Red → Green → Refactor → Commit on a single dedicated branch 
 6. Run `search-read` for 5s, same assertions.
 7. Cleanup is `t.Cleanup`-driven per the existing pattern.
 
+**Phase 3 compatibility note.** Once Phase 3 lands, the integration test must explicitly pin `--abort-on-p99-ms=0` and `--abort-on-error-pct=0` (Phase 3 §3.5 defaults are `0` already, but `flag.Default` is policy not contract — pin them so a future default change doesn't tripwire CI). Same for `--ramp-from=0`/`--ramp-to=0`/`--connections=1`. The integration test exercises the nominal-rate path; capacity-finding behaviour belongs in a separate test or a manual run.
+
 **Green:** Land whatever wiring the test surfaces (likely a `withReadinessProbe` helper to wait for service-up before generating, and an extra arg or two on existing setup helpers).
 
 ### Task 9 — compose + Grafana
@@ -112,6 +114,27 @@ Document, in `tools/loadgen/README.md`:
 - The `make run-natsrouter` shortcut.
 
 Tasks 9 + 10 may share a single commit since neither lands new code paths.
+
+### Task 10.5 — Pre-Phase-2 cleanup (carried from baseline review)
+
+**Why this lands here, not before Phase 3.** Phase 2's Task 13 (`RoomRPCGenerator`) is the third generator type to drop into the same chassis. The baseline reviewer flagged that without these cleanups, Task 13 will copy a byte-identical run-loop a *third* time and inherit the same patterns we'd otherwise have to fix later. Landing the cleanup before Task 13 means Task 13 plugs into a refactored chassis with one fewer copy. This is **not** optional and **not** "before Phase 3" — it's gating Task 13.
+
+The cleanups (none of which is a Phase 1 blocker — Phase 1 ships green):
+
+- **Cleanup A — sentinels for bare-string errors.** Replace bare `errors.New(...)` returns in `tools/loadgen/read_generator.go:62,219` and `request_builder.go:83,121` with package-level sentinels (`var ErrInvalidRate = errors.New("rate must be > 0")`, etc.). CLAUDE.md §3 mandates `fmt.Errorf` wrapping; sentinels are the right alternative when there's no underlying error. **Acceptance:** `git grep 'errors\.New("' tools/loadgen/` returns only the sentinel declarations. Audit the entire `tools/loadgen/` tree, not just the four sites flagged in the review.
+- **Cleanup B — extract `tickLoop`.** Pull the run-loop boilerplate from `HistoryReadGenerator.Run` and `SearchReadGenerator.Run` into a shared helper (`func tickLoop(ctx, rate, maxInFlight int, label string, tick func(ctx))`) that owns the ticker, the bounded-pool semaphore, and the saturation-counter increment. Generators provide only their per-tick body. Task 13's `RoomRPCGenerator` then plugs in as a third caller without copying the loop a third time.
+- **Cleanup C — saturation label dedup.** Replace `RequestErrors{kind="saturated", reason="saturated"}` (which wastes the `kind` cardinality dimension) with `kind="*"` since saturation drops happen before kind-selection — it's a queue-level event, not a per-RPC event.
+- **Cleanup D — preset-driven Scope/Size.** Move hard-coded `Scope: "channel"` and `Size: 20` from `read_generator.go:289-291` onto `Preset.SearchScope` / `Preset.SearchSize` (defaults preserved). Keeps the preset the single source of workload truth.
+
+**Red:** Add a small test for each cleanup so the regression has a guard:
+- `TestErrorsAreSentinels` — `errors.Is(gen.Run(...), loadgen.ErrInvalidRate)` returns true for the zero-rate path.
+- `TestTickLoop_RebuildsTicker` (Task 19 will need this anyway; piggyback now).
+- `TestSaturationLabelIsKindStar` — exercise the saturated path; assert the metric's `kind` label is `"*"`, not `"saturated"`.
+- `TestPresetSearchScope` — `BuiltinPreset("search-read")` returns the documented Scope/Size.
+
+**Green:** The four cleanups above. Single commit; each fix is small.
+
+**Refactor:** None — Task 10.5 is itself the refactor.
 
 ---
 
@@ -155,9 +178,9 @@ Same PR as Phase 1; tasks land after Task 10 in the same branch. Each task follo
 - `TestRoomRPCGenerator_RequestErrorIncrementsMetric` — seed a `Requester` that returns errors; assert `loadgen_request_errors_total{scenario="room"}` increments.
 - `TestRoomRPCGenerator_ZeroRate_ReturnsError`.
 
-**Green:** New file `room_generator.go`. Copy the tick + bounded-pool dispatch from `HistoryReadGenerator`; only the per-tick body differs. Call `buildRoomRequest`; record metrics with `scenario="room"` and `kind=roomKindLabel(kind)`. Reuse the `Requester` interface unchanged.
+**Green:** New file `room_generator.go`. Plug into the shared `tickLoop` helper extracted in Task 10.5 Cleanup B; provide only the per-tick body. Call `buildRoomRequest`; record metrics with `scenario="room"` and `kind=roomKindLabel(kind)`. Reuse the `Requester` interface unchanged.
 
-**Refactor:** If the three generator types now have substantially identical Run() loops (likely true), consider extracting a shared `tickLoop` helper. Out-of-line per the user's earlier "sibling types, no refactor" direction; revisit only if Task 13's diff is offensive.
+**Refactor:** If the per-tick body grows extra responsibilities (e.g. fixture-derived RPC argument prep), keep them in a private `(*RoomRPCGenerator).tick(ctx)` and call from `tickLoop` — same shape as Phase 1's read generators after Task 10.5.
 
 ### Task 14 — `--scenario=room-rpc` dispatch
 
@@ -184,17 +207,6 @@ No new tests — the `ConsumerSampler` is exercised by Phase 1's integration tes
 
 Same PR; tasks land after Task 15 in the same branch. Six upgrades; each is its own TDD task. Estimated total: ~4 days of focused work, with Tasks 16-18 (UX) deliverable in ~2 days as a partial-merge if needed.
 
-### Pre-Phase-3 cleanup (carried from baseline review)
-
-Before Task 16 lands, address the warnings the baseline reviewer surfaced. These are not blockers for shipped Phase 1 code but matter for Phase 2 / Phase 3 because the third generator type (`RoomRPCGenerator`) drops into the chassis they touch:
-
-- **Cleanup A:** Replace bare-string `errors` in `tools/loadgen/read_generator.go:62,219` and `request_builder.go:83,121` with sentinels (`var ErrInvalidRate = errors.New(...)`). CLAUDE.md §3 mandates `fmt.Errorf` wrapping; sentinels are the right alternative when there's no underlying error.
-- **Cleanup B:** Extract a shared `tickLoop(ctx, rate, maxInFlight, scenarioLabel, tickFn)` from `HistoryReadGenerator.Run` / `SearchReadGenerator.Run`. Today the two are byte-identical aside from saturation labels; with `RoomRPCGenerator` incoming they'd become byte-identical *thrice*.
-- **Cleanup C:** Replace `RequestErrors{kind="saturated", reason="saturated"}` (the duplicate label values) with `kind="*"` since saturation is a queue-level event, not a per-RPC event.
-- **Cleanup D:** Move hard-coded `Scope: "channel"` and `Size: 20` from `read_generator.go:289-291` onto `Preset.SearchScope` / `Preset.SearchSize`. Keeps the preset the single source of workload truth.
-
-Cleanup tasks share one commit; they're a refactor before Phase 2 Task 13, not a new feature.
-
 ### Task 16 — auto warm-up for read scenarios
 
 **Red:** New `auto_warmup_test.go`. Cases:
@@ -212,10 +224,10 @@ Cleanup tasks share one commit; they're a refactor before Phase 2 Task 13, not a
 
 ### Task 17 — live progress reporting
 
-**Red:** New `progress_test.go` cases:
-- `TestProgress_EmitsAtConfiguredInterval` — wire a fake clock + capture stdout; assert one line per interval.
+**Red:** New `progress_test.go` cases. Drive the loop off an injected `<-chan time.Time` (NOT real-time `time.Tick`) so tests are deterministic and don't flake under CI load:
+- `TestProgress_EmitsOnTickerSignal` — inject a tick channel, send N ticks, assert exactly N log lines via a captured `slog.Handler`.
 - `TestProgress_ComputesInstantaneousRate` — feed synthetic counter deltas, assert reported rate matches the delta over the last interval (not lifetime).
-- `TestProgress_StopsOnContextCancel` — cancel context, assert no further lines.
+- `TestProgress_StopsOnContextCancel` — cancel context, send a tick, assert no further lines emitted.
 
 **Green:**
 - New `progress.go` with a `Progress` type holding metrics references + a tick goroutine.
@@ -244,6 +256,7 @@ Cleanup tasks share one commit; they're a refactor before Phase 2 Task 13, not a
 - `TestRamp_LinearRateAt` — `Ramp{From:10, To:100, Duration:10s, Shape:Linear}.RateAt(5s)` returns 55. Boundary cases at 0s, full duration, beyond duration.
 - `TestRamp_ExponentialRateAt` — same shape with `Shape:Exponential`; assert `RateAt(0)==From`, `RateAt(Duration)==To`, monotonic non-decreasing.
 - `TestRamp_RateAtClampsBeyondDuration` — past duration returns `To`, doesn't keep climbing.
+- `TestRamp_RejectsBothFixedAndRamp` — when both `--rate` (non-zero) and `--ramp-from`/`--ramp-to` are configured, validation in `main.go` returns a meaningful error. (One or the other; `--rate` becomes the post-ramp steady value, `--rate=0` ends the run when ramp completes.)
 - `TestGenerator_RampOverridesFixedRate` — when ramp configured, generator's tick interval changes over time. Run for 2s with ramp 10→1000 rps, assert published count is in the expected ramped range, NOT the fixed-`--rate` count.
 
 **Green:**
@@ -277,6 +290,7 @@ Cleanup tasks share one commit; they're a refactor before Phase 2 Task 13, not a
 - `TestConnPool_DistributesUsersAcrossConnections` — N=10 with 1000 distinct user IDs; assert no connection holds more than ~150 (loose chi-square sanity).
 - `TestConnPool_ObserverIsSeparate` — `pool.Observer()` is not in `pool.connections`; subscribers attached to it see traffic from all data connections.
 - `TestConnPool_DrainAll` — call `Drain()`, assert all N+1 connections drained without error.
+- `TestConnPool_RampDistributesAcrossConns` — combine Task 19's ramp with `--connections=4`; run briefly; assert `loadgen_publishes_total{conn_id}` is non-zero for all four `conn_id` values.
 
 **Green:**
 - New `connpool.go` with `type ConnPool struct { conns []*nats.Conn; observer *nats.Conn }`, `New(urls, n)`, `For(userID) *nats.Conn`, `Observer() *nats.Conn`, `Drain()`.
@@ -308,7 +322,7 @@ Cleanup tasks share one commit; they're a refactor before Phase 2 Task 13, not a
 - `loadgen run` against a fresh `up.sh` succeeds without first-second `bad_reply` errors (readiness probe held until services were ready).
 - A ramped run (`--ramp-from=10 --ramp-to=1000 --ramp-duration=30s`) shows samples spread across at least 5 of the 9 `rate_bucket` values.
 - A run with `--abort-on-p99-ms=1` (intentionally trip-wire-low) exits with code 2 and prints `status="saturated"`.
-- A `--connections=10` run distributes published messages across all 10 connections (verifiable via NATS `/varz` endpoint).
+- A `--connections=10` run distributes published messages across all 10 connections (verifiable via the new `loadgen_publishes_total{conn_id="0..9"}` metric being non-zero for every value of `conn_id`). The `/varz` NATS endpoint reports aggregate connection counts, not per-connection publish volume, and is NOT the right oracle.
 - All Phase 3 code maintains ≥ 80% coverage.
 
 ## Risk
