@@ -228,11 +228,7 @@ func main() {
 	inboxCfg := stream.Inbox(cfg.SiteID)
 
 	// Local lane is reserved for search-sync-worker; scope to aggregate.> only.
-	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, jetstream.ConsumerConfig{
-		Durable:        "inbox-worker",
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		FilterSubjects: []string{subject.InboxAggregateAll(cfg.SiteID)},
-	})
+	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, buildConsumerConfig(cfg.SiteID))
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -269,4 +265,16 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
+}
+
+// buildConsumerConfig returns the durable consumer config for
+// inbox-worker. The site-scoped FilterSubjects keeps inbox-worker on the
+// federated `aggregate.>` lane only; same-site direct publishes are
+// reserved for search-sync-worker.
+func buildConsumerConfig(siteID string) jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults()
+	cc.Durable = "inbox-worker"
+	cc.MaxAckPending = 100
+	cc.FilterSubjects = []string{subject.InboxAggregateAll(siteID)}
+	return cc
 }
