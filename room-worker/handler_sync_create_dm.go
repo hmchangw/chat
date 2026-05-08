@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+
+	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 var (
@@ -31,4 +37,42 @@ func sanitizeSyncDMError(err error) string {
 	default:
 		return "internal error"
 	}
+}
+
+// handleSyncCreateDM is the business logic for the sync DM endpoint. It takes the inbound
+// request bytes and returns either the marshalled SyncCreateDMReply payload or an error.
+func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, error) {
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" {
+		return nil, errMissingRequestID
+	}
+	if !idgen.IsValidUUID(requestID) {
+		return nil, errInvalidRequestID
+	}
+
+	var req model.SyncCreateDMRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, errInvalidSyncDMRequest
+	}
+	if err := validateSyncCreateDMShape(&req); err != nil {
+		return nil, err
+	}
+
+	_ = requestID
+	return nil, errInvalidSyncDMRequest // placeholder — replaced in Task 7
+}
+
+func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
+	switch req.RoomType {
+	case model.RoomTypeDM, model.RoomTypeBotDM:
+	default:
+		return errInvalidSyncDMRequest
+	}
+	if req.RequesterAccount == "" || req.OtherAccount == "" {
+		return errInvalidSyncDMRequest
+	}
+	if req.RequesterAccount == req.OtherAccount {
+		return errInvalidSyncDMRequest
+	}
+	return nil
 }

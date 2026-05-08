@@ -1,11 +1,21 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
+
+// newRequestCtx returns a context carrying a syntactically-valid X-Request-ID.
+func newRequestCtx() context.Context {
+	return natsutil.WithRequestID(context.Background(), "01970a4f-8c2d-7c9a-abcd-e0123456789f")
+}
 
 func TestSanitizeSyncDMError(t *testing.T) {
 	cases := []struct {
@@ -27,4 +37,59 @@ func TestSanitizeSyncDMError(t *testing.T) {
 			assert.Equal(t, tc.want, sanitizeSyncDMError(tc.in))
 		})
 	}
+}
+
+func TestHandleSyncCreateDM_MissingRequestID(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(context.Background(), data)
+	assert.ErrorIs(t, err, errMissingRequestID)
+}
+
+func TestHandleSyncCreateDM_InvalidJSON(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	_, err := h.handleSyncCreateDM(newRequestCtx(), []byte("{not json"))
+	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
+}
+
+func TestHandleSyncCreateDM_InvalidRoomType(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeChannel,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
+}
+
+func TestHandleSyncCreateDM_EmptyAccounts(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	cases := []model.SyncCreateDMRequest{
+		{RoomType: model.RoomTypeDM, RequesterAccount: "", OtherAccount: "bob"},
+		{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: ""},
+	}
+	for _, req := range cases {
+		data, _ := json.Marshal(req)
+		_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+		assert.ErrorIs(t, err, errInvalidSyncDMRequest)
+	}
+}
+
+func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "alice",
+	}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
 }
