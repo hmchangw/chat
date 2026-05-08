@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -150,6 +151,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	rampTo := fs.Int("ramp-to", 0, "ending rate (rps) for a ramped run; 0 disables ramping")
 	rampDuration := fs.Duration("ramp-duration", 0, "time to climb from --ramp-from to --ramp-to")
 	rampShape := fs.String("ramp-shape", "linear", "ramp curve: linear|exponential")
+	abortP99Ms := fs.Int("abort-on-p99-ms", 0, "abort the run if median latency stays over this for --abort-p99-sustain; 0 disables")
+	abortP99Sustain := fs.Duration("abort-p99-sustain", 30*time.Second, "sustain window for the p99 abort threshold")
+	abortErrorPct := fs.Float64("abort-on-error-pct", 0, "abort the run if error rate stays over this fraction (0..1) for --abort-error-sustain; 0 disables")
+	abortErrorSustain := fs.Duration("abort-error-sustain", 10*time.Second, "sustain window for the error-rate abort threshold")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	switch *scenario {
@@ -229,6 +234,17 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
 	collector := NewCollector(metrics, p.Name)
+	// Phase 3 §3.5: in-process latency ring buffer for the abort watcher.
+	// Sized to retain max(--abort-p99-sustain, --abort-error-sustain, 60s).
+	windowRetain := 60 * time.Second
+	if *abortP99Sustain > windowRetain {
+		windowRetain = *abortP99Sustain
+	}
+	if *abortErrorSustain > windowRetain {
+		windowRetain = *abortErrorSustain
+	}
+	latencyWindow := NewLatencyWindow(windowRetain)
+	collector.AttachWindow(latencyWindow)
 
 	// E1 subscription: gatekeeper replies.
 	e1Sub, err := nc.NatsConn().Subscribe(subject.UserResponseWildcard(), func(msg *nats.Msg) {
@@ -439,8 +455,43 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		}()
 	}
 
+	// Phase 3 §3.5: saturation auto-detect.
+	var abortTripped atomic.Bool
+	var abortReason atomic.Value // string
+	var abortWG sync.WaitGroup
+	if *abortP99Ms > 0 || *abortErrorPct > 0 {
+		abortWG.Add(1)
+		go func() {
+			defer abortWG.Done()
+			abortCfg := &abortConfig{
+				Window:       latencyWindow,
+				P99Limit:     time.Duration(*abortP99Ms) * time.Millisecond,
+				P99Sustain:   *abortP99Sustain,
+				ErrorPct:     *abortErrorPct,
+				ErrorSustain: *abortErrorSustain,
+			}
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case t := <-ticker.C:
+					if tripped, reason := abortShouldFire(abortCfg, t); tripped {
+						slog.Warn("abort fired", "reason", reason)
+						abortTripped.Store(true)
+						abortReason.Store(reason)
+						cancelRun()
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	genErr := gen.Run(runCtx)
 	progressWG.Wait()
+	abortWG.Wait()
 	// Wait up to 2 seconds for trailing replies and broadcasts to arrive.
 	time.Sleep(2 * time.Second)
 	collector.DiscardBefore(warmupDeadline)
@@ -518,6 +569,13 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 
 	totalErrs := summary.PublishErrors + summary.GatekeeperErrors + summary.MissingReplies + summary.MissingBroadcasts
+	if abortTripped.Load() {
+		// Exit code 2 distinguishes "saturated" from clean-pass (0) and
+		// clean-fail (1). Phase 3 §3.5.
+		reason, _ := abortReason.Load().(string)
+		slog.Warn("run aborted by saturation watcher", "reason", reason)
+		return 2
+	}
 	return DetermineExitCode(summary.SentMeasured, totalErrs)
 }
 

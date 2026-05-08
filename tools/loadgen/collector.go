@@ -36,7 +36,18 @@ type Collector struct {
 	e1             []sample
 	e2             []sample
 	requests       map[requestKey][]requestSample
-	seenMessageIDs []string // Phase 3 §3.1: append-only log; never deleted
+	seenMessageIDs []string       // Phase 3 §3.1: append-only log; never deleted
+	window         *LatencyWindow // Phase 3 §3.5: sliding window for abort watcher
+}
+
+// AttachWindow wires a LatencyWindow into the collector. Subsequent
+// RecordRequest calls feed the window so the saturation auto-detect
+// watcher (Task 20) can read sliding-window percentiles. Optional;
+// nil is a no-op.
+func (c *Collector) AttachWindow(w *LatencyWindow) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.window = w
 }
 
 // NewCollector returns a ready-to-use Collector.
@@ -54,13 +65,17 @@ func NewCollector(m *Metrics, preset string) *Collector {
 // returned a non-nil error or the reply payload encoded a server error.
 func (c *Collector) RecordRequest(scenario, kind string, publishedAt time.Time, latency time.Duration, errored bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	k := requestKey{scenario: scenario, kind: kind}
 	c.requests[k] = append(c.requests[k], requestSample{
 		publishedAt: publishedAt,
 		latency:     latency,
 		errored:     errored,
 	})
+	w := c.window
+	c.mu.Unlock()
+	if w != nil {
+		w.AddAt(publishedAt, latency, errored)
+	}
 }
 
 // RequestStats returns aggregated per-(scenario, kind) percentiles + counts.
