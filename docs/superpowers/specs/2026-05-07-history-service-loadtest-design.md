@@ -152,3 +152,60 @@ Each lands as a TDD task per the codebase's spec → plan → implementation pat
 - Request-type mix: history `60/20/10/10`, search `50/50`. Tunable later; these match the most-likely real traffic shape.
 - Warm-up via messaging-pipeline (option A from the previous draft). No dedicated `seed --history` / `seed --search` flag in v1.
 - Out-of-scope list as above; nothing pulled back in.
+
+---
+
+## Phase 2 — additional services
+
+**Status:** added 2026-05-08, in scope for the same PR as Phase 1. Chassis built in Tasks 1-5 (Preset, Requester, picker, sibling generators, `--scenario` flag) is reused as-is; no architectural changes.
+
+**Scope rule.** Every service in the repo except `auth-service` (HTTP, deferred) and `inbox-worker` (federation, deferred). Both deferred services are tracked in their own follow-up specs.
+
+### Service coverage matrix (post Phase 2)
+
+| Service | Driver | Coverage | Mechanism |
+|---|---|---|---|
+| `history-service` | client RPC | Phase 1 scenario | `--scenario=history-read` |
+| `search-service` | client RPC | Phase 1 scenario | `--scenario=search-read` |
+| `message-gatekeeper` | client publish | Phase 0 (already covered) | `messaging-pipeline` `InjectFrontdoor` |
+| `message-worker` | downstream of canonical | Phase 0 (already covered) | indirect + existing `ConsumerSampler` |
+| `broadcast-worker` | downstream of canonical | Phase 0 (already covered) | indirect + existing `ConsumerSampler` |
+| `room-service` | client RPC | **Phase 2 scenario** | `--scenario=room-rpc` |
+| `room-worker` | downstream of room-service | **Phase 2 sampler** | `ConsumerSampler` only |
+| `notification-worker` | downstream of canonical | **Phase 2 sampler** | `ConsumerSampler` only |
+| `search-sync-worker` | downstream of canonical + INBOX | **Phase 2 samplers (×3)** | `ConsumerSampler` ×3 |
+| `inbox-worker` | federation INBOX | **out of scope (deferred)** | needs synthetic federation driver |
+| `auth-service` | client HTTP | **out of scope (deferred)** | needs HTTP transport in loadgen |
+
+### `room-service` — new scenario `room-rpc`
+
+**Transport.** NATS request/reply (queue group). Client-driven. **Not** natsrouter — uses bare `nc.QueueSubscribe`. Chassis is transport-agnostic; the new scenario plugs in identically to history-read / search-read.
+
+**Handler surface to load-test.** Subjects below already exist in `pkg/subject` (no new builders needed except payload marshalling).
+
+| Subject | `pkg/subject` builder | Request type | Response type | Default weight |
+|---|---|---|---|---|
+| `chat.user.{account}.request.rooms.list` | `RoomsList` | empty | `model.ListRoomsResponse` | 60 |
+| `chat.user.{account}.request.rooms.get.{roomID}` | `RoomsGet` | empty | `model.Room` | 20 |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.list` | `MemberList` | `model.ListRoomMembersRequest` | `model.ListRoomMembersResponse` | 10 |
+| `chat.user.{account}.request.room.{siteID}.create` | `RoomCreate` | `model.CreateRoomRequest` | `model.Room` | 8 |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.add` | `MemberAdd` | `model.AddMembersRequest` | ack (async) | 2 |
+
+**Mix rationale.** Read-heavy (90% list/get/member-list) reflecting real usage. Writes (create/member-add) capped at 10% so the test exercises the write path under load without dominating. Tunable per-preset.
+
+**What to build.**
+
+| File | Change |
+|---|---|
+| `preset.go` | Add `RoomMix map[roomRequestKind]int` to `Preset`; new `roomRequestKind` enum; new `room-rpc` preset entry. |
+| `preset.go` | Add `pickRoomKind` (1-line wrapper around the existing generic `pickWeighted`). |
+| `request_builder_room.go` (new) | `buildRoomRequest(kind, args) → (subject, body, error)`, paralleling `buildHistoryRequest` / `buildSearchRequest`. |
+| `room_generator.go` (new) | `RoomRPCGenerator` sibling to `HistoryReadGenerator` — same tick + bounded-pool dispatch. ~150 LoC. |
+| `main.go` | Add `room-rpc` to the `--scenario` switch. |
+
+**Metrics.** Reuses the new `loadgen_requests_total` and `loadgen_request_errors_total` (added in Task 5 of Phase 1) with `scenario="room"` label. No new histograms beyond what Task 6 lands.
+
+**Decision: write-path inclusion.** Including `MemberAdd` and `RoomCreate` in the mix mutates state during the run. Mitigations:
+- Test runs against a dedicated `tools/loadgen` Mongo database — `make teardown` drops it at the end.
+- Generated room/member IDs use the `loadgen-` prefix so they're clearly identifiable in any forensic check.
+- Asymmetric mix (only 10% writes) keeps state growth bounded over a 2-minute run.
