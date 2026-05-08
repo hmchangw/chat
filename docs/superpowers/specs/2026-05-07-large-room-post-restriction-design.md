@@ -64,16 +64,16 @@ Producers that already bypass gatekeeper bypass this rule too (by design):
 isThreadReply := req.ThreadParentMessageID != ""
 
 if !isThreadReply && !canBypassLargeRoomCap(sub) {
-    room, err := h.store.GetRoom(ctx, roomID)
+    userCount, err := h.store.GetRoomUserCount(ctx, roomID)
     if err != nil {
-        return nil, &infraError{cause: fmt.Errorf("get room %s for cap check: %w", roomID, err)}
+        return nil, &infraError{cause: fmt.Errorf("get user count for room %s: %w", roomID, err)}
     }
-    if room.UserCount > h.largeRoomThreshold {
+    if userCount > h.largeRoomThreshold {
         slog.Info("send blocked",
-            "reason",    "large_room_post_restricted",
+            "reason",    codeLargeRoomPostRestricted,
             "account",   account,
             "roomID",    roomID,
-            "userCount", room.UserCount,
+            "userCount", userCount,
             "threshold", h.largeRoomThreshold,
         )
         return nil, errLargeRoomPostRestricted
@@ -180,13 +180,14 @@ today.
 ```go
 type Store interface {
     GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
-    GetRoom(ctx context.Context, roomID string) (*model.Room, error) // NEW
+    GetRoomUserCount(ctx context.Context, roomID string) (int, error) // NEW
 }
 ```
 
 `message-gatekeeper/store_mongo.go` — `MongoStore` gains a `rooms` collection
-field and `GetRoom` method, structurally identical to
-`room-worker/store_mongo.go`'s `GetRoom`. No new indexes — `rooms._id` is
+field and a `GetRoomUserCount` method that uses a Mongo
+`SetProjection({"userCount": 1})` to pull only the field the rule consumes
+instead of the full `Room` document. No new indexes — `rooms._id` is
 already the primary key.
 
 Adding a method to `Store` invalidates the generated mock; regenerate via
@@ -252,9 +253,13 @@ type codedError struct {
 
 func (e *codedError) Error() string { return e.Message }
 
+// codeLargeRoomPostRestricted is shared between the sentinel and the slog
+// "reason" field so the wire code and log-query vocabulary stay aligned.
+const codeLargeRoomPostRestricted = "large_room_post_restricted"
+
 var errLargeRoomPostRestricted = &codedError{
-    Code:    "large_room_post_restricted",
-    Message: "only owners can post in this room",
+    Code:    codeLargeRoomPostRestricted,
+    Message: "posting is restricted to owners and admins in this room",
 }
 ```
 
@@ -278,7 +283,7 @@ through the existing `MarshalError(err.Error())` path unchanged.
 
 Reject (new rule fires):
 ```json
-{"error": "only owners can post in this room", "code": "large_room_post_restricted"}
+{"error": "posting is restricted to owners and admins in this room", "code": "large_room_post_restricted"}
 ```
 
 Existing reject (unchanged):
@@ -292,25 +297,26 @@ A single new log line on the rejection branch:
 
 ```go
 slog.Info("send blocked",
-    "reason",    "large_room_post_restricted",
+    "reason",    codeLargeRoomPostRestricted,
     "account",   account,
     "roomID",    roomID,
-    "userCount", room.UserCount,
+    "userCount", userCount,
     "threshold", h.largeRoomThreshold,
 )
 ```
 
 - Level `Info`: this is expected behavior, not an anomaly.
-- `reason` mirrors the wire `code` so log queries and frontend dispatch share
-  the same vocabulary; promotion to a Prometheus counter label is mechanical.
+- `reason` is the same `codeLargeRoomPostRestricted` constant emitted as the
+  wire `code`, so log queries and frontend dispatch share the same
+  vocabulary; promotion to a Prometheus counter label is mechanical.
 - No log on bypass paths (would be enormous volume in busy 500+ rooms for zero
   diagnostic value).
 - No log of `req.Content` — `CLAUDE.md` Section 3 forbids logging full message
   bodies.
 - `requestID` is already on the structured log scope from request-id
   middleware; no manual threading needed.
-- Existing log paths cover `GetRoom` infrastructure failures and ACK/NACK
-  failures — no new lines added there.
+- Existing log paths cover `GetRoomUserCount` infrastructure failures and
+  ACK/NACK failures — no new lines added there.
 
 ## Testing strategy
 
@@ -331,32 +337,32 @@ test style.
 Extend the existing table-driven `TestHandler_ProcessMessage` with the cases
 below. Regenerate mocks first (`make generate SERVICE=message-gatekeeper`).
 
-| Case | Roles | Account | Room.UserCount | ThreadParent | GetRoom expected? | Outcome |
+| Case | Roles | Account | userCount | ThreadParent | `GetRoomUserCount` expected? | Outcome |
 |---|---|---|---|---|---|---|
-| owner sends in big room | `[owner]` | `alice` | 600 | "" | no (fast-path) | success |
-| **admin sends in big room** | `[admin]` | `alice` | 600 | "" | no (fast-path) | success |
-| **bot account in big room (any role)** | `[member]` | `helper.bot` | 600 | "" | no (fast-path) | success |
+| owner sends in big room | `[owner]` | `alice` | 600 | "" | no (fast-path) | success, publishes to canonical |
+| **admin sends in big room** | `[admin]` | `alice` | 600 | "" | no (fast-path) | success, publishes to canonical |
+| **bot account in big room (any role)** | `[member]` | `helper.bot` | 600 | "" | no (fast-path) | success, publishes to canonical |
 | owner sends in small room | `[owner]` | `alice` | 50 | "" | no | success |
 | member sends in small room | `[member]` | `alice` | 50 | "" | yes | success |
 | member sends in big room | `[member]` | `alice` | 600 | "" | yes | reject `large_room_post_restricted`, no canonical publish |
 | boundary: count == threshold | `[member]` | `alice` | 500 | "" | yes | success (strict `>`) |
 | boundary: count == threshold+1 | `[member]` | `alice` | 501 | "" | yes | reject |
-| member thread reply in big room | `[member]` | `alice` | 600 | non-empty | no | success |
-| owner thread reply in big room | `[owner]` | `alice` | 600 | non-empty | no | success |
-| GetRoom returns Mongo error | `[member]` | `alice` | n/a | "" | yes (returns err) | infraError → NACK |
-| GetRoom returns ErrNoDocuments | `[member]` | `alice` | n/a | "" | yes | infraError → NACK |
+| member thread reply in big room | `[member]` | `alice` | 600 | non-empty | no (fast-path) | success, publishes to canonical |
+| `GetRoomUserCount` returns Mongo error | `[member]` | `alice` | n/a | "" | yes (returns err) | infraError → NACK |
+| `GetRoomUserCount` returns ErrNoDocuments | `[member]` | `alice` | n/a | "" | yes | infraError → NACK |
 | Custom threshold (env=2), 3-person room | `[member]` | `alice` | 3 | "" | yes | reject |
 
 Reject-case assertions check the wire payload:
 ```go
-assert.Equal(t, `{"error":"only owners can post in this room","code":"large_room_post_restricted"}`, string(replyData))
+assert.Equal(t, `{"error":"posting is restricted to owners and admins in this room","code":"large_room_post_restricted"}`, string(replyData))
 ```
 
-Negative assertions on fast-paths:
-- `MockStore.EXPECT().GetRoom(...).Times(0)` proves owners and thread replies
-  do not incur the fetch.
-- `published` slice empty on reject cases proves no canonical publish
-  happens when blocked.
+Per-case assertion fields supported by the table runner:
+- `wantNoPublish bool` — set on every reject case so `assert.Empty(t, *publishedPtr)` runs against the captured `published` slice. Proves no canonical publish happens when the rule rejects.
+- `checkResult` on bypass-success cases asserts `assert.Len(t, published, 1)`.
+  Combined with the absence of a `GetRoomUserCount` mock expectation,
+  this proves the fast-path both skipped the Mongo call and still
+  published.
 
 ### Predicate unit test
 
