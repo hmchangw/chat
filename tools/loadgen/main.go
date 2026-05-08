@@ -143,6 +143,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "per-request timeout for read scenarios")
 	autoWarmup := fs.Bool("auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
 	autoWarmupRate := fs.Int("auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
+	progressInterval := fs.Duration("progress-interval", 10*time.Second, "live progress log interval; 0 disables")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	switch *scenario {
@@ -374,7 +375,24 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	runCtx, cancelRun := context.WithTimeout(ctx, *duration)
 	defer cancelRun()
+
+	// Phase 3 §3.2: live progress reporter. Off when interval <= 0.
+	var progressWG sync.WaitGroup
+	if *progressInterval > 0 {
+		progressTicker := time.NewTicker(*progressInterval)
+		defer progressTicker.Stop()
+		progressWG.Add(1)
+		go func() {
+			defer progressWG.Done()
+			runProgress(runCtx, &progressConfig{
+				Metrics: metrics, Preset: p.Name,
+				Logger: slog.Default(), Ticks: progressTicker.C,
+			})
+		}()
+	}
+
 	genErr := gen.Run(runCtx)
+	progressWG.Wait()
 	// Wait up to 2 seconds for trailing replies and broadcasts to arrive.
 	time.Sleep(2 * time.Second)
 	collector.DiscardBefore(warmupDeadline)
