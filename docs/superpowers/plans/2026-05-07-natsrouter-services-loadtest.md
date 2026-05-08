@@ -3,10 +3,13 @@
 **Date:** 2026-05-07
 **Spec:** [`docs/superpowers/specs/2026-05-07-history-service-loadtest-design.md`](../specs/2026-05-07-history-service-loadtest-design.md)
 **Status:** ready (lands as a separate PR stacked on the spec PR once approved)
+**Phase 2 (added 2026-05-08):** Tasks 11-15 added at the bottom; same PR. Cover `room-service` RPC scenario + sampler-only services (`room-worker`, `notification-worker`, `search-sync-worker`). `auth-service` and `inbox-worker` deferred to follow-up specs.
 
 ## Context
 
 Two NATS request/reply services are built on `pkg/natsrouter` today: history-service and search-service. The spec extends `tools/loadgen` with two new read-load presets — `history-read` (60/20/10/10 across `LoadHistory` / `GetMessageByID` / `LoadSurroundingMessages` / `GetThreadMessages`) and `search-read` (50/50 across `searchMessages` / `searchRooms`) — that share the existing seed pool and the messaging-pipeline preset as their warm-up step. This plan breaks that work into TDD-ordered tasks.
+
+**Phase 2 expands scope** to one more client-driven scenario (`room-rpc`, against `room-service` — non-natsrouter but transport-identical) plus consumer-lag samplers for the remaining stream-only workers. The chassis built in Tasks 1-5 absorbs this with no architectural changes; Tasks 11-15 are appended at the bottom.
 
 Existing harness layout (the work edits in place — no new directory):
 
