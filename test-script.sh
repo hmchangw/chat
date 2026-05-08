@@ -42,7 +42,7 @@ for arg in "$@"; do
 done
 
 # --- output helpers ---------------------------------------------------------
-RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; DIM=$'\033[2m'; NC=$'\033[0m'
 PASS_COUNT=0; FAIL_COUNT=0
 declare -a FAILED_TESTS=()
 
@@ -53,6 +53,13 @@ fail()   { printf '%s[FAIL]%s %s\n' "$RED" "$NC" "$*"; FAIL_COUNT=$((FAIL_COUNT+
 warn()   { printf '%s[!]%s %s\n' "$YELLOW" "$NC" "$*"; }
 section(){ printf '\n%s===%s %s\n' "$BLUE" "$NC" "$*"; }
 verbose(){ [[ $VERBOSE -eq 1 ]] && printf '   %s\n' "$*" || true; }
+
+# Visible tagged logs (always shown, no -v required). Routed to stderr so they
+# remain visible when callers use command substitution to capture stdout.
+step()   { printf '  %s>%s %s\n' "$CYAN" "$NC" "$*" >&2; }
+seeded() { printf '    %sseed%s %s\n' "$DIM" "$NC" "$*" >&2; }
+sent()   { printf '    %s→ %s%s\n' "$YELLOW" "$NC" "$*" >&2; }
+recv()   { printf '    %s← %s%s\n' "$GREEN" "$NC" "$*" >&2; }
 
 # --- precondition checks ----------------------------------------------------
 check_prereqs() {
@@ -178,6 +185,7 @@ seed_user() {
     engName: '${eng}',
     chineseName: '${zh}'
   }"
+  seeded "user account=${account} engName=${eng} chineseName=${zh}"
 }
 
 # Seed a channel room owned by the sender.
@@ -193,6 +201,7 @@ seed_room() {
     createdAt: ISODate('$(now_iso)'),
     updatedAt: ISODate('$(now_iso)')
   }"
+  seeded "room id=${room_id} type=channel createdBy=${creator_account}"
 }
 
 # Seed a subscription. lastSeenAtIso may be empty (sub never read).
@@ -212,12 +221,32 @@ seed_sub() {
     threadUnread: []
     ${last_seen_clause}
   }"
+  seeded "subscription account=${account} roomId=${room_id} lastSeenAt=${last_seen_iso:-<none>}"
 }
 
-# Send the read-receipt RPC. Echoes the reply payload.
+# Echo the seeded message after writing the row, so the log reads chronologically.
+seed_message_logged() {
+  local message_id="$1" room_id="$2" created_at_iso="$3" sender_account="$4"
+  seed_message_logged "$message_id" "$room_id" "$created_at_iso" "$sender_account"
+  seeded "message id=${message_id} roomId=${room_id} createdAt=${created_at_iso} sender=${sender_account}"
+}
+
+# Send the read-receipt RPC, echoing subject, payload, and response. Echoes the
+# reply payload to stdout (last line) so callers can capture it via $(...).
 send_receipt() {
   local account="$1" room_id="$2" body="$3"
-  nats_request "chat.user.${account}.request.room.${room_id}.${SITE_ID}.message.read-receipt" "$body"
+  local subject="chat.user.${account}.request.room.${room_id}.${SITE_ID}.message.read-receipt"
+  step "REQUEST"
+  sent "subject: ${subject}"
+  sent "payload: ${body}"
+  local resp
+  resp=$(nats_request "$subject" "$body") || {
+    recv "<no response — ${NATS_LAST_STDERR}>"
+    return 1
+  }
+  step "RESPONSE"
+  recv "${resp:-<empty>}"
+  printf '%s' "$resp"
 }
 
 # --- scenarios --------------------------------------------------------------
@@ -225,6 +254,7 @@ send_receipt() {
 scenario_1_happy_two_readers() {
   current_scenario="1: happy path — two readers returned, sender excluded"
   section "$current_scenario"
+  step "SEEDING"
   local room_id sender msg_id resp
   room_id=$(new_room_id)
   sender="${TEST_PREFIX}_alice"
@@ -250,10 +280,9 @@ scenario_1_happy_two_readers() {
   # Dave read before the message — should not appear.
   seed_sub "$room_id" "${TEST_PREFIX}_dave" "$read_before"
 
-  seed_message "$msg_id" "$room_id" "$msg_time" "$sender"
+  seed_message_logged "$msg_id" "$room_id" "$msg_time" "$sender"
 
   resp=$(send_receipt "$sender" "$room_id" "{\"messageId\":\"${msg_id}\"}") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
-  verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"readers"'
   assert_contains "reply" "$resp" '"account":"'"${TEST_PREFIX}"'_bob"'
@@ -267,6 +296,7 @@ scenario_1_happy_two_readers() {
 scenario_2_empty_readers() {
   current_scenario="2: empty readers — no subscription matches lastSeenAt >= createdAt"
   section "$current_scenario"
+  step "SEEDING"
   local room_id sender msg_id resp
   room_id=$(new_room_id)
   sender="${TEST_PREFIX}_alice"
@@ -282,10 +312,9 @@ scenario_2_empty_readers() {
   seed_sub "$room_id" "$sender" "$(iso_offset -60)"
   seed_sub "$room_id" "${TEST_PREFIX}_dave" "$(iso_offset -60)"
 
-  seed_message "$msg_id" "$room_id" "$msg_time" "$sender"
+  seed_message_logged "$msg_id" "$room_id" "$msg_time" "$sender"
 
   resp=$(send_receipt "$sender" "$room_id" "{\"messageId\":\"${msg_id}\"}") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
-  verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"readers":[]'
 }
@@ -293,6 +322,7 @@ scenario_2_empty_readers() {
 scenario_3_not_a_room_member() {
   current_scenario="3: not a room member — handler rejects"
   section "$current_scenario"
+  step "SEEDING"
   local room_id sender outsider msg_id resp
   room_id=$(new_room_id)
   sender="${TEST_PREFIX}_alice"
@@ -303,11 +333,10 @@ scenario_3_not_a_room_member() {
   seed_user "$outsider" "Eve" "夏娃"
   seed_room "$room_id" "$sender"
   seed_sub "$room_id" "$sender" "$(iso_offset -10)"
-  seed_message "$msg_id" "$room_id" "$(iso_offset -30)" "$sender"
+  seed_message_logged "$msg_id" "$room_id" "$(iso_offset -30)" "$sender"
 
   # Outsider has no subscription in the room.
   resp=$(send_receipt "$outsider" "$room_id" "{\"messageId\":\"${msg_id}\"}") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
-  verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"error"'
   assert_contains "reply" "$resp" 'only room members'
@@ -316,6 +345,7 @@ scenario_3_not_a_room_member() {
 scenario_4_message_not_found() {
   current_scenario="4: message not found — handler rejects"
   section "$current_scenario"
+  step "SEEDING"
   local room_id sender resp
   room_id=$(new_room_id)
   sender="${TEST_PREFIX}_alice"
@@ -325,7 +355,6 @@ scenario_4_message_not_found() {
   seed_sub "$room_id" "$sender" "$(iso_offset -10)"
 
   resp=$(send_receipt "$sender" "$room_id" "{\"messageId\":\"${TEST_PREFIX}_does_not_exist\"}") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
-  verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"error"'
   assert_contains "reply" "$resp" 'message not found'
@@ -334,6 +363,7 @@ scenario_4_message_not_found() {
 scenario_5_message_in_another_room() {
   current_scenario="5: cross-room guard — message belongs to a different room"
   section "$current_scenario"
+  step "SEEDING"
   local room_a room_b sender msg_id resp
   room_a=$(new_room_id)
   room_b=$(new_room_id)
@@ -347,11 +377,10 @@ scenario_5_message_in_another_room() {
   seed_sub "$room_b" "$sender" "$(iso_offset -10)"
 
   # Message lives in room_b.
-  seed_message "$msg_id" "$room_b" "$(iso_offset -30)" "$sender"
+  seed_message_logged "$msg_id" "$room_b" "$(iso_offset -30)" "$sender"
 
   # Query against room_a should be rejected.
   resp=$(send_receipt "$sender" "$room_a" "{\"messageId\":\"${msg_id}\"}") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
-  verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"error"'
   assert_contains "reply" "$resp" 'does not belong to this room'
@@ -360,6 +389,7 @@ scenario_5_message_in_another_room() {
 scenario_6_not_the_sender() {
   current_scenario="6: not the sender — handler rejects"
   section "$current_scenario"
+  step "SEEDING"
   local room_id author requester msg_id resp
   room_id=$(new_room_id)
   author="${TEST_PREFIX}_alice"
@@ -372,10 +402,9 @@ scenario_6_not_the_sender() {
   seed_sub "$room_id" "$author" "$(iso_offset -10)"
   seed_sub "$room_id" "$requester" "$(iso_offset -10)"
 
-  seed_message "$msg_id" "$room_id" "$(iso_offset -30)" "$author"
+  seed_message_logged "$msg_id" "$room_id" "$(iso_offset -30)" "$author"
 
   resp=$(send_receipt "$requester" "$room_id" "{\"messageId\":\"${msg_id}\"}") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
-  verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"error"'
   assert_contains "reply" "$resp" 'only the message sender'
@@ -384,6 +413,7 @@ scenario_6_not_the_sender() {
 scenario_7_empty_message_id() {
   current_scenario="7: empty messageId — validation error"
   section "$current_scenario"
+  step "SEEDING"
   local room_id sender resp
   room_id=$(new_room_id)
   sender="${TEST_PREFIX}_alice"
@@ -393,7 +423,6 @@ scenario_7_empty_message_id() {
   seed_sub "$room_id" "$sender" "$(iso_offset -10)"
 
   resp=$(send_receipt "$sender" "$room_id" '{}') || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
-  verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"error"'
 }
@@ -401,9 +430,9 @@ scenario_7_empty_message_id() {
 scenario_8_invalid_subject() {
   current_scenario="8: invalid subject — handler not subscribed"
   section "$current_scenario"
+  step "SEEDING"
   local resp
   resp=$(nats_request "chat.user.${TEST_PREFIX}_jane.request.message.read-receipt" '{"messageId":"x"}') || true
-  verbose "reply: $resp"
 
   if [[ -z "$resp" ]]; then
     ok "no subscriber on malformed subject (expected)"
@@ -415,6 +444,7 @@ scenario_8_invalid_subject() {
 scenario_9_user_missing_display_fields() {
   current_scenario="9: reader with missing user record is dropped from result"
   section "$current_scenario"
+  step "SEEDING"
   local room_id sender msg_id resp
   room_id=$(new_room_id)
   sender="${TEST_PREFIX}_alice"
@@ -429,10 +459,9 @@ scenario_9_user_missing_display_fields() {
   seed_sub "$room_id" "${TEST_PREFIX}_bob" "$(iso_offset -10)"
   seed_sub "$room_id" "${TEST_PREFIX}_ghost" "$(iso_offset -10)"
 
-  seed_message "$msg_id" "$room_id" "$(iso_offset -30)" "$sender"
+  seed_message_logged "$msg_id" "$room_id" "$(iso_offset -30)" "$sender"
 
   resp=$(send_receipt "$sender" "$room_id" "{\"messageId\":\"${msg_id}\"}") || { fail "RPC failed: ${NATS_LAST_STDERR}"; return; }
-  verbose "reply: $resp"
 
   assert_contains "reply" "$resp" '"account":"'"${TEST_PREFIX}"'_bob"'
   assert_not_contains "reply" "$resp" '"account":"'"${TEST_PREFIX}"'_ghost"'
