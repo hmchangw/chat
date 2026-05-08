@@ -34,6 +34,23 @@ const (
 	HistoryGetThreadMessages
 )
 
+// searchRequestKind enumerates the search-service request handlers
+// exercised by the `search-read` preset.
+type searchRequestKind int
+
+const (
+	SearchMessagesKind searchRequestKind = iota
+	SearchRoomsKind
+)
+
+// builtinSearchTokens is the deterministic 10-token query bag used by the
+// `search-read` preset. Drawn from generic English so seeded message
+// content (Lorem-style) yields realistic hit rates.
+var builtinSearchTokens = []string{
+	"hello", "thanks", "team", "review", "deploy",
+	"meeting", "update", "today", "release", "status",
+}
+
 // Preset is a named, fully deterministic workload specification.
 //
 // Fixture-shaping fields (Users / Rooms / *Dist / ContentBytes / *Rate)
@@ -54,6 +71,14 @@ type Preset struct {
 	// `history-read` scenario. Keys are exhaustive over historyRequestKind;
 	// values are non-negative and conventionally sum to 100.
 	HistoryMix map[historyRequestKind]int
+
+	// SearchMix is the integer-weighted request-type mix for the
+	// `search-read` scenario, with the same conventions as HistoryMix.
+	SearchMix map[searchRequestKind]int
+
+	// SearchTokens is the deterministic bag of query strings the
+	// `search-read` scenario draws from when building requests.
+	SearchTokens []string
 }
 
 var builtinPresets = map[string]Preset{
@@ -89,6 +114,16 @@ var builtinPresets = map[string]Preset{
 			HistoryLoadSurrounding:   10,
 			HistoryGetThreadMessages: 10,
 		},
+	},
+	"search-read": {
+		Name: "search-read", Users: 10, Rooms: 5,
+		RoomSizeDist: DistUniform, SenderDist: DistUniform,
+		ContentBytes: Range{Min: 200, Max: 200},
+		SearchMix: map[searchRequestKind]int{
+			SearchMessagesKind: 50,
+			SearchRoomsKind:    50,
+		},
+		SearchTokens: builtinSearchTokens,
 	},
 }
 

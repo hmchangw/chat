@@ -144,6 +144,34 @@ func TestBuiltinPreset_HistoryRead(t *testing.T) {
 	assert.Equal(t, 100, sum, "history-read weights sum to 100")
 }
 
+func TestBuiltinPreset_SearchRead(t *testing.T) {
+	p, ok := BuiltinPreset("search-read")
+	require.True(t, ok, "preset \"search-read\" must exist")
+	assert.Equal(t, "search-read", p.Name)
+
+	small, _ := BuiltinPreset("small")
+	assert.Equal(t, small.Users, p.Users)
+	assert.Equal(t, small.Rooms, p.Rooms)
+
+	require.NotNil(t, p.SearchMix, "search-read carries a request-type weight map")
+	assert.Equal(t, 50, p.SearchMix[SearchMessagesKind])
+	assert.Equal(t, 50, p.SearchMix[SearchRoomsKind])
+
+	var sum int
+	for _, w := range p.SearchMix {
+		sum += w
+	}
+	assert.Equal(t, 100, sum)
+
+	require.Len(t, p.SearchTokens, 10, "search-read carries 10 deterministic query tokens")
+	for _, tok := range p.SearchTokens {
+		assert.NotEmpty(t, tok)
+	}
+	// determinism: BuiltinPreset must return equal values across calls.
+	q, _ := BuiltinPreset("search-read")
+	assert.Equal(t, p.SearchTokens, q.SearchTokens)
+}
+
 func TestSampleWithoutReplacement_CapsAtUserCount(t *testing.T) {
 	// Requesting more samples than users available silently caps at len(users).
 	r := rand.New(rand.NewSource(1))
