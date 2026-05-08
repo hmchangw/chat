@@ -279,21 +279,21 @@ func TestHandleSyncCreateDM_BulkInsertDuplicateKey_FallsBackToFind(t *testing.T)
 	assert.Equal(t, "existing-sub", reply.Subscription.ID)
 }
 
-type capturedPublish struct {
+type dmCapturedPublish struct {
 	subject string
 	data    []byte
 	msgID   string
 }
 
-type publishCapturer struct {
+type dmPublishCapturer struct {
 	mu       sync.Mutex
-	captured []capturedPublish
+	captured []dmCapturedPublish
 }
 
-func (c *publishCapturer) fn(_ context.Context, subj string, data []byte, msgID string) error {
+func (c *dmPublishCapturer) fn(_ context.Context, subj string, data []byte, msgID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.captured = append(c.captured, capturedPublish{subject: subj, data: append([]byte(nil), data...), msgID: msgID})
+	c.captured = append(c.captured, dmCapturedPublish{subject: subj, data: append([]byte(nil), data...), msgID: msgID})
 	return nil
 }
 
@@ -301,7 +301,7 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
-	cap := &publishCapturer{}
+	cap := &dmPublishCapturer{}
 	h := &Handler{siteID: "site-a", store: store, publish: cap.fn}
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
@@ -329,7 +329,7 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
-	cap := &publishCapturer{}
+	cap := &dmPublishCapturer{}
 	h := &Handler{siteID: "site-a", store: store, publish: cap.fn}
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
@@ -345,7 +345,7 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
 
-	var outbox *capturedPublish
+	var outbox *dmCapturedPublish
 	for i := range cap.captured {
 		if cap.captured[i].subject == subject.Outbox("site-a", "site-b", model.OutboxTypeRoomCreated) {
 			outbox = &cap.captured[i]
@@ -374,7 +374,7 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
-	cap := &publishCapturer{}
+	cap := &dmPublishCapturer{}
 	h := &Handler{siteID: "site-a", store: store, publish: cap.fn}
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
