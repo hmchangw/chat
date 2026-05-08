@@ -113,34 +113,6 @@ Document, in `tools/loadgen/README.md`:
 
 Tasks 9 + 10 may share a single commit since neither lands new code paths.
 
-## Done definition
-
-**Phase 1 (Tasks 1-10):**
-- `make test SERVICE=loadgen` is green.
-- `make test-integration SERVICE=loadgen` is green (CI-eligible — same shape as the existing integration test).
-- `make lint` is green.
-- Coverage for new code in `tools/loadgen` ≥ 80%.
-- `make -C tools/loadgen/deploy run-natsrouter` produces non-empty samples in both the `history_request_duration` and `search_request_duration` histograms within 30s of `loadgen run` start, with zero error-rate.
-
-**Phase 2 (Tasks 11-15) — additional gates on top of Phase 1:**
-- `BuiltinPreset("room-rpc")` returns the documented mix; `make test SERVICE=loadgen` covers it.
-- `loadgen run --scenario=room-rpc --preset=room-rpc --duration=10s` against the local compose stack produces non-zero `loadgen_requests_total{scenario="room"}` for at least three of the five room-request kinds, with zero error-rate.
-- `loadgen run --scenario=messaging-pipeline --duration=10s` produces non-zero `loadgen_consumer_pending` gauges for `notification-worker` and the three `search-sync-worker-*` durables (visibility, not health threshold).
-- New code paths for Phase 2 maintain ≥ 80% coverage.
-
-## Risk
-
-**Phase 1:**
-- The compose stack grows from ~3 services to ~9. CI run-time and local laptop footprint both go up. If CI integration-test run-time becomes a problem, gate the new test behind a `LOADGEN_NATSROUTER=1` env var so the stack only spins up when explicitly requested.
-- Elasticsearch + Cassandra startup is slow (30-60s combined). Readiness probes in task 8 must be patient or the test will be flaky on cold cache; budget at least 90s for setup.
-- search-sync-worker's Mongo→ES sync has measurable lag. The 30s warm-up should be enough for the seeded message corpus, but if `search-read` integration assertions are flaky, bump to 60s rather than reduce the corpus size.
-
-**Phase 2 incremental:**
-- `room-rpc` mutates Mongo state. Mitigated by running against the loadgen-owned `MONGO_DB=loadgen` and `WriteIDPrefix="loadgen-"` for forensic identification. `make teardown` already drops the database. Worst case: a long run leaves an inflated `rooms` collection in the loadgen DB until teardown.
-- Compose stack grows by **one more service** (`room-service`). Phase 1 already required substantial growth; one extra service is incremental. Phase 2 integration-test time impact is ~30s additional startup.
-- Sampler additions for stream consumers are zero-risk: they read JetStream consumer state via the same `ConsumerSampler` already used for `message-worker` / `broadcast-worker`. Empty gauges read as 0.
-- Task 15 doesn't add unit tests — it's pure config. The Phase 1 integration test from Task 8 doesn't exercise the new samplers; Phase 2 should extend it to assert the new gauges are present (one extra `assert.NotEmpty(samplers)` per durable).
-
 ---
 
 ## Phase 2 — additional services
@@ -297,3 +269,64 @@ Cleanup tasks share one commit; they're a refactor before Phase 2 Task 13, not a
 - `runRun` returns exit code 2 (vs 0 for clean, 1 for unclean) when abort fired. Code documented in main.go's exit-code helper.
 
 **Refactor:** Progress reporter (Task 17) and abort watcher both consume the same metrics scrape; consider a shared `func metricsTick(ctx) <-chan MetricsSnapshot` channel they both read from. Decision deferred — fine to ship them as siblings if the abstraction doesn't fall out cleanly.
+
+### Task 21 — per-tenant connection multiplexing
+
+**Red:** `connpool_test.go` cases:
+- `TestConnPool_ForUserHashesDeterministically` — `pool.For("alice")` returns the same connection across N calls.
+- `TestConnPool_DistributesUsersAcrossConnections` — N=10 with 1000 distinct user IDs; assert no connection holds more than ~150 (loose chi-square sanity).
+- `TestConnPool_ObserverIsSeparate` — `pool.Observer()` is not in `pool.connections`; subscribers attached to it see traffic from all data connections.
+- `TestConnPool_DrainAll` — call `Drain()`, assert all N+1 connections drained without error.
+
+**Green:**
+- New `connpool.go` with `type ConnPool struct { conns []*nats.Conn; observer *nats.Conn }`, `New(urls, n)`, `For(userID) *nats.Conn`, `Observer() *nats.Conn`, `Drain()`.
+- `natsCorePublisher` and `natsRequester` updated to take a `ConnPool` instead of `*nats.Conn`. They look up `pool.For(currentUserID)` per call.
+- `--connections=N` flag in `main.go` (default 1, matching today). When 1, the pool collapses to `[observer]` and `For(_)` returns observer — preserves identical behavior.
+- Reply / broadcast subscribers attached to `pool.Observer()`. Consumer samplers also use observer (they don't care about user partitioning).
+
+**Refactor:** Search for any direct `nc.Publish` or `nc.RequestWithContext` call sites in the loadgen code that bypass the publisher/requester abstractions; move them through the pool. Reviewer found this is currently clean — no bypasses — so the refactor is just due diligence.
+
+## Done definition
+
+**Phase 1 (Tasks 1-10):**
+- `make test SERVICE=loadgen` is green.
+- `make test-integration SERVICE=loadgen` is green (CI-eligible — same shape as the existing integration test).
+- `make lint` is green.
+- Coverage for new code in `tools/loadgen` ≥ 80%.
+- `make -C tools/loadgen/deploy run-natsrouter` produces non-empty samples in both the `history_request_duration` and `search_request_duration` histograms within 30s of `loadgen run` start, with zero error-rate.
+
+**Phase 2 (Tasks 11-15) — additional gates on top of Phase 1:**
+- `BuiltinPreset("room-rpc")` returns the documented mix; `make test SERVICE=loadgen` covers it.
+- `loadgen run --scenario=room-rpc --preset=room-rpc --duration=10s` against the local compose stack produces non-zero `loadgen_requests_total{scenario="room"}` for at least three of the five room-request kinds, with zero error-rate.
+- `loadgen run --scenario=messaging-pipeline --duration=10s` produces non-zero `loadgen_consumer_pending` gauges for `notification-worker` and the three `search-sync-worker-*` durables (visibility, not health threshold).
+- New code paths for Phase 2 maintain ≥ 80% coverage.
+
+**Phase 3 (Tasks 16-21) — additional gates on top of Phase 2:**
+- Pre-Phase-3 cleanup commit lands: bare-string errors → sentinels; `tickLoop` extracted; saturation labels deduped; preset owns Scope/Size.
+- `loadgen run --scenario=history-read --duration=30s` with default flags emits zero `no_message_ids` errors (auto-warmup populates the pool).
+- A 60s run prints ≥ 5 `progress` log lines.
+- `loadgen run` against a fresh `up.sh` succeeds without first-second `bad_reply` errors (readiness probe held until services were ready).
+- A ramped run (`--ramp-from=10 --ramp-to=1000 --ramp-duration=30s`) shows samples spread across at least 5 of the 9 `rate_bucket` values.
+- A run with `--abort-on-p99-ms=1` (intentionally trip-wire-low) exits with code 2 and prints `status="saturated"`.
+- A `--connections=10` run distributes published messages across all 10 connections (verifiable via NATS `/varz` endpoint).
+- All Phase 3 code maintains ≥ 80% coverage.
+
+## Risk
+
+**Phase 1:**
+- The compose stack grows from ~3 services to ~9. CI run-time and local laptop footprint both go up. If CI integration-test run-time becomes a problem, gate the new test behind a `LOADGEN_NATSROUTER=1` env var so the stack only spins up when explicitly requested.
+- Elasticsearch + Cassandra startup is slow (30-60s combined). Readiness probes in task 8 must be patient or the test will be flaky on cold cache; budget at least 90s for setup.
+- search-sync-worker's Mongo→ES sync has measurable lag. The 30s warm-up should be enough for the seeded message corpus, but if `search-read` integration assertions are flaky, bump to 60s rather than reduce the corpus size.
+
+**Phase 2 incremental:**
+- `room-rpc` mutates Mongo state. Mitigated by running against the loadgen-owned `MONGO_DB=loadgen` and `WriteIDPrefix="loadgen-"` for forensic identification. `make teardown` already drops the database. Worst case: a long run leaves an inflated `rooms` collection in the loadgen DB until teardown.
+- Compose stack grows by **one more service** (`room-service`). Phase 1 already required substantial growth; one extra service is incremental. Phase 2 integration-test time impact is ~30s additional startup.
+- Sampler additions for stream consumers are zero-risk: they read JetStream consumer state via the same `ConsumerSampler` already used for `message-worker` / `broadcast-worker`. Empty gauges read as 0.
+- Task 15 doesn't add unit tests — it's pure config. The Phase 1 integration test from Task 8 doesn't exercise the new samplers; Phase 2 should extend it to assert the new gauges are present (one extra `assert.NotEmpty(samplers)` per durable).
+
+**Phase 3 incremental:**
+- Auto-warmup (Task 16) adds a hidden first-stage to read scenarios. Mitigated by `--auto-warmup=false` opt-out and by an explicit `slog.Info("auto-warmup phase starting")` line so it's not invisible.
+- Live progress (Task 17) emits structured logs at the configured interval (default 10s). At 10s intervals over a 5-min run that's 30 lines — fine. Could pollute test logs if Task 8's integration test runs without `--progress-interval=0`; document the override.
+- Readiness probe (Task 18) consumes a small amount of pre-run traffic. Probe traffic appears in service-side metrics and could distort short-duration runs (< 30s). Mitigated by emitting probes BEFORE the warmup-window-deadline starts, so they're discarded along with warmup samples.
+- Rate ramp (Task 19) + abort (Task 20) interact: a ramped run that aborts at the knee is the prime use case; make sure the abort watcher's sliding window respects the ramp's instantaneous rate, not the average.
+- Connection multiplexing (Task 21) opens N connections at startup. NATS dev defaults limit clients to 64K; `--connections=10000` would work, but `--connections=100000` won't. Document the practical cap (~5K on a laptop).
