@@ -331,3 +331,45 @@ Loop with exponential backoff (start 200ms, max 2s) for up to 30s. Exit non-zero
 **Implementation.**
 - New `readiness.go` with a `WaitForReady(ctx, scenario, nc, fixtures)` function.
 - Called from `runRun` before the generator's `Run`. No-op if `--skip-readiness` is set (escape hatch for tests where the probe traffic itself is unwanted).
+
+### 3.4 Rate ramping
+
+**Problem.** Finding the capacity ceiling today means running at 100, 200, 500, 1000 rps in separate runs and eyeballing the latency curve. Slow, imprecise, samples scattered across CSVs.
+
+**Solution.** New flags:
+
+```
+--ramp-from=10        # start rate (rps)
+--ramp-to=1000        # end rate (rps)
+--ramp-duration=2m    # time to climb from --ramp-from to --ramp-to
+--ramp-shape=linear   # linear|exponential
+```
+
+When `--ramp-from`/`--ramp-to` are non-zero they override `--rate` (which becomes the steady rate AFTER the ramp finishes; `0` means "stop after the ramp"). The generator's tick interval is recomputed every second based on a curve function `currentRate(t) → rps`. Each published sample is labelled with the rate it was published at: `loadgen_published_total{phase="ramp",rate_bucket="100-200"}`.
+
+**Why a curve, not multiple runs.** A single ramped run produces one continuous latency series, so the knee is visible directly in Grafana as the point where p99 starts climbing exponentially. Far better signal than discrete-rate runs.
+
+**Implementation.**
+- `pkg/loadgen/ramp.go` (or sibling file) with a `Ramp` struct + `func (r *Ramp) RateAt(t time.Duration) int` method. Pure function, easy to unit-test.
+- `Generator.Run` reads `r.RateAt(time.Since(start))` once per second and rebuilds the ticker. Cheap; `time.Ticker.Reset(interval)` is the standard pattern.
+- `--ramp-shape=exponential` uses `rps = from * (to/from)^(t/dur)`. Useful when the linear ramp blasts past the knee in too few samples.
+
+### 3.5 Saturation auto-detect & abort
+
+**Problem.** A capacity-finding run that's clearly past saturation (p99 > 5s, 50% errors) keeps generating millions of useless samples until `--duration` expires. Wastes time and mucks up averages.
+
+**Solution.** Two flags:
+
+```
+--abort-on-p99-ms=2000   # if p99 > 2s sustained for 30s, stop and report "saturated at X rps"
+--abort-on-error-pct=10  # if error rate > 10% sustained for 10s, same
+```
+
+When triggered, the generator stops, the report tags the run as `status="saturated"`, and exit code is 2 (distinguishable from clean-fail or clean-pass).
+
+**Implementation.**
+- A goroutine alongside the progress reporter (§3.2) that consumes the same metrics. Maintains a sliding window (last 30s of samples) and checks both thresholds.
+- On trigger, calls `cancelRun()` (the existing context cancellation hook); the generator's drain logic does the rest.
+- The "sustained" requirement is important — momentary spikes are normal, what matters is sustained degradation.
+
+**Pairs naturally with §3.4.** A ramped run with `--abort-on-p99-ms=1000` walks the rate curve until the knee, then stops. The final summary reports the rate at which the threshold was breached — that IS the capacity number.
