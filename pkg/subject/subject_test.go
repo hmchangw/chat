@@ -342,3 +342,8 @@ func TestRoomCanonicalOperation(t *testing.T) {
 		})
 	}
 }
+
+func TestRoomCreateDMSync(t *testing.T) {
+	got := subject.RoomCreateDMSync("site-a")
+	assert.Equal(t, "chat.server.request.room.site-a.create.dm", got)
+}
