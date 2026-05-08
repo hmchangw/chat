@@ -213,3 +213,10 @@ func TestSampleWithoutReplacement_CapsAtUserCount(t *testing.T) {
 	out := sampleWithoutReplacement(r, users, 99)
 	assert.Len(t, out, 2)
 }
+
+func TestSearchReadPreset_HasScopeAndSize(t *testing.T) {
+	p, ok := BuiltinPreset("search-read")
+	require.True(t, ok)
+	assert.Equal(t, "channel", p.SearchScope, "search-read preset must declare SearchScope")
+	assert.Equal(t, 20, p.SearchSize, "search-read preset must declare SearchSize")
+}

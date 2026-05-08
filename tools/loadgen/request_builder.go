@@ -80,7 +80,7 @@ func buildHistoryRequest(kind historyRequestKind, args *historyRequestArgs) (str
 		}
 		return subject.MsgThread(account, roomID, siteID), body, nil
 	default:
-		return "", nil, fmt.Errorf("unknown historyRequestKind: %d", kind)
+		return "", nil, fmt.Errorf("%w: %d", ErrUnknownHistoryKind, kind)
 	}
 }
 
@@ -118,6 +118,6 @@ func buildSearchRequest(kind searchRequestKind, args *searchRequestArgs) (string
 		}
 		return subject.SearchRooms(args.User.Account), body, nil
 	default:
-		return "", nil, fmt.Errorf("unknown searchRequestKind: %d", kind)
+		return "", nil, fmt.Errorf("%w: %d", ErrUnknownSearchKind, kind)
 	}
 }

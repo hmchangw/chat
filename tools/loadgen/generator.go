@@ -78,7 +78,7 @@ const drainGracePeriod = 5 * time.Second
 // reason="saturated" rather than silently dropping the tick.
 func (g *Generator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 {
-		return fmt.Errorf("rate must be > 0")
+		return ErrInvalidRate
 	}
 	interval := time.Second / time.Duration(g.cfg.Rate)
 	if interval <= 0 {

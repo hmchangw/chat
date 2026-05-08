@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -53,62 +52,21 @@ func NewHistoryReadGenerator(cfg *HistoryReadConfig, seed int64) *HistoryReadGen
 	}
 }
 
-// Run ticks at the configured rate until ctx is cancelled. Mirrors the
-// dispatch model of the messaging-pipeline Generator: optional bounded
-// goroutine pool for in-flight cap, drain on cancel, saturation counted as
-// an error rather than silently dropped.
+// Run ticks at the configured rate until ctx is cancelled. Delegates the
+// loop body to the shared tickLoop helper (Cleanup B) so the three read
+// generators share dispatch + saturation accounting.
 func (g *HistoryReadGenerator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 {
-		return fmt.Errorf("rate must be > 0")
+		return ErrInvalidRate
 	}
-	interval := time.Second / time.Duration(g.cfg.Rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
-	}
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-
-	if g.cfg.MaxInFlight <= 0 {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-tick.C:
-				g.tick(ctx)
-			}
-		}
-	}
-
-	sem := make(chan struct{}, g.cfg.MaxInFlight)
-	var wg sync.WaitGroup
-	for {
-		select {
-		case <-ctx.Done():
-			done := make(chan struct{})
-			go func() { wg.Wait(); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(drainGracePeriod):
-			}
-			return nil
-		case <-tick.C:
-			select {
-			case sem <- struct{}{}:
-				wg.Add(1)
-				go func() {
-					defer func() {
-						<-sem
-						wg.Done()
-					}()
-					g.tick(ctx)
-				}()
-			default:
-				g.cfg.Metrics.RequestErrors.WithLabelValues(
-					g.cfg.Preset.Name, "history", "saturated", "saturated",
-				).Inc()
-			}
-		}
-	}
+	tickLoop(ctx, tickLoopConfig{
+		Rate:        g.cfg.Rate,
+		MaxInFlight: g.cfg.MaxInFlight,
+		Metrics:     g.cfg.Metrics,
+		Preset:      g.cfg.Preset.Name,
+		Scenario:    "history",
+	}, g.tick)
+	return nil
 }
 
 func (g *HistoryReadGenerator) intn(n int) int {
@@ -224,59 +182,20 @@ func NewSearchReadGenerator(cfg *SearchReadConfig, seed int64) *SearchReadGenera
 	}
 }
 
-// Run ticks at the configured rate until ctx is cancelled.
+// Run ticks at the configured rate until ctx is cancelled. Delegates to
+// the shared tickLoop helper (Cleanup B).
 func (g *SearchReadGenerator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 {
-		return fmt.Errorf("rate must be > 0")
+		return ErrInvalidRate
 	}
-	interval := time.Second / time.Duration(g.cfg.Rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
-	}
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-
-	if g.cfg.MaxInFlight <= 0 {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-tick.C:
-				g.tick(ctx)
-			}
-		}
-	}
-
-	sem := make(chan struct{}, g.cfg.MaxInFlight)
-	var wg sync.WaitGroup
-	for {
-		select {
-		case <-ctx.Done():
-			done := make(chan struct{})
-			go func() { wg.Wait(); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(drainGracePeriod):
-			}
-			return nil
-		case <-tick.C:
-			select {
-			case sem <- struct{}{}:
-				wg.Add(1)
-				go func() {
-					defer func() {
-						<-sem
-						wg.Done()
-					}()
-					g.tick(ctx)
-				}()
-			default:
-				g.cfg.Metrics.RequestErrors.WithLabelValues(
-					g.cfg.Preset.Name, "search", "saturated", "saturated",
-				).Inc()
-			}
-		}
-	}
+	tickLoop(ctx, tickLoopConfig{
+		Rate:        g.cfg.Rate,
+		MaxInFlight: g.cfg.MaxInFlight,
+		Metrics:     g.cfg.Metrics,
+		Preset:      g.cfg.Preset.Name,
+		Scenario:    "search",
+	}, g.tick)
+	return nil
 }
 
 func (g *SearchReadGenerator) intn(n int) int {
@@ -294,11 +213,15 @@ func (g *SearchReadGenerator) tick(ctx context.Context) {
 	g.rngMu.Unlock()
 	user := g.cfg.Fixtures.Users[g.intn(len(g.cfg.Fixtures.Users))]
 	query := g.cfg.Preset.SearchTokens[g.intn(len(g.cfg.Preset.SearchTokens))]
+	size := g.cfg.Preset.SearchSize
+	if size <= 0 {
+		size = 20
+	}
 	args := searchRequestArgs{
 		User:  user,
 		Query: query,
-		Scope: "channel",
-		Size:  20,
+		Scope: g.cfg.Preset.SearchScope,
+		Size:  size,
 	}
 	subj, body, err := buildSearchRequest(kind, &args)
 	if err != nil {

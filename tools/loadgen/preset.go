@@ -80,6 +80,16 @@ type Preset struct {
 	// SearchTokens is the deterministic bag of query strings the
 	// `search-read` scenario draws from when building requests.
 	SearchTokens []string
+
+	// SearchScope is the room-scope filter applied to SearchRooms requests.
+	// Empty string means "no scope filter" (all room types).
+	SearchScope string
+
+	// SearchSize is the requested page size for both SearchMessages and
+	// SearchRooms requests. Zero defaults to 20 at the call site (preset
+	// is the source of truth, but a zero default avoids breaking older
+	// presets that haven't set it).
+	SearchSize int
 }
 
 var builtinPresets = map[string]Preset{
@@ -125,6 +135,8 @@ var builtinPresets = map[string]Preset{
 			SearchRoomsKind:    50,
 		},
 		SearchTokens: builtinSearchTokens,
+		SearchScope:  "channel",
+		SearchSize:   20,
 	},
 }
 
