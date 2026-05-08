@@ -6,6 +6,7 @@ import (
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/history-service/internal/mongorepo"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
