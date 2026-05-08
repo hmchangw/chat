@@ -13,6 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 var (
@@ -130,6 +131,8 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 			"error", rcErr, "roomID", room.ID, "requestID", requestID)
 	}
 
+	h.publishSubscriptionUpdates(ctx, subs, acceptedAt, requestID)
+
 	reply, err := json.Marshal(model.SyncCreateDMReply{
 		Success:      true,
 		Subscription: *requesterSub,
@@ -182,4 +185,25 @@ func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
 		return errInvalidSyncDMRequest
 	}
 	return nil
+}
+
+func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.Subscription, acceptedAt time.Time, requestID string) {
+	for _, sub := range subs {
+		evt := model.SubscriptionUpdateEvent{
+			UserID:       sub.User.ID,
+			Subscription: *sub,
+			Action:       "added",
+			Timestamp:    acceptedAt.UnixMilli(),
+		}
+		data, err := json.Marshal(evt)
+		if err != nil {
+			slog.Error("sync DM: marshal subscription.update failed",
+				"error", err, "account", sub.User.Account, "requestID", requestID)
+			continue
+		}
+		if err := h.publish(ctx, subject.SubscriptionUpdate(sub.User.Account), data, ""); err != nil {
+			slog.Error("sync DM: publish subscription.update failed",
+				"error", err, "account", sub.User.Account, "requestID", requestID)
+		}
+	}
 }
