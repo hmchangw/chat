@@ -126,3 +126,66 @@ Tasks 9 + 10 may share a single commit since neither lands new code paths.
 - The compose stack grows from ~3 services to ~9. CI run-time and local laptop footprint both go up. If CI integration-test run-time becomes a problem, gate the new test behind a `LOADGEN_NATSROUTER=1` env var so the stack only spins up when explicitly requested.
 - Elasticsearch + Cassandra startup is slow (30-60s combined). Readiness probes in task 8 must be patient or the test will be flaky on cold cache; budget at least 90s for setup.
 - search-sync-worker's Mongo→ES sync has measurable lag. The 30s warm-up should be enough for the seeded message corpus, but if `search-read` integration assertions are flaky, bump to 60s rather than reduce the corpus size.
+
+---
+
+## Phase 2 — additional services
+
+**Spec section:** [Phase 2 — additional services](../specs/2026-05-07-history-service-loadtest-design.md#phase-2--additional-services)
+
+Same PR as Phase 1; tasks land after Task 10 in the same branch. Each task follows the Red → Green → Refactor → Commit cycle. Estimated total: ~1.5 days of focused work.
+
+### Task 11 — `room-rpc` preset definition
+
+**Red:** In `preset_test.go`, add a case asserting that `BuiltinPreset("room-rpc")` returns a struct whose `RoomMix` weights are `{RoomsList: 60, RoomsGet: 20, MemberList: 10, RoomCreate: 8, MemberAdd: 2}` (total 100), with `Users: 1000, Rooms: 100` (matching the existing `realistic` seed shape) and a `WriteIDPrefix: "loadgen-"` field for forensic identification of generated state.
+
+**Green:** Add to `preset.go`:
+- `roomRequestKind` typed enum (5 variants).
+- `RoomMix map[roomRequestKind]int` field on `Preset`.
+- `WriteIDPrefix string` field (zero-value = no prefix; `room-rpc` sets it).
+- `room-rpc` preset entry in `BuiltinPreset`.
+- `pickRoomKind(r, weights)` 1-line wrapper around the existing generic `pickWeighted`.
+
+**Refactor:** None expected — `Preset` already carries `HistoryMix` / `SearchMix` of the same shape.
+
+### Task 12 — `room-rpc` request builder
+
+**Red:** New file `request_builder_room_test.go`. Table-driven cases asserting `buildRoomRequest(kind, args) → (subject, body, error)` returns:
+- For `RoomsList`: subject `chat.user.{account}.request.rooms.list`, body `{}`.
+- For `RoomsGet`: subject `chat.user.{account}.request.rooms.get.{roomID}`, body `{}`.
+- For `MemberList`: subject `chat.user.{account}.request.room.{roomID}.{siteID}.member.list`, body marshals `model.ListRoomMembersRequest`.
+- For `RoomCreate`: subject `chat.user.{account}.request.room.{siteID}.create`, body marshals `model.CreateRoomRequest` with `Name = WriteIDPrefix + <random>`.
+- For `MemberAdd`: subject `chat.user.{account}.request.room.{roomID}.{siteID}.member.add`, body marshals `model.AddMembersRequest` with one member drawn from fixtures.
+- Unknown kind returns an error.
+
+**Green:** Implement `buildRoomRequest` in a new `request_builder_room.go`. Reuse existing `pkg/subject` builders (`RoomsList`, `RoomsGet`, `MemberList`, `RoomCreate`, `MemberAdd`) — no new subject builders needed.
+
+### Task 13 — `RoomRPCGenerator`
+
+**Red:** Add `room_generator_test.go` cases (parallel to `read_generator_test.go`):
+- `TestRoomRPCGenerator_ProducesValidSubjects` — runs briefly and asserts every recorded subject matches one of the five concrete patterns.
+- `TestRoomRPCGenerator_RespectsRoomMix` — 100% `RoomsList` mix produces only `rooms.list` subjects.
+- `TestRoomRPCGenerator_NoFixtures_NoRequests` — empty fixtures → zero requests issued.
+- `TestRoomRPCGenerator_RequestErrorIncrementsMetric` — seed a `Requester` that returns errors; assert `loadgen_request_errors_total{scenario="room"}` increments.
+- `TestRoomRPCGenerator_ZeroRate_ReturnsError`.
+
+**Green:** New file `room_generator.go`. Copy the tick + bounded-pool dispatch from `HistoryReadGenerator`; only the per-tick body differs. Call `buildRoomRequest`; record metrics with `scenario="room"` and `kind=roomKindLabel(kind)`. Reuse the `Requester` interface unchanged.
+
+**Refactor:** If the three generator types now have substantially identical Run() loops (likely true), consider extracting a shared `tickLoop` helper. Out-of-line per the user's earlier "sibling types, no refactor" direction; revisit only if Task 13's diff is offensive.
+
+### Task 14 — `--scenario=room-rpc` dispatch
+
+**Red:** Extend `main.go`-adjacent test (or smoke-test by binary build): `loadgen run --scenario=room-rpc --preset=room-rpc` returns a meaningful "rate must be > 0" error when rate is 0; returns a meaningful "preset not found" when preset is missing. (Existing `unknown scenario` case already handles validation.)
+
+**Green:** In `main.go` `runRun`, add a new `case "room-rpc":` arm to the dispatch switch that constructs `NewRoomRPCGenerator(...)` with the `requester` adapter already in place.
+
+**Refactor:** Trim the generator-construction switch if it's grown to the point of duplicating preset-lookup boilerplate.
+
+### Task 15 — sampler additions for `room-worker`, `notification-worker`, `search-sync-worker`
+
+No new tests — the `ConsumerSampler` is exercised by Phase 1's integration test. Edit:
+
+- `main.go`: extend the `samplers := []*ConsumerSampler{...}` slice with five new entries (one per durable from the spec table). Reuse the existing `NewConsumerSampler` constructor; reuse `stream.Rooms(siteID)` / `stream.Inbox(siteID)` for stream names.
+- The terminal report's "Consumers" section auto-includes them via the existing iteration.
+
+**Smoke test.** `loadgen run --scenario=messaging-pipeline --duration=10s` should produce non-zero `loadgen_consumer_pending` for `notification-worker`, `search-sync-worker-messages`. `loadgen run --scenario=room-rpc --duration=10s` should produce non-zero values for `room-worker`. Other gauges read 0 cleanly per scenario.
