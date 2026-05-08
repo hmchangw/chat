@@ -84,6 +84,7 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 
 	// Two durable consumers that simply ack — stand in for message-worker
 	// and broadcast-worker so the canonical stream drains to zero.
+	stubConsumers := make([]jetstream.ConsumeContext, 0, 2)
 	for _, durable := range []string{"message-worker", "broadcast-worker"} {
 		cons, err := js.CreateOrUpdateConsumer(ctx, canonical.Name, jetstream.ConsumerConfig{
 			Durable:   durable,
@@ -92,8 +93,13 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 		require.NoError(t, err)
 		cc, err := cons.Consume(func(msg jetstream.Msg) { _ = msg.Ack() })
 		require.NoError(t, err)
-		defer cc.Stop()
+		stubConsumers = append(stubConsumers, cc)
 	}
+	defer func() {
+		for _, cc := range stubConsumers {
+			cc.Stop()
+		}
+	}()
 
 	// Connect Mongo and seed fixtures.
 	client, err := mongoutil.Connect(ctx, mongoURI, "", "")
@@ -185,4 +191,182 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 	err = db.Collection("rooms").FindOne(ctx, bson.M{"_id": fixtures.Rooms[0].ID}).Decode(&room)
 	require.NoError(t, err)
 	require.Equal(t, fixtures.Rooms[0].ID, room.ID)
+}
+
+// TestHistoryReadScenario_EndToEnd_StubService runs HistoryReadGenerator
+// against a fake history-service handler that always replies success.
+// Proves the wire contract end-to-end via real NATS without requiring
+// the actual Cassandra-backed history-service to come up.
+func TestHistoryReadScenario_EndToEnd_StubService(t *testing.T) {
+	ctx := context.Background()
+	natsURI, stopNATS := setupNATS(t)
+	defer stopNATS()
+
+	nc, err := nats.Connect(natsURI)
+	require.NoError(t, err)
+	defer nc.Drain()
+
+	siteID := "site-test"
+	preset, _ := BuiltinPreset("history-read")
+	fixtures := BuildFixtures(&preset, 42, siteID)
+
+	// Fake history-service: reply to every msg.history / get / surrounding /
+	// thread subject with an empty success body.
+	wildcards := []string{
+		"chat.user.*.request.room.*." + siteID + ".msg.history",
+		"chat.user.*.request.room.*." + siteID + ".msg.get",
+		"chat.user.*.request.room.*." + siteID + ".msg.surrounding",
+		"chat.user.*.request.room.*." + siteID + ".msg.thread",
+	}
+	historyStubs := make([]*nats.Subscription, 0, len(wildcards))
+	for _, wc := range wildcards {
+		sub, err := nc.Subscribe(wc, func(m *nats.Msg) {
+			_ = m.Respond([]byte(`{"messages":[]}`))
+		})
+		require.NoError(t, err)
+		historyStubs = append(historyStubs, sub)
+	}
+	defer func() {
+		for _, s := range historyStubs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	metrics := NewMetrics()
+	collector := NewCollector(metrics, preset.Name)
+	requester := &natsRequester{nc: nc}
+
+	gen := NewHistoryReadGenerator(&HistoryReadConfig{
+		Preset: &preset, Fixtures: fixtures, SiteID: siteID,
+		Rate: 100, Requester: requester, Metrics: metrics,
+		Collector:  collector,
+		MessageIDs: []string{"m-stub-1", "m-stub-2"},
+		Timeout:    2 * time.Second,
+	}, 42)
+
+	runCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	require.NoError(t, gen.Run(runCtx))
+
+	stats := collector.RequestStats()
+	require.NotEmpty(t, stats, "expected per-kind request stats after end-to-end run")
+	totalCount, totalErrors := 0, 0
+	for _, s := range stats {
+		totalCount += s.Count
+		totalErrors += s.Errors
+	}
+	require.Greater(t, totalCount, 100, "expected ≥100 history requests; got %d", totalCount)
+	require.Zero(t, totalErrors, "expected zero errors; got %d", totalErrors)
+}
+
+// TestSearchReadScenario_EndToEnd_StubService — same shape against a
+// fake search-service.
+func TestSearchReadScenario_EndToEnd_StubService(t *testing.T) {
+	ctx := context.Background()
+	natsURI, stopNATS := setupNATS(t)
+	defer stopNATS()
+
+	nc, err := nats.Connect(natsURI)
+	require.NoError(t, err)
+	defer nc.Drain()
+
+	preset, _ := BuiltinPreset("search-read")
+	fixtures := BuildFixtures(&preset, 42, "site-test")
+
+	searchStubs := make([]*nats.Subscription, 0, 2)
+	for _, wc := range []string{
+		"chat.user.*.request.search.messages",
+		"chat.user.*.request.search.rooms",
+	} {
+		sub, err := nc.Subscribe(wc, func(m *nats.Msg) {
+			_ = m.Respond([]byte(`{"messages":[]}`))
+		})
+		require.NoError(t, err)
+		searchStubs = append(searchStubs, sub)
+	}
+	defer func() {
+		for _, s := range searchStubs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	metrics := NewMetrics()
+	collector := NewCollector(metrics, preset.Name)
+	gen := NewSearchReadGenerator(&SearchReadConfig{
+		Preset: &preset, Fixtures: fixtures, SiteID: "site-test",
+		Rate: 100, Requester: &natsRequester{nc: nc}, Metrics: metrics,
+		Collector: collector, Timeout: 2 * time.Second,
+	}, 42)
+
+	runCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	require.NoError(t, gen.Run(runCtx))
+
+	stats := collector.RequestStats()
+	require.NotEmpty(t, stats)
+	totalCount, totalErrors := 0, 0
+	for _, s := range stats {
+		totalCount += s.Count
+		totalErrors += s.Errors
+	}
+	require.Greater(t, totalCount, 100)
+	require.Zero(t, totalErrors)
+}
+
+// TestRoomRPCScenario_EndToEnd_StubService — same shape against a
+// fake room-service.
+func TestRoomRPCScenario_EndToEnd_StubService(t *testing.T) {
+	ctx := context.Background()
+	natsURI, stopNATS := setupNATS(t)
+	defer stopNATS()
+
+	nc, err := nats.Connect(natsURI)
+	require.NoError(t, err)
+	defer nc.Drain()
+
+	preset, _ := BuiltinPreset("room-rpc")
+	fixtures := BuildFixtures(&preset, 42, "site-test")
+
+	wildcards := []string{
+		"chat.user.*.request.rooms.list",
+		"chat.user.*.request.rooms.get.*",
+		"chat.user.*.request.room.*.site-test.member.list",
+		"chat.user.*.request.room.site-test.create",
+		"chat.user.*.request.room.*.site-test.member.add",
+	}
+	roomStubs := make([]*nats.Subscription, 0, len(wildcards))
+	for _, wc := range wildcards {
+		sub, err := nc.Subscribe(wc, func(m *nats.Msg) {
+			_ = m.Respond([]byte(`{}`))
+		})
+		require.NoError(t, err)
+		roomStubs = append(roomStubs, sub)
+	}
+	defer func() {
+		for _, s := range roomStubs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	metrics := NewMetrics()
+	collector := NewCollector(metrics, preset.Name)
+	gen := NewRoomRPCGenerator(&RoomRPCConfig{
+		Preset: &preset, Fixtures: fixtures, SiteID: "site-test",
+		Rate: 100, Requester: &natsRequester{nc: nc}, Metrics: metrics,
+		Collector: collector, Timeout: 2 * time.Second,
+	}, 42)
+
+	runCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	require.NoError(t, gen.Run(runCtx))
+
+	stats := collector.RequestStats()
+	require.NotEmpty(t, stats)
+	totalCount, totalErrors := 0, 0
+	for _, s := range stats {
+		totalCount += s.Count
+		totalErrors += s.Errors
+	}
+	require.Greater(t, totalCount, 100)
+	require.Zero(t, totalErrors)
 }
