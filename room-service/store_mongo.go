@@ -79,40 +79,6 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	if _, err := s.apps.Indexes().CreateOne(ctx, appsIndex); err != nil {
 		return fmt.Errorf("ensure apps index: %w", err)
 	}
-
-	// Partial UNIQUE indexes for FindDMSubscription, one per room type.
-	// MongoDB's partialFilterExpression only supports $eq/$exists/$gt/$lt/$type/$and —
-	// $in is rejected on most server versions, so we split into two equivalent indexes.
-	// Uniqueness enforces the create-room contract: concurrent CreateRoom calls racing
-	// to insert the same DM/botDM pair see one succeed and the others get duplicate-key,
-	// which the worker treats as "open existing" via the GetRoom lookup branch.
-	dmDedupIndexes := []mongo.IndexModel{
-		{
-			Keys: bson.D{
-				{Key: "u.account", Value: 1},
-				{Key: "name", Value: 1},
-				{Key: "roomType", Value: 1},
-			},
-			Options: options.Index().
-				SetName("u_account_name_roomtype_dm_idx").
-				SetUnique(true).
-				SetPartialFilterExpression(bson.M{"roomType": bson.M{"$eq": model.RoomTypeDM}}),
-		},
-		{
-			Keys: bson.D{
-				{Key: "u.account", Value: 1},
-				{Key: "name", Value: 1},
-				{Key: "roomType", Value: 1},
-			},
-			Options: options.Index().
-				SetName("u_account_name_roomtype_botdm_idx").
-				SetUnique(true).
-				SetPartialFilterExpression(bson.M{"roomType": bson.M{"$eq": model.RoomTypeBotDM}}),
-		},
-	}
-	if _, err := s.subscriptions.Indexes().CreateMany(ctx, dmDedupIndexes); err != nil {
-		return fmt.Errorf("ensure dm-dedup subscription indexes: %w", err)
-	}
 	return nil
 }
 
