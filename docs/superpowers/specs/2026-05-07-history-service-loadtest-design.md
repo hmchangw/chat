@@ -401,3 +401,19 @@ When triggered, the generator stops, the report tags the run as `status="saturat
 - All N data connections drained on shutdown; observer drained last.
 
 **Default stays at 1** so existing scripts and the default smoke run are unchanged. Bumping `--connections=10` is a deliberate "I want connection-level fan-out" decision.
+
+### Phase 3 — out of scope
+
+- **Chaos toggles** (drop replies, malformed payloads, burst spikes, disconnect/reconnect). Considered, designed in chat, explicitly deferred — adds value but not the right batch. Track in a follow-up `chaos-engineering-loadtest` spec when the harness has shaken out.
+- **NATS authentication beyond shared JWT.** Per-connection auth would require fixture-level credential generation (NKey per user), a non-trivial dependency. Defer until production-realism becomes a concrete need.
+- **Per-user reply subscriptions in `--connections > 1` mode.** Above; the observer-connection pattern is good enough for v1 capacity testing.
+- **Closed-loop request/reply pacing.** The whole tool is open-loop by design (`generator.go:71` predates Phase 3). Adding a closed-loop mode would require a parallel run path; leave for a chaos-or-distribution-shape PR.
+- **`loadgen diff`** (regression compare between two CSV exports). Useful but doesn't fit the harness — it's a post-processing tool, deserves its own binary or `go-cmp`-based test helper.
+- **Mid-run pprof capture.** Documented as Tier 4 #9; `--pprof-addr` already exposes the endpoint, capturing at run-time is a one-liner the user can do via `curl localhost:6060/debug/pprof/profile`. Not worth a flag.
+
+### Phase 3 — risk
+
+- **Goroutine count grows.** Each upgrade adds at most one persistent goroutine (progress reporter, ramp ticker, abort watcher). Total stays bounded; no leak risk if cleanup uses the same pattern as the existing samplers.
+- **Metric label cardinality grows** with §3.4's `rate_bucket` label. Bucketing is `[10, 50, 100, 200, 500, 1000, 2000, 5000, 10000+]` — fixed 9 values. No unbounded growth.
+- **Backwards compatibility.** Every Phase 3 flag has a default that reproduces today's behavior (`--auto-warmup=true` only kicks in for read scenarios that need IDs; `--ramp-from/to=0` disables ramping; `--connections=1`). Existing scripts continue to work unchanged.
+- **`--abort-on-*` and CI.** Auto-abort returns exit code 2 (saturated). CI integration tests (Phase 1 Task 8) must NOT set `--abort-on-*` — those tests target nominal-rate runs and shouldn't have a "tripping" signal. Documented in Task-8's text.
