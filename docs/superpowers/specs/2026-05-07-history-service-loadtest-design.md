@@ -127,6 +127,7 @@ If, in a later iteration, isolating either service from worker performance becom
 
 ## Out of scope (this PR / first cut)
 
+**Phase 1 (history + search):**
 - Write-side history-service handlers (EditMessage, DeleteMessage). Mutate state; revisit when write-load matters.
 - Federation / cross-site read patterns (both services are per-site).
 - Connection-pool / keepalive tuning sweeps. The existing `MAX_IN_FLIGHT` knob already covers concurrency.
@@ -135,11 +136,23 @@ If, in a later iteration, isolating either service from worker performance becom
 - Comparing natsrouter vs. raw `nc.QueueSubscribe` services (the original "how much faster" question). The other request/reply services in the codebase use raw subscribe; an apples-to-apples comparison would require a parallel non-natsrouter fork of one of these handlers, which is out of proportion to the value.
 - A dedicated seed-via-direct-write path for either service (warm-up via messaging-pipeline is sufficient).
 
+**Phase 2 (additional services):**
+- `auth-service` — HTTP transport. Loadgen has no HTTP scenario type today. Adding it requires a `Requester` analogue over Resty, separate metrics labels for HTTP status codes, and an entirely new test fixture path (sign-in flow with synthetic SSO tokens). Tracked in a follow-up spec.
+- `inbox-worker` — federation INBOX consumer. Driving it requires a synthetic `OutboxEvent` publisher targeting `outbox.{srcSite}.to.{siteID}.{eventType}` plus INBOX-stream `Sources`/`SubjectTransforms` config. Substantially more involved than the other Phase 2 work and benefits from being scoped on its own. Tracked in a follow-up spec.
+- Per-service write-path mutation budgets. The `room-rpc` mix caps writes at 10%; tighter budgeting (per-room write quotas, write-batch teardown) is left for when concrete data shows it's needed.
+
 ## Risk and reversibility
 
+**Phase 1:**
 - Pure additive: existing messaging-pipeline preset is unchanged.
 - Compose stack grows substantially (Cassandra + Elasticsearch + Valkey + 3 services). Local-only — production untouched. Disk + memory footprint of the compose run roughly doubles; called out in the README.
 - Failure mode: a buggy generator floods either service. The existing `MAX_IN_FLIGHT` cap bounds in-flight requests; same protection as the messaging-pipeline scenario. natsrouter's own `WithMaxConcurrency` (when configured) provides a server-side ceiling that returns `ErrUnavailable` rather than collapsing under load — the load test will surface that ceiling clearly via the `status="busy"` counter.
+
+**Phase 2 incremental risk:**
+- `room-rpc` mutates state (room creates, member adds). Mitigated by run-time isolation (`MONGO_DB=loadgen` + `make teardown`) and by capping writes at 10% of the mix. Worst case: a long run leaves an inflated `rooms` collection in the loadgen Mongo DB until teardown runs.
+- Compose stack grows by **one more service**: `room-service`. Already in the existing `docker-local` stack so the Dockerfile / wiring exists; just needs to be added to `tools/loadgen/deploy/docker-compose.loadtest.yml`.
+- Sampler additions are zero-risk: gauges that read 0 when the consumer isn't being driven. No effect on existing scenarios.
+- Phase 2 increases CI integration-test wallclock by ~30s (room-service startup) at most. If that becomes a problem, gate Phase 2 scenarios behind the same `LOADGEN_NATSROUTER=1` env-var hatch already proposed for Phase 1 in the plan's Risk section.
 
 ## Implementation plan (follow-up PR)
 
