@@ -367,6 +367,8 @@ No new shared package. No `pkg/createroom`. The async path's existing tests (`Te
 
 Call sites (three of them) update from `historySharedSincePtr(req.History, req.Timestamp, req.RoomID)` to `historySharedSincePtr(req.History.Mode, acceptedAt)`. The `req.Timestamp <= 0 → time.Now()` defensive guard at the top of `processAddMembers` already normalizes the timestamp, so the helper no longer needs its own guard or the `roomID` parameter for logging.
 
+**Shipped deviation:** the helper kept its original `(history model.HistoryConfig, timestamp int64, roomID string)` signature to minimize call-site churn — only the body collapsed to the single-branch form (`Mode != HistoryModeNone → nil; otherwise &timestamp`). Call sites still pass `req.History`, `req.Timestamp`, `req.RoomID`. The `roomID` parameter is no longer read but stayed in the signature.
+
 **`room-service/handler.go`:**
 
 The `handleAddMembers` flow forwards `req.History` (now without `SharedSince`) through to room-worker via JetStream. With the field gone from the model, it's no longer carried in the payload. No code change beyond the existing dedup/strip pass; the JSON unmarshal on the worker side simply doesn't see it.

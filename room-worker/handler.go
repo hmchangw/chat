@@ -1348,13 +1348,19 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return nil, fmt.Errorf("bulk create subs: %w", err)
 	}
-	// Re-read canonical sub: BulkCreateSubscriptions swallows dup-key races.
+	// Re-read canonical subs: BulkCreateSubscriptions swallows dup-key races, so the
+	// in-memory subs may carry IDs/JoinedAt that never made it to Mongo. Publish from
+	// the persisted pair instead.
 	requesterSub, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
 	if err != nil {
 		return nil, fmt.Errorf("find requester sub after insert: %w", err)
 	}
+	otherSub, err := h.store.FindDMSubscription(ctx, other.Account, requester.Account)
+	if err != nil {
+		return nil, fmt.Errorf("find counterpart sub after insert: %w", err)
+	}
 
-	h.publishSubscriptionUpdates(ctx, subs, acceptedAt, requestID)
+	h.publishSubscriptionUpdates(ctx, []*model.Subscription{requesterSub, otherSub}, requestID)
 
 	// Outbox failure means the remote site won't learn about the room; fail the request.
 	if err := h.publishSyncDMOutbox(ctx, room, requester, other, acceptedAt); err != nil {
@@ -1379,13 +1385,13 @@ func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
 	return nil
 }
 
-func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.Subscription, acceptedAt time.Time, requestID string) {
+func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.Subscription, requestID string) {
 	for _, sub := range subs {
 		evt := model.SubscriptionUpdateEvent{
 			UserID:       sub.User.ID,
 			Subscription: *sub,
 			Action:       "added",
-			Timestamp:    acceptedAt.UnixMilli(),
+			Timestamp:    time.Now().UTC().UnixMilli(),
 		}
 		data, err := json.Marshal(evt)
 		if err != nil {
@@ -1423,7 +1429,7 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 		SiteID:     room.SiteID,
 		DestSiteID: other.SiteID,
 		Payload:    pData,
-		Timestamp:  acceptedAt.UnixMilli(),
+		Timestamp:  time.Now().UTC().UnixMilli(),
 	}
 	eData, err := json.Marshal(envelope)
 	if err != nil {

@@ -2580,6 +2580,13 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 		Name:     "bob",
 		RoomType: model.RoomTypeDM,
 	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		ID:       "canonical-bob-sub",
+		User:     model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+		RoomID:   idgen.BuildDMRoomID("u-alice", "u-bob"),
+		Name:     "alice",
+		RoomType: model.RoomTypeDM,
+	}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -2629,6 +2636,9 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "helper.bot").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, IsSubscribed: true,
 	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "helper.bot", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bot", Account: "helper.bot"}, IsSubscribed: false,
+	}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
 	data := marshalReq(t, req)
@@ -2662,6 +2672,10 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 		RoomType: model.RoomTypeDM,
 	}
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(existingSub, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		ID: "canonical-bob-sub", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+		RoomID: idgen.BuildDMRoomID("u-alice", "u-bob"), Name: "alice", RoomType: model.RoomTypeDM,
+	}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -2699,6 +2713,9 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+	}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -2723,6 +2740,9 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
 	}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
@@ -2766,6 +2786,9 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+	}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -2798,6 +2821,9 @@ func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
 	}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
@@ -2854,6 +2880,9 @@ func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.
 		})
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, JoinedAt: originalCreatedAt,
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"}, JoinedAt: originalCreatedAt,
 	}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
