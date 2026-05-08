@@ -27,6 +27,7 @@ type HistoryReadConfig struct {
 	Collector      *Collector
 	WarmupDeadline time.Time
 	MaxInFlight    int
+	Ramp           *Ramp
 	// MessageIDs are the seed message IDs to sample from for kinds that
 	// require one (GetMessageByID, LoadSurroundingMessages,
 	// GetThreadMessages). Typically populated from a warm-up phase that
@@ -65,6 +66,7 @@ func (g *HistoryReadGenerator) Run(ctx context.Context) error {
 		Metrics:     g.cfg.Metrics,
 		Preset:      g.cfg.Preset.Name,
 		Scenario:    "history",
+		Ramp:        g.cfg.Ramp,
 	}, g.tick)
 	return nil
 }
@@ -161,6 +163,7 @@ type SearchReadConfig struct {
 	Collector      *Collector
 	WarmupDeadline time.Time
 	MaxInFlight    int
+	Ramp           *Ramp
 	Timeout        time.Duration
 }
 
@@ -194,6 +197,7 @@ func (g *SearchReadGenerator) Run(ctx context.Context) error {
 		Metrics:     g.cfg.Metrics,
 		Preset:      g.cfg.Preset.Name,
 		Scenario:    "search",
+		Ramp:        g.cfg.Ramp,
 	}, g.tick)
 	return nil
 }

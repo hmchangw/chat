@@ -16,7 +16,16 @@ type tickLoopConfig struct {
 	Metrics     *Metrics
 	Preset      string // preset name; the metrics label
 	Scenario    string // scenario name; the metrics label ("history" / "search" / "room")
+	// Ramp, when non-nil, overrides Rate: the ticker's interval is
+	// recomputed once per second from Ramp.RateAt(elapsed). When nil,
+	// the loop ticks at a fixed Rate for the whole run.
+	Ramp *Ramp
 }
+
+// rateRebuildInterval is how often tickLoop polls the Ramp curve to
+// rebuild its ticker. A coarse 1s cadence keeps overhead negligible
+// while still giving fine-grained latency knee detection in Grafana.
+const rateRebuildInterval = 1 * time.Second
 
 // tickLoop runs `tick` at `cfg.Rate` ticks per second until ctx is
 // cancelled. With MaxInFlight > 0, ticks dispatch into a bounded
@@ -25,15 +34,50 @@ type tickLoopConfig struct {
 // (Cleanup C: queue-level event, not per-RPC, so kind is the wildcard
 // "*" rather than a duplicated "saturated").
 //
+// When cfg.Ramp is non-nil, the rate follows the ramp curve and the
+// ticker is rebuilt every rateRebuildInterval (~1s).
+//
 // On ctx cancellation, drains in-flight ticks for up to drainGracePeriod
 // before returning.
 func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context)) {
-	interval := time.Second / time.Duration(cfg.Rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
+	rate := cfg.Rate
+	if cfg.Ramp != nil {
+		rate = cfg.Ramp.RateAt(0)
 	}
+	interval := tickInterval(rate)
+
 	t := time.NewTicker(interval)
 	defer t.Stop()
+
+	var rebuild <-chan time.Time
+	start := time.Now()
+	if cfg.Ramp != nil {
+		// Sample the ramp curve at most every rateRebuildInterval, but
+		// never less often than 10 sub-intervals across the ramp window
+		// — keeps short test ramps observable while bounding overhead on
+		// production-length runs.
+		ri := rateRebuildInterval
+		if cfg.Ramp.Duration > 0 && cfg.Ramp.Duration/10 < ri {
+			ri = cfg.Ramp.Duration / 10
+		}
+		if ri <= 0 {
+			ri = rateRebuildInterval
+		}
+		rebuildTicker := time.NewTicker(ri)
+		defer rebuildTicker.Stop()
+		rebuild = rebuildTicker.C
+	}
+
+	maybeRebuild := func() {
+		if cfg.Ramp == nil {
+			return
+		}
+		newRate := cfg.Ramp.RateAt(time.Since(start))
+		if newRate <= 0 {
+			return
+		}
+		t.Reset(tickInterval(newRate))
+	}
 
 	if cfg.MaxInFlight <= 0 {
 		for {
@@ -42,6 +86,8 @@ func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context
 				return
 			case <-t.C:
 				tick(ctx)
+			case <-rebuild:
+				maybeRebuild()
 			}
 		}
 	}
@@ -74,6 +120,19 @@ func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context
 					cfg.Preset, cfg.Scenario, "*", "saturated",
 				).Inc()
 			}
+		case <-rebuild:
+			maybeRebuild()
 		}
 	}
+}
+
+func tickInterval(rate int) time.Duration {
+	if rate <= 0 {
+		return time.Second
+	}
+	interval := time.Second / time.Duration(rate)
+	if interval <= 0 {
+		return time.Nanosecond
+	}
+	return interval
 }

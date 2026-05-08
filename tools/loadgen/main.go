@@ -146,6 +146,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	progressInterval := fs.Duration("progress-interval", 10*time.Second, "live progress log interval; 0 disables")
 	skipReadiness := fs.Bool("skip-readiness", false, "skip the pre-run readiness probe for read scenarios")
 	readinessTimeout := fs.Duration("readiness-timeout", 30*time.Second, "deadline for the readiness probe to succeed")
+	rampFrom := fs.Int("ramp-from", 0, "starting rate (rps) for a ramped run; 0 disables ramping")
+	rampTo := fs.Int("ramp-to", 0, "ending rate (rps) for a ramped run; 0 disables ramping")
+	rampDuration := fs.Duration("ramp-duration", 0, "time to climb from --ramp-from to --ramp-to")
+	rampShape := fs.String("ramp-shape", "linear", "ramp curve: linear|exponential")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	switch *scenario {
@@ -308,6 +312,30 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	publisher := newNatsCorePublisher(nc.NatsConn(), injectMode, js)
 	requester := &natsRequester{nc: nc.NatsConn()}
 
+	// Phase 3 §3.4: optional rate ramp.
+	var ramp *Ramp
+	if *rampFrom > 0 || *rampTo > 0 || *rampDuration > 0 {
+		var shape RampShape
+		switch *rampShape {
+		case "linear":
+			shape = RampLinear
+		case "exponential":
+			shape = RampExponential
+		default:
+			fmt.Fprintf(os.Stderr, "unknown ramp shape: %s (want linear|exponential)\n", *rampShape)
+			return 2
+		}
+		if *rampFrom <= 0 || *rampTo <= 0 || *rampDuration <= 0 {
+			fmt.Fprintln(os.Stderr, "--ramp-from, --ramp-to, --ramp-duration must all be > 0 when ramping")
+			return 2
+		}
+		ramp = &Ramp{From: *rampFrom, To: *rampTo, Duration: *rampDuration, Shape: shape}
+	}
+	if err := validateRampVsRate(*rate, ramp); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+
 	// Phase 3 §3.3: readiness probe for read scenarios. Skipped for
 	// messaging-pipeline (which doesn't request/reply to a service) and
 	// when --skip-readiness is set.
@@ -358,7 +386,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
 			Rate: *rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
-			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight,
+			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp,
 			Timeout:    *requestTimeout,
 			MessageIDs: msgIDs,
 		}, *seed)
@@ -367,7 +395,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
 			Rate: *rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
-			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight,
+			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp,
 			Timeout: *requestTimeout,
 		}, *seed)
 	case "room-rpc":
@@ -375,7 +403,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
 			Rate: *rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
-			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight,
+			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp,
 			Timeout: *requestTimeout,
 		}, *seed)
 	default:

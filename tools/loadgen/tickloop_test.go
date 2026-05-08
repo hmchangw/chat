@@ -74,3 +74,33 @@ func TestTickLoop_BoundedPoolSaturation(t *testing.T) {
 	}
 	assert.Greater(t, saturated, float64(0), "expected saturation counter to increment")
 }
+
+func TestTickLoop_RampOverridesFixedRate(t *testing.T) {
+	var ticks atomic.Int64
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	// Ramp 100 -> 1000 rps over 200ms. With a fixed rate of 50, the ramped
+	// rate should dominate immediately (RateAt(0) = 100, well above 50).
+	tickLoop(ctx, tickLoopConfig{
+		Rate:        50,
+		MaxInFlight: 0,
+		Metrics:     NewMetrics(),
+		Preset:      "test",
+		Scenario:    "test",
+		Ramp: &Ramp{
+			From: 100, To: 1000,
+			Duration: 200 * time.Millisecond,
+			Shape:    RampLinear,
+		},
+	}, func(ctx context.Context) {
+		ticks.Add(1)
+	})
+
+	got := ticks.Load()
+	// At fixed 50rps over 250ms we'd expect ~12 ticks.
+	// With ramp 100->1000 over 200ms (avg ~550 over the ramp window)
+	// + ~50ms tail at 1000, expect well over 50 ticks.
+	assert.GreaterOrEqual(t, got, int64(50),
+		"ramp should drive rate above fixed; got %d ticks", got)
+}

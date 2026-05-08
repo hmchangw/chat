@@ -20,6 +20,7 @@ type RoomRPCConfig struct {
 	Collector      *Collector
 	WarmupDeadline time.Time
 	MaxInFlight    int
+	Ramp           *Ramp
 	Timeout        time.Duration
 }
 
@@ -53,6 +54,7 @@ func (g *RoomRPCGenerator) Run(ctx context.Context) error {
 		Metrics:     g.cfg.Metrics,
 		Preset:      g.cfg.Preset.Name,
 		Scenario:    "room",
+		Ramp:        g.cfg.Ramp,
 	}, g.tick)
 	return nil
 }
