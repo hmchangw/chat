@@ -220,3 +220,47 @@ func TestSearchReadPreset_HasScopeAndSize(t *testing.T) {
 	assert.Equal(t, "channel", p.SearchScope, "search-read preset must declare SearchScope")
 	assert.Equal(t, 20, p.SearchSize, "search-read preset must declare SearchSize")
 }
+
+func TestRoomRPCPreset_HasMixAndWriteIDPrefix(t *testing.T) {
+	p, ok := BuiltinPreset("room-rpc")
+	require.True(t, ok, "room-rpc preset must be registered")
+
+	// Mix is exhaustive over roomRequestKind and sums to 100.
+	want := map[roomRequestKind]int{
+		RoomsListKind:  60,
+		RoomsGetKind:   20,
+		MemberListKind: 10,
+		RoomCreateKind: 8,
+		MemberAddKind:  2,
+	}
+	assert.Equal(t, want, p.RoomMix)
+
+	total := 0
+	for _, w := range p.RoomMix {
+		total += w
+	}
+	assert.Equal(t, 100, total, "RoomMix weights must sum to 100")
+
+	// WriteIDPrefix is the forensic-identification marker for generated
+	// rooms / member docs created by RoomCreate / MemberAdd ticks.
+	assert.Equal(t, "loadgen-", p.WriteIDPrefix)
+
+	// Fixture shape matches `realistic` for cross-preset reuse of seeds.
+	assert.Equal(t, 1000, p.Users)
+	assert.Equal(t, 100, p.Rooms)
+}
+
+func TestPickRoomKind_RespectsWeights(t *testing.T) {
+	r := rand.New(rand.NewSource(42))
+	weights := map[roomRequestKind]int{
+		RoomsListKind: 60,
+		RoomsGetKind:  40,
+	}
+	counts := map[roomRequestKind]int{}
+	for i := 0; i < 10000; i++ {
+		counts[pickRoomKind(r, weights)]++
+	}
+	// Within ±2% of expected (6000/4000).
+	assert.InDelta(t, 6000, counts[RoomsListKind], 200)
+	assert.InDelta(t, 4000, counts[RoomsGetKind], 200)
+}

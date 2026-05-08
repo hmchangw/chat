@@ -14,3 +14,7 @@ var ErrUnknownHistoryKind = errors.New("unknown historyRequestKind")
 // ErrUnknownSearchKind is wrapped by buildSearchRequest when the
 // caller-supplied kind doesn't match a known searchRequestKind.
 var ErrUnknownSearchKind = errors.New("unknown searchRequestKind")
+
+// ErrUnknownRoomKind is wrapped by buildRoomRequest when the
+// caller-supplied kind doesn't match a known roomRequestKind.
+var ErrUnknownRoomKind = errors.New("unknown roomRequestKind")

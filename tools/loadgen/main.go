@@ -144,7 +144,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	switch *scenario {
-	case "messaging-pipeline", "history-read", "search-read":
+	case "messaging-pipeline", "history-read", "search-read", "room-rpc":
 	default:
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", *scenario)
 		return 2
@@ -273,11 +273,23 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	defer func() { _ = e2DMSub.Unsubscribe() }()
 
 	canonical := stream.MessagesCanonical(cfg.SiteID)
+	rooms := stream.Rooms(cfg.SiteID)
+	inbox := stream.Inbox(cfg.SiteID)
 	samplerCtx, cancelSamplers := context.WithCancel(ctx)
 	defer cancelSamplers()
 	samplers := []*ConsumerSampler{
+		// MESSAGES_CANONICAL consumers (driven by messaging-pipeline).
 		NewConsumerSampler(js, canonical.Name, "message-worker", metrics, 1*time.Second),
 		NewConsumerSampler(js, canonical.Name, "broadcast-worker", metrics, 1*time.Second),
+		NewConsumerSampler(js, canonical.Name, "notification-worker", metrics, 1*time.Second),
+		NewConsumerSampler(js, canonical.Name, "search-sync-worker-messages", metrics, 1*time.Second),
+		// ROOMS consumer (driven by room-rpc).
+		NewConsumerSampler(js, rooms.Name, "room-worker", metrics, 1*time.Second),
+		// INBOX consumers — populated either by federation or by local-publish
+		// from message-worker / room-worker. Empty gauges read 0 cleanly when
+		// the relevant scenario isn't running.
+		NewConsumerSampler(js, inbox.Name, "search-sync-worker-spotlight", metrics, 1*time.Second),
+		NewConsumerSampler(js, inbox.Name, "search-sync-worker-user-room", metrics, 1*time.Second),
 	}
 	var samplerWG sync.WaitGroup
 	for _, s := range samplers {
@@ -315,6 +327,14 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		}, *seed)
 	case "search-read":
 		gen = NewSearchReadGenerator(&SearchReadConfig{
+			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
+			Rate: *rate, Requester: requester, Metrics: metrics,
+			Collector:      collector,
+			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight,
+			Timeout: *requestTimeout,
+		}, *seed)
+	case "room-rpc":
+		gen = NewRoomRPCGenerator(&RoomRPCConfig{
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
 			Rate: *rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
@@ -402,7 +422,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		E2:                ComputePercentiles(collector.E2Samples()),
 		E1Count:           collector.E1Count(),
 		E2Count:           collector.E2Count(),
-		Consumers:         []ConsumerStat{samplers[0].Snapshot(), samplers[1].Snapshot()},
+		Consumers:         consumerSnapshots(samplers),
 		Requests:          collector.RequestStats(),
 	}
 	if err := PrintSummary(os.Stdout, &summary); err != nil {
@@ -491,6 +511,14 @@ func writeCSVFile(path string, c *Collector) error {
 		})
 	}
 	return WriteCSV(f, rows)
+}
+
+func consumerSnapshots(samplers []*ConsumerSampler) []ConsumerStat {
+	out := make([]ConsumerStat, 0, len(samplers))
+	for _, s := range samplers {
+		out = append(out, s.Snapshot())
+	}
+	return out
 }
 
 func gatheredCounterValue(mfs []*dto.MetricFamily, name string, labelName, labelValue string) float64 {
