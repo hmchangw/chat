@@ -37,7 +37,7 @@ var errLargeRoomPostRestricted = &codedError{
 
 type Store interface {
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
-	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
+	GetRoomUserCount(ctx context.Context, roomID string) (int, error)
 }
 
 // ParentMessageFetcher resolves a quoted parent message into a snapshot

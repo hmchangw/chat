@@ -42,19 +42,19 @@ func (m *MockStore) EXPECT() *MockStoreMockRecorder {
 	return m.recorder
 }
 
-// GetRoom mocks base method.
-func (m *MockStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
+// GetRoomUserCount mocks base method.
+func (m *MockStore) GetRoomUserCount(ctx context.Context, roomID string) (int, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetRoom", ctx, roomID)
-	ret0, _ := ret[0].(*model.Room)
+	ret := m.ctrl.Call(m, "GetRoomUserCount", ctx, roomID)
+	ret0, _ := ret[0].(int)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetRoom indicates an expected call of GetRoom.
-func (mr *MockStoreMockRecorder) GetRoom(ctx, roomID any) *gomock.Call {
+// GetRoomUserCount indicates an expected call of GetRoomUserCount.
+func (mr *MockStoreMockRecorder) GetRoomUserCount(ctx, roomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRoom", reflect.TypeOf((*MockStore)(nil).GetRoom), ctx, roomID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRoomUserCount", reflect.TypeOf((*MockStore)(nil).GetRoomUserCount), ctx, roomID)
 }
 
 // GetSubscription mocks base method.

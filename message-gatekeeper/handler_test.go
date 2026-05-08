@@ -83,8 +83,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(sub, nil)
 				s.EXPECT().
-					GetRoom(gomock.Any(), validRoomID).
-					Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
+					GetRoomUserCount(gomock.Any(), validRoomID).
+					Return(1, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
@@ -282,8 +282,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(sub, nil)
 				s.EXPECT().
-					GetRoom(gomock.Any(), validRoomID).
-					Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
+					GetRoomUserCount(gomock.Any(), validRoomID).
+					Return(1, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				return makePublishFunc(nil, fmt.Errorf("nats publish error")), nil
@@ -425,8 +425,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 						Roles: []model.Role{model.RoleMember},
 					}, nil)
 				s.EXPECT().
-					GetRoom(gomock.Any(), validRoomID).
-					Return(&model.Room{ID: validRoomID, UserCount: 600}, nil)
+					GetRoomUserCount(gomock.Any(), validRoomID).
+					Return(600, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
@@ -457,8 +457,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 						Roles: []model.Role{model.RoleMember},
 					}, nil)
 				s.EXPECT().
-					GetRoom(gomock.Any(), validRoomID).
-					Return(&model.Room{ID: validRoomID, UserCount: 50}, nil)
+					GetRoomUserCount(gomock.Any(), validRoomID).
+					Return(50, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
@@ -484,8 +484,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 						Roles: []model.Role{model.RoleMember},
 					}, nil)
 				s.EXPECT().
-					GetRoom(gomock.Any(), validRoomID).
-					Return(&model.Room{ID: validRoomID, UserCount: 500}, nil)
+					GetRoomUserCount(gomock.Any(), validRoomID).
+					Return(500, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
@@ -511,8 +511,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 						Roles: []model.Role{model.RoleMember},
 					}, nil)
 				s.EXPECT().
-					GetRoom(gomock.Any(), validRoomID).
-					Return(&model.Room{ID: validRoomID, UserCount: 501}, nil)
+					GetRoomUserCount(gomock.Any(), validRoomID).
+					Return(501, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
@@ -574,8 +574,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 						Roles: []model.Role{model.RoleMember},
 					}, nil)
 				s.EXPECT().
-					GetRoom(gomock.Any(), validRoomID).
-					Return(nil, errors.New("mongo unreachable"))
+					GetRoomUserCount(gomock.Any(), validRoomID).
+					Return(0, errors.New("mongo unreachable"))
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				return makePublishFunc(nil, nil), nil
@@ -607,8 +607,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 						Roles: []model.Role{model.RoleMember},
 					}, nil)
 				s.EXPECT().
-					GetRoom(gomock.Any(), validRoomID).
-					Return(nil, fmt.Errorf("find room %q: %w", validRoomID, mongo.ErrNoDocuments))
+					GetRoomUserCount(gomock.Any(), validRoomID).
+					Return(0, fmt.Errorf("find user count for room %q: %w", validRoomID, mongo.ErrNoDocuments))
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				return makePublishFunc(nil, nil), nil
@@ -634,8 +634,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 						Roles: []model.Role{model.RoleMember},
 					}, nil)
 				s.EXPECT().
-					GetRoom(gomock.Any(), validRoomID).
-					Return(&model.Room{ID: validRoomID, UserCount: 3}, nil)
+					GetRoomUserCount(gomock.Any(), validRoomID).
+					Return(3, nil)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
@@ -730,8 +730,8 @@ func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing
 	store := NewMockStore(ctrl)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}}, nil)
-	store.EXPECT().GetRoom(gomock.Any(), "room-1").
-		Return(&model.Room{ID: "room-1", UserCount: 1}, nil)
+	store.EXPECT().GetRoomUserCount(gomock.Any(), "room-1").
+		Return(1, nil)
 
 	var capturedHeader nats.Header
 	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
@@ -826,7 +826,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
-				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
+				s.EXPECT().GetRoomUserCount(gomock.Any(), validRoomID).Return(1, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
@@ -859,7 +859,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
-				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
+				s.EXPECT().GetRoomUserCount(gomock.Any(), validRoomID).Return(1, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
@@ -911,7 +911,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
-				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
+				s.EXPECT().GetRoomUserCount(gomock.Any(), validRoomID).Return(1, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
@@ -974,7 +974,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
-				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
+				s.EXPECT().GetRoomUserCount(gomock.Any(), validRoomID).Return(1, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				// no EXPECT — gomock will fail the test if FetchQuotedParent is called
@@ -1000,7 +1000,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
-				s.EXPECT().GetRoom(gomock.Any(), validRoomID).Return(&model.Room{ID: validRoomID, UserCount: 1}, nil)
+				s.EXPECT().GetRoomUserCount(gomock.Any(), validRoomID).Return(1, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().

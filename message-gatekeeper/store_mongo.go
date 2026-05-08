@@ -7,6 +7,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -35,14 +36,19 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 	return &sub, nil
 }
 
-// GetRoom fetches a room document by its ID. Any error (including
+// GetRoomUserCount returns the room's userCount via a projected findOne. The
+// admission rule is the only consumer and only needs the count, so we avoid
+// pulling the rest of the Room document over the wire. Any error (including
 // mongo.ErrNoDocuments) is wrapped and returned — the handler treats every
 // failure here as an infrastructure error, since reaching this call already
 // implies a subscription for the room exists.
-func (s *MongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
-	var room model.Room
-	if err := s.rooms.FindOne(ctx, bson.M{"_id": roomID}).Decode(&room); err != nil {
-		return nil, fmt.Errorf("find room %q: %w", roomID, err)
+func (s *MongoStore) GetRoomUserCount(ctx context.Context, roomID string) (int, error) {
+	var doc struct {
+		UserCount int `bson:"userCount"`
 	}
-	return &room, nil
+	opts := options.FindOne().SetProjection(bson.M{"userCount": 1})
+	if err := s.rooms.FindOne(ctx, bson.M{"_id": roomID}, opts).Decode(&doc); err != nil {
+		return 0, fmt.Errorf("find user count for room %q: %w", roomID, err)
+	}
+	return doc.UserCount, nil
 }
