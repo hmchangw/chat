@@ -96,9 +96,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, jetstream.ConsumerConfig{
-		Durable: "room-worker", AckPolicy: jetstream.AckExplicitPolicy,
-	})
+	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, buildConsumerConfig())
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -153,4 +151,13 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
+}
+
+// buildConsumerConfig returns the durable consumer config for
+// room-worker. Centralized so it is unit-testable without NATS.
+func buildConsumerConfig() jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults()
+	cc.Durable = "room-worker"
+	cc.MaxAckPending = 200
+	return cc
 }
