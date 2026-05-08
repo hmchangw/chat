@@ -339,7 +339,7 @@ git commit -m "feat(broadcast-worker): apply standard durable consumer defaults"
 
 ## Task 4: Apply defaults in `message-worker` and remove `MaxRedeliver`
 
-**Context:** `message-worker` has a custom `MaxRedeliver` config field (default `5`) referenced only in `main.go` lines 34 and 118. No deploy manifests set `MAX_REDELIVER`. Verified by `grep -rn "MAX_REDELIVER" /home/user/chat/` — only the spec doc and the field/usage. The unified default of `MaxDeliver = 5` matches the current default, so no operational behavior change.
+**Context:** `message-worker` has a custom `MaxRedeliver` config field (default `5`) referenced only in `main.go` lines 34 and 118. No deploy manifests set `MAX_REDELIVER`. Verified by `grep -rn "MAX_REDELIVER" /home/user/chat/` — only the spec doc and the field/usage. The prior code computed `MaxDeliver = MaxRedeliver + 1 = 6` (1 initial + 5 retries). The unified default `MaxDeliver = 5` (1 initial + 4 retries) is a deliberate 1-attempt reduction in retry budget — accepted as part of unifying the project standard.
 
 **Files:**
 - Modify: `message-worker/main.go:34` (remove `MaxRedeliver` config field)

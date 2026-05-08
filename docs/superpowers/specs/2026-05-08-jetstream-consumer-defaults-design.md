@@ -125,7 +125,12 @@ cons, err := js.CreateOrUpdateConsumer(ctx, streamName, cc)
 - **`message-worker`**: drop the existing `MaxDeliver: cfg.MaxRedeliver+1`
   override; the unified `MaxDeliver = 5` from defaults applies. The
   `MaxRedeliver` config field can be removed if it is not referenced
-  elsewhere.
+  elsewhere. Note: the prior code computed `MaxDeliver = MaxRedeliver + 1`
+  with `MaxRedeliver` defaulting to `5`, yielding `MaxDeliver = 6` (1
+  initial + 5 retries). The new project-wide default of `5` total
+  deliveries (1 initial + 4 retries) is a deliberate 1-attempt
+  reduction in `message-worker`'s retry budget — accepted as part of
+  unifying the project standard.
 - **`inbox-worker`**: keep `FilterSubjects:
   ["chat.inbox.{siteID}.aggregate.>"]`.
 - **`search-sync-worker`** (all three consumers): keep `BackOff: [1s, 5s,
