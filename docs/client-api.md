@@ -777,6 +777,83 @@ See [Error envelope](#5-error-envelope-reference). Common errors:
 
 ---
 
+#### Read Message Receipts
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.message.read-receipt`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+A **synchronous, sender-only** RPC. Returns the list of users on the local site whose `subscription.lastSeenAt` is at or after the target message's `createdAt`. Only the message author may call it. The author is excluded from the result.
+
+##### Request body
+
+| Field       | Type   | Notes |
+|-------------|--------|-------|
+| `messageId` | string | Required. The message whose readers to enumerate. |
+
+```json
+{ "messageId": "01970a4f8c2d7c9a01970a4f" }
+```
+
+##### Success response
+
+| Field     | Type                    | Notes |
+|-----------|-------------------------|-------|
+| `readers` | array<ReadReceiptEntry> | Empty array when no subscription has read past `message.createdAt`. |
+
+`ReadReceiptEntry`:
+
+| Field         | Type   | Notes |
+|---------------|--------|-------|
+| `userId`      | string | Internal user ID (`users._id`). |
+| `account`     | string | Account name. |
+| `chineseName` | string |       |
+| `engName`     | string |       |
+
+```json
+{
+  "readers": [
+    {
+      "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+      "account": "bob",
+      "chineseName": "鮑勃",
+      "engName": "Bob"
+    }
+  ]
+}
+```
+
+##### Error response
+
+See [Error envelope](#5-error-envelope-reference). Common errors:
+
+- `"only room members can list members"` — the requester has no subscription in the room.
+- `"message not found"` — no message matches `messageId`.
+- `"message does not belong to this room"` — `messageId` exists but its `roomId` differs from the subject roomID.
+- `"only the message sender can view read receipts"` — requester is not the author of `messageId`.
+- `"invalid message-read-receipt subject: …"` — the subject is malformed.
+- `"invalid request: messageId is required"` — empty `messageId`.
+
+```json
+{ "error": "only the message sender can view read receipts" }
+```
+
+##### Behaviour notes
+
+- **Local-site only.** The query reads same-site `subscriptions`; cross-site read state is not surfaced by this RPC.
+- **Sender excluded.** The author is filtered out at the database layer regardless of their own `lastSeenAt`.
+- **Cap.** Result is capped at `MAX_ROOM_SIZE`; rooms larger than this cap will truncate silently.
+- **No writes.** This RPC does not mutate any subscription, room, or message. Use the `message.read` RPC to advance `lastSeenAt`.
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 #### List Org Members
 
 **Subject:** `chat.user.{account}.request.orgs.{orgID}.members`
