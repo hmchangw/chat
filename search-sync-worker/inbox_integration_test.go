@@ -153,7 +153,7 @@ func TestSpotlightSync_Integration(t *testing.T) {
 	indexName := "spotlight-site-spot-v1-chat"
 
 	// --- ES template + index ---
-	engine, err := searchengine.New(ctx, "elasticsearch", esURL, false)
+	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -245,7 +245,7 @@ func TestSpotlightSync_BulkInvite(t *testing.T) {
 	siteID := "site-spot-bulk"
 	indexName := "spotlight-site-spot-bulk-v1-chat"
 
-	engine, err := searchengine.New(ctx, "elasticsearch", esURL, false)
+	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -318,7 +318,7 @@ func TestUserRoomSync_Integration(t *testing.T) {
 	siteID := "site-ur"
 	indexName := "user-room-site-ur"
 
-	engine, err := searchengine.New(ctx, "elasticsearch", esURL, false)
+	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -440,7 +440,7 @@ func TestUserRoomSync_BulkInvite(t *testing.T) {
 	siteID := "site-ur-bulk"
 	indexName := "user-room-site-ur-bulk"
 
-	engine, err := searchengine.New(ctx, "elasticsearch", esURL, false)
+	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -555,7 +555,7 @@ func TestUserRoomSync_LWWGuard(t *testing.T) {
 	siteID := "site-lww"
 	indexName := "user-room-site-lww"
 
-	engine, err := searchengine.New(ctx, "elasticsearch", esURL, false)
+	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 

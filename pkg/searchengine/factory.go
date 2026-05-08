@@ -10,16 +10,30 @@ import (
 	"github.com/elastic/go-elasticsearch/v8"
 )
 
-// New creates a SearchEngine for the given backend ("elasticsearch" or "opensearch").
-// It verifies connectivity via Ping before returning. When tlsSkipVerify is
-// true, server certificate verification is disabled — intended for
-// self-signed/internal ES clusters; MUST stay false in production.
-func New(ctx context.Context, backend, url string, tlsSkipVerify bool) (SearchEngine, error) {
+// Config bundles every connection-time knob for the search backend.
+type Config struct {
+	Backend  string
+	URL      string
+	Username string
+	Password string
+	// TLSSkipVerify disables server cert verification — opt-in via env for
+	// self-signed/internal clusters; MUST stay false in production.
+	TLSSkipVerify bool
+}
+
+// New creates a SearchEngine for the configured backend
+// ("elasticsearch" or "opensearch") and verifies connectivity via Ping
+// before returning.
+func New(ctx context.Context, cfg Config) (SearchEngine, error) {
 	var transport Transporter
-	switch backend {
+	switch cfg.Backend {
 	case "elasticsearch":
-		esCfg := elasticsearch.Config{Addresses: []string{url}}
-		if tlsSkipVerify {
+		esCfg := elasticsearch.Config{
+			Addresses: []string{cfg.URL},
+			Username:  cfg.Username,
+			Password:  cfg.Password,
+		}
+		if cfg.TLSSkipVerify {
 			dt, ok := http.DefaultTransport.(*http.Transport)
 			if !ok {
 				return nil, fmt.Errorf("create elasticsearch client: http.DefaultTransport is not *http.Transport")
@@ -37,7 +51,7 @@ func New(ctx context.Context, backend, url string, tlsSkipVerify bool) (SearchEn
 		}
 		transport = client
 	default:
-		return nil, fmt.Errorf("unsupported search backend: %s", backend)
+		return nil, fmt.Errorf("unsupported search backend: %s", cfg.Backend)
 	}
 
 	adapter := newAdapter(transport)
