@@ -203,3 +203,65 @@ No new tests — the `ConsumerSampler` is exercised by Phase 1's integration tes
 - The terminal report's "Consumers" section auto-includes them via the existing iteration.
 
 **Smoke test.** `loadgen run --scenario=messaging-pipeline --duration=10s` should produce non-zero `loadgen_consumer_pending` for `notification-worker`, `search-sync-worker-messages`. `loadgen run --scenario=room-rpc --duration=10s` should produce non-zero values for `room-worker`. Other gauges read 0 cleanly per scenario.
+
+---
+
+## Phase 3 — harness upgrades
+
+**Spec section:** [Phase 3 — harness upgrades](../specs/2026-05-07-history-service-loadtest-design.md#phase-3--harness-upgrades)
+
+Same PR; tasks land after Task 15 in the same branch. Six upgrades; each is its own TDD task. Estimated total: ~4 days of focused work, with Tasks 16-18 (UX) deliverable in ~2 days as a partial-merge if needed.
+
+### Pre-Phase-3 cleanup (carried from baseline review)
+
+Before Task 16 lands, address the warnings the baseline reviewer surfaced. These are not blockers for shipped Phase 1 code but matter for Phase 2 / Phase 3 because the third generator type (`RoomRPCGenerator`) drops into the chassis they touch:
+
+- **Cleanup A:** Replace bare-string `errors` in `tools/loadgen/read_generator.go:62,219` and `request_builder.go:83,121` with sentinels (`var ErrInvalidRate = errors.New(...)`). CLAUDE.md §3 mandates `fmt.Errorf` wrapping; sentinels are the right alternative when there's no underlying error.
+- **Cleanup B:** Extract a shared `tickLoop(ctx, rate, maxInFlight, scenarioLabel, tickFn)` from `HistoryReadGenerator.Run` / `SearchReadGenerator.Run`. Today the two are byte-identical aside from saturation labels; with `RoomRPCGenerator` incoming they'd become byte-identical *thrice*.
+- **Cleanup C:** Replace `RequestErrors{kind="saturated", reason="saturated"}` (the duplicate label values) with `kind="*"` since saturation is a queue-level event, not a per-RPC event.
+- **Cleanup D:** Move hard-coded `Scope: "channel"` and `Size: 20` from `read_generator.go:289-291` onto `Preset.SearchScope` / `Preset.SearchSize`. Keeps the preset the single source of workload truth.
+
+Cleanup tasks share one commit; they're a refactor before Phase 2 Task 13, not a new feature.
+
+### Task 16 — auto warm-up for read scenarios
+
+**Red:** New `auto_warmup_test.go`. Cases:
+- `TestAutoWarmup_PopulatesMessageIDPool` — run a brief messaging-pipeline phase (using a fake Publisher), assert the resulting Collector has ≥ N messages in `byMsgID` and that `Collector.MessageIDs()` returns them.
+- `TestAutoWarmup_HandsOffToHistoryRead` — orchestrator function takes `(ctx, cfg)` and yields a `MessageIDs` slice; assert the slice is passed through to `HistoryReadConfig`.
+- `TestAutoWarmup_SkipsWhenNotNeeded` — when `HistoryMix` only contains `LoadHistory`, warm-up phase isn't run (no message IDs needed).
+- `TestAutoWarmup_OptOut` — `--auto-warmup=false` skips even when needed; user accepts the empty-pool error counter.
+
+**Green:**
+- New `Collector.MessageIDs() []string` method (lock + key extract from `byMsgID`).
+- New `runWithAutoWarmup(ctx, cfg) ([]string, error)` orchestrator in `main.go` (or a sibling `auto_warmup.go`).
+- `runRun` calls it conditionally before the read generator dispatch when `scenario=="history-read" && needsWarmup(preset)`.
+
+**Refactor:** None expected. Auto-warmup is purely additive; existing scenarios are untouched.
+
+### Task 17 — live progress reporting
+
+**Red:** New `progress_test.go` cases:
+- `TestProgress_EmitsAtConfiguredInterval` — wire a fake clock + capture stdout; assert one line per interval.
+- `TestProgress_ComputesInstantaneousRate` — feed synthetic counter deltas, assert reported rate matches the delta over the last interval (not lifetime).
+- `TestProgress_StopsOnContextCancel` — cancel context, assert no further lines.
+
+**Green:**
+- New `progress.go` with a `Progress` type holding metrics references + a tick goroutine.
+- `Progress.Run(ctx)` reads `Registry.Gather()` once per `--progress-interval` (default 10s), computes deltas vs. previous, emits one structured slog line.
+- Started by `runRun` after readiness probe (Task 18) succeeds. Stopped on context cancel.
+
+**Refactor:** Hoist the metric-name string constants to a private package-level block so `progress.go` and `main.go` share a single source of truth for what to scrape.
+
+### Task 18 — service readiness probes
+
+**Red:** `readiness_test.go` cases:
+- `TestReadiness_SucceedsOnFirstReply` — fake nc.Request returns immediately; assert `WaitForReady` returns nil within one probe interval.
+- `TestReadiness_RetriesUntilReady` — fake fails N times then succeeds; assert backoff sequence (200ms, 400ms, 800ms, ...) caps at 2s, total elapsed ≤ 30s.
+- `TestReadiness_ReturnsErrorAfterDeadline` — fake always fails; assert `ctx.DeadlineExceeded` (or wrapped equivalent).
+- `TestReadiness_ScenarioDispatch` — table-driven, one entry per scenario; assert the right probe subject is selected.
+
+**Green:**
+- New `readiness.go` with `WaitForReady(ctx, scenario, nc, fixtures)` and per-scenario probe builders. Probe subjects sourced from `pkg/subject` (no new builders needed).
+- `runRun` calls it after `nc` connect, before generator construction. Skipped when `--skip-readiness=true`.
+
+**Refactor:** None.
