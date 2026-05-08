@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -119,6 +120,8 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		subs = buildDMSubs(requester, other, room, acceptedAt)
 	case model.RoomTypeBotDM:
 		subs = buildBotDMSubs(requester, other, room, acceptedAt)
+	default:
+		return nil, errInvalidSyncDMRequest
 	}
 
 	requesterSub, err := h.persistSyncDMSubs(ctx, requester, other, subs)
@@ -247,4 +250,18 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 		eData,
 		requestID+":"+other.SiteID,
 	)
+}
+
+// natsServerCreateDM is the NATS-side entry point for chat.server.request.room.{siteID}.create.dm.
+// It builds the handler context, invokes handleSyncCreateDM, and replies via natsutil.
+func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
+	ctx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
+	reply, err := h.handleSyncCreateDM(ctx, m.Msg.Data)
+	if err != nil {
+		natsutil.ReplyError(m.Msg, sanitizeSyncDMError(err))
+		return
+	}
+	if err := m.Msg.Respond(reply); err != nil {
+		slog.Error("sync DM: reply failed", "error", err)
+	}
 }

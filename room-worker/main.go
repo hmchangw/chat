@@ -18,6 +18,7 @@ import (
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type config struct {
@@ -89,6 +90,11 @@ func main() {
 		}
 		return nil
 	})
+
+	if _, err := nc.QueueSubscribe(subject.RoomCreateDMSync(cfg.SiteID), "room-worker", handler.natsServerCreateDM); err != nil {
+		slog.Error("subscribe sync DM endpoint failed", "error", err)
+		os.Exit(1)
+	}
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, jetstream.ConsumerConfig{
 		Durable: "room-worker", AckPolicy: jetstream.AckExplicitPolicy,
