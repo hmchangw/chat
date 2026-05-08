@@ -367,12 +367,20 @@ When `--ramp-from`/`--ramp-to` are non-zero they override `--rate` (which become
 
 When triggered, the generator stops, the report tags the run as `status="saturated"`, and exit code is 2 (distinguishable from clean-fail or clean-pass).
 
-**Implementation.**
-- A goroutine alongside the progress reporter (§3.2) that consumes the same metrics. Maintains a sliding window (last 30s of samples) and checks both thresholds.
-- On trigger, calls `cancelRun()` (the existing context cancellation hook); the generator's drain logic does the rest.
-- The "sustained" requirement is important — momentary spikes are normal, what matters is sustained degradation.
+**Pairs naturally with §3.4** — this is the headline capability of the two combined: a ramped run with `--abort-on-p99-ms=1000` walks the rate curve until the knee, then stops. The final summary reports the rate at which the threshold was breached — that IS the capacity number.
 
-**Pairs naturally with §3.4.** A ramped run with `--abort-on-p99-ms=1000` walks the rate curve until the knee, then stops. The final summary reports the rate at which the threshold was breached — that IS the capacity number.
+**Implementation — the metric-source problem.** Prometheus `Histogram` exposes cumulative bucket counts; you cannot extract a per-window p99 from `Registry.Gather()` because there's no per-tick snapshot. Switching to `Summary` would give native quantiles but breaks aggregation across `scenario`/`kind` labels (Summaries don't aggregate, Histograms do — that's why we chose Histograms in Task 6).
+
+**Resolution.** Loadgen keeps the Histogram for Prometheus scrape (long-term observability) AND maintains an in-process **ring buffer of raw latency samples** scoped to each scenario+kind combination, sized to hold the last `max(abort_window, 60s)` worth at the configured rate. The abort watcher reads from this ring buffer:
+
+- `pkg/loadgen/window.go` (new): a `LatencyWindow` type with `Add(latency time.Duration, errored bool)` and `P99(over time.Duration) time.Duration`, `ErrorRate(over time.Duration) float64`. Append on every reply; lock-protected.
+- The `Collector` (or a sibling) holds one `LatencyWindow` per scenario; the watcher polls it once per second.
+- Memory: at 5000 rps × 60s × ~20 bytes per sample = ~6 MB worst case. Negligible.
+- This deliberately duplicates raw data already in the histogram. It's the right call: Prometheus does what Prometheus does well; loadgen does in-process control with in-process state.
+
+**The "sustained" requirement** is important — momentary spikes are normal, what matters is sustained degradation. A breach must hold for the full window (default 30s for p99, 10s for error rate) before triggering.
+
+**Window-state interaction with readiness probe (§3.3) and warmup (§3.1).** The abort watcher only starts AFTER the warmup deadline; samples from the warmup window AND from readiness probes are excluded from the ring buffer. Order: probe → warmup ticks (samples discarded) → measured ticks (samples retained, watcher armed).
 
 ### 3.6 Per-tenant connection multiplexing
 
@@ -401,6 +409,10 @@ When triggered, the generator stops, the report tags the run as `status="saturat
 - All N data connections drained on shutdown; observer drained last.
 
 **Default stays at 1** so existing scripts and the default smoke run are unchanged. Bumping `--connections=10` is a deliberate "I want connection-level fan-out" decision.
+
+**Interaction with §3.4 ramp.** A single ramp ticker drives the whole generator regardless of pool size. Each tick picks a user, hashes to a connection, publishes. The ramp is global (rps total), not per-connection. Per-connection rate-bucket cardinality stays bounded.
+
+**Verification of fan-out.** Loadgen exposes `loadgen_publishes_total{conn_id="0..N-1"}` so the test for "actually multiplexes" is a one-liner: assert all N values are non-zero after a brief run. (The `/varz` NATS endpoint reports aggregate connection counts, not per-connection publish volume, and is not the right oracle.)
 
 ### Phase 3 — out of scope
 
