@@ -139,8 +139,16 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	rate := fs.Int("rate", 500, "target msgs/sec")
 	warmup := fs.Duration("warmup", 10*time.Second, "warmup window (samples discarded)")
 	inject := fs.String("inject", "frontdoor", "injection point: frontdoor|canonical")
+	scenario := fs.String("scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read")
+	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "per-request timeout for read scenarios")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
+	switch *scenario {
+	case "messaging-pipeline", "history-read", "search-read":
+	default:
+		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", *scenario)
+		return 2
+	}
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
 		return 2
@@ -281,20 +289,50 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 
 	publisher := newNatsCorePublisher(nc.NatsConn(), injectMode, js)
+	requester := &natsRequester{nc: nc.NatsConn()}
 
 	warmupDeadline := time.Now().Add(*warmup)
-	gen := NewGenerator(&GeneratorConfig{
-		Preset:         &p,
-		Fixtures:       fixtures,
-		SiteID:         cfg.SiteID,
-		Rate:           *rate,
-		Inject:         injectMode,
-		Publisher:      publisher,
-		Metrics:        metrics,
-		Collector:      collector,
-		WarmupDeadline: warmupDeadline,
-		MaxInFlight:    cfg.MaxInFlight,
-	}, *seed)
+
+	type runner interface {
+		Run(ctx context.Context) error
+	}
+	var gen runner
+	switch *scenario {
+	case "history-read":
+		gen = NewHistoryReadGenerator(&HistoryReadConfig{
+			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
+			Rate: *rate, Requester: requester, Metrics: metrics,
+			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight,
+			Timeout: *requestTimeout,
+			// MessageIDs for kinds that need them are pre-populated by a
+			// follow-up wiring step (warm-up phase publishes via the
+			// messaging-pipeline scenario, then hands the captured IDs
+			// here). With an empty pool, GetMessageByID /
+			// LoadSurroundingMessages / GetThreadMessages tick into the
+			// "no_message_ids" error counter; LoadHistory works regardless.
+			MessageIDs: nil,
+		}, *seed)
+	case "search-read":
+		gen = NewSearchReadGenerator(&SearchReadConfig{
+			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
+			Rate: *rate, Requester: requester, Metrics: metrics,
+			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight,
+			Timeout: *requestTimeout,
+		}, *seed)
+	default:
+		gen = NewGenerator(&GeneratorConfig{
+			Preset:         &p,
+			Fixtures:       fixtures,
+			SiteID:         cfg.SiteID,
+			Rate:           *rate,
+			Inject:         injectMode,
+			Publisher:      publisher,
+			Metrics:        metrics,
+			Collector:      collector,
+			WarmupDeadline: warmupDeadline,
+			MaxInFlight:    cfg.MaxInFlight,
+		}, *seed)
+	}
 
 	runCtx, cancelRun := context.WithTimeout(ctx, *duration)
 	defer cancelRun()
@@ -382,6 +420,26 @@ type natsCorePublisher struct {
 	nc           *nats.Conn
 	useJetStream bool
 	js           jetstream.JetStream
+}
+
+// natsRequester adapts nc.RequestWithContext to the Requester interface
+// used by the read-only scenarios. The timeout is enforced via a per-call
+// derived context so callers don't need to thread one in themselves.
+type natsRequester struct {
+	nc *nats.Conn
+}
+
+func (r *natsRequester) Request(ctx context.Context, subject string, data []byte, timeout time.Duration) ([]byte, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	msg, err := r.nc.RequestWithContext(ctx, subject, data)
+	if err != nil {
+		return nil, fmt.Errorf("nats request: %w", err)
+	}
+	return msg.Data, nil
 }
 
 func newNatsCorePublisher(nc *nats.Conn, inject InjectMode, js jetstream.JetStream) *natsCorePublisher {

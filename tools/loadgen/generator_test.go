@@ -349,7 +349,7 @@ func TestBuildHistoryRequest(t *testing.T) {
 	}
 
 	t.Run("LoadHistory", func(t *testing.T) {
-		subj, body, err := buildHistoryRequest(HistoryLoadHistory, args)
+		subj, body, err := buildHistoryRequest(HistoryLoadHistory, &args)
 		require.NoError(t, err)
 		assert.Equal(t,
 			"chat.user.user-1.request.room.room-000001.site-local.msg.history",
@@ -360,7 +360,7 @@ func TestBuildHistoryRequest(t *testing.T) {
 	})
 
 	t.Run("GetMessageByID", func(t *testing.T) {
-		subj, body, err := buildHistoryRequest(HistoryGetMessageByID, args)
+		subj, body, err := buildHistoryRequest(HistoryGetMessageByID, &args)
 		require.NoError(t, err)
 		assert.Equal(t,
 			"chat.user.user-1.request.room.room-000001.site-local.msg.get",
@@ -371,7 +371,7 @@ func TestBuildHistoryRequest(t *testing.T) {
 	})
 
 	t.Run("LoadSurroundingMessages", func(t *testing.T) {
-		subj, body, err := buildHistoryRequest(HistoryLoadSurrounding, args)
+		subj, body, err := buildHistoryRequest(HistoryLoadSurrounding, &args)
 		require.NoError(t, err)
 		assert.Equal(t,
 			"chat.user.user-1.request.room.room-000001.site-local.msg.surrounding",
@@ -383,7 +383,7 @@ func TestBuildHistoryRequest(t *testing.T) {
 	})
 
 	t.Run("GetThreadMessages", func(t *testing.T) {
-		subj, body, err := buildHistoryRequest(HistoryGetThreadMessages, args)
+		subj, body, err := buildHistoryRequest(HistoryGetThreadMessages, &args)
 		require.NoError(t, err)
 		assert.Equal(t,
 			"chat.user.user-1.request.room.room-000001.site-local.msg.thread",
@@ -395,7 +395,7 @@ func TestBuildHistoryRequest(t *testing.T) {
 	})
 
 	t.Run("UnknownKindReturnsError", func(t *testing.T) {
-		_, _, err := buildHistoryRequest(historyRequestKind(99), args)
+		_, _, err := buildHistoryRequest(historyRequestKind(99), &args)
 		assert.Error(t, err)
 	})
 }
@@ -405,7 +405,7 @@ func TestBuildSearchRequest(t *testing.T) {
 	args := searchRequestArgs{User: user, Query: "hello", Scope: "channel", Size: 20}
 
 	t.Run("SearchMessages", func(t *testing.T) {
-		subj, body, err := buildSearchRequest(SearchMessagesKind, args)
+		subj, body, err := buildSearchRequest(SearchMessagesKind, &args)
 		require.NoError(t, err)
 		assert.Equal(t, "chat.user.user-1.request.search.messages", subj)
 		var got model.SearchMessagesRequest
@@ -415,7 +415,7 @@ func TestBuildSearchRequest(t *testing.T) {
 	})
 
 	t.Run("SearchRooms", func(t *testing.T) {
-		subj, body, err := buildSearchRequest(SearchRoomsKind, args)
+		subj, body, err := buildSearchRequest(SearchRoomsKind, &args)
 		require.NoError(t, err)
 		assert.Equal(t, "chat.user.user-1.request.search.rooms", subj)
 		var got model.SearchRoomsRequest
@@ -426,7 +426,7 @@ func TestBuildSearchRequest(t *testing.T) {
 	})
 
 	t.Run("UnknownKindReturnsError", func(t *testing.T) {
-		_, _, err := buildSearchRequest(searchRequestKind(99), args)
+		_, _, err := buildSearchRequest(searchRequestKind(99), &args)
 		assert.Error(t, err)
 	})
 }

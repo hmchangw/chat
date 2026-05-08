@@ -45,7 +45,7 @@ type historyRequestArgs struct {
 // history-service request kind. The returned subject targets the user's
 // account scope; the body is JSON-encoded against the wire-contract structs
 // above.
-func buildHistoryRequest(kind historyRequestKind, args historyRequestArgs) (string, []byte, error) {
+func buildHistoryRequest(kind historyRequestKind, args *historyRequestArgs) (string, []byte, error) {
 	account := args.User.Account
 	roomID := args.Room.ID
 	siteID := args.Room.SiteID
@@ -96,7 +96,7 @@ type searchRequestArgs struct {
 // buildSearchRequest builds a NATS request payload + subject for the given
 // search-service request kind. Reuses the public model.SearchMessagesRequest
 // and model.SearchRoomsRequest shapes.
-func buildSearchRequest(kind searchRequestKind, args searchRequestArgs) (string, []byte, error) {
+func buildSearchRequest(kind searchRequestKind, args *searchRequestArgs) (string, []byte, error) {
 	switch kind {
 	case SearchMessagesKind:
 		body, err := json.Marshal(model.SearchMessagesRequest{
