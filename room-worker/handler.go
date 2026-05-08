@@ -864,6 +864,24 @@ func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) stri
 	return ""
 }
 
+// buildDMSubs returns the two subscriptions for a DM: requester's sub names the other,
+// other's sub names the requester. Both have IsSubscribed=false (matches existing behavior).
+func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
+	return []*model.Subscription{
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, false, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), other, room, nil, requester.Account, false, acceptedAt),
+	}
+}
+
+// buildBotDMSubs returns the two subscriptions for a botDM. Human's sub: Name=bot.Account,
+// IsSubscribed=true. Bot's sub: Name=requester.Account, IsSubscribed=false.
+func buildBotDMSubs(requester, bot *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
+	return []*model.Subscription{
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, true, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requester.Account, false, acceptedAt),
+	}
+}
+
 // newSub constructs a Subscription from its constituent parts.
 func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 	name string, isSubscribed bool, joinedAt time.Time) *model.Subscription {
@@ -983,10 +1001,7 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 		return fmt.Errorf("get counterpart: %w", err)
 	}
 
-	subs := []*model.Subscription{
-		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, false, acceptedAt),
-		newSub(idgen.GenerateUUIDv7(), other, room, nil, requester.Account, false, acceptedAt),
-	}
+	subs := buildDMSubs(requester, other, room, acceptedAt)
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
@@ -1002,12 +1017,7 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 		return fmt.Errorf("get bot user: %w", err)
 	}
 
-	subs := []*model.Subscription{
-		// Human's sub: Name = bot account; IsSubscribed = true
-		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, true, acceptedAt),
-		// Bot's sub: Name = requester's account; IsSubscribed = false
-		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requester.Account, false, acceptedAt),
-	}
+	subs := buildBotDMSubs(requester, bot, room, acceptedAt)
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
