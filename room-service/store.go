@@ -33,6 +33,15 @@ type RoomCounts struct {
 	OwnerCount  int
 }
 
+// ReadReceiptRow is the per-user projection returned by ListReadReceipts.
+// UserID maps to the projected user._id under the document root.
+type ReadReceiptRow struct {
+	UserID      string `bson:"_id"`
+	Account     string `bson:"account"`
+	ChineseName string `bson:"chineseName"`
+	EngName     string `bson:"engName"`
+}
+
 type RoomStore interface {
 	CreateRoom(ctx context.Context, room *model.Room) error
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
@@ -79,6 +88,11 @@ type RoomStore interface {
 	// UpdateRoomMinUserLastSeenAt writes rooms.minUserLastSeenAt for roomID.
 	// A nil value clears the field via $unset; a non-nil value writes via $set.
 	UpdateRoomMinUserLastSeenAt(ctx context.Context, roomID string, t *time.Time) error
+
+	// ListReadReceipts returns subscribers of roomID whose lastSeenAt is at or
+	// after `since`, joined with their users record for display fields.
+	// excludeAccount is filtered out at the $match stage. limit caps results.
+	ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]ReadReceiptRow, error)
 
 	// GetUser returns the user by account, or ErrUserNotFound.
 	GetUser(ctx context.Context, account string) (*model.User, error)
