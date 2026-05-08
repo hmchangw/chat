@@ -93,10 +93,7 @@ func main() {
 	}
 
 	messagesCfg := stream.Messages(cfg.SiteID)
-	cons, err := js.CreateOrUpdateConsumer(ctx, messagesCfg.Name, jetstream.ConsumerConfig{
-		Durable:   "message-gatekeeper",
-		AckPolicy: jetstream.AckExplicitPolicy,
-	})
+	cons, err := js.CreateOrUpdateConsumer(ctx, messagesCfg.Name, buildConsumerConfig())
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -151,4 +148,13 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
+}
+
+// buildConsumerConfig returns the durable consumer config for
+// message-gatekeeper. Centralized so it is unit-testable without NATS.
+func buildConsumerConfig() jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults()
+	cc.Durable = "message-gatekeeper"
+	cc.MaxAckPending = 1000
+	return cc
 }
