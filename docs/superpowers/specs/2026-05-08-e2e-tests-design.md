@@ -79,29 +79,29 @@ Resource budget (uncapped, default heap sizes everywhere): ~8–12 GB RAM, ~6–
 
 ### Federation wiring
 
-Owned by the harness, not by any service's `bootstrap.go` (per CLAUDE.md: federation config is ops/IaC, never service-owned). The harness is the ops layer for the test environment.
+Owned by the harness, not by any service's `bootstrap.go` (per CLAUDE.md and the `2026-04-27-inbox-stream-ownership-design` spec: federation config is ops/IaC-only, never service-owned). The harness is the ops layer for the test environment.
 
-After both NATS clusters are healthy, the harness creates:
+The two NATS clusters federate as a **supercluster via gateways** — same pattern the repo's existing two-site test config (`broadcast-worker/deploy/test/nats/nats-site{1,2}.conf`) already uses. Each `nats-server.conf` declares its own `cluster` block plus a `gateway` block pointing at the peer site's gateway port. JetStream traffic routes across the gateway so cross-cluster `Sources` work without external API prefixes.
+
+After both NATS clusters are healthy, the harness creates the cross-site `Sources + SubjectTransforms` on each site's INBOX stream — exactly the prod-reference shape documented in `docs/superpowers/specs/2026-04-27-inbox-stream-ownership-design.md`:
 
 ```go
-// INBOX_siteA sources from OUTBOX_siteB
-js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+// On siteA's NATS: INBOX_siteA sources from siteB's OUTBOX_siteB.
+js.UpdateStream(ctx, jetstream.StreamConfig{
     Name:     "INBOX_siteA",
-    Subjects: []string{"inbox.siteB.>"},
+    Subjects: stream.Inbox("siteA").Subjects, // chat.inbox.siteA.* + chat.inbox.siteA.aggregate.>
     Sources: []*jetstream.StreamSource{{
-        Name:          "OUTBOX_siteB",
-        FilterSubject: "outbox.siteB.to.siteA.>",
+        Name: "OUTBOX_siteB",
         SubjectTransforms: []jetstream.SubjectTransformConfig{{
             Source:      "outbox.siteB.to.siteA.>",
-            Destination: "inbox.siteB.>",
+            Destination: "chat.inbox.siteA.aggregate.>",
         }},
-        External: &jetstream.ExternalStream{APIPrefix: "$JS.siteB.API"},
     }},
 })
-// ... and the symmetric siteB ← siteA stream
+// ... and the symmetric INBOX_siteB ← OUTBOX_siteA on siteB's NATS.
 ```
 
-Cross-NATS access uses leaf nodes or account exports configured in the per-site `nats-server.conf` mounted into each NATS container. Specifics are pinned during implementation; the architectural commitment is that federation wiring is harness-owned and lives next to the e2e compose file.
+The harness updates an existing stream (created moments earlier by `inbox-worker`'s bootstrap) rather than creating a new one — same Name + Subjects, just adding Sources. This matches how ops/IaC layers federation onto an app-bootstrapped schema in production.
 
 ## Compose file
 
