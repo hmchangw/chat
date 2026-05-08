@@ -28,14 +28,15 @@ type requestKey struct{ scenario, kind string }
 
 // Collector correlates publishes with replies (E1) and broadcasts (E2).
 type Collector struct {
-	m        *Metrics
-	preset   string
-	mu       sync.Mutex
-	byReqID  map[string]publishEntry
-	byMsgID  map[string]publishEntry
-	e1       []sample
-	e2       []sample
-	requests map[requestKey][]requestSample
+	m              *Metrics
+	preset         string
+	mu             sync.Mutex
+	byReqID        map[string]publishEntry
+	byMsgID        map[string]publishEntry
+	e1             []sample
+	e2             []sample
+	requests       map[requestKey][]requestSample
+	seenMessageIDs []string // Phase 3 §3.1: append-only log; never deleted
 }
 
 // NewCollector returns a ready-to-use Collector.
@@ -103,6 +104,7 @@ func (c *Collector) RecordPublish(requestID, messageID string, t time.Time) {
 	defer c.mu.Unlock()
 	c.byReqID[requestID] = publishEntry{publishedAt: t}
 	c.byMsgID[messageID] = publishEntry{publishedAt: t}
+	c.seenMessageIDs = append(c.seenMessageIDs, messageID)
 }
 
 // RecordReply consumes one pending publish keyed by requestID.
@@ -125,6 +127,20 @@ func (c *Collector) RecordPublishBroadcastOnly(messageID string, t time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.byMsgID[messageID] = publishEntry{publishedAt: t}
+	c.seenMessageIDs = append(c.seenMessageIDs, messageID)
+}
+
+// MessageIDs returns every message ID published during this Collector's
+// lifetime. Append-only: RecordReply / RecordBroadcast consumption does
+// not remove entries. Used by the Phase 3 auto warm-up phase to
+// pre-populate the HistoryReadGenerator's message-ID pool. Returns a
+// copy so callers may freely sort / shuffle it.
+func (c *Collector) MessageIDs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, len(c.seenMessageIDs))
+	copy(out, c.seenMessageIDs)
+	return out
 }
 
 // RecordPublishFailed removes entries previously stored by RecordPublish.

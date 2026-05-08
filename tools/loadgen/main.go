@@ -139,8 +139,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	rate := fs.Int("rate", 500, "target msgs/sec")
 	warmup := fs.Duration("warmup", 10*time.Second, "warmup window (samples discarded)")
 	inject := fs.String("inject", "frontdoor", "injection point: frontdoor|canonical")
-	scenario := fs.String("scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read")
+	scenario := fs.String("scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc")
 	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "per-request timeout for read scenarios")
+	autoWarmup := fs.Bool("auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
+	autoWarmupRate := fs.Int("auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	switch *scenario {
@@ -311,19 +313,33 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	var gen runner
 	switch *scenario {
 	case "history-read":
+		var msgIDs []string
+		if *autoWarmup && needsAutoWarmup(*scenario, &p) {
+			slog.Info("auto-warmup phase starting",
+				"rate", *autoWarmupRate, "duration", *warmup)
+			ids, werr := runAutoWarmup(ctx, &autoWarmupConfig{
+				Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
+				Rate:      *autoWarmupRate,
+				Publisher: publisher, Metrics: metrics, Collector: collector,
+				Duration: *warmup,
+			})
+			if werr != nil {
+				slog.Warn("auto-warmup failed; proceeding with empty pool", "error", werr)
+			} else {
+				msgIDs = ids
+				slog.Info("auto-warmup phase complete", "message_ids", len(msgIDs))
+			}
+			// Reset warmup deadline now that the warm-up phase has elapsed:
+			// the read generator's measured window starts fresh.
+			warmupDeadline = time.Now()
+		}
 		gen = NewHistoryReadGenerator(&HistoryReadConfig{
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
 			Rate: *rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
 			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight,
-			Timeout: *requestTimeout,
-			// MessageIDs for kinds that need them are pre-populated by a
-			// follow-up wiring step (warm-up phase publishes via the
-			// messaging-pipeline scenario, then hands the captured IDs
-			// here). With an empty pool, GetMessageByID /
-			// LoadSurroundingMessages / GetThreadMessages tick into the
-			// "no_message_ids" error counter; LoadHistory works regardless.
-			MessageIDs: nil,
+			Timeout:    *requestTimeout,
+			MessageIDs: msgIDs,
 		}, *seed)
 	case "search-read":
 		gen = NewSearchReadGenerator(&SearchReadConfig{
