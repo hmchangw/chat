@@ -85,6 +85,136 @@ services:
     depends_on: [nats, mongodb]
     networks: [loadtest]
 
+  notification-worker:
+    build:
+      context: ../../..
+      dockerfile: notification-worker/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+    depends_on: [nats, mongodb]
+    networks: [loadtest]
+
+  room-service:
+    build:
+      context: ../../..
+      dockerfile: room-service/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - BOOTSTRAP_STREAMS=true
+    depends_on: [nats, mongodb]
+    networks: [loadtest]
+
+  room-worker:
+    build:
+      context: ../../..
+      dockerfile: room-worker/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+    depends_on: [nats, mongodb, room-service]
+    networks: [loadtest]
+
+  elasticsearch:
+    image: elasticsearch:8.15.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [loadtest]
+
+  valkey:
+    image: valkey/valkey:8
+    ports:
+      - "6379:6379"
+    networks: [loadtest]
+
+  history-service:
+    build:
+      context: ../../..
+      dockerfile: history-service/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - CASSANDRA_HOSTS=cassandra
+      - CASSANDRA_KEYSPACE=chat
+      - VALKEY_ADDR=valkey:6379
+      - ENCRYPTION_ENABLED=false
+    depends_on:
+      nats:
+        condition: service_started
+      mongodb:
+        condition: service_started
+      cassandra-init:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
+    networks: [loadtest]
+
+  search-service:
+    build:
+      context: ../../..
+      dockerfile: search-service/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - SEARCH_URL=http://elasticsearch:9200
+      - SEARCH_BACKEND=elasticsearch
+      - VALKEY_ADDR=valkey:6379
+      - VALKEY_PASSWORD=
+      - SEARCH_DOC_COUNTS=25
+      - SEARCH_MAX_DOC_COUNTS=100
+      - SEARCH_RESTRICTED_ROOMS_CACHE_TTL=5m
+      - SEARCH_RECENT_WINDOW=8760h
+      - SEARCH_REQUEST_TIMEOUT=10s
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+    depends_on:
+      nats:
+        condition: service_started
+      mongodb:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+      valkey:
+        condition: service_started
+    networks: [loadtest]
+
+  search-sync-worker:
+    build:
+      context: ../../..
+      dockerfile: search-sync-worker/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - SEARCH_URL=http://elasticsearch:9200
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+    depends_on:
+      nats:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
+    networks: [loadtest]
+
   loadgen:
     build:
       context: ../../..
@@ -104,7 +234,18 @@ services:
       # - PPROF_ADDR=:6060
     ports:
       - "9099:9099"
-    depends_on: [nats, mongodb, message-gatekeeper, message-worker, broadcast-worker]
+    depends_on:
+      - nats
+      - mongodb
+      - message-gatekeeper
+      - message-worker
+      - broadcast-worker
+      - notification-worker
+      - history-service
+      - search-service
+      - search-sync-worker
+      - room-service
+      - room-worker
     entrypoint: ["sleep", "infinity"]
     networks: [loadtest]
 
