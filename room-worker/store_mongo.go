@@ -429,3 +429,21 @@ func (s *MongoStore) GetSubscriptionAccounts(ctx context.Context, roomID string)
 	}
 	return accounts, nil
 }
+
+// FindDMSubscription returns the requester's existing dm/botDM sub with Name == targetName.
+// Returns model.ErrSubscriptionNotFound on no match.
+func (s *MongoStore) FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error) {
+	var sub model.Subscription
+	err := s.subscriptions.FindOne(ctx, bson.M{
+		"u.account": account,
+		"name":      targetName,
+		"roomType":  bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}},
+	}).Decode(&sub)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, model.ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find dm subscription: %w", err)
+	}
+	return &sub, nil
+}

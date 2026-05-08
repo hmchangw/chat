@@ -43,6 +43,10 @@ type SubscriptionStore interface {
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	GetUser(ctx context.Context, account string) (*model.User, error)
+	// FindDMSubscription returns the requester's existing dm/botDM sub with Name == targetName.
+	// Returns model.ErrSubscriptionNotFound when no match exists. Used only on the duplicate-key
+	// redelivery branch of the sync DM handler — not on the happy path.
+	FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error)
 	AddRole(ctx context.Context, account, roomID string, role model.Role) error
 	RemoveRole(ctx context.Context, account, roomID string, role model.Role) error
 
