@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
@@ -58,8 +59,28 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		return nil, err
 	}
 
+	requester, err := h.store.GetUser(ctx, req.RequesterAccount)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return nil, errUserLookupFailed
+		}
+		return nil, fmt.Errorf("get requester: %w", errUserLookupFailed)
+	}
+	if requester.SiteID != h.siteID {
+		return nil, errCrossSiteRequester
+	}
+
+	other, err := h.store.GetUser(ctx, req.OtherAccount)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return nil, errUserLookupFailed
+		}
+		return nil, fmt.Errorf("get counterpart: %w", errUserLookupFailed)
+	}
+
 	_ = requestID
-	return nil, errInvalidSyncDMRequest // placeholder — replaced in Task 7
+	_, _ = requester, other
+	return nil, errInvalidSyncDMRequest // placeholder — replaced in Task 8
 }
 
 func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {

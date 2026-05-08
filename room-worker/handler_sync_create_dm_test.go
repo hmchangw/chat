@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -92,4 +93,59 @@ func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
 	data, _ := json.Marshal(req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
+}
+
+func TestHandleSyncCreateDM_RequesterNotFound(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	h := &Handler{siteID: "site-a", store: store}
+
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(nil, ErrUserNotFound)
+
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errUserLookupFailed)
+}
+
+func TestHandleSyncCreateDM_OtherNotFound(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	h := &Handler{siteID: "site-a", store: store}
+
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").Return(nil, ErrUserNotFound)
+
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errUserLookupFailed)
+}
+
+func TestHandleSyncCreateDM_CrossSiteRequester(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	h := &Handler{siteID: "site-a", store: store}
+
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-b"}, nil)
+
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errCrossSiteRequester)
 }
