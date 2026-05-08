@@ -43,6 +43,8 @@ type SubscriptionStore interface {
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	GetUser(ctx context.Context, account string) (*model.User, error)
+	// FindDMSubscription returns the requester's dm/botDM sub by Name; ErrSubscriptionNotFound on miss.
+	FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error)
 	AddRole(ctx context.Context, account, roomID string, role model.Role) error
 	RemoveRole(ctx context.Context, account, roomID string, role model.Role) error
 

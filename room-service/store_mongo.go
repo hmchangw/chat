@@ -79,28 +79,6 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	if _, err := s.apps.Indexes().CreateOne(ctx, appsIndex); err != nil {
 		return fmt.Errorf("ensure apps index: %w", err)
 	}
-
-	// Partial UNIQUE index for FindDMSubscription, restricted to DM/botDM subs.
-	// Uniqueness is the database-layer enforcement of the create-room contract:
-	// concurrent CreateRoom requests racing to insert the same DM/botDM pair
-	// will see one succeed and the others receive a duplicate-key error, which
-	// the worker treats as "open existing" via the GetRoom lookup branch.
-	dmDedupIndex := mongo.IndexModel{
-		Keys: bson.D{
-			{Key: "u.account", Value: 1},
-			{Key: "name", Value: 1},
-			{Key: "roomType", Value: 1},
-		},
-		Options: options.Index().
-			SetName("u_account_name_roomtype_dm_idx").
-			SetUnique(true).
-			SetPartialFilterExpression(bson.M{
-				"roomType": bson.M{"$in": bson.A{model.RoomTypeDM, model.RoomTypeBotDM}},
-			}),
-	}
-	if _, err := s.subscriptions.Indexes().CreateOne(ctx, dmDedupIndex); err != nil {
-		return fmt.Errorf("ensure dm-dedup subscription index: %w", err)
-	}
 	return nil
 }
 

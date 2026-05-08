@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
@@ -55,21 +56,10 @@ func messageDedupSeed(ctx context.Context, handler, roomID, payloadSeed string) 
 	return payloadSeed
 }
 
-// historySharedSincePtr resolves the History.SharedSince value for an
-// add-member request. Mode != HistoryModeNone → nil (history is unrestricted).
-// Otherwise prefers the caller-supplied req.History.SharedSince when non-nil
-// and positive, falling back to req.Timestamp. This single source of truth
-// keeps the local subscription's HistorySharedSince consistent with the
-// MemberAddEvent published to the user's subject and the cross-site outbox
-// payload — without it, an explicit caller cutoff would be silently
-// overwritten with the request acceptance timestamp at fan-out time.
+// historySharedSincePtr returns nil for unrestricted history; req.Timestamp under HistoryModeNone.
 func historySharedSincePtr(history model.HistoryConfig, timestamp int64, roomID string) *int64 {
 	if history.Mode != model.HistoryModeNone {
 		return nil
-	}
-	if history.SharedSince != nil && *history.SharedSince > 0 {
-		ss := *history.SharedSince
-		return &ss
 	}
 	if timestamp <= 0 {
 		slog.Error("restricted history with missing timestamp, emitting nil", "roomID", roomID, "mode", history.Mode)
@@ -864,6 +854,22 @@ func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) stri
 	return ""
 }
 
+// buildDMSubs returns the two DM subs (each names the counterpart, IsSubscribed=false).
+func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
+	return []*model.Subscription{
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, false, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), other, room, nil, requester.Account, false, acceptedAt),
+	}
+}
+
+// buildBotDMSubs returns the two botDM subs (human IsSubscribed=true, bot IsSubscribed=false).
+func buildBotDMSubs(requester, bot *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
+	return []*model.Subscription{
+		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, true, acceptedAt),
+		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requester.Account, false, acceptedAt),
+	}
+}
+
 // newSub constructs a Subscription from its constituent parts.
 func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 	name string, isSubscribed bool, joinedAt time.Time) *model.Subscription {
@@ -983,10 +989,7 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 		return fmt.Errorf("get counterpart: %w", err)
 	}
 
-	subs := []*model.Subscription{
-		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, false, acceptedAt),
-		newSub(idgen.GenerateUUIDv7(), other, room, nil, requester.Account, false, acceptedAt),
-	}
+	subs := buildDMSubs(requester, other, room, acceptedAt)
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
@@ -1002,12 +1005,7 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 		return fmt.Errorf("get bot user: %w", err)
 	}
 
-	subs := []*model.Subscription{
-		// Human's sub: Name = bot account; IsSubscribed = true
-		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, true, acceptedAt),
-		// Bot's sub: Name = requester's account; IsSubscribed = false
-		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requester.Account, false, acceptedAt),
-	}
+	subs := buildBotDMSubs(requester, bot, room, acceptedAt)
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
@@ -1227,4 +1225,234 @@ func (h *Handler) publishCanonical(ctx context.Context, msg *model.Message, site
 		return fmt.Errorf("marshal MessageEvent: %w", err)
 	}
 	return h.publish(ctx, subject.MsgCanonicalCreated(siteID), data, msg.ID)
+}
+
+// Sync DM endpoint handlers (chat.server.request.room.{siteID}.create.dm).
+
+var (
+	errMissingRequestID     = errors.New("missing X-Request-ID header")
+	errInvalidRequestID     = errors.New("invalid X-Request-ID header")
+	errInvalidSyncDMRequest = errors.New("invalid sync DM request")
+	errUserLookupFailed     = errors.New("user lookup failed")
+	errCrossSiteRequester   = errors.New("requester is not on this site")
+	errRoomIDCollision      = errors.New("room ID collision (existing room metadata mismatch)")
+)
+
+// sanitizeSyncDMError surfaces sentinel messages; masks anything else as "internal error".
+func sanitizeSyncDMError(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, errMissingRequestID),
+		errors.Is(err, errInvalidRequestID),
+		errors.Is(err, errInvalidSyncDMRequest),
+		errors.Is(err, errUserLookupFailed),
+		errors.Is(err, errCrossSiteRequester):
+		return err.Error()
+	default:
+		return "internal error"
+	}
+}
+
+// handleSyncCreateDM creates a DM/botDM room + 2 subs and returns the requester's sub.
+func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.SyncCreateDMReply, error) {
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" {
+		return nil, errMissingRequestID
+	}
+	if !idgen.IsValidUUID(requestID) {
+		return nil, errInvalidRequestID
+	}
+
+	var req model.SyncCreateDMRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, errInvalidSyncDMRequest
+	}
+	if err := validateSyncCreateDMShape(&req); err != nil {
+		return nil, err
+	}
+
+	users, err := h.store.FindUsersByAccounts(ctx, []string{req.RequesterAccount, req.OtherAccount})
+	if err != nil {
+		return nil, fmt.Errorf("find dm users: %w", err)
+	}
+	byAccount := make(map[string]*model.User, len(users))
+	for i := range users {
+		byAccount[users[i].Account] = &users[i]
+	}
+	requester, ok := byAccount[req.RequesterAccount]
+	if !ok {
+		return nil, errUserLookupFailed
+	}
+	if requester.SiteID != h.siteID {
+		return nil, errCrossSiteRequester
+	}
+	other, ok := byAccount[req.OtherAccount]
+	if !ok {
+		return nil, errUserLookupFailed
+	}
+
+	acceptedAt := time.Now().UTC()
+	roomID := idgen.BuildDMRoomID(requester.ID, other.ID)
+
+	// DMs/botDMs have a fixed 2-member roster — set counts at creation; no Reconcile needed.
+	userCount, appCount := 2, 0
+	if req.RoomType == model.RoomTypeBotDM {
+		userCount, appCount = 1, 1
+	}
+
+	room := &model.Room{
+		ID:        roomID,
+		Name:      "",
+		Type:      req.RoomType,
+		CreatedBy: requester.ID,
+		SiteID:    h.siteID,
+		UserCount: userCount,
+		AppCount:  appCount,
+		CreatedAt: acceptedAt,
+		UpdatedAt: acceptedAt,
+	}
+	if err := h.store.CreateRoom(ctx, room); err != nil {
+		if !mongo.IsDuplicateKeyError(err) {
+			return nil, fmt.Errorf("create room: %w", err)
+		}
+		existing, fetchErr := h.store.GetRoom(ctx, room.ID)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("fetch room on duplicate-key: %w", fetchErr)
+		}
+		if existing.Type != room.Type ||
+			existing.SiteID != room.SiteID ||
+			existing.Name != room.Name ||
+			existing.CreatedBy != room.CreatedBy {
+			slog.Error("sync DM: room ID collision",
+				"roomID", room.ID,
+				"existingType", existing.Type, "wantType", room.Type,
+				"existingSiteID", existing.SiteID, "wantSiteID", room.SiteID,
+				"existingCreatedBy", existing.CreatedBy, "wantCreatedBy", room.CreatedBy,
+				"requestID", requestID)
+			return nil, errRoomIDCollision
+		}
+		room = existing
+		acceptedAt = existing.CreatedAt
+	}
+
+	// validateSyncCreateDMShape already gated this to {dm, botDM}.
+	var subs []*model.Subscription
+	if req.RoomType == model.RoomTypeBotDM {
+		subs = buildBotDMSubs(requester, other, room, acceptedAt)
+	} else {
+		subs = buildDMSubs(requester, other, room, acceptedAt)
+	}
+
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return nil, fmt.Errorf("bulk create subs: %w", err)
+	}
+	// Re-read canonical subs: BulkCreateSubscriptions swallows dup-key races, so the
+	// in-memory subs may carry IDs/JoinedAt that never made it to Mongo. Publish from
+	// the persisted pair instead.
+	requesterSub, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
+	if err != nil {
+		return nil, fmt.Errorf("find requester sub after insert: %w", err)
+	}
+	otherSub, err := h.store.FindDMSubscription(ctx, other.Account, requester.Account)
+	if err != nil {
+		return nil, fmt.Errorf("find counterpart sub after insert: %w", err)
+	}
+
+	h.publishSubscriptionUpdates(ctx, []*model.Subscription{requesterSub, otherSub}, requestID)
+
+	// Outbox failure means the remote site won't learn about the room; fail the request.
+	if err := h.publishSyncDMOutbox(ctx, room, requester, other, acceptedAt); err != nil {
+		return nil, fmt.Errorf("publish room_created outbox: %w", err)
+	}
+
+	return &model.SyncCreateDMReply{Success: true, Subscription: *requesterSub}, nil
+}
+
+func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
+	switch req.RoomType {
+	case model.RoomTypeDM, model.RoomTypeBotDM:
+	default:
+		return errInvalidSyncDMRequest
+	}
+	if req.RequesterAccount == "" || req.OtherAccount == "" {
+		return errInvalidSyncDMRequest
+	}
+	if req.RequesterAccount == req.OtherAccount {
+		return errInvalidSyncDMRequest
+	}
+	return nil
+}
+
+func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.Subscription, requestID string) {
+	for _, sub := range subs {
+		evt := model.SubscriptionUpdateEvent{
+			UserID:       sub.User.ID,
+			Subscription: *sub,
+			Action:       "added",
+			Timestamp:    time.Now().UTC().UnixMilli(),
+		}
+		data, err := json.Marshal(evt)
+		if err != nil {
+			slog.Error("sync DM: marshal subscription.update failed",
+				"error", err, "account", sub.User.Account, "requestID", requestID)
+			continue
+		}
+		if err := h.publish(ctx, subject.SubscriptionUpdate(sub.User.Account), data, ""); err != nil {
+			slog.Error("sync DM: publish subscription.update failed",
+				"error", err, "account", sub.User.Account, "requestID", requestID)
+		}
+	}
+}
+
+func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, acceptedAt time.Time) error {
+	if other.SiteID == "" || other.SiteID == h.siteID {
+		return nil
+	}
+
+	payload := model.RoomCreatedOutbox{
+		RoomID:           room.ID,
+		RoomType:         room.Type,
+		RoomName:         "",
+		HomeSiteID:       room.SiteID,
+		Accounts:         []string{other.Account},
+		RequesterAccount: requester.Account,
+		Timestamp:        acceptedAt.UnixMilli(),
+	}
+	pData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal room_created outbox payload: %w", err)
+	}
+	envelope := model.OutboxEvent{
+		Type:       model.OutboxTypeRoomCreated,
+		SiteID:     room.SiteID,
+		DestSiteID: other.SiteID,
+		Payload:    pData,
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}
+	eData, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal outbox envelope: %w", err)
+	}
+	payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, acceptedAt.UnixMilli())
+	return h.publish(ctx,
+		subject.Outbox(room.SiteID, other.SiteID, model.OutboxTypeRoomCreated),
+		eData,
+		outboxDedupID(ctx, other.SiteID, payloadSeed),
+	)
+}
+
+// natsServerCreateDM is the NATS entry point for chat.server.request.room.{siteID}.create.dm.
+func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
+	ctx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
+	reply, err := h.handleSyncCreateDM(ctx, m.Msg.Data)
+	if err != nil {
+		slog.Error("sync DM: handler failed",
+			"error", err, "subject", m.Msg.Subject,
+			"requestID", natsutil.RequestIDFromContext(ctx))
+		natsutil.ReplyError(m.Msg, sanitizeSyncDMError(err))
+		return
+	}
+	natsutil.ReplyJSON(m.Msg, reply)
 }

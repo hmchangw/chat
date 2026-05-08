@@ -18,8 +18,6 @@ const (
 
 type HistoryConfig struct {
 	Mode HistoryMode `json:"mode" bson:"mode"`
-	// SharedSince (ms): when non-nil under HistoryModeNone, takes precedence over acceptedAt.
-	SharedSince *int64 `json:"sharedSince,omitempty" bson:"sharedSince,omitempty"`
 }
 
 // ChannelRef identifies a source channel by room + its home site. Used by add-member
@@ -148,4 +146,18 @@ type CreateRoomRequest struct {
 	RequesterID      string `json:"requesterId"       bson:"requesterId"`
 	RequesterAccount string `json:"requesterAccount"  bson:"requesterAccount"`
 	Timestamp        int64  `json:"timestamp"         bson:"timestamp"`
+}
+
+// SyncCreateDMRequest is the request payload for chat.server.request.room.{siteID}.create.dm.
+// Caller (user-service) is responsible for all data-integrity validation before issuing.
+type SyncCreateDMRequest struct {
+	RoomType         RoomType `json:"roomType"         bson:"roomType"`
+	RequesterAccount string   `json:"requesterAccount" bson:"requesterAccount"`
+	OtherAccount     string   `json:"otherAccount"     bson:"otherAccount"`
+}
+
+// SyncCreateDMReply is the success reply; errors flow via natsutil.ReplyError instead.
+type SyncCreateDMReply struct {
+	Success      bool         `json:"success"      bson:"success"`
+	Subscription Subscription `json:"subscription" bson:"subscription"`
 }

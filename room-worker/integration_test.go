@@ -971,3 +971,161 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 	assert.Equal(t, []string{"bob"}, inner.Accounts)
 	assert.Equal(t, reqID+":site-A", pubs[0].msgID)
 }
+
+// --- Sync DM endpoint integration tests ---
+
+const integSyncDMRequestID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+
+func newIntegSyncDMCtx() context.Context {
+	return natsutil.WithRequestID(context.Background(), integSyncDMRequestID)
+}
+
+func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
+	ctx := newIntegSyncDMCtx()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: siteID, EngName: "Bob", ChineseName: "鮑勃"})
+
+	cap := &publishCapture{}
+	handler := NewHandler(store, siteID, cap.fn())
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, _ := json.Marshal(req)
+	got, err := handler.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.True(t, got.Success)
+	assert.Equal(t, "alice", got.Subscription.User.Account)
+
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.Equal(t, model.RoomTypeDM, room.Type)
+	assert.Equal(t, siteID, room.SiteID)
+	assert.Equal(t, 2, room.UserCount, "DM room.UserCount set at creation; no Reconcile pass")
+	assert.Equal(t, 0, room.AppCount)
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount)
+
+	// Two subscription.update publishes — one per user.
+	subjects := map[string]int{}
+	cap.mu.Lock()
+	for _, p := range cap.captured {
+		subjects[p.subject]++
+	}
+	cap.mu.Unlock()
+	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("alice")])
+	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("bob")])
+}
+
+func TestSyncCreateDM_BotDM_CrossSiteOutbox(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+	mustInsertUser(t, db, &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-B", EngName: "Helper", ChineseName: "助手"})
+
+	cap := &publishCapture{}
+	handler := NewHandler(store, siteID, cap.fn())
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
+	data, _ := json.Marshal(req)
+	_, err := handler.handleSyncCreateDM(newIntegSyncDMCtx(), data)
+	require.NoError(t, err)
+
+	pubs := cap.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxTypeRoomCreated))
+	assert.Len(t, pubs, 1, "exactly one outbox to site-B")
+}
+
+func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
+	ctx := newIntegSyncDMCtx()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: siteID, EngName: "Bob", ChineseName: "鮑勃"})
+
+	cap := &publishCapture{}
+	handler := NewHandler(store, siteID, cap.fn())
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, _ := json.Marshal(req)
+
+	r1, err := handler.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	r2, err := handler.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	require.NotNil(t, r1)
+	require.NotNil(t, r2)
+	assert.Equal(t, r1.Subscription.RoomID, r2.Subscription.RoomID)
+
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.Equal(t, roomID, room.ID)
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount, "redelivery must not create duplicate subs")
+}
+
+// Federation convergence: the cross-site OUTBOX payload carries the deterministic
+// BuildDMRoomID, so the remote inbox-worker (and any replay) writes to the SAME
+// room ID as the home site. Same X-Request-ID across replays produces the same
+// Nats-Msg-Id so JetStream dedup blocks duplicates.
+func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
+	ctx := newIntegSyncDMCtx()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: "site-B", EngName: "Bob", ChineseName: "鮑勃"})
+
+	cap1 := &publishCapture{}
+	handler := NewHandler(store, siteID, cap1.fn())
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	_, err = handler.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+
+	// 1. Local Mongo room.ID equals the deterministic BuildDMRoomID.
+	wantRoomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	persisted, err := store.GetRoom(ctx, wantRoomID)
+	require.NoError(t, err)
+	assert.Equal(t, wantRoomID, persisted.ID)
+
+	// 2. OUTBOX payload carries the same RoomID + the dedup key includes destSiteID.
+	pubs := cap1.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxTypeRoomCreated))
+	require.Len(t, pubs, 1)
+	var env model.OutboxEvent
+	require.NoError(t, json.Unmarshal(pubs[0].data, &env))
+	var payload model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(env.Payload, &payload))
+	assert.Equal(t, wantRoomID, payload.RoomID,
+		"outbox RoomID must match local room.ID so remote site converges")
+	assert.Equal(t, "alice", payload.RequesterAccount)
+	assert.Equal(t, []string{"bob"}, payload.Accounts)
+	assert.Contains(t, pubs[0].msgID, "site-B",
+		"Nats-Msg-Id must include destSiteID for JetStream stream dedup")
+
+	// 3. Replay with the same X-Request-ID produces the same Nats-Msg-Id —
+	//    on the wire, JetStream OUTBOX dedup would reject the second emit.
+	cap2 := &publishCapture{}
+	handler2 := NewHandler(store, siteID, cap2.fn())
+	_, err = handler2.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	pubs2 := cap2.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxTypeRoomCreated))
+	require.Len(t, pubs2, 1)
+	assert.Equal(t, pubs[0].msgID, pubs2[0].msgID,
+		"replay must produce identical Nats-Msg-Id so broker dedup blocks duplicate cross-site events")
+}

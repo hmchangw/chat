@@ -39,7 +39,9 @@ func TestIntegration_Connect_Smoke(t *testing.T) {
 func TestIntegration_NewBucket_Success(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 
-	type doc struct{ Name string `json:"name"` }
+	type doc struct {
+		Name string `json:"name"`
+	}
 	b, err := NewBucket[doc](context.Background(), client, bucketName)
 	require.NoError(t, err)
 	require.NotNil(t, b)
@@ -51,7 +53,9 @@ func TestIntegration_NewBucket_Success(t *testing.T) {
 func TestIntegration_NewBucket_MissingBucket(t *testing.T) {
 	client, _ := testutil.MinIO(t, "minioutil")
 
-	type doc struct{ Name string `json:"name"` }
+	type doc struct {
+		Name string `json:"name"`
+	}
 	_, err := NewBucket[doc](context.Background(), client, "definitely-does-not-exist")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "definitely-does-not-exist")
@@ -93,7 +97,9 @@ func TestIntegration_Put_Overwrites(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
-	type doc struct{ V int `json:"v"` }
+	type doc struct {
+		V int `json:"v"`
+	}
 	b, err := NewBucket[doc](ctx, client, bucketName)
 	require.NoError(t, err)
 
@@ -138,7 +144,9 @@ func TestIntegration_Get_MissingKey(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
-	type doc struct{ V int `json:"v"` }
+	type doc struct {
+		V int `json:"v"`
+	}
 	b, err := NewBucket[doc](ctx, client, bucketName)
 	require.NoError(t, err)
 
@@ -155,7 +163,9 @@ func TestIntegration_Get_MalformedJSON(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
-	type doc struct{ V int `json:"v"` }
+	type doc struct {
+		V int `json:"v"`
+	}
 	b, err := NewBucket[doc](ctx, client, bucketName)
 	require.NoError(t, err)
 
@@ -174,7 +184,9 @@ func TestIntegration_List_Prefix(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
-	type doc struct{ V int `json:"v"` }
+	type doc struct {
+		V int `json:"v"`
+	}
 	b, err := NewBucket[doc](ctx, client, bucketName)
 	require.NoError(t, err)
 
@@ -200,7 +212,9 @@ func TestIntegration_List_ZeroMaxKeysReturnsAll(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
-	type doc struct{ V int `json:"v"` }
+	type doc struct {
+		V int `json:"v"`
+	}
 	b, err := NewBucket[doc](ctx, client, bucketName)
 	require.NoError(t, err)
 
@@ -221,7 +235,9 @@ func TestIntegration_List_MaxKeysCap(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
-	type doc struct{ V int `json:"v"` }
+	type doc struct {
+		V int `json:"v"`
+	}
 	b, err := NewBucket[doc](ctx, client, bucketName)
 	require.NoError(t, err)
 
@@ -254,7 +270,9 @@ func TestIntegration_List_EmptyResult(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
-	type doc struct{ V int `json:"v"` }
+	type doc struct {
+		V int `json:"v"`
+	}
 	b, err := NewBucket[doc](ctx, client, bucketName)
 	require.NoError(t, err)
 
@@ -270,7 +288,9 @@ func TestIntegration_Delete_RemovesExisting(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
-	type doc struct{ V int `json:"v"` }
+	type doc struct {
+		V int `json:"v"`
+	}
 	b, err := NewBucket[doc](ctx, client, bucketName)
 	require.NoError(t, err)
 
@@ -289,7 +309,9 @@ func TestIntegration_Delete_Idempotent(t *testing.T) {
 	client, bucketName := testutil.MinIO(t, "minioutil")
 	ctx := context.Background()
 
-	type doc struct{ V int `json:"v"` }
+	type doc struct {
+		V int `json:"v"`
+	}
 	b, err := NewBucket[doc](ctx, client, bucketName)
 	require.NoError(t, err)
 

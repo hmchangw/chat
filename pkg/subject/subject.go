@@ -192,6 +192,11 @@ func RoomsInfoBatch(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
 }
 
+// RoomCreateDMSync is the server-to-server request subject for synchronous DM/botDM creation.
+func RoomCreateDMSync(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.create.dm", siteID)
+}
+
 // --- Wildcard patterns for subscriptions ---
 
 func MsgSendWildcard(siteID string) string {

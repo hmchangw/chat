@@ -342,3 +342,11 @@ func TestRoomCanonicalOperation(t *testing.T) {
 		})
 	}
 }
+
+func TestRoomCreateDMSync(t *testing.T) {
+	got := subject.RoomCreateDMSync("site-a")
+	want := "chat.server.request.room.site-a.create.dm"
+	if got != want {
+		t.Errorf("RoomCreateDMSync: got %q, want %q", got, want)
+	}
+}

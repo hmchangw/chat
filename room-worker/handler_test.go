@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,9 +23,8 @@ import (
 )
 
 type publishedMsg struct {
-	subj  string
-	data  []byte
-	msgID string
+	subj string
+	data []byte
 }
 
 func TestHandler_ProcessRoleUpdate_Promote(t *testing.T) {
@@ -1575,45 +1575,7 @@ func TestProcessAddMembers_PopulatesSubName(t *testing.T) {
 	assert.Equal(t, model.RoomTypeChannel, capturedSubs[0].RoomType)
 }
 
-// Task 14b: HistoryModeNone with explicit SharedSince — sub.HistorySharedSince must match.
-func TestProcessAddMembers_HistoryNone_WithExplicitTimestamp(t *testing.T) {
-	h, mockStore, _ := newAddMembersTestHandler(t)
-	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0001")
-
-	explicitMs := int64(1700000000000)
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
-		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
-	}, nil)
-	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
-		Return([]string{"bob"}, nil)
-	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
-		{ID: "u_bob", Account: "bob", SiteID: "site-A", EngName: "X", ChineseName: "X"},
-	}, nil)
-	var capturedSubs []*model.Subscription
-	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
-			capturedSubs = subs
-			return nil
-		})
-	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
-	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
-
-	body, err := json.Marshal(model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"bob"},
-		RequesterID: "u_alice", RequesterAccount: "alice",
-		Timestamp: 1740000000000,
-		History:   model.HistoryConfig{Mode: model.HistoryModeNone, SharedSince: &explicitMs},
-	})
-	require.NoError(t, err)
-	require.NoError(t, h.processAddMembers(ctx, body))
-
-	require.Len(t, capturedSubs, 1)
-	require.NotNil(t, capturedSubs[0].HistorySharedSince)
-	wantTime := time.UnixMilli(explicitMs).UTC()
-	assert.Equal(t, wantTime, *capturedSubs[0].HistorySharedSince)
-}
-
-// Task 14b: HistoryModeNone without explicit SharedSince — sub.HistorySharedSince falls back to acceptedAt.
+// Task 14b: HistoryModeNone — sub.HistorySharedSince falls back to acceptedAt (req.Timestamp).
 func TestProcessAddMembers_HistoryNone_NoTimestamp(t *testing.T) {
 	h, mockStore, _ := newAddMembersTestHandler(t)
 	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0002")
@@ -2395,347 +2357,542 @@ func TestSanitizeAsyncJobError_NonPermanentCollapsed(t *testing.T) {
 	assert.Equal(t, "operation failed", got)
 }
 
-// Caller-supplied req.History.SharedSince must propagate identically to the
-// local subscription, the per-user SubscriptionUpdateEvent fan-out, and the
-// MemberAddEvent published locally — without it, the event would carry
-// req.Timestamp instead and remote-site sub creation would diverge from
-// home-site sub creation.
-func TestHandler_ProcessAddMembers_HistorySharedSinceWinsOverTimestamp(t *testing.T) {
+// newRequestCtx returns a context carrying a syntactically-valid X-Request-ID.
+func newRequestCtx() context.Context {
+	return natsutil.WithRequestID(context.Background(), "01970a4f-8c2d-7c9a-abcd-e0123456789f")
+}
+
+// dmCapturedPublish + dmPublishCapture are unit-test-local equivalents of the
+// integration_test.go types; same shape under a different name to avoid collision
+// when both files compile together under the `integration` build tag.
+type dmCapturedPublish struct {
+	subject string
+	data    []byte
+	msgID   string
+}
+
+type dmPublishCapture struct {
+	mu       sync.Mutex
+	captured []dmCapturedPublish
+}
+
+func (c *dmPublishCapture) fn(_ context.Context, subj string, data []byte, msgID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.captured = append(c.captured, dmCapturedPublish{subject: subj, data: append([]byte(nil), data...), msgID: msgID})
+	return nil
+}
+
+// newSyncDMTestHandler builds a Handler wired to a fresh mock store + capture.
+// Mirrors newAddMembersTestHandler's shape for consistency.
+func newSyncDMTestHandler(t *testing.T) (*Handler, *MockSubscriptionStore, *dmPublishCapture) {
+	t.Helper()
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
+	capture := &dmPublishCapture{}
+	h := &Handler{siteID: "site-a", store: store, publish: capture.fn}
+	return h, store, capture
+}
 
-	var published []publishedMsg
-	publish := func(_ context.Context, subj string, data []byte, _ string) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
-		return nil
+// marshalReq JSON-encodes v or fails the test on error.
+func marshalReq(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	require.NoError(t, err)
+	return data
+}
+
+func TestSanitizeSyncDMError(t *testing.T) {
+	cases := []struct {
+		name string
+		in   error
+		want string
+	}{
+		{"nil returns empty", nil, ""},
+		{"missing request ID surfaced", errMissingRequestID, "missing X-Request-ID header"},
+		{"invalid request ID surfaced", errInvalidRequestID, "invalid X-Request-ID header"},
+		{"invalid sync DM request surfaced", errInvalidSyncDMRequest, "invalid sync DM request"},
+		{"user lookup failed surfaced", errUserLookupFailed, "user lookup failed"},
+		{"cross-site requester surfaced", errCrossSiteRequester, "requester is not on this site"},
+		{"room ID collision masked as internal", errRoomIDCollision, "internal error"},
+		{"unknown error masked as internal", errors.New("mongo: connection refused"), "internal error"},
 	}
-	h := NewHandler(store, "site-a", publish)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, sanitizeSyncDMError(tc.in))
+		})
+	}
+}
 
-	const sharedSince int64 = 500
-	const timestamp int64 = 1500
-	require.NotEqual(t, sharedSince, timestamp, "test premise: explicit cutoff must differ from acceptedAt")
+func TestHandleSyncCreateDM_MissingRequestID(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(context.Background(), data)
+	assert.ErrorIs(t, err, errMissingRequestID)
+}
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
-	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob"}, "r1").Return([]string{"bob"}, nil)
-	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
-		{ID: "u_bob", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑伯"},
-	}, nil)
-	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, subs []*model.Subscription) error {
-			require.Len(t, subs, 1)
-			require.NotNil(t, subs[0].HistorySharedSince, "explicit cutoff must reach sub")
-			assert.Equal(t, time.UnixMilli(sharedSince).UTC(), *subs[0].HistorySharedSince,
-				"sub HistorySharedSince must equal req.History.SharedSince, not req.Timestamp")
+func TestHandleSyncCreateDM_InvalidJSON(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	_, err := h.handleSyncCreateDM(newRequestCtx(), []byte("{not json"))
+	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
+}
+
+func TestHandleSyncCreateDM_InvalidRoomType(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeChannel,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
+}
+
+func TestHandleSyncCreateDM_EmptyAccounts(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	cases := []model.SyncCreateDMRequest{
+		{RoomType: model.RoomTypeDM, RequesterAccount: "", OtherAccount: "bob"},
+		{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: ""},
+	}
+	for _, req := range cases {
+		data := marshalReq(t, req)
+		_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+		assert.ErrorIs(t, err, errInvalidSyncDMRequest)
+	}
+}
+
+func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
+	h := &Handler{siteID: "site-a"}
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "alice",
+	}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
+}
+
+func TestHandleSyncCreateDM_RequesterNotFound(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
+
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, nil)
+
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errUserLookupFailed)
+}
+
+func TestHandleSyncCreateDM_OtherNotFound(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
+
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{{ID: "u-alice", Account: "alice", SiteID: "site-a"}}, nil)
+
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errUserLookupFailed)
+}
+
+func TestHandleSyncCreateDM_CrossSiteRequester(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
+
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{{ID: "u-alice", Account: "alice", SiteID: "site-b"}}, nil)
+
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	assert.ErrorIs(t, err, errCrossSiteRequester)
+}
+
+func TestHandleSyncCreateDM_RoomCollisionMismatch(t *testing.T) {
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	cases := []struct {
+		name     string
+		existing model.Room
+	}{
+		{"type mismatch", model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: "", CreatedBy: "u-alice"}},
+		{"siteID mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-other", Name: "", CreatedBy: "u-alice"}},
+		{"name mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a", Name: "leak", CreatedBy: "u-alice"}},
+		{"createdBy mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a", Name: "", CreatedBy: "u-eve"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, store, _ := newSyncDMTestHandler(t)
+			requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+			other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+			store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
+			dupErr := mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000}}}
+			store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
+			existing := tc.existing
+			store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&existing, nil)
+
+			req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+			data := marshalReq(t, req)
+			_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+			assert.ErrorIs(t, err, errRoomIDCollision)
+		})
+	}
+}
+
+func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
+	var insertedRoom *model.Room
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, r *model.Room) error {
+			insertedRoom = r
 			return nil
 		})
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
-	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
-	ss := sharedSince
-	req := model.AddMembersRequest{
-		RoomID:           "r1",
-		Users:            []string{"bob"},
-		RequesterAccount: "alice",
-		Timestamp:        timestamp,
-		History:          model.HistoryConfig{Mode: model.HistoryModeNone, SharedSince: &ss},
+	var captured []*model.Subscription
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			captured = subs
+			return nil
+		})
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		ID:       "canonical-alice-sub",
+		User:     model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+		RoomID:   idgen.BuildDMRoomID("u-alice", "u-bob"),
+		Name:     "bob",
+		RoomType: model.RoomTypeDM,
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		ID:       "canonical-bob-sub",
+		User:     model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+		RoomID:   idgen.BuildDMRoomID("u-alice", "u-bob"),
+		Name:     "alice",
+		RoomType: model.RoomTypeDM,
+	}, nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+	require.NotNil(t, reply)
+	assert.True(t, reply.Success)
+	assert.Equal(t, "canonical-alice-sub", reply.Subscription.ID)
+
+	// DM room is inserted with userCount=2, appCount=0 — no Reconcile needed.
+	require.NotNil(t, insertedRoom)
+	assert.Equal(t, 2, insertedRoom.UserCount)
+	assert.Equal(t, 0, insertedRoom.AppCount)
+
+	// Both subs persisted: requester names other (IsSubscribed=false), other names requester.
+	require.Len(t, captured, 2)
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	subByAccount := map[string]*model.Subscription{}
+	for _, s := range captured {
+		subByAccount[s.User.Account] = s
 	}
-	reqData, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-shared-since-precedence")
-	require.NoError(t, h.processAddMembers(ctx, reqData))
-
-	addEvt, _ := findMemberAddEvent(t, published, "r1")
-	require.NotNil(t, addEvt.HistorySharedSince, "MemberAddEvent must carry the explicit cutoff")
-	assert.Equal(t, sharedSince, *addEvt.HistorySharedSince,
-		"MemberAddEvent.HistorySharedSince must equal req.History.SharedSince, not req.Timestamp")
+	require.Contains(t, subByAccount, "alice")
+	require.Contains(t, subByAccount, "bob")
+	assert.Equal(t, "u-alice", subByAccount["alice"].User.ID)
+	assert.Equal(t, roomID, subByAccount["alice"].RoomID)
+	assert.Equal(t, "bob", subByAccount["alice"].Name)
+	assert.Equal(t, model.RoomTypeDM, subByAccount["alice"].RoomType)
+	assert.False(t, subByAccount["alice"].IsSubscribed)
+	assert.Equal(t, "u-bob", subByAccount["bob"].User.ID)
+	assert.Equal(t, "alice", subByAccount["bob"].Name)
+	assert.False(t, subByAccount["bob"].IsSubscribed)
 }
 
-// findInboxPublish returns the message published on the local INBOX subject,
-// or fails the test if none / more than one were captured.
-func findInboxPublish(t *testing.T, published []publishedMsg, want string) publishedMsg {
-	t.Helper()
-	var matches []publishedMsg
-	for _, p := range published {
-		if p.subj == want {
-			matches = append(matches, p)
+func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	bot := &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-a"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *bot}, nil)
+	var insertedRoom *model.Room
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, r *model.Room) error {
+			insertedRoom = r
+			return nil
+		})
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "helper.bot").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, IsSubscribed: true,
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "helper.bot", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bot", Account: "helper.bot"}, IsSubscribed: false,
+	}, nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
+	data := marshalReq(t, req)
+	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+	require.NotNil(t, reply)
+	assert.True(t, reply.Subscription.IsSubscribed)
+	assert.Equal(t, "alice", reply.Subscription.User.Account)
+
+	// botDM room is inserted with userCount=1, appCount=1 — no Reconcile needed.
+	require.NotNil(t, insertedRoom)
+	assert.Equal(t, 1, insertedRoom.UserCount)
+	assert.Equal(t, 1, insertedRoom.AppCount)
+}
+
+// On dup-key race, BulkCreateSubscriptions swallows the error and the in-memory subs
+// carry stale state; the handler must return the canonical persisted sub via FindDMSubscription.
+func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	existingSub := &model.Subscription{
+		ID:       "canonical-sub",
+		User:     model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+		RoomID:   idgen.BuildDMRoomID("u-alice", "u-bob"),
+		Name:     "bob",
+		RoomType: model.RoomTypeDM,
+	}
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(existingSub, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		ID: "canonical-bob-sub", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+		RoomID: idgen.BuildDMRoomID("u-alice", "u-bob"), Name: "alice", RoomType: model.RoomTypeDM,
+	}, nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+	require.NotNil(t, reply)
+	assert.Equal(t, "canonical-sub", reply.Subscription.ID)
+}
+
+// Transient store errors on GetUser must NOT be sanitized as errUserLookupFailed (which
+// signals "user does not exist"); they should propagate as wrapped errors and surface
+// as "internal error" via sanitizeSyncDMError.
+func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
+
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, errors.New("mongo: connection refused"))
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errUserLookupFailed,
+		"transient error must not be tagged as user-not-found")
+	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
+}
+
+func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T) {
+	h, store, capture := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+	}, nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+
+	subjects := map[string]int{}
+	for _, p := range capture.captured {
+		subjects[p.subject]++
+	}
+	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("alice")])
+	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("bob")])
+}
+
+func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
+	h, store, capture := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+	}, nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+
+	var outbox *dmCapturedPublish
+	for i := range capture.captured {
+		if capture.captured[i].subject == subject.Outbox("site-a", "site-b", model.OutboxTypeRoomCreated) {
+			outbox = &capture.captured[i]
+			break
 		}
 	}
-	require.Lenf(t, matches, 1, "expected exactly 1 publish to %s, got %d (all: %+v)", want, len(matches), published)
-	return matches[0]
+	require.NotNil(t, outbox, "expected an outbox publish to site-b")
+
+	var env model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outbox.data, &env))
+	assert.Equal(t, model.OutboxEventType(model.OutboxTypeRoomCreated), env.Type)
+	assert.Equal(t, "site-a", env.SiteID)
+	assert.Equal(t, "site-b", env.DestSiteID)
+
+	var payload model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(env.Payload, &payload))
+	assert.Equal(t, model.RoomTypeDM, payload.RoomType)
+	assert.Equal(t, "", payload.RoomName)
+	assert.Equal(t, "site-a", payload.HomeSiteID)
+	assert.Equal(t, []string{"bob"}, payload.Accounts)
+	assert.Equal(t, "alice", payload.RequesterAccount)
+	assert.Equal(t, "01970a4f-8c2d-7c9a-abcd-e0123456789f:site-b", outbox.msgID)
 }
 
-func TestHandler_processAddMembers_PublishesLocalInbox(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
+func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
+	h, store, capture := newSyncDMTestHandler(t)
 
-	const (
-		roomID    = "r1"
-		siteID    = "site-a"
-		requester = "alice"
-	)
-
-	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(&model.Room{ID: roomID, SiteID: siteID}, nil)
-	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"charlie", "bob", "carol"}, roomID).
-		Return([]string{"charlie", "bob", "carol"}, nil)
-	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"charlie", "bob", "carol"}).Return([]model.User{
-		{ID: "u-charlie", Account: "charlie", SiteID: siteID},
-		{ID: "u-bob", Account: "bob", SiteID: "site-b"},
-		{ID: "u-carol", Account: "carol", SiteID: "site-c"},
-	}, nil)
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+	}, nil)
 
-	var published []publishedMsg
-	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
-		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
-		return nil
-	})
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
 
-	req := model.AddMembersRequest{
-		RoomID:           roomID,
-		Users:            []string{"charlie", "bob", "carol"},
-		RequesterAccount: requester,
-		Timestamp:        12345,
-		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
-	}
-	reqData, _ := json.Marshal(req)
-
-	ctx := natsutil.WithRequestID(context.Background(), "req-add-local-inbox")
-	require.NoError(t, h.processAddMembers(ctx, reqData))
-
-	got := findInboxPublish(t, published, subject.InboxMemberAdded(siteID))
-
-	var outboxEvt model.OutboxEvent
-	require.NoError(t, json.Unmarshal(got.data, &outboxEvt))
-	assert.Equal(t, "member_added", outboxEvt.Type)
-	assert.Equal(t, siteID, outboxEvt.SiteID, "origin site must equal h.siteID")
-	assert.Equal(t, siteID, outboxEvt.DestSiteID, "self-loop publish: dest must equal origin")
-	assert.Greater(t, outboxEvt.Timestamp, int64(0), "OutboxEvent.Timestamp must be set")
-
-	var inner model.MemberAddEvent
-	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
-	assert.Equal(t, "member_added", inner.Type)
-	assert.Equal(t, roomID, inner.RoomID)
-	assert.Equal(t, siteID, inner.SiteID)
-	assert.ElementsMatch(t, []string{"charlie", "bob", "carol"}, inner.Accounts,
-		"local INBOX must carry full add set — same-site + cross-site")
-
-	wantMsgID := outboxDedupID(ctx, siteID, fmt.Sprintf("%s:%s:%d", roomID, requester, req.Timestamp))
-	assert.Equal(t, wantMsgID, got.msgID, "Nats-Msg-Id must follow outboxDedupID(ctx, siteID, payloadSeed)")
-}
-
-func TestHandler_processAddMembers_NoLocalInboxOnEmptyAccounts(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
-	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob"}, "r1").Return(nil, nil)
-
-	var published []publishedMsg
-	h := NewHandler(store, "site-a", func(_ context.Context, subj string, data []byte, msgID string) error {
-		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
-		return nil
-	})
-
-	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"bob"}, RequesterAccount: "alice", Timestamp: 1000}
-	reqData, _ := json.Marshal(req)
-
-	ctx := natsutil.WithRequestID(context.Background(), "req-empty-accounts")
-	require.NoError(t, h.processAddMembers(ctx, reqData))
-
-	for _, p := range published {
-		assert.NotEqual(t, subject.InboxMemberAdded("site-a"), p.subj,
-			"no local INBOX publish should occur when actualAccounts is empty")
+	for _, p := range capture.captured {
+		assert.NotContains(t, p.subject, "outbox.", "no outbox publish expected for same-site DM")
 	}
 }
 
-func TestHandler_processRemoveIndividual_PublishesLocalInbox(t *testing.T) {
+// Outbox publish failure must fail the request — otherwise the requester sees success
+// while the remote site never learns about the room.
+func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
-
-	const (
-		roomID    = "r1"
-		account   = "bob"
-		requester = "alice"
-		siteID    = "site-a"
-	)
-
-	userResult := &UserWithMembership{
-		User:             model.User{ID: "u-bob", Account: account, SiteID: siteID},
-		HasOrgMembership: false,
-	}
-
-	store.EXPECT().GetUserWithMembership(gomock.Any(), roomID, account).Return(userResult, nil)
-	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u-bob").Return(nil)
-	store.EXPECT().DeleteSubscription(gomock.Any(), roomID, account).Return(int64(1), nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-
-	var published []publishedMsg
-	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
-		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
+	failingPublish := func(_ context.Context, subj string, _ []byte, _ string) error {
+		if strings.HasPrefix(subj, "outbox.") {
+			return errors.New("jetstream pubAck failed")
+		}
 		return nil
-	})
+	}
+	h := &Handler{siteID: "site-a", store: store, publish: failingPublish}
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, Account: account, Timestamp: 9999}
-	reqData, _ := json.Marshal(req)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{
+		{ID: "u-alice", Account: "alice", SiteID: "site-a"},
+		{ID: "u-bob", Account: "bob", SiteID: "site-b"},
+	}, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+	}, nil)
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-rm-individual-inbox")
-	require.NoError(t, h.processRemoveMember(ctx, reqData))
-
-	got := findInboxPublish(t, published, subject.InboxMemberRemoved(siteID))
-
-	var outboxEvt model.OutboxEvent
-	require.NoError(t, json.Unmarshal(got.data, &outboxEvt))
-	assert.Equal(t, "member_removed", outboxEvt.Type)
-	assert.Equal(t, siteID, outboxEvt.SiteID)
-	assert.Equal(t, siteID, outboxEvt.DestSiteID)
-	assert.Greater(t, outboxEvt.Timestamp, int64(0))
-
-	var inner model.MemberRemoveEvent
-	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
-	assert.Equal(t, "member_removed", inner.Type, "admin-remove inner type is member_removed")
-	assert.Equal(t, roomID, inner.RoomID)
-	assert.Equal(t, []string{account}, inner.Accounts)
-
-	wantMsgID := outboxDedupID(ctx, siteID, fmt.Sprintf("%s:%s:%d", roomID, account, req.Timestamp))
-	assert.Equal(t, wantMsgID, got.msgID, "Nats-Msg-Id must follow outboxDedupID(ctx, siteID, payloadSeed)")
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.Error(t, err)
+	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
 }
 
-// Self-leave: wrapper Type collapses to member_removed while inner Type
-// stays member_left — matches the cross-site OUTBOX convention so
-// search-sync-worker dispatches on a single MV op.
-func TestHandler_processRemoveIndividual_SelfLeavePublishesLocalInbox(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
+// BulkCreateSubscriptions returning a non-dup-key error must surface as "internal error".
+func TestHandleSyncCreateDM_BulkCreateSubsTransientError(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
 
-	const (
-		roomID  = "r1"
-		account = "alice"
-		siteID  = "site-a"
-	)
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		Return(errors.New("mongo: connection reset"))
 
-	userResult := &UserWithMembership{
-		User:             model.User{ID: "u1", Account: account, SiteID: siteID},
-		HasOrgMembership: false,
-	}
-
-	store.EXPECT().GetUserWithMembership(gomock.Any(), roomID, account).Return(userResult, nil)
-	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").Return(nil)
-	store.EXPECT().DeleteSubscription(gomock.Any(), roomID, account).Return(int64(1), nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-
-	var published []publishedMsg
-	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
-		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
-		return nil
-	})
-
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1000}
-	reqData, _ := json.Marshal(req)
-
-	ctx := natsutil.WithRequestID(context.Background(), "req-rm-self-leave-inbox")
-	require.NoError(t, h.processRemoveMember(ctx, reqData))
-
-	got := findInboxPublish(t, published, subject.InboxMemberRemoved(siteID))
-
-	var outboxEvt model.OutboxEvent
-	require.NoError(t, json.Unmarshal(got.data, &outboxEvt))
-	assert.Equal(t, "member_removed", outboxEvt.Type,
-		"OutboxEvent wrapper Type must be member_removed even for self-leave")
-
-	var inner model.MemberRemoveEvent
-	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
-	assert.Equal(t, "member_left", inner.Type,
-		"inner MemberRemoveEvent.Type is preserved as member_left for self-leave")
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.Error(t, err)
+	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
 }
 
-func TestHandler_processRemoveOrg_PublishesLocalInbox(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
+// On a CreateRoom dup-key with matching existing room (idempotent re-delivery),
+// the handler must reuse existing.CreatedAt as acceptedAt — sub.JoinedAt and event
+// timestamps reflect the original creation, not retry wall-clock.
+func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
 
-	const (
-		roomID    = "r1"
-		orgID     = "org-1"
-		requester = "alice"
-		siteID    = "site-a"
-	)
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
 
-	orgMembers := []OrgMemberStatus{
-		{Account: "carol", SiteID: siteID, SectName: "Eng", HasIndividualMembership: false},
-		{Account: "dave", SiteID: "site-b", SectName: "Eng", HasIndividualMembership: false},
-	}
+	// CreateRoom hits dup-key; GetRoom returns a matching existing room with a known CreatedAt.
+	originalCreatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	dupErr := mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000}}}
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
+	store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&model.Room{
+		ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a",
+		Name: "", CreatedBy: "u-alice",
+		CreatedAt: originalCreatedAt, UpdatedAt: originalCreatedAt,
+	}, nil)
 
-	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, orgID).Return(orgMembers, nil)
-	store.EXPECT().
-		DeleteSubscriptionsByAccounts(gomock.Any(), roomID, gomock.InAnyOrder([]string{"carol", "dave"})).
-		Return(int64(2), nil)
-	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	var captured []*model.Subscription
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			captured = subs
+			return nil
+		})
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, JoinedAt: originalCreatedAt,
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"}, JoinedAt: originalCreatedAt,
+	}, nil)
 
-	var published []publishedMsg
-	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
-		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
-		return nil
-	})
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
 
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID, Timestamp: 4242}
-	reqData, _ := json.Marshal(req)
-
-	ctx := natsutil.WithRequestID(context.Background(), "req-rm-org-inbox")
-	require.NoError(t, h.processRemoveMember(ctx, reqData))
-
-	got := findInboxPublish(t, published, subject.InboxMemberRemoved(siteID))
-
-	var outboxEvt model.OutboxEvent
-	require.NoError(t, json.Unmarshal(got.data, &outboxEvt))
-	assert.Equal(t, "member_removed", outboxEvt.Type)
-	assert.Equal(t, siteID, outboxEvt.SiteID)
-	assert.Equal(t, siteID, outboxEvt.DestSiteID)
-
-	var inner model.MemberRemoveEvent
-	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
-	assert.Equal(t, "member_removed", inner.Type)
-	assert.Equal(t, roomID, inner.RoomID)
-	assert.Equal(t, orgID, inner.OrgID)
-	assert.ElementsMatch(t, []string{"carol", "dave"}, inner.Accounts,
-		"local INBOX must carry every removed account regardless of site")
-
-	wantMsgID := outboxDedupID(ctx, siteID, fmt.Sprintf("%s:%s:%d", roomID, orgID, req.Timestamp))
-	assert.Equal(t, wantMsgID, got.msgID, "Nats-Msg-Id must follow outboxDedupID(ctx, siteID, payloadSeed)")
-}
-
-func TestHandler_processRemoveOrg_NoLocalInboxOnZeroAccounts(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	const (
-		roomID = "r1"
-		orgID  = "org-1"
-		siteID = "site-a"
-	)
-
-	orgMembers := []OrgMemberStatus{
-		{Account: "carol", SiteID: siteID, SectName: "Eng", HasIndividualMembership: true},
-	}
-
-	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, orgID).Return(orgMembers, nil)
-	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-
-	var published []publishedMsg
-	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
-		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
-		return nil
-	})
-
-	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", OrgID: orgID, Timestamp: 1000}
-	reqData, _ := json.Marshal(req)
-
-	ctx := natsutil.WithRequestID(context.Background(), "req-rm-org-empty")
-	require.NoError(t, h.processRemoveMember(ctx, reqData))
-
-	for _, p := range published {
-		assert.NotEqual(t, subject.InboxMemberRemoved(siteID), p.subj,
-			"no local INBOX publish when no accounts are actually removed")
+	require.Len(t, captured, 2)
+	for _, s := range captured {
+		assert.Equal(t, originalCreatedAt, s.JoinedAt,
+			"sub.JoinedAt must reflect existing.CreatedAt on idempotent re-delivery, not retry wall-clock")
 	}
 }

@@ -9,17 +9,18 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 )
 
 const roomsCollection = "rooms"
 
 type RoomRepo struct {
-	rooms *Collection[model.Room]
+	rooms *mongoutil.Collection[model.Room]
 }
 
 func NewRoomRepo(db *mongo.Database) *RoomRepo {
 	return &RoomRepo{
-		rooms: NewCollection[model.Room](db.Collection(roomsCollection)),
+		rooms: mongoutil.NewCollection[model.Room](db.Collection(roomsCollection)),
 	}
 }
 
@@ -28,7 +29,7 @@ func NewRoomRepo(db *mongo.Database) *RoomRepo {
 func (r *RoomRepo) GetMinUserLastSeenAt(ctx context.Context, roomID string) (*time.Time, error) {
 	room, err := r.rooms.FindOne(ctx,
 		bson.M{"_id": roomID},
-		WithProjection(bson.M{"minUserLastSeenAt": 1, "_id": 0}),
+		mongoutil.WithProjection(bson.M{"minUserLastSeenAt": 1, "_id": 0}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get room %s minUserLastSeenAt: %w", roomID, err)

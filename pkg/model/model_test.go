@@ -1981,3 +1981,45 @@ func TestMessageTypeAndAsyncJobStatusConstants(t *testing.T) {
 	assert.Equal(t, "ok", model.AsyncJobStatusOK)
 	assert.Equal(t, "error", model.AsyncJobStatusError)
 }
+
+func TestSyncCreateDMRequestJSON(t *testing.T) {
+	src := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+	}
+	b, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	assert.JSONEq(t, `{"roomType":"dm","requesterAccount":"alice","otherAccount":"bob"}`, string(b))
+
+	var dst model.SyncCreateDMRequest
+	require.NoError(t, json.Unmarshal(b, &dst))
+	assert.Equal(t, src, dst)
+}
+
+func TestSyncCreateDMReplyJSON(t *testing.T) {
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	src := model.SyncCreateDMReply{
+		Success: true,
+		Subscription: model.Subscription{
+			ID:           "sub1",
+			User:         model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:       "room1",
+			SiteID:       "site-a",
+			Name:         "bob",
+			RoomType:     model.RoomTypeDM,
+			IsSubscribed: true,
+			JoinedAt:     now,
+		},
+	}
+	b, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var dst model.SyncCreateDMReply
+	require.NoError(t, json.Unmarshal(b, &dst))
+	assert.True(t, dst.Success)
+	assert.Equal(t, src.Subscription.ID, dst.Subscription.ID)
+	assert.Equal(t, src.Subscription.User, dst.Subscription.User)
+	assert.Equal(t, src.Subscription.RoomID, dst.Subscription.RoomID)
+}
