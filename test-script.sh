@@ -468,6 +468,10 @@ scenario_9_user_missing_display_fields() {
 
 run_scenario() {
   local n="$1"
+  # Each scenario reuses account names (alice, bob, …) so a leftover users._id
+  # from a prior scenario would collide on the unique index. Clean before
+  # every scenario for full isolation.
+  cleanup_test_data
   case "$n" in
     1) scenario_1_happy_two_readers ;;
     2) scenario_2_empty_readers ;;
