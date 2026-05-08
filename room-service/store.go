@@ -93,3 +93,13 @@ type RoomStore interface {
 type RoomKeyStore interface {
 	GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error)
 }
+
+// MessageReader is the read-only Cassandra accessor used by
+// handleMessageReadReceipt to look up a message's room and creation time.
+// found=false (with err=nil) signals "no row matched"; on driver failures
+// err is non-nil and the other return values are unset.
+type MessageReader interface {
+	GetMessageRoomAndCreatedAt(ctx context.Context, messageID string) (
+		roomID string, createdAt time.Time, senderAccount string, found bool, err error,
+	)
+}
