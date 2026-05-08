@@ -324,3 +324,73 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("alice")])
 	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("bob")])
 }
+
+func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	cap := &publishCapturer{}
+	h := &Handler{siteID: "site-a", store: store, publish: cap.fn}
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+
+	var outbox *capturedPublish
+	for i := range cap.captured {
+		if cap.captured[i].subject == subject.Outbox("site-a", "site-b", model.OutboxTypeRoomCreated) {
+			outbox = &cap.captured[i]
+			break
+		}
+	}
+	require.NotNil(t, outbox, "expected an outbox publish to site-b")
+
+	var env model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outbox.data, &env))
+	assert.Equal(t, model.OutboxEventType(model.OutboxTypeRoomCreated), env.Type)
+	assert.Equal(t, "site-a", env.SiteID)
+	assert.Equal(t, "site-b", env.DestSiteID)
+
+	var payload model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(env.Payload, &payload))
+	assert.Equal(t, model.RoomTypeDM, payload.RoomType)
+	assert.Equal(t, "", payload.RoomName)
+	assert.Equal(t, "site-a", payload.HomeSiteID)
+	assert.Equal(t, []string{"bob"}, payload.Accounts)
+	assert.Equal(t, "alice", payload.RequesterAccount)
+	assert.Equal(t, "01970a4f-8c2d-7c9a-abcd-e0123456789f:site-b", outbox.msgID)
+}
+
+func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	cap := &publishCapturer{}
+	h := &Handler{siteID: "site-a", store: store, publish: cap.fn}
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+
+	for _, p := range cap.captured {
+		assert.NotContains(t, p.subject, "outbox.", "no outbox publish expected for same-site DM")
+	}
+}

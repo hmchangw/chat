@@ -133,6 +133,11 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 
 	h.publishSubscriptionUpdates(ctx, subs, acceptedAt, requestID)
 
+	if err := h.publishSyncDMOutbox(ctx, room, requester, other, acceptedAt, requestID); err != nil {
+		slog.Error("sync DM: publish outbox failed",
+			"error", err, "roomID", room.ID, "requestID", requestID)
+	}
+
 	reply, err := json.Marshal(model.SyncCreateDMReply{
 		Success:      true,
 		Subscription: *requesterSub,
@@ -206,4 +211,40 @@ func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.
 				"error", err, "account", sub.User.Account, "requestID", requestID)
 		}
 	}
+}
+
+func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, acceptedAt time.Time, requestID string) error {
+	if other.SiteID == "" || other.SiteID == h.siteID {
+		return nil
+	}
+
+	payload := model.RoomCreatedOutbox{
+		RoomID:           room.ID,
+		RoomType:         room.Type,
+		RoomName:         "",
+		HomeSiteID:       room.SiteID,
+		Accounts:         []string{other.Account},
+		RequesterAccount: requester.Account,
+		Timestamp:        acceptedAt.UnixMilli(),
+	}
+	pData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal room_created outbox payload: %w", err)
+	}
+	envelope := model.OutboxEvent{
+		Type:       model.OutboxTypeRoomCreated,
+		SiteID:     room.SiteID,
+		DestSiteID: other.SiteID,
+		Payload:    pData,
+		Timestamp:  acceptedAt.UnixMilli(),
+	}
+	eData, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal outbox envelope: %w", err)
+	}
+	return h.publish(ctx,
+		subject.Outbox(room.SiteID, other.SiteID, model.OutboxTypeRoomCreated),
+		eData,
+		requestID+":"+other.SiteID,
+	)
 }
