@@ -1273,23 +1273,24 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		return nil, err
 	}
 
-	requester, err := h.store.GetUser(ctx, req.RequesterAccount)
+	users, err := h.store.FindUsersByAccounts(ctx, []string{req.RequesterAccount, req.OtherAccount})
 	if err != nil {
-		if errors.Is(err, ErrUserNotFound) {
-			return nil, errUserLookupFailed
-		}
-		return nil, fmt.Errorf("get requester: %w", err)
+		return nil, fmt.Errorf("find dm users: %w", err)
+	}
+	byAccount := make(map[string]*model.User, len(users))
+	for i := range users {
+		byAccount[users[i].Account] = &users[i]
+	}
+	requester, ok := byAccount[req.RequesterAccount]
+	if !ok {
+		return nil, errUserLookupFailed
 	}
 	if requester.SiteID != h.siteID {
 		return nil, errCrossSiteRequester
 	}
-
-	other, err := h.store.GetUser(ctx, req.OtherAccount)
-	if err != nil {
-		if errors.Is(err, ErrUserNotFound) {
-			return nil, errUserLookupFailed
-		}
-		return nil, fmt.Errorf("get counterpart: %w", err)
+	other, ok := byAccount[req.OtherAccount]
+	if !ok {
+		return nil, errUserLookupFailed
 	}
 
 	acceptedAt := time.Now().UTC()

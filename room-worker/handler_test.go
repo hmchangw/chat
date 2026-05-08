@@ -23,9 +23,8 @@ import (
 )
 
 type publishedMsg struct {
-	subj  string
-	data  []byte
-	msgID string
+	subj string
+	data []byte
 }
 
 func TestHandler_ProcessRoleUpdate_Promote(t *testing.T) {
@@ -2483,7 +2482,7 @@ func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
 func TestHandleSyncCreateDM_RequesterNotFound(t *testing.T) {
 	h, store, _ := newSyncDMTestHandler(t)
 
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(nil, ErrUserNotFound)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, nil)
 
 	req := model.SyncCreateDMRequest{
 		RoomType:         model.RoomTypeDM,
@@ -2498,8 +2497,7 @@ func TestHandleSyncCreateDM_RequesterNotFound(t *testing.T) {
 func TestHandleSyncCreateDM_OtherNotFound(t *testing.T) {
 	h, store, _ := newSyncDMTestHandler(t)
 
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(nil, ErrUserNotFound)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{{ID: "u-alice", Account: "alice", SiteID: "site-a"}}, nil)
 
 	req := model.SyncCreateDMRequest{
 		RoomType:         model.RoomTypeDM,
@@ -2514,7 +2512,7 @@ func TestHandleSyncCreateDM_OtherNotFound(t *testing.T) {
 func TestHandleSyncCreateDM_CrossSiteRequester(t *testing.T) {
 	h, store, _ := newSyncDMTestHandler(t)
 
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-b"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{{ID: "u-alice", Account: "alice", SiteID: "site-b"}}, nil)
 
 	req := model.SyncCreateDMRequest{
 		RoomType:         model.RoomTypeDM,
@@ -2542,8 +2540,7 @@ func TestHandleSyncCreateDM_RoomCollisionMismatch(t *testing.T) {
 			h, store, _ := newSyncDMTestHandler(t)
 			requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 			other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
-			store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-			store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+			store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
 			dupErr := mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000}}}
 			store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
 			existing := tc.existing
@@ -2562,8 +2559,7 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
 	var insertedRoom *model.Room
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, r *model.Room) error {
@@ -2622,8 +2618,7 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	bot := &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-a"}
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	store.EXPECT().GetUser(gomock.Any(), "helper.bot").Return(bot, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *bot}, nil)
 	var insertedRoom *model.Room
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, r *model.Room) error {
@@ -2656,8 +2651,7 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	existingSub := &model.Subscription{
@@ -2683,7 +2677,7 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
 	h, store, _ := newSyncDMTestHandler(t)
 
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(nil, errors.New("mongo: connection refused"))
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, errors.New("mongo: connection refused"))
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -2699,8 +2693,7 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
@@ -2725,8 +2718,7 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
@@ -2768,8 +2760,7 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
@@ -2799,8 +2790,10 @@ func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 	}
 	h := &Handler{siteID: "site-a", store: store, publish: failingPublish}
 
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{
+		{ID: "u-alice", Account: "alice", SiteID: "site-a"},
+		{ID: "u-bob", Account: "bob", SiteID: "site-b"},
+	}, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
@@ -2820,8 +2813,7 @@ func TestHandleSyncCreateDM_BulkCreateSubsTransientError(t *testing.T) {
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 		Return(errors.New("mongo: connection reset"))
@@ -2841,8 +2833,7 @@ func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
 
 	// CreateRoom hits dup-key; GetRoom returns a matching existing room with a known CreatedAt.
 	originalCreatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
