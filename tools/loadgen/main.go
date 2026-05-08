@@ -144,6 +144,8 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	autoWarmup := fs.Bool("auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
 	autoWarmupRate := fs.Int("auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
 	progressInterval := fs.Duration("progress-interval", 10*time.Second, "live progress log interval; 0 disables")
+	skipReadiness := fs.Bool("skip-readiness", false, "skip the pre-run readiness probe for read scenarios")
+	readinessTimeout := fs.Duration("readiness-timeout", 30*time.Second, "deadline for the readiness probe to succeed")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	switch *scenario {
@@ -305,6 +307,24 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	publisher := newNatsCorePublisher(nc.NatsConn(), injectMode, js)
 	requester := &natsRequester{nc: nc.NatsConn()}
+
+	// Phase 3 §3.3: readiness probe for read scenarios. Skipped for
+	// messaging-pipeline (which doesn't request/reply to a service) and
+	// when --skip-readiness is set.
+	if !*skipReadiness && scenarioNeedsReadiness(*scenario) && len(fixtures.Subscriptions) > 0 {
+		probeSub := fixtures.Subscriptions[0]
+		probe := buildReadinessProbe(*scenario, &probeSub, cfg.SiteID, requester)
+		probeCtx, probeCancel := context.WithTimeout(ctx, *readinessTimeout)
+		if err := waitForReady(probeCtx, &readinessConfig{
+			Probe: probe, MinBackoff: 200 * time.Millisecond, MaxBackoff: 2 * time.Second,
+		}); err != nil {
+			probeCancel()
+			slog.Error("readiness probe failed", "scenario", *scenario, "error", err)
+			return 1
+		}
+		probeCancel()
+		slog.Info("readiness probe succeeded", "scenario", *scenario)
+	}
 
 	warmupDeadline := time.Now().Add(*warmup)
 
