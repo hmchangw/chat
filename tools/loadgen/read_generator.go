@@ -25,6 +25,7 @@ type HistoryReadConfig struct {
 	Rate           int
 	Requester      Requester
 	Metrics        *Metrics
+	Collector      *Collector
 	WarmupDeadline time.Time
 	MaxInFlight    int
 	// MessageIDs are the seed message IDs to sample from for kinds that
@@ -153,13 +154,17 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 	).Inc()
 	start := time.Now()
 	_, err = g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
+	latency := time.Since(start)
 	g.cfg.Metrics.RequestLatency.WithLabelValues(
 		g.cfg.Preset.Name, "history", historyKindLabel(kind),
-	).Observe(time.Since(start).Seconds())
+	).Observe(latency.Seconds())
 	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
 			g.cfg.Preset.Name, "history", historyKindLabel(kind), "request",
 		).Inc()
+	}
+	if g.cfg.Collector != nil {
+		g.cfg.Collector.RecordRequest("history", historyKindLabel(kind), start, latency, err != nil)
 	}
 }
 
@@ -195,6 +200,7 @@ type SearchReadConfig struct {
 	Rate           int
 	Requester      Requester
 	Metrics        *Metrics
+	Collector      *Collector
 	WarmupDeadline time.Time
 	MaxInFlight    int
 	Timeout        time.Duration
@@ -310,13 +316,17 @@ func (g *SearchReadGenerator) tick(ctx context.Context) {
 	).Inc()
 	start := time.Now()
 	_, err = g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
+	latency := time.Since(start)
 	g.cfg.Metrics.RequestLatency.WithLabelValues(
 		g.cfg.Preset.Name, "search", searchKindLabel(kind),
-	).Observe(time.Since(start).Seconds())
+	).Observe(latency.Seconds())
 	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
 			g.cfg.Preset.Name, "search", searchKindLabel(kind), "request",
 		).Inc()
+	}
+	if g.cfg.Collector != nil {
+		g.cfg.Collector.RecordRequest("search", searchKindLabel(kind), start, latency, err != nil)
 	}
 }
 

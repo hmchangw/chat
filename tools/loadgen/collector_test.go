@@ -168,3 +168,52 @@ func TestCollector_RecordPublishBroadcastOnly_FinalizeNoMissingReplies(t *testin
 	assert.Equal(t, 0, missingReplies, "canonical mode should never produce missing replies")
 	assert.Equal(t, 1, missingBroadcasts)
 }
+
+func TestCollector_RecordRequest_AppendsSamples(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "history-read")
+	t0 := time.Unix(100, 0)
+	c.RecordRequest("history", "load_history", t0, 4*time.Millisecond, false)
+	c.RecordRequest("history", "load_history", t0, 8*time.Millisecond, false)
+	c.RecordRequest("history", "load_history", t0, 18*time.Millisecond, true) // error
+	c.RecordRequest("history", "get_message_by_id", t0, 1*time.Millisecond, false)
+
+	stats := c.RequestStats()
+	require.Len(t, stats, 2)
+
+	// stats are sorted (scenario, kind) for deterministic output.
+	var loadHistory, getByID *RequestStat
+	for i := range stats {
+		switch stats[i].Kind {
+		case "load_history":
+			loadHistory = &stats[i]
+		case "get_message_by_id":
+			getByID = &stats[i]
+		}
+	}
+	require.NotNil(t, loadHistory)
+	require.NotNil(t, getByID)
+
+	assert.Equal(t, 3, loadHistory.Count, "all three load_history calls counted")
+	assert.Equal(t, 1, loadHistory.Errors, "one was an error")
+	assert.Greater(t, int64(loadHistory.Latency.P99), int64(0))
+
+	assert.Equal(t, 1, getByID.Count)
+	assert.Equal(t, 0, getByID.Errors)
+}
+
+func TestCollector_RequestStats_DiscardsBeforeCutoff(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "history-read")
+	warmup := time.Unix(100, 0)
+	cutoff := time.Unix(110, 0)
+	measured := time.Unix(120, 0)
+
+	c.RecordRequest("history", "load_history", warmup, 5*time.Millisecond, false)   // discarded
+	c.RecordRequest("history", "load_history", measured, 7*time.Millisecond, false) // kept
+
+	c.DiscardBefore(cutoff)
+	stats := c.RequestStats()
+	require.Len(t, stats, 1)
+	assert.Equal(t, 1, stats[0].Count, "warmup samples must be discarded")
+}

@@ -302,6 +302,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		gen = NewHistoryReadGenerator(&HistoryReadConfig{
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
 			Rate: *rate, Requester: requester, Metrics: metrics,
+			Collector:      collector,
 			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight,
 			Timeout: *requestTimeout,
 			// MessageIDs for kinds that need them are pre-populated by a
@@ -316,6 +317,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		gen = NewSearchReadGenerator(&SearchReadConfig{
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
 			Rate: *rate, Requester: requester, Metrics: metrics,
+			Collector:      collector,
 			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight,
 			Timeout: *requestTimeout,
 		}, *seed)
@@ -401,6 +403,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		E1Count:           collector.E1Count(),
 		E2Count:           collector.E2Count(),
 		Consumers:         []ConsumerStat{samplers[0].Snapshot(), samplers[1].Snapshot()},
+		Requests:          collector.RequestStats(),
 	}
 	if err := PrintSummary(os.Stdout, &summary); err != nil {
 		slog.Warn("print summary", "error", err)
@@ -479,6 +482,13 @@ func writeCSVFile(path string, c *Collector) error {
 	}
 	for i, d := range c.E2Samples() {
 		rows = append(rows, CSVSample{TimestampNs: int64(i), Metric: "E2", LatencyNs: d.Nanoseconds()})
+	}
+	for i, r := range c.RequestSampleRows() {
+		rows = append(rows, CSVSample{
+			TimestampNs: int64(i),
+			Metric:      r.Scenario + "." + r.Kind,
+			LatencyNs:   r.Latency.Nanoseconds(),
+		})
 	}
 	return WriteCSV(f, rows)
 }

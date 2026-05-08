@@ -36,6 +36,17 @@ func ComputePercentiles(samples []time.Duration) Percentiles {
 	}
 }
 
+// RequestStat captures count + error count + latency percentiles for a
+// single (scenario, kind) cell from the read-only scenarios. Empty for
+// the messaging-pipeline scenario.
+type RequestStat struct {
+	Scenario string
+	Kind     string
+	Count    int
+	Errors   int
+	Latency  Percentiles
+}
+
 // ConsumerStat captures the min/peak/final snapshot of a single durable.
 type ConsumerStat struct {
 	Stream         string
@@ -65,6 +76,7 @@ type Summary struct {
 	E2                   Percentiles
 	E1Count, E2Count     int
 	Consumers            []ConsumerStat
+	Requests             []RequestStat
 }
 
 // PrintSummary writes the terminal summary to w using text/tabwriter.
@@ -93,6 +105,21 @@ func PrintSummary(w io.Writer, s *Summary) error {
 	}
 
 	fmt.Fprintln(w)
+	if len(s.Requests) > 0 {
+		fmt.Fprintln(w, "request latency (read scenarios)")
+		twR := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(twR, "scenario\tkind\tcount\terrors\tp50\tp95\tp99\tmax")
+		for i := range s.Requests {
+			r := &s.Requests[i]
+			fmt.Fprintf(twR, "%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\n",
+				r.Scenario, r.Kind, r.Count, r.Errors,
+				r.Latency.P50, r.Latency.P95, r.Latency.P99, r.Latency.Max)
+		}
+		if err := twR.Flush(); err != nil {
+			return fmt.Errorf("flush request table: %w", err)
+		}
+		fmt.Fprintln(w)
+	}
 	if len(s.Consumers) > 0 {
 		fmt.Fprintf(w, "consumer lag (%s)\n", s.Consumers[0].Stream)
 		tw2 := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)

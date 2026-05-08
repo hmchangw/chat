@@ -16,24 +16,85 @@ type sample struct {
 	latency     time.Duration
 }
 
+// requestSample carries one (scenario, kind) read-scenario observation.
+type requestSample struct {
+	publishedAt time.Time
+	latency     time.Duration
+	errored     bool
+}
+
+// requestKey identifies one (scenario, kind) cell.
+type requestKey struct{ scenario, kind string }
+
 // Collector correlates publishes with replies (E1) and broadcasts (E2).
 type Collector struct {
-	m       *Metrics
-	preset  string
-	mu      sync.Mutex
-	byReqID map[string]publishEntry
-	byMsgID map[string]publishEntry
-	e1      []sample
-	e2      []sample
+	m        *Metrics
+	preset   string
+	mu       sync.Mutex
+	byReqID  map[string]publishEntry
+	byMsgID  map[string]publishEntry
+	e1       []sample
+	e2       []sample
+	requests map[requestKey][]requestSample
 }
 
 // NewCollector returns a ready-to-use Collector.
 func NewCollector(m *Metrics, preset string) *Collector {
 	return &Collector{
 		m: m, preset: preset,
-		byReqID: make(map[string]publishEntry),
-		byMsgID: make(map[string]publishEntry),
+		byReqID:  make(map[string]publishEntry),
+		byMsgID:  make(map[string]publishEntry),
+		requests: make(map[requestKey][]requestSample),
 	}
+}
+
+// RecordRequest captures one read-scenario request observation under
+// (scenario, kind). errored is true when the underlying NATS request
+// returned a non-nil error or the reply payload encoded a server error.
+func (c *Collector) RecordRequest(scenario, kind string, publishedAt time.Time, latency time.Duration, errored bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := requestKey{scenario: scenario, kind: kind}
+	c.requests[k] = append(c.requests[k], requestSample{
+		publishedAt: publishedAt,
+		latency:     latency,
+		errored:     errored,
+	})
+}
+
+// RequestStats returns aggregated per-(scenario, kind) percentiles + counts.
+// Result is sorted by (scenario, kind) for deterministic output.
+func (c *Collector) RequestStats() []RequestStat {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]RequestStat, 0, len(c.requests))
+	for k, samples := range c.requests {
+		if len(samples) == 0 {
+			continue
+		}
+		latencies := make([]time.Duration, len(samples))
+		errors := 0
+		for i := range samples {
+			latencies[i] = samples[i].latency
+			if samples[i].errored {
+				errors++
+			}
+		}
+		out = append(out, RequestStat{
+			Scenario: k.scenario,
+			Kind:     k.kind,
+			Count:    len(samples),
+			Errors:   errors,
+			Latency:  ComputePercentiles(latencies),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Scenario != out[j].Scenario {
+			return out[i].Scenario < out[j].Scenario
+		}
+		return out[i].Kind < out[j].Kind
+	})
+	return out
 }
 
 // RecordPublish stores the publish time under both correlation keys.
@@ -96,9 +157,22 @@ func (c *Collector) DiscardBefore(cutoff time.Time) {
 	defer c.mu.Unlock()
 	c.e1 = filterAtOrAfter(c.e1, cutoff)
 	c.e2 = filterAtOrAfter(c.e2, cutoff)
+	for k, samples := range c.requests {
+		c.requests[k] = filterRequestsAtOrAfter(samples, cutoff)
+	}
 }
 
 func filterAtOrAfter(in []sample, cutoff time.Time) []sample {
+	out := in[:0]
+	for i := range in {
+		if !in[i].publishedAt.Before(cutoff) {
+			out = append(out, in[i])
+		}
+	}
+	return out
+}
+
+func filterRequestsAtOrAfter(in []requestSample, cutoff time.Time) []requestSample {
 	out := in[:0]
 	for i := range in {
 		if !in[i].publishedAt.Before(cutoff) {
@@ -141,6 +215,44 @@ func (c *Collector) E2Samples() []time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.snapshotLatenciesLocked(c.e2)
+}
+
+// RequestSampleRow is a single row for the per-sample CSV export.
+type RequestSampleRow struct {
+	Scenario string
+	Kind     string
+	Latency  time.Duration
+	Errored  bool
+}
+
+// RequestSampleRows returns one row per recorded request, suitable for CSV
+// export. Order is per-bucket insertion order across deterministic
+// scenario+kind iteration.
+func (c *Collector) RequestSampleRows() []RequestSampleRow {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := make([]requestKey, 0, len(c.requests))
+	for k := range c.requests {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].scenario != keys[j].scenario {
+			return keys[i].scenario < keys[j].scenario
+		}
+		return keys[i].kind < keys[j].kind
+	})
+	var rows []RequestSampleRow
+	for _, k := range keys {
+		for _, s := range c.requests[k] {
+			rows = append(rows, RequestSampleRow{
+				Scenario: k.scenario,
+				Kind:     k.kind,
+				Latency:  s.latency,
+				Errored:  s.errored,
+			})
+		}
+	}
+	return rows
 }
 
 // snapshotLatenciesLocked copies and sorts latencies from in.

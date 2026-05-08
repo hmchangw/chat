@@ -134,6 +134,74 @@ func TestWriteCSV_RowWriteError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestPrintSummary_WithRequestStats(t *testing.T) {
+	var buf bytes.Buffer
+	s := Summary{
+		Preset: "history-read", Seed: 42, Site: "site-local",
+		TargetRate: 200, ActualRate: 199.5,
+		Duration: 30 * time.Second, Warmup: 10 * time.Second,
+		Inject: "frontdoor",
+		Requests: []RequestStat{
+			{
+				Scenario: "history", Kind: "load_history",
+				Count: 1200, Errors: 0,
+				Latency: Percentiles{
+					P50: 4 * time.Millisecond,
+					P95: 18 * time.Millisecond,
+					P99: 42 * time.Millisecond,
+					Max: 95 * time.Millisecond,
+				},
+			},
+			{
+				Scenario: "history", Kind: "get_message_by_id",
+				Count: 400, Errors: 3,
+				Latency: Percentiles{
+					P50: 1 * time.Millisecond,
+					P95: 3 * time.Millisecond,
+					P99: 8 * time.Millisecond,
+					Max: 12 * time.Millisecond,
+				},
+			},
+		},
+	}
+	require.NoError(t, PrintSummary(&buf, &s))
+	out := buf.String()
+	assert.Contains(t, out, "request latency", "summary missing request-latency section")
+	assert.Contains(t, out, "load_history")
+	assert.Contains(t, out, "get_message_by_id")
+	assert.Contains(t, out, "1200")
+	// Error count must surface (3 above).
+	assert.Contains(t, out, "3")
+}
+
+func TestPrintSummary_NoRequestStats_NoSection(t *testing.T) {
+	var buf bytes.Buffer
+	s := Summary{
+		Preset:     "small",
+		Seed:       1,
+		Site:       "site-a",
+		TargetRate: 100, ActualRate: 99.9,
+		Duration: 30 * time.Second, Warmup: 10 * time.Second,
+		Inject: "frontdoor",
+	}
+	require.NoError(t, PrintSummary(&buf, &s))
+	assert.NotContains(t, buf.String(), "request latency",
+		"messaging-pipeline runs should not render the request-latency section")
+}
+
+func TestWriteCSV_RequestSamples(t *testing.T) {
+	var buf bytes.Buffer
+	rows := []CSVSample{
+		{TimestampNs: 1, RequestID: "r1", Metric: "history.load_history", LatencyNs: 4_200_000},
+		{TimestampNs: 2, RequestID: "r2", Metric: "search.search_messages", LatencyNs: 3_700_000},
+	}
+	require.NoError(t, WriteCSV(&buf, rows))
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	require.Len(t, lines, 3) // header + 2 rows
+	assert.Equal(t, "1,r1,history.load_history,4200000", lines[1])
+	assert.Equal(t, "2,r2,search.search_messages,3700000", lines[2])
+}
+
 func TestDetermineExitCode(t *testing.T) {
 	cases := []struct {
 		name         string
