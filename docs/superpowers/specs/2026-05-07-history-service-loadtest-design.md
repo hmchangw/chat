@@ -1,21 +1,23 @@
-# Extend `tools/loadgen` with history-service read-load workload
+# Extend `tools/loadgen` with read-load workloads for natsrouter services
 
 **Date:** 2026-05-07
 **Status:** scoping (this PR proposes the design; implementation lands in a follow-up)
 
 ## Goal
 
-Add a read-side load-test scenario to the existing `tools/loadgen` harness that exercises history-service's NATS request/reply handlers (history pagination, thread queries, single-message fetch) under sustained load, with the same Prometheus-driven reporting the messaging-pipeline scenario already produces.
+Add read-side load-test scenarios to the existing `tools/loadgen` harness that exercise the **NATS request/reply services built on `pkg/natsrouter`** under sustained load, with the same Prometheus-driven reporting the messaging-pipeline scenario already produces.
+
+Today only two services use natsrouter: **history-service** and **search-service**. Both are read-heavy, request/reply, and share a seed population (users / rooms / subscriptions) with the messaging-pipeline preset, so adding both is a single coherent change with one shared compose stack.
 
 ## Background
 
-`tools/loadgen` (added in [docs/superpowers/specs/2026-04-21-load-test-messaging-workers-design.md](2026-04-21-load-test-messaging-workers-design.md)) is a Go binary with three subcommands (`seed` / `run` / `teardown`) that drives the **messaging pipeline** — `message-gatekeeper → MESSAGES_CANONICAL → message-worker + broadcast-worker`. It opens an NATS connection, seeds users/rooms/subscriptions, fires `SendMessageRequest` events with an open-loop ticker, and tracks reply-correlation, broadcast-correlation, and consumer lag via Prometheus.
+`tools/loadgen` (added in [docs/superpowers/specs/2026-04-21-load-test-messaging-workers-design.md](2026-04-21-load-test-messaging-workers-design.md)) is a Go binary with three subcommands (`seed` / `run` / `teardown`) that drives the **messaging pipeline** — `message-gatekeeper → MESSAGES_CANONICAL → message-worker + broadcast-worker`. It opens a NATS connection, seeds users/rooms/subscriptions, fires `SendMessageRequest` events with an open-loop ticker, and tracks reply-correlation, broadcast-correlation, and consumer lag via Prometheus.
 
-What it does NOT cover today: history-service. history-service is a NATS request/reply service (no JetStream consumer in the hot path), backed by Cassandra for messages and MongoDB for subscriptions/thread metadata. Its workload profile is read-heavy: 8 distinct request handlers, fanned out across users with different access windows.
+What it does NOT cover today: any natsrouter consumer. We extend it with two new read presets that share the existing seed and dispatch infrastructure.
 
-## history-service handler surface (as of `b505e47`)
+## natsrouter consumers — handler surface
 
-Registered in `history-service/internal/service/service.go:91-99`:
+### history-service (`history-service/internal/service/service.go:91-99`)
 
 | Subject (template) | Handler | Storage hit |
 |---|---|---|
@@ -28,23 +30,49 @@ Registered in `history-service/internal/service/service.go:91-99`:
 | `chat.user.{account}.request.msg.thread` | `GetThreadMessages` | Cassandra `messages_by_room` (thread bucket walk) |
 | `chat.user.{account}.request.msg.thread-parents` | `GetThreadParentMessages` | MongoDB `thread_rooms` + Cassandra fanout |
 
-Plus the service depends on a subscription lookup against MongoDB (`subscriptions` collection) for the access-window check on every read.
+Plus a subscription lookup against MongoDB (`subscriptions` collection) for the access-window check on every read.
 
-## Proposed workload — preset `history-read`
+### search-service (`search-service/handler.go:47-49`)
 
-Open-loop publisher driven by `time.Ticker` (the existing pattern in `tools/loadgen/generator.go`). For each tick:
+| Subject (template) | Handler | Storage hit |
+|---|---|---|
+| `chat.user.{account}.request.search.messages` | `searchMessages` | Elasticsearch `messages-*` index + Valkey restricted-rooms cache |
+| `chat.user.{account}.request.search.rooms` | `searchRooms` | Elasticsearch `spotlight` index |
 
-1. Pick a `(user, room)` pair from the seeded population (existing seed.go scaffolding works as-is — users/rooms/subscriptions were already seeded for the messaging-pipeline scenario; history-service consumes the same collections).
-2. Pick a request type from a configurable mix:
-   - 60 % `LoadHistory` (canonical "open the room" path; fetches the most-recent N messages)
-   - 20 % `GetMessageByID` (deep-link / quote-resolve path; single-message lookup)
-   - 10 % `LoadSurroundingMessages` (jump-to-message path; window query)
-   - 10 % `GetThreadMessages` (thread-open path; thread-bucket walk)
-   - (Edits/deletes excluded from v1 — they mutate state and would interact with the messaging-pipeline scenario; revisit if write-load coverage becomes interesting.)
-3. Marshal the request struct (`models.LoadHistoryRequest`, `models.GetMessageByIDRequest`, etc. — already public).
-4. `nc.Request(subject, payload, deadline)`. Record latency in a per-request-type histogram. Track success / 4xx-style validation errors / timeout / NATS error.
+Both handlers consult Valkey for a per-user restricted-rooms cache (TTL = `RESTRICTED_ROOMS_CACHE_TTL`, default 5m); on miss they fall back to a MongoDB lookup.
 
-Open-loop pacing: target rate is `RPS` per second; if the consumer can't keep up, requests queue (which surfaces as latency p99 climbing). Same pattern as the existing generator — no closed-loop wait.
+## Proposed workloads
+
+Open-loop publishers driven by `time.Ticker` (the existing pattern in `tools/loadgen/generator.go`). Two new presets, each with its own request-type mix.
+
+### Preset `history-read`
+
+Per tick:
+
+1. Pick a `(user, room)` pair from the seeded population.
+2. Pick a request type from the fixed mix:
+   - **60 % `LoadHistory`** — canonical "open the room" path; fetches the most-recent N messages.
+   - **20 % `GetMessageByID`** — deep-link / quote-resolve path; single-message lookup.
+   - **10 % `LoadSurroundingMessages`** — jump-to-message path; window query.
+   - **10 % `GetThreadMessages`** — thread-open path; thread-bucket walk.
+   - (Edits / deletes / `LoadNextMessages` / `GetThreadParentMessages` excluded from v1 — mutators interact with the messaging-pipeline scenario; the latter two are minor variants of the four above.)
+3. Marshal the typed request struct (`model.LoadHistoryRequest`, `model.GetMessageByIDRequest`, etc. — already public).
+4. `nc.Request(subject, payload, deadline)`. Record latency in a per-handler histogram. Track success / 4xx-style validation errors / timeout / NATS error.
+
+### Preset `search-read`
+
+Per tick:
+
+1. Pick a `user` from the seeded population.
+2. Pick a request type from the fixed mix:
+   - **50 % `searchMessages`** — full-text query against the messages index.
+   - **50 % `searchRooms`** — spotlight room-name query.
+3. Build the request from a small bag of `searchText` tokens drawn from the seeded message corpus (so hits are realistic, not all empty). For `searchRooms`, randomise `Scope` across `"all"` / `"channel"` / `"dm"` proportional to seeded room mix.
+4. `nc.Request(subject, payload, deadline)`. Same metric/error classification as `history-read`.
+
+### Open-loop pacing
+
+Target rate is `RPS` per second; if the consumer can't keep up, requests queue (which surfaces as latency p99 climbing). Same pattern as the existing generator — no closed-loop wait.
 
 ## Required additions
 
@@ -52,61 +80,72 @@ Open-loop pacing: target rate is `RPS` per second; if the consumer can't keep up
 
 | File | Change |
 |---|---|
-| `preset.go` | New built-in preset `history-read` with the request-type mix above. |
-| `generator.go` | New `historyReadGenerator` type implementing the existing generator interface, OR a `--scenario=history-read` flag that switches the generator's hot path. |
-| `metrics.go` | Per-handler latency histogram (`loadgen_history_request_duration_seconds{handler="LoadHistory|GetMessageByID|...",status="ok|error|timeout"}`) and a request-counter. Reuse existing histogram buckets. |
-| `report.go` | Add a "History Read" section to the terminal summary: per-handler p50/p95/p99 latency, success rate, RPS achieved, error counts. CSV export gains the same columns. |
-| `integration_test.go` | New `//go:build integration` test that spins up real NATS + Mongo + Cassandra + history-service, seeds with `small` preset (existing), runs `history-read` for 5s, asserts non-empty samples + zero error rate. |
-| `README.md` | Document the new preset, request mix, and recommended seed sizes. |
+| `preset.go` | Two new built-in presets: `history-read` (60/20/10/10) and `search-read` (50/50). |
+| `generator.go` | Two new generator types — `historyReadGenerator` and `searchReadGenerator` — selected by a `--scenario={messaging-pipeline,history-read,search-read}` flag. |
+| `metrics.go` | Two new per-handler latency histograms: `loadgen_history_request_duration_seconds{handler,status}` and `loadgen_search_request_duration_seconds{handler,status}`. Reuse existing histogram buckets. |
+| `report.go` | "History Read" and "Search Read" terminal-summary sections: per-handler p50/p95/p99 latency, success rate, RPS achieved, error counts. CSV export gains the same columns. |
+| `integration_test.go` | New `//go:build integration` cases that spin up real NATS + Mongo + Cassandra + Elasticsearch + history-service + search-service + search-sync-worker (+ Valkey), seed via the messaging-pipeline preset for 30s, run each new preset for 5s, assert non-empty samples + zero error rate. |
+| `README.md` | Document the new presets, request mixes, recommended seed sizes, and the "warm up first" workflow. |
 
 ### Deploy
 
-- `tools/loadgen/deploy/docker-compose.loadtest.yml`: add the `history-service` container plus its dependencies (Cassandra is new — the existing compose only had Mongo and NATS for the messaging-pipeline scenario; bring in `cassandra:4.1.3` per `pkg/testutil/testimages`).
-- `tools/loadgen/deploy/grafana/dashboards/loadtest.json`: add panels for the new metrics. Re-use existing dashboard structure (latency p50/p95/p99 over time, RPS counter, error-rate gauge).
+`tools/loadgen/deploy/docker-compose.loadtest.yml` gains the dependencies neither preset has today:
 
-### Seed data
+- `cassandra:4.1.3`
+- `elasticsearch:8.x` (per `pkg/testutil/testimages`)
+- `valkey:8`
+- `history-service` (built from repo root)
+- `search-service` (built from repo root)
+- `search-sync-worker` (needed so search indexes are populated as the messaging-pipeline warm-up runs — without it the Elasticsearch indexes stay empty and `search-read` returns zero hits)
 
-The messaging-pipeline scenario already seeds users/rooms/subscriptions in MongoDB. history-service needs **populated message history in Cassandra** to produce realistic latencies — an empty `messages_by_room` table makes every read return zero rows in O(1).
+`tools/loadgen/deploy/grafana/dashboards/loadtest.json`: add panels per preset (latency p50/p95/p99 over time, RPS counter, error-rate gauge), reusing the existing dashboard structure.
 
-Two options:
-- **(A) Reuse the messaging-pipeline scenario as a warm-up.** Run `loadgen run` against `messaging-pipeline` for 60s first to populate Cassandra via `message-worker`, then run `history-read`. Cleanest because no duplicate seeding code.
-- **(B) Add a `seed --history` flag** that bulk-writes synthetic messages directly into `messages_by_room` and `messages_by_id` from the loadgen process, bypassing the messaging pipeline.
+### Seed data — warm up via messaging-pipeline
 
-Recommended: (A) for v1 (zero new code, realistic data shape). Document the run order in `tools/loadgen/README.md`. If (B) becomes useful for isolating history-service from worker performance, add it later.
+Both new presets need realistic backing state:
+
+- history-service: populated rows in Cassandra `messages_by_room` / `messages_by_id`.
+- search-service: populated documents in Elasticsearch `messages-*` and `spotlight`.
+
+Both populate naturally as a side-effect of running the messaging-pipeline preset (message-worker writes Cassandra; search-sync-worker mirrors MESSAGES_CANONICAL into Elasticsearch). Decision: **reuse the messaging-pipeline preset as a warm-up rather than adding dedicated seed paths.**
+
+Documented run order:
+
+```
+loadgen seed                                         # users/rooms/subscriptions in Mongo
+loadgen run --scenario=messaging-pipeline --duration=60s   # warm up Cassandra + ES
+loadgen run --scenario=history-read --duration=2m
+loadgen run --scenario=search-read   --duration=2m
+```
+
+Zero new seed code; realistic data shape; a single `make -C tools/loadgen/deploy run-natsrouter` target wraps the four steps for ergonomics.
+
+If, in a later iteration, isolating either service from worker performance becomes interesting, a `seed --history` / `seed --search` direct-write path can land then. Not in v1.
 
 ## Out of scope (this PR / first cut)
 
-- Write-side handlers (EditMessage, DeleteMessage). Mutate state; revisit when write-load matters.
-- Federation / cross-site read patterns (history-service is per-site).
+- Write-side history-service handlers (EditMessage, DeleteMessage). Mutate state; revisit when write-load matters.
+- Federation / cross-site read patterns (both services are per-site).
 - Connection-pool / keepalive tuning sweeps. The existing `MAX_IN_FLIGHT` knob already covers concurrency.
 - Per-user rate limiting on the loadgen side (open-loop publishing is the design choice).
-- gRPC / HTTP probes — history-service is NATS-only.
+- gRPC / HTTP probes — both services are NATS-only.
+- Comparing natsrouter vs. raw `nc.QueueSubscribe` services (the original "how much faster" question). The other request/reply services in the codebase use raw subscribe; an apples-to-apples comparison would require a parallel non-natsrouter fork of one of these handlers, which is out of proportion to the value.
+- A dedicated seed-via-direct-write path for either service (warm-up via messaging-pipeline is sufficient).
 
 ## Risk and reversibility
 
 - Pure additive: existing messaging-pipeline preset is unchanged.
-- New deploy entry adds Cassandra to the compose stack; runs locally only via `make -C tools/loadgen/deploy run-history`. Production untouched.
-- Failure mode: a buggy generator floods history-service. The existing `MAX_IN_FLIGHT` cap bounds in-flight requests; same protection as the messaging-pipeline scenario.
+- Compose stack grows substantially (Cassandra + Elasticsearch + Valkey + 3 services). Local-only — production untouched. Disk + memory footprint of the compose run roughly doubles; called out in the README.
+- Failure mode: a buggy generator floods either service. The existing `MAX_IN_FLIGHT` cap bounds in-flight requests; same protection as the messaging-pipeline scenario. natsrouter's own `WithMaxConcurrency` (when configured) provides a server-side ceiling that returns `ErrUnavailable` rather than collapsing under load — the load test will surface that ceiling clearly via the `status="busy"` counter.
 
 ## Implementation plan (follow-up PR)
 
-If the design above is accepted, the implementation breaks into ~8 tasks:
-
-1. Add `history-read` preset + request-type weighted picker (preset.go + tests).
-2. Marshalable request templates per handler (uses existing `pkg/model.GetMessageByIDRequest` etc.).
-3. Generator scenario: per-handler `nc.Request` with timeout + error classification.
-4. Metrics: per-handler latency histogram + counter; reuse existing buckets.
-5. Report: terminal summary section + CSV columns.
-6. Compose: add `history-service` + `cassandra` to docker-compose.loadtest.yml.
-7. Grafana dashboard panels.
-8. Integration test (real NATS+Mongo+Cassandra+history-service via testcontainers).
+If the design above is accepted, the implementation breaks into ~10 TDD tasks; see the companion plan at [`docs/superpowers/plans/2026-05-07-natsrouter-services-loadtest.md`](../plans/2026-05-07-natsrouter-services-loadtest.md).
 
 Each lands as a TDD task per the codebase's spec → plan → implementation pattern.
 
-## Decision needed from maintainer
+## Decisions baked in (no further input required)
 
-- Approve the preset request-type mix (60/20/10/10) or propose a different weighting?
-- Approve seed-via-warm-up (option A) over the dedicated `seed --history` flag (option B)?
-- Approve the out-of-scope list, or pull anything back in?
-
-Once those three are settled, the implementation plan lands as a separate PR.
+- Request-type mix: history `60/20/10/10`, search `50/50`. Tunable later; these match the most-likely real traffic shape.
+- Warm-up via messaging-pipeline (option A from the previous draft). No dedicated `seed --history` / `seed --search` flag in v1.
+- Out-of-scope list as above; nothing pulled back in.
