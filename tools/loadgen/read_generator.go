@@ -151,7 +151,12 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 	g.cfg.Metrics.Requests.WithLabelValues(
 		g.cfg.Preset.Name, "history", historyKindLabel(kind), phase,
 	).Inc()
-	if _, err := g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout); err != nil {
+	start := time.Now()
+	_, err = g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
+	g.cfg.Metrics.RequestLatency.WithLabelValues(
+		g.cfg.Preset.Name, "history", historyKindLabel(kind),
+	).Observe(time.Since(start).Seconds())
+	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
 			g.cfg.Preset.Name, "history", historyKindLabel(kind), "request",
 		).Inc()
@@ -303,7 +308,12 @@ func (g *SearchReadGenerator) tick(ctx context.Context) {
 	g.cfg.Metrics.Requests.WithLabelValues(
 		g.cfg.Preset.Name, "search", searchKindLabel(kind), phase,
 	).Inc()
-	if _, err := g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout); err != nil {
+	start := time.Now()
+	_, err = g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
+	g.cfg.Metrics.RequestLatency.WithLabelValues(
+		g.cfg.Preset.Name, "search", searchKindLabel(kind),
+	).Observe(time.Since(start).Seconds())
+	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
 			g.cfg.Preset.Name, "search", searchKindLabel(kind), "request",
 		).Inc()

@@ -14,6 +14,7 @@ type Metrics struct {
 	PublishErrors       *prometheus.CounterVec
 	Requests            *prometheus.CounterVec
 	RequestErrors       *prometheus.CounterVec
+	RequestLatency      *prometheus.HistogramVec
 	E1Latency           *prometheus.HistogramVec
 	E2Latency           *prometheus.HistogramVec
 	ConsumerPending     *prometheus.GaugeVec
@@ -47,6 +48,10 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Name: "loadgen_request_errors_total", Help: "Request/reply errors by scenario+kind+reason."},
 			[]string{"preset", "scenario", "kind", "reason"},
 		),
+		RequestLatency: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{Name: "loadgen_request_latency_seconds", Help: "Request/reply latency by scenario+kind.", Buckets: buckets},
+			[]string{"preset", "scenario", "kind"},
+		),
 		E1Latency: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{Name: "loadgen_e1_latency_seconds", Help: "Gatekeeper ack latency.", Buckets: buckets},
 			[]string{"preset"},
@@ -70,7 +75,7 @@ func NewMetrics() *Metrics {
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
-		m.Requests, m.RequestErrors,
+		m.Requests, m.RequestErrors, m.RequestLatency,
 		m.E1Latency, m.E2Latency,
 		m.ConsumerPending, m.ConsumerAckPending, m.ConsumerRedelivered,
 	)
