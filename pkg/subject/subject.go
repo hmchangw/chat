@@ -45,6 +45,24 @@ func MsgGet(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", account, roomID, siteID)
 }
 
+// MsgHistory returns the concrete subject for a LoadHistory request. Pair
+// with MsgHistoryPattern, the natsrouter handler-registration form.
+func MsgHistory(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.history", account, roomID, siteID)
+}
+
+// MsgSurrounding returns the concrete subject for a LoadSurroundingMessages
+// request. Pair with MsgSurroundingPattern.
+func MsgSurrounding(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.surrounding", account, roomID, siteID)
+}
+
+// MsgThread returns the concrete subject for a GetThreadMessages request.
+// Pair with MsgThreadPattern.
+func MsgThread(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.thread", account, roomID, siteID)
+}
+
 func UserResponse(account, requestID string) string {
 	return fmt.Sprintf("chat.user.%s.response.%s", account, requestID)
 }

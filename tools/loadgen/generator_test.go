@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 type recordingPublisher struct {
@@ -335,4 +338,95 @@ func TestGenerator_PoolSaturationCountedAsError(t *testing.T) {
 		}
 	}
 	assert.Greater(t, saturated, float64(0), "expected saturated counter to increment under pool-full conditions")
+}
+
+func TestBuildHistoryRequest(t *testing.T) {
+	user := model.User{ID: "u-000001", Account: "user-1", SiteID: "site-local"}
+	room := model.Room{ID: "room-000001", SiteID: "site-local"}
+	args := historyRequestArgs{
+		User: user, Room: room,
+		MessageID: "m-deadbeef", Limit: 50,
+	}
+
+	t.Run("LoadHistory", func(t *testing.T) {
+		subj, body, err := buildHistoryRequest(HistoryLoadHistory, args)
+		require.NoError(t, err)
+		assert.Equal(t,
+			"chat.user.user-1.request.room.room-000001.site-local.msg.history",
+			subj)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(body, &got))
+		assert.EqualValues(t, 50, got["limit"])
+	})
+
+	t.Run("GetMessageByID", func(t *testing.T) {
+		subj, body, err := buildHistoryRequest(HistoryGetMessageByID, args)
+		require.NoError(t, err)
+		assert.Equal(t,
+			"chat.user.user-1.request.room.room-000001.site-local.msg.get",
+			subj)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(body, &got))
+		assert.Equal(t, "m-deadbeef", got["messageId"])
+	})
+
+	t.Run("LoadSurroundingMessages", func(t *testing.T) {
+		subj, body, err := buildHistoryRequest(HistoryLoadSurrounding, args)
+		require.NoError(t, err)
+		assert.Equal(t,
+			"chat.user.user-1.request.room.room-000001.site-local.msg.surrounding",
+			subj)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(body, &got))
+		assert.Equal(t, "m-deadbeef", got["messageId"])
+		assert.EqualValues(t, 50, got["limit"])
+	})
+
+	t.Run("GetThreadMessages", func(t *testing.T) {
+		subj, body, err := buildHistoryRequest(HistoryGetThreadMessages, args)
+		require.NoError(t, err)
+		assert.Equal(t,
+			"chat.user.user-1.request.room.room-000001.site-local.msg.thread",
+			subj)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(body, &got))
+		assert.Equal(t, "m-deadbeef", got["threadMessageId"])
+		assert.EqualValues(t, 50, got["limit"])
+	})
+
+	t.Run("UnknownKindReturnsError", func(t *testing.T) {
+		_, _, err := buildHistoryRequest(historyRequestKind(99), args)
+		assert.Error(t, err)
+	})
+}
+
+func TestBuildSearchRequest(t *testing.T) {
+	user := model.User{ID: "u-000001", Account: "user-1", SiteID: "site-local"}
+	args := searchRequestArgs{User: user, Query: "hello", Scope: "channel", Size: 20}
+
+	t.Run("SearchMessages", func(t *testing.T) {
+		subj, body, err := buildSearchRequest(SearchMessagesKind, args)
+		require.NoError(t, err)
+		assert.Equal(t, "chat.user.user-1.request.search.messages", subj)
+		var got model.SearchMessagesRequest
+		require.NoError(t, json.Unmarshal(body, &got))
+		assert.Equal(t, "hello", got.SearchText)
+		assert.Equal(t, 20, got.Size)
+	})
+
+	t.Run("SearchRooms", func(t *testing.T) {
+		subj, body, err := buildSearchRequest(SearchRoomsKind, args)
+		require.NoError(t, err)
+		assert.Equal(t, "chat.user.user-1.request.search.rooms", subj)
+		var got model.SearchRoomsRequest
+		require.NoError(t, json.Unmarshal(body, &got))
+		assert.Equal(t, "hello", got.SearchText)
+		assert.Equal(t, "channel", got.Scope)
+		assert.Equal(t, 20, got.Size)
+	})
+
+	t.Run("UnknownKindReturnsError", func(t *testing.T) {
+		_, _, err := buildSearchRequest(searchRequestKind(99), args)
+		assert.Error(t, err)
+	})
 }

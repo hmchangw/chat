@@ -94,6 +94,12 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.{account}.request.room.{roomID}.site-a.msg.delete"},
 		{"MsgGet", subject.MsgGet("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.msg.get"},
+		{"MsgHistory", subject.MsgHistory("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.msg.history"},
+		{"MsgSurrounding", subject.MsgSurrounding("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.msg.surrounding"},
+		{"MsgThread", subject.MsgThread("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.msg.thread"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
