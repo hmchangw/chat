@@ -45,6 +45,8 @@ type config struct {
 	SiteID              string `env:"SITE_ID,required"`
 	SearchURL           string `env:"SEARCH_URL,required"`
 	SearchBackend       string `env:"SEARCH_BACKEND"         envDefault:"elasticsearch"`
+	SearchUsername      string `env:"SEARCH_USERNAME"        envDefault:""`
+	SearchPassword      string `env:"SEARCH_PASSWORD"        envDefault:""`
 	SearchTLSSkipVerify bool   `env:"SEARCH_TLS_SKIP_VERIFY" envDefault:"false"`
 	MsgIndexPrefix      string `env:"MSG_INDEX_PREFIX,required"`
 	SpotlightIndex      string `env:"SPOTLIGHT_INDEX" envDefault:""`
@@ -119,7 +121,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	engine, err := searchengine.New(ctx, cfg.SearchBackend, cfg.SearchURL, cfg.SearchTLSSkipVerify)
+	engine, err := searchengine.New(ctx, searchengine.Config{
+		Backend:       cfg.SearchBackend,
+		URL:           cfg.SearchURL,
+		Username:      cfg.SearchUsername,
+		Password:      cfg.SearchPassword,
+		TLSSkipVerify: cfg.SearchTLSSkipVerify,
+	})
 	if err != nil {
 		slog.Error("search engine connect failed", "error", err)
 		os.Exit(1)

@@ -310,7 +310,7 @@ func TestSearchSyncIntegration(t *testing.T) {
 
 	// --- Setup search engine + template ---
 	prefix := "msgs-inttest-v1"
-	engine, err := searchengine.New(ctx, "elasticsearch", esURL, false)
+	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
 	require.NoError(t, err, "create search engine")
 
 	// Wait for cluster to be green before creating indices.
@@ -496,7 +496,7 @@ func TestCustomAnalyzer(t *testing.T) {
 	ctx := context.Background()
 
 	prefix := "analyzer-test-v1"
-	engine, err := searchengine.New(ctx, "elasticsearch", esURL, false)
+	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
 	require.NoError(t, err)
 
 	waitForClusterGreen(t, esURL, 120*time.Second)
