@@ -265,3 +265,35 @@ Cleanup tasks share one commit; they're a refactor before Phase 2 Task 13, not a
 - `runRun` calls it after `nc` connect, before generator construction. Skipped when `--skip-readiness=true`.
 
 **Refactor:** None.
+
+### Task 19 — rate ramping
+
+**Red:** `ramp_test.go` cases:
+- `TestRamp_LinearRateAt` — `Ramp{From:10, To:100, Duration:10s, Shape:Linear}.RateAt(5s)` returns 55. Boundary cases at 0s, full duration, beyond duration.
+- `TestRamp_ExponentialRateAt` — same shape with `Shape:Exponential`; assert `RateAt(0)==From`, `RateAt(Duration)==To`, monotonic non-decreasing.
+- `TestRamp_RateAtClampsBeyondDuration` — past duration returns `To`, doesn't keep climbing.
+- `TestGenerator_RampOverridesFixedRate` — when ramp configured, generator's tick interval changes over time. Run for 2s with ramp 10→1000 rps, assert published count is in the expected ramped range, NOT the fixed-`--rate` count.
+
+**Green:**
+- New `ramp.go` with `Ramp` struct + `RateAt(t time.Duration) int` method. Pure function.
+- Generator's `Run` checks for non-zero `cfg.Ramp` and rebuilds the ticker once per second from `cfg.Ramp.RateAt(time.Since(start))`. Reuses `time.Ticker.Reset(interval)`.
+- `loadgen_published_total` gains a `rate_bucket` label (9 fixed buckets: 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000+). New label registered in `metrics.go`.
+- New flags in `main.go`: `--ramp-from`, `--ramp-to`, `--ramp-duration`, `--ramp-shape`. Mutually-validate against `--rate` (one or the other, not both as primary driver).
+
+**Refactor:** If the ticker rebuild loop becomes complex enough, extract `(*Generator).rateScheduler(ctx)` to a sibling goroutine. Keep the in-loop check minimal otherwise.
+
+### Task 20 — saturation auto-detect & abort
+
+**Red:** `abort_test.go` cases:
+- `TestAbort_TriggersOnSustainedP99Breach` — feed synthetic histogram samples where p99 stays above threshold for 30s; assert abort fires.
+- `TestAbort_DoesNotTriggerOnTransientSpike` — same threshold, but breach lasts only 5s; assert no abort.
+- `TestAbort_TriggersOnSustainedErrorRate` — error counter delta exceeds threshold for 10s; assert abort.
+- `TestAbort_DisabledWhenFlagsZero` — both flags zero (default); assert the watcher never triggers regardless of metric state.
+- `TestRunRun_ExitCodeOnAbort` — full-binary integration via test harness; assert exit code 2 when abort fires.
+
+**Green:**
+- New `abort.go` with an `AbortWatcher` reading metrics every second, maintaining a sliding window (e.g. ring buffer of last 30s of samples).
+- Started by `runRun` alongside the progress reporter; receives a context cancel function that it calls on trigger.
+- `runRun` returns exit code 2 (vs 0 for clean, 1 for unclean) when abort fired. Code documented in main.go's exit-code helper.
+
+**Refactor:** Progress reporter (Task 17) and abort watcher both consume the same metrics scrape; consider a shared `func metricsTick(ctx) <-chan MetricsSnapshot` channel they both read from. Decision deferred — fine to ship them as siblings if the abstraction doesn't fall out cleanly.
