@@ -225,7 +225,12 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
-	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	var insertedRoom *model.Room
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, r *model.Room) error {
+			insertedRoom = r
+			return nil
+		})
 
 	var captured []*model.Subscription
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
@@ -240,7 +245,6 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 		Name:     "bob",
 		RoomType: model.RoomTypeDM,
 	}, nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -251,6 +255,11 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rawReply, &reply))
 	assert.True(t, reply.Success)
 	assert.Equal(t, "canonical-alice-sub", reply.Subscription.ID)
+
+	// DM room is inserted with userCount=2, appCount=0 — no Reconcile needed.
+	require.NotNil(t, insertedRoom)
+	assert.Equal(t, 2, insertedRoom.UserCount)
+	assert.Equal(t, 0, insertedRoom.AppCount)
 
 	// Both subs persisted: requester names other (IsSubscribed=false), other names requester.
 	require.Len(t, captured, 2)
@@ -278,12 +287,16 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 	bot := &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-a"}
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	store.EXPECT().GetUser(gomock.Any(), "helper.bot").Return(bot, nil)
-	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	var insertedRoom *model.Room
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, r *model.Room) error {
+			insertedRoom = r
+			return nil
+		})
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "helper.bot").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, IsSubscribed: true,
 	}, nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
 	data := marshalReq(t, req)
@@ -294,6 +307,11 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rawReply, &reply))
 	assert.True(t, reply.Subscription.IsSubscribed)
 	assert.Equal(t, "alice", reply.Subscription.User.Account)
+
+	// botDM room is inserted with userCount=1, appCount=1 — no Reconcile needed.
+	require.NotNil(t, insertedRoom)
+	assert.Equal(t, 1, insertedRoom.UserCount)
+	assert.Equal(t, 1, insertedRoom.AppCount)
 }
 
 // On dup-key race, BulkCreateSubscriptions swallows the error and the in-memory subs
@@ -315,7 +333,6 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 		RoomType: model.RoomTypeDM,
 	}
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(existingSub, nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -356,7 +373,6 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 	}, nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -383,7 +399,6 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 	}, nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -427,7 +442,6 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 	}, nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)
@@ -460,7 +474,6 @@ func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 	}, nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data := marshalReq(t, req)

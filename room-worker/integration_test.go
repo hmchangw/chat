@@ -1007,6 +1007,8 @@ func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, model.RoomTypeDM, room.Type)
 	assert.Equal(t, siteID, room.SiteID)
+	assert.Equal(t, 2, room.UserCount, "DM room.UserCount set at creation; no Reconcile pass")
+	assert.Equal(t, 0, room.AppCount)
 
 	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
 	require.NoError(t, err)

@@ -1295,12 +1295,20 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 	acceptedAt := time.Now().UTC()
 	roomID := idgen.BuildDMRoomID(requester.ID, other.ID)
 
+	// DMs/botDMs have a fixed 2-member roster — set counts at creation; no Reconcile needed.
+	userCount, appCount := 2, 0
+	if req.RoomType == model.RoomTypeBotDM {
+		userCount, appCount = 1, 1
+	}
+
 	room := &model.Room{
 		ID:        roomID,
 		Name:      "",
 		Type:      req.RoomType,
 		CreatedBy: requester.ID,
 		SiteID:    h.siteID,
+		UserCount: userCount,
+		AppCount:  appCount,
 		CreatedAt: acceptedAt,
 		UpdatedAt: acceptedAt,
 	}
@@ -1346,11 +1354,6 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 	requesterSub, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
 	if err != nil {
 		return nil, fmt.Errorf("find requester sub after insert: %w", err)
-	}
-
-	if rcErr := h.store.ReconcileMemberCounts(ctx, room.ID); rcErr != nil {
-		slog.Error("sync DM: reconcile member counts failed",
-			"error", rcErr, "roomID", room.ID, "requestID", requestID)
 	}
 
 	h.publishSubscriptionUpdates(ctx, subs, acceptedAt, requestID)
