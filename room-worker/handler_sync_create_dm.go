@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -111,9 +112,61 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		acceptedAt = existing.CreatedAt
 	}
 
-	_ = requestID
-	_, _ = room, acceptedAt
-	return nil, errInvalidSyncDMRequest // placeholder — replaced in Task 9
+	var subs []*model.Subscription
+	switch req.RoomType {
+	case model.RoomTypeDM:
+		subs = buildDMSubs(requester, other, room, acceptedAt)
+	case model.RoomTypeBotDM:
+		subs = buildBotDMSubs(requester, other, room, acceptedAt)
+	}
+
+	requesterSub, err := h.persistSyncDMSubs(ctx, requester, other, subs)
+	if err != nil {
+		return nil, err
+	}
+
+	if rcErr := h.store.ReconcileMemberCounts(ctx, room.ID); rcErr != nil {
+		slog.Error("sync DM: reconcile member counts failed",
+			"error", rcErr, "roomID", room.ID, "requestID", requestID)
+	}
+
+	reply, err := json.Marshal(model.SyncCreateDMReply{
+		Success:      true,
+		Subscription: *requesterSub,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal reply: %w", err)
+	}
+	return reply, nil
+}
+
+// persistSyncDMSubs inserts both subs. On a duplicate-key race (concurrent caller or retry),
+// it falls back to fetching the requester's existing sub via FindDMSubscription and returns
+// that — preserving idempotent behavior.
+func (h *Handler) persistSyncDMSubs(ctx context.Context, requester, other *model.User,
+	subs []*model.Subscription,
+) (*model.Subscription, error) {
+	err := h.store.BulkCreateSubscriptions(ctx, subs)
+	if err == nil {
+		return pickRequesterSub(subs, requester.Account), nil
+	}
+	if !mongo.IsDuplicateKeyError(err) {
+		return nil, fmt.Errorf("bulk create subs: %w", err)
+	}
+	existing, fetchErr := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
+	if fetchErr != nil {
+		return nil, fmt.Errorf("find existing sub on duplicate-key: %w", fetchErr)
+	}
+	return existing, nil
+}
+
+func pickRequesterSub(subs []*model.Subscription, requesterAccount string) *model.Subscription {
+	for _, s := range subs {
+		if s.User.Account == requesterAccount {
+			return s
+		}
+	}
+	return nil
 }
 
 func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
