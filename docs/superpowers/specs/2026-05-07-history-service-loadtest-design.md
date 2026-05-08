@@ -209,3 +209,40 @@ Each lands as a TDD task per the codebase's spec → plan → implementation pat
 - Test runs against a dedicated `tools/loadgen` Mongo database — `make teardown` drops it at the end.
 - Generated room/member IDs use the `loadgen-` prefix so they're clearly identifiable in any forensic check.
 - Asymmetric mix (only 10% writes) keeps state growth bounded over a 2-minute run.
+
+### Sampler-only services — `room-worker`, `notification-worker`, `search-sync-worker`
+
+These three services are stream-only consumers with no client-facing surface. They process events that the existing scenarios already produce:
+
+- `room-worker` consumes `ROOMS_{siteID}` — driven by the new `room-rpc` scenario above.
+- `notification-worker` consumes `MESSAGES_CANONICAL_{siteID}` — driven by the existing `messaging-pipeline` scenario.
+- `search-sync-worker` consumes `MESSAGES_CANONICAL_{siteID}` and `INBOX_{siteID}` across **three durables** — driven by `messaging-pipeline`.
+
+So no new generator types are needed. What's missing is **visibility**: their consumer-lag metrics aren't in the loadgen scrape. The fix is one `ConsumerSampler` per durable, registered in `main.go` next to the existing `message-worker` / `broadcast-worker` samplers.
+
+**Sampler additions per service.**
+
+| Service | Stream | Durable name(s) | Driven by |
+|---|---|---|---|
+| `room-worker` | `ROOMS_{siteID}` | `room-worker` | `room-rpc` |
+| `notification-worker` | `MESSAGES_CANONICAL_{siteID}` | `notification-worker` | `messaging-pipeline` |
+| `search-sync-worker` (msgs) | `MESSAGES_CANONICAL_{siteID}` | `search-sync-worker-messages` | `messaging-pipeline` |
+| `search-sync-worker` (spotlight) | `INBOX_{siteID}` | `search-sync-worker-spotlight` | `messaging-pipeline` (member events) |
+| `search-sync-worker` (user-room) | `INBOX_{siteID}` | `search-sync-worker-user-room` | `messaging-pipeline` (member events) |
+
+**What to build.** A single edit to `main.go` extending the `samplers := []*ConsumerSampler{...}` slice with the five new entries. Each sampler reuses the existing `NewConsumerSampler` constructor — no new code paths. The terminal report's "Consumers" section auto-includes them.
+
+**Activation.** The samplers are scenario-aware in spirit: a `messaging-pipeline` run will see meaningful values for the four MESSAGES_CANONICAL/INBOX-fed durables but zero values for `room-worker` (no driver). A `room-rpc` run will see the inverse. The loadgen run command should always register all of them — empty-stream gauges read 0 cleanly, and toggling them per-scenario adds switch-case noise without value.
+
+### Phase 2 dependency on Phase 1 work
+
+Phase 2 is purely additive on the chassis built in Phase 1 Tasks 1-5:
+
+- `Preset` struct already extensible (`HistoryMix`, `SearchMix` precedents).
+- `Requester` interface already exists; `room-rpc` reuses it unchanged.
+- `pickWeighted` is already generic (`K ~int`); `pickRoomKind` is a 1-line wrapper.
+- Tick + bounded-pool dispatch model already proven by `HistoryReadGenerator` / `SearchReadGenerator`; `RoomRPCGenerator` copies it.
+- `--scenario` flag already in `main.go`; new value is one switch arm.
+- Metrics labels (`scenario`, `kind`) already designed to admit any scenario.
+
+**No structural changes from Phase 1 are required for Phase 2.**
