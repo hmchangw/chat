@@ -32,7 +32,7 @@ const codeLargeRoomPostRestricted = "large_room_post_restricted"
 // message in a room whose userCount exceeds the configured threshold.
 var errLargeRoomPostRestricted = &codedError{
 	Code:    codeLargeRoomPostRestricted,
-	Message: "only owners can post in this room",
+	Message: "posting is restricted to owners and admins in this room",
 }
 
 type Store interface {

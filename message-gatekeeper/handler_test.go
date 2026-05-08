@@ -347,6 +347,9 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				return makePublishFunc(&published, nil), &published
 			},
 			wantErr: false,
+			checkResult: func(t *testing.T, _ []byte, published []publishedMsg) {
+				assert.Len(t, published, 1, "bypass path must still publish to MESSAGES_CANONICAL")
+			},
 		},
 		{
 			name:    "admin sends in big room — fast-path skips GetRoom",
@@ -372,6 +375,9 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				return makePublishFunc(&published, nil), &published
 			},
 			wantErr: false,
+			checkResult: func(t *testing.T, _ []byte, published []publishedMsg) {
+				assert.Len(t, published, 1, "bypass path must still publish to MESSAGES_CANONICAL")
+			},
 		},
 		{
 			name:    "bot account in big room with member role — fast-path skips GetRoom",
@@ -397,6 +403,9 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				return makePublishFunc(&published, nil), &published
 			},
 			wantErr: false,
+			checkResult: func(t *testing.T, _ []byte, published []publishedMsg) {
+				assert.Len(t, published, 1, "bypass path must still publish to MESSAGES_CANONICAL")
+			},
 		},
 		{
 			name:    "member sends in big room — rejected with codedError",
@@ -543,6 +552,9 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				return makePublishFunc(&published, nil), &published
 			},
 			wantErr: false,
+			checkResult: func(t *testing.T, _ []byte, published []publishedMsg) {
+				assert.Len(t, published, 1, "bypass path must still publish to MESSAGES_CANONICAL")
+			},
 		},
 		{
 			name:    "GetRoom infra failure — wrapped as infraError",
@@ -1116,7 +1128,7 @@ func TestHandler_marshalErrorReply(t *testing.T) {
 		data := h.marshalErrorReply(errLargeRoomPostRestricted)
 		var got model.ErrorResponse
 		require.NoError(t, json.Unmarshal(data, &got))
-		assert.Equal(t, "only owners can post in this room", got.Error)
+		assert.Equal(t, "posting is restricted to owners and admins in this room", got.Error)
 		assert.Equal(t, "large_room_post_restricted", got.Code)
 	})
 
@@ -1125,7 +1137,7 @@ func TestHandler_marshalErrorReply(t *testing.T) {
 		data := h.marshalErrorReply(wrapped)
 		var got model.ErrorResponse
 		require.NoError(t, json.Unmarshal(data, &got))
-		assert.Equal(t, "only owners can post in this room", got.Error)
+		assert.Equal(t, "posting is restricted to owners and admins in this room", got.Error)
 		assert.Equal(t, "large_room_post_restricted", got.Code)
 	})
 }
