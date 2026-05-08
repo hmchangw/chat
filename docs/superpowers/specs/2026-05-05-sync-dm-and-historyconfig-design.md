@@ -452,6 +452,21 @@ There is no error path that returns "partial success" to the caller. Either the 
 - `make test-integration SERVICE=inbox-worker` green.
 - Manual NATS request to local docker-compose (server credentials, targeting `chat.server.request.room.{siteID}.create.dm`) creates a botDM end-to-end and the reply contains `success:true` with the requester's `Subscription`. Re-issuing the same request returns the same Subscription (also `success:true`, indistinguishable from the first call).
 
+## Implementation deviations from spec
+
+| Spec said | Shipped |
+|-----------|---------|
+| Call `ReconcileMemberCounts`; log on error | Skip; set `Room.UserCount`/`AppCount` inline at create (DM=2,0; botDM=1,1). DMs have fixed rosters — no future membership change to self-heal. |
+| Outbox publish: log and continue | Fail the request. Sync RPC has no auto-retry; silent federation break otherwise. |
+| `FindDMSubscription` only on dup-key fallback | Always re-read after `BulkCreateSubscriptions` (the store swallows dup-key, in-memory sub may diverge from persisted). |
+| `errUserLookupFailed` on any `GetUser` error | Only on `ErrUserNotFound`; transient errors wrapped with `%w err` → surface as `"internal error"`. |
+| `errRoomIDCollision` surfaces verbatim | Masked as `"internal error"`; mismatch details logged. |
+| New file `handler_sync_create_dm.go` | Sync code lives at the bottom of `room-worker/handler.go`; tests stay in `handler_sync_create_dm_test.go`. |
+
+Out-of-spec fix in same PR: `room-service/store_mongo.go` partial-unique DM dedup index used `roomType: {$in:…}` which MongoDB rejects in `partialFilterExpression`. Split into two `$eq`-filtered indexes (one per room type).
+
+---
+
 ## Follow-ups
 
 - **Sync caller in user-service** — the user-service-side caller of the new sync endpoint (for the app-subscribe flow) is a separate PR. That PR is responsible for implementing the validation contract documented above (existence checks, EngName/ChineseName checks, bot-enabled check, dedup-existing). This PR delivers the room-worker surface only.

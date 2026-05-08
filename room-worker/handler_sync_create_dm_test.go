@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -457,7 +458,6 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 // while the remote site never learns about the room.
 func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
 	failingPublish := func(_ context.Context, subj string, _ []byte, _ string) error {
 		if strings.HasPrefix(subj, "outbox.") {
@@ -480,4 +480,67 @@ func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.Error(t, err)
 	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
+}
+
+// BulkCreateSubscriptions returning a non-dup-key error must surface as "internal error".
+func TestHandleSyncCreateDM_BulkCreateSubsTransientError(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		Return(errors.New("mongo: connection reset"))
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.Error(t, err)
+	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
+}
+
+// On a CreateRoom dup-key with matching existing room (idempotent re-delivery),
+// the handler must reuse existing.CreatedAt as acceptedAt — sub.JoinedAt and event
+// timestamps reflect the original creation, not retry wall-clock.
+func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+
+	// CreateRoom hits dup-key; GetRoom returns a matching existing room with a known CreatedAt.
+	originalCreatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	dupErr := mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000}}}
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
+	store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&model.Room{
+		ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a",
+		Name: "", CreatedBy: "u-alice",
+		CreatedAt: originalCreatedAt, UpdatedAt: originalCreatedAt,
+	}, nil)
+
+	var captured []*model.Subscription
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			captured = subs
+			return nil
+		})
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, JoinedAt: originalCreatedAt,
+	}, nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+
+	require.Len(t, captured, 2)
+	for _, s := range captured {
+		assert.Equal(t, originalCreatedAt, s.JoinedAt,
+			"sub.JoinedAt must reflect existing.CreatedAt on idempotent re-delivery, not retry wall-clock")
+	}
 }

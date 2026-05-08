@@ -1595,3 +1595,9 @@ Verification doesn't produce code changes. If any of steps 1–3 surfaced a bug,
 - **Part 2 — `HistoryConfig.SharedSince` removal.** Will be a separate plan in `docs/superpowers/plans/2026-05-07-historyconfig-sharedsince-removal.md`.
 - **NATS callout policy update.** Adding `chat.server.request.room.>` permission for `room-worker` is an ops/IaC change, owned outside this repo.
 - **user-service caller.** The actual caller (which performs the validation contract per the spec) is a separate PR.
+
+---
+
+## Post-implementation deviations
+
+See the spec's "Implementation deviations from spec" section for the authoritative table.

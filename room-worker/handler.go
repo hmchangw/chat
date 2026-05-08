@@ -1227,7 +1227,7 @@ func (h *Handler) publishCanonical(ctx context.Context, msg *model.Message, site
 	return h.publish(ctx, subject.MsgCanonicalCreated(siteID), data, msg.ID)
 }
 
-// --- Sync DM endpoint (chat.server.request.room.{siteID}.create.dm) ---
+// Sync DM endpoint handlers (chat.server.request.room.{siteID}.create.dm).
 
 var (
 	errMissingRequestID     = errors.New("missing X-Request-ID header")
@@ -1336,21 +1336,18 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		acceptedAt = existing.CreatedAt
 	}
 
+	// validateSyncCreateDMShape already gated this to {dm, botDM}.
 	var subs []*model.Subscription
-	switch req.RoomType {
-	case model.RoomTypeDM:
-		subs = buildDMSubs(requester, other, room, acceptedAt)
-	case model.RoomTypeBotDM:
+	if req.RoomType == model.RoomTypeBotDM {
 		subs = buildBotDMSubs(requester, other, room, acceptedAt)
-	default:
-		return nil, errInvalidSyncDMRequest
+	} else {
+		subs = buildDMSubs(requester, other, room, acceptedAt)
 	}
 
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return nil, fmt.Errorf("bulk create subs: %w", err)
 	}
-	// Always re-read the canonical persisted sub — BulkCreateSubscriptions swallows dup-key
-	// races, so the in-memory sub may carry a different _id/JoinedAt than what's stored.
+	// Re-read canonical sub: BulkCreateSubscriptions swallows dup-key races.
 	requesterSub, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
 	if err != nil {
 		return nil, fmt.Errorf("find requester sub after insert: %w", err)
