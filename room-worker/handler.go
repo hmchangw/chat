@@ -55,21 +55,12 @@ func messageDedupSeed(ctx context.Context, handler, roomID, payloadSeed string) 
 	return payloadSeed
 }
 
-// historySharedSincePtr resolves the History.SharedSince value for an
+// historySharedSincePtr resolves the per-subscription HistorySharedSince cutoff for an
 // add-member request. Mode != HistoryModeNone → nil (history is unrestricted).
-// Otherwise prefers the caller-supplied req.History.SharedSince when non-nil
-// and positive, falling back to req.Timestamp. This single source of truth
-// keeps the local subscription's HistorySharedSince consistent with the
-// MemberAddEvent published to the user's subject and the cross-site outbox
-// payload — without it, an explicit caller cutoff would be silently
-// overwritten with the request acceptance timestamp at fan-out time.
+// Otherwise returns req.Timestamp (the request acceptance time).
 func historySharedSincePtr(history model.HistoryConfig, timestamp int64, roomID string) *int64 {
 	if history.Mode != model.HistoryModeNone {
 		return nil
-	}
-	if history.SharedSince != nil && *history.SharedSince > 0 {
-		ss := *history.SharedSince
-		return &ss
 	}
 	if timestamp <= 0 {
 		slog.Error("restricted history with missing timestamp, emitting nil", "roomID", roomID, "mode", history.Mode)

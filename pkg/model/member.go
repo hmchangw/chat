@@ -18,8 +18,6 @@ const (
 
 type HistoryConfig struct {
 	Mode HistoryMode `json:"mode" bson:"mode"`
-	// SharedSince (ms): when non-nil under HistoryModeNone, takes precedence over acceptedAt.
-	SharedSince *int64 `json:"sharedSince,omitempty" bson:"sharedSince,omitempty"`
 }
 
 // ChannelRef identifies a source channel by room + its home site. Used by add-member

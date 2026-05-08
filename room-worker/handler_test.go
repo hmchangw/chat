@@ -2356,4 +2356,3 @@ func TestSanitizeAsyncJobError_NonPermanentCollapsed(t *testing.T) {
 	got := sanitizeAsyncJobError(err)
 	assert.Equal(t, "operation failed", got)
 }
-
