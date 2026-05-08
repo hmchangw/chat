@@ -19,7 +19,7 @@ type HistoryConfig struct {
 
 **Verification before acting.** This plan is built from the survey in the prior message. Before writing any code, the executor MUST re-confirm by running:
 
-```
+```bash
 grep -rn "HistoryConfig{" /home/user/chat --include='*.go'
 grep -rn "History\.SharedSince\|history\.SharedSince" /home/user/chat --include='*.go'
 grep -rn "\"sharedSince\"" /home/user/chat

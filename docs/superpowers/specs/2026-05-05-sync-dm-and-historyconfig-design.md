@@ -44,7 +44,7 @@ Out of scope:
 
 ### Topology
 
-```
+```text
 user-service ──validates──> NATS req/reply ──> room-worker ──persists──> Mongo
                                                     │
                                                     ├── publishes subscription.update events
@@ -157,7 +157,7 @@ room-worker stamps its own `acceptedAt = time.Now().UTC()` at handler entry. The
 
 ### Handler pipeline
 
-```
+```text
 1. Read X-Request-ID from ctx (set by natsrouter middleware).
    If empty → reject errMissingRequestID.
    If not a valid UUID → reject errInvalidRequestID.
