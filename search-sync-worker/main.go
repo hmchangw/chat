@@ -40,14 +40,15 @@ type bootstrapConfig struct {
 }
 
 type config struct {
-	NatsURL        string `env:"NATS_URL,required"`
-	NatsCredsFile  string `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID         string `env:"SITE_ID,required"`
-	SearchURL      string `env:"SEARCH_URL,required"`
-	SearchBackend  string `env:"SEARCH_BACKEND"  envDefault:"elasticsearch"`
-	MsgIndexPrefix string `env:"MSG_INDEX_PREFIX,required"`
-	SpotlightIndex string `env:"SPOTLIGHT_INDEX" envDefault:""`
-	UserRoomIndex  string `env:"USER_ROOM_INDEX" envDefault:""`
+	NatsURL             string `env:"NATS_URL,required"`
+	NatsCredsFile       string `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID              string `env:"SITE_ID,required"`
+	SearchURL           string `env:"SEARCH_URL,required"`
+	SearchBackend       string `env:"SEARCH_BACKEND"         envDefault:"elasticsearch"`
+	SearchTLSSkipVerify bool   `env:"SEARCH_TLS_SKIP_VERIFY" envDefault:"false"`
+	MsgIndexPrefix      string `env:"MSG_INDEX_PREFIX,required"`
+	SpotlightIndex      string `env:"SPOTLIGHT_INDEX" envDefault:""`
+	UserRoomIndex       string `env:"USER_ROOM_INDEX" envDefault:""`
 
 	// FetchBatchSize is the maximum number of JetStream messages to pull
 	// per Fetch() round-trip. Smaller values give lower latency per message
@@ -118,7 +119,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	engine, err := searchengine.New(ctx, cfg.SearchBackend, cfg.SearchURL)
+	engine, err := searchengine.New(ctx, cfg.SearchBackend, cfg.SearchURL, cfg.SearchTLSSkipVerify)
 	if err != nil {
 		slog.Error("search engine connect failed", "error", err)
 		os.Exit(1)

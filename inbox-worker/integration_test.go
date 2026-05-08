@@ -9,14 +9,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
@@ -499,4 +505,67 @@ func TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub(t *testing.T) {
 	assert.Equal(t, model.RoomTypeDM, bobSub.RoomType)
 	assert.Nil(t, bobSub.Roles, "DMs have no roles")
 	assert.False(t, bobSub.IsSubscribed, "DM does not set IsSubscribed=true")
+}
+
+// setupNATS starts a NATS container with JetStream enabled and returns a
+// JetStream client tied to the test's lifetime.
+func setupNATS(t *testing.T) (context.Context, jetstream.JetStream) {
+	t.Helper()
+	ctx := context.Background()
+
+	c, err := natsmod.Run(ctx, testimages.NATS)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Terminate(ctx) })
+
+	url, err := c.ConnectionString(ctx)
+	require.NoError(t, err)
+
+	nc, err := nats.Connect(url)
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Close() })
+
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+
+	return ctx, js
+}
+
+// TestInboxWorker_FilterScoping_Integration verifies the consumer filters
+// out the local lane: a local-lane publish stays unreachable to inbox-worker.
+func TestInboxWorker_FilterScoping_Integration(t *testing.T) {
+	const siteID = "site-filter"
+
+	ctx, js := setupNATS(t)
+
+	inboxCfg := stream.Inbox(siteID)
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     inboxCfg.Name,
+		Subjects: inboxCfg.Subjects,
+	})
+	require.NoError(t, err)
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, jetstream.ConsumerConfig{
+		Durable:        "inbox-worker",
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		FilterSubjects: []string{subject.InboxAggregateAll(siteID)},
+	})
+	require.NoError(t, err)
+
+	_, err = js.Publish(ctx, subject.InboxMemberAdded(siteID), []byte(`{"type":"member_added"}`))
+	require.NoError(t, err)
+	_, err = js.Publish(ctx, subject.InboxMemberAddedAggregate(siteID), []byte(`{"type":"member_added"}`))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		info, err := js.Stream(ctx, inboxCfg.Name)
+		if err != nil {
+			return false
+		}
+		return info.CachedInfo().State.Msgs >= 2
+	}, 2*time.Second, 50*time.Millisecond, "stream must accept both publishes")
+
+	info, err := cons.Info(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, info.NumPending,
+		"FilterSubjects must scope inbox-worker to the aggregate.> lane only")
 }

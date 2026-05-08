@@ -22,8 +22,9 @@ import (
 // ESConfig bundles the search backend knobs. BACKEND is the key
 // `pkg/searchengine.New` reads to choose between elasticsearch/opensearch.
 type ESConfig struct {
-	URL     string `env:"URL,required"`
-	Backend string `env:"BACKEND" envDefault:"elasticsearch"`
+	URL           string `env:"URL,required"`
+	Backend       string `env:"BACKEND"          envDefault:"elasticsearch"`
+	TLSSkipVerify bool   `env:"TLS_SKIP_VERIFY"  envDefault:"false"`
 }
 
 type ValkeyConfig struct {
@@ -80,7 +81,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	engine, err := searchengine.New(ctx, cfg.ES.Backend, cfg.ES.URL)
+	engine, err := searchengine.New(ctx, cfg.ES.Backend, cfg.ES.URL, cfg.ES.TLSSkipVerify)
 	if err != nil {
 		slog.Error("search engine connect failed", "error", err)
 		os.Exit(1)

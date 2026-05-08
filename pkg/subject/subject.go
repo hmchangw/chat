@@ -127,6 +127,16 @@ func InboxMemberRemovedAggregate(siteID string) string {
 	return fmt.Sprintf("chat.inbox.%s.aggregate.member_removed", siteID)
 }
 
+// InboxAggregateAll returns the wildcard pattern matching every federated
+// (aggregate-lane) event on a site's INBOX stream:
+// `chat.inbox.{siteID}.aggregate.>`. Use with
+// jetstream.ConsumerConfig.FilterSubjects to scope a consumer to the
+// federated lane only — excluding local-lane publishes that are reserved
+// for search-sync-worker.
+func InboxAggregateAll(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.aggregate.>", siteID)
+}
+
 // InboxMemberEventSubjects returns the subject filters a consumer should use
 // to receive both local and federated member_added/member_removed events for
 // the given site. Use with jetstream.ConsumerConfig.FilterSubjects (NATS 2.10+).

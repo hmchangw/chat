@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -25,13 +27,17 @@ type Claims struct {
 	Extra             map[string]interface{}
 }
 
-// ErrTokenExpired is returned when the SSO token has passed its expiry time.
-var ErrTokenExpired = fmt.Errorf("oidc: token has expired")
+var (
+	ErrTokenExpired       = errors.New("oidc: token has expired")
+	ErrNoAudiences        = errors.New("oidc: at least one allowed audience is required")
+	ErrAudienceNotAllowed = errors.New("oidc: token audience not in allowed list")
+)
 
 // Config controls how the OIDC validator behaves.
 type Config struct {
-	IssuerURL     string
-	Audience      string
+	IssuerURL string
+	// A token is accepted when any of its `aud` claim entries appears here.
+	Audiences     []string
 	TLSSkipVerify bool
 }
 
@@ -39,14 +45,17 @@ type Config struct {
 type Validator struct {
 	verifier   *oidc.IDTokenVerifier
 	httpClient *http.Client
-	audience   string
+	audiences  []string
 }
 
 const issuerDiscoveryTimeout = 10 * time.Second
 
 // NewValidator connects to the OIDC issuer and fetches its JWKS keys.
-// Fails fast if the issuer is unreachable.
 func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
+	if len(cfg.Audiences) == 0 {
+		return nil, ErrNoAudiences
+	}
+
 	var httpClient *http.Client
 
 	if cfg.TLSSkipVerify {
@@ -62,7 +71,6 @@ func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
 		ctx = oidc.ClientContext(ctx, httpClient)
 	}
 
-	// Ensure issuer discovery cannot hang indefinitely.
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, issuerDiscoveryTimeout)
@@ -74,22 +82,19 @@ func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
 		return nil, fmt.Errorf("connect to oidc issuer %q: %w", cfg.IssuerURL, err)
 	}
 
-	oidcConfig := &oidc.Config{
-		ClientID: cfg.Audience,
-	}
+	// SkipClientIDCheck: we enforce a multi-audience allow-list ourselves below.
+	oidcConfig := &oidc.Config{SkipClientIDCheck: true}
 
 	return &Validator{
 		verifier:   provider.Verifier(oidcConfig),
 		httpClient: httpClient,
-		audience:   cfg.Audience,
+		audiences:  cfg.Audiences,
 	}, nil
 }
 
 // Validate verifies the raw OIDC token string and extracts user claims.
-// Returns ErrTokenExpired if the token's exp claim is in the past — expiry
-// is enforced by go-oidc's Verifier, we just translate its sentinel error.
+// Returns ErrTokenExpired when go-oidc reports an expired exp claim.
 func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, error) {
-	// Re-attach the custom HTTP client so JWKS fetches also use TLSSkipVerify.
 	if v.httpClient != nil {
 		ctx = oidc.ClientContext(ctx, v.httpClient)
 	}
@@ -101,6 +106,11 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 			return Claims{}, ErrTokenExpired
 		}
 		return Claims{}, fmt.Errorf("oidc token verification failed: %w", err)
+	}
+
+	if !containsAudience(idToken.Audience, v.audiences) {
+		slog.Warn("oidc audience mismatch", "token_aud", idToken.Audience, "allowed", v.audiences)
+		return Claims{}, ErrAudienceNotAllowed
 	}
 
 	var tokenClaims struct {
@@ -118,7 +128,6 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 		return Claims{}, fmt.Errorf("parse oidc token claims: %w", err)
 	}
 
-	// Parse all claims into Extra for custom fields (roles, groups, etc.)
 	var allClaims map[string]interface{}
 	if err := idToken.Claims(&allClaims); err != nil {
 		return Claims{}, fmt.Errorf("parse oidc extra claims: %w", err)
@@ -144,4 +153,10 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (Claims, erro
 		DeptName:          tokenClaims.DeptName,
 		Extra:             allClaims,
 	}, nil
+}
+
+func containsAudience(tokenAud, allowed []string) bool {
+	return slices.ContainsFunc(tokenAud, func(t string) bool {
+		return slices.Contains(allowed, t)
+	})
 }

@@ -22,8 +22,9 @@ import (
 )
 
 type publishedMsg struct {
-	subj string
-	data []byte
+	subj  string
+	data  []byte
+	msgID string
 }
 
 func TestHandler_ProcessRoleUpdate_Promote(t *testing.T) {
@@ -402,8 +403,8 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	// Expect: subscription update + member change event + system message = 3 publishes
-	assert.Len(t, published, 3, "expected 3 publishes: sub update, member event, sys msg")
+	// Expect: subscription update + member change event + local INBOX + system message = 4 publishes
+	assert.Len(t, published, 4, "expected 4 publishes: sub update, member event, local INBOX, sys msg")
 
 	subjSet := make(map[string]bool)
 	for _, p := range published {
@@ -412,6 +413,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 
 	assert.True(t, subjSet[subject.SubscriptionUpdate(account)], "expected subscription update published")
 	assert.True(t, subjSet[subject.MemberEvent(roomID)], "expected member event published")
+	assert.True(t, subjSet[subject.InboxMemberRemoved(siteID)], "expected local INBOX member_removed published")
 
 	for _, p := range published {
 		if p.subj != subject.SubscriptionUpdate(account) {
@@ -584,7 +586,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	assert.Len(t, published, 3, "expected 3 publishes: sub update, member event, sys msg")
+	assert.Len(t, published, 4, "expected 4 publishes: sub update, member event, local INBOX, sys msg")
 
 	// Verify the sys msg has type "member_removed"
 	for _, p := range published {
@@ -1022,8 +1024,8 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 sys msg = 4 publishes
-	assert.Len(t, published, 4, "expected 4 publishes: 2 sub updates, member event, sys msg")
+	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 local INBOX + 1 sys msg = 5 publishes
+	assert.Len(t, published, 5, "expected 5 publishes: 2 sub updates, member event, local INBOX, sys msg")
 
 	subjSet := make(map[string]bool)
 	for _, p := range published {
@@ -1080,8 +1082,8 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	// Expect: sub update + member event + sys msg + outbox = 4 publishes
-	assert.Len(t, published, 4, "expected 4 publishes including outbox for federated user")
+	// Expect: sub update + member event + local INBOX + sys msg + outbox = 5 publishes
+	assert.Len(t, published, 5, "expected 5 publishes including local INBOX and outbox for federated user")
 
 	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
 	subjSet := make(map[string]bool)
@@ -2445,4 +2447,295 @@ func TestHandler_ProcessAddMembers_HistorySharedSinceWinsOverTimestamp(t *testin
 	require.NotNil(t, addEvt.HistorySharedSince, "MemberAddEvent must carry the explicit cutoff")
 	assert.Equal(t, sharedSince, *addEvt.HistorySharedSince,
 		"MemberAddEvent.HistorySharedSince must equal req.History.SharedSince, not req.Timestamp")
+}
+
+// findInboxPublish returns the message published on the local INBOX subject,
+// or fails the test if none / more than one were captured.
+func findInboxPublish(t *testing.T, published []publishedMsg, want string) publishedMsg {
+	t.Helper()
+	var matches []publishedMsg
+	for _, p := range published {
+		if p.subj == want {
+			matches = append(matches, p)
+		}
+	}
+	require.Lenf(t, matches, 1, "expected exactly 1 publish to %s, got %d (all: %+v)", want, len(matches), published)
+	return matches[0]
+}
+
+func TestHandler_processAddMembers_PublishesLocalInbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID    = "r1"
+		siteID    = "site-a"
+		requester = "alice"
+	)
+
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(&model.Room{ID: roomID, SiteID: siteID}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"charlie", "bob", "carol"}, roomID).
+		Return([]string{"charlie", "bob", "carol"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"charlie", "bob", "carol"}).Return([]model.User{
+		{ID: "u-charlie", Account: "charlie", SiteID: siteID},
+		{ID: "u-bob", Account: "bob", SiteID: "site-b"},
+		{ID: "u-carol", Account: "carol", SiteID: "site-c"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
+		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
+		return nil
+	})
+
+	req := model.AddMembersRequest{
+		RoomID:           roomID,
+		Users:            []string{"charlie", "bob", "carol"},
+		RequesterAccount: requester,
+		Timestamp:        12345,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	reqData, _ := json.Marshal(req)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-add-local-inbox")
+	require.NoError(t, h.processAddMembers(ctx, reqData))
+
+	got := findInboxPublish(t, published, subject.InboxMemberAdded(siteID))
+
+	var outboxEvt model.OutboxEvent
+	require.NoError(t, json.Unmarshal(got.data, &outboxEvt))
+	assert.Equal(t, "member_added", outboxEvt.Type)
+	assert.Equal(t, siteID, outboxEvt.SiteID, "origin site must equal h.siteID")
+	assert.Equal(t, siteID, outboxEvt.DestSiteID, "self-loop publish: dest must equal origin")
+	assert.Greater(t, outboxEvt.Timestamp, int64(0), "OutboxEvent.Timestamp must be set")
+
+	var inner model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
+	assert.Equal(t, "member_added", inner.Type)
+	assert.Equal(t, roomID, inner.RoomID)
+	assert.Equal(t, siteID, inner.SiteID)
+	assert.ElementsMatch(t, []string{"charlie", "bob", "carol"}, inner.Accounts,
+		"local INBOX must carry full add set — same-site + cross-site")
+
+	wantMsgID := outboxDedupID(ctx, siteID, fmt.Sprintf("%s:%s:%d", roomID, requester, req.Timestamp))
+	assert.Equal(t, wantMsgID, got.msgID, "Nats-Msg-Id must follow outboxDedupID(ctx, siteID, payloadSeed)")
+}
+
+func TestHandler_processAddMembers_NoLocalInboxOnEmptyAccounts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-a"}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob"}, "r1").Return(nil, nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, "site-a", func(_ context.Context, subj string, data []byte, msgID string) error {
+		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
+		return nil
+	})
+
+	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"bob"}, RequesterAccount: "alice", Timestamp: 1000}
+	reqData, _ := json.Marshal(req)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-empty-accounts")
+	require.NoError(t, h.processAddMembers(ctx, reqData))
+
+	for _, p := range published {
+		assert.NotEqual(t, subject.InboxMemberAdded("site-a"), p.subj,
+			"no local INBOX publish should occur when actualAccounts is empty")
+	}
+}
+
+func TestHandler_processRemoveIndividual_PublishesLocalInbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID    = "r1"
+		account   = "bob"
+		requester = "alice"
+		siteID    = "site-a"
+	)
+
+	userResult := &UserWithMembership{
+		User:             model.User{ID: "u-bob", Account: account, SiteID: siteID},
+		HasOrgMembership: false,
+	}
+
+	store.EXPECT().GetUserWithMembership(gomock.Any(), roomID, account).Return(userResult, nil)
+	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u-bob").Return(nil)
+	store.EXPECT().DeleteSubscription(gomock.Any(), roomID, account).Return(int64(1), nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
+		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
+		return nil
+	})
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, Account: account, Timestamp: 9999}
+	reqData, _ := json.Marshal(req)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-rm-individual-inbox")
+	require.NoError(t, h.processRemoveMember(ctx, reqData))
+
+	got := findInboxPublish(t, published, subject.InboxMemberRemoved(siteID))
+
+	var outboxEvt model.OutboxEvent
+	require.NoError(t, json.Unmarshal(got.data, &outboxEvt))
+	assert.Equal(t, "member_removed", outboxEvt.Type)
+	assert.Equal(t, siteID, outboxEvt.SiteID)
+	assert.Equal(t, siteID, outboxEvt.DestSiteID)
+	assert.Greater(t, outboxEvt.Timestamp, int64(0))
+
+	var inner model.MemberRemoveEvent
+	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
+	assert.Equal(t, "member_removed", inner.Type, "admin-remove inner type is member_removed")
+	assert.Equal(t, roomID, inner.RoomID)
+	assert.Equal(t, []string{account}, inner.Accounts)
+
+	wantMsgID := outboxDedupID(ctx, siteID, fmt.Sprintf("%s:%s:%d", roomID, account, req.Timestamp))
+	assert.Equal(t, wantMsgID, got.msgID, "Nats-Msg-Id must follow outboxDedupID(ctx, siteID, payloadSeed)")
+}
+
+// Self-leave: wrapper Type collapses to member_removed while inner Type
+// stays member_left — matches the cross-site OUTBOX convention so
+// search-sync-worker dispatches on a single MV op.
+func TestHandler_processRemoveIndividual_SelfLeavePublishesLocalInbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID  = "r1"
+		account = "alice"
+		siteID  = "site-a"
+	)
+
+	userResult := &UserWithMembership{
+		User:             model.User{ID: "u1", Account: account, SiteID: siteID},
+		HasOrgMembership: false,
+	}
+
+	store.EXPECT().GetUserWithMembership(gomock.Any(), roomID, account).Return(userResult, nil)
+	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").Return(nil)
+	store.EXPECT().DeleteSubscription(gomock.Any(), roomID, account).Return(int64(1), nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
+		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
+		return nil
+	})
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1000}
+	reqData, _ := json.Marshal(req)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-rm-self-leave-inbox")
+	require.NoError(t, h.processRemoveMember(ctx, reqData))
+
+	got := findInboxPublish(t, published, subject.InboxMemberRemoved(siteID))
+
+	var outboxEvt model.OutboxEvent
+	require.NoError(t, json.Unmarshal(got.data, &outboxEvt))
+	assert.Equal(t, "member_removed", outboxEvt.Type,
+		"OutboxEvent wrapper Type must be member_removed even for self-leave")
+
+	var inner model.MemberRemoveEvent
+	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
+	assert.Equal(t, "member_left", inner.Type,
+		"inner MemberRemoveEvent.Type is preserved as member_left for self-leave")
+}
+
+func TestHandler_processRemoveOrg_PublishesLocalInbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID    = "r1"
+		orgID     = "org-1"
+		requester = "alice"
+		siteID    = "site-a"
+	)
+
+	orgMembers := []OrgMemberStatus{
+		{Account: "carol", SiteID: siteID, SectName: "Eng", HasIndividualMembership: false},
+		{Account: "dave", SiteID: "site-b", SectName: "Eng", HasIndividualMembership: false},
+	}
+
+	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, orgID).Return(orgMembers, nil)
+	store.EXPECT().
+		DeleteSubscriptionsByAccounts(gomock.Any(), roomID, gomock.InAnyOrder([]string{"carol", "dave"})).
+		Return(int64(2), nil)
+	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
+		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
+		return nil
+	})
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID, Timestamp: 4242}
+	reqData, _ := json.Marshal(req)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-rm-org-inbox")
+	require.NoError(t, h.processRemoveMember(ctx, reqData))
+
+	got := findInboxPublish(t, published, subject.InboxMemberRemoved(siteID))
+
+	var outboxEvt model.OutboxEvent
+	require.NoError(t, json.Unmarshal(got.data, &outboxEvt))
+	assert.Equal(t, "member_removed", outboxEvt.Type)
+	assert.Equal(t, siteID, outboxEvt.SiteID)
+	assert.Equal(t, siteID, outboxEvt.DestSiteID)
+
+	var inner model.MemberRemoveEvent
+	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &inner))
+	assert.Equal(t, "member_removed", inner.Type)
+	assert.Equal(t, roomID, inner.RoomID)
+	assert.Equal(t, orgID, inner.OrgID)
+	assert.ElementsMatch(t, []string{"carol", "dave"}, inner.Accounts,
+		"local INBOX must carry every removed account regardless of site")
+
+	wantMsgID := outboxDedupID(ctx, siteID, fmt.Sprintf("%s:%s:%d", roomID, orgID, req.Timestamp))
+	assert.Equal(t, wantMsgID, got.msgID, "Nats-Msg-Id must follow outboxDedupID(ctx, siteID, payloadSeed)")
+}
+
+func TestHandler_processRemoveOrg_NoLocalInboxOnZeroAccounts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	const (
+		roomID = "r1"
+		orgID  = "org-1"
+		siteID = "site-a"
+	)
+
+	orgMembers := []OrgMemberStatus{
+		{Account: "carol", SiteID: siteID, SectName: "Eng", HasIndividualMembership: true},
+	}
+
+	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, orgID).Return(orgMembers, nil)
+	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+
+	var published []publishedMsg
+	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, msgID string) error {
+		published = append(published, publishedMsg{subj: subj, data: data, msgID: msgID})
+		return nil
+	})
+
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", OrgID: orgID, Timestamp: 1000}
+	reqData, _ := json.Marshal(req)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-rm-org-empty")
+	require.NoError(t, h.processRemoveMember(ctx, reqData))
+
+	for _, p := range published {
+		assert.NotEqual(t, subject.InboxMemberRemoved(siteID), p.subj,
+			"no local INBOX publish when no accounts are actually removed")
+	}
 }
