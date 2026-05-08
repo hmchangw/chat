@@ -172,6 +172,40 @@ func TestBuiltinPreset_SearchRead(t *testing.T) {
 	assert.Equal(t, p.SearchTokens, q.SearchTokens)
 }
 
+func TestPickHistoryKind_HonoursWeights(t *testing.T) {
+	p, _ := BuiltinPreset("history-read")
+	r := rand.New(rand.NewSource(42))
+	const iters = 10_000
+
+	counts := map[historyRequestKind]int{}
+	for i := 0; i < iters; i++ {
+		counts[pickHistoryKind(r, p.HistoryMix)]++
+	}
+	for kind, weight := range p.HistoryMix {
+		want := float64(iters) * float64(weight) / 100.0
+		assert.InDelta(t, want, float64(counts[kind]), float64(iters)*0.02,
+			"kind %d count %d off from weighted expectation %.0f (±2%%)",
+			kind, counts[kind], want)
+	}
+}
+
+func TestPickSearchKind_HonoursWeights(t *testing.T) {
+	p, _ := BuiltinPreset("search-read")
+	r := rand.New(rand.NewSource(42))
+	const iters = 10_000
+
+	counts := map[searchRequestKind]int{}
+	for i := 0; i < iters; i++ {
+		counts[pickSearchKind(r, p.SearchMix)]++
+	}
+	for kind, weight := range p.SearchMix {
+		want := float64(iters) * float64(weight) / 100.0
+		assert.InDelta(t, want, float64(counts[kind]), float64(iters)*0.02,
+			"kind %d count %d off from weighted expectation %.0f (±2%%)",
+			kind, counts[kind], want)
+	}
+}
+
 func TestSampleWithoutReplacement_CapsAtUserCount(t *testing.T) {
 	// Requesting more samples than users available silently caps at len(users).
 	r := rand.New(rand.NewSource(1))

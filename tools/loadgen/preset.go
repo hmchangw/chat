@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"sort"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -131,6 +132,41 @@ var builtinPresets = map[string]Preset{
 func BuiltinPreset(name string) (Preset, bool) {
 	p, ok := builtinPresets[name]
 	return p, ok
+}
+
+// pickWeighted draws a key from the weights map with probability proportional
+// to its weight. Iteration order is sorted by key to keep selection
+// deterministic for a given (rand.Rand, weights) pair across runs. Total
+// weight must be > 0; the caller owns that invariant since both callers
+// derive weights from the preset registry where the invariant is enforced.
+func pickWeighted[K ~int](r *rand.Rand, weights map[K]int) K {
+	keys := make([]K, 0, len(weights))
+	for k := range weights {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+
+	total := 0
+	for _, k := range keys {
+		total += weights[k]
+	}
+	pick := r.Intn(total)
+	cum := 0
+	for _, k := range keys {
+		cum += weights[k]
+		if pick < cum {
+			return k
+		}
+	}
+	return keys[len(keys)-1] // unreachable when total>0
+}
+
+func pickHistoryKind(r *rand.Rand, weights map[historyRequestKind]int) historyRequestKind {
+	return pickWeighted(r, weights)
+}
+
+func pickSearchKind(r *rand.Rand, weights map[searchRequestKind]int) searchRequestKind {
+	return pickWeighted(r, weights)
 }
 
 // Fixtures is the full seed data for a preset run.
