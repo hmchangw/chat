@@ -83,6 +83,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MessageReadWildcard(h.siteID), queue, h.natsMessageRead); err != nil {
 		return fmt.Errorf("subscribe message read: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.MessageReadReceiptWildcard(h.siteID), queue, h.natsMessageReadReceipt); err != nil {
+		return fmt.Errorf("subscribe message read-receipt: %w", err)
+	}
 	if _, err := nc.QueueSubscribe(subject.MemberListWildcard(h.siteID), queue, h.natsListMembers); err != nil {
 		return fmt.Errorf("subscribe member list: %w", err)
 	}
