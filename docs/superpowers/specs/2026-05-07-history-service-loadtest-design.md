@@ -3,6 +3,7 @@
 **Date:** 2026-05-07
 **Status:** scoping (this PR proposes the design; implementation lands in a follow-up)
 **Phase 2 (added 2026-05-08):** scope expanded to cover every service in the codebase except `auth-service` (HTTP, deferred) and `inbox-worker` (federation, deferred). See "Phase 2 — additional services" near the end of this document.
+**Phase 3 (added 2026-05-08):** harness-level upgrades — auto warm-up, live progress reporting, service readiness probes, rate ramping, saturation auto-detect, per-tenant connection multiplexing. See "Phase 3 — harness upgrades" at the bottom of this document. Chaos-engineering toggles considered and explicitly deferred.
 
 ## Goal
 
@@ -259,3 +260,74 @@ Phase 2 is purely additive on the chassis built in Phase 1 Tasks 1-5:
 - Metrics labels (`scenario`, `kind`) already designed to admit any scenario.
 
 **No structural changes from Phase 1 are required for Phase 2.**
+
+---
+
+## Phase 3 — harness upgrades
+
+**Status:** added 2026-05-08, in scope for the same PR. Six harness-level features that close the rough edges in Phase 1 + Phase 2: auto warm-up, live progress reporting, readiness probes, rate ramping, saturation auto-detect, and per-tenant connection multiplexing. Chaos-engineering toggles considered (drop-replies / malformed / burst / disconnect) and dropped from v1 by explicit decision.
+
+### Why these six
+
+Phases 1-2 build the chassis (presets, generators, scenarios, metrics, scripts). Running them on a fresh laptop today exposes the same failure modes every time:
+
+1. **Read scenarios start cold** — `history-read` fires `GetMessageByID` against an empty Cassandra and gets all errors, because nobody seeded message IDs.
+2. **Long runs feel dead** — no output between `loadgen run` and final summary; you can't tell at minute 4 whether minute 5 will be useful.
+3. **First-second errors** — services aren't ready when the generator starts; the first ~500ms of samples are publish errors that contaminate the warmup window.
+4. **Fixed-rate runs are blunt** — to find the knee you re-run at 100, 200, 500, 1000 rps. Slow and imprecise.
+5. **Capacity-finding requires a babysitter** — a long run that's clearly saturated keeps generating millions of error samples until duration expires.
+6. **Single connection** — every loadgen instance opens one NATS connection regardless of `--rate`. Real client populations open thousands.
+
+Each upgrade below addresses one of these.
+
+### 3.1 Auto warm-up for read scenarios
+
+**Problem.** `history-read`'s `GetMessageByID` / `LoadSurroundingMessages` / `GetThreadMessages` request kinds need a pool of real message IDs that exist in Cassandra. Today the pool is `nil` so those kinds fire with empty IDs and fail with `no_message_ids`. Only `LoadHistory` works without warm-up.
+
+**Solution.** A `--auto-warmup-rate=N` flag (default 200 rps). When the selected scenario is `history-read` *and* the configured `HistoryMix` includes any kind that needs an ID, loadgen runs an internal `messaging-pipeline` phase first for the duration of `--warmup`, captures the published message IDs from the existing `Collector.byMsgID` map, and hands the resulting `[]string` to the `HistoryReadGenerator`. The phase is transparent to the user — same `--warmup` window, same final summary, just a populated pool.
+
+**Wire-up.**
+- New `Collector.MessageIDs() []string` method exposing `keys(byMsgID)` after the warmup phase.
+- New `runHistoryReadWithWarmup(ctx, ...)` helper in `main.go` that orchestrates two `Run()` calls back-to-back.
+- `--auto-warmup=false` opt-out for the rare case the user already populated Cassandra externally.
+
+**Doesn't apply to.** `search-read` (warm-up via messaging-pipeline already populates Elasticsearch via search-sync-worker — same code path Phase 1 already uses). `room-rpc` (no message IDs needed).
+
+### 3.2 Live progress reporting
+
+**Problem.** Today `loadgen run --duration=5m` prints nothing for 5 minutes, then dumps the summary. There's no way to tell mid-run if the test is healthy.
+
+**Solution.** Every 10 seconds (configurable via `--progress-interval`), emit one structured-log line:
+
+```
+{"level":"info","time":"...","msg":"progress",
+ "elapsed":"30s","remaining":"4m30s",
+ "rate":498.2,"target":500,
+ "p50_ms":4.1,"p95_ms":18,"p99_ms":42,
+ "errors":3,"saturated":0}
+```
+
+**Implementation.**
+- A `progress.go` goroutine started by the run command; reads `loadgen_*` Prometheus counters/histograms via `Registry.Gather()` (same pattern as `gatheredCounterValue` in `main.go`).
+- Computes deltas vs. the previous tick so reported rate is instantaneous, not lifetime.
+- Stops when the run context cancels.
+- Output goes through the existing `slog` JSON handler for grep-friendliness.
+
+### 3.3 Service readiness probes
+
+**Problem.** When `loadgen run` starts immediately after `compose up`, the first ~500ms of publishes hit services that haven't finished initialising. These show up as `bad_reply` / `gatekeeper` errors and contaminate even the post-warmup measured window if warmup is short.
+
+**Solution.** Before the generator starts, probe the target services. The probe shape varies by scenario:
+
+| Scenario | Probe |
+|---|---|
+| `messaging-pipeline` | `nc.RequestWithContext(subject.RoomsList(probeUser), {}, 2s)` — bounces off room-service. |
+| `history-read` | `nc.RequestWithContext(subject.MsgHistory(probeUser, probeRoom, siteID), {}, 2s)` — bounces off history-service. |
+| `search-read` | `nc.RequestWithContext(subject.SearchMessages(probeUser), {searchText:"probe"}, 2s)` — bounces off search-service. |
+| `room-rpc` | same as `messaging-pipeline`. |
+
+Loop with exponential backoff (start 200ms, max 2s) for up to 30s. Exit non-zero if the probe never succeeds — that's a stack-misconfig signal worth surfacing.
+
+**Implementation.**
+- New `readiness.go` with a `WaitForReady(ctx, scenario, nc, fixtures)` function.
+- Called from `runRun` before the generator's `Run`. No-op if `--skip-readiness` is set (escape hatch for tests where the probe traffic itself is unwanted).
