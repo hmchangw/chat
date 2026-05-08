@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -111,45 +110,8 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 				SetPartialFilterExpression(bson.M{"roomType": bson.M{"$eq": model.RoomTypeBotDM}}),
 		},
 	}
-	// Idempotent migration: drop the legacy $in-filtered index if a prior deploy
-	// installed it. Same name as the new dm index but with a different
-	// partialFilterExpression — CreateMany would fail with IndexOptionsConflict.
-	if err := dropLegacyDMDedupIndex(ctx, s.subscriptions); err != nil {
-		return fmt.Errorf("drop legacy dm-dedup index: %w", err)
-	}
 	if _, err := s.subscriptions.Indexes().CreateMany(ctx, dmDedupIndexes); err != nil {
 		return fmt.Errorf("ensure dm-dedup subscription indexes: %w", err)
-	}
-	return nil
-}
-
-// dropLegacyDMDedupIndex removes any existing u_account_name_roomtype_dm_idx
-// whose partialFilterExpression uses the legacy $in operator, leaving correctly-
-// specified indexes alone. No-op when the index doesn't exist.
-func dropLegacyDMDedupIndex(ctx context.Context, coll *mongo.Collection) error {
-	cursor, err := coll.Indexes().List(ctx)
-	if err != nil {
-		return fmt.Errorf("list indexes: %w", err)
-	}
-	var indexes []bson.M
-	if err := cursor.All(ctx, &indexes); err != nil {
-		return fmt.Errorf("decode indexes: %w", err)
-	}
-	for _, idx := range indexes {
-		name, _ := idx["name"].(string)
-		if name != "u_account_name_roomtype_dm_idx" {
-			continue
-		}
-		pfe, _ := idx["partialFilterExpression"].(bson.M)
-		rt, _ := pfe["roomType"].(bson.M)
-		if _, hasIn := rt["$in"]; !hasIn {
-			return nil
-		}
-		slog.Warn("dropping legacy $in-filtered dm-dedup index", "name", name)
-		if err := coll.Indexes().DropOne(ctx, name); err != nil {
-			return fmt.Errorf("drop %s: %w", name, err)
-		}
-		return nil
 	}
 	return nil
 }
