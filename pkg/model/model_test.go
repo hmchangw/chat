@@ -1872,6 +1872,30 @@ func TestErrorResponseJSON(t *testing.T) {
 	})
 }
 
+func TestReadReceiptRequestJSON(t *testing.T) {
+	r := model.ReadReceiptRequest{MessageID: "m1"}
+	roundTrip(t, &r, &model.ReadReceiptRequest{})
+}
+
+func TestReadReceiptEntryJSON(t *testing.T) {
+	e := model.ReadReceiptEntry{
+		UserID:      "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+		Account:     "alice",
+		ChineseName: "愛麗絲",
+		EngName:     "Alice",
+	}
+	roundTrip(t, &e, &model.ReadReceiptEntry{})
+}
+
+func TestReadReceiptResponseJSON(t *testing.T) {
+	r := model.ReadReceiptResponse{
+		Readers: []model.ReadReceiptEntry{
+			{UserID: "u1", Account: "alice", ChineseName: "愛麗絲", EngName: "Alice"},
+		},
+	}
+	roundTrip(t, &r, &model.ReadReceiptResponse{})
+}
+
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T any](t *testing.T, src *T, dst *T) {
 	t.Helper()
