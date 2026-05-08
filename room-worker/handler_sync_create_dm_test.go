@@ -56,6 +56,14 @@ func newSyncDMTestHandler(t *testing.T) (*Handler, *MockSubscriptionStore, *dmPu
 	return h, store, capture
 }
 
+// marshalReq JSON-encodes v or fails the test on error.
+func marshalReq(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	require.NoError(t, err)
+	return data
+}
+
 func TestSanitizeSyncDMError(t *testing.T) {
 	cases := []struct {
 		name string
@@ -85,7 +93,7 @@ func TestHandleSyncCreateDM_MissingRequestID(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 	}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(context.Background(), data)
 	assert.ErrorIs(t, err, errMissingRequestID)
 }
@@ -103,7 +111,7 @@ func TestHandleSyncCreateDM_InvalidRoomType(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 	}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
 }
@@ -115,7 +123,7 @@ func TestHandleSyncCreateDM_EmptyAccounts(t *testing.T) {
 		{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: ""},
 	}
 	for _, req := range cases {
-		data, _ := json.Marshal(req)
+		data := marshalReq(t, req)
 		_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 		assert.ErrorIs(t, err, errInvalidSyncDMRequest)
 	}
@@ -128,7 +136,7 @@ func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "alice",
 	}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
 }
@@ -143,7 +151,7 @@ func TestHandleSyncCreateDM_RequesterNotFound(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 	}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	assert.ErrorIs(t, err, errUserLookupFailed)
 }
@@ -159,7 +167,7 @@ func TestHandleSyncCreateDM_OtherNotFound(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 	}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	assert.ErrorIs(t, err, errUserLookupFailed)
 }
@@ -174,40 +182,44 @@ func TestHandleSyncCreateDM_CrossSiteRequester(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 	}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	assert.ErrorIs(t, err, errCrossSiteRequester)
 }
 
 func TestHandleSyncCreateDM_RoomCollisionMismatch(t *testing.T) {
-	h, store, _ := newSyncDMTestHandler(t)
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	cases := []struct {
+		name     string
+		existing model.Room
+	}{
+		{"type mismatch", model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: "", CreatedBy: "u-alice"}},
+		{"siteID mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-other", Name: "", CreatedBy: "u-alice"}},
+		{"name mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a", Name: "leak", CreatedBy: "u-alice"}},
+		{"createdBy mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a", Name: "", CreatedBy: "u-eve"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, store, _ := newSyncDMTestHandler(t)
+			requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+			other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
+			store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+			store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+			dupErr := mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000}}}
+			store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
+			existing := tc.existing
+			store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&existing, nil)
 
-	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
-	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
-	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
-
-	dupErr := mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000}}}
-	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
-	store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&model.Room{
-		ID: idgen.BuildDMRoomID("u-alice", "u-bob"), Type: model.RoomTypeChannel,
-		SiteID: "site-a", Name: "", CreatedBy: "u-alice",
-	}, nil)
-
-	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
-	assert.ErrorIs(t, err, errRoomIDCollision)
+			req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+			data := marshalReq(t, req)
+			_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+			assert.ErrorIs(t, err, errRoomIDCollision)
+		})
+	}
 }
 
-// noopPublish is a PublishFunc that drops all events.
-func noopPublish(_ context.Context, _ string, _ []byte, _ string) error { return nil }
-
 func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{siteID: "site-a", store: store, publish: noopPublish}
+	h, store, _ := newSyncDMTestHandler(t)
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
@@ -231,7 +243,7 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	rawReply, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
 
@@ -239,17 +251,28 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rawReply, &reply))
 	assert.True(t, reply.Success)
 	assert.Equal(t, "canonical-alice-sub", reply.Subscription.ID)
-	assert.Equal(t, "alice", reply.Subscription.User.Account)
-	assert.Equal(t, idgen.BuildDMRoomID("u-alice", "u-bob"), reply.Subscription.RoomID)
 
+	// Both subs persisted: requester names other (IsSubscribed=false), other names requester.
 	require.Len(t, captured, 2)
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	subByAccount := map[string]*model.Subscription{}
+	for _, s := range captured {
+		subByAccount[s.User.Account] = s
+	}
+	require.Contains(t, subByAccount, "alice")
+	require.Contains(t, subByAccount, "bob")
+	assert.Equal(t, "u-alice", subByAccount["alice"].User.ID)
+	assert.Equal(t, roomID, subByAccount["alice"].RoomID)
+	assert.Equal(t, "bob", subByAccount["alice"].Name)
+	assert.Equal(t, model.RoomTypeDM, subByAccount["alice"].RoomType)
+	assert.False(t, subByAccount["alice"].IsSubscribed)
+	assert.Equal(t, "u-bob", subByAccount["bob"].User.ID)
+	assert.Equal(t, "alice", subByAccount["bob"].Name)
+	assert.False(t, subByAccount["bob"].IsSubscribed)
 }
 
 func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{siteID: "site-a", store: store, publish: noopPublish}
+	h, store, _ := newSyncDMTestHandler(t)
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	bot := &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-a"}
@@ -263,7 +286,7 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	rawReply, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
 
@@ -276,10 +299,7 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 // On dup-key race, BulkCreateSubscriptions swallows the error and the in-memory subs
 // carry stale state; the handler must return the canonical persisted sub via FindDMSubscription.
 func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{siteID: "site-a", store: store, publish: noopPublish}
+	h, store, _ := newSyncDMTestHandler(t)
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
@@ -298,7 +318,7 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	rawReply, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
 
@@ -311,15 +331,12 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 // signals "user does not exist"); they should propagate as wrapped errors and surface
 // as "internal error" via sanitizeSyncDMError.
 func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{siteID: "site-a", store: store}
+	h, store, _ := newSyncDMTestHandler(t)
 
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(nil, errors.New("mongo: connection refused"))
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, errUserLookupFailed,
@@ -328,11 +345,7 @@ func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
 }
 
 func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	capture := &dmPublishCapture{}
-	h := &Handler{siteID: "site-a", store: store, publish: capture.fn}
+	h, store, capture := newSyncDMTestHandler(t)
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
@@ -346,7 +359,7 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
 
@@ -359,11 +372,7 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 }
 
 func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	capture := &dmPublishCapture{}
-	h := &Handler{siteID: "site-a", store: store, publish: capture.fn}
+	h, store, capture := newSyncDMTestHandler(t)
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}
@@ -377,7 +386,7 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
 
@@ -407,11 +416,7 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 }
 
 func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-	capture := &dmPublishCapture{}
-	h := &Handler{siteID: "site-a", store: store, publish: capture.fn}
+	h, store, capture := newSyncDMTestHandler(t)
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}
@@ -425,7 +430,7 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.NoError(t, err)
 
@@ -458,7 +463,7 @@ func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
+	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.Error(t, err)
 	assert.Equal(t, "internal error", sanitizeSyncDMError(err))

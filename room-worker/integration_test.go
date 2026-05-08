@@ -1077,3 +1077,57 @@ func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), subCount, "redelivery must not create duplicate subs")
 }
+
+// Federation convergence: the cross-site OUTBOX payload carries the deterministic
+// BuildDMRoomID, so the remote inbox-worker (and any replay) writes to the SAME
+// room ID as the home site. Same X-Request-ID across replays produces the same
+// Nats-Msg-Id so JetStream dedup blocks duplicates.
+func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
+	ctx := newIntegSyncDMCtx()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: "site-B", EngName: "Bob", ChineseName: "鮑勃"})
+
+	cap1 := &publishCapture{}
+	handler := NewHandler(store, siteID, cap1.fn())
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	_, err = handler.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+
+	// 1. Local Mongo room.ID equals the deterministic BuildDMRoomID.
+	wantRoomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	persisted, err := store.GetRoom(ctx, wantRoomID)
+	require.NoError(t, err)
+	assert.Equal(t, wantRoomID, persisted.ID)
+
+	// 2. OUTBOX payload carries the same RoomID + the dedup key includes destSiteID.
+	pubs := cap1.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxTypeRoomCreated))
+	require.Len(t, pubs, 1)
+	var env model.OutboxEvent
+	require.NoError(t, json.Unmarshal(pubs[0].data, &env))
+	var payload model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(env.Payload, &payload))
+	assert.Equal(t, wantRoomID, payload.RoomID,
+		"outbox RoomID must match local room.ID so remote site converges")
+	assert.Equal(t, "alice", payload.RequesterAccount)
+	assert.Equal(t, []string{"bob"}, payload.Accounts)
+	assert.Contains(t, pubs[0].msgID, "site-B",
+		"Nats-Msg-Id must include destSiteID for JetStream stream dedup")
+
+	// 3. Replay with the same X-Request-ID produces the same Nats-Msg-Id —
+	//    on the wire, JetStream OUTBOX dedup would reject the second emit.
+	cap2 := &publishCapture{}
+	handler2 := NewHandler(store, siteID, cap2.fn())
+	_, err = handler2.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	pubs2 := cap2.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxTypeRoomCreated))
+	require.Len(t, pubs2, 1)
+	assert.Equal(t, pubs[0].msgID, pubs2[0].msgID,
+		"replay must produce identical Nats-Msg-Id so broker dedup blocks duplicate cross-site events")
+}
