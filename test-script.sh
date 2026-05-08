@@ -127,15 +127,9 @@ cqlsh_exec() {
   docker exec -i "$CASSANDRA_CONTAINER" cqlsh -k "$CASSANDRA_KEYSPACE" -e "$cql"
 }
 
-# Insert a row into messages_by_id with the minimum columns the handler reads
-# (message_id, room_id, created_at, sender). Uses INSERT...JSON instead of the
-# inline UDT literal form ({account: 'x', id: 'y'}) — the latter trips a
-# segfault in cqlsh's Python parser on some hosts. With JSON, cqlsh hands the
-# raw JSON to the server which parses the UDT, bypassing the crashing path.
 seed_message() {
   local message_id="$1" room_id="$2" created_at_iso="$3" sender_account="$4"
-  local json="{\"message_id\":\"${message_id}\",\"room_id\":\"${room_id}\",\"created_at\":\"${created_at_iso}\",\"sender\":{\"account\":\"${sender_account}\",\"id\":\"${sender_account}_uid\"}}"
-  cqlsh_exec "INSERT INTO messages_by_id JSON '${json}'" >/dev/null
+  cqlsh_exec "INSERT INTO messages_by_id (message_id, room_id, created_at, sender) VALUES ('${message_id}', '${room_id}', '${created_at_iso}', { account: '${sender_account}', id: '${sender_account}_uid' })" >/dev/null
 }
 
 # --- assertion helpers ------------------------------------------------------
@@ -230,7 +224,7 @@ seed_sub() {
 # Echo the seeded message after writing the row, so the log reads chronologically.
 seed_message_logged() {
   local message_id="$1" room_id="$2" created_at_iso="$3" sender_account="$4"
-  seed_message_logged "$message_id" "$room_id" "$created_at_iso" "$sender_account"
+  seed_message "$message_id" "$room_id" "$created_at_iso" "$sender_account"
   seeded "message id=${message_id} roomId=${room_id} createdAt=${created_at_iso} sender=${sender_account}"
 }
 
