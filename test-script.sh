@@ -122,23 +122,20 @@ mongo_delete() {
 }
 
 # --- Cassandra helpers ------------------------------------------------------
-# `cqlsh -e "..."` segfaults on some hosts (Python/libev mismatch surfaced via
-# the inline-statement code path). The init container (compose.deps.yaml) runs
-# `cqlsh -f file.cql` reliably on the same image, so use the file form instead:
-# write the statement into the container, then run cqlsh -f.
 cqlsh_exec() {
   local cql="$1"
-  local tmp="/tmp/e2e_$$_$RANDOM.cql"
-  printf '%s\n' "$cql" | docker exec -i "$CASSANDRA_CONTAINER" \
-    bash -c "cat > $tmp && cqlsh -k '$CASSANDRA_KEYSPACE' -f $tmp; rc=\$?; rm -f $tmp; exit \$rc"
+  docker exec -i "$CASSANDRA_CONTAINER" cqlsh -k "$CASSANDRA_KEYSPACE" -e "$cql"
 }
 
 # Insert a row into messages_by_id with the minimum columns the handler reads
-# (message_id, room_id, created_at, sender). sender is the Participant UDT;
-# only sender.account is queried by the handler.
+# (message_id, room_id, created_at, sender). Uses INSERT...JSON instead of the
+# inline UDT literal form ({account: 'x', id: 'y'}) — the latter trips a
+# segfault in cqlsh's Python parser on some hosts. With JSON, cqlsh hands the
+# raw JSON to the server which parses the UDT, bypassing the crashing path.
 seed_message() {
   local message_id="$1" room_id="$2" created_at_iso="$3" sender_account="$4"
-  cqlsh_exec "INSERT INTO messages_by_id (message_id, room_id, created_at, sender) VALUES ('${message_id}', '${room_id}', '${created_at_iso}', { account: '${sender_account}', id: '${sender_account}_uid' })" >/dev/null
+  local json="{\"message_id\":\"${message_id}\",\"room_id\":\"${room_id}\",\"created_at\":\"${created_at_iso}\",\"sender\":{\"account\":\"${sender_account}\",\"id\":\"${sender_account}_uid\"}}"
+  cqlsh_exec "INSERT INTO messages_by_id JSON '${json}'" >/dev/null
 }
 
 # --- assertion helpers ------------------------------------------------------
