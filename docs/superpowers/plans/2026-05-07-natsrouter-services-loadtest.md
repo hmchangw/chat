@@ -115,17 +115,31 @@ Tasks 9 + 10 may share a single commit since neither lands new code paths.
 
 ## Done definition
 
+**Phase 1 (Tasks 1-10):**
 - `make test SERVICE=loadgen` is green.
 - `make test-integration SERVICE=loadgen` is green (CI-eligible — same shape as the existing integration test).
 - `make lint` is green.
 - Coverage for new code in `tools/loadgen` ≥ 80%.
 - `make -C tools/loadgen/deploy run-natsrouter` produces non-empty samples in both the `history_request_duration` and `search_request_duration` histograms within 30s of `loadgen run` start, with zero error-rate.
 
+**Phase 2 (Tasks 11-15) — additional gates on top of Phase 1:**
+- `BuiltinPreset("room-rpc")` returns the documented mix; `make test SERVICE=loadgen` covers it.
+- `loadgen run --scenario=room-rpc --preset=room-rpc --duration=10s` against the local compose stack produces non-zero `loadgen_requests_total{scenario="room"}` for at least three of the five room-request kinds, with zero error-rate.
+- `loadgen run --scenario=messaging-pipeline --duration=10s` produces non-zero `loadgen_consumer_pending` gauges for `notification-worker` and the three `search-sync-worker-*` durables (visibility, not health threshold).
+- New code paths for Phase 2 maintain ≥ 80% coverage.
+
 ## Risk
 
+**Phase 1:**
 - The compose stack grows from ~3 services to ~9. CI run-time and local laptop footprint both go up. If CI integration-test run-time becomes a problem, gate the new test behind a `LOADGEN_NATSROUTER=1` env var so the stack only spins up when explicitly requested.
 - Elasticsearch + Cassandra startup is slow (30-60s combined). Readiness probes in task 8 must be patient or the test will be flaky on cold cache; budget at least 90s for setup.
 - search-sync-worker's Mongo→ES sync has measurable lag. The 30s warm-up should be enough for the seeded message corpus, but if `search-read` integration assertions are flaky, bump to 60s rather than reduce the corpus size.
+
+**Phase 2 incremental:**
+- `room-rpc` mutates Mongo state. Mitigated by running against the loadgen-owned `MONGO_DB=loadgen` and `WriteIDPrefix="loadgen-"` for forensic identification. `make teardown` already drops the database. Worst case: a long run leaves an inflated `rooms` collection in the loadgen DB until teardown.
+- Compose stack grows by **one more service** (`room-service`). Phase 1 already required substantial growth; one extra service is incremental. Phase 2 integration-test time impact is ~30s additional startup.
+- Sampler additions for stream consumers are zero-risk: they read JetStream consumer state via the same `ConsumerSampler` already used for `message-worker` / `broadcast-worker`. Empty gauges read as 0.
+- Task 15 doesn't add unit tests — it's pure config. The Phase 1 integration test from Task 8 doesn't exercise the new samplers; Phase 2 should extend it to assert the new gauges are present (one extra `assert.NotEmpty(samplers)` per durable).
 
 ---
 
