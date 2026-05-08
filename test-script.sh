@@ -122,9 +122,14 @@ mongo_delete() {
 }
 
 # --- Cassandra helpers ------------------------------------------------------
+# The cqlsh shipped inside the cassandra:5 image segfaults on many Linux hosts
+# (Python/driver compatibility issue), so run cqlsh from a separate cassandra:4.1
+# image over the docker network. cqlsh is forward-compatible for CQL DML against
+# a 5.x server.
 cqlsh_exec() {
   local cql="$1"
-  docker exec -i "$CASSANDRA_CONTAINER" cqlsh -k "$CASSANDRA_KEYSPACE" -e "$cql"
+  docker run --rm --network "$NETWORK" cassandra:4.1 \
+    cqlsh "$CASSANDRA_CONTAINER" -k "$CASSANDRA_KEYSPACE" -e "$cql"
 }
 
 # Insert a row into messages_by_id with the minimum columns the handler reads
