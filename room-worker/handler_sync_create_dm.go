@@ -67,7 +67,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		if errors.Is(err, ErrUserNotFound) {
 			return nil, errUserLookupFailed
 		}
-		return nil, fmt.Errorf("get requester: %w", errUserLookupFailed)
+		return nil, fmt.Errorf("get requester: %w", err)
 	}
 	if requester.SiteID != h.siteID {
 		return nil, errCrossSiteRequester
@@ -78,7 +78,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		if errors.Is(err, ErrUserNotFound) {
 			return nil, errUserLookupFailed
 		}
-		return nil, fmt.Errorf("get counterpart: %w", errUserLookupFailed)
+		return nil, fmt.Errorf("get counterpart: %w", err)
 	}
 
 	acceptedAt := time.Now().UTC()
@@ -121,9 +121,14 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		return nil, errInvalidSyncDMRequest
 	}
 
-	requesterSub, err := h.persistSyncDMSubs(ctx, requester, other, subs)
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return nil, fmt.Errorf("bulk create subs: %w", err)
+	}
+	// Always re-read the canonical persisted sub — BulkCreateSubscriptions swallows dup-key
+	// races, so the in-memory sub may carry a different _id/JoinedAt than what's stored.
+	requesterSub, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find requester sub after insert: %w", err)
 	}
 
 	if rcErr := h.store.ReconcileMemberCounts(ctx, room.ID); rcErr != nil {
@@ -133,9 +138,9 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 
 	h.publishSubscriptionUpdates(ctx, subs, acceptedAt, requestID)
 
-	if err := h.publishSyncDMOutbox(ctx, room, requester, other, acceptedAt, requestID); err != nil {
-		slog.Error("sync DM: publish outbox failed",
-			"error", err, "roomID", room.ID, "requestID", requestID)
+	// Outbox failure means the remote site won't learn about the room; fail the request.
+	if err := h.publishSyncDMOutbox(ctx, room, requester, other, acceptedAt); err != nil {
+		return nil, fmt.Errorf("publish room_created outbox: %w", err)
 	}
 
 	reply, err := json.Marshal(model.SyncCreateDMReply{
@@ -146,33 +151,6 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) ([]byte, 
 		return nil, fmt.Errorf("marshal reply: %w", err)
 	}
 	return reply, nil
-}
-
-// persistSyncDMSubs inserts both subs; on duplicate-key race falls back to FindDMSubscription.
-func (h *Handler) persistSyncDMSubs(ctx context.Context, requester, other *model.User,
-	subs []*model.Subscription,
-) (*model.Subscription, error) {
-	err := h.store.BulkCreateSubscriptions(ctx, subs)
-	if err == nil {
-		return pickRequesterSub(subs, requester.Account), nil
-	}
-	if !mongo.IsDuplicateKeyError(err) {
-		return nil, fmt.Errorf("bulk create subs: %w", err)
-	}
-	existing, fetchErr := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
-	if fetchErr != nil {
-		return nil, fmt.Errorf("find existing sub on duplicate-key: %w", fetchErr)
-	}
-	return existing, nil
-}
-
-func pickRequesterSub(subs []*model.Subscription, requesterAccount string) *model.Subscription {
-	for _, s := range subs {
-		if s.User.Account == requesterAccount {
-			return s
-		}
-	}
-	return nil
 }
 
 func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
@@ -211,7 +189,7 @@ func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.
 	}
 }
 
-func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, acceptedAt time.Time, requestID string) error {
+func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, acceptedAt time.Time) error {
 	if other.SiteID == "" || other.SiteID == h.siteID {
 		return nil
 	}
@@ -240,10 +218,11 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 	if err != nil {
 		return fmt.Errorf("marshal outbox envelope: %w", err)
 	}
+	payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, acceptedAt.UnixMilli())
 	return h.publish(ctx,
 		subject.Outbox(room.SiteID, other.SiteID, model.OutboxTypeRoomCreated),
 		eData,
-		requestID+":"+other.SiteID,
+		outboxDedupID(ctx, other.SiteID, payloadSeed),
 	)
 }
 

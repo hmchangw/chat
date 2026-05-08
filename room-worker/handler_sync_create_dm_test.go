@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -200,6 +201,13 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 			captured = subs
 			return nil
 		})
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		ID:       "canonical-alice-sub",
+		User:     model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+		RoomID:   idgen.BuildDMRoomID("u-alice", "u-bob"),
+		Name:     "bob",
+		RoomType: model.RoomTypeDM,
+	}, nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
@@ -210,11 +218,9 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 	var reply model.SyncCreateDMReply
 	require.NoError(t, json.Unmarshal(rawReply, &reply))
 	assert.True(t, reply.Success)
+	assert.Equal(t, "canonical-alice-sub", reply.Subscription.ID)
 	assert.Equal(t, "alice", reply.Subscription.User.Account)
-	assert.Equal(t, "u-alice", reply.Subscription.User.ID)
 	assert.Equal(t, idgen.BuildDMRoomID("u-alice", "u-bob"), reply.Subscription.RoomID)
-	assert.Equal(t, "bob", reply.Subscription.Name)
-	assert.Equal(t, model.RoomTypeDM, reply.Subscription.RoomType)
 
 	require.Len(t, captured, 2)
 }
@@ -231,6 +237,9 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 	store.EXPECT().GetUser(gomock.Any(), "helper.bot").Return(bot, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "helper.bot").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, IsSubscribed: true,
+	}, nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
@@ -244,7 +253,9 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 	assert.Equal(t, "alice", reply.Subscription.User.Account)
 }
 
-func TestHandleSyncCreateDM_BulkInsertDuplicateKey_FallsBackToFind(t *testing.T) {
+// On dup-key race, BulkCreateSubscriptions swallows the error and the in-memory subs
+// carry stale state; the handler must return the canonical persisted sub via FindDMSubscription.
+func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
@@ -255,16 +266,13 @@ func TestHandleSyncCreateDM_BulkInsertDuplicateKey_FallsBackToFind(t *testing.T)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
 	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
-
-	dupErr := mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000}}}
-	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(dupErr)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	existingSub := &model.Subscription{
-		ID:           "existing-sub",
-		User:         model.SubscriptionUser{ID: "u-alice", Account: "alice"},
-		RoomID:       idgen.BuildDMRoomID("u-alice", "u-bob"),
-		Name:         "bob",
-		RoomType:     model.RoomTypeDM,
-		IsSubscribed: true,
+		ID:       "canonical-sub",
+		User:     model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+		RoomID:   idgen.BuildDMRoomID("u-alice", "u-bob"),
+		Name:     "bob",
+		RoomType: model.RoomTypeDM,
 	}
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(existingSub, nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
@@ -276,7 +284,27 @@ func TestHandleSyncCreateDM_BulkInsertDuplicateKey_FallsBackToFind(t *testing.T)
 
 	var reply model.SyncCreateDMReply
 	require.NoError(t, json.Unmarshal(rawReply, &reply))
-	assert.Equal(t, "existing-sub", reply.Subscription.ID)
+	assert.Equal(t, "canonical-sub", reply.Subscription.ID)
+}
+
+// Transient store errors on GetUser must NOT be sanitized as errUserLookupFailed (which
+// signals "user does not exist"); they should propagate as wrapped errors and surface
+// as "internal error" via sanitizeSyncDMError.
+func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	h := &Handler{siteID: "site-a", store: store}
+
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(nil, errors.New("mongo: connection refused"))
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errUserLookupFailed,
+		"transient error must not be tagged as user-not-found")
+	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
 }
 
 type dmCapturedPublish struct {
@@ -310,6 +338,9 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
@@ -338,6 +369,9 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
@@ -383,6 +417,9 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
@@ -393,4 +430,34 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 	for _, p := range cap.captured {
 		assert.NotContains(t, p.subject, "outbox.", "no outbox publish expected for same-site DM")
 	}
+}
+
+// Outbox publish failure must fail the request — otherwise the requester sees success
+// while the remote site never learns about the room.
+func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	failingPublish := func(_ context.Context, subj string, _ []byte, _ string) error {
+		if strings.HasPrefix(subj, "outbox.") {
+			return errors.New("jetstream pubAck failed")
+		}
+		return nil
+	}
+	h := &Handler{siteID: "site-a", store: store, publish: failingPublish}
+
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), gomock.Any()).Return(nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, _ := json.Marshal(req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.Error(t, err)
+	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
 }
