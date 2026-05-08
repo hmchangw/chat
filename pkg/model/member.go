@@ -149,3 +149,22 @@ type CreateRoomRequest struct {
 	RequesterAccount string `json:"requesterAccount"  bson:"requesterAccount"`
 	Timestamp        int64  `json:"timestamp"         bson:"timestamp"`
 }
+
+// SyncCreateDMRequest is the request payload for chat.server.request.room.{siteID}.create.dm.
+// Caller (user-service) MUST perform all data-integrity validation before issuing this request:
+// existence checks, EngName/ChineseName checks, bot Assistant.Enabled, self-DM rejection, and
+// dedup-existing via FindDMSubscription. room-worker performs only request-shape sanity checks
+// and resolves User records via GetUser for data (User.ID, User.SiteID).
+type SyncCreateDMRequest struct {
+	RoomType         RoomType `json:"roomType"`
+	RequesterAccount string   `json:"requesterAccount"`
+	OtherAccount     string   `json:"otherAccount"`
+}
+
+// SyncCreateDMReply is the success reply payload. Errors are returned via the standard
+// natsutil.ReplyError -> model.ErrorResponse path (NOT this envelope). On the wire,
+// callers should TryParseError first, then unmarshal SyncCreateDMReply on success.
+type SyncCreateDMReply struct {
+	Success      bool         `json:"success"`
+	Subscription Subscription `json:"subscription"`
+}
