@@ -50,6 +50,9 @@ services:
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
+      # Owns MESSAGES + MESSAGES_CANONICAL streams; must bootstrap in
+      # the loadgen compose stack since no external IaC creates them.
+      - BOOTSTRAP_STREAMS=true
     depends_on: [nats, mongodb]
     networks: [loadtest]
 
@@ -64,6 +67,7 @@ services:
       - MONGO_DB=chat
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat
+      - BOOTSTRAP_STREAMS=true
     depends_on:
       nats:
         condition: service_started
@@ -82,6 +86,7 @@ services:
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
+      - BOOTSTRAP_STREAMS=true
     depends_on: [nats, mongodb]
     networks: [loadtest]
 
@@ -94,6 +99,7 @@ services:
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
+      - BOOTSTRAP_STREAMS=true
     depends_on: [nats, mongodb]
     networks: [loadtest]
 
@@ -107,7 +113,11 @@ services:
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
       - BOOTSTRAP_STREAMS=true
-    depends_on: [nats, mongodb]
+      # VALKEY_ADDR + VALKEY_KEY_GRACE_PERIOD are env:",required" in
+      # room-service/main.go (used to dedupe room-key writes).
+      - VALKEY_ADDR=valkey:6379
+      - VALKEY_KEY_GRACE_PERIOD=24h
+    depends_on: [nats, mongodb, valkey]
     networks: [loadtest]
 
   room-worker:
@@ -119,6 +129,7 @@ services:
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
+      - BOOTSTRAP_STREAMS=true
     depends_on: [nats, mongodb, room-service]
     networks: [loadtest]
 
@@ -206,6 +217,9 @@ services:
       - SEARCH_URL=http://elasticsearch:9200
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
+      # MSG_INDEX_PREFIX is env:",required". Mirrors the canonical
+      # value from search-sync-worker/deploy/docker-compose.yml.
+      - MSG_INDEX_PREFIX=messages-site-local-v1
     depends_on:
       nats:
         condition: service_started
