@@ -74,6 +74,36 @@ func TestAbortWatcher_TriggersOnSustainedP99(t *testing.T) {
 	assert.Contains(t, reason, "p99")
 }
 
+// TestAbortWatcher_TripsOnLongTailEvenWhenMedianOK is the regression
+// test for B1: the abort watcher must compare p99 against P99Limit, not
+// p50. A workload where the median is fine but the long tail is well
+// over the threshold should trip — that's the whole point of a p99
+// knob (long-tail saturation detection).
+func TestAbortWatcher_TripsOnLongTailEvenWhenMedianOK(t *testing.T) {
+	w := NewLatencyWindow(60 * time.Second)
+	t0 := time.Unix(100, 0)
+	// 100 samples across 10s. 95% are 1ms (median = 1ms, well below threshold).
+	// 5% are 5s (p99 lands well above threshold).
+	for i := 0; i < 100; i++ {
+		var lat time.Duration
+		if i%20 == 0 { // every 20th sample → 5%
+			lat = 5 * time.Second
+		} else {
+			lat = 1 * time.Millisecond
+		}
+		w.AddAt(t0.Add(time.Duration(i)*100*time.Millisecond), lat, false)
+	}
+	cfg := &abortConfig{
+		Window:     w,
+		P99Limit:   1 * time.Second,
+		P99Sustain: 10 * time.Second,
+	}
+	now := t0.Add(11 * time.Second)
+	tripped, reason := abortShouldFire(cfg, now)
+	assert.True(t, tripped, "5%% tail at 5s should trip a 1s p99 limit even though median is 1ms")
+	assert.Contains(t, reason, "p99")
+}
+
 func TestAbortWatcher_TriggersOnSustainedErrorRate(t *testing.T) {
 	w := NewLatencyWindow(60 * time.Second)
 	t0 := time.Unix(100, 0)
@@ -92,24 +122,43 @@ func TestAbortWatcher_TriggersOnSustainedErrorRate(t *testing.T) {
 	assert.Contains(t, reason, "error_rate")
 }
 
-func TestAbortWatcher_DoesNotTriggerOnShortSpike(t *testing.T) {
+func TestAbortWatcher_DoesNotTriggerOnRecoveredSpike(t *testing.T) {
+	// A spike that happened OUTSIDE the current sustain window should not
+	// trip; the window has moved past it. Sustain=10s, "now" is 30s after
+	// the spike, so all spike samples are pruned/excluded from the p99.
 	w := NewLatencyWindow(60 * time.Second)
 	t0 := time.Unix(100, 0)
-	// 5 seconds of high latency (not enough to sustain a 30s threshold).
-	for i := 0; i < 30; i++ {
-		var lat time.Duration
-		if i >= 25 {
-			lat = 5 * time.Second
-		} else {
-			lat = 1 * time.Millisecond
-		}
-		w.AddAt(t0.Add(time.Duration(i)*time.Second), lat, false)
+	// First 5s: spike at 5s latency.
+	for i := 0; i < 5; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*time.Second), 5*time.Second, false)
+	}
+	// Next 30s: healthy at 1ms.
+	for i := 5; i < 35; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*time.Second), 1*time.Millisecond, false)
 	}
 	cfg := &abortConfig{
-		Window: w, P99Limit: 1 * time.Second, P99Sustain: 30 * time.Second,
+		Window:     w,
+		P99Limit:   1 * time.Second,
+		P99Sustain: 10 * time.Second, // last 10s only — spike is 25-30s old
 	}
-	tripped, _ := abortShouldFire(cfg, t0.Add(30*time.Second))
-	require.False(t, tripped, "5s of breach should not trip a 30s sustain")
+	tripped, _ := abortShouldFire(cfg, t0.Add(35*time.Second))
+	require.False(t, tripped, "spike older than sustain window must not trip")
+}
+
+func TestAbortWatcher_RequiresFullSustainCoverage(t *testing.T) {
+	// On a fresh run, a single high-latency sample shouldn't trip even
+	// though it's 100% over the threshold for the moment — the window
+	// hasn't accumulated enough history to assert "sustained".
+	w := NewLatencyWindow(60 * time.Second)
+	t0 := time.Unix(100, 0)
+	w.AddAt(t0, 5*time.Second, false)
+	cfg := &abortConfig{
+		Window:     w,
+		P99Limit:   1 * time.Second,
+		P99Sustain: 30 * time.Second,
+	}
+	tripped, _ := abortShouldFire(cfg, t0.Add(1*time.Second))
+	require.False(t, tripped, "single sample 1s in cannot satisfy a 30s sustain")
 }
 
 func TestAbortWatcher_DisabledWhenLimitsZero(t *testing.T) {

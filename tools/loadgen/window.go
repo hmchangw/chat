@@ -128,11 +128,14 @@ type abortConfig struct {
 // over.
 func abortShouldFire(cfg *abortConfig, now time.Time) (bool, string) {
 	if cfg.P99Limit > 0 {
-		// "Sustained" semantics: median over limit means more than half the
-		// recent samples breached. Avoids tripping on a single spike that
-		// would otherwise dominate the p99.
-		p50 := cfg.Window.P50(now, cfg.P99Sustain)
-		if p50 > cfg.P99Limit && hasFullSustainCoverage(cfg.Window, now, cfg.P99Sustain) {
+		// Compares the actual p99 of the sustain window to the limit.
+		// "Sustained" comes from the window length itself: a transient
+		// spike older than P99Sustain has been pruned/excluded by the
+		// time-bound query, so the p99 only reflects recent samples.
+		// hasFullSustainCoverage guards against tripping before the
+		// window has accumulated enough history to assert sustain.
+		p99 := cfg.Window.P99(now, cfg.P99Sustain)
+		if p99 > cfg.P99Limit && hasFullSustainCoverage(cfg.Window, now, cfg.P99Sustain) {
 			return true, "p99 over " + cfg.P99Limit.String() + " sustained for " + cfg.P99Sustain.String()
 		}
 	}
