@@ -90,3 +90,38 @@ ifdef SERVICE
 else
 	docker compose -f $(SERVICES_COMPOSE) down
 endif
+
+# ---------------------------------------------------------------------------
+# E2E suite. Two-site backend stack via testcontainers + docker compose.
+# See docs/superpowers/plans/2026-05-08-e2e-tests.md.
+# ---------------------------------------------------------------------------
+E2E_DIR     := docker-local/e2e
+E2E_COMPOSE := $(E2E_DIR)/compose.e2e.yaml
+E2E_ENV     := $(E2E_DIR)/.env
+
+# Auto-create .env from .env.example on first run; idempotent.
+$(E2E_ENV):
+	@cp $(E2E_DIR)/.env.example $@
+	@echo "Created $@ from .env.example."
+	@echo "Edit it to point at an internal registry mirror, or leave defaults for upstream."
+
+.PHONY: e2e e2e-only e2e-up e2e-down e2e-logs
+
+# Full run: TestMain owns stack lifecycle.
+e2e: $(E2E_ENV)
+	go test -tags e2e -race -count=1 ./e2e/...
+
+# Iteration loop: assumes a stack already running via `make e2e-up`.
+e2e-only:
+	E2E_REUSE_STACK=1 go test -tags e2e -race -count=1 ./e2e/...
+
+# Manual stack control.
+e2e-up: $(E2E_ENV)
+	docker compose -f $(E2E_COMPOSE) up -d --wait
+
+e2e-down:
+	docker compose -f $(E2E_COMPOSE) down -v
+
+# `make e2e-logs SERVICE=msg-gk-a` to tail one container.
+e2e-logs:
+	docker compose -f $(E2E_COMPOSE) logs -f $(SERVICE)
