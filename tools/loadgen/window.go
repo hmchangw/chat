@@ -75,8 +75,9 @@ func (w *LatencyWindow) P50(now time.Time, over time.Duration) time.Duration {
 
 // P99WithCoverage returns the p99 AND whether the window covers the
 // full sustain interval, in a single locked operation. Avoids the
-// TOCTOU race where a separate P99() then hasFullSustainCoverage()
-// can interleave with an Add that prunes the head between them.
+// TOCTOU race where a separate P99() and a separate "is the oldest
+// sample old enough" check could interleave with an Add that prunes
+// the head between them.
 func (w *LatencyWindow) P99WithCoverage(now time.Time, over time.Duration) (time.Duration, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
