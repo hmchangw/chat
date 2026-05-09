@@ -23,19 +23,20 @@ import (
 )
 
 type config struct {
-	NatsURL           string          `env:"NATS_URL,required"`
-	NatsCredsFile     string          `env:"NATS_CREDS_FILE"    envDefault:""`
-	SiteID            string          `env:"SITE_ID,required"`
-	CassandraHosts    string          `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
-	CassandraKeyspace string          `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
-	CassandraUsername string          `env:"CASSANDRA_USERNAME" envDefault:""`
-	CassandraPassword string          `env:"CASSANDRA_PASSWORD" envDefault:""`
-	MaxWorkers        int             `env:"MAX_WORKERS"        envDefault:"100"`
-	MongoURI          string          `env:"MONGO_URI,required"`
-	MongoDB           string          `env:"MONGO_DB"           envDefault:"chat"`
-	MongoUsername     string          `env:"MONGO_USERNAME"     envDefault:""`
-	MongoPassword     string          `env:"MONGO_PASSWORD"     envDefault:""`
-	Bootstrap         bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	NatsURL           string                  `env:"NATS_URL,required"`
+	NatsCredsFile     string                  `env:"NATS_CREDS_FILE"    envDefault:""`
+	SiteID            string                  `env:"SITE_ID,required"`
+	CassandraHosts    string                  `env:"CASSANDRA_HOSTS"    envDefault:"localhost"`
+	CassandraKeyspace string                  `env:"CASSANDRA_KEYSPACE" envDefault:"chat"`
+	CassandraUsername string                  `env:"CASSANDRA_USERNAME" envDefault:""`
+	CassandraPassword string                  `env:"CASSANDRA_PASSWORD" envDefault:""`
+	MaxWorkers        int                     `env:"MAX_WORKERS"        envDefault:"100"`
+	MongoURI          string                  `env:"MONGO_URI,required"`
+	MongoDB           string                  `env:"MONGO_DB"           envDefault:"chat"`
+	MongoUsername     string                  `env:"MONGO_USERNAME"     envDefault:""`
+	MongoPassword     string                  `env:"MONGO_PASSWORD"     envDefault:""`
+	Consumer          stream.ConsumerSettings `envPrefix:"CONSUMER_"`
+	Bootstrap         bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 }
 
 func main() {
@@ -111,7 +112,7 @@ func main() {
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig())
+	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig(cfg.Consumer))
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -171,9 +172,8 @@ func main() {
 
 // buildConsumerConfig returns the durable consumer config for
 // message-worker. Centralized so it is unit-testable without NATS.
-func buildConsumerConfig() jetstream.ConsumerConfig {
-	cc := stream.DurableConsumerDefaults()
+func buildConsumerConfig(s stream.ConsumerSettings) jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults(s)
 	cc.Durable = "message-worker"
-	cc.MaxAckPending = 500
 	return cc
 }

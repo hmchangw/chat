@@ -75,7 +75,8 @@ type config struct {
 	// idle / low-traffic periods.
 	BulkFlushInterval int `env:"BULK_FLUSH_INTERVAL" envDefault:"5"`
 
-	Bootstrap bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	Consumer  stream.ConsumerSettings `envPrefix:"CONSUMER_"`
+	Bootstrap bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 }
 
 func main() {
@@ -191,7 +192,7 @@ func main() {
 			}
 		}
 
-		consumerCfg := buildConsumerConfig(coll, cfg.SiteID)
+		consumerCfg := buildConsumerConfig(cfg.Consumer, coll, cfg.SiteID)
 		cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, consumerCfg)
 		if err != nil {
 			slog.Error("create consumer failed",
@@ -364,10 +365,9 @@ type consumerSource interface {
 // With MaxDeliver=5 from defaults and 3 BackOff entries, NATS reuses
 // the last entry (30s) for the 4th and 5th retries — do not extend
 // BackOff to length 5 to "fix" this; the reuse is the intended pattern.
-func buildConsumerConfig(coll consumerSource, siteID string) jetstream.ConsumerConfig {
-	cc := stream.DurableConsumerDefaults()
+func buildConsumerConfig(s stream.ConsumerSettings, coll consumerSource, siteID string) jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults(s)
 	cc.Durable = coll.ConsumerName()
-	cc.MaxAckPending = 500
 	cc.BackOff = []time.Duration{1 * time.Second, 5 * time.Second, 30 * time.Second}
 	if filters := coll.FilterSubjects(siteID); len(filters) > 0 {
 		cc.FilterSubjects = filters
