@@ -217,3 +217,38 @@ func TestCollector_RequestStats_DiscardsBeforeCutoff(t *testing.T) {
 	require.Len(t, stats, 1)
 	assert.Equal(t, 1, stats[0].Count, "warmup samples must be discarded")
 }
+
+func TestCollector_PruneCorrelation_ClearsByReqAndByMsg_PreservesSamples(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	t0 := time.Unix(100, 0)
+	// One matched + one unmatched.
+	c.RecordPublish("req-1", "msg-1", t0)
+	c.RecordPublish("req-2", "msg-2", t0)
+	c.RecordReply("req-1", t0.Add(2*time.Millisecond))
+
+	c.PruneCorrelation()
+
+	missingReplies, missingBroadcasts := c.Finalize()
+	assert.Zero(t, missingReplies, "PruneCorrelation must drop unmatched byReqID")
+	assert.Zero(t, missingBroadcasts, "PruneCorrelation must drop unmatched byMsgID")
+
+	// E1 sample from the matched publish must survive.
+	require.Len(t, c.E1Samples(), 1, "PruneCorrelation must NOT drop completed E1 samples")
+	// seenMessageIDs append-only history must survive.
+	assert.ElementsMatch(t, []string{"msg-1", "msg-2"}, c.MessageIDs())
+}
+
+func TestCollector_RecordPublishFailed_PrunesSeenMessageIDs(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	now := time.Unix(100, 0)
+	c.RecordPublish("req-good", "msg-good", now)
+	c.RecordPublish("req-bad", "msg-bad", now)
+
+	c.RecordPublishFailed("req-bad", "msg-bad")
+
+	ids := c.MessageIDs()
+	assert.ElementsMatch(t, []string{"msg-good"}, ids,
+		"failed publish must be removed from MessageIDs() so history-read doesn't poll non-existent IDs")
+}

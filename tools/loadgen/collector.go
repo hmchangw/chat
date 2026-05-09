@@ -161,11 +161,33 @@ func (c *Collector) MessageIDs() []string {
 // RecordPublishFailed removes entries previously stored by RecordPublish.
 // Use when the publish itself failed (message never reached NATS) so the
 // orphans do not inflate Finalize's missing-reply / missing-broadcast counts.
+// Also prunes the failed messageID from seenMessageIDs so the auto-warmup
+// MessageIDs() pool doesn't hand history-read scenarios a message that
+// never made it to Cassandra.
 func (c *Collector) RecordPublishFailed(requestID, messageID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.byReqID, requestID)
 	delete(c.byMsgID, messageID)
+	for i, id := range c.seenMessageIDs {
+		if id == messageID {
+			c.seenMessageIDs = append(c.seenMessageIDs[:i], c.seenMessageIDs[i+1:]...)
+			break
+		}
+	}
+}
+
+// PruneCorrelation clears byReqID / byMsgID. Call between phases (e.g.
+// after auto-warmup completes, before the read scenario starts) so a
+// trailing reply/broadcast that arrives just after the warmup phase
+// ends doesn't get attributed to the next phase, and so leftover
+// unmatched warmup orphans don't inflate Finalize's missing counts.
+// E1/E2 latency samples and seenMessageIDs are preserved.
+func (c *Collector) PruneCorrelation() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.byReqID = make(map[string]publishEntry)
+	c.byMsgID = make(map[string]publishEntry)
 }
 
 // RecordBroadcast consumes one pending publish keyed by messageID.
@@ -218,6 +240,15 @@ func (c *Collector) Finalize() (missingReplies int, missingBroadcasts int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.byReqID), len(c.byMsgID)
+}
+
+// outstandingCorrelations reports the total count of unmatched
+// byReqID + byMsgID. Used by the quiescence drain in main.go to
+// decide when trailing replies / broadcasts have all landed.
+func (c *Collector) outstandingCorrelations() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.byReqID) + len(c.byMsgID)
 }
 
 // E1Count returns the number of matched E1 samples.

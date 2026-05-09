@@ -58,7 +58,9 @@ func (w *LatencyWindow) AddAt(at time.Time, latency time.Duration, errored bool)
 // P99 returns the 99th-percentile latency over the last `over` window
 // ending at `now`. Returns 0 when the window is empty.
 func (w *LatencyWindow) P99(now time.Time, over time.Duration) time.Duration {
-	return w.percentile(now, over, 0.99)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.percentileLocked(now, over, 0.99)
 }
 
 // P50 returns the median latency over the window. Used by the abort
@@ -66,12 +68,54 @@ func (w *LatencyWindow) P99(now time.Time, over time.Duration) time.Duration {
 // limit, the median is over it — the breach is dominant rather than
 // a transient spike.
 func (w *LatencyWindow) P50(now time.Time, over time.Duration) time.Duration {
-	return w.percentile(now, over, 0.50)
-}
-
-func (w *LatencyWindow) percentile(now time.Time, over time.Duration, q float64) time.Duration {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.percentileLocked(now, over, 0.50)
+}
+
+// P99WithCoverage returns the p99 AND whether the window covers the
+// full sustain interval, in a single locked operation. Avoids the
+// TOCTOU race where a separate P99() then hasFullSustainCoverage()
+// can interleave with an Add that prunes the head between them.
+func (w *LatencyWindow) P99WithCoverage(now time.Time, over time.Duration) (time.Duration, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.samples) == 0 {
+		return 0, false
+	}
+	covered := !w.samples[0].at.After(now.Add(-over))
+	return w.percentileLocked(now, over, 0.99), covered
+}
+
+// ErrorRateWithCoverage is the error-rate companion to P99WithCoverage:
+// returns the error fraction over the last `over` window AND whether
+// the window has accumulated full coverage, atomically.
+func (w *LatencyWindow) ErrorRateWithCoverage(now time.Time, over time.Duration) (float64, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.samples) == 0 {
+		return 0, false
+	}
+	covered := !w.samples[0].at.After(now.Add(-over))
+	cutoff := now.Add(-over)
+	total, errs := 0, 0
+	for i := range w.samples {
+		if w.samples[i].at.Before(cutoff) || w.samples[i].at.After(now) {
+			continue
+		}
+		total++
+		if w.samples[i].errored {
+			errs++
+		}
+	}
+	if total == 0 {
+		return 0, covered
+	}
+	return float64(errs) / float64(total), covered
+}
+
+// percentileLocked must be called with w.mu held.
+func (w *LatencyWindow) percentileLocked(now time.Time, over time.Duration, q float64) time.Duration {
 	cutoff := now.Add(-over)
 	latencies := make([]time.Duration, 0, len(w.samples))
 	for i := range w.samples {
@@ -128,37 +172,20 @@ type abortConfig struct {
 // over.
 func abortShouldFire(cfg *abortConfig, now time.Time) (bool, string) {
 	if cfg.P99Limit > 0 {
-		// Compares the actual p99 of the sustain window to the limit.
-		// "Sustained" comes from the window length itself: a transient
-		// spike older than P99Sustain has been pruned/excluded by the
-		// time-bound query, so the p99 only reflects recent samples.
-		// hasFullSustainCoverage guards against tripping before the
-		// window has accumulated enough history to assert sustain.
-		p99 := cfg.Window.P99(now, cfg.P99Sustain)
-		if p99 > cfg.P99Limit && hasFullSustainCoverage(cfg.Window, now, cfg.P99Sustain) {
+		// Atomic percentile + coverage check (W3 fix): without the
+		// combined call, an Add between two separate locks could prune
+		// the head and break the "covers full sustain interval"
+		// invariant inconsistently across the two reads.
+		p99, covered := cfg.Window.P99WithCoverage(now, cfg.P99Sustain)
+		if p99 > cfg.P99Limit && covered {
 			return true, "p99 over " + cfg.P99Limit.String() + " sustained for " + cfg.P99Sustain.String()
 		}
 	}
 	if cfg.ErrorPct > 0 {
-		rate := cfg.Window.ErrorRate(now, cfg.ErrorSustain)
-		if rate > cfg.ErrorPct && hasFullSustainCoverage(cfg.Window, now, cfg.ErrorSustain) {
+		rate, covered := cfg.Window.ErrorRateWithCoverage(now, cfg.ErrorSustain)
+		if rate > cfg.ErrorPct && covered {
 			return true, "error_rate over threshold sustained for " + cfg.ErrorSustain.String()
 		}
 	}
 	return false, ""
-}
-
-// hasFullSustainCoverage reports whether the window contains samples
-// covering the entire (now-sustain, now] interval — i.e. the oldest
-// sample in the window is at or before (now - sustain). Without this
-// guard, a single sample taken near `now` could falsely satisfy the
-// "sustained" requirement on a fresh run.
-func hasFullSustainCoverage(w *LatencyWindow, now time.Time, sustain time.Duration) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if len(w.samples) == 0 {
-		return false
-	}
-	cutoff := now.Add(-sustain)
-	return !w.samples[0].at.After(cutoff)
 }

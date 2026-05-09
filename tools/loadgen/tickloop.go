@@ -116,6 +116,15 @@ func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context
 					tick(ctx)
 				}()
 			default:
+				// B2: account saturated drops as attempts in the
+				// Requests counter too, so rate(loadgen_requests_total)
+				// matches rate(loadgen_request_errors_total{reason="saturated"})
+				// + the in-flight ticks. Phase label is "saturated" to
+				// keep the warmup/measured split clean for the success
+				// path.
+				cfg.Metrics.Requests.WithLabelValues(
+					cfg.Preset, cfg.Scenario, "*", "saturated",
+				).Inc()
 				cfg.Metrics.RequestErrors.WithLabelValues(
 					cfg.Preset, cfg.Scenario, "*", "saturated",
 				).Inc()

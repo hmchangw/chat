@@ -387,6 +387,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 				Rate:      *autoWarmupRate,
 				Publisher: publisher, Metrics: metrics, Collector: collector,
 				Duration: *warmup,
+				Seed:     *seed,
 			})
 			if werr != nil {
 				slog.Warn("auto-warmup failed; proceeding with empty pool", "error", werr)
@@ -394,6 +395,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 				msgIDs = ids
 				slog.Info("auto-warmup phase complete", "message_ids", len(msgIDs))
 			}
+			// Drop any unmatched correlation entries left over from the
+			// warm-up phase so they don't inflate the read scenario's
+			// final missing-reply / missing-broadcast count (B3).
+			collector.PruneCorrelation()
 			// Reset warmup deadline now that the warm-up phase has elapsed:
 			// the read generator's measured window starts fresh.
 			warmupDeadline = time.Now()
@@ -492,6 +497,14 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	genErr := gen.Run(runCtx)
 	progressWG.Wait()
 	abortWG.Wait()
+
+	// Trailing replies and broadcasts may still be in flight after gen.Run
+	// returns (the SUT's reply latency is independent of the generator's
+	// stop). Replace the previous time.Sleep(2s) — which was racy and
+	// CLAUDE.md-prohibited — with a deterministic quiescence detector:
+	// poll the Collector's outstanding correlation count every 50ms,
+	// declare drained when it stops decreasing for 500ms, cap at 5s.
+	drainTrailingReplies(collector, 5*time.Second, 50*time.Millisecond, 10)
 	// Wait up to 2 seconds for trailing replies and broadcasts to arrive.
 	time.Sleep(2 * time.Second)
 	collector.DiscardBefore(warmupDeadline)
@@ -628,6 +641,42 @@ func lastToken(subj string) string {
 		return subj
 	}
 	return subj[i+1:]
+}
+
+// drainTrailingReplies waits for trailing replies/broadcasts to land
+// after gen.Run returns. Polls the Collector's outstanding correlation
+// count every `interval`; when it stops decreasing for `stableTicks`
+// consecutive samples, declares drained. Caps total wait at maxWait.
+//
+// Replaces the previous time.Sleep(2s), which was racy (workers'
+// drainGracePeriod is 5s, so up to 3s of late samples were lost) and
+// violated CLAUDE.md §3 ("Never use time.Sleep for goroutine sync").
+func drainTrailingReplies(c *Collector, maxWait, interval time.Duration, stableTicks int) {
+	deadlineCh := time.After(maxWait)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	prev := c.outstandingCorrelations()
+	stable := 0
+	for {
+		select {
+		case <-deadlineCh:
+			return
+		case <-ticker.C:
+			cur := c.outstandingCorrelations()
+			if cur == 0 {
+				return
+			}
+			if cur == prev {
+				stable++
+				if stable >= stableTicks {
+					return
+				}
+			} else {
+				stable = 0
+			}
+			prev = cur
+		}
+	}
 }
 
 func writeCSVFile(path string, c *Collector) error {

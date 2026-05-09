@@ -42,6 +42,11 @@ type autoWarmupConfig struct {
 	Metrics   *Metrics
 	Collector *Collector
 	Duration  time.Duration
+	// Seed is the RNG seed for the warm-up Generator. Honor the user's
+	// `--seed` flag so two runs with the same `--seed` value emit the
+	// same message-ID pool. Pre-fix, this used `time.Now().UnixNano()`,
+	// breaking the determinism guarantee the rest of the harness honors.
+	Seed int64
 }
 
 // runAutoWarmup runs a brief messaging-pipeline phase to populate the
@@ -75,7 +80,7 @@ func runAutoWarmup(ctx context.Context, cfg *autoWarmupConfig) ([]string, error)
 		// surrounding read generator owns its own warmup window via the
 		// outer Collector.DiscardBefore call.
 		WarmupDeadline: time.Now(),
-	}, time.Now().UnixNano())
+	}, cfg.Seed)
 
 	warmupCtx, cancel := context.WithTimeout(ctx, cfg.Duration)
 	defer cancel()
