@@ -52,6 +52,11 @@ func TestBuildRoomRequest(t *testing.T) {
 		require.NoError(t, json.Unmarshal(body, &got))
 		assert.True(t, strings.HasPrefix(got.Name, "loadgen-"),
 			"generated room name must carry the WriteIDPrefix; got %q", got.Name)
+		// B6: room-service validation requires RequesterAccount + Timestamp.
+		assert.Equal(t, "user-1", got.RequesterAccount,
+			"RequesterAccount must be set so room-service validation passes")
+		assert.NotZero(t, got.Timestamp,
+			"Timestamp must be set so canonical events are correctly ordered")
 	})
 
 	t.Run("MemberAdd", func(t *testing.T) {

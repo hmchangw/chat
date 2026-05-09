@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
@@ -52,11 +53,21 @@ func buildRoomRequest(kind roomRequestKind, args *roomRequestArgs) (string, []by
 		// identifiable in forensic Mongo audits. Users[] is empty for now;
 		// real load tests can extend the args struct to include a small
 		// member list when richer create payloads matter.
+		//
+		// RequesterAccount and Timestamp are required by room-service's
+		// validation path (see pkg/model/member.go CreateRoomRequest);
+		// omitting them in earlier loadgen builds caused either rejection
+		// or silently corrupted downstream sys-message payloads.
 		newID := args.WriteIDPrefix + idgen.GenerateID()
 		body, err := json.Marshal(model.CreateRoomRequest{
-			Name:        newID,
-			RoomID:      newID,
-			RequesterID: args.User.ID,
+			Name:             newID,
+			Users:            []string{},
+			Orgs:             []string{},
+			Channels:         []model.ChannelRef{},
+			RoomID:           newID,
+			RequesterID:      args.User.ID,
+			RequesterAccount: args.User.Account,
+			Timestamp:        time.Now().UnixMilli(),
 		})
 		if err != nil {
 			return "", nil, fmt.Errorf("marshal CreateRoomRequest: %w", err)
