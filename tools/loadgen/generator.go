@@ -44,6 +44,12 @@ type GeneratorConfig struct {
 	// Set to 0 to publish serially on the ticker goroutine (legacy behavior,
 	// useful for bisection).
 	MaxInFlight int
+	// ConnIDFor maps a userID to the index of the data connection that
+	// will publish on its behalf. Optional; nil means "all publishes go
+	// through one connection" — the metric label collapses to "0".
+	// Phase 3 §3.6: lets `loadgen_published_total{conn_id}` confirm
+	// fan-out across the configured ConnPool.
+	ConnIDFor func(userID string) string
 }
 
 // Generator is the open-loop publisher.
@@ -193,7 +199,13 @@ func (g *Generator) publishOne(ctx context.Context) {
 	if publishTime.Before(g.cfg.WarmupDeadline) {
 		phase = "warmup"
 	}
-	g.cfg.Metrics.Published.WithLabelValues(g.cfg.Preset.Name, phase).Inc()
+	connID := "0"
+	if g.cfg.ConnIDFor != nil {
+		connID = g.cfg.ConnIDFor(sub.User.Account)
+	}
+	g.cfg.Metrics.Published.WithLabelValues(
+		g.cfg.Preset.Name, phase, connID, rateBucketLabel(g.cfg.Rate),
+	).Inc()
 }
 
 func (g *Generator) content() string {

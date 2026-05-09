@@ -158,7 +158,7 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	defer bwSub.Unsubscribe()
 
-	publisher := &natsCorePublisher{nc: nc}
+	publisher := &natsCorePublisher{pool: &ConnPool{observer: nc}}
 	gen := NewGenerator(&GeneratorConfig{
 		Preset:    &preset,
 		Fixtures:  fixtures,
@@ -234,7 +234,7 @@ func TestHistoryReadScenario_EndToEnd_StubService(t *testing.T) {
 
 	metrics := NewMetrics()
 	collector := NewCollector(metrics, preset.Name)
-	requester := &natsRequester{nc: nc}
+	requester := &natsRequester{pool: &ConnPool{observer: nc}}
 
 	gen := NewHistoryReadGenerator(&HistoryReadConfig{
 		Preset: &preset, Fixtures: fixtures, SiteID: siteID,
@@ -294,7 +294,7 @@ func TestSearchReadScenario_EndToEnd_StubService(t *testing.T) {
 	collector := NewCollector(metrics, preset.Name)
 	gen := NewSearchReadGenerator(&SearchReadConfig{
 		Preset: &preset, Fixtures: fixtures, SiteID: "site-test",
-		Rate: 100, Requester: &natsRequester{nc: nc}, Metrics: metrics,
+		Rate: 100, Requester: &natsRequester{pool: &ConnPool{observer: nc}}, Metrics: metrics,
 		Collector: collector, Timeout: 2 * time.Second,
 	}, 42)
 
@@ -352,7 +352,7 @@ func TestRoomRPCScenario_EndToEnd_StubService(t *testing.T) {
 	collector := NewCollector(metrics, preset.Name)
 	gen := NewRoomRPCGenerator(&RoomRPCConfig{
 		Preset: &preset, Fixtures: fixtures, SiteID: "site-test",
-		Rate: 100, Requester: &natsRequester{nc: nc}, Metrics: metrics,
+		Rate: 100, Requester: &natsRequester{pool: &ConnPool{observer: nc}}, Metrics: metrics,
 		Collector: collector, Timeout: 2 * time.Second,
 	}, 42)
 

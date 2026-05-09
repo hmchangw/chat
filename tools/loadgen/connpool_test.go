@@ -79,3 +79,53 @@ func itoa(i int) string {
 	}
 	return string(buf[pos:])
 }
+
+func TestRateBucketLabel(t *testing.T) {
+	cases := []struct {
+		rate int
+		want string
+	}{
+		{0, "0"},
+		{1, "0-10"},
+		{10, "0-10"},
+		{11, "10-50"},
+		{500, "200-500"},
+		{1000, "500-1000"},
+		{9999, "5000-10000"},
+		{10000, "5000-10000"},
+		{15000, "10000+"},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, rateBucketLabel(tc.rate), "rateBucketLabel(%d)", tc.rate)
+	}
+}
+
+func TestPublishedMetric_HasConnAndRateBucketLabels(t *testing.T) {
+	// The Phase 3 §3.6 verification gate: loadgen_published_total must
+	// admit conn_id and rate_bucket labels.
+	m := NewMetrics()
+	m.Published.WithLabelValues("test", "measured", "0", "100-200").Inc()
+	m.Published.WithLabelValues("test", "measured", "1", "100-200").Inc()
+	m.Published.WithLabelValues("test", "measured", "2", "200-500").Inc()
+
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+	for _, mf := range mfs {
+		if mf.GetName() != "loadgen_published_total" {
+			continue
+		}
+		// Three unique label combinations.
+		require.Len(t, mf.GetMetric(), 3)
+		seenConnIDs := map[string]struct{}{}
+		for _, metric := range mf.GetMetric() {
+			for _, lp := range metric.GetLabel() {
+				if lp.GetName() == "conn_id" {
+					seenConnIDs[lp.GetValue()] = struct{}{}
+				}
+			}
+		}
+		assert.Equal(t, map[string]struct{}{"0": {}, "1": {}, "2": {}}, seenConnIDs)
+		return
+	}
+	t.Fatal("loadgen_published_total not found")
+}

@@ -11,6 +11,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -151,7 +152,8 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	rampTo := fs.Int("ramp-to", 0, "ending rate (rps) for a ramped run; 0 disables ramping")
 	rampDuration := fs.Duration("ramp-duration", 0, "time to climb from --ramp-from to --ramp-to")
 	rampShape := fs.String("ramp-shape", "linear", "ramp curve: linear|exponential")
-	abortP99Ms := fs.Int("abort-on-p99-ms", 0, "abort the run if median latency stays over this for --abort-p99-sustain; 0 disables")
+	connections := fs.Int("connections", 1, "number of NATS data connections (per-user fan-out); 1 reuses the observer connection")
+	abortP99Ms := fs.Int("abort-on-p99-ms", 0, "abort the run if the p99 of the abort window's latency stays over this for --abort-p99-sustain; 0 disables")
 	abortP99Sustain := fs.Duration("abort-p99-sustain", 30*time.Second, "sustain window for the p99 abort threshold")
 	abortErrorPct := fs.Float64("abort-on-error-pct", 0, "abort the run if error rate stays over this fraction (0..1) for --abort-error-sustain; 0 disables")
 	abortErrorSustain := fs.Duration("abort-error-sustain", 10*time.Second, "sustain window for the error-rate abort threshold")
@@ -325,8 +327,26 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		}(s)
 	}
 
-	publisher := newNatsCorePublisher(nc.NatsConn(), injectMode, js)
-	requester := &natsRequester{nc: nc.NatsConn()}
+	// Phase 3 §3.6: ConnPool with the observer reused as the
+	// reply / broadcast / sampler connection, plus optional N data
+	// connections for per-user fan-out. --connections=1 falls back to
+	// observer-only (today's behavior).
+	pool, perr := NewConnPoolWithObserver(
+		nc.NatsConn(), cfg.NatsURL, cfg.NatsCredsFile, *connections,
+		func(url, creds string) (*nats.Conn, error) {
+			c, derr := natsutil.Connect(url, creds)
+			if derr != nil {
+				return nil, derr
+			}
+			return c.NatsConn(), nil
+		},
+	)
+	if perr != nil {
+		slog.Error("conn pool init", "error", perr)
+		return 1
+	}
+	publisher := newNatsCorePublisher(pool, injectMode, js)
+	requester := &natsRequester{pool: pool}
 
 	// Phase 3 §3.4: optional rate ramp.
 	var ramp *Ramp
@@ -439,6 +459,9 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			Collector:      collector,
 			WarmupDeadline: warmupDeadline,
 			MaxInFlight:    cfg.MaxInFlight,
+			ConnIDFor: func(userID string) string {
+				return strconv.Itoa(pool.IndexFor(userID))
+			},
 		}, *seed)
 	}
 
@@ -505,8 +528,6 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// poll the Collector's outstanding correlation count every 50ms,
 	// declare drained when it stops decreasing for 500ms, cap at 5s.
 	drainTrailingReplies(collector, 5*time.Second, 50*time.Millisecond, 10)
-	// Wait up to 2 seconds for trailing replies and broadcasts to arrive.
-	time.Sleep(2 * time.Second)
 	collector.DiscardBefore(warmupDeadline)
 	missingReplies, missingBroadcasts := collector.Finalize()
 
@@ -593,7 +614,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 }
 
 type natsCorePublisher struct {
-	nc           *nats.Conn
+	pool         *ConnPool // Phase 3 §3.6 — picks the data conn per subject's userID
 	useJetStream bool
 	js           jetstream.JetStream
 }
@@ -601,8 +622,10 @@ type natsCorePublisher struct {
 // natsRequester adapts nc.RequestWithContext to the Requester interface
 // used by the read-only scenarios. The timeout is enforced via a per-call
 // derived context so callers don't need to thread one in themselves.
+// When the pool's Size > 1, the request is routed to the data connection
+// hashed from the subject's user-account segment.
 type natsRequester struct {
-	nc *nats.Conn
+	pool *ConnPool
 }
 
 func (r *natsRequester) Request(ctx context.Context, subject string, data []byte, timeout time.Duration) ([]byte, error) {
@@ -611,25 +634,29 @@ func (r *natsRequester) Request(ctx context.Context, subject string, data []byte
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	msg, err := r.nc.RequestWithContext(ctx, subject, data)
+	conn := r.pool.For(UserFromSubject(subject))
+	msg, err := conn.RequestWithContext(ctx, subject, data)
 	if err != nil {
 		return nil, fmt.Errorf("nats request: %w", err)
 	}
 	return msg.Data, nil
 }
 
-func newNatsCorePublisher(nc *nats.Conn, inject InjectMode, js jetstream.JetStream) *natsCorePublisher {
-	return &natsCorePublisher{nc: nc, useJetStream: inject == InjectCanonical, js: js}
+func newNatsCorePublisher(pool *ConnPool, inject InjectMode, js jetstream.JetStream) *natsCorePublisher {
+	return &natsCorePublisher{pool: pool, useJetStream: inject == InjectCanonical, js: js}
 }
 
 func (p *natsCorePublisher) Publish(ctx context.Context, subject string, data []byte) error {
 	if p.useJetStream {
+		// JetStream publishes go through one writer; canonical-injection
+		// is a single-stream concern, not a per-user concern.
 		if _, err := p.js.Publish(ctx, subject, data); err != nil {
 			return fmt.Errorf("jetstream publish: %w", err)
 		}
 		return nil
 	}
-	if err := p.nc.Publish(subject, data); err != nil {
+	conn := p.pool.For(UserFromSubject(subject))
+	if err := conn.Publish(subject, data); err != nil {
 		return fmt.Errorf("core publish: %w", err)
 	}
 	return nil

@@ -60,6 +60,36 @@ func NewTestConnPool(size int) *ConnPool {
 	return &ConnPool{conns: make([]*nats.Conn, size)}
 }
 
+// NewConnPoolWithObserver builds a ConnPool reusing an already-opened
+// observer connection. dataSize is the number of additional data
+// connections to dial (zero or one means "fall back to observer for
+// every publish/request"). Used when the caller already needed an
+// observer for reply / broadcast subscriptions and wants the pool to
+// share it instead of opening one more.
+func NewConnPoolWithObserver(observer *nats.Conn, urls, credsFile string, dataSize int, dial func(string, string) (*nats.Conn, error)) (*ConnPool, error) {
+	if observer == nil {
+		return nil, fmt.Errorf("observer connection required")
+	}
+	if dataSize <= 1 {
+		return &ConnPool{observer: observer}, nil
+	}
+	if dial == nil {
+		return nil, fmt.Errorf("dial function required when dataSize > 1")
+	}
+	conns := make([]*nats.Conn, 0, dataSize)
+	for i := 0; i < dataSize; i++ {
+		c, err := dial(urls, credsFile)
+		if err != nil {
+			for _, prior := range conns {
+				_ = prior.Drain()
+			}
+			return nil, fmt.Errorf("dial conn %d: %w", i, err)
+		}
+		conns = append(conns, c)
+	}
+	return &ConnPool{conns: conns, observer: observer}, nil
+}
+
 // Size returns the number of data connections (excluding the observer).
 // 1 is the degenerate "no fan-out" case.
 func (p *ConnPool) Size() int {

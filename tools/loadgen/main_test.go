@@ -28,9 +28,9 @@ func TestLastToken(t *testing.T) {
 
 func TestCounterValue(t *testing.T) {
 	m := NewMetrics()
-	m.Published.WithLabelValues("small", "measured").Inc()
-	m.Published.WithLabelValues("small", "measured").Inc()
-	m.Published.WithLabelValues("medium", "measured").Inc()
+	m.Published.WithLabelValues("small", "measured", "0", "100-200").Inc()
+	m.Published.WithLabelValues("small", "measured", "0", "100-200").Inc()
+	m.Published.WithLabelValues("medium", "measured", "0", "100-200").Inc()
 	assert.Equal(t, float64(3), counterValue(m, "loadgen_published_total"))
 	assert.Equal(t, float64(0), counterValue(m, "nonexistent_metric"))
 }
@@ -98,19 +98,19 @@ func TestNewNatsCorePublisher_FrontdoorDoesNotSetUseJetStream(t *testing.T) {
 
 func TestNewNatsCorePublisher_FieldWiring(t *testing.T) {
 	p := newNatsCorePublisher(nil, InjectCanonical, nil)
-	assert.Nil(t, p.nc)
+	assert.Nil(t, p.pool)
 	assert.Nil(t, p.js)
 	assert.True(t, p.useJetStream)
 
 	p2 := newNatsCorePublisher(nil, InjectFrontdoor, nil)
-	assert.Nil(t, p2.nc)
+	assert.Nil(t, p2.pool)
 	assert.Nil(t, p2.js)
 	assert.False(t, p2.useJetStream)
 }
 
 func TestMetricsHandler_ServesOpenMetrics(t *testing.T) {
 	m := NewMetrics()
-	m.Published.WithLabelValues("small", "measured").Inc()
+	m.Published.WithLabelValues("small", "measured", "0", "100-200").Inc()
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, req)

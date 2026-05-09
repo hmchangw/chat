@@ -92,7 +92,7 @@ func TestProgress_EmitsOnTickerSignal(t *testing.T) {
 	}()
 
 	for i := 1; i <= 3; i++ {
-		m.Published.WithLabelValues("test", "measured").Inc()
+		m.Published.WithLabelValues("test", "measured", "0", "100-200").Inc()
 		tickCh <- time.Now()
 		waitForLines(t, buf, i)
 	}
@@ -129,13 +129,13 @@ func TestProgress_ComputesInstantaneousRate(t *testing.T) {
 	}()
 
 	for i := 0; i < 100; i++ {
-		m.Published.WithLabelValues("test", "measured").Inc()
+		m.Published.WithLabelValues("test", "measured", "0", "100-200").Inc()
 	}
 	tickCh <- time.Now()
 	waitForLines(t, buf, 1)
 
 	for i := 0; i < 50; i++ {
-		m.Published.WithLabelValues("test", "measured").Inc()
+		m.Published.WithLabelValues("test", "measured", "0", "100-200").Inc()
 	}
 	tickCh <- time.Now()
 	waitForLines(t, buf, 2)

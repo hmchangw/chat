@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"math"
+	"strconv"
 	"time"
 )
 
@@ -65,4 +66,30 @@ func validateRampVsRate(rate int, ramp *Ramp) error {
 		return ErrRampAndRateConfigured
 	}
 	return nil
+}
+
+// rateBucketUpperBounds enumerates the fixed rate-bucket boundaries used
+// by the loadgen_published_total{rate_bucket} label. Phase 3 §3.4: 9
+// values, intentionally bounded so a ramped run produces a small set of
+// label combinations and Grafana can render the rate trajectory.
+var rateBucketUpperBounds = []int{10, 50, 100, 200, 500, 1000, 2000, 5000, 10000}
+
+// rateBucketLabel returns the rate-bucket label for a given rps. Buckets
+// are inclusive on the upper bound: rps=50 → "10-50", rps=51 → "50-100".
+// rps over 10000 → "10000+". rps=0 → "0".
+func rateBucketLabel(rps int) string {
+	if rps <= 0 {
+		return "0"
+	}
+	prev := 0
+	for _, ub := range rateBucketUpperBounds {
+		if rps <= ub {
+			if prev == 0 {
+				return "0-" + strconv.Itoa(ub)
+			}
+			return strconv.Itoa(prev) + "-" + strconv.Itoa(ub)
+		}
+		prev = ub
+	}
+	return "10000+"
 }
