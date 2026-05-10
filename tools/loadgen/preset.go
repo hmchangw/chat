@@ -199,6 +199,14 @@ func pickWeighted[K ~int](r *rand.Rand, weights map[K]int) K {
 	for _, k := range keys {
 		total += weights[k]
 	}
+	if total <= 0 {
+		// Defensive: zero-weight map (e.g. a hand-crafted preset with all
+		// weights set to 0) used to panic in r.Intn(0). Return the
+		// zero-value K so callers can branch on it; conventional callers
+		// already early-return when len(weights)==0 above the call.
+		var zero K
+		return zero
+	}
 	pick := r.Intn(total)
 	cum := 0
 	for _, k := range keys {

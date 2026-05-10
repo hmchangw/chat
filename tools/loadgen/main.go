@@ -611,13 +611,26 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	totalErrs := summary.PublishErrors + summary.GatekeeperErrors + summary.MissingReplies + summary.MissingBroadcasts
 	if abortTripped.Load() {
-		// Exit code 2 distinguishes "saturated" from clean-pass (0) and
-		// clean-fail (1). Phase 3 §3.5.
 		reason, _ := abortReason.Load().(string)
 		slog.Warn("run aborted by saturation watcher", "reason", reason)
+	}
+	return exitCodeFor(abortTripped.Load(), summary.SentMeasured, totalErrs)
+}
+
+// exitCodeFor maps the run's terminal state to the process exit code.
+// Phase 3 §3.5: abort wins over clean-fail wins over clean-pass.
+//
+//	0 = clean pass (no errors above tolerance, no abort)
+//	1 = clean fail (errors above tolerance)
+//	2 = aborted by the saturation watcher
+//
+// Extracted out of runRun so the policy is unit-testable in isolation
+// (see TestRunRun_ExitCodeOnAbort).
+func exitCodeFor(aborted bool, sent, totalErrs int) int {
+	if aborted {
 		return 2
 	}
-	return DetermineExitCode(summary.SentMeasured, totalErrs)
+	return DetermineExitCode(sent, totalErrs)
 }
 
 type natsCorePublisher struct {
@@ -721,16 +734,16 @@ func writeCSVFile(path string, c *Collector) error {
 	defer func() { _ = f.Close() }()
 	var rows []CSVSample
 	for i, d := range c.E1Samples() {
-		rows = append(rows, CSVSample{TimestampNs: int64(i), Metric: "E1", LatencyNs: d.Nanoseconds()})
+		rows = append(rows, CSVSample{RowIndex: int64(i), Metric: "E1", LatencyNs: d.Nanoseconds()})
 	}
 	for i, d := range c.E2Samples() {
-		rows = append(rows, CSVSample{TimestampNs: int64(i), Metric: "E2", LatencyNs: d.Nanoseconds()})
+		rows = append(rows, CSVSample{RowIndex: int64(i), Metric: "E2", LatencyNs: d.Nanoseconds()})
 	}
 	for i, r := range c.RequestSampleRows() {
 		rows = append(rows, CSVSample{
-			TimestampNs: int64(i),
-			Metric:      r.Scenario + "." + r.Kind,
-			LatencyNs:   r.Latency.Nanoseconds(),
+			RowIndex:  int64(i),
+			Metric:    r.Scenario + "." + r.Kind,
+			LatencyNs: r.Latency.Nanoseconds(),
 		})
 	}
 	return WriteCSV(f, rows)

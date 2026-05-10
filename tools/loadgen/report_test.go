@@ -65,13 +65,13 @@ func TestPrintSummary_ContainsKeyFields(t *testing.T) {
 func TestWriteCSV_OneRowPerSample(t *testing.T) {
 	var buf bytes.Buffer
 	rows := []CSVSample{
-		{TimestampNs: 1, RequestID: "r1", Metric: "E1", LatencyNs: 2_100_000},
-		{TimestampNs: 2, RequestID: "r1", Metric: "E2", LatencyNs: 8_700_000},
+		{RowIndex: 1, RequestID: "r1", Metric: "E1", LatencyNs: 2_100_000},
+		{RowIndex: 2, RequestID: "r1", Metric: "E2", LatencyNs: 8_700_000},
 	}
 	require.NoError(t, WriteCSV(&buf, rows))
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	require.Len(t, lines, 3) // header + 2 rows
-	assert.Equal(t, "timestamp_ns,request_id,metric,latency_ns", lines[0])
+	assert.Equal(t, "row_index,request_id,metric,latency_ns", lines[0])
 	assert.Equal(t, "1,r1,E1,2100000", lines[1])
 	assert.Equal(t, "2,r1,E2,8700000", lines[2])
 }
@@ -103,7 +103,7 @@ func TestWriteCSV_Empty(t *testing.T) {
 	require.NoError(t, WriteCSV(&buf, nil))
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	require.Len(t, lines, 1) // header only
-	assert.Equal(t, "timestamp_ns,request_id,metric,latency_ns", lines[0])
+	assert.Equal(t, "row_index,request_id,metric,latency_ns", lines[0])
 }
 
 func TestWriteCSV_WriterError(t *testing.T) {
@@ -127,7 +127,7 @@ func TestWriteCSV_RowWriteError(t *testing.T) {
 	}()
 
 	rows := []CSVSample{
-		{TimestampNs: 1, RequestID: "r1", Metric: "E1", LatencyNs: 100},
+		{RowIndex: 1, RequestID: "r1", Metric: "E1", LatencyNs: 100},
 	}
 	err := WriteCSV(pw, rows)
 	<-doneCh
@@ -192,8 +192,8 @@ func TestPrintSummary_NoRequestStats_NoSection(t *testing.T) {
 func TestWriteCSV_RequestSamples(t *testing.T) {
 	var buf bytes.Buffer
 	rows := []CSVSample{
-		{TimestampNs: 1, RequestID: "r1", Metric: "history.load_history", LatencyNs: 4_200_000},
-		{TimestampNs: 2, RequestID: "r2", Metric: "search.search_messages", LatencyNs: 3_700_000},
+		{RowIndex: 1, RequestID: "r1", Metric: "history.load_history", LatencyNs: 4_200_000},
+		{RowIndex: 2, RequestID: "r2", Metric: "search.search_messages", LatencyNs: 3_700_000},
 	}
 	require.NoError(t, WriteCSV(&buf, rows))
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")

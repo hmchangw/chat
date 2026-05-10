@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/rand"
 	"testing"
 	"time"
 
@@ -170,4 +171,44 @@ func TestAbortWatcher_DisabledWhenLimitsZero(t *testing.T) {
 	cfg := &abortConfig{Window: w, P99Limit: 0, ErrorPct: 0}
 	tripped, _ := abortShouldFire(cfg, t0.Add(30*time.Second))
 	assert.False(t, tripped, "watcher must be silent when both limits are 0")
+}
+
+// TestPickWeighted_ZeroTotalReturnsZeroValue is the F2 regression: a
+// weights map where every weight is zero used to panic via r.Intn(0).
+func TestPickWeighted_ZeroTotalReturnsZeroValue(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+	weights := map[historyRequestKind]int{
+		HistoryLoadHistory:    0,
+		HistoryGetMessageByID: 0,
+	}
+	got := pickWeighted(r, weights)
+	assert.Equal(t, historyRequestKind(0), got, "all-zero weights must return zero value, not panic")
+}
+
+// TestRunRun_ExitCodeOnAbort exercises the abort exit-code mapping in
+// isolation. The full runRun is bound to a NATS connection so we can't
+// invoke it as a unit test; instead we verify the exit-code policy that
+// runRun applies when abortTripped is set. The plan's Task 20 Done gate
+// was "exit with code 2"; this test locks it down at the shape level.
+func TestRunRun_ExitCodeOnAbort(t *testing.T) {
+	// Direct exit-code derivation: abort > clean fail > clean pass.
+	cases := []struct {
+		name     string
+		tripped  bool
+		sent     int
+		errs     int
+		wantCode int
+	}{
+		{"clean pass", false, 1000, 0, 0},
+		{"clean tolerable errors", false, 1000, 1, 0},
+		{"errors over tolerance", false, 1000, 100, 1},
+		{"abort wins over clean", true, 1000, 0, 2},
+		{"abort wins over errors", true, 1000, 100, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := exitCodeFor(tc.tripped, tc.sent, tc.errs)
+			assert.Equal(t, tc.wantCode, got)
+		})
+	}
 }

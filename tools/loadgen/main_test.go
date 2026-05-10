@@ -64,7 +64,7 @@ func TestWriteCSVFile_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	out := string(data)
 	// Header present
-	require.True(t, strings.HasPrefix(out, "timestamp_ns,request_id,metric,latency_ns"))
+	require.True(t, strings.HasPrefix(out, "row_index,request_id,metric,latency_ns"))
 	// At least one E1 row and one E2 row
 	require.Contains(t, out, ",E1,")
 	require.Contains(t, out, ",E2,")
@@ -81,7 +81,7 @@ func TestWriteCSVFile_EmptyCollector(t *testing.T) {
 	require.NoError(t, err)
 	out := string(data)
 	// Header still present, no data rows
-	require.True(t, strings.HasPrefix(out, "timestamp_ns,request_id,metric,latency_ns"))
+	require.True(t, strings.HasPrefix(out, "row_index,request_id,metric,latency_ns"))
 	require.NotContains(t, out, ",E1,")
 	require.NotContains(t, out, ",E2,")
 }
