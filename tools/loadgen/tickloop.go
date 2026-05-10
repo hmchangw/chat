@@ -76,6 +76,11 @@ func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context
 		if newRate <= 0 {
 			return
 		}
+		// Go 1.23+ Reset doesn't require a drained channel; at most one
+		// stale tick from the old interval may fire immediately after
+		// the rate change, briefly doubling the rate by a single tick.
+		// We accept that — the rate-bucket label captures the regime
+		// shift and a single extra tick is below any meaningful signal.
 		t.Reset(tickInterval(newRate))
 	}
 
@@ -135,13 +140,20 @@ func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context
 	}
 }
 
+// minTickInterval clamps the lower bound of a ticker interval so that
+// extreme rates (e.g. configured at the int64 limit, or a ramp curve
+// crossing into 1ns territory) don't spin the ticker fast enough to
+// peg a CPU. 1µs corresponds to ~1M ticks/s — well above any realistic
+// load test target — and gives the goroutine pool time to dispatch.
+const minTickInterval = 1 * time.Microsecond
+
 func tickInterval(rate int) time.Duration {
 	if rate <= 0 {
 		return time.Second
 	}
 	interval := time.Second / time.Duration(rate)
-	if interval <= 0 {
-		return time.Nanosecond
+	if interval < minTickInterval {
+		return minTickInterval
 	}
 	return interval
 }

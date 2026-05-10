@@ -459,6 +459,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			Collector:      collector,
 			WarmupDeadline: warmupDeadline,
 			MaxInFlight:    cfg.MaxInFlight,
+			Ramp:           ramp,
 			ConnIDFor: func(userID string) string {
 				return strconv.Itoa(pool.IndexFor(userID))
 			},

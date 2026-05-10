@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -50,6 +51,12 @@ type GeneratorConfig struct {
 	// Phase 3 §3.6: lets `loadgen_published_total{conn_id}` confirm
 	// fan-out across the configured ConnPool.
 	ConnIDFor func(userID string) string
+
+	// Ramp, when non-nil, overrides Rate over time per Phase 3 §3.4.
+	// Same semantics as the read-scenario tickLoop's Ramp field: the
+	// ticker is rebuilt every rateRebuildInterval (1s, or Duration/10
+	// for short test ramps). When nil, the loop ticks at fixed Rate.
+	Ramp *Ramp
 }
 
 // Generator is the open-loop publisher.
@@ -58,6 +65,10 @@ type Generator struct {
 	rngMu   sync.Mutex
 	rng     *rand.Rand
 	maxBody string
+	// curRate is the rate the ticker is currently set to (rps). Updated
+	// by the rebuild goroutine when Ramp is active so publishOne can
+	// label each publish with the in-effect rate_bucket.
+	curRate atomic.Int64
 }
 
 // NewGenerator returns a Generator seeded from `seed`.
@@ -83,15 +94,42 @@ const drainGracePeriod = 5 * time.Second
 // (pool full when a tick fires) is recorded as a publish error with
 // reason="saturated" rather than silently dropping the tick.
 func (g *Generator) Run(ctx context.Context) error {
-	if g.cfg.Rate <= 0 {
+	if g.cfg.Rate <= 0 && g.cfg.Ramp == nil {
 		return ErrInvalidRate
 	}
-	interval := time.Second / time.Duration(g.cfg.Rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
+	rate := g.cfg.Rate
+	if g.cfg.Ramp != nil {
+		rate = g.cfg.Ramp.RateAt(0)
 	}
-	tick := time.NewTicker(interval)
+	g.curRate.Store(int64(rate))
+	tick := time.NewTicker(tickInterval(rate))
 	defer tick.Stop()
+
+	var rebuild <-chan time.Time
+	start := time.Now()
+	if g.cfg.Ramp != nil {
+		ri := rateRebuildInterval
+		if g.cfg.Ramp.Duration > 0 && g.cfg.Ramp.Duration/10 < ri {
+			ri = g.cfg.Ramp.Duration / 10
+		}
+		if ri <= 0 {
+			ri = rateRebuildInterval
+		}
+		rebuildTicker := time.NewTicker(ri)
+		defer rebuildTicker.Stop()
+		rebuild = rebuildTicker.C
+	}
+	maybeRebuild := func() {
+		if g.cfg.Ramp == nil {
+			return
+		}
+		newRate := g.cfg.Ramp.RateAt(time.Since(start))
+		if newRate <= 0 {
+			return
+		}
+		g.curRate.Store(int64(newRate))
+		tick.Reset(tickInterval(newRate))
+	}
 
 	if g.cfg.MaxInFlight <= 0 {
 		for {
@@ -100,6 +138,8 @@ func (g *Generator) Run(ctx context.Context) error {
 				return nil
 			case <-tick.C:
 				g.publishOne(ctx)
+			case <-rebuild:
+				maybeRebuild()
 			}
 		}
 	}
@@ -130,6 +170,8 @@ func (g *Generator) Run(ctx context.Context) error {
 			default:
 				g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "saturated").Inc()
 			}
+		case <-rebuild:
+			maybeRebuild()
 		}
 	}
 }
@@ -204,7 +246,7 @@ func (g *Generator) publishOne(ctx context.Context) {
 		connID = g.cfg.ConnIDFor(sub.User.Account)
 	}
 	g.cfg.Metrics.Published.WithLabelValues(
-		g.cfg.Preset.Name, phase, connID, rateBucketLabel(g.cfg.Rate),
+		g.cfg.Preset.Name, phase, connID, rateBucketLabel(int(g.curRate.Load())),
 	).Inc()
 }
 

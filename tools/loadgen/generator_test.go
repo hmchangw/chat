@@ -430,3 +430,42 @@ func TestBuildSearchRequest(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+func TestGenerator_Ramp_OverridesFixedRate(t *testing.T) {
+	p, _ := BuiltinPreset("small")
+	f := BuildFixtures(&p, 42, "site-local")
+	rp := &recordingPublisher{}
+	m := NewMetrics()
+	g := NewGenerator(&GeneratorConfig{
+		Preset: &p, Fixtures: f, SiteID: "site-local",
+		Rate:      0, // ramp-only
+		Inject:    InjectFrontdoor,
+		Publisher: rp, Metrics: m,
+		Collector: NewCollector(m, p.Name),
+		Ramp: &Ramp{
+			From: 100, To: 1000,
+			Duration: 200 * time.Millisecond,
+			Shape:    RampLinear,
+		},
+	}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	require.NoError(t, g.Run(ctx))
+	count := rp.count()
+	// Ramp 100→1000 over 200ms (avg ~550) + 50ms tail at 1000 ≈ 160+ publishes.
+	// Wide tolerance for scheduler.
+	assert.GreaterOrEqual(t, count, 50, "ramp should drive publishes; got %d", count)
+}
+
+func TestGenerator_RejectsZeroRateAndNoRamp(t *testing.T) {
+	p, _ := BuiltinPreset("small")
+	g := NewGenerator(&GeneratorConfig{
+		Preset: &p, Fixtures: Fixtures{}, SiteID: "site-local",
+		Rate: 0, Inject: InjectFrontdoor,
+		Publisher: &recordingPublisher{}, Metrics: NewMetrics(),
+		Collector: NewCollector(NewMetrics(), p.Name),
+	}, 1)
+	err := g.Run(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidRate)
+}
