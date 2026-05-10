@@ -77,6 +77,15 @@
       "title": "Read scenarios — request errors/sec",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
       "targets": [{"expr": "sum by (scenario, kind, reason) (rate(loadgen_request_errors_total[10s]))", "legendFormat": "{{scenario}}.{{kind}}.{{reason}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Saturation events/sec (all scenarios)",
+      "description": "Unified saturation view: messaging-pipeline saturation lives in loadgen_publish_errors_total{reason=saturated}; read-scenario saturation lives in loadgen_request_errors_total{reason=saturated}. This panel sums both so loadgen-side pressure is visible regardless of scenario.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 40},
+      "targets": [
+        {"expr": "sum(rate(loadgen_publish_errors_total{reason=\"saturated\"}[10s])) + sum(rate(loadgen_request_errors_total{reason=\"saturated\"}[10s]))", "legendFormat": "saturated/s", "refId": "A"}
+      ]
     }
   ]
 }

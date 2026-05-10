@@ -92,6 +92,24 @@ make -C tools/loadgen/deploy run-dashboards PRESET=medium
 - **history-read / search-read / room-rpc:** the "request latency" section shows per-(scenario, kind) p50/p95/p99/max + count + errors. p99 climbing while count drops → service-side saturation.
 - **Exit codes:** 0 = clean pass, 1 = errors above tolerance, 2 = aborted by saturation watcher.
 
+### Saturation metric layout
+
+Loadgen-side saturation (when `MaxInFlight` is reached) is recorded into
+two different counters by intentional scenario asymmetry:
+
+- **messaging-pipeline:** `loadgen_publish_errors_total{reason="saturated"}` — saturation is a publish-side event.
+- **history-read / search-read / room-rpc:** `loadgen_request_errors_total{scenario, kind="*", reason="saturated"}` — saturation is a request-side event.
+
+The Grafana dashboard's "Saturation events/sec (all scenarios)" panel sums
+both so operators see the loadgen-side pressure in one place regardless
+of scenario. Alerts that need to fire on saturation should query the same
+sum:
+
+```promql
+sum(rate(loadgen_publish_errors_total{reason="saturated"}[1m]))
++ sum(rate(loadgen_request_errors_total{reason="saturated"}[1m]))
+```
+
 ## Workflow notes
 
 - `history-read` and `search-read` need data in their backing stores. The
