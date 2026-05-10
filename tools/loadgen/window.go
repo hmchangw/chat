@@ -73,6 +73,15 @@ func (w *LatencyWindow) P50(now time.Time, over time.Duration) time.Duration {
 	return w.percentileLocked(now, over, 0.50)
 }
 
+// percentileAt returns an arbitrary quantile over the window, used by
+// the progress reporter to surface p95 alongside p50/p99. The Phase 3
+// §3.2 spec lists these three percentile fields on every progress line.
+func (w *LatencyWindow) percentileAt(now time.Time, over time.Duration, q float64) time.Duration {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.percentileLocked(now, over, q)
+}
+
 // P99WithCoverage returns the p99 AND whether the window covers the
 // full sustain interval, in a single locked operation. Avoids the
 // TOCTOU race where a separate P99() and a separate "is the oldest

@@ -479,7 +479,13 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			defer progressWG.Done()
 			runProgress(runCtx, &progressConfig{
 				Metrics: metrics, Preset: p.Name,
-				Logger: slog.Default(), Ticks: progressTicker.C,
+				Logger:      slog.Default(),
+				Ticks:       progressTicker.C,
+				Window:      latencyWindow,
+				WindowOver:  *abortP99Sustain,
+				RunStart:    time.Now(),
+				RunDuration: *duration,
+				TargetRate:  *rate,
 			})
 		}()
 	}

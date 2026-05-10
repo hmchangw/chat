@@ -66,20 +66,22 @@ func runAutoWarmup(ctx context.Context, cfg *autoWarmupConfig) ([]string, error)
 	if cfg.Rate <= 0 {
 		return nil, ErrInvalidRate
 	}
+	// WarmupDeadline = far future means every publish in this auto-warmup
+	// phase is correctly labelled phase="warmup" in loadgen_published_total
+	// (F9 fix). Pre-fix this was set to time.Now() so warmup publishes
+	// were tagged "measured", inflating the read scenario's measured
+	// publish count by the warmup share.
+	farFuture := time.Now().Add(24 * time.Hour)
 	gen := NewGenerator(&GeneratorConfig{
-		Preset:    cfg.Preset,
-		Fixtures:  cfg.Fixtures,
-		SiteID:    cfg.SiteID,
-		Rate:      cfg.Rate,
-		Inject:    InjectFrontdoor,
-		Publisher: cfg.Publisher,
-		Metrics:   cfg.Metrics,
-		Collector: cfg.Collector,
-		// WarmupDeadline = now means every published sample is "measured"
-		// from the messaging-pipeline generator's perspective. The
-		// surrounding read generator owns its own warmup window via the
-		// outer Collector.DiscardBefore call.
-		WarmupDeadline: time.Now(),
+		Preset:         cfg.Preset,
+		Fixtures:       cfg.Fixtures,
+		SiteID:         cfg.SiteID,
+		Rate:           cfg.Rate,
+		Inject:         InjectFrontdoor,
+		Publisher:      cfg.Publisher,
+		Metrics:        cfg.Metrics,
+		Collector:      cfg.Collector,
+		WarmupDeadline: farFuture,
 	}, cfg.Seed)
 
 	warmupCtx, cancel := context.WithTimeout(ctx, cfg.Duration)
