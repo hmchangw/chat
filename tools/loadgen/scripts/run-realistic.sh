@@ -25,7 +25,7 @@ PRESET="${PRESET:-realistic}"
 
 cd "$DEPLOY_DIR"
 
-if ! $COMPOSE ps loadgen --format '{{.State}}' 2>/dev/null | grep -q running; then
+if [ "$(docker inspect -f '{{.State.Status}}' loadgen-loadgen-1 2>/dev/null || echo missing)" != "running" ]; then
   echo "ERROR: loadgen container is not running. Run ./up.sh first." >&2
   exit 1
 fi

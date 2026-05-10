@@ -7,12 +7,25 @@ services:
     ports:
       - "4222:4222"
       - "8222:8222"
+    healthcheck:
+      # /healthz is the standard NATS HTTP healthcheck on the monitor
+      # port. Lets dependents use `condition: service_healthy` instead
+      # of the racy `service_started`.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz | grep -q '\"status\":\"ok\"' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
     networks: [loadtest]
 
   mongodb:
     image: mongo:8
     ports:
       - "27017:27017"
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep -q '^1$$' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
     networks: [loadtest]
 
   cassandra:

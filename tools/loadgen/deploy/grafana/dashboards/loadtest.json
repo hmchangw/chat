@@ -7,12 +7,14 @@
   "panels": [
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "Throughput (msg/s)",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "targets": [{"expr": "rate(loadgen_published_total[10s])", "refId": "A"}]
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "E1 gatekeeper latency (P50/P95/P99)",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
@@ -23,6 +25,7 @@
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "E2 broadcast latency (P50/P95/P99)",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
@@ -33,30 +36,35 @@
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "Consumer pending",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [{"expr": "loadgen_consumer_pending", "legendFormat": "{{durable}}", "refId": "A"}]
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "Consumer ack pending",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
       "targets": [{"expr": "loadgen_consumer_ack_pending", "legendFormat": "{{durable}}", "refId": "A"}]
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "Publish errors/sec",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
       "targets": [{"expr": "rate(loadgen_publish_errors_total[10s])", "legendFormat": "{{reason}}", "refId": "A"}]
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "Read scenarios — request rate by kind",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
       "targets": [{"expr": "sum by (scenario, kind) (rate(loadgen_requests_total[10s]))", "legendFormat": "{{scenario}}.{{kind}}", "refId": "A"}]
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "Read scenarios — request latency p99",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
       "targets": [
@@ -65,6 +73,7 @@
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "Read scenarios — request latency p50/p95",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
       "targets": [
@@ -74,12 +83,14 @@
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "Read scenarios — request errors/sec",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
       "targets": [{"expr": "sum by (scenario, kind, reason) (rate(loadgen_request_errors_total[10s]))", "legendFormat": "{{scenario}}.{{kind}}.{{reason}}", "refId": "A"}]
     },
     {
       "type": "timeseries",
+      "datasource": {"type":"prometheus","uid":"prometheus"},
       "title": "Saturation events/sec (all scenarios)",
       "description": "Unified saturation view: messaging-pipeline saturation lives in loadgen_publish_errors_total{reason=saturated}; read-scenario saturation lives in loadgen_request_errors_total{reason=saturated}. This panel sums both so loadgen-side pressure is visible regardless of scenario.",
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 40},
