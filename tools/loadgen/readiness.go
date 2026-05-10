@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // scenarioNeedsReadiness reports whether the given scenario benefits
@@ -26,27 +24,45 @@ func scenarioNeedsReadiness(scenario string) bool {
 // buildReadinessProbe returns a probe function that sends one RPC of the
 // shape the chosen scenario will send during the run. A nil-return from
 // the probe means the target service is reachable and replying.
+//
+// Probes are built via the same request_builder*.go entry points the
+// per-tick body uses, so a future change to a scenario's wire shape
+// (e.g. an added required field on CreateRoomRequest) propagates to
+// the probe automatically — no second source of truth (D3 fix).
 func buildReadinessProbe(scenario string, sub *model.Subscription, siteID string, r Requester) func(context.Context) error {
+	user := model.User{Account: sub.User.Account, ID: sub.User.ID, SiteID: siteID}
+	room := model.Room{ID: sub.RoomID, SiteID: siteID}
 	switch scenario {
 	case "history-read":
-		req, _ := json.Marshal(loadHistoryRequestWire{Limit: 1})
-		subj := subject.MsgHistory(sub.User.Account, sub.RoomID, siteID)
+		// Smallest reasonable load — Limit=1 keeps the probe cheap.
+		args := historyRequestArgs{User: user, Room: room, Limit: 1}
+		subj, body, err := buildHistoryRequest(HistoryLoadHistory, &args)
+		if err != nil {
+			return func(_ context.Context) error { return err }
+		}
 		return func(ctx context.Context) error {
-			_, err := r.Request(ctx, subj, req, 2*time.Second)
-			return err
+			_, perr := r.Request(ctx, subj, body, 2*time.Second)
+			return perr
 		}
 	case "search-read":
-		req, _ := json.Marshal(model.SearchMessagesRequest{SearchText: "probe", Size: 1})
-		subj := subject.SearchMessages(sub.User.Account)
+		args := searchRequestArgs{User: user, Query: "probe", Size: 1}
+		subj, body, err := buildSearchRequest(SearchMessagesKind, &args)
+		if err != nil {
+			return func(_ context.Context) error { return err }
+		}
 		return func(ctx context.Context) error {
-			_, err := r.Request(ctx, subj, req, 2*time.Second)
-			return err
+			_, perr := r.Request(ctx, subj, body, 2*time.Second)
+			return perr
 		}
 	case "room-rpc":
-		subj := subject.RoomsList(sub.User.Account)
+		args := roomRequestArgs{User: user, Room: room, SiteID: siteID}
+		subj, body, err := buildRoomRequest(RoomsListKind, &args)
+		if err != nil {
+			return func(_ context.Context) error { return err }
+		}
 		return func(ctx context.Context) error {
-			_, err := r.Request(ctx, subj, []byte(`{}`), 2*time.Second)
-			return err
+			_, perr := r.Request(ctx, subj, body, 2*time.Second)
+			return perr
 		}
 	default:
 		return func(_ context.Context) error { return nil }
