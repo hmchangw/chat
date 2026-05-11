@@ -82,10 +82,16 @@ func TestSender_Send(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Snapshot the caller's event for the post-call non-mutation check.
+			before := tt.evt
 			pub := &mockPublisher{err: tt.publishErr}
 			sender := roomkeysender.NewSender(pub)
 
 			err := sender.Send(tt.account, tt.evt)
+
+			// Non-mutation contract: Send takes the event by value and stamps Timestamp
+			// on its local copy — the caller's struct must be unchanged on success or error.
+			assert.Equal(t, before, tt.evt, "Send must not mutate the caller's RoomKeyEvent")
 
 			if tt.wantErr != "" {
 				require.Error(t, err)

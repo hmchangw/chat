@@ -739,19 +739,15 @@ After the `nc, err := natsutil.Connect(...)` block and before the existing handl
 			os.Exit(1)
 		}
 		keyStore = ks
-		keySender = roomkeysender.NewSender(natsPublisherAdapter{nc: nc})
+		keySender = roomkeysender.NewSender(nc.NatsConn())
 	}
 ```
 
-Add a small adapter near the bottom of `main.go`:
+`nc` here is the OpenTelemetry-wrapped connection returned by `natsutil.Connect`
+(`*otelnats.Conn`); `nc.NatsConn()` returns the underlying `*nats.Conn`, which
+satisfies `roomkeysender.Publisher` directly. No bespoke adapter type is needed.
 
-```go
-type natsPublisherAdapter struct{ nc *nats.Conn }
-
-func (a natsPublisherAdapter) Publish(subj string, data []byte) error { return a.nc.Publish(subj, data) }
-```
-
-Add imports: `"github.com/hmchangw/chat/pkg/roomkeystore"`, `"github.com/hmchangw/chat/pkg/roomkeysender"`, `"github.com/nats-io/nats.go"`.
+Add imports: `"github.com/hmchangw/chat/pkg/roomkeystore"`, `"github.com/hmchangw/chat/pkg/roomkeysender"`.
 
 - [ ] **Step 3: Plumb `keyStore` and `keySender` through `NewHandler`**
 

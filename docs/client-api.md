@@ -40,8 +40,9 @@ This doc covers the public client-facing API surface only.
 **Out of scope (documented elsewhere or backend-internal):**
 
 - Backend-only JetStream subjects (MESSAGES, MESSAGES_CANONICAL, FANOUT, OUTBOX, INBOX, ROOMS streams). See [`docs/nats-subject-naming.md`](./nats-subject-naming.md).
-- Server-pushed events not triggered by a specific client RPC (federation arrivals, presence, room-key rotation, cross-site member events).
 - Server-to-server subjects (`chat.server.request.…`).
+
+Server-pushed events that clients consume (room-key generation/rotation, etc.) are documented in [§5](#5-server-pushed-events). Federation arrivals, presence, and cross-site member events remain backend-internal.
 
 ### Subject placeholders
 

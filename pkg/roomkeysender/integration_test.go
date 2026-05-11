@@ -171,16 +171,18 @@ func splitOutput(r io.Reader) (stdout, combined string) {
 	return outBuf.String(), outBuf.String() + errBuf.String()
 }
 
-// skipOnVFS skips the calling test when Docker uses the VFS storage driver.
-// VFS lacks copy-on-write, so pulling node:20-alpine and running npm install
-// inside a container takes several minutes — exceeding the default 10-minute
-// test timeout. Set DOCKER_STORAGE_DRIVER=overlay2 (or btrfs/aufs) in the
-// environment to opt in to these tests. Follow-up: migrate the npm installs
-// to a pre-built image so the test runs in reasonable time on any driver.
+// skipOnVFS skips the calling test when Docker is explicitly configured with
+// the VFS storage driver. VFS lacks copy-on-write, so pulling node:20-alpine
+// and running npm install inside a container takes several minutes — exceeding
+// the default 10-minute test timeout. The unset case is NOT treated as VFS so
+// CI/dev shells that don't export DOCKER_STORAGE_DRIVER still run these tests
+// on whatever driver Docker actually uses (typically overlay2). Follow-up:
+// migrate the npm installs to a pre-built image so the test runs in reasonable
+// time on any driver.
 func skipOnVFS(t *testing.T) {
 	t.Helper()
-	if os.Getenv("DOCKER_STORAGE_DRIVER") == "" || os.Getenv("DOCKER_STORAGE_DRIVER") == "vfs" {
-		t.Skip("skipping TypeScript client test: requires overlay2/btrfs storage driver (set DOCKER_STORAGE_DRIVER=overlay2 to enable)")
+	if os.Getenv("DOCKER_STORAGE_DRIVER") == "vfs" {
+		t.Skip("skipping TypeScript client test: VFS storage driver is too slow (unset DOCKER_STORAGE_DRIVER or set to overlay2/btrfs to enable)")
 	}
 }
 

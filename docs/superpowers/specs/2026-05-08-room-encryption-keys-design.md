@@ -54,7 +54,7 @@ Out of scope:
 
 ### Create-room (all room types)
 
-```
+```text
 Client
   │ chat.user.{account}.request.room.{siteID}.create
   ▼
@@ -81,15 +81,15 @@ room-worker (origin site)
 
 inbox-worker (each remote site)
  12. handleRoomCreated: write replicated subs (existing)
- 13. replicateRoomKey: RPC chat.server.request.roomkey.{originSite}.get {roomID}  ← new
+ 13. fetchAndStoreKey: RPC chat.server.request.roomkey.{originSite}.get {roomID}  ← new
         ↓ reply: model.RoomKeyEvent (RoomID, Version, PublicKey, PrivateKey)
- 14. keyStore.Set(roomID, pair) on local Valkey         ← new
-     (no Send — room-worker already sent to all members via supercluster)
+ 14. keyStore.SetWithVersion(roomID, pair, fetched.Version) on local Valkey  ← new
+     (no Send — origin room-worker already published to every member via supercluster)
 ```
 
 ### Add-member (channel only)
 
-```
+```text
 room-service
   1. Validate (existing add-member checks; rejects DM/botDM)
   2. publishToStream(chat.room.canonical.{site}.member.add, req)
@@ -107,15 +107,15 @@ room-worker (origin)
 inbox-worker (each remote site receiving new members)
   8. Replicate subs (existing)
   9. replicateLocalKey: local keyStore.Get(roomID) hit → no-op (already present);
-     miss → RPC origin + keyStore.Set(roomID, pair)     ← new
-     (no Send — room-worker already sent via supercluster)
+     miss → fetchAndStoreKey: RPC origin + keyStore.SetWithVersion at fetched version  ← new
+     (no Send — origin room-worker already published via supercluster)
 ```
 
-A remote site that already has members of this room will already have the key locally from the create-time replication; a cache hit is a no-op. A remote site receiving its **first** member of a room takes the RPC + Set path.
+A remote site that already has members of this room will already have the key locally from the create-time replication; a cache hit is a no-op. A remote site receiving its **first** member of a room takes the RPC + SetWithVersion path.
 
 ### Remove-member (channel only)
 
-```
+```text
 room-service
   1. Validate (existing: authz, last-owner guard, last-member guard, org-only guard,
               roomType=channel guard)
@@ -139,12 +139,13 @@ room-worker (origin)
 
 inbox-worker (each remote site with surviving members)
  12. Delete listed subscriptions (existing)
- 13. rotateLocalKey: RPC chat.server.request.roomkey.{originSite}.get {roomID} ← new
+ 13. fetchAndStoreKey: RPC chat.server.request.roomkey.{originSite}.get {roomID} ← new
        ↓ reply: model.RoomKeyEvent (carries the new pair + version)
        failure → NAK (fatal on this path, not best-effort)
- 14. keyStore.Rotate(roomID, fetchedPair) on local Valkey         ← new
-       (falls back to Set if no current key locally — defensive)
-     (no Send — room-worker already sent to all survivors via supercluster)
+ 14. keyStore.SetWithVersion(roomID, fetchedPair, fetched.Version) on local Valkey  ← new
+       (origin's version is adopted exactly; no local rotate — broadcast-worker
+        on this site will encrypt envelopes with the version every client holds)
+     (no Send — origin room-worker already published to all survivors via supercluster)
 ```
 
 ### Why rotate-first (in `room-service`) rather than rotate-after (in worker post-Mongo-delete)
@@ -293,18 +294,18 @@ The extended interface (`Set`, `Rotate`) is a breaking change to `room-service/s
 
 - `InboxStore.ListByRoom` takes a `siteID` parameter pushed down to Mongo: `ListByRoom(ctx context.Context, roomID, siteID string) ([]model.Subscription, error)`.
 
-- `handleRoomCreated` extended: after sub writes succeed, calls `replicateOrSendLocalKey` which tries local Valkey first, falls back to RPC + `Set` on miss. Then `Send` for each local-site member. Valkey Get failure returns error (caller NAKs).
-- `handleMemberAdded` extended: `replicateOrSendLocalKey` path (local hit → send; miss → RPC + Set + send). Valkey Get failure returns error (caller NAKs).
-- `handleMemberRemoved` extended: after sub deletes, calls `rotateAndFanOutLocalKey` which: RPCs origin → `Rotate` (or `Set` fallback on `ErrNoCurrentKey`) on local Valkey → `Send` to pre-computed survivors slice. RPC failure on this path returns error (caller **NAKs** — the member-remove key rotation is fatal, not best-effort).
+- `handleRoomCreated` extended: after sub writes succeed, calls `fetchAndStoreKey` which RPCs the origin and replicates the key into local Valkey via `SetWithVersion` at origin's version. No user-event fan-out from inbox-worker — origin `room-worker` already published `RoomKeyEvent` to every member via the NATS supercluster.
+- `handleMemberAdded` extended: `replicateLocalKey` path (local hit → no-op; miss → RPC + SetWithVersion). Local Valkey Get failure returns error (caller NAKs). No fan-out from inbox-worker.
+- `handleMemberRemoved` extended: after sub deletes, calls `fetchAndStoreKey` to pull the rotated key from origin and write it into local Valkey at origin's version. RPC or write failure returns error (caller NAKs — this path is fatal, not best-effort). No fan-out from inbox-worker — origin already published to survivors.
 
-- `replicateOrSendLocalKey` now returns an error on Valkey Get failure. Previously this was logged and silently fell through to the RPC path; the current behavior correctly surfaces transient Valkey errors for NAK + retry.
-- `replicateRoomKey` uses Rotate-with-Set-fallback instead of unconditional Set, preserving version progression on remote sites for pre-existing rooms.
+- `replicateLocalKey` returns an error on Valkey Get failure (NAK + retry), and now also surfaces `errKeyDepsMissing` when the handler was constructed without Valkey wiring so a miswired worker fails loudly instead of silently Acking key-bearing outbox events.
+- `fetchAndStoreKey` compares the fetched origin version to the local stored version and writes via `SetWithVersion` only when origin is strictly newer. Redelivered events never re-rotate or bump the local version independently of origin.
 
 **Sequential consumer caveat.** `inbox-worker` uses `cons.Consume` for sequential processing. Per `CLAUDE.md` Section 6 ("Match the pattern already used by the service being modified"), this spec preserves sequential processing. Each new cross-site RPC adds a synchronous round-trip per inbox event, serialized behind the single Consume callback. Acceptable at the project's current event rate; if rate-limit issues surface, a follow-up spec can introduce bounded concurrency inside the handler. Documented here so the implementer doesn't silently switch to `cons.Messages`.
 
 ### File layout (additions only)
 
-```
+```text
 room-service/
   keygen.go                    — generateRoomKeyPair helper
   keygen_test.go               — TDD tests
@@ -357,8 +358,9 @@ For package-level documentation covering versioning, concurrency guarantees, and
 
 | Service | Role |
 |---|---|
-| `room-worker` (origin) | Generates/rotates keys; fans out `RoomKeyEvent` to **every room member** (local + remote) via `roomkeysender.Send`. NATS supercluster routes `chat.user.{account}.event.*` subjects to home sites. |
-| `inbox-worker` (remote site) | Replicates key bytes into local Valkey only (`Set` or `Rotate`). Does **not** fan out user events — origin `room-worker` already did that. |
+| `room-service` | Generates keys on room create (`Set`) and rotates on member-remove (`Rotate`, with `Set` fallback on `ErrNoCurrentKey`). The single rotator in the system; downstream version comparisons depend on this. |
+| `room-worker` (origin) | Reads the current key from origin Valkey on create / member-add / member-remove and fans out `RoomKeyEvent` to **every room member** (local + remote) via `roomkeysender.Send`. NATS supercluster routes `chat.user.{account}.event.*` subjects to home sites. Also serves the inter-site `chat.server.request.roomkey.{siteID}.get` RPC. |
+| `inbox-worker` (remote site) | Pulls the current key from origin via the RPC and replicates it into local Valkey at the origin's exact version (`SetWithVersion`). Does **not** fan out user events — origin `room-worker` already did that. |
 | `broadcast-worker` | Reads the current key from local Valkey to encrypt outgoing messages. Requires `VALKEY_ADDR` and `ENCRYPTION_ENABLED=true`. |
 
 ### Service interplay
