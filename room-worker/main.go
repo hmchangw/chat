@@ -16,6 +16,8 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/roomkeysender"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -32,6 +34,11 @@ type config struct {
 	MaxWorkers    int                     `env:"MAX_WORKERS"     envDefault:"100"`
 	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+
+	// Valkey wiring; empty addr disables key handling.
+	ValkeyAddr           string        `env:"VALKEY_ADDR"`
+	ValkeyPassword       string        `env:"VALKEY_PASSWORD"           envDefault:""`
+	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
 }
 
 func main() {
@@ -48,6 +55,12 @@ func main() {
 	tracerShutdown, err := otelutil.InitTracer(ctx, "room-worker")
 	if err != nil {
 		slog.Error("init tracer failed", "error", err)
+		os.Exit(1)
+	}
+
+	meterShutdown, err := otelutil.InitMeter("room-worker")
+	if err != nil {
+		slog.Error("init meter failed", "error", err)
 		os.Exit(1)
 	}
 
@@ -73,6 +86,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	var keyStore roomkeystore.RoomKeyStore
+	var keySender *roomkeysender.Sender
+	if cfg.ValkeyAddr != "" {
+		if cfg.ValkeyKeyGracePeriod <= 0 {
+			slog.Error("VALKEY_ADDR set but VALKEY_KEY_GRACE_PERIOD is not a positive duration",
+				"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
+			os.Exit(1)
+		}
+		ks, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+			Addr:        cfg.ValkeyAddr,
+			Password:    cfg.ValkeyPassword,
+			GracePeriod: cfg.ValkeyKeyGracePeriod,
+		})
+		if err != nil {
+			slog.Error("valkey connect failed", "error", err)
+			os.Exit(1)
+		}
+		keyStore = ks
+		keySender = roomkeysender.NewSender(roomkeysender.NatsPublisher{Conn: nc.NatsConn()})
+	}
+
+	if cfg.ValkeyAddr == "" {
+		slog.Warn("room key distribution disabled — VALKEY_ADDR not set; create/add/remove members will skip key fan-out")
+	}
+
 	streamCfg := stream.Rooms(cfg.SiteID)
 
 	store := NewMongoStore(mongoClient.Database(cfg.MongoDB))
@@ -90,11 +128,18 @@ func main() {
 			return fmt.Errorf("publish to %q: %w", subj, err)
 		}
 		return nil
-	})
+	}, keyStore, keySender)
 
 	if _, err := nc.QueueSubscribe(subject.RoomCreateDMSync(cfg.SiteID), "room-worker", handler.natsServerCreateDM); err != nil {
 		slog.Error("subscribe sync DM endpoint failed", "error", err)
 		os.Exit(1)
+	}
+
+	if keyStore != nil {
+		if _, err := nc.QueueSubscribe(subject.ServerRoomKeyGet(cfg.SiteID), "room-worker", handler.NatsHandleGetRoomKey); err != nil {
+			slog.Error("subscribe roomkey get failed", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, buildConsumerConfig(cfg.Consumer))
@@ -133,7 +178,7 @@ func main() {
 
 	slog.Info("room-worker running", "site", cfg.SiteID)
 
-	shutdown.Wait(ctx, 25*time.Second,
+	hooks := []func(ctx context.Context) error{
 		func(ctx context.Context) error {
 			iter.Stop()
 			return nil
@@ -149,9 +194,15 @@ func main() {
 			}
 		},
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(ctx context.Context) error { return meterShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-	)
+	}
+	if keyStore != nil {
+		hooks = append(hooks, func(ctx context.Context) error { return keyStore.Close() })
+	}
+
+	shutdown.Wait(ctx, 25*time.Second, hooks...)
 }
 
 // buildConsumerConfig returns the durable consumer config for

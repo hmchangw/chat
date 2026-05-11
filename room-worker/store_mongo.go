@@ -35,8 +35,12 @@ func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscrip
 	return err
 }
 
-func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error) {
-	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
+func (s *MongoStore) ListByRoom(ctx context.Context, roomID, siteID string) ([]model.Subscription, error) {
+	filter := bson.M{"roomId": roomID}
+	if siteID != "" {
+		filter["siteId"] = siteID
+	}
+	cursor, err := s.subscriptions.Find(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
