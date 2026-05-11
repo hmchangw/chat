@@ -10,16 +10,28 @@ reporting story.
 ```
 ./tools/loadgen/scripts/up.sh           # build + bring up the full stack
 ./tools/loadgen/scripts/quickstart.sh   # 30s sanity smoke (small preset)
-./tools/loadgen/scripts/run-realistic.sh # 2-min realistic-preset run
-./tools/loadgen/scripts/down.sh          # tear down + drop volumes
+./tools/loadgen/scripts/down.sh         # tear down + drop volumes
 ```
 
-For the full read-scenario sweep (Phase 1+2 — messaging + history +
-search + room):
+## Per-scenario scripts
 
-```
-make -C tools/loadgen/deploy run-natsrouter
-```
+Each script takes env-var knobs (RATE, DURATION, ...) with sensible defaults.
+Run `./up.sh` once first, then any of these:
+
+| Script | What it does |
+|--------|-------------|
+| `quickstart.sh` | 30s messaging-pipeline at 100rps on the `small` preset — the "is the stack working" smoke test. |
+| `run-realistic.sh` | 2-min messaging-pipeline run on the `realistic` preset (1000 users, 100 rooms, 10% mention rate). |
+| `run-history.sh` | history-service RPCs (LoadHistory / GetMessageByID / LoadSurrounding / GetThreadMessages) with auto-warmup populating the message-ID pool. |
+| `run-search.sh` | search-service RPCs (SearchMessages / SearchRooms) using the 10-token query bag. |
+| `run-room.sh` | room-service RPCs (RoomsList / RoomsGet / MemberList / RoomCreate / MemberAdd) with the `loadgen-` write prefix for cleanup. |
+| `run-canonical.sh` | Bypass the gatekeeper — JetStream `PublishMsgAsync` direct to `MESSAGES_CANONICAL` (S5 path). |
+| `run-ramp.sh` | Ramp the rate from FROM rps to TO rps over a window. Use to find SUT saturation point. |
+| `run-saturation.sh` | Deliberately push past the SUT's p99 threshold and let the abort watcher trip (exit 2). |
+| `run-mixed.sh` | Concurrent messaging-pipeline + 3 read scenarios — production-shaped mixed workload. |
+| `run-csv.sh` | Same as messaging-pipeline but emit `--csv` for offline analysis (run_id stamped on each row). |
+| `run-dashboards.sh` | Bring up the Grafana + Prometheus profile and run a 5-min realistic-preset run with live scrapes. |
+| `run-all-rpc.sh` | Run all three RPC scenarios back-to-back — single-command sanity check after a deploy. |
 
 For live dashboards:
 
