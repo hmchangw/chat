@@ -93,6 +93,7 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	), "request_id=%s", requestID)
 	roomID := createReply.RoomID
+	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
 	require.NotEmpty(t, roomID, "server-assigned room ID must be non-empty")
 	t.Logf("created channel roomID=%s", roomID)
 
@@ -239,6 +240,29 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 			mentionAccounts = append(mentionAccounts, p.Account)
 		}
 		assert.Contains(t, mentionAccounts, bob.Account)
+	}
+
+	// R4.D: cross-site negative LoadHistory. The site-A-local message must NOT
+	// be retrievable via siteB's history-service. Catches "wrote to wrong
+	// site's Cassandra" or "history-service reading wrong keyspace" regressions
+	// that the positive-only assertion above would miss. Uses siteB's system-
+	// creds NATS connection to issue the MsgHistory request scoped to siteB.
+	siteBConn := stack.SiteB.SystemConn(t)
+	histReqB := loadHistoryRequest{Limit: 50}
+	var histRespB loadHistoryResponse
+	histErr := requestReply(
+		siteBConn,
+		subject.MsgHistory(alice.Account, roomID, stack.SiteB.SiteID),
+		histReqB, 5*time.Second, &histRespB,
+	)
+	// history-service-b may legitimately return an error (room not subscribed
+	// on siteB) OR return an empty result; either way is correct. The
+	// regression we guard against is "returns alice's siteA message."
+	if histErr == nil {
+		for _, hm := range histRespB.Messages {
+			assert.NotEqual(t, ids.MessageID, hm.MessageID,
+				"siteB history must NOT contain alice's siteA-local message %s", ids.MessageID)
+		}
 	}
 }
 

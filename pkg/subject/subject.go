@@ -53,6 +53,18 @@ func MsgHistory(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.history", account, roomID, siteID)
 }
 
+// MsgEdit returns the concrete subject for an EditMessage request to
+// history-service. Pair with MsgEditPattern.
+func MsgEdit(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.edit", account, roomID, siteID)
+}
+
+// MsgDelete returns the concrete subject for a DeleteMessage request to
+// history-service. Pair with MsgDeletePattern.
+func MsgDelete(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.delete", account, roomID, siteID)
+}
+
 func UserResponse(account, requestID string) string {
 	return fmt.Sprintf("chat.user.%s.response.%s", account, requestID)
 }
