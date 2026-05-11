@@ -15,6 +15,7 @@ services:
       - VALKEY_ADDR=valkey:6379
       - VALKEY_KEY_GRACE_PERIOD=24h
       - ROOM_KEY_RPC_TIMEOUT=5s
+      - ROOM_KEY_MAX_REDELIVER=10
       - BOOTSTRAP_STREAMS=true
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro

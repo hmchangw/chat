@@ -19,6 +19,7 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/roomkeymetrics"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
@@ -42,6 +43,10 @@ type config struct {
 	// ValkeyKeyGracePeriod controls how long the previous key remains readable after a rotation (TTL on the :prev slot).
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
 	RoomKeyRPCTimeout    time.Duration `env:"ROOM_KEY_RPC_TIMEOUT"      envDefault:"5s"`
+	// RoomKeyMaxRedeliver caps how many times a message may be redelivered before
+	// inbox-worker terminates it (Ack + log) instead of NAK-looping indefinitely.
+	// Applies when the origin site is unreachable and fetchAndStoreKey keeps failing.
+	RoomKeyMaxRedeliver int `env:"ROOM_KEY_MAX_REDELIVER" envDefault:"10"`
 }
 
 // mongoInboxStore implements InboxStore using MongoDB.
@@ -276,6 +281,23 @@ func main() {
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
 		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
+
+		// Terminate messages that have been redelivered too many times to prevent indefinite
+		// NAK-loops when the origin site is unreachable (e.g. fetchAndStoreKey keeps failing).
+		if meta, metaErr := m.Metadata(); metaErr == nil && meta != nil {
+			if exceedsMaxRedeliver(meta.NumDelivered, cfg.RoomKeyMaxRedeliver) {
+				slog.Error("inbox event terminated after max redeliver",
+					"numDelivered", meta.NumDelivered,
+					"maxRedeliver", cfg.RoomKeyMaxRedeliver,
+					"request_id", natsutil.RequestIDFromContext(handlerCtx))
+				roomkeymetrics.ReplicationTerminated.Add(handlerCtx, 1)
+				if err := m.Ack(); err != nil {
+					slog.Error("failed to ack terminated message", "error", err)
+				}
+				return
+			}
+		}
+
 		if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
 			slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 			if err := m.Nak(); err != nil {
@@ -309,6 +331,12 @@ func main() {
 	}
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)
+}
+
+// exceedsMaxRedeliver reports whether numDelivered has reached or exceeded the
+// configured maximum. Extracted for unit-testing without a real JetStream Msg.
+func exceedsMaxRedeliver(numDelivered uint64, maxRedeliver int) bool {
+	return int(numDelivered) >= maxRedeliver
 }
 
 // buildConsumerConfig returns the durable consumer config for

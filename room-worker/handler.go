@@ -28,6 +28,10 @@ import (
 // errPermanent marks non-retryable errors (caller Acks instead of Nak).
 var errPermanent = errors.New("permanent")
 
+// errRoomKeyAbsent fires when keyStore.Get returns (nil, nil) — Valkey responded but the room
+// has no current key. Distinct from transient Valkey errors so operators can alert separately.
+var errRoomKeyAbsent = errors.New("room key absent")
+
 // Sentinel errors for handleGetRoomKey — internal only; NatsHandleGetRoomKey stringifies via err.Error() before crossing the wire.
 var (
 	errRoomKeyNotFound      = errors.New("room key not found")
@@ -98,14 +102,23 @@ func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, o
 // permanentError pairs a user-safe message with the errPermanent sentinel so
 // HandleJetStreamMsg can Ack the JetStream message AND publishAsyncJobResult
 // can render a clean per-cause string without depending on suffix matching of
-// the wrapped Error() output.
-type permanentError struct{ msg string }
+// the wrapped Error() output. An optional cause allows errors.Is(err, cause) checks.
+type permanentError struct {
+	msg   string
+	cause error // optional; allows errors.Is(err, cause) matching
+}
 
 func newPermanent(format string, args ...any) error {
 	return &permanentError{msg: fmt.Sprintf(format, args...)}
 }
 
+// newPermanentAbsent returns a permanent error that also satisfies errors.Is(err, errRoomKeyAbsent).
+func newPermanentAbsent(format string, args ...any) error {
+	return &permanentError{msg: fmt.Sprintf(format, args...), cause: errRoomKeyAbsent}
+}
+
 func (e *permanentError) Error() string { return e.msg }
+func (e *permanentError) Unwrap() error { return e.cause }
 func (e *permanentError) Is(target error) bool {
 	if target == errPermanent {
 		return true
@@ -981,7 +994,8 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 			return fmt.Errorf("get room key: %w", err)
 		}
 		if pair == nil {
-			return newPermanent("room key missing for %s", req.RoomID)
+			roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
+			return newPermanentAbsent("room key absent for %s", req.RoomID)
 		}
 	}
 
@@ -1671,7 +1685,8 @@ func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, user
 		return fmt.Errorf("get room key: %w", err)
 	}
 	if pair == nil {
-		return newPermanent("room key missing for %s", roomID)
+		roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
+		return newPermanentAbsent("room key absent for %s", roomID)
 	}
 	evt := model.RoomKeyEvent{
 		RoomID:     roomID,

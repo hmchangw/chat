@@ -21,6 +21,7 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeymetrics"
 	"github.com/hmchangw/chat/pkg/roomkeysender"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -3138,6 +3139,7 @@ func TestProcessCreateRoom_PermanentErrorWhenKeyMissing(t *testing.T) {
 	err := h.processCreateRoom(ctx, data)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "missing key must be permanent")
+	assert.True(t, errors.Is(err, errRoomKeyAbsent), "missing key must satisfy errRoomKeyAbsent sentinel")
 }
 
 // ---- Task 11: fan-out current key to newly-added channel members ----
@@ -3212,6 +3214,7 @@ func TestProcessAddMembers_PermanentErrorWhenKeyMissing(t *testing.T) {
 	err := h.processAddMembers(ctx, data)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent))
+	assert.True(t, errors.Is(err, errRoomKeyAbsent), "absent key must satisfy errRoomKeyAbsent sentinel")
 }
 
 // TestProcessAddMembers_TransientErrorWhenValkeyFails verifies that a non-nil
@@ -3540,4 +3543,49 @@ func TestHandler_handleGetRoomKey(t *testing.T) {
 			assert.LessOrEqual(t, evt.Timestamp, after)
 		})
 	}
+}
+
+// TestErrRoomKeyAbsent_SentinelDistinguishedFromTransient verifies that a (nil, nil)
+// Get result carries errRoomKeyAbsent but NOT a Valkey I/O error, and that a (nil, err)
+// Get result does NOT carry errRoomKeyAbsent.
+func TestErrRoomKeyAbsent_SentinelDistinguishedFromTransient(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	// Absent case: Get returns (nil, nil).
+	keyStore.EXPECT().Get(gomock.Any(), "r1").Return(nil, nil)
+
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore, nil)
+
+	req := model.CreateRoomRequest{
+		RoomID: "r1", RequesterAccount: "alice",
+		Name: "general", Timestamp: time.Now().UnixMilli(),
+	}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	err := h.processCreateRoom(ctx, data)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errPermanent), "absent key must be permanent")
+	assert.True(t, errors.Is(err, errRoomKeyAbsent), "absent key must satisfy errRoomKeyAbsent")
+
+	// Transient case: Get returns (nil, someErr).
+	ctrl2 := gomock.NewController(t)
+	store2 := NewMockSubscriptionStore(ctrl2)
+	keyStore2 := NewMockRoomKeyStore(ctrl2)
+	valkeyErr := fmt.Errorf("valkey: connection refused")
+	keyStore2.EXPECT().Get(gomock.Any(), "r1").Return(nil, valkeyErr)
+
+	h2 := NewHandler(store2, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore2, nil)
+
+	err2 := h2.processCreateRoom(ctx, data)
+	require.Error(t, err2)
+	assert.False(t, errors.Is(err2, errPermanent), "Valkey I/O error must be transient")
+	assert.False(t, errors.Is(err2, errRoomKeyAbsent), "Valkey I/O error must NOT trigger errRoomKeyAbsent")
+}
+
+// TestKeyAbsentErrors_MetricIsNonNil verifies the KeyAbsentErrors counter is initialized.
+func TestKeyAbsentErrors_MetricIsNonNil(t *testing.T) {
+	assert.NotNil(t, roomkeymetrics.KeyAbsentErrors, "KeyAbsentErrors metric must be non-nil")
 }

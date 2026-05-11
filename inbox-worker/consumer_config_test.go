@@ -7,9 +7,36 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/hmchangw/chat/pkg/roomkeymetrics"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 )
+
+func TestExceedsMaxRedeliver(t *testing.T) {
+	tests := []struct {
+		name         string
+		numDelivered uint64
+		maxRedeliver int
+		want         bool
+	}{
+		{name: "below threshold", numDelivered: 5, maxRedeliver: 10, want: false},
+		{name: "at threshold (terminate)", numDelivered: 10, maxRedeliver: 10, want: true},
+		{name: "above threshold (terminate)", numDelivered: 15, maxRedeliver: 10, want: true},
+		{name: "first delivery never terminates", numDelivered: 1, maxRedeliver: 10, want: false},
+		{name: "zero delivered (never terminates)", numDelivered: 0, maxRedeliver: 10, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := exceedsMaxRedeliver(tc.numDelivered, tc.maxRedeliver)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestReplicationTerminated_MetricIsNonNil verifies the counter is initialized.
+func TestReplicationTerminated_MetricIsNonNil(t *testing.T) {
+	assert.NotNil(t, roomkeymetrics.ReplicationTerminated, "ReplicationTerminated metric must be non-nil")
+}
 
 func TestBuildConsumerConfig(t *testing.T) {
 	siteID := "site-a"

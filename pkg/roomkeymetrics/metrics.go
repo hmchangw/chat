@@ -19,6 +19,12 @@ var (
 	KeyRotated metric.Int64Counter
 	// ValkeyErrors counts Valkey operation failures, tagged by operation name.
 	ValkeyErrors metric.Int64Counter
+	// KeyAbsentErrors fires when Valkey is healthy but no current key exists for a room
+	// (TTL expired, Valkey wipe, etc.). Distinct from ValkeyErrors which counts I/O failures.
+	KeyAbsentErrors metric.Int64Counter
+	// ReplicationTerminated counts inbox-worker messages that exceeded ROOM_KEY_MAX_REDELIVER
+	// and were Acked (terminated) to prevent indefinite NAK-loop on unreachable origin.
+	ReplicationTerminated metric.Int64Counter
 )
 
 func init() {
@@ -66,5 +72,21 @@ func init() {
 	)
 	if err != nil {
 		ValkeyErrors, _ = noop.NewMeterProvider().Meter("room-key").Int64Counter("room_key_valkey_errors_total")
+	}
+
+	KeyAbsentErrors, err = m.Int64Counter(
+		"room_key_absent_errors_total",
+		metric.WithDescription("Number of times Valkey returned (nil, nil) for a room key — key absent, not a transient error"),
+	)
+	if err != nil {
+		KeyAbsentErrors, _ = noop.NewMeterProvider().Meter("room-key").Int64Counter("room_key_absent_errors_total")
+	}
+
+	ReplicationTerminated, err = m.Int64Counter(
+		"room_key_replication_terminated_total",
+		metric.WithDescription("Number of inbox-worker messages terminated after exceeding ROOM_KEY_MAX_REDELIVER to prevent indefinite NAK-loop"),
+	)
+	if err != nil {
+		ReplicationTerminated, _ = noop.NewMeterProvider().Meter("room-key").Int64Counter("room_key_replication_terminated_total")
 	}
 }
