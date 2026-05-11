@@ -882,9 +882,133 @@ The amendment's explicit setting is harmless (sets the same value the default wo
 
 The survey separately confirmed (no action needed):
 
-- All subject builders referenced in amendments R1 chapter 10/11 exist with the claimed signatures (`MsgSend`, `RoomCreate`, `MemberAdd`, `RoomEventWildcard`, `UserResponse`, `SearchMessages`, `Notification`, `MessageRead`).
+- All subject builders referenced in amendments R1 chapter 10/11 exist with the claimed signatures (`MsgSend`, `RoomCreate`, `MemberAdd`, `RoomEventWildcard`, `UserResponse`, `SearchMessages`, `Notification`).
+- `MessageRead` exists but signature in R3.D was understated (see R4.A below).
 - `MsgHistory(account, roomID, siteID)` builder is the **only** missing one — already flagged in R1 amendment 10.A. Implementer should add it as a tiny prereq to chapter 10, not inline `fmt.Sprintf` (one new builder is cheaper than scattered format-strings).
 - All model types referenced match (`AddMembersRequest{Users []string}`, `CreateRoomRequest{Name,Users,...}` with no ID/Type, `SendMessageRequest{ID,Content,RequestID,...}` with handler-enforced RequestID, `LoadHistoryRequest{Before,Limit}`, `RoomEvent`, `CreateRoomReply{RoomID}`, `ErrorResponse{Error,RoomID}`, `RoomTypeChannel`/`RoomTypeDM`).
 - Stream-ownership claim is accurate: `OUTBOX_{siteID}` is genuinely orphaned (no service's `bootstrap.go` creates it). Amendment 9.A's harness `ensureOutbox` is necessary.
 - `docker-local/cassandra/init/*.cql` exists with 10 sortable files; the `for f in $(ls /init/*.cql | sort)` shape from amendment 3.A works.
 - `docker-local/keycloak/realm-export.json` (actually at `auth-service/deploy/keycloak/realm-export.json`) exists with realm `chatapp`, client `nats-chat`, users `alice`/`bob`. Compose mount path in chapter 3 / 5 must reflect the actual location — note this when chapter 3 lands.
+
+---
+
+## Revision 4 — claim-verification corrections + second-pass survey gaps
+
+Two reviewers (a claim-verifier on commits Lane C + R3, and a second-pass surveyor of areas the first survey didn't touch) returned consolidated findings. The verifier confirmed that R3.A and R3.B are correctly applied but caught two stale claims in R2.C. The second-pass surveyor confirmed Keycloak realm import is already handled correctly in the original chapter 3 plan, and clarified the worker-healthcheck story. R4 encodes the actionable corrections.
+
+### R4.A — Subject signature corrections in R2.C items 5 and 6 (BLOCKER)
+
+**Problem:** R3.D's "all subject builders verified" sweep correctly listed every builder used in chapters 10/11/12 EXCEPT for the two newly added in R2.C. Verified directly against `pkg/subject/subject.go`:
+
+- Line 340: `func MessageRead(account, roomID, siteID string) string` — **3 args**, not the 2 shown in R2.C item 5.
+- Line 88: `func SubscriptionUpdate(account string) string` — **no `User` prefix**, contrary to R2.C item 6's `subject.UserSubscriptionUpdate(...)`.
+
+**Corrections:**
+
+R2.C item 5 becomes:
+
+```go
+// alice marks message as read on siteA
+err := requestReply(
+    alice.Conn(),
+    subject.MessageRead(alice.Account, ids.RoomID, stack.SiteA.SiteID),
+    model.MarkReadRequest{MessageID: ids.MessageID, ReadAt: time.Now().UnixMilli()},
+    5*time.Second,
+    nil,
+)
+require.NoError(t, err)
+
+// verify Mongo subscription's LastSeenAt advanced
+sub := readSubscription(t, ctx, mongoA, alice.Account, ids.RoomID)
+assert.GreaterOrEqual(t, sub.LastSeenAt, ids.PublishedAt)
+```
+
+(Implementer must verify the actual `MarkReadRequest` payload shape against `pkg/model/` when chapter 11 lands; the signature in `pkg/model/event.go` for the read-receipt RPC is the authoritative source.)
+
+R2.C item 6 becomes:
+
+```go
+// Subscribe BEFORE inviting, on siteB's NATS connection.
+sub, err := stack.SiteB.SystemConn().SubscribeSync(subject.SubscriptionUpdate(carol.Account))
+require.NoError(t, err)
+defer sub.Unsubscribe()
+
+// alice invites carol into a siteA-LOCAL channel; carol is also a siteA user.
+inviteCarolIntoSiteAChannel(t, alice, carolSiteAOnly)
+
+// Assert the subscription event does NOT cross to siteB.
+_, err = sub.NextMsg(2 * time.Second)
+assert.ErrorIs(t, err, nats.ErrTimeout, "siteA-local invite must not federate to siteB")
+```
+
+(`stack.SiteB.SystemConn()` is the harness-provided NATS connection on siteB, used here for negative observation. The chapter-7 harness should expose a low-permissions read-only connection per site, distinct from per-user authenticated connections, for tests that need to observe rather than publish.)
+
+### R4.B — Mongo host ports out of Linux ephemeral range (HIGH)
+
+**Problem:** R2.A's port table placed site-A Mongo at `37017` and site-B at `47017`. Linux's default ephemeral port range starts at `32768` (`/proc/sys/net/ipv4/ip_local_port_range`). Outbound connections from any process on the host can be assigned ports in this range. Docker's port publish wins the race because it `bind()`s before the kernel assigns ephemerally, but the configuration is fragile and surprising — a developer's `curl localhost:37017` could hit *their own outbound socket* on a busy machine.
+
+**Fix:** move Mongo to sub-32768 ports while keeping the +X00 mnemonic:
+
+| Service | Internal | Site-A host (revised) | Site-B host (revised) |
+|---|---|---|---|
+| Mongo | 27017 | **27117** | **27217** |
+
+(Other ports in R2.A's table — NATS 14222/24222, Cassandra 19042/29042, ES 19200/29200, Valkey 16379/26379, Keycloak 18180/28180, auth-service 18080/28080, search-service metrics 19090 — all sit comfortably below 32768. Only Mongo crossed the line.)
+
+**Edits to apply when chapter 3 / 5 land:** site-A `mongo-a: ports: ["27117:27017"]`, site-B `mongo-b: ports: ["27217:27017"]`. Harness `SiteEndpoints.MongoURI` becomes `mongodb://localhost:27117/...` for site-A, `27217` for site-B.
+
+### R4.C — Worker healthcheck strategy is intentional; harness compensates (clarification)
+
+**Concern raised:** the second-pass surveyor noted that NATS-only worker services (message-worker, broadcast-worker, room-worker, inbox-worker, notification-worker, history-service) have no healthchecks in their existing `<service>/deploy/docker-compose.yml`. Without a healthcheck, `docker compose up --wait` returns once the container has merely *started* — not once it has subscribed to its JetStream durable consumer.
+
+**Resolution:** this is by design and **the harness compensates**, not the compose file. R1 amendment 10.C already prescribes `awaitDurableReady(t, ctx, js, streamName, durable)` and `awaitCanonicalAcked(...)` for exactly this purpose: tests poll for the worker's durable to exist (proves the worker has called `CreateOrUpdateConsumer`) and for the durable's ack floor to advance (proves the worker has actually processed events). This is *more correct* than an HTTP healthcheck would be — an HTTP probe could pass while the worker hadn't yet subscribed to its consumer.
+
+**Action:** none required for R4. When chapter 3 lands, the worker compose blocks should NOT add boilerplate healthchecks. When chapter 7 (harness) lands, the implementer must wire `awaitDurableReady` calls into `BootstrapStack` so tests don't race against worker subscription.
+
+Optional belt-and-braces: define a simple healthcheck on each worker that pings NATS — `nc -z nats-a 4222` or similar. This makes `docker compose up --wait` more accurate but doesn't replace the JetStream-durable polling. Skip for v1.
+
+### R4.D — Cross-site negative LoadHistory assertion (suggested by claim verifier)
+
+R3.A dropped the `SiteID` history assertion because `Message` has no `SiteID` field. The reviewer's critical-thinking probe asked: is implicit-via-subject site isolation good enough? Stronger alternative: also issue `LoadHistory` on **siteB's** NATS connection for the same message ID and assert no result. This is a one-sided positive ("siteA has it") plus an explicit negative ("siteB doesn't").
+
+**Action:** strengthen R2.C item 2 (strengthen-history) by appending:
+
+```go
+// Negative isolation: the message must NOT be retrievable via siteB.
+histB, errB := loadHistory(stack.SiteB.SystemConn(), ids.RoomID, stack.SiteB.SiteID, 5*time.Second)
+require.NoError(t, errB)
+require.Empty(t, histB.Messages, "siteB must not have siteA-local messages")
+```
+
+(`loadHistory` is a harness helper that wraps the request/reply for `subject.MsgHistory(...)`. Same caveat as R4.A item 6 about `SystemConn()` being a harness-provided observation channel.)
+
+This catches a class of "we accidentally wrote to the wrong site's Cassandra" or "history-service is reading the wrong keyspace" regressions that the positive-only assertion would miss. Cost: ~5 lines.
+
+### R4.E — Worker config audit summary (informational)
+
+The claim verifier flagged that R3 didn't fully audit every worker's required env vars. Completed here for chapter 4 / 5 implementer reference.
+
+**Required-or-strongly-recommended env vars by service** (omitting `MONGO_USERNAME` / `MONGO_PASSWORD` which default to empty for unauthenticated dev mongo):
+
+| Service | Required envs | Recommended |
+|---|---|---|
+| message-gatekeeper | `NATS_URL`, `SITE_ID`, `MONGO_URI` | `MAX_WORKERS`, `BOOTSTRAP_STREAMS` |
+| message-worker | `NATS_URL` (required tag), `SITE_ID` (required tag) | `CASSANDRA_HOSTS`, `MAX_WORKERS` |
+| broadcast-worker | `NATS_URL`, `SITE_ID`, `MONGO_URI` | `VALKEY_ADDR`, `BOOTSTRAP_STREAMS` |
+| room-service | `NATS_URL`, `SITE_ID`, `MONGO_URI` | `VALKEY_ADDR` |
+| room-worker | `NATS_URL`, `SITE_ID`, `MONGO_URI` | `BOOTSTRAP_STREAMS` |
+| notification-worker | `NATS_URL`, `SITE_ID`, `MONGO_URI` | `MAX_WORKERS` |
+| inbox-worker | `NATS_URL`, `SITE_ID`, `MONGO_URI` | `BOOTSTRAP_STREAMS` (owns INBOX) |
+| search-service | `NATS_URL`, `SITE_ID`, `SEARCH_URL` | `SEARCH_USER_ROOM_INDEX` |
+| search-sync-worker | `NATS_URL` (required tag), `SITE_ID` (required tag), `SEARCH_URL` (required tag) | `BOOTSTRAP_STREAMS` |
+| history-service | `CASSANDRA_HOSTS`, `MONGO_URI`, `NATS_URL` (per nested config — uses prefixed `Cassandra__HOSTS` etc. via `caarlos0/env`'s `envPrefix`) | `ENCRYPTION_ENABLED=false` for v1 |
+| auth-service | `OIDC_ISSUER_URL`, `OIDC_AUDIENCES`, `AUTH_SIGNING_KEY` (when DEV_MODE=false) | `PORT`, `DEV_MODE=false` |
+
+`SITE_ID=siteA` for site-A services and `SITE_ID=siteB` for site-B; `OTEL_SDK_DISABLED=true` blanket per R1 amendment H3 (now actually honored after R3.B).
+
+The original chapter 4 spec explicitly says "use the per-service compose files as the canonical reference for env vars; only the host/site-rewrites listed above change" (chapter 4 task 4.4 step 1) — this audit is a sanity-check against that, not a replacement.
+
+### R4.F — Out-of-scope additions
+
+- **NATS subject permission boundaries.** Verified by the second-pass surveyor: the prod-local `setup.sh` grants the single `backend` user `--allow-pub ">"` and `--allow-sub ">"` (wildcard). Per-service permission scoping does not exist today, so the e2e suite can't catch a regression that doesn't exist. If/when permissions are tightened in production, a follow-up plan adds e2e coverage.
+- **Optional NATS-port healthchecks for workers.** R4.C describes the rationale to skip; if a future iteration wants `docker compose up --wait` to be more accurate for workers, this is a one-line addition per service.
