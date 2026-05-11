@@ -85,12 +85,13 @@ make -C tools/loadgen/deploy run-dashboards PRESET=medium
 | `--abort-p99-sustain=<dur>`       | `30s`   | Sustain window for the latency abort.                              |
 | `--abort-on-error-pct=F`          | 0       | Stop if error rate stays above F (0..1) for `--abort-error-sustain`. |
 | `--abort-error-sustain=<dur>`     | `10s`   | Sustain window for the error-rate abort.                           |
-| `--js-async-max-pending=N`        | 4096    | Canonical-inject only: in-flight cap for async JetStream publishes (S5). `0` falls back to sync `js.PublishMsg` (legacy / bisection). Failed acks land in `loadgen_publish_errors_total{reason="async_ack"}`. |
+| `--js-async-max-pending=N`        | 4096    | Canonical-inject only: in-flight cap for async JetStream publishes (S5). `0` falls back to sync `js.PublishMsg` (legacy / bisection). Failed acks land in `loadgen_publish_errors_total{reason="async_ack"}` and the orphan messageIDs are evicted from the broadcast correlation map so MissingBroadcasts isn't inflated. Rule of thumb: `2 × peak-rps × expected-ack-latency-seconds`; the default 4096 covers ~5k rps × 400ms or ~50k rps × 40ms. Lower it (e.g. 256) to detect upstream wedging earlier; raise only if `loadgen_publish_errors_total{reason="async_ack"}` climbs due to MaxPending stalls rather than real stream failures. |
 
 ## Reading the summary
 
 - **messaging-pipeline:** `final_pending == 0` on every durable + zero errors → pipeline sustaining target rate. `final_pending` climbing or errors > 0 → over capacity or upstream regression.
 - **history-read / search-read / room-rpc:** the "request latency" section shows per-(scenario, kind) p50/p95/p99/max + count + errors. p99 climbing while count drops → service-side saturation.
+- **Async JetStream publishes (S5, `--inject canonical` only):** when `--js-async-max-pending>0`, `loadgen_published_total` counts publishes *queued* into the JetStream async ring, not acked. The ack happens off-loop; failures land in `loadgen_publish_errors_total{reason="async_ack"}`. To get the acked count, subtract `async_ack` errors from `Published`. The orphan messageID is evicted from the broadcast correlation map, so `MissingBroadcasts` is NOT inflated by async-ack failures (R1 BLOCKER #5/#8 fix). If the shutdown drain logs `"jetstream async publish drain timed out"`, the printed report's `Published` count is a lower-bound — late acks landing after the drain timeout still bump `loadgen_publish_errors_total{reason="async_ack"}` on the metrics endpoint, but the printed summary won't reflect them.
 - **Exit codes** (precedence: liveness > saturation > clean-fail > clean-pass):
     - `0` clean pass
     - `1` errors above tolerance

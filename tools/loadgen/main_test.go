@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -109,11 +111,12 @@ func TestNewNatsCorePublisher_FieldWiring(t *testing.T) {
 }
 
 // S5: a publisher built with async enabled records the flag so the
-// publish path can branch onto js.PublishMsgAsync. Default ctor leaves
-// it off (legacy sync path) for safe-by-default behavior.
+// publish path can branch onto js.PublishMsgAsync. The constructor
+// leaves asyncJS off; runtime opts the caller in based on the
+// --js-async-max-pending flag in main.go (default 4096 → async on).
 func TestNewNatsCorePublisher_AsyncDefaultsOff(t *testing.T) {
 	p := newNatsCorePublisher(nil, InjectCanonical, nil)
-	assert.False(t, p.asyncJS, "async must default off so a missing flag value preserves sync behavior")
+	assert.False(t, p.asyncJS, "constructor must leave asyncJS off; runtime wiring opts in via --js-async-max-pending")
 }
 
 func TestNatsCorePublisher_WithAsyncFlipsFlag(t *testing.T) {
@@ -127,15 +130,73 @@ func TestNatsCorePublisher_WithAsyncFlipsFlag(t *testing.T) {
 // helper that builds the jetstream options list rather than the full
 // jetstream.New plumbing (which needs a live nats.Conn).
 func TestJetStreamPublishOpts_AsyncEnabled(t *testing.T) {
-	opts := jetstreamPublishOpts(4096, NewMetrics(), "small")
+	opts := jetstreamPublishOpts(4096, NewMetrics(), "small", nil)
 	assert.Len(t, opts, 2, "want both MaxPending and ErrHandler when async is enabled")
 }
 
 func TestJetStreamPublishOpts_AsyncDisabledIsEmpty(t *testing.T) {
 	// 0 means "leave async pending at the nats.go default and skip the
 	// err handler"; effectively disables the S5 path.
-	opts := jetstreamPublishOpts(0, NewMetrics(), "small")
+	opts := jetstreamPublishOpts(0, NewMetrics(), "small", nil)
 	assert.Empty(t, opts, "zero MaxPending must produce no jetstream opts so callers fall back to sync publishes")
+}
+
+// S5: the async err handler is the entire correctness story for
+// reporting failed publishes. Validate it directly.
+//
+// On invocation it MUST:
+//  1. bump loadgen_publish_errors_total{preset, reason="async_ack"}
+//  2. evict the orphan messageID from the collector so it doesn't
+//     inflate Finalize's MissingBroadcasts count.
+func TestNewAsyncErrHandler_BumpsMetricAndEvictsOrphan(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	// Seed the collector with a publish so we can confirm eviction.
+	t0 := time.Unix(100, 0)
+	c.RecordPublishBroadcastOnly("msg-abc", t0)
+	require.Contains(t, c.MessageIDs(), "msg-abc",
+		"precondition: collector knows about msg-abc")
+
+	h := newAsyncErrHandler(m, "small", c)
+
+	// Canonical event payload — handler's JSON stub targets {"message":{"id":...}}.
+	payload := []byte(`{"message":{"id":"msg-abc","roomId":"r1"},"siteId":"s1","timestamp":1}`)
+	h(nil, &nats.Msg{Data: payload}, errors.New("simulated async ack failure"))
+
+	// Metric bumped.
+	got := counterValueLabeled(m, "loadgen_publish_errors_total", "reason", "async_ack")
+	assert.Equal(t, 1.0, got, "must increment PublishErrors{reason=async_ack} on async failure")
+
+	// Orphan evicted from the broadcast correlation map AND from the
+	// seenMessageIDs pool (so auto-warmup doesn't hand a dead ID to
+	// downstream history-read scenarios).
+	assert.NotContains(t, c.MessageIDs(), "msg-abc",
+		"async err handler must evict orphan messageID via RecordPublishFailed")
+}
+
+func TestNewAsyncErrHandler_NilCollectorIsSafe(t *testing.T) {
+	m := NewMetrics()
+	h := newAsyncErrHandler(m, "small", nil)
+	// Must not panic when collector is nil (defensive — production wires
+	// it but tests / future callers might not).
+	require.NotPanics(t, func() {
+		h(nil, &nats.Msg{Data: []byte(`{"message":{"id":"x"}}`)}, errors.New("x"))
+	})
+	got := counterValueLabeled(m, "loadgen_publish_errors_total", "reason", "async_ack")
+	assert.Equal(t, 1.0, got, "metric still bumps even when collector is nil")
+}
+
+func TestNewAsyncErrHandler_MalformedPayloadDoesNotPanic(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	h := newAsyncErrHandler(m, "small", c)
+	require.NotPanics(t, func() {
+		h(nil, &nats.Msg{Data: []byte(`not json`)}, errors.New("x"))
+		h(nil, &nats.Msg{Data: nil}, errors.New("x"))
+		h(nil, nil, errors.New("x"))
+	})
+	got := counterValueLabeled(m, "loadgen_publish_errors_total", "reason", "async_ack")
+	assert.Equal(t, 3.0, got, "metric bumps on every invocation regardless of payload shape")
 }
 
 func TestMetricsHandler_ServesOpenMetrics(t *testing.T) {

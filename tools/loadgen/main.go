@@ -218,12 +218,23 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		return 1
 	}
 	metrics := NewMetrics()
-	// S5: when --js-async-max-pending>0, jetstream.New is built with an
-	// async-publish in-flight bound and an err-handler that bumps
-	// loadgen_publish_errors_total{reason="async_ack"} on per-publish
-	// failures. Built BEFORE jetstream.New so the handler is wired from
-	// the first publish.
-	jsOpts := jetstreamPublishOpts(*jsAsyncMaxPending, metrics, p.Name)
+	// Collector built BEFORE jetstream.New so the S5 async err handler
+	// (constructed inside jetstreamPublishOpts) can capture it and evict
+	// orphan messageIDs on async ack failures — without that eviction,
+	// every async_ack would also inflate Finalize's MissingBroadcasts.
+	collector := NewCollector(metrics, p.Name)
+	// S5: when --js-async-max-pending>0 AND inject=canonical, jetstream.New
+	// is built with an async-publish in-flight bound and an err-handler
+	// that (a) bumps loadgen_publish_errors_total{reason="async_ack"} and
+	// (b) calls collector.RecordPublishFailed("", messageID) on the
+	// orphaned canonical event. Built BEFORE jetstream.New so the handler
+	// is wired from the first publish. Frontdoor inject doesn't use the
+	// async path so the opts are skipped to avoid pre-allocating an
+	// unused ring buffer (R2 NIT #5).
+	var jsOpts []jetstream.JetStreamOpt
+	if injectMode == InjectCanonical {
+		jsOpts = jetstreamPublishOpts(*jsAsyncMaxPending, metrics, p.Name, collector)
+	}
 	js, err := jetstream.New(nc.NatsConn(), jsOpts...)
 	if err != nil {
 		slog.Error("jetstream init", "error", err)
@@ -267,7 +278,6 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
-	collector := NewCollector(metrics, p.Name)
 	// Phase 3 §3.5: in-process latency ring buffer for the abort watcher.
 	// Sized to retain max(--abort-p99-sustain, --abort-error-sustain, 60s).
 	windowRetain := 60 * time.Second
@@ -643,13 +653,25 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// only guarantees publishes are queued; their PubAcks may still be
 	// in flight. Wait for the in-flight window to drain before exiting so
 	// errors land in loadgen_publish_errors_total{reason="async_ack"}
-	// before the report is emitted. Bounded so a wedged stream doesn't
-	// hang the run forever — the explicit cap matches drainTrailingReplies'.
+	// (and orphan messageIDs are evicted from the broadcast collector)
+	// before the report is emitted. Bounded by asyncDrainTimeout so a
+	// wedged stream doesn't hang the run forever.
+	//
+	// ORDERING INVARIANT (R2 WARN #1): no js.PublishMsgAsync may be
+	// invoked after this point — the gen.Run goroutines have all returned
+	// (drainGracePeriod inside Run) and no other code path here calls
+	// PublishMsgAsync. If a future change adds a late publisher (a new
+	// sampler, liveness probe, etc.), it MUST run before this drain or
+	// late acks will race with report emission.
 	if publisher.asyncJS {
 		select {
 		case <-js.PublishAsyncComplete():
-		case <-time.After(5 * time.Second):
-			slog.Warn("jetstream async publish drain timed out", "pending", js.PublishAsyncPending())
+		case <-time.After(asyncDrainTimeout):
+			slog.Warn("jetstream async publish drain timed out",
+				"pending", js.PublishAsyncPending(),
+				"max_pending", *jsAsyncMaxPending,
+				"drain_timeout", asyncDrainTimeout.String(),
+			)
 		}
 	}
 
@@ -785,6 +807,12 @@ func exitCodeForFull(saturationAborted, livenessFailed bool, sent, totalErrs int
 // the loadgen run that drove them. C3 fix.
 const HeaderRunID = "X-Loadgen-Run-ID"
 
+// asyncDrainTimeout caps the wait for in-flight async JetStream
+// publishes to ack at shutdown. Same magnitude as drainTrailingReplies
+// so the two shutdown phases are symmetric; both bounded so a wedged
+// stream doesn't hang the run forever.
+const asyncDrainTimeout = 5 * time.Second
+
 type natsCorePublisher struct {
 	pool         *ConnPool // Phase 3 §3.6 — picks the data conn per subject's userID
 	useJetStream bool
@@ -829,23 +857,58 @@ func newNatsCorePublisher(pool *ConnPool, inject InjectMode, js jetstream.JetStr
 	return &natsCorePublisher{pool: pool, useJetStream: inject == InjectCanonical, js: js}
 }
 
+// newAsyncErrHandler returns the WithPublishAsyncErrHandler closure used
+// by the S5 async publish path. Split out from jetstreamPublishOpts for
+// direct testability — the closure is the entire correctness story for
+// async error reporting and orphan eviction.
+//
+// On per-publish failure (NoResponders, stream not found, max-pending
+// stall, etc.), the handler:
+//
+//   - bumps loadgen_publish_errors_total{preset, reason="async_ack"}; the
+//     preset is captured by closure so cardinality stays bounded by the
+//     {preset, reason} pair already used elsewhere; presetName binding
+//     is one-shot, tied to the run's preset (R1 NIT #12).
+//   - decodes msg.Data as a model.MessageEvent (canonical schema is the
+//     only payload that reaches this path) and calls
+//     collector.RecordPublishFailed("", messageID). That evicts the
+//     orphaned messageID from byMsgID + seenMessageIDs so it doesn't
+//     inflate Finalize's MissingBroadcasts and doesn't get handed to
+//     the auto-warmup MessageIDs() pool. The empty requestID is a no-op
+//     under RecordPublishFailed (delete-from-map of empty key is a
+//     no-op).
+//
+// JSON unmarshal in the hot path is acceptable because the handler only
+// fires on errors (rare) — happy-path publishes never reach here.
+func newAsyncErrHandler(m *Metrics, presetName string, collector *Collector) func(jetstream.JetStream, *nats.Msg, error) {
+	return func(_ jetstream.JetStream, msg *nats.Msg, _ error) {
+		m.PublishErrors.WithLabelValues(presetName, "async_ack").Inc()
+		if collector == nil || msg == nil || len(msg.Data) == 0 {
+			return
+		}
+		var stub struct {
+			Message struct {
+				ID string `json:"id"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(msg.Data, &stub); err != nil || stub.Message.ID == "" {
+			return
+		}
+		collector.RecordPublishFailed("", stub.Message.ID)
+	}
+}
+
 // jetstreamPublishOpts returns the JetStream client options that enable
 // the S5 async publish path. When maxPending<=0 the async path is
 // disabled and the helper returns nil so jetstream.New keeps its
-// defaults (sync publishes via PublishMsg). When enabled it wires both
-// the in-flight bound and the error handler that increments
-// loadgen_publish_errors_total{reason="async_ack"} on per-publish
-// failures (NoResponders, stream not found, max-pending stall, etc).
-func jetstreamPublishOpts(maxPending int, m *Metrics, presetName string) []jetstream.JetStreamOpt {
+// defaults (sync publishes via PublishMsg).
+func jetstreamPublishOpts(maxPending int, m *Metrics, presetName string, collector *Collector) []jetstream.JetStreamOpt {
 	if maxPending <= 0 {
 		return nil
 	}
-	errHandler := func(_ jetstream.JetStream, _ *nats.Msg, _ error) {
-		m.PublishErrors.WithLabelValues(presetName, "async_ack").Inc()
-	}
 	return []jetstream.JetStreamOpt{
 		jetstream.WithPublishAsyncMaxPending(maxPending),
-		jetstream.WithPublishAsyncErrHandler(errHandler),
+		jetstream.WithPublishAsyncErrHandler(newAsyncErrHandler(m, presetName, collector)),
 	}
 }
 
