@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -15,12 +16,19 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
-// InitTracer is a no-op (propagator only) when no OTLP endpoint env var is
-// set, to avoid `traces export: connection refused` spam in dev / CI.
+// noopShutdown is returned when the SDK is disabled; safe to call.
+func noopShutdown(context.Context) error { return nil }
+
+// InitTracer creates and registers a TracerProvider with OTLP gRPC exporter.
+// Returns a shutdown function.
+//
+// Honors OTEL_SDK_DISABLED=true (the standard OTel SDK env var): when set,
+// the tracer provider is left as the global no-op and no OTLP exporter is
+// constructed. This lets the e2e suite run without an OTLP collector
+// container and without log noise from failed export attempts.
 func InitTracer(ctx context.Context, serviceName string) (func(context.Context) error, error) {
-	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" && os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == "" {
-		otel.SetTextMapPropagator(propagation.TraceContext{})
-		return func(context.Context) error { return nil }, nil
+	if strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") {
+		return noopShutdown, nil
 	}
 
 	exp, err := otlptracegrpc.New(ctx)
