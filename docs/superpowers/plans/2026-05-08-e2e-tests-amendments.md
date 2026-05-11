@@ -776,3 +776,115 @@ The chapter-1 Makefile is amended in this revision (committed alongside this doc
 - The `e2e-up` precheck for `make deps-up` running (R2.A above) lands when chapter 3 modifies the target.
 
 The `pkg/testutil/testimages/testimages.go` Mongo pin is bumped from 4.4.15 → 8 in this revision (committed alongside this doc) to match the prod-local stack and the e2e suite. The original 4.4.15 comment described a divergence-protection pattern that the codebase doesn't actually use today (no `partialFilterExpression` with `$in`); the comment was preventative, not reactive. Sandbox lacks Docker so behavioral verification of integration tests against mongo:8 is deferred to CI.
+
+---
+
+## Revision 3 — codebase-survey corrections
+
+After committing Revision 2, an `Explore`-agent survey of `pkg/`, services, and `docker-local/` found two real BLOCKERS where the amendments referenced fields/behavior that don't exist in the current codebase, plus one HIGH-severity item that needs a 4-line code change to one shared package. This revision corrects them. Survey also confirmed that most other amendment claims (subjects, model types, stream ownership, Keycloak realm, Cassandra init layout) are accurate as written.
+
+### R3.A — `NotificationEvent` field-name corrections (BLOCKER)
+
+**Problem:** Revision 2's R2.C item 3 (mention assertion) and the chapter-11 piggyback assertion in the original amendments both reference `notif.MessageID` and `notif.Mentions`. Verified against `pkg/model/event.go:70`:
+
+```go
+type NotificationEvent struct {
+    Type      string  `json:"type"`        // "new_message"
+    RoomID    string  `json:"roomId"`
+    Message   Message `json:"message"`     // value, not pointer
+    Timestamp int64   `json:"timestamp" bson:"timestamp"`
+}
+```
+
+There is **no** top-level `MessageID` and **no** top-level `Mentions`. They live one level down on `Message` (`pkg/model/message.go:9`):
+
+```go
+type Message struct {
+    ID          string         `json:"id"          bson:"_id"`
+    UserAccount string         `json:"userAccount" bson:"userAccount"`   // NOT "Sender"
+    Content     string         `json:"content"     bson:"content"`
+    Mentions    []Participant  `json:"mentions,omitempty" bson:"mentions,omitempty"`
+    CreatedAt   time.Time      `json:"createdAt"   bson:"createdAt"`     // time.Time, NOT int64
+    // ... no SiteID
+}
+```
+
+`Participant.Account` (`pkg/model/event.go:121`) is the field to compare against `bob.Account` for the mention check.
+
+**Corrections to apply when chapter 10 / 11 land:**
+
+The chapter-10 piggyback assertion in the original amendments doc (the "Notification-worker assertion" section near the end of Revision 1) becomes:
+
+```go
+notifSub, err := bob.Conn().SubscribeSync(subject.Notification(bob.Account))
+require.NoError(t, err)
+defer notifSub.Unsubscribe()
+
+// ... existing send + receive assertions ...
+
+notifMsg, err := notifSub.NextMsg(5*time.Second)
+require.NoError(t, err)
+var notif model.NotificationEvent
+require.NoError(t, json.Unmarshal(notifMsg.Data, &notif))
+assert.Equal(t, ids.MessageID, notif.Message.ID)         // .Message.ID, NOT .MessageID
+```
+
+R2.C item 2 (strengthen-history) becomes:
+
+```go
+require.Len(t, hist.Messages, 1)
+m := hist.Messages[0]
+assert.Equal(t, ids.MessageID, m.ID)
+assert.Equal(t, alice.Account, m.UserAccount)            // .UserAccount, NOT .Sender
+assert.False(t, m.CreatedAt.IsZero())                    // time.Time, use .IsZero()
+// SiteID assertion DROPPED -- Message struct has no SiteID. The site is
+// scoped via the NATS subject + history-service connection, not the document.
+```
+
+R2.C item 3 (mention resolution) becomes:
+
+```go
+// Message body: "hello @bob, ping?"
+// ...send and receive notification...
+require.NotEmpty(t, notif.Message.Mentions)              // .Message.Mentions, NOT .Mentions
+mentionAccounts := make([]string, 0, len(notif.Message.Mentions))
+for _, p := range notif.Message.Mentions {
+    mentionAccounts = append(mentionAccounts, p.Account)
+}
+assert.Contains(t, mentionAccounts, bob.Account)
+```
+
+### R3.B — Honor `OTEL_SDK_DISABLED` in `pkg/otelutil` (HIGH; small code change)
+
+**Problem:** R1 amendment H3 set `OTEL_SDK_DISABLED=true` on every service container, expecting the standard OTel SDK env var to short-circuit tracer initialization. Survey confirmed `pkg/otelutil/InitTracer` calls `otlptracegrpc.New(ctx)` unconditionally — the env var has no effect today. Without an OTLP collector container in the e2e compose, every service spams export-attempt errors in its log every few seconds.
+
+The OTel Go SDK's `otlptracegrpc.New` is *lazy* (returns immediately, connects on first export), so this is **not** a startup blocker — services run fine, just noisy. Reclassified from BLOCKER to HIGH.
+
+**Fix (committed alongside this doc):** add a 3-line check at the top of `pkg/otelutil.InitTracer`:
+
+```go
+if strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") {
+    return noopShutdown, nil
+}
+```
+
+This is a one-time change to one shared package — well within the spirit of "modify pkg only when it cleanly unblocks e2e without leaking e2e concerns into production code." The check uses the standard OTel SDK env var name, so it's not e2e-specific; production deployments can use it too if they want to disable tracing in a particular environment.
+
+`InitMeter` is intentionally NOT changed: the Prometheus exporter is in-process (no network), so no log noise. Disabling it would also disable production metrics scraping in non-e2e environments where the same env var might one day be set for trace-only disabling.
+
+### R3.C — `SEARCH_USER_ROOM_INDEX` is auto-derived (no action; survey false-alarm)
+
+Survey worried that R1 amendment H4 explicitly setting `SEARCH_USER_ROOM_INDEX=user-room-siteA` might be redundant. Verified: yes, it's redundant — `search-sync-worker/main.go:93-95` auto-derives `user-room-{siteID}` if the env var is empty, and `search-service` reads the same env var. Both services already produce the right per-site index name without any explicit override.
+
+The amendment's explicit setting is harmless (sets the same value the default would compute), and explicit-over-implicit is reasonable for a test environment where someone reading the compose file shouldn't have to know about service-internal defaults. **Keep amendment H4 as written.**
+
+### R3.D — Unchanged but worth re-confirming for downstream chapters
+
+The survey separately confirmed (no action needed):
+
+- All subject builders referenced in amendments R1 chapter 10/11 exist with the claimed signatures (`MsgSend`, `RoomCreate`, `MemberAdd`, `RoomEventWildcard`, `UserResponse`, `SearchMessages`, `Notification`, `MessageRead`).
+- `MsgHistory(account, roomID, siteID)` builder is the **only** missing one — already flagged in R1 amendment 10.A. Implementer should add it as a tiny prereq to chapter 10, not inline `fmt.Sprintf` (one new builder is cheaper than scattered format-strings).
+- All model types referenced match (`AddMembersRequest{Users []string}`, `CreateRoomRequest{Name,Users,...}` with no ID/Type, `SendMessageRequest{ID,Content,RequestID,...}` with handler-enforced RequestID, `LoadHistoryRequest{Before,Limit}`, `RoomEvent`, `CreateRoomReply{RoomID}`, `ErrorResponse{Error,RoomID}`, `RoomTypeChannel`/`RoomTypeDM`).
+- Stream-ownership claim is accurate: `OUTBOX_{siteID}` is genuinely orphaned (no service's `bootstrap.go` creates it). Amendment 9.A's harness `ensureOutbox` is necessary.
+- `docker-local/cassandra/init/*.cql` exists with 10 sortable files; the `for f in $(ls /init/*.cql | sort)` shape from amendment 3.A works.
+- `docker-local/keycloak/realm-export.json` (actually at `auth-service/deploy/keycloak/realm-export.json`) exists with realm `chatapp`, client `nats-chat`, users `alice`/`bob`. Compose mount path in chapter 3 / 5 must reflect the actual location — note this when chapter 3 lands.
