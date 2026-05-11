@@ -1,6 +1,6 @@
 //go:build e2e
 
-package scenarios
+package e2e
 
 import (
 	"encoding/json"
@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/hmchangw/chat/e2e"
+	
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -27,7 +27,7 @@ import (
 // pkg/natsutil/request_id.go).
 func TestRequestID_PropagatesThroughBroadcastChain(t *testing.T) {
 	ctx := t.Context()
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 
 	alice := site.Authenticate(t, ctx, "alice")
 	bob := site.Authenticate(t, ctx, "bob")
@@ -44,6 +44,10 @@ func TestRequestID_PropagatesThroughBroadcastChain(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
+
+	// Wait for subscriptions before sending; otherwise gatekeeper rejects.
+	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
+	awaitSubscription(t, ctx, site.MongoDB(t), bob.Account, roomID)
 
 	bobSub, err := bob.Conn().SubscribeSync(subject.RoomEvent(roomID))
 	require.NoError(t, err)
@@ -80,9 +84,30 @@ func TestRequestID_PropagatesThroughBroadcastChain(t *testing.T) {
 	_, err = respSub.NextMsg(10 * time.Second)
 	require.NoError(t, err, "gatekeeper must reply to msg.send")
 
-	// Receive the broadcast on bob's side and assert the header.
-	broadcastMsg := awaitMessage(t, bobSub, 10*time.Second)
-	gotRequestID := broadcastMsg.Header.Get(natsutil.RequestIDHeader)
-	assert.Equal(t, requestID, gotRequestID,
-		"X-Request-ID must propagate end-to-end: gatekeeper -> message-worker -> broadcast-worker")
+	// Receive broadcasts on bob's side. Channel creation emits system messages
+	// (room_created, members_added) BEFORE alice's user message; each carries
+	// its own X-Request-ID. Loop to find the broadcast that corresponds to
+	// alice's specific message.
+	deadline := time.Now().Add(10 * time.Second)
+	var matched bool
+	for time.Now().Before(deadline) {
+		broadcastMsg, mErr := bobSub.NextMsg(2 * time.Second)
+		if mErr != nil {
+			break
+		}
+		// Parse the body to find the message we care about.
+		var ev model.RoomEvent
+		if jerr := json.Unmarshal(broadcastMsg.Data, &ev); jerr != nil {
+			continue
+		}
+		if ev.Message == nil || ev.Message.ID != msgID {
+			continue
+		}
+		gotRequestID := broadcastMsg.Header.Get(natsutil.RequestIDHeader)
+		assert.Equal(t, requestID, gotRequestID,
+			"X-Request-ID must propagate end-to-end: gatekeeper -> message-worker -> broadcast-worker")
+		matched = true
+		break
+	}
+	require.True(t, matched, "did not observe alice's broadcast carrying msgID=%s within 10s", msgID)
 }

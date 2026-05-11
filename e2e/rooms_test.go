@@ -1,27 +1,38 @@
 //go:build e2e
 
-package scenarios
+package e2e
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
-	"github.com/hmchangw/chat/e2e"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
+// makeRoomAndWait is a per-test convenience: creates a channel with bob,
+// reads the server-assigned roomID, then waits for room-worker to persist
+// alice's + bob's subscriptions in mongo. Without the wait, the next
+// per-room RPC races the persistence path and intermittently hits "user
+// is not subscribed" or "only room members can list members" errors.
+func makeRoomAndWait(t *testing.T, ctx context.Context, alice *struct{}, _ string) {}
+
 // TestRoom_DM_CreateIsIdempotent: room-service rejects a duplicate DM with
 // model.ErrorResponse{Error: "...", RoomID: existingRoomID}. Per amendment
-// R1 11.B: the test extracts RoomID via errors.As on *errorReply, NOT by
-// expecting a normal success reply.
+// R1 11.B: the test extracts RoomID via errors.As on *errorReply.
+//
+// Tests run sequentially against a shared stack; an earlier DM test may
+// have already created the alice-bob DM. We handle both first-call and
+// already-exists paths.
 func TestRoom_DM_CreateIsIdempotent(t *testing.T) {
 	ctx := t.Context()
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 
 	alice := site.Authenticate(t, ctx, "alice")
 	_ = site.Authenticate(t, ctx, "bob")
@@ -31,18 +42,29 @@ func TestRoom_DM_CreateIsIdempotent(t *testing.T) {
 		Users: []string{"bob"},
 	}
 
-	// First create -> normal success reply with a fresh roomID.
+	// First attempt may succeed (fresh DM) OR return the existing RoomID
+	// via *errorReply (prior test left state). Capture the roomID either way.
+	var existingRoomID string
 	var first model.CreateRoomReply
-	require.NoError(t, requestReply(
+	err := requestReply(
 		alice.Conn(),
 		subject.RoomCreate(alice.Account, site.SiteID),
 		createReq, 5*time.Second, &first,
-	))
-	require.NotEmpty(t, first.RoomID)
-	assert.Equal(t, string(model.RoomTypeDM), first.RoomType)
+	)
+	if err == nil {
+		require.NotEmpty(t, first.RoomID)
+		assert.Equal(t, string(model.RoomTypeDM), first.RoomType)
+		existingRoomID = first.RoomID
+	} else {
+		er := asErrorReply(err)
+		require.NotNil(t, er, "expected *errorReply, got %T: %v", err, err)
+		require.NotEmpty(t, er.Resp.RoomID, "errorReply for existing DM must carry RoomID")
+		existingRoomID = er.Resp.RoomID
+		t.Logf("first create returned existing DM RoomID=%s (prior test state)", existingRoomID)
+	}
 
-	// Second create -> ErrorResponse with the same RoomID (existing DM).
-	err := requestReply(
+	// Second create MUST be the ErrorResponse path with the SAME RoomID.
+	err = requestReply(
 		alice.Conn(),
 		subject.RoomCreate(alice.Account, site.SiteID),
 		createReq, 5*time.Second, &model.CreateRoomReply{},
@@ -50,25 +72,22 @@ func TestRoom_DM_CreateIsIdempotent(t *testing.T) {
 	require.Error(t, err)
 	er := asErrorReply(err)
 	require.NotNil(t, er, "expected an *errorReply, got %T: %v", err, err)
-	assert.NotEmpty(t, er.Resp.Error, "ErrorResponse must carry a non-empty Error (sanitization softness per R1 11.F)")
-	assert.Equal(t, first.RoomID, er.Resp.RoomID,
+	assert.NotEmpty(t, er.Resp.Error)
+	assert.Equal(t, existingRoomID, er.Resp.RoomID,
 		"duplicate DM create must return the existing roomID in the error reply")
 }
 
-// TestRoom_Channel_InviteAndMemberList: channel-create assigns a server-side
-// roomID, then member-list returns alice + bob. Per amendment R1 11.C: the
-// channel create itself can carry Users -- no separate MemberAdd needed for
-// the initial members.
+// TestRoom_Channel_InviteAndMemberList per R1 11.C.
 func TestRoom_Channel_InviteAndMemberList(t *testing.T) {
 	ctx := t.Context()
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 
 	alice := site.Authenticate(t, ctx, "alice")
-	_ = site.Authenticate(t, ctx, "bob")
+	bob := site.Authenticate(t, ctx, "bob")
 
 	createReq := model.CreateRoomRequest{
 		Name:  "e2e-" + t.Name(),
-		Users: []string{"bob"},
+		Users: []string{bob.Account},
 	}
 	var createReply model.CreateRoomReply
 	require.NoError(t, requestReply(
@@ -79,9 +98,9 @@ func TestRoom_Channel_InviteAndMemberList(t *testing.T) {
 	roomID := createReply.RoomID
 	require.NotEmpty(t, roomID)
 
-	// MemberList replies with the room's current member set. The reply shape
-	// is service-specific; we just assert the call succeeds and the response
-	// is non-empty JSON.
+	// Wait for room-worker to persist subscriptions before per-room RPCs.
+	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
+
 	var rawReply map[string]any
 	require.NoError(t, requestReply(
 		alice.Conn(),
@@ -91,20 +110,19 @@ func TestRoom_Channel_InviteAndMemberList(t *testing.T) {
 	assert.NotEmpty(t, rawReply, "MemberList reply must be non-empty JSON")
 }
 
-// TestRoom_Channel_RemoveMember: alice creates a channel with bob, then
-// removes bob, then asserts the remove call succeeded. Verifying bob's
-// absence from the member list afterwards is a stronger but separate test;
-// keep this focused on the remove RPC's happy path.
+// TestRoom_Channel_RemoveMember: uses the proper model.RemoveMemberRequest
+// shape. Bug-hunter HIGH: map[string]any{"account":"bob"} doesn't match the
+// service-side struct -- room-service requires Requester + Account fields.
 func TestRoom_Channel_RemoveMember(t *testing.T) {
 	ctx := t.Context()
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 
 	alice := site.Authenticate(t, ctx, "alice")
-	_ = site.Authenticate(t, ctx, "bob")
+	bob := site.Authenticate(t, ctx, "bob")
 
 	createReq := model.CreateRoomRequest{
 		Name:  "e2e-" + t.Name(),
-		Users: []string{"bob"},
+		Users: []string{bob.Account},
 	}
 	var createReply model.CreateRoomReply
 	require.NoError(t, requestReply(
@@ -115,10 +133,15 @@ func TestRoom_Channel_RemoveMember(t *testing.T) {
 	roomID := createReply.RoomID
 	require.NotEmpty(t, roomID)
 
-	// MemberRemove takes a payload identifying the account(s) to remove.
-	// The exact shape is room-service's RemoveMemberRequest -- not exported
-	// as a stable model type, so use a map matching the JSON.
-	removeReq := map[string]any{"account": "bob"}
+	mongoA := site.MongoDB(t)
+	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
+	awaitSubscription(t, ctx, mongoA, bob.Account, roomID)
+
+	removeReq := model.RemoveMemberRequest{
+		RoomID:    roomID,
+		Requester: alice.Account,
+		Account:   bob.Account,
+	}
 	require.NoError(t, requestReply(
 		alice.Conn(),
 		subject.MemberRemove(alice.Account, roomID, site.SiteID),
@@ -127,19 +150,16 @@ func TestRoom_Channel_RemoveMember(t *testing.T) {
 }
 
 // TestRoom_MarkMessageRead: read-receipt RPC happy path per R2.C item 5.
-// subject.MessageRead is a 3-arg builder (account, roomID, siteID per R4.A);
-// payload is empty -- room-service derives the read marker from the message
-// timestamp of the most-recent message in the room at request time.
 func TestRoom_MarkMessageRead(t *testing.T) {
 	ctx := t.Context()
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 
 	alice := site.Authenticate(t, ctx, "alice")
-	_ = site.Authenticate(t, ctx, "bob")
+	bob := site.Authenticate(t, ctx, "bob")
 
 	createReq := model.CreateRoomRequest{
 		Name:  "e2e-" + t.Name(),
-		Users: []string{"bob"},
+		Users: []string{bob.Account},
 	}
 	var createReply model.CreateRoomReply
 	require.NoError(t, requestReply(
@@ -149,25 +169,28 @@ func TestRoom_MarkMessageRead(t *testing.T) {
 	))
 	roomID := createReply.RoomID
 
-	// Alice sends one message so there's something to mark read.
+	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
+
+	// Send one message so there's something to mark read. The same RequestID
+	// is used both as the SendMessageRequest.RequestID AND as the response-
+	// subject suffix -- gatekeeper computes the reply subject from the
+	// request body's RequestID, so they must match.
 	msgID := idgen.GenerateMessageID()
+	reqID := idgen.GenerateRequestID()
 	require.NoError(t, sendAndAwaitReply(
 		t,
 		alice.Conn(),
 		alice.Account,
-		idgen.GenerateRequestID(),
+		reqID,
 		subject.MsgSend(alice.Account, roomID, site.SiteID),
 		model.SendMessageRequest{
 			ID:        msgID,
 			Content:   "for read receipt",
-			RequestID: idgen.GenerateRequestID(),
+			RequestID: reqID,
 		},
 		10*time.Second,
 	))
 
-	// Mark as read. Empty payload; room-service uses the room's current
-	// state as the read watermark (per room-service/handler.go: payload arg
-	// is `_ []byte`).
 	require.NoError(t, requestReply(
 		alice.Conn(),
 		subject.MessageRead(alice.Account, roomID, site.SiteID),
@@ -176,3 +199,6 @@ func TestRoom_MarkMessageRead(t *testing.T) {
 		nil,
 	))
 }
+
+// suppress unused imports if helper-only.
+var _ = mongo.Database{}

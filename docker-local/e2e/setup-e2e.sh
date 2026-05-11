@@ -125,7 +125,13 @@ cat > "$SECRETS_DIR/e2e-secrets.env" <<EOF
 # Sourced via compose env_file: into auth-service-{a,b}.
 AUTH_SIGNING_KEY=${ACCOUNT_SEED}
 EOF
-chmod 600 "$SECRETS_DIR/e2e-secrets.env" "$SECRETS_DIR/backend.creds"
+# backend.creds is read by 22 services running as a mix of root and non-root
+# users (search-service / search-sync-worker drop to uid 10001 `app`); 644 lets
+# every container user read it. e2e-secrets.env carries the chatapp account
+# SEED -- only auth-service mounts it, and auth-service runs as root, so 600
+# is safe there.
+chmod 644 "$SECRETS_DIR/backend.creds"
+chmod 600 "$SECRETS_DIR/e2e-secrets.env"
 
 echo "[setup-e2e] wrote:"
 echo "  $SECRETS_DIR/operator.jwt"

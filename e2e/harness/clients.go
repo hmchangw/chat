@@ -128,9 +128,14 @@ func (s SiteEndpoints) SeedRemoteUser(t *testing.T, ctx context.Context, account
 	// Match the pkg/model.User shape; _id and Account are required for
 	// room-worker's lookups; the other fields are cosmetic and left empty.
 	doc := bson.M{
-		"_id":     account,
-		"account": account,
-		"siteId":  siteID,
+		"_id":         account,
+		"account":     account,
+		"siteId":      siteID,
+		"engName":     account,                  // satisfies "missing required name fields"
+		"chineseName": account,
+		"sectId":      "test",
+		"sectName":    "test",
+		"employeeId":  account,
 	}
 	_, err := users.ReplaceOne(ctx, bson.M{"_id": account}, doc,
 		mongoOptionsReplaceUpsert())

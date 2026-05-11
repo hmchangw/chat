@@ -1,6 +1,6 @@
 //go:build e2e
 
-package scenarios
+package e2e
 
 import (
 	"testing"
@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
-	"github.com/hmchangw/chat/e2e"
+	
 	"github.com/hmchangw/chat/e2e/harness"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -33,7 +33,7 @@ import (
 //     the expected fields.
 func TestFederation_CrossSiteInvite(t *testing.T) {
 	ctx := t.Context()
-	stack := e2e.Stack()
+	stack := stack
 	harness.CaptureLogs(t, stack,
 		"room-worker-a", "inbox-worker-b", "broadcast-worker-b")
 
@@ -60,74 +60,77 @@ func TestFederation_CrossSiteInvite(t *testing.T) {
 	require.NotEmpty(t, roomID)
 	t.Logf("alice created room %s on siteA; invited bob on siteB", roomID)
 
-	// Poll mongo-b's subscriptions collection for bob+roomID.
+	// Poll mongo-b's subscriptions collection for bob+roomID. The field is
+	// nested under `u.account` in the subscription document, not flat
+	// `account` -- see pkg/model.Subscription (the Mongo bson tag is `u`).
 	subs := stack.SiteB.MongoDB(t).Collection("subscriptions")
+	filter := bson.M{"u.account": bobOnB.Account, "roomId": roomID}
 	require.Eventually(t, func() bool {
 		var sub map[string]any
-		err := subs.FindOne(ctx, bson.M{
-			"account": bobOnB.Account,
-			"roomId":  roomID,
-		}).Decode(&sub)
-		return err == nil
+		return subs.FindOne(ctx, filter).Decode(&sub) == nil
 	}, 15*time.Second, 250*time.Millisecond,
 		"bob's subscription on roomID=%s never appeared on siteB", roomID)
 
-	// Stronger assertion: the subscription document carries the correct
-	// originating site so future cross-site routing decisions work.
 	var sub map[string]any
-	require.NoError(t, subs.FindOne(ctx, bson.M{
-		"account": bobOnB.Account,
-		"roomId":  roomID,
-	}).Decode(&sub))
-	assert.Equal(t, bobOnB.Account, sub["account"])
+	require.NoError(t, subs.FindOne(ctx, filter).Decode(&sub))
 	assert.Equal(t, roomID, sub["roomId"])
+	// `siteId` on a subscription record reflects the room's home site
+	// (siteA for this test), letting downstream consumers route correctly.
+	assert.Equal(t, stack.SiteA.SiteID, sub["siteId"])
 }
 
-// TestFederation_NegativeIsolation per R2.C item 6: a siteA-LOCAL channel
-// invite (where the invitee is also a siteA user) must NOT fire a
-// subscription update on siteB. Catches the "we accidentally over-broadcast
-// cross-site" regression class.
+// TestFederation_NegativeIsolation_StateStaysSiteLocal per R2.C item 6 (revised
+// from the original "subject-silent-on-B" check after live-run discovery):
 //
-// alice and carol are both siteA users. alice creates a channel with carol;
-// we observe siteB's `chat.user.{carol}.update` subject and assert it stays
-// silent for 2 seconds.
-func TestFederation_NegativeIsolation_SiteALocalInviteSilentOnB(t *testing.T) {
+// The original conception was that `chat.user.{account}.update` on siteB
+// would NOT fire for a siteA-local invite. Live testing showed that broadcast
+// NATS subjects ARE gateway-federated by design -- subject interest propagates
+// regardless of the publishing site. So observing siteB's NATS is not a
+// meaningful negative-isolation signal.
+//
+// The MEANINGFUL boundary is mongo state: a siteA-local invite must NOT
+// produce a subscription row in mongo-b. mongo state is per-site and never
+// federated; that's the actual isolation contract.
+//
+// Catches the regression class "inbox-worker-b receives + materializes events
+// that should have stayed siteA-local."
+func TestFederation_NegativeIsolation_StateStaysSiteLocal(t *testing.T) {
 	ctx := t.Context()
-	stack := e2e.Stack()
+	stack := stack
 	harness.CaptureLogs(t, stack, "room-worker-a", "inbox-worker-b")
 
 	alice := stack.SiteA.Authenticate(t, ctx, "alice")
-	// Use bob as the local invitee here -- realm-export.json defines alice
-	// and bob; if more test users land later, swap in a synthetic "carol".
-	bob := stack.SiteA.Authenticate(t, ctx, "bob")
+	bob := stack.SiteA.Authenticate(t, ctx, "bob") // bob is a SITE-A user here
 
-	// Subscribe on siteB BEFORE inviting on siteA. Reuses bob's account
-	// name; the subscription update on siteB is observed via the local
-	// system creds (no per-user auth needed for observation).
-	siteBConn := stack.SiteB.SystemConn(t)
-	negSub, err := siteBConn.SubscribeSync(subject.SubscriptionUpdate(bob.Account))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = negSub.Unsubscribe() })
-
-	// alice creates a channel with bob (BOTH on siteA, no cross-site path
-	// should fire).
 	createReq := model.CreateRoomRequest{
 		Name:  "e2e-" + t.Name(),
 		Users: []string{bob.Account},
 	}
+	var createReply model.CreateRoomReply
 	require.NoError(t, requestReply(
 		alice.Conn(),
 		subject.RoomCreate(alice.Account, stack.SiteA.SiteID),
-		createReq, 5*time.Second, &model.CreateRoomReply{},
+		createReq, 5*time.Second, &createReply,
 	))
+	roomID := createReply.RoomID
+	require.NotEmpty(t, roomID)
 
-	// Wait 2 seconds for nothing to arrive on siteB's subject.
-	msg, err := negSub.NextMsg(2 * time.Second)
-	if err == nil {
-		t.Fatalf("siteB received an unexpected subscription update for a siteA-local invite: %s", msg.Data)
-	}
-	// Expected: nats.ErrTimeout. Any other error is a test infra issue, not a
-	// federation regression -- log loudly.
-	assert.Contains(t, err.Error(), "timeout",
-		"expected timeout on siteB subscription subject; got %v", err)
+	// Wait for siteA's room-worker to finish (the local subscription should
+	// appear on mongo-a). This gives any cross-site path enough time to also
+	// fire if it WERE going to misbehave.
+	awaitSubscription(t, ctx, stack.SiteA.MongoDB(t), bob.Account, roomID)
+
+	// Buffer for any straggler async work.
+	time.Sleep(1 * time.Second)
+
+	// Mongo-b must NOT have a subscription for this room (it's siteA-local).
+	subsB := stack.SiteB.MongoDB(t).Collection("subscriptions")
+	count, err := subsB.CountDocuments(ctx, bson.M{
+		"u.account": bob.Account,
+		"roomId":    roomID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), count,
+		"mongo-b must have no subscription for siteA-local room %s -- found %d",
+		roomID, count)
 }

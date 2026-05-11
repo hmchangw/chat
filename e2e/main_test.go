@@ -12,6 +12,10 @@ import (
 	"github.com/hmchangw/chat/e2e/harness"
 )
 
+// stack is the package-level singleton populated by TestMain. Test files in
+// this package read it directly (e.g. `site := stack.SiteA`).
+var stack *harness.Stack
+
 func TestMain(m *testing.M) {
 	os.Exit(runTestMain(m))
 }
