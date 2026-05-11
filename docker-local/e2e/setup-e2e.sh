@@ -76,7 +76,6 @@ docker run --rm \
 
     nsc describe account chatapp 2>/dev/null | grep "Account ID" | awk -F"|" "{gsub(/[ \t]/, \"\", \$3); print \$3}" > /output/account_pub.txt
     nsc describe account SYS 2>/dev/null | grep "Account ID" | awk -F"|" "{gsub(/[ \t]/, \"\", \$3); print \$3}" > /output/sys_pub.txt
-    nsc describe operator 2>/dev/null | grep "Operator ID" | awk -F"|" "{gsub(/[ \t]/, \"\", \$3); print \$3}" > /output/operator_pub.txt
 
     ACCOUNT_PUB=$(cat /output/account_pub.txt)
     SEED_FILE=$(find /root/.local/share/nats/nsc/keys -name "${ACCOUNT_PUB}.nk" 2>/dev/null | head -1)

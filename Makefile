@@ -132,8 +132,6 @@ e2e-up: $(E2E_ENV) $(E2E_SECRETS)
 	  exit 1; \
 	} || true
 	docker compose -f $(E2E_COMPOSE) up -d --wait
-	docker compose -f $(E2E_COMPOSE) --profile init run --rm cassandra-init-a
-	docker compose -f $(E2E_COMPOSE) --profile init run --rm search-init-a
 
 # Non-destructive: stops containers, preserves volumes (keycloak realm + cass
 # schema survive). Use this for fast iteration.
