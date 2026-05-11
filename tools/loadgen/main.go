@@ -169,6 +169,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	rampDuration := fs.Duration("ramp-duration", 0, "time to climb from --ramp-from to --ramp-to")
 	rampShape := fs.String("ramp-shape", "linear", "ramp curve: linear|exponential")
 	connections := fs.Int("connections", 1, "number of NATS data connections (per-user fan-out); 1 reuses the observer connection")
+	natsCredsDir := fs.String("nats-creds-dir", "", "directory of *.creds files; data conns rotate through them (C2 prep — auth-service must be in compose stack for SUT-side validation)")
 	abortP99Ms := fs.Int("abort-on-p99-ms", 0, "abort the run if the p99 of the abort window's latency stays over this for --abort-p99-sustain; 0 disables")
 	abortP99Sustain := fs.Duration("abort-p99-sustain", 30*time.Second, "sustain window for the p99 abort threshold")
 	abortErrorPct := fs.Float64("abort-on-error-pct", 0, "abort the run if error rate stays over this fraction (0..1) for --abort-error-sustain; 0 disables")
@@ -355,8 +356,24 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// reply / broadcast / sampler connection, plus optional N data
 	// connections for per-user fan-out. --connections=1 falls back to
 	// observer-only (today's behavior).
-	pool, perr := NewConnPoolWithObserver(
-		nc.NatsConn(), cfg.NatsURL, cfg.NatsCredsFile, *connections,
+	//
+	// C2 prep: when --nats-creds-dir is set, each data conn dials with
+	// a different *.creds file from that dir. Full per-fixture-user
+	// auth requires auth-service in the compose stack (deferred);
+	// today this rotates whatever pre-minted creds the operator
+	// supplies. Empty dir → fall back to cfg.NatsCredsFile for every
+	// dial (existing behavior).
+	credsFiles, credsErr := LoadCredsDir(*natsCredsDir)
+	if credsErr != nil {
+		slog.Error("nats creds dir", "error", credsErr)
+		return 1
+	}
+	if len(credsFiles) > 0 {
+		slog.Info("rotating per-user nats creds",
+			"creds_count", len(credsFiles), "data_conns", *connections)
+	}
+	pool, perr := NewConnPoolWithCreds(
+		nc.NatsConn(), cfg.NatsURL, cfg.NatsCredsFile, credsFiles, *connections,
 		func(url, creds string) (*nats.Conn, error) {
 			c, derr := natsutil.Connect(url, creds)
 			if derr != nil {

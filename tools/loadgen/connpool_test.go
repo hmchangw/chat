@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/nats-io/nats.go"
@@ -257,4 +259,62 @@ func TestNewConnPoolWithObserver_MultiDialPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 4, pool.Size())
 	assert.Same(t, stub, pool.Observer())
+}
+
+func TestLoadCredsDir_Empty(t *testing.T) {
+	got, err := LoadCredsDir("")
+	require.NoError(t, err)
+	assert.Empty(t, got, "empty dir → empty slice, no error")
+}
+
+func TestLoadCredsDir_NonExistent(t *testing.T) {
+	_, err := LoadCredsDir("/nonexistent-path-no-really")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read creds dir")
+}
+
+func TestLoadCredsDir_PicksOnlyCredsFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Write a mix of *.creds and decoys (ignored).
+	for _, n := range []string{"alice.creds", "bob.creds", "readme.txt", "ignored.bak"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, n), []byte("stub"), 0o600))
+	}
+	// And a subdirectory — also ignored.
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "subdir"), 0o700))
+
+	got, err := LoadCredsDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, got, 2, "must pick only *.creds")
+	// Sorted lexically → alice before bob.
+	assert.True(t, len(got) == 2 && filepath.Base(got[0]) == "alice.creds")
+	assert.True(t, len(got) == 2 && filepath.Base(got[1]) == "bob.creds")
+}
+
+func TestNewConnPoolWithCreds_FallsBackWhenCredsListEmpty(t *testing.T) {
+	calls := 0
+	credUsed := ""
+	stubDial := func(_, creds string) (*nats.Conn, error) {
+		calls++
+		credUsed = creds
+		return &nats.Conn{}, nil
+	}
+	pool, err := NewConnPoolWithCreds(&nats.Conn{}, "nats://stub", "/path/to/global.creds", nil, 3, stubDial)
+	require.NoError(t, err)
+	assert.Equal(t, 3, pool.Size())
+	assert.Equal(t, 3, calls)
+	assert.Equal(t, "/path/to/global.creds", credUsed, "empty credsFiles → cfg fallback")
+}
+
+func TestNewConnPoolWithCreds_RotatesAcrossDataConns(t *testing.T) {
+	credsFiles := []string{"/a.creds", "/b.creds"}
+	got := []string{}
+	stubDial := func(_, creds string) (*nats.Conn, error) {
+		got = append(got, creds)
+		return &nats.Conn{}, nil
+	}
+	pool, err := NewConnPoolWithCreds(&nats.Conn{}, "nats://stub", "", credsFiles, 4, stubDial)
+	require.NoError(t, err)
+	assert.Equal(t, 4, pool.Size())
+	assert.Equal(t, []string{"/a.creds", "/b.creds", "/a.creds", "/b.creds"}, got,
+		"data conns must rotate creds round-robin")
 }

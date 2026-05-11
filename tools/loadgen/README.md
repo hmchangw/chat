@@ -129,6 +129,21 @@ sum(rate(loadgen_publish_errors_total{reason="saturated"}[1m]))
   `loadgen seed --i-know-what-i-am-doing` bypasses the check.
   `teardown` has no such bypass — drop a non-loadgen DB directly
   via `mongosh` if you really need to.
+- **Per-user NATS credentials (preview):** `--nats-creds-dir=DIR`
+  rotates `*.creds` files from `DIR` across the data connections in
+  the pool, so each data connection dials with a different user
+  credential. This is the harness-side plumbing for the eventual
+  "per-fixture-user JWT/NKey" auth path. Full SUT-side validation
+  requires `auth-service` in the compose stack, which today is
+  deferred — until then, the rotation runs but the SUT doesn't
+  validate against auth-service. Set `NATS_CREDS_FILE` (single
+  shared creds, today's default) OR `--nats-creds-dir`, not both.
+- **Mid-run liveness probe:** the harness probes the SUT every
+  `--liveness-interval` (default 30s). After
+  `--liveness-failures` (default 3) consecutive failures, the run
+  aborts with exit code 3 ("SUT unreachable"), distinct from exit
+  code 2 ("SUT slow / saturation watcher fired"). Counted by the
+  `loadgen_liveness_probes_total{result=ok|fail}` metric.
 - The compose stack is substantial (NATS + Mongo + Cassandra +
   Elasticsearch + Valkey + 7 services). Plan for ~3GB of memory on
   Cassandra + Elasticsearch alone.

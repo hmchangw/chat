@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"hash/fnv"
+	"os"
+	"path/filepath"
+	"sort"
 
 	"github.com/nats-io/nats.go"
 )
@@ -136,6 +139,77 @@ func (p *ConnPool) Drain() {
 	if p.observer != nil {
 		_ = p.observer.Drain()
 	}
+}
+
+// LoadCredsDir lists *.creds files in dir (sorted lexically) and
+// returns their absolute paths. Used by `--nats-creds-dir` so each
+// data connection in the ConnPool can dial with a different
+// credential — laying the plumbing for the C2 "per-fixture-user
+// JWT/NKey" auth path. Today the loadgen compose stack does not
+// include auth-service (deferred), so callers typically leave this
+// empty and dial unauthenticated. When auth-service lands in the
+// stack, operators point `--nats-creds-dir` at a directory of
+// pre-minted user creds and the pool rotates them across data conns.
+//
+// Returns an empty slice + nil error when dir is empty; non-existent
+// dir or a read error returns an error.
+func LoadCredsDir(dir string) ([]string, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read creds dir %q: %w", dir, err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if filepath.Ext(name) != ".creds" {
+			continue
+		}
+		out = append(out, filepath.Join(dir, name))
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// NewConnPoolWithCreds builds a ConnPool where each data connection
+// dials with a different credentials file rotated from credsFiles.
+// Like NewConnPoolWithObserver, the observer is reused from the
+// caller-supplied connection. When credsFiles is empty, falls back to
+// the global credsFile parameter for every dial — backwards-compatible
+// with NewConnPoolWithObserver.
+//
+// dataSize <= 1 collapses to {observer} (no data conns dialed).
+func NewConnPoolWithCreds(observer *nats.Conn, urls, credsFile string, credsFiles []string, dataSize int, dial func(url, creds string) (*nats.Conn, error)) (*ConnPool, error) {
+	if observer == nil {
+		return nil, fmt.Errorf("observer connection required")
+	}
+	if dataSize <= 1 {
+		return &ConnPool{observer: observer}, nil
+	}
+	if dial == nil {
+		return nil, fmt.Errorf("dial function required when dataSize > 1")
+	}
+	conns := make([]*nats.Conn, 0, dataSize)
+	for i := 0; i < dataSize; i++ {
+		creds := credsFile
+		if len(credsFiles) > 0 {
+			creds = credsFiles[i%len(credsFiles)]
+		}
+		c, err := dial(urls, creds)
+		if err != nil {
+			for _, prior := range conns {
+				_ = prior.Drain()
+			}
+			return nil, fmt.Errorf("dial conn %d: %w", i, err)
+		}
+		conns = append(conns, c)
+	}
+	return &ConnPool{conns: conns, observer: observer}, nil
 }
 
 // UserFromSubject extracts the {account} segment from
