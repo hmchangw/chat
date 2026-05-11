@@ -649,8 +649,7 @@ Verify `subject.Notification(account)` is the actual builder name (otherwise inl
 - Log-level happy-path assertion (no `slog.Error` during a passing test)
 - Encryption-on coverage (`ENCRYPTION_ENABLED=true` path)
 - Edit/delete message paths (`MsgEdit`, `MsgDelete`, `EventUpdated`/`EventDeleted` through search-sync-worker)
-- Time-window pagination, threads, mentions
-- DM broadcast path (`UserRoomEvent` channel — separate from channel `RoomEvent`)
+- Time-window pagination, threads
 - Throughput baseline (one test asserting p99 < 2s for a 100-message burst)
 - Connection-recovery test (kill nats-a mid-send, assert producer reconnects)
 - Per-test JS state snapshot in `CaptureLogs`
@@ -658,3 +657,122 @@ Verify `subject.Notification(account)` is the actual builder name (otherwise inl
 - Two-account federation (separate operator-per-site with cross-signing) for trust-isolation realism
 - Cassandra image version drift between `pkg/testutil/testimages` (4.1.3) and e2e plan (5)
 - OIDC discovery URL decoupling in auth-service (would simplify B7)
+- Graceful shutdown verification (drain ordering, no message loss)
+
+---
+
+## Revision 2 — additional amendments from second review pass
+
+The first revision missed three families of issues that surfaced when chapters 1+2 landed and got fresh eyes on them. This section layers on top.
+
+### R2.A — Chapter 3 host-port allocation table (latent bug: collision with `make deps-up`)
+
+**Problem:** the original chapter 3 plan (lines 361, 390, 411, 442, 471, 492 of the spec) host-publishes site-A ports as `4222:4222`, `27017:27017`, `9042:9042`, `9200:9200`, `6379:6379`, `8180:8080`, `8222:8222` — exactly the ports `docker-local/compose.deps.yaml` already binds. Chapter 5 site-B uses a +100 band (`4322`, `27018`, `9142`, `9300`, `6479`, `8181`). A developer with `make deps-up` running can't `make e2e-up`. The plan never specified a port table.
+
+**Fix:** Move site-A to a `+10000` band, site-B to a `+20000` band. deps-up keeps stock ports. Each band preserves the last 4 digits of the original (so ports remain mnemonic).
+
+| Service | Internal | deps-up host | site-A host (chapter 3) | site-B host (chapter 5) |
+|---|---|---|---|---|
+| NATS client | 4222 | 4222 | **14222** | **24222** |
+| NATS HTTP monitoring | 8222 | 8222 | **18222** | **28222** |
+| NATS gateway | 7222 | — | (network-only) | (network-only) |
+| NATS cluster | 6222 | — | (network-only) | (network-only) |
+| Mongo | 27017 | 27017 | **37017** | **47017** |
+| Cassandra | 9042 | 9042 | **19042** | **29042** |
+| Elasticsearch | 9200 | 9200 | **19200** | **29200** |
+| Valkey | 6379 | 6379 | **16379** | **26379** |
+| Keycloak | 8080 | 8180 | **18180** | **28180** |
+| auth-service | 8080 | — | **18080** | **28080** |
+| search-service metrics | 9090 | — | **19090** | (drop, per existing chapter 12 amendment) |
+
+**Rule:** internal container-to-container traffic uses the original ports (4222, 8080, etc.) via the `chat-e2e` docker network. Only the harness on the host uses the +10000/+20000 mapped ports.
+
+**Edits required when chapter 3 lands:**
+- Replace every `"4222:4222"` etc. with `"14222:4222"` etc. on site-A blocks.
+- Cross-reference amendment 3.D (Keycloak `KC_HOSTNAME`): must become `http://host.docker.internal:18180` (was `:8180`). Site-B mirror in chapter 5 becomes `:28180` (was `:8181`).
+- Cross-reference amendment 4.B (auth-service `OIDC_ISSUER_URL`): `http://host.docker.internal:18180/realms/chatapp` for site-A; `:28180` for site-B.
+- Cross-reference amendment 4.B (search-init job): `http://es-a:9200` is unchanged (internal docker-network address).
+- Update chapter 7 `harness/stack.go` `SiteEndpoints` to point at the new host ports (`http://localhost:14222`, etc.).
+
+**Defensive belt-and-braces:** also add a precheck to `e2e-up`:
+
+```makefile
+e2e-up: $(E2E_ENV)
+	@docker compose -f docker-local/compose.deps.yaml ps -q nats >/dev/null 2>&1 \
+	  && { echo "ERROR: 'make deps-up' is running. Stop it first ('make deps-down') — even with the new port band, sharing two stacks on one box is unsupported."; exit 1; } \
+	  || true
+	docker compose -f $(E2E_COMPOSE) --profile init up -d --wait
+	docker compose -f $(E2E_COMPOSE) --profile init run --rm cassandra-init-a
+	docker compose -f $(E2E_COMPOSE) --profile init run --rm cassandra-init-b
+	docker compose -f $(E2E_COMPOSE) --profile init run --rm search-init-a
+	docker compose -f $(E2E_COMPOSE) --profile init run --rm search-init-b
+```
+
+(Even with non-overlapping ports, dual-stack on a 32GB box risks OOM. Hard guard is cheaper than debugging mystery failures.)
+
+### R2.B — `.env` regeneration when `.env.example` changes (latent #4)
+
+**Problem:** the `$(E2E_ENV)` rule has no prerequisites. Once `docker-local/e2e/.env` exists, edits to `.env.example` do not propagate. When chapter 4's amendment adds new `E2E_*` vars (or chapter 3 adds image refs), existing devs see cryptic compose errors like `variable is not set` rather than a useful prompt.
+
+**Fix:** purely documentary. Append to chapter 1's `.env.example` itself:
+
+```
+# When you pull updates that add new vars to this file, you must
+# manually refresh your local .env by running:
+#     rm docker-local/e2e/.env && make e2e-up
+# This re-copies the latest defaults. The Makefile rule will not
+# auto-overwrite an existing .env (by design — it preserves your
+# local mirror overrides).
+```
+
+No Makefile change. The auto-create rule's "preserve local overrides" semantics are the desired behavior; we only need to make the refresh story discoverable.
+
+### R2.C — Coverage adds folded into chapters 10–12 (per coverage audit)
+
+The amendments doc's "Out of scope" list dropped DM-broadcast and mention-resolution as deferred. That was wrong — they're cheap to add and they exercise distinct code paths the suite otherwise misses entirely. Plus the audit surfaced one fully-undocumented omission (`MessageRead`) and asymmetric federation coverage (only `member_added`, missing `role_update` and `member_removed`).
+
+**Add to chapter 10** (single-site happy path):
+
+1. **DM broadcast variant** — clone `TestMessage_SendAndBroadcast_SingleSite` as `TestMessage_DMSendAndBroadcast_SingleSite`. Create the room via `idgen.BuildDMRoomID(alice.User.ID, bob.User.ID)` and `model.CreateRoomRequest{Type: model.RoomTypeDM, Users: []string{bob.Account}}`. Send via `subject.MsgSend` (same builder); the broadcast channel for DMs is `subject.UserRoomEvent(account)` not `subject.RoomEvent(roomID)` — bob's `SubscribeSync` target changes accordingly. Cost: ~30 lines; one new test.
+
+2. **Strengthen the chapter-10 history assertion** — after `LoadHistory`, assert:
+   ```go
+   require.Len(t, hist.Messages, 1)
+   m := hist.Messages[0]
+   assert.Equal(t, ids.MessageID, m.ID)
+   assert.Equal(t, alice.Account, m.Sender)
+   assert.NotZero(t, m.CreatedAt)
+   assert.Equal(t, stack.SiteA.SiteID, m.SiteID)
+   ```
+   Catches a class of "worker writes garbage extra fields" or "Sender gets stripped" regressions the equality-only check misses.
+
+3. **Mention-resolution exercise** — change the message body to include `@bob`, then assert the notification's `Mentions` field (or whatever the actual field name on `model.NotificationEvent` is — verify before writing) contains bob's account. Catches the high-frequency "mention parser broke and no one notices" bug. The current chapter 10 amendment (notification piggyback) only proves notification-worker fired; it doesn't prove the mention path lit up.
+
+**Add to chapter 11** (single-site coverage):
+
+4. **Strengthen search assertion** — replace the chapter-11 generic search test's body with a unique two-token string like `"pumpernickel xylophone"`, search for `pumpernickel`, assert the response contains exactly one hit AND that hit's message ID matches the one alice sent. One-line content change + one extra assertion. Turns a smoke test into a real test.
+
+5. **`TestRoom_MarkMessageRead` happy path** — read receipts are a wired RPC at `room-service/handler.go:81` (`subject.MessageReadWildcard`) and a documented client API in `docs/client-api.md` section 3.1. Subject builder: verify whether it's `subject.MessageRead(account, roomID)` or similar (read `pkg/subject/subject.go` first). Test: alice sends → alice acks read → `requestReply` returns success; verify Mongo subscription document's `LastSeenAt` updated. Cost: ~25 lines.
+
+**Add to chapter 12** (federation):
+
+6. **Negative-isolation assertion** — after `TestFederation_CrossSiteInvite`, separately invite carol@A into a siteA-only channel. Subscribe `subject.UserSubscriptionUpdate(carol.Account)` on **siteB's** NATS. Assert the subscription event does NOT arrive within 2s. Catches the "we accidentally over-broadcast cross-site" regression class. ~15 lines.
+
+7. **Cycle through OUTBOX event types** — extend chapter 12's catch-up rescope (currently 20 `member_added` events) into a small table-driven test covering each OUTBOX subject: `member_added`, `member_removed`, `role_update`. Each is a separate handler in `inbox-worker`; bug in one wouldn't show via the others. Cost: ~40 lines, +2 sub-tests.
+
+### R2.D — Out-of-scope list updated
+
+Two items removed from "out of scope" because R2.C now covers them:
+- ~~DM broadcast path~~ — added in R2.C item 1.
+- ~~Mentions~~ — added in R2.C item 3 (resolution path), though full mention parser unit-test coverage still belongs to `pkg/mention` per its own integration tests.
+
+One item added to "out of scope":
+- **Read receipt edge cases** (re-reading already-read messages, reading older messages out of order, multi-device sync). R2.C item 5 covers only the happy-path RPC; the edge cases warrant a follow-up plan.
+
+### R2.E — Cross-cutting consistency (cleanup of chapter-1/2 latent bugs)
+
+The chapter-1 Makefile is amended in this revision (committed alongside this doc):
+- `e2e-only` gets a `$(E2E_ENV)` prerequisite and a precheck that `nats-a` is up. Fixes the confusing `lstat ./e2e/: no such file or directory` failure on a fresh clone.
+- The `e2e-up` precheck for `make deps-up` running (R2.A above) lands when chapter 3 modifies the target.
+
+The `pkg/testutil/testimages/testimages.go` Mongo pin is bumped from 4.4.15 → 8 in this revision (committed alongside this doc) to match the prod-local stack and the e2e suite. The original 4.4.15 comment described a divergence-protection pattern that the codebase doesn't actually use today (no `partialFilterExpression` with `$in`); the comment was preventative, not reactive. Sandbox lacks Docker so behavioral verification of integration tests against mongo:8 is deferred to CI.

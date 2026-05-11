@@ -20,10 +20,11 @@ const (
 	Cassandra = "cassandra:4.1.3"
 
 	// Mongo is the image for every Mongo-backed integration test.
-	// Pinned to 4.4.15 to match production; catches operator-allow-list
-	// regressions like $in in partialFilterExpression that newer Mongo
-	// silently accepts.
-	Mongo = "mongo:4.4.15"
+	// Tracks docker-local/compose.deps.yaml (mongo:8) so integration
+	// tests, the e2e suite, and prod-local all converge on one version.
+	// Earlier 4.4.15 pin was retired when the prod-local stack moved to
+	// mongo:8.
+	Mongo = "mongo:8"
 
 	// NATS is the image for every NATS-backed integration test
 	// (core NATS + JetStream + WebSocket).
