@@ -10,10 +10,14 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeymetrics"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
@@ -33,14 +37,30 @@ type InboxStore interface {
 	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
 }
 
-// Handler processes incoming cross-site OutboxEvent messages.
-type Handler struct {
-	store InboxStore
+// RoomKeyStore is the local Valkey-backed keystore used by inbox-worker.
+type RoomKeyStore interface {
+	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
+	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
+	Rotate(ctx context.Context, roomID string, newPair roomkeystore.RoomKeyPair) (int, error)
+	Close() error
 }
 
-// NewHandler creates a Handler with the given store.
-func NewHandler(store InboxStore) *Handler {
-	return &Handler{store: store}
+// InterSiteKeyClient fetches a keypair from an origin site via NATS RPC.
+type InterSiteKeyClient interface {
+	GetRoomKey(ctx context.Context, originSiteID, roomID string) (*model.RoomKeyEvent, error)
+}
+
+// Handler processes incoming cross-site OutboxEvent messages.
+type Handler struct {
+	store           InboxStore
+	siteID          string
+	keyStore        RoomKeyStore
+	interSiteClient InterSiteKeyClient
+}
+
+// NewHandler creates a Handler with the given store and optional key-handling dependencies.
+func NewHandler(store InboxStore, siteID string, keyStore RoomKeyStore, client InterSiteKeyClient) *Handler {
+	return &Handler{store: store, siteID: siteID, keyStore: keyStore, interSiteClient: client}
 }
 
 // HandleEvent processes a single JetStream message payload.
@@ -124,6 +144,14 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		return fmt.Errorf("bulk create subscriptions: %w", err)
 	}
 
+	// 4. Replicate room key locally. Origin room-worker already published
+	// chat.user.<account>.event.room.key for each new member; the supercluster
+	// routes it to the user's home site. This call only ensures local Valkey
+	// has the key so broadcast-worker on this site can encrypt.
+	if err := h.replicateLocalKey(ctx, evt.SiteID, event.RoomID); err != nil {
+		slog.Error("replicate local key", "error", err, "roomId", event.RoomID, "originSiteID", evt.SiteID)
+	}
+
 	// No SubscriptionUpdateEvent is published here — room-worker already publishes
 	// to the user's subject and the NATS supercluster routes it to the user's
 	// home site.
@@ -146,6 +174,12 @@ func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEven
 	}
 	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
 		return fmt.Errorf("delete subscriptions for room %s: %w", memberEvt.RoomID, err)
+	}
+	// Rotate local Valkey key so broadcast-worker on this site uses the new pair.
+	// Origin room-worker already published chat.user.<account>.event.room.key to
+	// all survivors; the supercluster routes those events to home sites.
+	if err := h.rotateLocalKey(ctx, evt.SiteID, memberEvt.RoomID); err != nil {
+		return fmt.Errorf("rotate local key (room %s, origin %s): %w", memberEvt.RoomID, evt.SiteID, err)
 	}
 	return nil
 }
@@ -305,9 +339,91 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 	}
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
+			if err := h.replicateRoomKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
+				slog.Error("replicate room key", "error", err, "roomId", data.RoomID, "originSiteID", data.HomeSiteID)
+			}
 			return nil
 		}
 		return fmt.Errorf("bulk create subs: %w", err)
+	}
+	if err := h.replicateRoomKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
+		slog.Error("replicate room key", "error", err, "roomId", data.RoomID, "originSiteID", data.HomeSiteID)
+	}
+	return nil
+}
+
+// replicateLocalKey ensures the local Valkey has the room key. On cache hit it
+// is a no-op (key already replicated). On miss it calls replicateRoomKey to
+// fetch from origin and store locally. User-side fan-out is NOT performed here
+// — origin room-worker publishes chat.user.<account>.event.room.key for all
+// members; the NATS supercluster routes those events to home sites.
+func (h *Handler) replicateLocalKey(ctx context.Context, originSiteID, roomID string) error {
+	if h.keyStore == nil || h.interSiteClient == nil {
+		return nil
+	}
+	pair, err := h.keyStore.Get(ctx, roomID)
+	if err != nil {
+		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+		return fmt.Errorf("get local key: %w", err)
+	}
+	if pair != nil {
+		// Key already present locally — nothing to do.
+		return nil
+	}
+	// Local miss → replicate from origin.
+	return h.replicateRoomKey(ctx, originSiteID, roomID)
+}
+
+// rotateLocalKey RPCs the origin for the latest key and rotates local Valkey
+// so broadcast-worker on this site uses the new pair. User-side fan-out is NOT
+// performed here — origin room-worker already published chat.user.<account>.event.room.key
+// to all survivors; the NATS supercluster routes those events to home sites.
+// RPC failure is returned so the caller can NAK the JetStream message.
+func (h *Handler) rotateLocalKey(ctx context.Context, originSiteID, roomID string) error {
+	if h.keyStore == nil || h.interSiteClient == nil {
+		return nil
+	}
+	fetched, err := h.interSiteClient.GetRoomKey(ctx, originSiteID, roomID)
+	if err != nil {
+		return fmt.Errorf("rpc origin: %w", err)
+	}
+	pair := roomkeystore.RoomKeyPair{PublicKey: fetched.PublicKey, PrivateKey: fetched.PrivateKey}
+	if _, err := h.keyStore.Rotate(ctx, roomID, pair); err != nil {
+		if errors.Is(err, roomkeystore.ErrNoCurrentKey) {
+			if _, err := h.keyStore.Set(ctx, roomID, pair); err != nil {
+				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
+				return fmt.Errorf("set local key (fallback): %w", err)
+			}
+		} else {
+			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
+			return fmt.Errorf("rotate local key: %w", err)
+		}
+	}
+	return nil
+}
+
+// replicateRoomKey pulls the keypair from origin and stores it in local Valkey
+// (Rotate-with-Set-fallback to preserve version progression on pre-existing rooms).
+// No user-side fan-out — origin room-worker handles that via NATS supercluster.
+func (h *Handler) replicateRoomKey(ctx context.Context, originSiteID, roomID string) error {
+	if h.keyStore == nil || h.interSiteClient == nil {
+		return nil
+	}
+	fetched, err := h.interSiteClient.GetRoomKey(ctx, originSiteID, roomID)
+	if err != nil {
+		return fmt.Errorf("rpc origin: %w", err)
+	}
+	pair := roomkeystore.RoomKeyPair{PublicKey: fetched.PublicKey, PrivateKey: fetched.PrivateKey}
+	if _, err := h.keyStore.Rotate(ctx, roomID, pair); err != nil {
+		if errors.Is(err, roomkeystore.ErrNoCurrentKey) {
+			if _, err := h.keyStore.Set(ctx, roomID, pair); err != nil {
+				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
+				return fmt.Errorf("set local (fallback): %w", err)
+			}
+		} else {
+			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
+			return fmt.Errorf("rotate local: %w", err)
+		}
 	}
 	return nil
 }
