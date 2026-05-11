@@ -55,3 +55,7 @@ chat-frontend/.vite/
 
 # Vitest junit reporter output (CI artifact, not source)
 chat-frontend/junit.xml
+# e2e suite failure-time log captures (harness.CaptureLogs writes here,
+# relative to the test package's CWD).
+e2e/logs/
+e2e/scenarios/logs/

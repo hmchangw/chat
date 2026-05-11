@@ -15,9 +15,16 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
+
+// mongoOptionsReplaceUpsert returns ReplaceOptions with Upsert(true). Wrapped
+// in a helper because the v2 driver's API is verbose at the call site.
+func mongoOptionsReplaceUpsert() *options.ReplaceOptionsBuilder {
+	return options.Replace().SetUpsert(true)
+}
 
 // SystemConn returns a NATS connection authenticated with backend.creds (the
 // all-services credential). Used by the harness for negative-observation and
@@ -103,4 +110,29 @@ func (s SiteEndpoints) HTTPClient(t *testing.T) *resty.Client {
 func (s SiteEndpoints) ESClient(t *testing.T) (*http.Client, string) {
 	t.Helper()
 	return http.DefaultClient, s.ESURL
+}
+
+// SeedRemoteUser inserts a stub User document into the site's users
+// collection. Per amendment R1 12.D: cross-site federation tests need the
+// originating site (where the inviter lives) to know that the invitee
+// belongs to a different site, so room-worker's invite path can publish to
+// the correct outbox.{src}.to.{dst}.member_added subject. Production has a
+// separate user-replication mechanism out of scope here; the test simulates
+// it directly.
+//
+// Idempotent: re-inserts with the same _id replace the prior document.
+func (s SiteEndpoints) SeedRemoteUser(t *testing.T, ctx context.Context, account, siteID string) {
+	t.Helper()
+	db := s.MongoDB(t)
+	users := db.Collection("users")
+	// Match the pkg/model.User shape; _id and Account are required for
+	// room-worker's lookups; the other fields are cosmetic and left empty.
+	doc := bson.M{
+		"_id":     account,
+		"account": account,
+		"siteId":  siteID,
+	}
+	_, err := users.ReplaceOne(ctx, bson.M{"_id": account}, doc,
+		mongoOptionsReplaceUpsert())
+	require.NoError(t, err, "seed remote user %s on %s", account, s.SiteID)
 }
