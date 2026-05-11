@@ -212,3 +212,53 @@ func TestRunRun_ExitCodeOnAbort(t *testing.T) {
 		})
 	}
 }
+
+// TestLatencyWindow_Add_UsesWallClock confirms the production `Add`
+// entry point (wall-clock variant of AddAt) is wired correctly.
+func TestLatencyWindow_Add_UsesWallClock(t *testing.T) {
+	w := NewLatencyWindow(1 * time.Second)
+	w.Add(5*time.Millisecond, false)
+	w.Add(7*time.Millisecond, true)
+	// Both samples are near time.Now(); P99 over 1s should pick the higher.
+	p99 := w.P99(time.Now(), 1*time.Second)
+	assert.GreaterOrEqual(t, p99, 5*time.Millisecond)
+	rate := w.ErrorRate(time.Now(), 1*time.Second)
+	assert.InDelta(t, 0.5, rate, 0.001, "one error of two = 50%%")
+}
+
+func TestLatencyWindow_P50_ExactValue(t *testing.T) {
+	w := NewLatencyWindow(60 * time.Second)
+	t0 := time.Unix(100, 0)
+	// 100 samples 1ms..100ms.
+	for i := 1; i <= 100; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*100*time.Millisecond), time.Duration(i)*time.Millisecond, false)
+	}
+	end := t0.Add(101 * 100 * time.Millisecond)
+	p50 := w.P50(end, 60*time.Second)
+	// 100 samples, idx = floor(99 * 0.50) = 49 → samples[49] = 50ms.
+	assert.Equal(t, 50*time.Millisecond, p50)
+}
+
+func TestLatencyWindow_PercentileAt_P95(t *testing.T) {
+	w := NewLatencyWindow(60 * time.Second)
+	t0 := time.Unix(100, 0)
+	for i := 1; i <= 100; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*100*time.Millisecond), time.Duration(i)*time.Millisecond, false)
+	}
+	end := t0.Add(101 * 100 * time.Millisecond)
+	p95 := w.percentileAt(end, 60*time.Second, 0.95)
+	// idx = floor(99 * 0.95) = 94 → samples[94] = 95ms.
+	assert.Equal(t, 95*time.Millisecond, p95)
+}
+
+func TestLatencyWindow_P99_ExactValue(t *testing.T) {
+	// Pin the off-by-one: with 100 samples 1..100ms, p99 idx = floor(99*0.99) = 98 → 99ms.
+	w := NewLatencyWindow(60 * time.Second)
+	t0 := time.Unix(100, 0)
+	for i := 1; i <= 100; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*100*time.Millisecond), time.Duration(i)*time.Millisecond, false)
+	}
+	end := t0.Add(101 * 100 * time.Millisecond)
+	p99 := w.P99(end, 60*time.Second)
+	assert.Equal(t, 99*time.Millisecond, p99, "p99 of 100 samples must be the 99th value, not the 100th")
+}

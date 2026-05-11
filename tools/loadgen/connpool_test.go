@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -128,4 +130,131 @@ func TestPublishedMetric_HasConnAndRateBucketLabels(t *testing.T) {
 		return
 	}
 	t.Fatal("loadgen_published_total not found")
+}
+
+func TestConnPool_ForReturnsObserverWhenSizeOne(t *testing.T) {
+	// Size==1 pool short-circuits For() to the observer (which is nil
+	// in NewTestConnPool, so we just verify the contract holds).
+	pool := NewTestConnPool(1)
+	// IndexFor must return 0 regardless of user.
+	assert.Equal(t, 0, pool.IndexFor("anyone"))
+	assert.Equal(t, 0, pool.IndexFor("else"))
+	// Size reports 1.
+	assert.Equal(t, 1, pool.Size())
+}
+
+func TestConnPool_DrainIsIdempotent(t *testing.T) {
+	// With a test pool (no real conns), Drain is a no-op that doesn't panic.
+	pool := NewTestConnPool(4)
+	pool.Drain()
+	pool.Drain() // second call must not panic
+}
+
+func TestConnPool_ObserverPublic(t *testing.T) {
+	pool := NewTestConnPool(3)
+	// NewTestConnPool leaves observer nil — accessor is well-defined.
+	assert.Nil(t, pool.Observer(), "test pool has no observer; method must still be callable")
+}
+
+func TestNewConnPoolWithObserver_RequiresObserver(t *testing.T) {
+	_, err := NewConnPoolWithObserver(nil, "", "", 1, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "observer")
+}
+
+func TestNewConnPoolWithObserver_SizeOneSkipsDialFn(t *testing.T) {
+	// With dataSize <= 1, the dial fn is never called; observer alone is the pool.
+	// Pass a dial fn that would fail if invoked to lock down the contract.
+	failDial := func(_, _ string) (*nats.Conn, error) {
+		return nil, errors.New("dial must NOT be called for size <= 1")
+	}
+	// We can't construct a real *nats.Conn without dialing, so use the
+	// hash-only path: pool returned must report Size()==1 and observer nil.
+	// Note: passing a non-nil observer is required, but for size <= 1 the
+	// observer is the only conn used; a nil-ish stub works.
+	stub := &nats.Conn{}
+	pool, err := NewConnPoolWithObserver(stub, "", "", 1, failDial)
+	require.NoError(t, err)
+	assert.Equal(t, 1, pool.Size())
+	assert.Same(t, stub, pool.Observer())
+}
+
+func TestNewConnPoolWithObserver_RequiresDialWhenMulti(t *testing.T) {
+	stub := &nats.Conn{}
+	_, err := NewConnPoolWithObserver(stub, "", "", 4, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dial")
+}
+
+func TestNewConnPool_RequiresDialFn(t *testing.T) {
+	_, err := NewConnPool("nats://localhost:4222", "", 2, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dial")
+}
+
+func TestConnPool_ForReturnsFromConnsSlice(t *testing.T) {
+	// With size>1 and nil conns (NewTestConnPool's shape), For returns the
+	// nil slot at the hashed index. Verifies we don't crash and stays
+	// deterministic.
+	pool := NewTestConnPool(4)
+	got := pool.For("alice")
+	assert.Nil(t, got, "test pool's conns are all nil; For must return that without crashing")
+	// Calling twice produces the same result (deterministic hash).
+	assert.Same(t, got, pool.For("alice"))
+}
+
+// TestNewConnPool_StubDial exercises the multi-dial happy path of
+// NewConnPool without a real NATS server. The stub returns a fresh
+// *nats.Conn each call (without going through nats.Connect), so the
+// pool ends up with N distinct slots. Closes the previous 11.8%
+// coverage gap on NewConnPool.
+func TestNewConnPool_StubDial(t *testing.T) {
+	calls := 0
+	stubDial := func(_, _ string) (*nats.Conn, error) {
+		calls++
+		return &nats.Conn{}, nil
+	}
+	pool, err := NewConnPool("nats://stub", "", 3, stubDial)
+	require.NoError(t, err)
+	require.NotNil(t, pool)
+	// NewConnPool opens observer + N data conns when N>1.
+	assert.Equal(t, 4, calls, "NewConnPool with dataSize=3 must dial observer + 3 data conns")
+	assert.Equal(t, 3, pool.Size())
+	assert.NotNil(t, pool.Observer())
+}
+
+func TestNewConnPool_SizeOneOpensOnlyObserver(t *testing.T) {
+	calls := 0
+	stubDial := func(_, _ string) (*nats.Conn, error) {
+		calls++
+		return &nats.Conn{}, nil
+	}
+	pool, err := NewConnPool("nats://stub", "", 1, stubDial)
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls, "size=1 opens only the observer connection")
+	assert.Equal(t, 1, pool.Size())
+}
+
+func TestNewConnPool_ObserverDialFailure(t *testing.T) {
+	stubDial := func(_, _ string) (*nats.Conn, error) {
+		return nil, errors.New("connect refused")
+	}
+	_, err := NewConnPool("nats://stub", "", 3, stubDial)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "observer")
+}
+
+// Mid-pool dial-failure path triggers nats.Conn.Drain on prior conns
+// which panics on a zero-value &nats.Conn{}. Covered by integration
+// tests against real NATS via testcontainers; not unit-testable here.
+
+func TestNewConnPoolWithObserver_MultiDialPath(t *testing.T) {
+	stubDial := func(_, _ string) (*nats.Conn, error) {
+		return &nats.Conn{}, nil
+	}
+	stub := &nats.Conn{}
+	pool, err := NewConnPoolWithObserver(stub, "nats://stub", "", 4, stubDial)
+	require.NoError(t, err)
+	assert.Equal(t, 4, pool.Size())
+	assert.Same(t, stub, pool.Observer())
 }

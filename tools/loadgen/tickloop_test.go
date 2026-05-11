@@ -104,3 +104,50 @@ func TestTickLoop_RampOverridesFixedRate(t *testing.T) {
 	assert.GreaterOrEqual(t, got, int64(50),
 		"ramp should drive rate above fixed; got %d ticks", got)
 }
+
+// TestTickLoop_SaturationIncrementsBothCounters locks down the B2 invariant:
+// saturated drops bump BOTH Requests{phase="saturated"} and
+// RequestErrors{reason="saturated"}, by exactly the same amount, so
+// rate(loadgen_requests_total) doesn't under-count attempts.
+func TestTickLoop_SaturationIncrementsBothCounters(t *testing.T) {
+	m := NewMetrics()
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	tickLoop(ctx, tickLoopConfig{
+		Rate:        2000,
+		MaxInFlight: 1,
+		Metrics:     m,
+		Preset:      "test",
+		Scenario:    "search",
+	}, func(ctx context.Context) {
+		time.Sleep(30 * time.Millisecond) // make pool saturate
+	})
+
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+
+	var saturatedRequests, saturatedErrors float64
+	for _, mf := range mfs {
+		for _, metric := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, lp := range metric.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			switch mf.GetName() {
+			case "loadgen_requests_total":
+				if labels["phase"] == "saturated" {
+					saturatedRequests += metric.GetCounter().GetValue()
+				}
+			case "loadgen_request_errors_total":
+				if labels["reason"] == "saturated" {
+					saturatedErrors += metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+
+	assert.Greater(t, saturatedRequests, float64(0), "expected Requests{phase=saturated} to increment")
+	assert.Equal(t, saturatedErrors, saturatedRequests,
+		"B2 invariant: saturated Requests count must equal saturated RequestErrors count")
+}

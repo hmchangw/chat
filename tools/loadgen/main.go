@@ -159,10 +159,8 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	abortErrorSustain := fs.Duration("abort-error-sustain", 10*time.Second, "sustain window for the error-rate abort threshold")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
-	switch *scenario {
-	case "messaging-pipeline", "history-read", "search-read", "room-rpc":
-	default:
-		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", *scenario)
+	if err := parseScenarioFlag(*scenario); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
 	if *preset == "" {
@@ -174,14 +172,22 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
 		return 2
 	}
-	var injectMode InjectMode
-	switch *inject {
-	case "frontdoor":
-		injectMode = InjectFrontdoor
-	case "canonical":
-		injectMode = InjectCanonical
-	default:
-		fmt.Fprintf(os.Stderr, "unknown inject mode: %s\n", *inject)
+	injectMode, err := parseInjectMode(*inject)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+
+	// Validate ramp + rate flags BEFORE opening any external connections —
+	// fail fast on config errors so the operator doesn't wait for a NATS
+	// timeout to learn they typo'd a flag.
+	ramp, rerr := buildRamp(*rampFrom, *rampTo, *rampDuration, *rampShape)
+	if rerr != nil {
+		fmt.Fprintln(os.Stderr, rerr.Error())
+		return 2
+	}
+	if err := validateRampVsRate(*rate, ramp); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
 
@@ -348,29 +354,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	publisher := newNatsCorePublisher(pool, injectMode, js)
 	requester := &natsRequester{pool: pool}
 
-	// Phase 3 §3.4: optional rate ramp.
-	var ramp *Ramp
-	if *rampFrom > 0 || *rampTo > 0 || *rampDuration > 0 {
-		var shape RampShape
-		switch *rampShape {
-		case "linear":
-			shape = RampLinear
-		case "exponential":
-			shape = RampExponential
-		default:
-			fmt.Fprintf(os.Stderr, "unknown ramp shape: %s (want linear|exponential)\n", *rampShape)
-			return 2
-		}
-		if *rampFrom <= 0 || *rampTo <= 0 || *rampDuration <= 0 {
-			fmt.Fprintln(os.Stderr, "--ramp-from, --ramp-to, --ramp-duration must all be > 0 when ramping")
-			return 2
-		}
-		ramp = &Ramp{From: *rampFrom, To: *rampTo, Duration: *rampDuration, Shape: shape}
-	}
-	if err := validateRampVsRate(*rate, ramp); err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		return 2
-	}
+	// Ramp + rate flags are validated above (before any NATS connect).
 
 	// Phase 3 §3.3: readiness probe for read scenarios. Skipped for
 	// messaging-pipeline (which doesn't request/reply to a service) and

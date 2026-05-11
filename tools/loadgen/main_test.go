@@ -129,3 +129,130 @@ func TestMetricsHandler_ContentType(t *testing.T) {
 	// Prometheus text format
 	require.Contains(t, ct, "text/plain")
 }
+
+func TestDrainTrailingReplies_ReturnsImmediatelyWhenAlreadyDrained(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	// No publishes; outstanding count is 0 from the start.
+	start := time.Now()
+	drainTrailingReplies(c, 5*time.Second, 10*time.Millisecond, 3)
+	elapsed := time.Since(start)
+	// Should return after the first ticker fire (≤ 20ms) since outstanding==0.
+	assert.Less(t, elapsed, 50*time.Millisecond, "drain must return fast when already drained")
+}
+
+func TestDrainTrailingReplies_TimesOutWhenStuck(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	// Add 5 outstanding correlations; never complete them.
+	t0 := time.Unix(100, 0)
+	for i := 0; i < 5; i++ {
+		c.RecordPublish("r-"+string(rune('A'+i)), "m-"+string(rune('A'+i)), t0)
+	}
+	// outstanding stays at 10 (5 byReqID + 5 byMsgID); stable for 3 ticks
+	// at 10ms intervals → drain returns after ~30ms via the stable-tick
+	// detector, NOT the maxWait deadline.
+	start := time.Now()
+	drainTrailingReplies(c, 200*time.Millisecond, 10*time.Millisecond, 3)
+	elapsed := time.Since(start)
+	assert.Less(t, elapsed, 100*time.Millisecond,
+		"stable-tick detector should fire well before maxWait")
+}
+
+func TestDrainTrailingReplies_HonorsMaxWait(t *testing.T) {
+	// With stableTicks much larger than the interval, the loop will hit
+	// the deadline before stabilizing.
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	c.RecordPublish("r-1", "m-1", time.Unix(0, 0))
+	start := time.Now()
+	drainTrailingReplies(c, 30*time.Millisecond, 5*time.Millisecond, 100)
+	elapsed := time.Since(start)
+	assert.GreaterOrEqual(t, elapsed, 25*time.Millisecond)
+	assert.Less(t, elapsed, 100*time.Millisecond, "must not exceed maxWait by much")
+}
+
+func TestConsumerSnapshots_BuildsFromSamplers(t *testing.T) {
+	// Build snapshots from empty samplers slice → empty result.
+	got := consumerSnapshots(nil)
+	assert.Empty(t, got)
+}
+
+func TestGatheredCounterValue_NoMatch(t *testing.T) {
+	m := NewMetrics()
+	m.Published.WithLabelValues("p", "measured", "0", "100-200").Inc()
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+	// Unknown metric name → 0.
+	assert.Equal(t, float64(0), gatheredCounterValue(mfs, "nonexistent", "", ""))
+	// Known metric, unmatched label → 0.
+	assert.Equal(t, float64(0),
+		gatheredCounterValue(mfs, "loadgen_published_total", "preset", "nope"))
+}
+
+func TestDispatch_UnknownSubcommand(t *testing.T) {
+	// Save + restore os.Args; inject a bad subcommand and assert exit code 2.
+	saved := os.Args
+	defer func() { os.Args = saved }()
+	os.Args = []string{"loadgen", "nonsense-subcommand"}
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := dispatch(t.Context(), cfg)
+	assert.Equal(t, 2, code, "unknown subcommand must exit 2")
+}
+
+func TestRunSeed_MissingPresetFlag(t *testing.T) {
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := runSeed(t.Context(), cfg, []string{})
+	assert.Equal(t, 2, code, "missing --preset must exit 2")
+}
+
+func TestRunSeed_UnknownPreset(t *testing.T) {
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := runSeed(t.Context(), cfg, []string{"--preset=nonexistent"})
+	assert.Equal(t, 2, code, "unknown preset must exit 2")
+}
+
+func TestRunRun_MissingPresetFlag(t *testing.T) {
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := runRun(t.Context(), cfg, []string{})
+	assert.Equal(t, 2, code, "missing --preset must exit 2")
+}
+
+func TestRunRun_UnknownScenario(t *testing.T) {
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := runRun(t.Context(), cfg, []string{"--preset=small", "--scenario=bogus"})
+	assert.Equal(t, 2, code, "unknown scenario must exit 2")
+}
+
+func TestRunRun_UnknownInject(t *testing.T) {
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := runRun(t.Context(), cfg, []string{"--preset=small", "--inject=sideways"})
+	assert.Equal(t, 2, code, "unknown inject mode must exit 2")
+}
+
+func TestRunRun_UnknownPreset(t *testing.T) {
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := runRun(t.Context(), cfg, []string{"--preset=nonexistent"})
+	assert.Equal(t, 2, code, "unknown preset must exit 2")
+}
+
+func TestRunRun_BadRampShape(t *testing.T) {
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := runRun(t.Context(), cfg,
+		[]string{"--preset=small", "--ramp-from=10", "--ramp-to=100", "--ramp-duration=5s", "--ramp-shape=logarithmic"})
+	assert.Equal(t, 2, code, "bad ramp shape must exit 2")
+}
+
+func TestRunRun_PartialRamp(t *testing.T) {
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := runRun(t.Context(), cfg,
+		[]string{"--preset=small", "--ramp-from=10", "--ramp-duration=5s"}) // missing --ramp-to
+	assert.Equal(t, 2, code, "partial ramp config must exit 2")
+}
+
+func TestRunRun_RampAndRateConflict(t *testing.T) {
+	cfg := &config{NatsURL: "nats://stub", MongoURI: "mongodb://stub"}
+	code := runRun(t.Context(), cfg,
+		[]string{"--preset=small", "--rate=500", "--ramp-from=10", "--ramp-to=100", "--ramp-duration=5s"})
+	assert.Equal(t, 2, code, "rate + ramp must exit 2")
+}

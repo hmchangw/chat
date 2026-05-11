@@ -252,3 +252,41 @@ func TestCollector_RecordPublishFailed_PrunesSeenMessageIDs(t *testing.T) {
 	assert.ElementsMatch(t, []string{"msg-good"}, ids,
 		"failed publish must be removed from MessageIDs() so history-read doesn't poll non-existent IDs")
 }
+
+func TestCollector_AttachWindow_FeedsRecordRequest(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	w := NewLatencyWindow(10 * time.Second)
+	c.AttachWindow(w)
+
+	t0 := time.Unix(100, 0)
+	c.RecordRequest("history", "load_history", t0, 4*time.Millisecond, false)
+	c.RecordRequest("history", "load_history", t0, 18*time.Millisecond, true)
+
+	// Window should contain both samples.
+	p99 := w.P99(t0.Add(1*time.Second), 10*time.Second)
+	assert.GreaterOrEqual(t, p99, 4*time.Millisecond,
+		"AttachWindow must wire RecordRequest into the window")
+	rate := w.ErrorRate(t0.Add(1*time.Second), 10*time.Second)
+	assert.InDelta(t, 0.5, rate, 0.001, "one of two errored")
+}
+
+func TestCollector_OutstandingCorrelations(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	t0 := time.Unix(100, 0)
+	// 3 publishes, each landing in both byReqID + byMsgID.
+	c.RecordPublish("r-1", "m-1", t0)
+	c.RecordPublish("r-2", "m-2", t0)
+	c.RecordPublish("r-3", "m-3", t0)
+	assert.Equal(t, 6, c.outstandingCorrelations(),
+		"3 publishes × 2 maps = 6 outstanding correlations")
+
+	c.RecordReply("r-1", t0.Add(2*time.Millisecond))
+	assert.Equal(t, 5, c.outstandingCorrelations(),
+		"reply consumes one byReqID entry")
+
+	c.RecordBroadcast("m-1", t0.Add(5*time.Millisecond))
+	assert.Equal(t, 4, c.outstandingCorrelations(),
+		"broadcast consumes one byMsgID entry")
+}
