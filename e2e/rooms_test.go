@@ -89,6 +89,7 @@ func TestRoom_Channel_InviteAndMemberList(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
+	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
 	require.NotEmpty(t, roomID)
 
 	// Wait for room-worker to persist subscriptions before per-room RPCs.
@@ -136,6 +137,7 @@ func TestRoom_Channel_RemoveMember(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
+	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
 	require.NotEmpty(t, roomID)
 
 	mongoA := site.MongoDB(t)
@@ -186,6 +188,7 @@ func TestRoom_MarkMessageRead(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
+	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
 
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 

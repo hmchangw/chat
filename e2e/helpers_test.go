@@ -199,3 +199,52 @@ func awaitSubscription(t *testing.T, ctx context.Context, db *mongo.Database, ac
 	}, 15*time.Second, 100*time.Millisecond,
 		"subscription for account=%s roomId=%s never persisted", account, roomID)
 }
+
+// registerRoomCleanup deletes a room's rows from both sites' mongo on test
+// teardown. Without this, state accumulates across runs: subscriptions,
+// rooms, room_members, thread_subscriptions collections grow monotonically
+// and tests that count or list start to drift. Per test-quality reviewer's
+// must-fix #3.
+//
+// The harness has no way to drop Cassandra/ES state at the per-test level
+// without forcing structural changes to history-service / search-sync-worker;
+// for now this cleanup keeps the high-churn mongo collections bounded.
+//
+// Idempotent: safe to call even if some collections don't yet have rows.
+func registerRoomCleanup(t *testing.T, sites []SiteDB, roomID string) {
+	t.Helper()
+	if roomID == "" {
+		return
+	}
+	t.Cleanup(func() {
+		// Use a fresh context: the test's context may already be canceled
+		// by t.Cleanup ordering.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		for _, sd := range sites {
+			for _, collName := range []string{
+				"subscriptions",
+				"rooms",
+				"room_members",
+				"thread_subscriptions",
+				"thread_rooms",
+			} {
+				coll := sd.DB.Collection(collName)
+				// Match a few common field names that carry the roomID.
+				// CountDocuments-style filter is cheaper than a $or here;
+				// the worst case is two passes per collection.
+				_, _ = coll.DeleteMany(cleanupCtx, bson.M{"roomId": roomID})
+				_, _ = coll.DeleteMany(cleanupCtx, bson.M{"rid": roomID})
+				_, _ = coll.DeleteMany(cleanupCtx, bson.M{"_id": roomID})
+			}
+		}
+	})
+}
+
+// SiteDB pairs a site label with its mongo database for cleanup. Tests
+// commonly want to clean both sites (cross-site invite leaves rows on
+// mongo-b) so this lets them pass a slice.
+type SiteDB struct {
+	SiteID string
+	DB     *mongo.Database
+}

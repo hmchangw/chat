@@ -3,7 +3,9 @@
 package harness
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -113,7 +115,6 @@ func (s SiteEndpoints) ESClient(t *testing.T) (*http.Client, string) {
 }
 
 // SeedRemoteUser inserts a stub User document into the site's users
-// collection. Per amendment R1 12.D: cross-site federation tests need the
 // originating site (where the inviter lives) to know that the invitee
 // belongs to a different site, so room-worker's invite path can publish to
 // the correct outbox.{src}.to.{dst}.member_added subject. Production has a
@@ -140,4 +141,49 @@ func (s SiteEndpoints) SeedRemoteUser(t *testing.T, ctx context.Context, account
 	_, err := users.ReplaceOne(ctx, bson.M{"_id": account}, doc,
 		mongoOptionsReplaceUpsert())
 	require.NoError(t, err, "seed remote user %s on %s", account, s.SiteID)
+}
+
+// SeedUserRoom pre-creates a user-room ES doc so search-service's restricted-
+// rooms machinery permits the user to search the given rooms. Production
+// search-sync-worker populates this from cross-site INBOX events; the doc
+// remains empty for purely-local users on a single-site stack, blocking
+// search-service queries.
+//
+// Idempotent: PUTting the same _id overwrites the document. roomIDs is the
+// set of room IDs the user should be considered a regular (non-restricted)
+// member of. The doc's `roomTimestamps` is populated with `now` for each
+// room so any subsequent script-update by search-sync-worker that compares
+// timestamps does the right last-write-wins.
+//
+// Index name is hardcoded to `user-room-{siteID-lowercased}` because ES
+// rejects uppercase characters in index names (live-debug finding) and
+// search-service / search-sync-worker both auto-derive to this form when
+// USER_ROOM_INDEX is empty.
+func (s SiteEndpoints) SeedUserRoom(t *testing.T, account string, roomIDs []string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	timestamps := make(map[string]int64, len(roomIDs))
+	for _, rid := range roomIDs {
+		timestamps[rid] = now
+	}
+	body, err := json.Marshal(map[string]any{
+		"account":         account,
+		"siteId":          strings.ToLower(s.SiteID),
+		"rooms":           roomIDs,
+		"restrictedRooms": map[string]any{}, // empty = no restrictions
+		"roomTimestamps":  timestamps,
+		"updatedAt":       now,
+	})
+	require.NoError(t, err)
+
+	indexName := "user-room-" + strings.ToLower(s.SiteID)
+	url := s.ESURL + "/" + indexName + "/_doc/" + account + "?refresh=true"
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "seed user-room doc")
+	defer resp.Body.Close()
+	require.LessOrEqual(t, resp.StatusCode, 299,
+		"seed user-room: status %d", resp.StatusCode)
 }

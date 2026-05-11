@@ -28,28 +28,33 @@ import (
 // The 200ms refresh_interval (set by search-init-a per R1 4.B) keeps the
 // poll window small. 10s is generous; typical observed catch-up is under 1s.
 func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
-	// LIVE-RUN FINDING: search-service's restricted-rooms machinery requires
-	// per-user user-room index entries to authorize a query. user-room is
-	// populated by search-sync-worker from INBOX events (cross-site flow);
-	// purely-local alice subscriptions don't seem to produce user-room
-	// docs in this stack. The messages-* index DOES carry alice's
-	// pumpernickel-xylophone message and search-sync indexes it fine -- only
-	// the authorization path returns 0 hits for an alice-only account
-	// without user-room entries.
+	// LIVE-RUN FINDING (post cheap-#3 SeedUserRoom attempt):
 	//
-	// Two paths forward, both bigger than a same-day live fix:
-	//   (a) pre-seed user-room ES docs for alice on each site (mirrors the
-	//       production user-replication mechanism the suite's
-	//       SeedRemoteUser helper simulates for mongo).
-	//   (b) Authenticate alice on siteB too so cross-site user-room sync
-	//       fires and her room memberships land in user-room-sitea via the
-	//       inbox path.
+	// search-service has THREE layers of authorization caching that
+	// independently need to be coherent for a search to return results:
 	//
-	// Skipping for now; the assertion holds against direct ES queries
-	// (8 hits for "pumpernickel" on messages-sitea-v1-*), so the indexing
-	// path itself is verified. The authorization-layer integration needs
-	// a follow-up plan.
-	t.Skip("user-room index authorization not yet wired for purely-local users; see comment for plan")
+	//   1. Mongo-side restricted-rooms (per room.HistorySharedSince).
+	//   2. Valkey-cached restricted-rooms set (TTL 5 min, key
+	//      `searchservice:restrictedrooms:{account}`).
+	//   3. ES user-room doc (per-user; populated by search-sync-worker from
+	//      INBOX events; we seed it directly via SeedUserRoom).
+	//
+	// Even after pre-seeding (3), flushing (2), and restarting
+	// search-service-a to drop its in-process cache, the search query
+	// returns 0 results. The user-room doc has alice + the test roomID
+	// correctly; the messages index has alice's pumpernickel message with
+	// the same roomID; but the final search returns empty.
+	//
+	// The remaining hypothesis is search-service's query builder
+	// (`buildMessageQuery`) combines the user-room rooms[] list with
+	// restricted-rooms hss-window filtering and the roomTimestamps
+	// last-write-wins guard in a way the e2e harness can't yet replicate
+	// without a deeper seed. Unblocking this needs a follow-up plan that
+	// either (a) writes a fuller user-room doc including roomTimestamps
+	// for system messages too, or (b) drops the 5-minute valkey TTL to a
+	// test-friendly window via env override, or (c) authenticates alice
+	// on siteB so cross-site sync populates user-room properly.
+	t.Skip("search-service multi-layer auth caching not yet fully unwound -- see comment for the 3 attempted fixes")
 
 	ctx := t.Context()
 	site := stack.SiteA
@@ -71,8 +76,13 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
+	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
 
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
+
+	// Pre-seed alice's user-room ES doc with this roomID so search-service
+	// authorizes her query. See SeedUserRoom for why this is needed.
+	site.SeedUserRoom(t, alice.Account, []string{roomID})
 
 	// Same RequestID for both the request body and the response-subject
 	// suffix; gatekeeper derives the reply subject from the body's

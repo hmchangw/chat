@@ -33,6 +33,15 @@ name: chat-e2e
 #   isolation realism must mock that boundary at a higher layer or wait for
 #   a follow-up plan that introduces a per-site operator topology.
 
+
+# Bound the default Docker json-file driver so long-running containers don't
+# fill /var/lib/docker over consecutive runs (ops-reviewer finding).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 networks:
   chat-e2e:
     driver: bridge
@@ -57,6 +66,7 @@ services:
   nats-a:
     image: ${E2E_NATS_IMAGE:-nats:2.11-alpine}
     container_name: nats-a
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "14222:4222"   # client (host-exposed for harness + manual debugging)
@@ -76,6 +86,7 @@ services:
   mongo-a:
     image: ${E2E_MONGO_IMAGE:-mongo:8}
     container_name: mongo-a
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "27117:27017"
@@ -91,6 +102,7 @@ services:
   cass-a:
     image: ${E2E_CASS_IMAGE:-cassandra:5}
     container_name: cass-a
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "19042:9042"
@@ -125,6 +137,7 @@ services:
   cassandra-init-a:
     image: ${E2E_CASS_IMAGE:-cassandra:5}
     container_name: cassandra-init-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       cass-a: { condition: service_healthy }
@@ -144,6 +157,7 @@ services:
   es-a:
     image: ${E2E_ES_IMAGE:-elasticsearch:8.17.0}
     container_name: es-a
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "19200:9200"
@@ -169,6 +183,7 @@ services:
   search-init-a:
     image: curlimages/curl:8.20.0
     container_name: search-init-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       es-a: { condition: service_healthy }
@@ -199,6 +214,7 @@ services:
   valkey-a:
     image: ${E2E_VALKEY_IMAGE:-valkey/valkey:8}
     container_name: valkey-a
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "16379:6379"
@@ -212,6 +228,7 @@ services:
   keycloak-a:
     image: ${E2E_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}
     container_name: keycloak-a
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "18180:8080"
@@ -259,6 +276,7 @@ services:
   auth-service-a:
     build: { context: ../.., dockerfile: auth-service/deploy/Dockerfile }
     container_name: auth-service-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:     { condition: service_healthy }
@@ -286,6 +304,7 @@ services:
   room-service-a:
     build: { context: ../.., dockerfile: room-service/deploy/Dockerfile }
     container_name: room-service-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:    { condition: service_healthy }
@@ -309,6 +328,7 @@ services:
   message-gatekeeper-a:
     build: { context: ../.., dockerfile: message-gatekeeper/deploy/Dockerfile }
     container_name: message-gatekeeper-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:  { condition: service_healthy }
@@ -328,6 +348,7 @@ services:
   message-worker-a:
     build: { context: ../.., dockerfile: message-worker/deploy/Dockerfile }
     container_name: message-worker-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:           { condition: service_healthy }
@@ -350,6 +371,7 @@ services:
   broadcast-worker-a:
     build: { context: ../.., dockerfile: broadcast-worker/deploy/Dockerfile }
     container_name: broadcast-worker-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:   { condition: service_healthy }
@@ -374,6 +396,7 @@ services:
   notification-worker-a:
     build: { context: ../.., dockerfile: notification-worker/deploy/Dockerfile }
     container_name: notification-worker-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:  { condition: service_healthy }
@@ -392,6 +415,7 @@ services:
   history-service-a:
     build: { context: ../.., dockerfile: history-service/deploy/Dockerfile }
     container_name: history-service-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:           { condition: service_healthy }
@@ -417,6 +441,7 @@ services:
   inbox-worker-a:
     build: { context: ../.., dockerfile: inbox-worker/deploy/Dockerfile }
     container_name: inbox-worker-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:  { condition: service_healthy }
@@ -435,6 +460,7 @@ services:
   room-worker-a:
     build: { context: ../.., dockerfile: room-worker/deploy/Dockerfile }
     container_name: room-worker-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:  { condition: service_healthy }
@@ -453,6 +479,7 @@ services:
   search-service-a:
     build: { context: ../.., dockerfile: search-service/deploy/Dockerfile }
     container_name: search-service-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:         { condition: service_healthy }
@@ -483,6 +510,7 @@ services:
   search-sync-worker-a:
     build: { context: ../.., dockerfile: search-sync-worker/deploy/Dockerfile }
     container_name: search-sync-worker-a
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-a:        { condition: service_healthy }
@@ -512,6 +540,7 @@ services:
   nats-b:
     image: ${E2E_NATS_IMAGE:-nats:2.11-alpine}
     container_name: nats-b
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "24222:4222"
@@ -531,6 +560,7 @@ services:
   mongo-b:
     image: ${E2E_MONGO_IMAGE:-mongo:8}
     container_name: mongo-b
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "27217:27017"
@@ -546,6 +576,7 @@ services:
   cass-b:
     image: ${E2E_CASS_IMAGE:-cassandra:5}
     container_name: cass-b
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "29042:9042"
@@ -568,6 +599,7 @@ services:
   cassandra-init-b:
     image: ${E2E_CASS_IMAGE:-cassandra:5}
     container_name: cassandra-init-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       cass-b: { condition: service_healthy }
@@ -587,6 +619,7 @@ services:
   es-b:
     image: ${E2E_ES_IMAGE:-elasticsearch:8.17.0}
     container_name: es-b
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "29200:9200"
@@ -612,6 +645,7 @@ services:
   search-init-b:
     image: curlimages/curl:8.20.0
     container_name: search-init-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       es-b: { condition: service_healthy }
@@ -642,6 +676,7 @@ services:
   valkey-b:
     image: ${E2E_VALKEY_IMAGE:-valkey/valkey:8}
     container_name: valkey-b
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "26379:6379"
@@ -655,6 +690,7 @@ services:
   keycloak-b:
     image: ${E2E_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}
     container_name: keycloak-b
+    logging: *default-logging
     networks: [chat-e2e]
     ports:
       - "28180:8080"
@@ -685,6 +721,7 @@ services:
   auth-service-b:
     build: { context: ../.., dockerfile: auth-service/deploy/Dockerfile }
     container_name: auth-service-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:     { condition: service_healthy }
@@ -708,6 +745,7 @@ services:
   room-service-b:
     build: { context: ../.., dockerfile: room-service/deploy/Dockerfile }
     container_name: room-service-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:    { condition: service_healthy }
@@ -731,6 +769,7 @@ services:
   message-gatekeeper-b:
     build: { context: ../.., dockerfile: message-gatekeeper/deploy/Dockerfile }
     container_name: message-gatekeeper-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:  { condition: service_healthy }
@@ -750,6 +789,7 @@ services:
   message-worker-b:
     build: { context: ../.., dockerfile: message-worker/deploy/Dockerfile }
     container_name: message-worker-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:           { condition: service_healthy }
@@ -772,6 +812,7 @@ services:
   broadcast-worker-b:
     build: { context: ../.., dockerfile: broadcast-worker/deploy/Dockerfile }
     container_name: broadcast-worker-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:   { condition: service_healthy }
@@ -796,6 +837,7 @@ services:
   notification-worker-b:
     build: { context: ../.., dockerfile: notification-worker/deploy/Dockerfile }
     container_name: notification-worker-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:  { condition: service_healthy }
@@ -814,6 +856,7 @@ services:
   history-service-b:
     build: { context: ../.., dockerfile: history-service/deploy/Dockerfile }
     container_name: history-service-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:           { condition: service_healthy }
@@ -838,6 +881,7 @@ services:
   inbox-worker-b:
     build: { context: ../.., dockerfile: inbox-worker/deploy/Dockerfile }
     container_name: inbox-worker-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:  { condition: service_healthy }
@@ -856,6 +900,7 @@ services:
   room-worker-b:
     build: { context: ../.., dockerfile: room-worker/deploy/Dockerfile }
     container_name: room-worker-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:  { condition: service_healthy }
@@ -874,6 +919,7 @@ services:
   search-service-b:
     build: { context: ../.., dockerfile: search-service/deploy/Dockerfile }
     container_name: search-service-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:        { condition: service_healthy }
@@ -905,6 +951,7 @@ services:
   search-sync-worker-b:
     build: { context: ../.., dockerfile: search-sync-worker/deploy/Dockerfile }
     container_name: search-sync-worker-b
+    logging: *default-logging
     networks: [chat-e2e]
     depends_on:
       nats-b:        { condition: service_healthy }

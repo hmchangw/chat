@@ -57,6 +57,10 @@ func TestFederation_CrossSiteInvite(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
+	registerRoomCleanup(t, []SiteDB{
+		{SiteID: stack.SiteA.SiteID, DB: stack.SiteA.MongoDB(t)},
+		{SiteID: stack.SiteB.SiteID, DB: stack.SiteB.MongoDB(t)},
+	}, roomID)
 	require.NotEmpty(t, roomID)
 	t.Logf("alice created room %s on siteA; invited bob on siteB", roomID)
 
@@ -113,6 +117,10 @@ func TestFederation_NegativeIsolation_StateStaysSiteLocal(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
+	registerRoomCleanup(t, []SiteDB{
+		{SiteID: stack.SiteA.SiteID, DB: stack.SiteA.MongoDB(t)},
+		{SiteID: stack.SiteB.SiteID, DB: stack.SiteB.MongoDB(t)},
+	}, roomID)
 	require.NotEmpty(t, roomID)
 
 	// Wait for siteA's room-worker to finish (the local subscription should
