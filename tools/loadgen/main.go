@@ -178,6 +178,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	livenessFailures := fs.Int("liveness-failures", 3, "consecutive liveness probe failures required to abort the run")
 	livenessTimeout := fs.Duration("liveness-timeout", 5*time.Second, "per-probe timeout. Aligned with --request-timeout default so a slow-but-up SUT trips the saturation watcher (exit 2) before the liveness watcher (exit 3).")
 	jsAsyncMaxPending := fs.Int("js-async-max-pending", 4096, "S5: max in-flight async JetStream publishes for canonical inject; 0 falls back to sync js.PublishMsg (legacy / bisection)")
+	abortWindowMaxSamples := fs.Int("abort-window-max-samples", 10000, "S3: cap on the abort/progress latency ring buffer; 0 disables the cap (legacy). Bounds the per-tick percentile sort under sustained high publish rates.")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	if err := parseScenarioFlag(*scenario); err != nil {
@@ -288,6 +289,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		windowRetain = *abortErrorSustain
 	}
 	latencyWindow := NewLatencyWindow(windowRetain)
+	// S3: bound the sort cost at high publish rates. At 5k rps × 60s
+	// retain the unbounded slice would hold 300k samples; cap default
+	// 10k keeps each percentile sort under ~150µs.
+	latencyWindow.SetMaxSamples(*abortWindowMaxSamples)
 	collector.AttachWindow(latencyWindow)
 
 	// E1 subscription: gatekeeper replies.

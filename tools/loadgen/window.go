@@ -19,10 +19,20 @@ type windowSample struct {
 // we cannot extract a sliding-window p99 from a Gather() snapshot
 // alone. The watcher reads from this in-process buffer; Prometheus
 // scrape continues to read from the parallel histogram.
+//
+// S3: maxSamples bounds the slice length so the periodic percentile
+// sort cost stays bounded at high publish rates (e.g. 5k rps × 60s
+// retention would otherwise hold 300k samples). When 0, no cap is
+// applied (legacy behavior). The cap policy is drop-oldest, which
+// preserves sliding-window semantics — we lose the early end of the
+// retention window once the rate × retention exceeds the cap, but
+// the abort watcher only consults the tail (the sustain interval),
+// which is much shorter than the retention.
 type LatencyWindow struct {
-	mu      sync.Mutex
-	retain  time.Duration
-	samples []windowSample
+	mu         sync.Mutex
+	retain     time.Duration
+	samples    []windowSample
+	maxSamples int
 }
 
 // NewLatencyWindow returns a buffer that retains samples for the
@@ -30,6 +40,16 @@ type LatencyWindow struct {
 // lazily on each Add.
 func NewLatencyWindow(retain time.Duration) *LatencyWindow {
 	return &LatencyWindow{retain: retain}
+}
+
+// SetMaxSamples caps the slice length at n (drop-oldest when full).
+// 0 disables the cap (legacy unbounded behavior). Intended for use
+// at construction time; concurrent updates are technically safe
+// (locked) but the new cap only takes effect on the next Add.
+func (w *LatencyWindow) SetMaxSamples(n int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.maxSamples = n
 }
 
 // Add records one observation at time.Now(). Use AddAt in tests for
@@ -53,6 +73,11 @@ func (w *LatencyWindow) AddAt(at time.Time, latency time.Duration, errored bool)
 		w.samples = w.samples[idx:]
 	}
 	w.samples = append(w.samples, windowSample{at: at, latency: latency, errored: errored})
+	// S3: cap the slice (drop-oldest) so the periodic percentile sort
+	// stays bounded under sustained high publish rates.
+	if w.maxSamples > 0 && len(w.samples) > w.maxSamples {
+		w.samples = w.samples[len(w.samples)-w.maxSamples:]
+	}
 }
 
 // P99 returns the 99th-percentile latency over the last `over` window
@@ -126,6 +151,34 @@ func (w *LatencyWindow) ErrorRateWithCoverage(now time.Time, over time.Duration)
 
 // percentileLocked must be called with w.mu held.
 func (w *LatencyWindow) percentileLocked(now time.Time, over time.Duration, q float64) time.Duration {
+	latencies := w.windowedLatenciesLocked(now, over)
+	return percentileFromSorted(sortedCopy(latencies), q)
+}
+
+// Percentiles returns multiple quantiles over the same window in a
+// single locked operation, sorting the in-window latencies exactly
+// once. Progress reporting and other multi-percentile readouts MUST
+// prefer this over N separate P50/P95/P99 calls — each separate call
+// would re-take the lock, re-copy the slice, and re-sort it.
+// Returns a slice the same length as `qs`. An empty `qs` returns an
+// empty slice (no allocation beyond the zero-cap result header).
+func (w *LatencyWindow) Percentiles(now time.Time, over time.Duration, qs ...float64) []time.Duration {
+	if len(qs) == 0 {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	latencies := sortedCopy(w.windowedLatenciesLocked(now, over))
+	out := make([]time.Duration, len(qs))
+	for i, q := range qs {
+		out[i] = percentileFromSorted(latencies, q)
+	}
+	return out
+}
+
+// windowedLatenciesLocked returns the in-window latencies (unsorted).
+// Caller must hold w.mu.
+func (w *LatencyWindow) windowedLatenciesLocked(now time.Time, over time.Duration) []time.Duration {
 	cutoff := now.Add(-over)
 	latencies := make([]time.Duration, 0, len(w.samples))
 	for i := range w.samples {
@@ -134,12 +187,20 @@ func (w *LatencyWindow) percentileLocked(now time.Time, over time.Duration, q fl
 		}
 		latencies = append(latencies, w.samples[i].latency)
 	}
-	if len(latencies) == 0 {
+	return latencies
+}
+
+func sortedCopy(latencies []time.Duration) []time.Duration {
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	return latencies
+}
+
+func percentileFromSorted(sorted []time.Duration, q float64) time.Duration {
+	if len(sorted) == 0 {
 		return 0
 	}
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	idx := int(float64(len(latencies)-1) * q)
-	return latencies[idx]
+	idx := int(float64(len(sorted)-1) * q)
+	return sorted[idx]
 }
 
 // ErrorRate returns the fraction of errored samples over the last

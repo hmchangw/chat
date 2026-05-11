@@ -85,6 +85,7 @@ make -C tools/loadgen/deploy run-dashboards PRESET=medium
 | `--abort-p99-sustain=<dur>`       | `30s`   | Sustain window for the latency abort.                              |
 | `--abort-on-error-pct=F`          | 0       | Stop if error rate stays above F (0..1) for `--abort-error-sustain`. |
 | `--abort-error-sustain=<dur>`     | `10s`   | Sustain window for the error-rate abort.                           |
+| `--abort-window-max-samples=N`    | 10000   | Cap on the abort/progress latency ring buffer (S3); drop-oldest when full. `0` disables the cap (legacy unbounded behavior). Bounds the per-tick percentile sort: at the default 10k, each sort is ~10k log 10k ≈ 130k comparisons (~150µs). Tail accuracy is preserved because the abort watcher only consults the sustain interval, which is typically much shorter than the retention. |
 | `--js-async-max-pending=N`        | 4096    | Canonical-inject only: in-flight cap for async JetStream publishes (S5). `0` falls back to sync `js.PublishMsg` (legacy / bisection). Failed acks land in `loadgen_publish_errors_total{reason="async_ack"}` and the orphan messageIDs are evicted from the broadcast correlation map so MissingBroadcasts isn't inflated. Rule of thumb: `2 × peak-rps × expected-ack-latency-seconds`; the default 4096 covers ~5k rps × 400ms or ~50k rps × 40ms. Lower it (e.g. 256) to detect upstream wedging earlier; raise only if `loadgen_publish_errors_total{reason="async_ack"}` climbs due to MaxPending stalls rather than real stream failures. |
 
 ## Reading the summary

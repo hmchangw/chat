@@ -85,9 +85,10 @@ func runProgress(ctx context.Context, cfg *progressConfig) {
 			}
 			var p50, p95, p99 time.Duration
 			if cfg.Window != nil {
-				p50 = cfg.Window.P50(t, cfg.WindowOver)
-				p95 = cfg.Window.percentileAt(t, cfg.WindowOver, 0.95)
-				p99 = cfg.Window.P99(t, cfg.WindowOver)
+				// S3: batched percentile — sort the in-window slice once
+				// instead of three times for {p50, p95, p99}.
+				qs := cfg.Window.Percentiles(t, cfg.WindowOver, 0.50, 0.95, 0.99)
+				p50, p95, p99 = qs[0], qs[1], qs[2]
 			}
 			logger.LogAttrs(ctx, slog.LevelInfo, "progress",
 				slog.Float64("rate_rps", rate),

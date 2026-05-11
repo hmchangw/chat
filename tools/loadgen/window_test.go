@@ -260,3 +260,74 @@ func TestLatencyWindow_P99_ExactValue(t *testing.T) {
 	p99 := w.P99(end, 60*time.Second)
 	assert.Equal(t, 99*time.Millisecond, p99, "p99 of 100 samples must be the 99th value, not the 100th")
 }
+
+// S3: Percentiles is the batched form — sort once, return many
+// quantiles. The progress reporter calls P50 / P95 / P99 once per
+// tick today (three separate sorts of the same slice); switching it
+// to Percentiles drops the per-tick cost to a single sort.
+func TestLatencyWindow_Percentiles_MatchesSeparateCalls(t *testing.T) {
+	w := NewLatencyWindow(60 * time.Second)
+	t0 := time.Unix(100, 0)
+	for i := 1; i <= 100; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*100*time.Millisecond), time.Duration(i)*time.Millisecond, false)
+	}
+	end := t0.Add(101 * 100 * time.Millisecond)
+	got := w.Percentiles(end, 60*time.Second, 0.50, 0.95, 0.99)
+	require.Len(t, got, 3)
+	// Same indexing rule as percentileLocked: idx = floor((N-1)*q).
+	assert.Equal(t, 50*time.Millisecond, got[0], "p50")
+	assert.Equal(t, 95*time.Millisecond, got[1], "p95")
+	assert.Equal(t, 99*time.Millisecond, got[2], "p99")
+}
+
+func TestLatencyWindow_Percentiles_EmptyWindowReturnsZeros(t *testing.T) {
+	w := NewLatencyWindow(10 * time.Second)
+	got := w.Percentiles(time.Now(), 1*time.Second, 0.50, 0.99)
+	require.Len(t, got, 2)
+	assert.Zero(t, got[0])
+	assert.Zero(t, got[1])
+}
+
+func TestLatencyWindow_Percentiles_NoQuantilesReturnsEmpty(t *testing.T) {
+	// Defensive: if a caller passes no quantiles, return an empty slice
+	// rather than panic on an unbounded slice index.
+	w := NewLatencyWindow(10 * time.Second)
+	w.AddAt(time.Unix(100, 0), 5*time.Millisecond, false)
+	got := w.Percentiles(time.Unix(101, 0), 10*time.Second)
+	assert.Empty(t, got)
+}
+
+// S3: at very high publish rates the unbounded sample slice would
+// retain 300k+ entries (5k rps × 60s). Cap it so the periodic
+// percentile sort doesn't drift into the milliseconds. Cap policy:
+// drop-oldest when over cap, preserving sliding-window semantics
+// (i.e. the cap doesn't change WHICH samples we keep, just bounds
+// HOW MANY). Adds remain monotonic-time so the binary-search prune
+// in AddAt continues to work.
+func TestLatencyWindow_MaxSamples_DropsOldestOverCap(t *testing.T) {
+	w := NewLatencyWindow(60 * time.Second)
+	w.SetMaxSamples(5)
+	t0 := time.Unix(100, 0)
+	// 10 samples 1..10ms — only the last 5 (6..10ms) should survive.
+	for i := 1; i <= 10; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*time.Millisecond), time.Duration(i)*time.Millisecond, false)
+	}
+	end := t0.Add(11 * time.Millisecond)
+	got := w.Percentiles(end, 60*time.Second, 0.50, 0.99)
+	require.Len(t, got, 2)
+	// With samples [6,7,8,9,10]ms surviving, p50 idx=floor(4*0.5)=2 → 8ms; p99 idx=floor(4*0.99)=3 → 9ms.
+	assert.Equal(t, 8*time.Millisecond, got[0], "p50 of the 5 surviving samples")
+	assert.Equal(t, 9*time.Millisecond, got[1], "p99 of the 5 surviving samples")
+}
+
+func TestLatencyWindow_MaxSamples_ZeroMeansUnbounded(t *testing.T) {
+	// Default (0) preserves legacy behavior — no cap, all samples kept.
+	w := NewLatencyWindow(60 * time.Second)
+	t0 := time.Unix(100, 0)
+	for i := 1; i <= 50; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*time.Millisecond), time.Duration(i)*time.Millisecond, false)
+	}
+	// p99 over the full window — idx=floor(49*0.99)=48 → samples[48]=49ms.
+	end := t0.Add(60 * time.Millisecond)
+	assert.Equal(t, 49*time.Millisecond, w.P99(end, 60*time.Second))
+}
