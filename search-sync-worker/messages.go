@@ -15,10 +15,11 @@ import (
 // messageCollection implements Collection for message search sync.
 type messageCollection struct {
 	indexPrefix string
+	devMode     bool
 }
 
-func newMessageCollection(indexPrefix string) *messageCollection {
-	return &messageCollection{indexPrefix: indexPrefix}
+func newMessageCollection(indexPrefix string, devMode bool) *messageCollection {
+	return &messageCollection{indexPrefix: indexPrefix, devMode: devMode}
 }
 
 func (c *messageCollection) StreamConfig(siteID string) jetstream.StreamConfig {
@@ -43,7 +44,7 @@ func (c *messageCollection) TemplateName() string {
 }
 
 func (c *messageCollection) TemplateBody() json.RawMessage {
-	return messageTemplateBody(c.indexPrefix)
+	return messageTemplateBody(c.indexPrefix, c.devMode)
 }
 
 func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
@@ -144,14 +145,15 @@ func messageTemplateProperties() map[string]any {
 	return esPropertiesFromStruct[MessageSearchIndex]()
 }
 
-func messageTemplateBody(prefix string) json.RawMessage {
+func messageTemplateBody(prefix string, devMode bool) json.RawMessage {
+	shards, replicas := indexTopology(4, 2, devMode)
 	tmpl := map[string]any{
 		"index_patterns": []string{fmt.Sprintf("%s-*", prefix)},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"index": map[string]any{
-					"number_of_shards":   4,
-					"number_of_replicas": 2,
+					"number_of_shards":   shards,
+					"number_of_replicas": replicas,
 					"refresh_interval":   "30s",
 				},
 				"analysis": map[string]any{

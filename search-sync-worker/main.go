@@ -135,9 +135,9 @@ func main() {
 	}
 
 	collections := []Collection{
-		newMessageCollection(cfg.MsgIndexPrefix),
-		newSpotlightCollection(cfg.SpotlightIndex),
-		newUserRoomCollection(cfg.UserRoomIndex),
+		newMessageCollection(cfg.MsgIndexPrefix, false),
+		newSpotlightCollection(cfg.SpotlightIndex, false),
+		newUserRoomCollection(cfg.UserRoomIndex, false),
 	}
 
 	for _, coll := range collections {

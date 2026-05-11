@@ -15,12 +15,12 @@ import (
 )
 
 func TestMessageCollection_TemplateName(t *testing.T) {
-	coll := newMessageCollection("messages-site1-v1")
+	coll := newMessageCollection("messages-site1-v1", false)
 	assert.Equal(t, "messages-site1-v1_template", coll.TemplateName())
 }
 
 func TestMessageCollection_TemplateBody(t *testing.T) {
-	coll := newMessageCollection("messages-site1-v1")
+	coll := newMessageCollection("messages-site1-v1", false)
 	body := coll.TemplateBody()
 	require.NotNil(t, body)
 
@@ -52,13 +52,13 @@ func TestMessageCollection_TemplateBody(t *testing.T) {
 }
 
 func TestMessageCollection_StreamConfig(t *testing.T) {
-	coll := newMessageCollection("msgs-v1")
+	coll := newMessageCollection("msgs-v1", false)
 	cfg := coll.StreamConfig("site-a")
 	assert.Equal(t, "MESSAGES_CANONICAL_site-a", cfg.Name)
 }
 
 func TestMessageCollection_ConsumerName(t *testing.T) {
-	coll := newMessageCollection("msgs-v1")
+	coll := newMessageCollection("msgs-v1", false)
 	assert.Equal(t, "message-sync", coll.ConsumerName())
 }
 
@@ -235,7 +235,7 @@ func TestNewMessageSearchIndex_TShowOmittedWhenFalse(t *testing.T) {
 }
 
 func TestMessageCollection_BuildAction(t *testing.T) {
-	coll := newMessageCollection("msgs-v1")
+	coll := newMessageCollection("msgs-v1", false)
 	evt := model.MessageEvent{
 		Event: model.EventCreated,
 		Message: model.Message{
@@ -256,5 +256,24 @@ func TestMessageCollection_BuildAction(t *testing.T) {
 	t.Run("malformed JSON returns error", func(t *testing.T) {
 		_, err := coll.BuildAction([]byte("{invalid"))
 		assert.Error(t, err)
+	})
+}
+
+func TestMessageTemplateBody_DevMode(t *testing.T) {
+	t.Run("prod", func(t *testing.T) {
+		body := messageTemplateBody("messages-site-a-v1", false)
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal(body, &parsed))
+		idx := parsed["template"].(map[string]any)["settings"].(map[string]any)["index"].(map[string]any)
+		assert.Equal(t, float64(4), idx["number_of_shards"])
+		assert.Equal(t, float64(2), idx["number_of_replicas"])
+	})
+	t.Run("dev", func(t *testing.T) {
+		body := messageTemplateBody("messages-site-a-v1", true)
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal(body, &parsed))
+		idx := parsed["template"].(map[string]any)["settings"].(map[string]any)["index"].(map[string]any)
+		assert.Equal(t, float64(1), idx["number_of_shards"])
+		assert.Equal(t, float64(0), idx["number_of_replicas"])
 	})
 }

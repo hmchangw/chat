@@ -46,7 +46,7 @@ func baseInboxMemberEvent() *model.InboxMemberEvent {
 }
 
 func TestSpotlightCollection_Metadata(t *testing.T) {
-	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat", false)
 
 	assert.Equal(t, "spotlight-sync", coll.ConsumerName())
 	assert.Equal(t, "spotlight_template", coll.TemplateName())
@@ -69,7 +69,7 @@ func TestSpotlightCollection_Metadata(t *testing.T) {
 }
 
 func TestSpotlightCollection_TemplateBody(t *testing.T) {
-	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat", false)
 	body := coll.TemplateBody()
 	require.NotNil(t, body)
 
@@ -115,7 +115,7 @@ func TestSpotlightTemplateProperties_MatchesStruct(t *testing.T) {
 }
 
 func TestSpotlightCollection_BuildAction_MemberAdded(t *testing.T) {
-	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat", false)
 	payload := baseInboxMemberEvent()
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 1000)
 
@@ -142,7 +142,7 @@ func TestSpotlightCollection_BuildAction_MemberAdded(t *testing.T) {
 }
 
 func TestSpotlightCollection_BuildAction_MemberRemoved(t *testing.T) {
-	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat", false)
 	payload := baseInboxMemberEvent()
 	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 2000)
 
@@ -161,7 +161,7 @@ func TestSpotlightCollection_BuildAction_MemberRemoved(t *testing.T) {
 func TestSpotlightCollection_BuildAction_RestrictedRoomIndexedLikeAnyOther(t *testing.T) {
 	// See spotlightCollection.BuildAction docstring for the room-name
 	// vs message-content access boundary.
-	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat", false)
 	payload := baseInboxMemberEvent()
 	payload.Accounts = []string{"alice", "bob"}
 	hss := int64(1735689500000)
@@ -196,7 +196,7 @@ func TestSpotlightCollection_BuildAction_RestrictedRoomIndexedLikeAnyOther(t *te
 }
 
 func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
-	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat", false)
 
 	t.Run("malformed outbox event", func(t *testing.T) {
 		_, err := coll.BuildAction([]byte("{invalid"))
@@ -255,7 +255,7 @@ func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
 // event carrying N accounts produces N index actions, all sharing the same
 // external Version (event timestamp).
 func TestSpotlightCollection_BuildAction_BulkInvite(t *testing.T) {
-	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat", false)
 	payload := baseInboxMemberEvent()
 	payload.Accounts = []string{"alice", "bob", "carol"}
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 12345)
@@ -279,10 +279,28 @@ func TestSpotlightCollection_BuildAction_BulkInvite(t *testing.T) {
 	}
 }
 
+// TestSpotlightTemplateBody_HasTokenChars locks in that the spotlight
+// template adopts the shared analyzer (which carries token_chars).
+// Before this change the spotlight tokenizer had no token_chars set.
+func TestSpotlightTemplateBody_HasTokenChars(t *testing.T) {
+	body := spotlightTemplateBody("spotlight-site-a-v1-chat", false)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+
+	tmpl := parsed["template"].(map[string]any)
+	settings := tmpl["settings"].(map[string]any)
+	analysis := settings["analysis"].(map[string]any)
+	tokenizer := analysis["tokenizer"].(map[string]any)
+	custom := tokenizer["custom_tokenizer"].(map[string]any)
+	tokenChars, ok := custom["token_chars"].([]any)
+	require.True(t, ok, "custom_tokenizer must declare token_chars after the refactor")
+	assert.ElementsMatch(t, []any{"letter", "digit", "punctuation", "symbol"}, tokenChars)
+}
+
 // TestSpotlightCollection_BuildAction_BulkRemove verifies fan-out on remove:
 // N accounts → N delete actions.
 func TestSpotlightCollection_BuildAction_BulkRemove(t *testing.T) {
-	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
+	coll := newSpotlightCollection("spotlight-site-a-v1-chat", false)
 	payload := baseInboxMemberEvent()
 	payload.Accounts = []string{"alice", "bob"}
 	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 67890)
@@ -296,4 +314,23 @@ func TestSpotlightCollection_BuildAction_BulkRemove(t *testing.T) {
 		assert.Equal(t, int64(67890), action.Version)
 		assert.Nil(t, action.Doc)
 	}
+}
+
+func TestSpotlightTemplateBody_DevMode(t *testing.T) {
+	t.Run("prod", func(t *testing.T) {
+		body := spotlightTemplateBody("spotlight-site-a-v1-chat", false)
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal(body, &parsed))
+		idx := parsed["template"].(map[string]any)["settings"].(map[string]any)["index"].(map[string]any)
+		assert.Equal(t, float64(3), idx["number_of_shards"])
+		assert.Equal(t, float64(1), idx["number_of_replicas"])
+	})
+	t.Run("dev", func(t *testing.T) {
+		body := spotlightTemplateBody("spotlight-site-a-v1-chat", true)
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal(body, &parsed))
+		idx := parsed["template"].(map[string]any)["settings"].(map[string]any)["index"].(map[string]any)
+		assert.Equal(t, float64(1), idx["number_of_shards"])
+		assert.Equal(t, float64(0), idx["number_of_replicas"])
+	})
 }

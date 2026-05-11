@@ -157,8 +157,8 @@ func TestSpotlightSync_Integration(t *testing.T) {
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
-	coll := newSpotlightCollection(indexName)
-	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(spotlightTemplateBody(indexName))))
+	coll := newSpotlightCollection(indexName, false)
+	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(spotlightTemplateBody(indexName, false))))
 	preCreateIndex(t, esURL, indexName)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -249,8 +249,8 @@ func TestSpotlightSync_BulkInvite(t *testing.T) {
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
-	coll := newSpotlightCollection(indexName)
-	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(spotlightTemplateBody(indexName))))
+	coll := newSpotlightCollection(indexName, false)
+	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(spotlightTemplateBody(indexName, false))))
 	preCreateIndex(t, esURL, indexName)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -322,8 +322,8 @@ func TestUserRoomSync_Integration(t *testing.T) {
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
-	coll := newUserRoomCollection(indexName)
-	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName))))
+	coll := newUserRoomCollection(indexName, false)
+	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName, false))))
 	preCreateIndex(t, esURL, indexName)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -444,8 +444,8 @@ func TestUserRoomSync_BulkInvite(t *testing.T) {
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
-	coll := newUserRoomCollection(indexName)
-	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName))))
+	coll := newUserRoomCollection(indexName, false)
+	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName, false))))
 	preCreateIndex(t, esURL, indexName)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -559,8 +559,8 @@ func TestUserRoomSync_LWWGuard(t *testing.T) {
 	require.NoError(t, err)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
-	coll := newUserRoomCollection(indexName)
-	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName))))
+	coll := newUserRoomCollection(indexName, false)
+	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName, false))))
 	preCreateIndex(t, esURL, indexName)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 

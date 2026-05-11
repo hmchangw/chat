@@ -12,7 +12,7 @@ import (
 )
 
 func TestUserRoomCollection_Metadata(t *testing.T) {
-	coll := newUserRoomCollection("user-room-site-a")
+	coll := newUserRoomCollection("user-room-site-a", false)
 
 	assert.Equal(t, "user-room-sync", coll.ConsumerName())
 	assert.Equal(t, "user_room_template", coll.TemplateName())
@@ -36,7 +36,7 @@ func TestUserRoomCollection_Metadata(t *testing.T) {
 }
 
 func TestUserRoomCollection_TemplateBody(t *testing.T) {
-	coll := newUserRoomCollection("user-room-site-a")
+	coll := newUserRoomCollection("user-room-site-a", false)
 	body := coll.TemplateBody()
 	require.NotNil(t, body)
 
@@ -69,7 +69,7 @@ func TestUserRoomCollection_TemplateBody(t *testing.T) {
 }
 
 func TestUserRoomCollection_BuildAction_MemberAdded(t *testing.T) {
-	coll := newUserRoomCollection("user-room-site-a")
+	coll := newUserRoomCollection("user-room-site-a", false)
 	payload := baseInboxMemberEvent()
 	const ts int64 = 1735689600000
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, ts)
@@ -124,7 +124,7 @@ func TestUserRoomCollection_BuildAction_MemberAdded(t *testing.T) {
 }
 
 func TestUserRoomCollection_BuildAction_MemberAdded_Restricted(t *testing.T) {
-	coll := newUserRoomCollection("user-room-site-a")
+	coll := newUserRoomCollection("user-room-site-a", false)
 	payload := baseInboxMemberEvent()
 	const ts int64 = 1735689700000
 	const hssVal int64 = 1735689500000
@@ -162,7 +162,7 @@ func TestUserRoomCollection_BuildAction_MemberAdded_Restricted(t *testing.T) {
 }
 
 func TestUserRoomCollection_BuildAction_MemberRemoved(t *testing.T) {
-	coll := newUserRoomCollection("user-room-site-a")
+	coll := newUserRoomCollection("user-room-site-a", false)
 	payload := baseInboxMemberEvent()
 	const ts int64 = 1735689700000
 	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, ts)
@@ -202,7 +202,7 @@ func TestUserRoomCollection_BuildAction_MemberRemoved(t *testing.T) {
 // seeded with `restrictedRooms[rid] = hss` and an empty `rooms[]`. All
 // actions share the same HSS (event-level field).
 func TestUserRoomCollection_BuildAction_BulkMixed_AllRestricted(t *testing.T) {
-	coll := newUserRoomCollection("user-room-site-a")
+	coll := newUserRoomCollection("user-room-site-a", false)
 	payload := baseInboxMemberEvent()
 	payload.Accounts = []string{"alice", "bob", "carol"}
 	const hssVal int64 = 1735689500000
@@ -232,7 +232,7 @@ func TestUserRoomCollection_BuildAction_BulkMixed_AllRestricted(t *testing.T) {
 // remove body touches both rooms[] and restrictedRooms{} so a member_removed
 // event works regardless of which slot currently holds the rid.
 func TestUserRoomCollection_BuildAction_RemoveScriptEvictsBoth(t *testing.T) {
-	coll := newUserRoomCollection("user-room-site-a")
+	coll := newUserRoomCollection("user-room-site-a", false)
 	payload := baseInboxMemberEvent()
 	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 200)
 
@@ -253,7 +253,7 @@ func TestUserRoomCollection_BuildAction_RemoveScriptEvictsBoth(t *testing.T) {
 // with N accounts produces N distinct user-room update actions (each keyed
 // by a different account).
 func TestUserRoomCollection_BuildAction_BulkInvite(t *testing.T) {
-	coll := newUserRoomCollection("user-room-site-a")
+	coll := newUserRoomCollection("user-room-site-a", false)
 	payload := baseInboxMemberEvent()
 	payload.Accounts = []string{"alice", "bob", "carol"}
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 12345)
@@ -275,7 +275,7 @@ func TestUserRoomCollection_BuildAction_BulkInvite(t *testing.T) {
 }
 
 func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
-	coll := newUserRoomCollection("user-room-site-a")
+	coll := newUserRoomCollection("user-room-site-a", false)
 
 	t.Run("malformed outbox event", func(t *testing.T) {
 		_, err := coll.BuildAction([]byte("{invalid"))
@@ -322,5 +322,24 @@ func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
 		data := makeInboxMemberEvent(t, "room_deleted", baseInboxMemberEvent(), 100)
 		_, err := coll.BuildAction(data)
 		assert.Error(t, err)
+	})
+}
+
+func TestUserRoomTemplateBody_DevMode(t *testing.T) {
+	t.Run("prod", func(t *testing.T) {
+		body := userRoomTemplateBody("user-room-site-a", false)
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal(body, &parsed))
+		idx := parsed["template"].(map[string]any)["settings"].(map[string]any)["index"].(map[string]any)
+		assert.Equal(t, float64(1), idx["number_of_shards"])
+		assert.Equal(t, float64(1), idx["number_of_replicas"])
+	})
+	t.Run("dev", func(t *testing.T) {
+		body := userRoomTemplateBody("user-room-site-a", true)
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal(body, &parsed))
+		idx := parsed["template"].(map[string]any)["settings"].(map[string]any)["index"].(map[string]any)
+		assert.Equal(t, float64(1), idx["number_of_shards"])
+		assert.Equal(t, float64(0), idx["number_of_replicas"])
 	})
 }
