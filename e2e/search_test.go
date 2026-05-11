@@ -13,6 +13,7 @@ import (
 	
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -54,13 +55,21 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 	// for system messages too, or (b) drops the 5-minute valkey TTL to a
 	// test-friendly window via env override, or (c) authenticates alice
 	// on siteB so cross-site sync populates user-room properly.
-	t.Skip("search-service multi-layer auth caching not yet fully unwound -- see comment for the 3 attempted fixes")
+	// Unblock attempt (per R3): the missing piece in earlier runs was that
+	// search-service's per-account valkey cache (key
+	// `searchservice:restrictedrooms:{account}`, TTL 5m) can be populated
+	// from a prior test with an empty/wrong rooms set. The terms-lookup uses
+	// the user-room ES doc (which we DO seed), but the cache short-circuits
+	// the doc fetch when warm. Flushing the cache for alice forces
+	// search-service to re-read the doc we just seeded.
 
 	ctx := t.Context()
 	site := stack.SiteA
 
 	alice := site.Authenticate(t, ctx, "alice")
 	_ = site.Authenticate(t, ctx, "bob")
+
+	site.FlushSearchRestrictedCache(t, alice.Account)
 
 	// Set up a channel + send a message with two unique two-token strings.
 	// `pumpernickel xylophone` won't appear in any other test fixture and
@@ -87,6 +96,13 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 	// Same RequestID for both the request body and the response-subject
 	// suffix; gatekeeper derives the reply subject from the body's
 	// RequestID, so they must agree.
+	js := site.JetStream(t)
+	canonical := stream.MessagesCanonical(site.SiteID).Name
+	awaitDurableReady(t, ctx, js, canonical, "message-sync")
+	preInfo, err := js.Stream(ctx, canonical)
+	require.NoError(t, err)
+	preSeq := preInfo.CachedInfo().State.LastSeq
+
 	msgID := idgen.GenerateMessageID()
 	body := "pumpernickel xylophone " + t.Name()
 	reqID := idgen.GenerateRequestID()
@@ -103,6 +119,10 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 		},
 		10*time.Second,
 	))
+	// Wait for search-sync-worker to ack the canonical event (it's the one
+	// that writes the messages-*-YYYY-MM ES doc; without this we may poll
+	// search-service before indexing has started).
+	awaitCanonicalAcked(t, ctx, js, canonical, "message-sync", preSeq+1)
 
 	// Poll search-service until the message is indexed. Subject is
 	// subject.SearchMessages(account) per R1 11.A.

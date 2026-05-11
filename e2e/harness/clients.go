@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -186,4 +188,30 @@ func (s SiteEndpoints) SeedUserRoom(t *testing.T, account string, roomIDs []stri
 	defer resp.Body.Close()
 	require.LessOrEqual(t, resp.StatusCode, 299,
 		"seed user-room: status %d", resp.StatusCode)
+}
+
+// FlushSearchRestrictedCache deletes search-service's per-account
+// restricted-rooms entry from this site's Valkey so the next search-service
+// call falls through to the ES user-room doc (where the test's SeedUserRoom
+// just wrote the truth). Without this, a stale cached entry from a prior run
+// — or one populated by search-service itself on a previous request with no
+// rooms — can return 0 results despite a freshly-seeded user-room doc.
+//
+// Key format mirrors search-service/store_valkey.go restrictedKey:
+//
+//	searchservice:restrictedrooms:{account}
+//
+// DEL is idempotent — calling on an absent key is a no-op.
+func (s SiteEndpoints) FlushSearchRestrictedCache(t *testing.T, account string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	client := redis.NewClient(&redis.Options{Addr: s.ValkeyAddr})
+	defer func() { _ = client.Close() }()
+
+	key := fmt.Sprintf("searchservice:restrictedrooms:%s", account)
+	if err := client.Del(ctx, key).Err(); err != nil {
+		t.Fatalf("flush search restricted cache key=%s: %v", key, err)
+	}
 }

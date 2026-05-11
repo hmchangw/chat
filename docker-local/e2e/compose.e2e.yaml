@@ -202,11 +202,42 @@ services:
             && break
           sleep 2
         done
+        # Per R3-search-auth-unblock (item 1): the e2e template MUST include
+        # the same mappings search-sync-worker would install via its own
+        # template (`messages-sitea-v1_template`, priority 0). ES picks ONE
+        # composable template per index — highest priority wins entirely, no
+        # merging — so a settings-only override at priority 200 silently
+        # nukes search-sync-worker's keyword mappings and the messages index
+        # ends up with dynamic text+.keyword (lowercased) mappings. Live-run
+        # finding: with text-typed roomId, the search-service terms-lookup
+        # (path: "rooms" - mixed-case roomIDs) can't match the analyzed
+        # lowercased roomId tokens, and every search returns 0 results.
+        #
+        # Keep the inline `properties` map in lockstep with
+        # search-sync-worker/messages.go's MessageSearchIndex `es:"..."` tags.
+        # If a new field is added there, mirror it here.
         curl -fsS -X PUT http://es-a:9200/_index_template/messages-e2e \
           -H 'Content-Type: application/json' \
           -d '{
             "index_patterns": ["messages-sitea-v1-*", "messages-siteb-v1-*"],
-            "template": { "settings": { "index": { "refresh_interval": "200ms", "number_of_replicas": 0 } } },
+            "template": {
+              "settings": { "index": { "refresh_interval": "200ms", "number_of_replicas": 0 } },
+              "mappings": {
+                "dynamic": false,
+                "properties": {
+                  "messageId":                   {"type": "keyword"},
+                  "roomId":                      {"type": "keyword"},
+                  "siteId":                      {"type": "keyword"},
+                  "userId":                      {"type": "keyword"},
+                  "userAccount":                 {"type": "keyword"},
+                  "content":                     {"type": "text"},
+                  "createdAt":                   {"type": "date"},
+                  "threadParentMessageId":       {"type": "keyword"},
+                  "threadParentMessageCreatedAt":{"type": "date"},
+                  "tshow":                       {"type": "boolean"}
+                }
+              }
+            },
             "priority": 200
           }'
         echo "[search-init-a] template applied"
@@ -664,11 +695,32 @@ services:
             && break
           sleep 2
         done
+        # See search-init-a for why the mappings are inline (ES composable
+        # templates pick a single winner; settings-only override silently
+        # erases search-sync-worker's keyword mappings -> mixed-case
+        # roomId terms-lookup fails -> every search returns 0 hits).
         curl -fsS -X PUT http://es-b:9200/_index_template/messages-e2e \
           -H 'Content-Type: application/json' \
           -d '{
             "index_patterns": ["messages-sitea-v1-*", "messages-siteb-v1-*"],
-            "template": { "settings": { "index": { "refresh_interval": "200ms", "number_of_replicas": 0 } } },
+            "template": {
+              "settings": { "index": { "refresh_interval": "200ms", "number_of_replicas": 0 } },
+              "mappings": {
+                "dynamic": false,
+                "properties": {
+                  "messageId":                   {"type": "keyword"},
+                  "roomId":                      {"type": "keyword"},
+                  "siteId":                      {"type": "keyword"},
+                  "userId":                      {"type": "keyword"},
+                  "userAccount":                 {"type": "keyword"},
+                  "content":                     {"type": "text"},
+                  "createdAt":                   {"type": "date"},
+                  "threadParentMessageId":       {"type": "keyword"},
+                  "threadParentMessageCreatedAt":{"type": "date"},
+                  "tshow":                       {"type": "boolean"}
+                }
+              }
+            },
             "priority": 200
           }'
         echo "[search-init-b] template applied"
