@@ -20,6 +20,18 @@ name: chat-e2e
 #
 # `make deps-up` keeps stock ports (4222, 27017, 9042, 9200, 6379, 8180); the
 # e2e Makefile target refuses to start if `deps-up` is running.
+#
+# Trust model deviation from production:
+#   The e2e supercluster runs with ONE shared operator + ONE shared chatapp
+#   account across both sites. auth-service-a and auth-service-b both sign
+#   user JWTs with the SAME chatapp seed (AUTH_SIGNING_KEY). NATS-level
+#   subject permissions encode siteID so a forged subscribe on the wrong
+#   site is denied, but the minted user JWT itself is bit-identical on both
+#   sites -- a token issued by auth-service-a will be accepted by nats-b
+#   directly. This is acceptable for the test environment but is NOT how
+#   production trust isolation works. Tests that need per-site token
+#   isolation realism must mock that boundary at a higher layer or wait for
+#   a follow-up plan that introduces a per-site operator topology.
 
 networks:
   chat-e2e:
@@ -94,23 +106,23 @@ services:
       retries: 60
       start_period: 30s
 
-  # Profile-gated init job that applies the keyspace + table DDL once cass-a
-  # is healthy. Per amendment R1 3.A: cassandra:5 has no docker-entrypoint
-  # init hook, so a one-shot job that shells out to `cqlsh` is the working
+  # One-shot init job: applies the keyspace + table DDL once cass-a is
+  # healthy. Per amendment R1 3.A: cassandra:5 has no docker-entrypoint
+  # init hook, so a separate job that shells out to `cqlsh` is the working
   # pattern (mirrors docker-local/compose.deps.yaml's cassandra-init job).
-  # Invoked via `docker compose --profile init run --rm cassandra-init-a`
-  # from the e2e-up Makefile target.
+  #
+  # NOT profile-gated (revised per chapter 4 self-review): worker services
+  # depend on this via `service_completed_successfully` so they don't start
+  # against a Cassandra missing the `chat` keyspace. The CQL files use
+  # CREATE ... IF NOT EXISTS so this is idempotent across restarts.
   cassandra-init-a:
     image: ${E2E_CASS_IMAGE:-cassandra:5}
-    # container_name intentionally omitted: `docker compose run --rm` auto-
-    # generates a unique name per invocation. An explicit container_name
-    # would collide on re-run if the previous invocation didn't `--rm`.
+    container_name: cassandra-init-a
     networks: [chat-e2e]
     depends_on:
       cass-a: { condition: service_healthy }
     volumes:
       - ../cassandra/init:/init:ro
-    profiles: [init]
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -141,17 +153,18 @@ services:
       retries: 30
       start_period: 15s
 
-  # Profile-gated init job that applies an index template to ES so messages
-  # indices have a 200ms refresh_interval (vs the 30s default). This makes
-  # search-after-write deterministic for the e2e suite. Per amendment R1 4.B.
-  # Invoked via `docker compose --profile init run --rm search-init-a`.
+  # One-shot init job: applies an index template to ES so messages indices
+  # have a 200ms refresh_interval (vs the 30s default). This makes search-
+  # after-write deterministic for the e2e suite. Per amendment R1 4.B.
+  # NOT profile-gated (revised per chapter 4 self-review) for the same
+  # reason as cassandra-init-a: search-service-a + search-sync-worker-a
+  # depend on this completing.
   search-init-a:
     image: curlimages/curl:8
-    # container_name omitted -- see cassandra-init-a above for rationale.
+    container_name: search-init-a
     networks: [chat-e2e]
     depends_on:
       es-a: { condition: service_healthy }
-    profiles: [init]
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -300,9 +313,10 @@ services:
     container_name: message-worker-a
     networks: [chat-e2e]
     depends_on:
-      nats-a:  { condition: service_healthy }
-      mongo-a: { condition: service_healthy }
-      cass-a:  { condition: service_healthy }
+      nats-a:           { condition: service_healthy }
+      mongo-a:          { condition: service_healthy }
+      cass-a:           { condition: service_healthy }
+      cassandra-init-a: { condition: service_completed_successfully }
     environment:
       NATS_URL: nats://nats-a:4222
       NATS_CREDS_FILE: /etc/nats/backend.creds
@@ -363,10 +377,11 @@ services:
     container_name: history-service-a
     networks: [chat-e2e]
     depends_on:
-      nats-a:   { condition: service_healthy }
-      mongo-a:  { condition: service_healthy }
-      cass-a:   { condition: service_healthy }
-      valkey-a: { condition: service_healthy }
+      nats-a:           { condition: service_healthy }
+      mongo-a:          { condition: service_healthy }
+      cass-a:           { condition: service_healthy }
+      cassandra-init-a: { condition: service_completed_successfully }
+      valkey-a:         { condition: service_healthy }
     environment:
       # history-service uses prefixed nested config (per pkg internal/config).
       CASSANDRA_HOSTS: cass-a
@@ -423,9 +438,10 @@ services:
     container_name: search-service-a
     networks: [chat-e2e]
     depends_on:
-      nats-a:   { condition: service_healthy }
-      es-a:     { condition: service_healthy }
-      valkey-a: { condition: service_healthy }
+      nats-a:         { condition: service_healthy }
+      es-a:           { condition: service_healthy }
+      search-init-a:  { condition: service_completed_successfully }
+      valkey-a:       { condition: service_healthy }
     environment:
       NATS_URL: nats://nats-a:4222
       NATS_CREDS_FILE: /etc/nats/backend.creds
@@ -452,8 +468,9 @@ services:
     container_name: search-sync-worker-a
     networks: [chat-e2e]
     depends_on:
-      nats-a: { condition: service_healthy }
-      es-a:   { condition: service_healthy }
+      nats-a:        { condition: service_healthy }
+      es-a:          { condition: service_healthy }
+      search-init-a: { condition: service_completed_successfully }
     environment:
       NATS_URL: nats://nats-a:4222
       NATS_CREDS_FILE: /etc/nats/backend.creds
