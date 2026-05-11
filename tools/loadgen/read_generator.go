@@ -2,8 +2,7 @@ package main
 
 import (
 	"context"
-	"math/rand"
-	"sync"
+	randv2 "math/rand/v2"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -40,16 +39,17 @@ type HistoryReadConfig struct {
 // rate, distributing across LoadHistory / GetMessageByID / LoadSurrounding /
 // GetThreadMessages per the preset's HistoryMix weights.
 type HistoryReadGenerator struct {
-	cfg   HistoryReadConfig
-	rngMu sync.Mutex
-	rng   *rand.Rand
+	cfg HistoryReadConfig
 }
 
-// NewHistoryReadGenerator returns a generator seeded from `seed`.
+// NewHistoryReadGenerator returns a generator. The `seed` parameter is
+// retained for API compatibility but no longer seeds an instance Rand —
+// per-tick picks now use the lock-free math/rand/v2 globals (S4).
+// Fixture seeding (BuildFixtures) still honors the same seed.
 func NewHistoryReadGenerator(cfg *HistoryReadConfig, seed int64) *HistoryReadGenerator {
+	_ = seed
 	return &HistoryReadGenerator{
 		cfg: *cfg,
-		rng: rand.New(rand.NewSource(seed)),
 	}
 }
 
@@ -71,20 +71,14 @@ func (g *HistoryReadGenerator) Run(ctx context.Context) error {
 	return nil
 }
 
-func (g *HistoryReadGenerator) intn(n int) int {
-	g.rngMu.Lock()
-	defer g.rngMu.Unlock()
-	return g.rng.Intn(n)
-}
+// S4: removed g.intn — use math/rand/v2.IntN globals (lock-free).
 
 func (g *HistoryReadGenerator) tick(ctx context.Context) {
 	if len(g.cfg.Fixtures.Subscriptions) == 0 || len(g.cfg.Preset.HistoryMix) == 0 {
 		return
 	}
-	g.rngMu.Lock()
-	kind := pickHistoryKind(g.rng, g.cfg.Preset.HistoryMix)
-	g.rngMu.Unlock()
-	sub := g.cfg.Fixtures.Subscriptions[g.intn(len(g.cfg.Fixtures.Subscriptions))]
+	kind := pickHistoryKind(g.cfg.Preset.HistoryMix)
+	sub := g.cfg.Fixtures.Subscriptions[randv2.IntN(len(g.cfg.Fixtures.Subscriptions))]
 	args := historyRequestArgs{
 		User: model.User{Account: sub.User.Account, ID: sub.User.ID, SiteID: g.cfg.SiteID},
 		Room: model.Room{ID: sub.RoomID, SiteID: g.cfg.SiteID},
@@ -96,7 +90,7 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 			).Inc()
 			return
 		}
-		args.MessageID = g.cfg.MessageIDs[g.intn(len(g.cfg.MessageIDs))]
+		args.MessageID = g.cfg.MessageIDs[randv2.IntN(len(g.cfg.MessageIDs))]
 	}
 	subj, body, err := buildHistoryRequest(kind, &args)
 	if err != nil {
@@ -172,16 +166,16 @@ type SearchReadConfig struct {
 // SearchMix weights, and drawing query strings uniformly from
 // preset.SearchTokens.
 type SearchReadGenerator struct {
-	cfg   SearchReadConfig
-	rngMu sync.Mutex
-	rng   *rand.Rand
+	cfg SearchReadConfig
 }
 
-// NewSearchReadGenerator returns a generator seeded from `seed`.
+// NewSearchReadGenerator returns a generator. The `seed` parameter is
+// retained for API compatibility but no longer seeds an instance Rand
+// (S4 — see HistoryReadGenerator).
 func NewSearchReadGenerator(cfg *SearchReadConfig, seed int64) *SearchReadGenerator {
+	_ = seed
 	return &SearchReadGenerator{
 		cfg: *cfg,
-		rng: rand.New(rand.NewSource(seed)),
 	}
 }
 
@@ -202,21 +196,15 @@ func (g *SearchReadGenerator) Run(ctx context.Context) error {
 	return nil
 }
 
-func (g *SearchReadGenerator) intn(n int) int {
-	g.rngMu.Lock()
-	defer g.rngMu.Unlock()
-	return g.rng.Intn(n)
-}
+// S4: removed g.intn — use math/rand/v2.IntN globals (lock-free).
 
 func (g *SearchReadGenerator) tick(ctx context.Context) {
 	if len(g.cfg.Fixtures.Users) == 0 || len(g.cfg.Preset.SearchTokens) == 0 || len(g.cfg.Preset.SearchMix) == 0 {
 		return
 	}
-	g.rngMu.Lock()
-	kind := pickSearchKind(g.rng, g.cfg.Preset.SearchMix)
-	g.rngMu.Unlock()
-	user := g.cfg.Fixtures.Users[g.intn(len(g.cfg.Fixtures.Users))]
-	query := g.cfg.Preset.SearchTokens[g.intn(len(g.cfg.Preset.SearchTokens))]
+	kind := pickSearchKind(g.cfg.Preset.SearchMix)
+	user := g.cfg.Fixtures.Users[randv2.IntN(len(g.cfg.Fixtures.Users))]
+	query := g.cfg.Preset.SearchTokens[randv2.IntN(len(g.cfg.Preset.SearchTokens))]
 	size := g.cfg.Preset.SearchSize
 	if size <= 0 {
 		size = 20

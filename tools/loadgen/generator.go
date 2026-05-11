@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	randv2 "math/rand/v2"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,8 +62,6 @@ type GeneratorConfig struct {
 // Generator is the open-loop publisher.
 type Generator struct {
 	cfg     GeneratorConfig
-	rngMu   sync.Mutex
-	rng     *rand.Rand
 	maxBody string
 	// curRate is the rate the ticker is currently set to (rps). Updated
 	// by the rebuild goroutine when Ramp is active so publishOne can
@@ -71,15 +69,18 @@ type Generator struct {
 	curRate atomic.Int64
 }
 
-// NewGenerator returns a Generator seeded from `seed`.
+// NewGenerator returns a Generator. The `seed` parameter is retained for
+// API compatibility but no longer seeds an instance Rand — per-tick
+// picks now use math/rand/v2 globals (S4). Fixture seeding still honors
+// the same seed via BuildFixtures.
 func NewGenerator(cfg *GeneratorConfig, seed int64) *Generator {
+	_ = seed
 	max := cfg.Preset.ContentBytes.Max
 	if max <= 0 {
 		max = 1
 	}
 	return &Generator{
 		cfg:     *cfg,
-		rng:     rand.New(rand.NewSource(seed)),
 		maxBody: strings.Repeat("x", max),
 	}
 }
@@ -176,25 +177,14 @@ func (g *Generator) Run(ctx context.Context) error {
 	}
 }
 
-// intn returns rng.Intn(n) with mutex protection so publishOne is
-// safe to call from multiple worker goroutines.
-func (g *Generator) intn(n int) int {
-	g.rngMu.Lock()
-	defer g.rngMu.Unlock()
-	return g.rng.Intn(n)
-}
-
-func (g *Generator) float64() float64 {
-	g.rngMu.Lock()
-	defer g.rngMu.Unlock()
-	return g.rng.Float64()
-}
+// S4: removed g.intn/g.float64 — call sites now use math/rand/v2.IntN
+// and randv2.Float64 directly (lock-free ChaCha8 globals).
 
 func (g *Generator) publishOne(ctx context.Context) {
 	if len(g.cfg.Fixtures.Subscriptions) == 0 {
 		return
 	}
-	subIdx := g.intn(len(g.cfg.Fixtures.Subscriptions))
+	subIdx := randv2.IntN(len(g.cfg.Fixtures.Subscriptions))
 	sub := g.cfg.Fixtures.Subscriptions[subIdx]
 	content := g.content()
 	msgID := idgen.GenerateMessageID()
@@ -254,14 +244,14 @@ func (g *Generator) content() string {
 	r := g.cfg.Preset.ContentBytes
 	size := r.Min
 	if r.Max > r.Min {
-		size = r.Min + g.intn(r.Max-r.Min+1)
+		size = r.Min + randv2.IntN(r.Max-r.Min+1)
 	}
 	if size <= 0 {
 		size = 1
 	}
 	body := g.maxBody[:size]
-	if g.cfg.Preset.MentionRate > 0 && g.float64() < g.cfg.Preset.MentionRate {
-		target := g.intn(g.cfg.Preset.Users)
+	if g.cfg.Preset.MentionRate > 0 && randv2.Float64() < g.cfg.Preset.MentionRate {
+		target := randv2.IntN(g.cfg.Preset.Users)
 		body = fmt.Sprintf("@user-%d %s", target, body)
 	}
 	return body

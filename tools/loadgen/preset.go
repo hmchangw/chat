@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	randv2 "math/rand/v2"
 	"sort"
 	"time"
 
@@ -184,11 +185,19 @@ func BuiltinPreset(name string) (Preset, bool) {
 }
 
 // pickWeighted draws a key from the weights map with probability proportional
-// to its weight. Iteration order is sorted by key to keep selection
-// deterministic for a given (rand.Rand, weights) pair across runs. Total
-// weight must be > 0; the caller owns that invariant since both callers
+// to its weight. Iteration order is sorted by key for stable enumeration.
+// Total weight must be > 0; the caller owns that invariant since both callers
 // derive weights from the preset registry where the invariant is enforced.
-func pickWeighted[K ~int](r *rand.Rand, weights map[K]int) K {
+//
+// S4: uses math/rand/v2 globals (lock-free ChaCha8 internally) instead of
+// the old caller-supplied *math/rand.Rand. Determinism trade-off:
+// per-tick picks are no longer reproducible across runs, but fixture
+// seeding (in BuildFixtures) still uses the seeded v1 Rand for
+// deterministic users/rooms/subscriptions. For capacity testing the
+// per-tick non-determinism is irrelevant; for unit tests the picker's
+// distribution properties (asserted via large-sample chi-squared bounds)
+// don't depend on a specific seed.
+func pickWeighted[K ~int](weights map[K]int) K {
 	keys := make([]K, 0, len(weights))
 	for k := range weights {
 		keys = append(keys, k)
@@ -207,7 +216,7 @@ func pickWeighted[K ~int](r *rand.Rand, weights map[K]int) K {
 		var zero K
 		return zero
 	}
-	pick := r.Intn(total)
+	pick := randv2.IntN(total)
 	cum := 0
 	for _, k := range keys {
 		cum += weights[k]
@@ -218,16 +227,16 @@ func pickWeighted[K ~int](r *rand.Rand, weights map[K]int) K {
 	return keys[len(keys)-1] // unreachable when total>0
 }
 
-func pickHistoryKind(r *rand.Rand, weights map[historyRequestKind]int) historyRequestKind {
-	return pickWeighted(r, weights)
+func pickHistoryKind(weights map[historyRequestKind]int) historyRequestKind {
+	return pickWeighted(weights)
 }
 
-func pickSearchKind(r *rand.Rand, weights map[searchRequestKind]int) searchRequestKind {
-	return pickWeighted(r, weights)
+func pickSearchKind(weights map[searchRequestKind]int) searchRequestKind {
+	return pickWeighted(weights)
 }
 
-func pickRoomKind(r *rand.Rand, weights map[roomRequestKind]int) roomRequestKind {
-	return pickWeighted(r, weights)
+func pickRoomKind(weights map[roomRequestKind]int) roomRequestKind {
+	return pickWeighted(weights)
 }
 
 // Fixtures is the full seed data for a preset run.

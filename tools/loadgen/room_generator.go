@@ -2,8 +2,7 @@ package main
 
 import (
 	"context"
-	"math/rand"
-	"sync"
+	randv2 "math/rand/v2"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -30,16 +29,16 @@ type RoomRPCConfig struct {
 // the shared tickLoop helper from Task 10.5; differs from the
 // HistoryReadGenerator only in per-tick body.
 type RoomRPCGenerator struct {
-	cfg   RoomRPCConfig
-	rngMu sync.Mutex
-	rng   *rand.Rand
+	cfg RoomRPCConfig
 }
 
-// NewRoomRPCGenerator returns a generator seeded from `seed`.
+// NewRoomRPCGenerator returns a generator. The `seed` parameter is
+// retained for API compatibility but no longer seeds an instance Rand
+// (S4 — see HistoryReadGenerator).
 func NewRoomRPCGenerator(cfg *RoomRPCConfig, seed int64) *RoomRPCGenerator {
+	_ = seed
 	return &RoomRPCGenerator{
 		cfg: *cfg,
-		rng: rand.New(rand.NewSource(seed)),
 	}
 }
 
@@ -59,21 +58,15 @@ func (g *RoomRPCGenerator) Run(ctx context.Context) error {
 	return nil
 }
 
-func (g *RoomRPCGenerator) intn(n int) int {
-	g.rngMu.Lock()
-	defer g.rngMu.Unlock()
-	return g.rng.Intn(n)
-}
+// S4: removed g.intn — use math/rand/v2.IntN globals (lock-free).
 
 func (g *RoomRPCGenerator) tick(ctx context.Context) {
 	if len(g.cfg.Fixtures.Subscriptions) == 0 || len(g.cfg.Preset.RoomMix) == 0 {
 		return
 	}
-	g.rngMu.Lock()
-	kind := pickRoomKind(g.rng, g.cfg.Preset.RoomMix)
-	g.rngMu.Unlock()
+	kind := pickRoomKind(g.cfg.Preset.RoomMix)
 
-	sub := g.cfg.Fixtures.Subscriptions[g.intn(len(g.cfg.Fixtures.Subscriptions))]
+	sub := g.cfg.Fixtures.Subscriptions[randv2.IntN(len(g.cfg.Fixtures.Subscriptions))]
 	args := roomRequestArgs{
 		User:          model.User{Account: sub.User.Account, ID: sub.User.ID, SiteID: g.cfg.SiteID},
 		Room:          model.Room{ID: sub.RoomID, SiteID: g.cfg.SiteID},
@@ -81,7 +74,7 @@ func (g *RoomRPCGenerator) tick(ctx context.Context) {
 		WriteIDPrefix: g.cfg.Preset.WriteIDPrefix,
 	}
 	if kind == MemberAddKind && len(g.cfg.Fixtures.Users) > 0 {
-		args.MemberAccount = g.cfg.Fixtures.Users[g.intn(len(g.cfg.Fixtures.Users))].Account
+		args.MemberAccount = g.cfg.Fixtures.Users[randv2.IntN(len(g.cfg.Fixtures.Users))].Account
 	}
 
 	subj, body, err := buildRoomRequest(kind, &args)

@@ -174,12 +174,11 @@ func TestBuiltinPreset_SearchRead(t *testing.T) {
 
 func TestPickHistoryKind_HonoursWeights(t *testing.T) {
 	p, _ := BuiltinPreset("history-read")
-	r := rand.New(rand.NewSource(42))
 	const iters = 10_000
 
 	counts := map[historyRequestKind]int{}
 	for i := 0; i < iters; i++ {
-		counts[pickHistoryKind(r, p.HistoryMix)]++
+		counts[pickHistoryKind(p.HistoryMix)]++
 	}
 	for kind, weight := range p.HistoryMix {
 		want := float64(iters) * float64(weight) / 100.0
@@ -191,12 +190,11 @@ func TestPickHistoryKind_HonoursWeights(t *testing.T) {
 
 func TestPickSearchKind_HonoursWeights(t *testing.T) {
 	p, _ := BuiltinPreset("search-read")
-	r := rand.New(rand.NewSource(42))
 	const iters = 10_000
 
 	counts := map[searchRequestKind]int{}
 	for i := 0; i < iters; i++ {
-		counts[pickSearchKind(r, p.SearchMix)]++
+		counts[pickSearchKind(p.SearchMix)]++
 	}
 	for kind, weight := range p.SearchMix {
 		want := float64(iters) * float64(weight) / 100.0
@@ -251,14 +249,13 @@ func TestRoomRPCPreset_HasMixAndWriteIDPrefix(t *testing.T) {
 }
 
 func TestPickRoomKind_RespectsWeights(t *testing.T) {
-	r := rand.New(rand.NewSource(42))
 	weights := map[roomRequestKind]int{
 		RoomsListKind: 60,
 		RoomsGetKind:  40,
 	}
 	counts := map[roomRequestKind]int{}
 	for i := 0; i < 10000; i++ {
-		counts[pickRoomKind(r, weights)]++
+		counts[pickRoomKind(weights)]++
 	}
 	// Within ±2% of expected (6000/4000).
 	assert.InDelta(t, 6000, counts[RoomsListKind], 200)

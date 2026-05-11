@@ -1,7 +1,6 @@
 package main
 
 import (
-	"math/rand"
 	"testing"
 	"time"
 
@@ -176,12 +175,11 @@ func TestAbortWatcher_DisabledWhenLimitsZero(t *testing.T) {
 // TestPickWeighted_ZeroTotalReturnsZeroValue is the F2 regression: a
 // weights map where every weight is zero used to panic via r.Intn(0).
 func TestPickWeighted_ZeroTotalReturnsZeroValue(t *testing.T) {
-	r := rand.New(rand.NewSource(1))
 	weights := map[historyRequestKind]int{
 		HistoryLoadHistory:    0,
 		HistoryGetMessageByID: 0,
 	}
-	got := pickWeighted(r, weights)
+	got := pickWeighted(weights)
 	assert.Equal(t, historyRequestKind(0), got, "all-zero weights must return zero value, not panic")
 }
 
