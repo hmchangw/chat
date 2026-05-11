@@ -354,20 +354,9 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 	return nil
 }
 
-// errKeyDepsMissing is returned when a key-handling helper is invoked on a
-// handler constructed without Valkey wiring. Callers (the JetStream consume
-// loop) treat it as a permanent error so the message Acks with a clear log
-// rather than NAK-looping a misconfigured worker.
-var errKeyDepsMissing = errors.New("room key dependencies not configured")
-
 // replicateLocalKey ensures the local Valkey has the room key, fetching from origin on a cache miss.
-// Returns errKeyDepsMissing if the handler was built without keyStore/interSiteClient — see main.go's
-// VALKEY_ADDR gate; the warning at startup tells the operator they must configure Valkey wiring
-// before key-bearing outbox events arrive.
+// keyStore and interSiteClient are required (see VALKEY_ADDR gate in main.go).
 func (h *Handler) replicateLocalKey(ctx context.Context, originSiteID, roomID string) error {
-	if h.keyStore == nil || h.interSiteClient == nil {
-		return errKeyDepsMissing
-	}
 	pair, err := h.keyStore.Get(ctx, roomID)
 	if err != nil {
 		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
@@ -387,9 +376,6 @@ func (h *Handler) replicateLocalKey(ctx context.Context, originSiteID, roomID st
 // no-op once the local copy is at or beyond the fetched version; never re-rotates.
 // No user-side fan-out — origin room-worker handles that via NATS supercluster.
 func (h *Handler) fetchAndStoreKey(ctx context.Context, originSiteID, roomID string) error {
-	if h.keyStore == nil || h.interSiteClient == nil {
-		return errKeyDepsMissing
-	}
 	fetched, err := h.interSiteClient.GetRoomKey(ctx, originSiteID, roomID)
 	if err != nil {
 		return fmt.Errorf("rpc origin: %w", err)

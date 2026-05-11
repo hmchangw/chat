@@ -37,8 +37,9 @@ type config struct {
 	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 
-	// Valkey wiring; empty addr disables key handling.
-	ValkeyAddr     string `env:"VALKEY_ADDR"`
+	// Valkey wiring; required. inbox-worker cannot replicate cross-site keys
+	// without it and would NAK every key-bearing outbox event.
+	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
 	ValkeyPassword string `env:"VALKEY_PASSWORD"           envDefault:""`
 	// ValkeyKeyGracePeriod controls how long the previous key remains readable after a rotation (TTL on the :prev slot).
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
@@ -254,35 +255,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	var keyStore RoomKeyStore
-	var interSiteClient InterSiteKeyClient
-	if cfg.ValkeyAddr != "" {
-		if cfg.ValkeyKeyGracePeriod <= 0 {
-			slog.Error("VALKEY_ADDR set but VALKEY_KEY_GRACE_PERIOD is not a positive duration",
-				"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
-			os.Exit(1)
-		}
-		if cfg.RoomKeyMaxRedeliver <= 0 {
-			// A zero or negative cap would satisfy the >= check on the very first
-			// delivery and silently terminate every event before the handler runs.
-			slog.Error("ROOM_KEY_MAX_REDELIVER must be a positive integer",
-				"room_key_max_redeliver", cfg.RoomKeyMaxRedeliver)
-			os.Exit(1)
-		}
-		ks, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
-			Addr: cfg.ValkeyAddr, Password: cfg.ValkeyPassword, GracePeriod: cfg.ValkeyKeyGracePeriod,
-		})
-		if err != nil {
-			slog.Error("valkey connect failed", "error", err)
-			os.Exit(1)
-		}
-		keyStore = ks
-		interSiteClient = newNatsInterSiteKeyClient(nc.NatsConn(), cfg.RoomKeyRPCTimeout)
+	if cfg.ValkeyKeyGracePeriod <= 0 {
+		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
+			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
+		os.Exit(1)
 	}
-
-	if cfg.ValkeyAddr == "" {
-		slog.Warn("room key distribution disabled — VALKEY_ADDR not set; create/add/remove members will skip key Valkey replication")
+	if cfg.RoomKeyMaxRedeliver <= 0 {
+		// A zero or negative cap would satisfy the >= check on the very first
+		// delivery and silently terminate every event before the handler runs.
+		slog.Error("ROOM_KEY_MAX_REDELIVER must be a positive integer",
+			"room_key_max_redeliver", cfg.RoomKeyMaxRedeliver)
+		os.Exit(1)
 	}
+	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr: cfg.ValkeyAddr, Password: cfg.ValkeyPassword, GracePeriod: cfg.ValkeyKeyGracePeriod,
+	})
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
+	}
+	interSiteClient := newNatsInterSiteKeyClient(nc.NatsConn(), cfg.RoomKeyRPCTimeout)
 
 	handler := NewHandler(store, cfg.SiteID, keyStore, interSiteClient)
 
@@ -332,9 +324,7 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return meterShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-	}
-	if keyStore != nil {
-		hooks = append(hooks, func(ctx context.Context) error { return keyStore.Close() })
+		func(ctx context.Context) error { return keyStore.Close() },
 	}
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)

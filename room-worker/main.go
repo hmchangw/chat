@@ -35,8 +35,10 @@ type config struct {
 	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 
-	// Valkey wiring; empty addr disables key handling.
-	ValkeyAddr     string `env:"VALKEY_ADDR"`
+	// Valkey wiring; required. room-worker needs the key on every create / add /
+	// remove path and the inter-site `chat.server.request.roomkey.{siteID}.get`
+	// RPC handler depends on the keystore.
+	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
 	ValkeyPassword string `env:"VALKEY_PASSWORD"           envDefault:""`
 	// ValkeyKeyGracePeriod controls how long the previous key remains readable after a rotation (TTL on the :prev slot).
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
@@ -87,30 +89,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	var keyStore roomkeystore.RoomKeyStore
-	var keySender *roomkeysender.Sender
-	if cfg.ValkeyAddr != "" {
-		if cfg.ValkeyKeyGracePeriod <= 0 {
-			slog.Error("VALKEY_ADDR set but VALKEY_KEY_GRACE_PERIOD is not a positive duration",
-				"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
-			os.Exit(1)
-		}
-		ks, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
-			Addr:        cfg.ValkeyAddr,
-			Password:    cfg.ValkeyPassword,
-			GracePeriod: cfg.ValkeyKeyGracePeriod,
-		})
-		if err != nil {
-			slog.Error("valkey connect failed", "error", err)
-			os.Exit(1)
-		}
-		keyStore = ks
-		keySender = roomkeysender.NewSender(nc.NatsConn())
+	if cfg.ValkeyKeyGracePeriod <= 0 {
+		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
+			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
+		os.Exit(1)
 	}
-
-	if cfg.ValkeyAddr == "" {
-		slog.Warn("room key distribution disabled — VALKEY_ADDR not set; create/add/remove members will skip key fan-out")
+	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        cfg.ValkeyAddr,
+		Password:    cfg.ValkeyPassword,
+		GracePeriod: cfg.ValkeyKeyGracePeriod,
+	})
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
 	}
+	keySender := roomkeysender.NewSender(nc.NatsConn())
 
 	streamCfg := stream.Rooms(cfg.SiteID)
 
@@ -136,11 +129,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if keyStore != nil {
-		if _, err := nc.QueueSubscribe(subject.ServerRoomKeyGet(cfg.SiteID), "room-worker", handler.NatsHandleGetRoomKey); err != nil {
-			slog.Error("subscribe roomkey get failed", "error", err)
-			os.Exit(1)
-		}
+	if _, err := nc.QueueSubscribe(subject.ServerRoomKeyGet(cfg.SiteID), "room-worker", handler.NatsHandleGetRoomKey); err != nil {
+		slog.Error("subscribe roomkey get failed", "error", err)
+		os.Exit(1)
 	}
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, buildConsumerConfig(cfg.Consumer))
@@ -198,9 +189,7 @@ func main() {
 		func(ctx context.Context) error { return meterShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-	}
-	if keyStore != nil {
-		hooks = append(hooks, func(ctx context.Context) error { return keyStore.Close() })
+		func(ctx context.Context) error { return keyStore.Close() },
 	}
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)

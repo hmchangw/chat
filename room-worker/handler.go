@@ -275,23 +275,19 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 	}
 	// Version assertion: room-service rotated the key before dispatching the remove; worker must see the new version.
 	// Fetch once here so callers (processRemoveIndividual / processRemoveOrg) can pass the same pair to fanOutRoomKeyToSurvivors.
-	var keyPair *roomkeystore.VersionedKeyPair
-	if h.keyStore != nil {
-		pair, err := h.keyStore.Get(ctx, req.RoomID)
-		if err != nil {
-			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-			return fmt.Errorf("get room key: %w", err)
+	keyPair, err := h.keyStore.Get(ctx, req.RoomID)
+	if err != nil {
+		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+		return fmt.Errorf("get room key: %w", err)
+	}
+	// Version gate assumes single-rotator semantics: only room-service originates rotations, so a scalar int suffices for ordering.
+	// First rotation (newVer=1) requires pair.Version >= 1; fallback-Set path stamps newVer=0 which trivially passes (room had no prior key to wait for).
+	if keyPair == nil || keyPair.Version < req.NewKeyVersion {
+		haveVersion := -1
+		if keyPair != nil {
+			haveVersion = keyPair.Version
 		}
-		// Version gate assumes single-rotator semantics: only room-service originates rotations, so a scalar int suffices for ordering.
-		// First rotation (newVer=1) requires pair.Version >= 1; fallback-Set path stamps newVer=0 which trivially passes (room had no prior key to wait for).
-		if pair == nil || pair.Version < req.NewKeyVersion {
-			haveVersion := -1
-			if pair != nil {
-				haveVersion = pair.Version
-			}
-			return fmt.Errorf("stale key version (have=%d want>=%d); jetstream delivered before valkey settled, will retry", haveVersion, req.NewKeyVersion)
-		}
-		keyPair = pair
+		return fmt.Errorf("stale key version (have=%d want>=%d); jetstream delivered before valkey settled, will retry", haveVersion, req.NewKeyVersion)
 	}
 
 	if req.OrgID != "" {
@@ -344,13 +340,11 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	// A list failure here means the key has rotated at room-service but
 	// survivors can't be enumerated — NAK so JetStream retries rather than
 	// stranding the room on a key nobody received.
-	if keyPair != nil {
-		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
-		if listErr != nil {
-			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
-		}
-		h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
+	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
+	if listErr != nil {
+		return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 	}
+	h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
 
 	now := time.Now().UTC()
 
@@ -499,13 +493,11 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	// ListByRoom after the delete returns the already-filtered survivor set.
 	// See the org-individual analog above: a list failure here would leave
 	// the rotated key undelivered, so propagate to NAK + retry.
-	if keyPair != nil {
-		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
-		if listErr != nil {
-			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
-		}
-		h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
+	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
+	if listErr != nil {
+		return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 	}
+	h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
 
 	now := time.Now().UTC()
 
@@ -990,16 +982,14 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	roomID = req.RoomID
 
 	// Gate: key MUST exist before any Mongo write.
-	if h.keyStore != nil {
-		pair, err := h.keyStore.Get(ctx, req.RoomID)
-		if err != nil {
-			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-			return fmt.Errorf("get room key: %w", err)
-		}
-		if pair == nil {
-			roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
-			return newPermanentAbsent("room key absent for %s", req.RoomID)
-		}
+	pair, err := h.keyStore.Get(ctx, req.RoomID)
+	if err != nil {
+		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+		return fmt.Errorf("get room key: %w", err)
+	}
+	if pair == nil {
+		roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
+		return newPermanentAbsent("room key absent for %s", req.RoomID)
 	}
 
 	requester, err := h.store.GetUser(ctx, req.RequesterAccount)
@@ -1619,11 +1609,7 @@ func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
 // fanOutRoomKeyToSurvivors sends the already-fetched room key to every room member in survivors
 // (local + remote). NATS supercluster routes user-subjects to home sites.
 // survivors is a pre-computed post-deletion snapshot supplied by the caller; pair must be non-nil.
-// Callers should skip the call when key handling is disabled.
 func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, survivors []model.Subscription) {
-	if h.keySender == nil || pair == nil {
-		return
-	}
 	evt := model.RoomKeyEvent{
 		RoomID:     roomID,
 		Version:    pair.Version,
@@ -1661,10 +1647,6 @@ func (h *Handler) handleGetRoomKey(ctx context.Context, roomID string) (*model.R
 // NatsHandleGetRoomKey serves chat.server.request.roomkey.{siteID}.get for inbox-worker on remote sites.
 func (h *Handler) NatsHandleGetRoomKey(m otelnats.Msg) {
 	ctx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
-	if h.keyStore == nil {
-		natsutil.ReplyError(m.Msg, "key store not configured")
-		return
-	}
 	var req model.RoomKeyGetRequest
 	if err := json.Unmarshal(m.Msg.Data, &req); err != nil {
 		natsutil.ReplyError(m.Msg, "invalid request")
@@ -1682,9 +1664,6 @@ func (h *Handler) NatsHandleGetRoomKey(m otelnats.Msg) {
 // and fans it out to every room member account in users (local + remote).
 // NATS supercluster routes user-subjects to home sites.
 func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, users []model.User) error {
-	if h.keyStore == nil || h.keySender == nil {
-		return nil
-	}
 	pair, err := h.keyStore.Get(ctx, roomID)
 	if err != nil {
 		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))

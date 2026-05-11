@@ -1450,18 +1450,6 @@ func TestFetchAndStoreKey_SkipsWhenLocalAtOrAheadOfOrigin(t *testing.T) {
 
 // --- replicateLocalKey direct tests ---
 
-// TestReplicateLocalKey_FailsFastWhenDepsNil verifies that a handler built
-// without keyStore/interSiteClient surfaces a clear error rather than silently
-// no-oping on key-bearing events — a miswired worker must NOT Ack key-relevant
-// outbox events.
-func TestReplicateLocalKey_FailsFastWhenDepsNil(t *testing.T) {
-	store := &stubInboxStore{}
-	h := NewHandler(store, "site-b", nil, nil)
-	err := h.replicateLocalKey(context.Background(), "site-a", "r1")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errKeyDepsMissing)
-}
-
 // TestReplicateLocalKey_NoRPCOnCacheHit confirms that when the local key
 // is already cached, no RPC is made (it's a no-op).
 func TestReplicateLocalKey_NoRPCOnCacheHit(t *testing.T) {
@@ -1541,14 +1529,6 @@ func TestReplicateLocalKey_ReturnsErrorOnKeyStoreFailure(t *testing.T) {
 }
 
 // --- fetchAndStoreKey direct tests ---
-
-// TestFetchAndStoreKey_FailsFastWhenDepsNil verifies fail-fast on a miswired handler.
-func TestFetchAndStoreKey_FailsFastWhenDepsNil(t *testing.T) {
-	h := NewHandler(nil, "site-b", nil, nil)
-	err := h.fetchAndStoreKey(context.Background(), "site-a", "r1")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errKeyDepsMissing)
-}
 
 // TestFetchAndStoreKey_HappyPath verifies that on an empty local store the
 // fetched key is written with origin's exact version (no Set-at-version-0 quirk).

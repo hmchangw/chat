@@ -240,12 +240,12 @@ func ServerRoomKeyGet(siteID string) string {
 - `Config` adds:
 
   ```go
-  ValkeyAddr           string        `env:"VALKEY_ADDR"`
+  ValkeyAddr           string        `env:"VALKEY_ADDR,required"`
   ValkeyPassword       string        `env:"VALKEY_PASSWORD" envDefault:""`
   ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
   ```
 
-  When `VALKEY_ADDR` is empty, `main.go` emits a `slog.Warn` and disables all key fan-out at startup rather than failing.
+  `VALKEY_ADDR` is required: `room-worker` refuses to start without it.
 
 - New consumer-side interface in `room-worker/store.go`:
 
@@ -277,10 +277,12 @@ The extended interface (`Set`, `Rotate`) is a breaking change to `room-service/s
 - `Config` adds the same Valkey block as `room-worker`, plus:
 
   ```go
-  RoomKeyRPCTimeout time.Duration `env:"ROOM_KEY_RPC_TIMEOUT" envDefault:"5s"`
+  ValkeyAddr           string        `env:"VALKEY_ADDR,required"`
+  RoomKeyRPCTimeout    time.Duration `env:"ROOM_KEY_RPC_TIMEOUT" envDefault:"5s"`
+  RoomKeyMaxRedeliver  int           `env:"ROOM_KEY_MAX_REDELIVER" envDefault:"10"`
   ```
 
-  When `VALKEY_ADDR` is empty, `main.go` emits a `slog.Warn` and disables all key replication at startup.
+  `VALKEY_ADDR` is required: `inbox-worker` refuses to start without it.
 
 - New consumer-defined interface in `inbox-worker/store.go` (per `CLAUDE.md` Section 3, "Define interfaces in the consumer, not the implementer"):
 
@@ -368,10 +370,12 @@ For package-level documentation covering versioning, concurrency guarantees, and
 | Service | VALKEY_ADDR | Behavior |
 |---|---|---|
 | `room-service` | required | Always wires key generation/rotation on create / remove |
-| `room-worker` | optional | Key gate + fan-out to all members enabled when set; logs warning at startup when unset |
-| `inbox-worker` | optional | Local Valkey replication enabled when set; logs warning at startup when unset |
+| `room-worker` | required | Key gate + fan-out to all members; refuses to start without `VALKEY_ADDR` |
+| `inbox-worker` | required | Cross-site key replication into local Valkey; refuses to start without `VALKEY_ADDR` |
 | `broadcast-worker` | required when `ENCRYPTION_ENABLED=true` | Encrypts outgoing room messages using current key |
 | `history-service` | required when its encryption toggle is true | Encrypts message history on edit |
+
+`VALKEY_ADDR` graduated from "optional with `slog.Warn` at startup" to a hard requirement on the workers. The earlier "key handling disabled" mode produced a silent split-brain — rooms were created and members removed in Mongo while no key flowed to clients — and (once cross-site versions had to match origin's exactly) made any cross-site message undecryptable. Failing loudly at startup matches what the system actually requires.
 
 `ENCRYPTION_ENABLED` is a consumer-side toggle in `broadcast-worker` and `history-service`.
 It does NOT control whether keys are generated — keys are always generated when the
@@ -380,9 +384,12 @@ flip on encryption later without a key backfill.
 
 ### Partial deployments
 
-If a worker runs without VALKEY_ADDR, it skips all key handling silently except for
-a startup-time `slog.Warn`. To detect at scale, alert on the absence of
-`room_key_fanout_errors_total` over time, or use the warning log.
+`room-worker` and `inbox-worker` refuse to start without `VALKEY_ADDR`, so a
+worker process either has Valkey wiring or it isn't running. There is no
+"silent skip" mode anymore — earlier drafts let workers degrade gracefully,
+which masked misconfigurations and (after origin-version replication landed)
+produced cross-site messages no client could decrypt. Operators see the
+startup failure immediately.
 
 ### Valkey data loss
 
@@ -452,18 +459,19 @@ Available on the OpenTelemetry meter once a meter provider is registered.
 - create-room: `Send` failure on one account logged but doesn't abort the loop
 - add-member (channel): `Get` succeeds → `Send` called for each newly-added account, not for existing members
 - add-member: defensive guard rejects non-channel `roomType` as permanent error
-- remove-member: `Get` returning version `< NewKeyVersion` → permanent error
+- remove-member: `Get` returning version `< NewKeyVersion` → **transient** error (NAK + retry). Stale-version means Valkey propagation hasn't yet caught up to the room-service write; JetStream redelivery resolves it. Not permanent.
 - remove-member: `Send` called for survivors, never for removed accounts
 - remove-member: defensive guard rejects non-channel
 - `NatsHandleGetRoomKey`: returns `RoomKeyEvent` on hit, 404 on miss, 500 on Valkey error
 
 `inbox-worker/handler_test.go` (new test cases):
 
-- `handleRoomCreated`: replicates subs → calls `interSiteClient.GetRoomKey` → `Set`s local Valkey → `Send`s to local members
-- `handleMemberAdded`: local key present → no RPC, just `Send`. Local key absent → RPC + `Set` + `Send`.
-- `handleMemberRemoved`: deletes subs → RPC origin → `Rotate` local Valkey → `Send` to local survivors
-- RPC failure → NAK path
-- RPC 404 → log + ack (no infinite retry on a permanently-missing key)
+- `handleRoomCreated`: replicates subs → calls `interSiteClient.GetRoomKey` → `SetWithVersion` on local Valkey at origin's version (no user-side `Send` — origin `room-worker` already published).
+- `handleMemberAdded`: local key present → no-op. Local key absent → RPC + `SetWithVersion`.
+- `handleMemberRemoved`: deletes subs → RPC origin → `SetWithVersion` on local Valkey at origin's new version.
+- Duplicate JetStream delivery → version comparison short-circuits; no re-write or version bump on the local Valkey.
+- RPC failure → NAK path.
+- RPC 404 → wrapped with `errRoomKeyAbsent` sentinel so callers can distinguish from transient RPC errors.
 
 Mocks generated via `mockgen` for: `RoomKeyStore`, `roomkeysender.Publisher`, `InterSiteKeyClient`. Stored in `mock_*_test.go` files per project convention; `make generate` updated accordingly.
 

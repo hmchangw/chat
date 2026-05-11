@@ -191,7 +191,7 @@ func TestHandler_ProcessRoleUpdate_FallsBackToNowOnInvalidTimestamp(t *testing.T
 	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(fmt.Errorf("db error"))
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
 		return nil
-	}, nil, nil)
+	}, testKeyStore, testKeySender)
 	req := model.UpdateRoleRequest{
 		RoomID:    "r1",
 		Account:   "bob",
@@ -325,7 +325,7 @@ func TestHandler_ProcessRoleUpdate_PropagatesRequestID(t *testing.T) {
 		capturedCtx = ctx
 		return nil
 	}
-	h := NewHandler(store, "site1", publish, nil, nil)
+	h := NewHandler(store, "site1", publish, testKeyStore, testKeySender)
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-rw-test")
 	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
@@ -349,7 +349,7 @@ func TestHandler_ProcessRemoveMember_FallsBackToNowOnInvalidTimestamp(t *testing
 	store.EXPECT().GetUserWithMembership(gomock.Any(), "r1", "alice").Return(nil, fmt.Errorf("db error"))
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
 		return nil
-	}, nil, nil)
+	}, testKeyStore, testKeySender)
 	req := model.RemoveMemberRequest{
 		RoomID:    "r1",
 		Account:   "alice",
@@ -395,12 +395,14 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}, nil, nil)
+	}, testKeyStore, testKeySender)
 
 	// Self-leave: Requester == Account
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1, RoomType: model.RoomTypeChannel}
@@ -477,7 +479,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_DualMembership(t *testing.T) {
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}, nil, nil)
+	}, testKeyStore, testKeySender)
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
@@ -531,7 +533,7 @@ func TestHandler_ProcessRemoveMember_DualMembership_OwnerDemoted(t *testing.T) {
 			h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 				published = append(published, publishedMsg{subj: subj, data: data})
 				return nil
-			}, nil, nil)
+			}, testKeyStore, testKeySender)
 
 			req := model.RemoveMemberRequest{RoomID: roomID, Requester: tc.requester, Account: account, Timestamp: 1, RoomType: model.RoomTypeChannel}
 			data, _ := json.Marshal(req)
@@ -578,12 +580,14 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}, nil, nil)
+	}, testKeyStore, testKeySender)
 
 	// requester != account means this is owner-removes-other
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, Account: account, Timestamp: 1, RoomType: model.RoomTypeChannel}
@@ -617,7 +621,7 @@ func TestHandler_ProcessAddMembers_FallsBackToNowOnInvalidTimestamp(t *testing.T
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, fmt.Errorf("db error"))
 	h := NewHandler(store, "site1", func(_ context.Context, _ string, _ []byte, _ string) error {
 		return nil
-	}, nil, nil)
+	}, testKeyStore, testKeySender)
 	req := model.AddMembersRequest{
 		RoomID:           "r1",
 		RequesterAccount: "alice",
@@ -640,7 +644,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}
-	h := NewHandler(store, "site-a", publish, nil, nil)
+	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob", "charlie"}, "r1").
@@ -699,7 +703,7 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
-	h := NewHandler(store, "site-a", publish, nil, nil)
+	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob"}, "r1").
@@ -759,7 +763,7 @@ func TestHandler_ProcessAddMembers_RestrictedPropagatesPointer(t *testing.T) {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}
-	h := NewHandler(store, "site-a", publish, nil, nil)
+	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob", "charlie"}, "r1").
@@ -819,7 +823,7 @@ func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) 
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}
-	h := NewHandler(store, "site-a", publish, nil, nil)
+	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob"}, "r1").
@@ -854,7 +858,7 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
-	h := NewHandler(store, "site-a", publish, nil, nil)
+	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListNewMembers(gomock.Any(), []string{"eng"}, []string{"bob"}, "r1").
@@ -902,7 +906,7 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
-	h := NewHandler(store, "site-a", publish, nil, nil)
+	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob", "ghost"}, "r1").
@@ -939,7 +943,7 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}
-	h := NewHandler(store, "site-a", publish, nil, nil)
+	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"alice", "bob", "charlie"}, "r1").
@@ -1017,12 +1021,14 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil) // recount after removal
+	store.EXPECT().
+		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}, nil, nil)
+	}, testKeyStore, testKeySender)
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID, Timestamp: 1000, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
@@ -1075,12 +1081,14 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}, nil, nil)
+	}, testKeyStore, testKeySender)
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1000, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
@@ -1102,7 +1110,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 func TestHandler_ProcessRemoveMember_UnmarshalError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, nil)
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, testKeyStore, testKeySender)
 
 	err := h.processRemoveMember(context.Background(), []byte("{not json"))
 	require.Error(t, err)
@@ -1116,7 +1124,7 @@ func TestHandler_ProcessRemoveIndividual_GetUserError(t *testing.T) {
 		GetUserWithMembership(gomock.Any(), "r1", "alice").
 		Return(nil, fmt.Errorf("db down"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, nil)
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, testKeyStore, testKeySender)
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
 
@@ -1138,7 +1146,7 @@ func TestHandler_ProcessRemoveIndividual_DeleteRoomMemberError(t *testing.T) {
 		DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u1").
 		Return(fmt.Errorf("write failed"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, nil)
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, testKeyStore, testKeySender)
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
 
@@ -1164,7 +1172,7 @@ func TestHandler_ProcessRemoveIndividual_DualDemoteError(t *testing.T) {
 		RemoveRole(gomock.Any(), "alice", "r1", model.RoleOwner).
 		Return(fmt.Errorf("write failed"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, nil)
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, testKeyStore, testKeySender)
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
 
@@ -1189,7 +1197,7 @@ func TestHandler_ProcessRemoveIndividual_DeleteSubscriptionError(t *testing.T) {
 		DeleteSubscription(gomock.Any(), "r1", "alice").
 		Return(int64(0), fmt.Errorf("write failed"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, nil)
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, testKeyStore, testKeySender)
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
 
@@ -1217,7 +1225,7 @@ func TestHandler_ProcessRemoveIndividual_ReconcileMemberCountsError(t *testing.T
 		ReconcileMemberCounts(gomock.Any(), "r1").
 		Return(fmt.Errorf("write failed"))
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, nil)
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, testKeyStore, testKeySender)
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "alice", Timestamp: 1000, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
 
@@ -1231,7 +1239,7 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
-	h := NewHandler(store, "site-a", publish, nil, nil)
+	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob"}, "r1").
@@ -1290,6 +1298,8 @@ func TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates(t *testing.T) {
 		Return(int64(1), nil)
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
 
 	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
@@ -1298,7 +1308,7 @@ func TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates(t *testing.T) {
 		}
 		return nil
 	}
-	h := NewHandler(store, localSite, publish, nil, nil)
+	h := NewHandler(store, localSite, publish, testKeyStore, testKeySender)
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: account, Account: account, Timestamp: 1000, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
@@ -1328,6 +1338,7 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	store.EXPECT().DeleteSubscriptionsByAccounts(gomock.Any(), roomID, []string{"carol"}).Return(int64(1), nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
 
 	outboxSubj := subject.Outbox(localSite, remoteSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
@@ -1336,7 +1347,7 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 		}
 		return nil
 	}
-	h := NewHandler(store, localSite, publish, nil, nil)
+	h := NewHandler(store, localSite, publish, testKeyStore, testKeySender)
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: requester, OrgID: orgID, Timestamp: 1000, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
@@ -1359,7 +1370,7 @@ func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *te
 		}
 		return nil
 	}
-	h := NewHandler(store, "site1", publish, nil, nil)
+	h := NewHandler(store, "site1", publish, testKeyStore, testKeySender)
 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site1"}, nil)
 	store.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), []string{"bob"}, "r1").Return([]string{"bob"}, nil)
@@ -1404,7 +1415,7 @@ func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
 		}
 		return nil
 	}
-	h := NewHandler(store, "site1", publish, nil, nil)
+	h := NewHandler(store, "site1", publish, testKeyStore, testKeySender)
 
 	// Mock store to fail on FindUsersByAccounts (first store operation after ListNewMembers)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site1"}, nil)
@@ -1444,7 +1455,7 @@ func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
 		}
 		return nil
 	}
-	h := NewHandler(nil, "site1", publish, nil, nil)
+	h := NewHandler(nil, "site1", publish, testKeyStore, testKeySender)
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-err-test")
 	jobErr := errors.New("oops")
@@ -1466,7 +1477,7 @@ func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequestID(t *testing.T) {
 		called = true
 		return nil
 	}
-	h := NewHandler(nil, "site1", publish, nil, nil)
+	h := NewHandler(nil, "site1", publish, testKeyStore, testKeySender)
 
 	// No WithRequestID on ctx → empty request ID → publish is skipped.
 	h.publishAsyncJobResult(context.Background(), "alice", model.AsyncJobOpRoomMemberAdd, "r1", nil)
@@ -1479,7 +1490,7 @@ func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequester(t *testing.T) {
 		called = true
 		return nil
 	}
-	h := NewHandler(nil, "site1", publish, nil, nil)
+	h := NewHandler(nil, "site1", publish, testKeyStore, testKeySender)
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-test")
 	h.publishAsyncJobResult(ctx, "", model.AsyncJobOpRoomMemberAdd, "r1", nil)
@@ -1502,9 +1513,11 @@ func newAddMembersTestHandler(t *testing.T) (*Handler, *MockSubscriptionStore, f
 		return nil
 	}
 	h := &Handler{
-		store:   mockStore,
-		publish: publish,
-		siteID:  "site-A",
+		store:     mockStore,
+		publish:   publish,
+		siteID:    "site-A",
+		keyStore:  testKeyStore,
+		keySender: testKeySender,
 	}
 	return h, mockStore, func() []publishedMsg { return published }
 }
@@ -1782,7 +1795,7 @@ func newCreateRoomTestHandler(t *testing.T) (*Handler, *MockSubscriptionStore, f
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}
-	h := &Handler{store: mockStore, publish: publish, siteID: "site-A"}
+	h := &Handler{store: mockStore, publish: publish, siteID: "site-A", keyStore: testKeyStore, keySender: testKeySender}
 	return h, mockStore, func() []publishedMsg { return published }
 }
 
@@ -3257,7 +3270,7 @@ func TestProcessAddMembers_RejectsNonChannel(t *testing.T) {
 		ID: "r1", Type: model.RoomTypeDM, SiteID: "site-a",
 	}, nil)
 
-	h := NewHandler(mockStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, nil)
+	h := NewHandler(mockStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, testKeyStore, testKeySender)
 	req := model.AddMembersRequest{RoomID: "r1", RequesterAccount: "alice", Users: []string{"x"}, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	err := h.processAddMembers(natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0013"), data)
@@ -3286,7 +3299,7 @@ func TestProcessRemoveMember_RejectsNonChannel(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, nil)
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, testKeyStore, testKeySender)
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob", RoomType: model.RoomTypeDM}
 	data, _ := json.Marshal(req)
 	err := h.processRemoveMember(natsutil.WithRequestID(context.Background(), "req-1"), data)
@@ -3322,12 +3335,23 @@ func TestHandler_ProcessRemoveIndividual_NewKeyVersionInOutbox(t *testing.T) {
 		Return(int64(1), nil)
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+
+	keyStore := NewMockRoomKeyStore(ctrl)
+	keyStore.EXPECT().Get(gomock.Any(), roomID).Return(&roomkeystore.VersionedKeyPair{
+		Version: newKeyVer,
+		KeyPair: roomkeystore.RoomKeyPair{
+			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
+			PrivateKey: bytes.Repeat([]byte{0x05}, 32),
+		},
+	}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}, nil, nil)
+	}, keyStore, testKeySender)
 
 	req := model.RemoveMemberRequest{
 		RoomID:        roomID,
@@ -3395,12 +3419,23 @@ func TestHandler_ProcessRemoveMember_OrgNewKeyVersionInOutbox(t *testing.T) {
 		Return(nil)
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().
+		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+
+	keyStore := NewMockRoomKeyStore(ctrl)
+	keyStore.EXPECT().Get(gomock.Any(), roomID).Return(&roomkeystore.VersionedKeyPair{
+		Version: newKeyVer,
+		KeyPair: roomkeystore.RoomKeyPair{
+			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
+			PrivateKey: bytes.Repeat([]byte{0x05}, 32),
+		},
+	}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}, nil, nil)
+	}, keyStore, testKeySender)
 
 	req := model.RemoveMemberRequest{
 		RoomID:        roomID,
