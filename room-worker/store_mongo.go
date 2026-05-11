@@ -42,11 +42,11 @@ func (s *MongoStore) ListByRoom(ctx context.Context, roomID, siteID string) ([]m
 	}
 	cursor, err := s.subscriptions.Find(ctx, filter)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list subscriptions for room %q site %q: find: %w", roomID, siteID, err)
 	}
 	var subs []model.Subscription
 	if err := cursor.All(ctx, &subs); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list subscriptions for room %q site %q: decode: %w", roomID, siteID, err)
 	}
 	return subs, nil
 }

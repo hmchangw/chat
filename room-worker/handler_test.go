@@ -3461,11 +3461,11 @@ func TestFanOutRoomKeyToSurvivors_SendsToAllSurvivorsIncludingRemoteSite(t *test
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, keySender)
 	h.fanOutRoomKeyToSurvivors(context.Background(), "r1", pair, survivors)
 	// alice, bob (site-a) and remote-carol (site-b) all receive the new key.
-	assert.Equal(t, 3, pub.publishCount())
-	subjects := pub.subjects
-	assert.Contains(t, subjects[0], "chat.user.alice.event.room.key")
-	assert.Contains(t, subjects[1], "chat.user.bob.event.room.key")
-	assert.Contains(t, subjects[2], "chat.user.remote-carol.event.room.key")
+	assert.ElementsMatch(t, []string{
+		"chat.user.alice.event.room.key",
+		"chat.user.bob.event.room.key",
+		"chat.user.remote-carol.event.room.key",
+	}, pub.subjects)
 }
 
 func TestHandler_handleGetRoomKey(t *testing.T) {

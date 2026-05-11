@@ -491,7 +491,11 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		return nil, fmt.Errorf("exactly one of account or orgId must be set")
 	}
 
-	var targetIsDualMembership bool
+	// skipKeyRotation == true means no subscription will actually be deleted:
+	//   - individual-remove: target keeps the room via org membership
+	//   - org-remove: every org member is also individually subscribed
+	// In either case the member list doesn't shrink, so the key need not rotate.
+	var skipKeyRotation bool
 	if req.Account != "" {
 		// Individual removal: cheapest-first validation (target → requester → counts).
 		target, err := h.store.GetSubscriptionWithMembership(ctx, roomID, req.Account)
@@ -520,9 +524,8 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		if hasRole(target.Subscription.Roles, model.RoleOwner) && counts.OwnerCount <= 1 {
 			return nil, fmt.Errorf("last owner cannot leave the room")
 		}
-		targetIsDualMembership = target.HasIndividualMembership && target.HasOrgMembership
+		skipKeyRotation = target.HasIndividualMembership && target.HasOrgMembership
 	} else {
-		// Org removes rotate unconditionally; dual-membership users are filtered in room-worker after the rotation lands.
 		// Owner-removes-org: only the requester's owner role matters here; org members resolved downstream.
 		sub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
 		if err != nil {
@@ -531,29 +534,21 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		if !hasRole(sub.Roles, model.RoleOwner) {
 			return nil, fmt.Errorf("only owners can remove members")
 		}
+		if h.keyStore != nil {
+			count, err := h.store.CountOrgOnlySubs(ctx, req.RoomID, req.OrgID)
+			if err != nil {
+				return nil, fmt.Errorf("count org-only subs: %w", err)
+			}
+			skipKeyRotation = count == 0
+		}
 	}
 
 	// Stable seed for room-worker's deterministic system-message IDs across JetStream redeliveries.
 	req.Timestamp = time.Now().UTC().UnixMilli()
 
-	// For org-removes, skip rotation when no subscriptions would actually be deleted.
-	// This happens when every org member is also individually subscribed (dual-membership),
-	// so the org-remove only removes room_members org entries — no subscription changes.
-	if h.keyStore != nil && req.OrgID != "" {
-		count, err := h.store.CountOrgOnlySubs(ctx, req.RoomID, req.OrgID)
-		if err != nil {
-			return nil, fmt.Errorf("count org-only subs: %w", err)
-		}
-		if count == 0 {
-			// No subscriptions will be deleted; skip rotation (member list changes, key does not).
-			// Fall through to publish the canonical event with NewKeyVersion=0.
-			targetIsDualMembership = true
-		}
-	}
-
 	// Rotate before publish so broadcast-worker encrypts under the new key immediately.
-	// Skip rotation when target is dual-membership: no actual removal happens in that case.
-	if h.keyStore != nil && !targetIsDualMembership {
+	// See skipKeyRotation comment above for the cases this branch skips.
+	if h.keyStore != nil && !skipKeyRotation {
 		pair, err := generateRoomKeyPair()
 		if err != nil {
 			return nil, fmt.Errorf("generate new room key: %w", err)

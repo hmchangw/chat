@@ -339,15 +339,17 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
-	// Best-effort: fan out the new key to all surviving subscribers (all sites).
+	// Fan out the new key to all surviving subscribers (all sites).
 	// ListByRoom after the delete returns the already-filtered survivor set.
+	// A list failure here means the key has rotated at room-service but
+	// survivors can't be enumerated — NAK so JetStream retries rather than
+	// stranding the room on a key nobody received.
 	if keyPair != nil {
 		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
 		if listErr != nil {
-			slog.Error("list survivors for key fan-out failed", "error", listErr, "roomId", req.RoomID)
-		} else {
-			h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
+			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 		}
+		h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
 	}
 
 	now := time.Now().UTC()
@@ -493,15 +495,16 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
-	// Best-effort: fan out the new key to all surviving subscribers (all sites).
+	// Fan out the new key to all surviving subscribers (all sites).
 	// ListByRoom after the delete returns the already-filtered survivor set.
+	// See the org-individual analog above: a list failure here would leave
+	// the rotated key undelivered, so propagate to NAK + retry.
 	if keyPair != nil {
 		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
 		if listErr != nil {
-			slog.Error("list survivors for key fan-out failed", "error", listErr, "roomId", req.RoomID)
-		} else {
-			h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
+			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 		}
+		h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
 	}
 
 	now := time.Now().UTC()
@@ -1307,9 +1310,12 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 		}
 	}
 
-	// Fan out current key to every local-site member.
+	// Fan out current key to every local-site member. If this fails the room and
+	// subscriptions are durable but no member received the initial key event;
+	// NAK so JetStream retries the whole handler rather than persisting silent
+	// missing-key state.
 	if err := h.buildAndFanOutRoomKey(ctx, room.ID, allUsers); err != nil {
-		slog.Error("room key fan-out failed", "error", err, "roomId", room.ID)
+		return fmt.Errorf("room key fan-out (room %s): %w", room.ID, err)
 	}
 
 	return nil

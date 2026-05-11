@@ -53,6 +53,14 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure room_members (rid,member.type,member.id) unique index: %w", err)
 	}
+	// Lookup index for CountOrgOnlySubs: the $lookup in store_mongo.go matches
+	// room_members on (rid, member.type, member.account); the (id) index above
+	// can't serve that join.
+	if _, err := s.roomMembers.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "rid", Value: 1}, {Key: "member.type", Value: 1}, {Key: "member.account", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure room_members (rid,member.type,member.account) index: %w", err)
+	}
 	// Unique logical key for subscriptions. Same retry-idempotency rationale
 	// as room_members above.
 	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{

@@ -880,14 +880,19 @@ func TestHandler_RemoveMember_RotatesKeyAndStampsVersion(t *testing.T) {
 	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").Return(
 		&RoomCounts{MemberCount: 5, OwnerCount: 2}, nil)
 
+	var rotated bool
 	keyStore.EXPECT().Rotate(gomock.Any(), "r1", gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ string, pair roomkeystore.RoomKeyPair) (int, error) {
 			assert.Len(t, pair.PublicKey, 65)
+			rotated = true
 			return 7, nil
 		})
 
 	var captured model.RemoveMemberRequest
 	publish := func(_ context.Context, _ string, data []byte) error {
+		// Rotate-before-publish invariant: surviving clients must never see a
+		// MemberRemoveEvent encrypted with the OLD key, so Rotate must land first.
+		assert.True(t, rotated, "Rotate must run before publishToStream")
 		require.NoError(t, json.Unmarshal(data, &captured))
 		return nil
 	}
@@ -3157,16 +3162,21 @@ func TestHandler_CreateRoom_WritesKeyBeforePublish(t *testing.T) {
 	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "", "alice").
 		Return(1, nil)
 
+	var keyStored bool
 	var publishCalls int
 	keyStore.EXPECT().Set(gomock.Any(), gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error) {
 			assert.NotEmpty(t, roomID)
 			assert.Len(t, pair.PublicKey, 65)
 			assert.Len(t, pair.PrivateKey, 32)
+			keyStored = true
 			return 0, nil
 		})
 
 	publish := func(_ context.Context, subj string, _ []byte) error {
+		// Write-before-publish invariant: room-worker reads the key on canonical
+		// arrival, so Set must complete before the create event is published.
+		assert.True(t, keyStored, "keyStore.Set must run before publishToStream")
 		publishCalls++
 		assert.Equal(t, "chat.room.canonical.site-a.create", subj)
 		return nil
