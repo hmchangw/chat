@@ -121,6 +121,14 @@ sum(rate(loadgen_publish_errors_total{reason="saturated"}[1m]))
 - `room-rpc` mutates Mongo state (10% of the mix is room/member
   creates). Run against the loadgen-owned `MONGO_DB=loadgen` and call
   `make teardown` between runs to keep the rooms collection bounded.
+- **Mongo isolation guard:** `loadgen seed` and `loadgen teardown`
+  refuse to operate unless `MONGO_DB` carries the `loadgen` prefix.
+  Protects against the footgun of accidentally seeding into a
+  production-shaped database. For one-off recovery / migration
+  workflows where you genuinely need to touch a non-`loadgen` DB,
+  `loadgen seed --i-know-what-i-am-doing` bypasses the check.
+  `teardown` has no such bypass — drop a non-loadgen DB directly
+  via `mongosh` if you really need to.
 - The compose stack is substantial (NATS + Mongo + Cassandra +
   Elasticsearch + Valkey + 7 services). Plan for ~3GB of memory on
   Cassandra + Elasticsearch alone.

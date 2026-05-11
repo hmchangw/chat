@@ -92,3 +92,22 @@ func TestBuildRamp_BadShape(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown ramp shape")
 }
+
+func TestGuardMongoDB_Allowed(t *testing.T) {
+	for _, db := range []string{"loadgen", "loadgen-site-a", "loadgen_test"} {
+		assert.NoError(t, guardMongoDB(db, false), "DB %q should pass guard", db)
+	}
+}
+
+func TestGuardMongoDB_Refused(t *testing.T) {
+	for _, db := range []string{"chat", "production", "app_prod", "", "load-gen"} {
+		err := guardMongoDB(db, false)
+		require.Error(t, err, "DB %q should be refused", db)
+		assert.True(t, errors.Is(err, ErrMongoDBNotIsolated))
+	}
+}
+
+func TestGuardMongoDB_OverrideBypasses(t *testing.T) {
+	assert.NoError(t, guardMongoDB("production", true),
+		"override must allow operations on non-loadgen DBs")
+}

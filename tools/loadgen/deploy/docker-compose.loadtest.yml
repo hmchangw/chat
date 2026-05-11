@@ -62,7 +62,7 @@ services:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
       # Owns MESSAGES + MESSAGES_CANONICAL streams; must bootstrap in
       # the loadgen compose stack since no external IaC creates them.
       - BOOTSTRAP_STREAMS=true
@@ -77,7 +77,7 @@ services:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat
       - BOOTSTRAP_STREAMS=true
@@ -98,7 +98,7 @@ services:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
       - BOOTSTRAP_STREAMS=true
     depends_on: [nats, mongodb]
     networks: [loadtest]
@@ -111,7 +111,7 @@ services:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
       - BOOTSTRAP_STREAMS=true
     depends_on: [nats, mongodb]
     networks: [loadtest]
@@ -124,7 +124,7 @@ services:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
       - BOOTSTRAP_STREAMS=true
       # VALKEY_ADDR + VALKEY_KEY_GRACE_PERIOD are env:",required" in
       # room-service/main.go (used to dedupe room-key writes).
@@ -141,7 +141,7 @@ services:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
       - BOOTSTRAP_STREAMS=true
     depends_on: [nats, mongodb, room-service]
     networks: [loadtest]
@@ -175,7 +175,7 @@ services:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat
       - VALKEY_ADDR=valkey:6379
@@ -208,7 +208,7 @@ services:
       - SEARCH_RECENT_WINDOW=8760h
       - SEARCH_REQUEST_TIMEOUT=10s
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
     depends_on:
       nats:
         condition: service_started
@@ -229,7 +229,7 @@ services:
       - SITE_ID=site-local
       - SEARCH_URL=http://elasticsearch:9200
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
       # MSG_INDEX_PREFIX is env:",required". Mirrors the canonical
       # value from search-sync-worker/deploy/docker-compose.yml.
       - MSG_INDEX_PREFIX=messages-site-local-v1
@@ -250,7 +250,7 @@ services:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=loadgen
       - METRICS_ADDR=:9099
       # Worker-pool cap for concurrent publishes. Set to 0 to publish
       # serially on the ticker goroutine (legacy behavior).

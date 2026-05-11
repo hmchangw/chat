@@ -3,8 +3,36 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
+
+// LoadgenDBPrefix is the required prefix on MONGO_DB for state-mutating
+// loadgen subcommands (seed, teardown). Refusing to operate on databases
+// that don't carry this prefix avoids the footgun where an operator
+// accidentally seeds (or worse, tears down) the production "chat" DB.
+const LoadgenDBPrefix = "loadgen"
+
+// ErrMongoDBNotIsolated is returned by guardMongoDB when the configured
+// MONGO_DB doesn't begin with LoadgenDBPrefix.
+var ErrMongoDBNotIsolated = errors.New(
+	"refusing to operate on Mongo DB without 'loadgen' prefix; set MONGO_DB=loadgen[suffix] " +
+		"or pass --i-know-what-i-am-doing")
+
+// guardMongoDB enforces the isolation rule: any DB name not starting
+// with LoadgenDBPrefix is refused unless the caller has explicitly
+// opted out. The "opt out" path exists for one-off operator workflows
+// that genuinely need to touch a shared DB (recoveries, migrations);
+// it is NOT meant to be hard-coded by other entry points.
+func guardMongoDB(dbName string, override bool) error {
+	if override {
+		return nil
+	}
+	if !strings.HasPrefix(dbName, LoadgenDBPrefix) {
+		return fmt.Errorf("%w: got MONGO_DB=%q", ErrMongoDBNotIsolated, dbName)
+	}
+	return nil
+}
 
 // parseInjectMode maps the --inject string to its enum. Pure function;
 // the only side-effect is the error case. Extracted from runRun for

@@ -87,6 +87,8 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
+	override := fs.Bool("i-know-what-i-am-doing", false,
+		"override the MONGO_DB=loadgen* isolation guard; use ONLY for one-off recoveries")
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
@@ -95,6 +97,10 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	p, ok := BuiltinPreset(*preset)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+		return 2
+	}
+	if err := guardMongoDB(cfg.MongoDB, *override); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
 	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
@@ -118,6 +124,15 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 }
 
 func runTeardown(ctx context.Context, cfg *config) int {
+	// Teardown is destructive — refuse unless the configured DB carries
+	// the loadgen prefix. Override flag is intentionally not exposed
+	// for the teardown subcommand; an operator who genuinely needs to
+	// drop a non-loadgen DB can rename it temporarily or use mongosh
+	// directly.
+	if err := guardMongoDB(cfg.MongoDB, false); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
 	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		slog.Error("mongo connect", "error", err)

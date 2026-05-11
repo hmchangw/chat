@@ -256,3 +256,28 @@ func TestRunRun_RampAndRateConflict(t *testing.T) {
 		[]string{"--preset=small", "--rate=500", "--ramp-from=10", "--ramp-to=100", "--ramp-duration=5s"})
 	assert.Equal(t, 2, code, "rate + ramp must exit 2")
 }
+
+func TestRunSeed_MongoDBGuardRefusesNonLoadgenDB(t *testing.T) {
+	cfg := &config{
+		NatsURL:  "nats://stub",
+		MongoURI: "mongodb://stub",
+		MongoDB:  "chat", // production-like name; guard must refuse
+	}
+	code := runSeed(t.Context(), cfg, []string{"--preset=small"})
+	assert.Equal(t, 2, code, "guard must refuse seeding into non-loadgen DB")
+}
+
+// The override-bypass path is unit-tested at the guard level via
+// TestGuardMongoDB_OverrideBypasses. Exercising it through runSeed
+// would block on mongoutil.Connect's ~30s timeout for the stub URI;
+// not worth the wall-clock for the additional signal.
+
+func TestRunTeardown_MongoDBGuardRefuses(t *testing.T) {
+	cfg := &config{
+		NatsURL:  "nats://stub",
+		MongoURI: "mongodb://stub",
+		MongoDB:  "chat",
+	}
+	code := runTeardown(t.Context(), cfg)
+	assert.Equal(t, 2, code, "guard must refuse teardown of non-loadgen DB")
+}
