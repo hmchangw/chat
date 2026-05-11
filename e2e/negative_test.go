@@ -65,8 +65,10 @@ func TestNegative_OversizedPayload(t *testing.T) {
 	// time (visible immediately). The regression we're testing for is
 	// silent acceptance.
 	require.Error(t, pubErr, "oversized payload must not be accepted silently at the NATS layer")
-	assert.Contains(t, pubErr.Error(), "payload",
-		"expected NATS max_payload rejection; got %v", pubErr)
+	// Prefer errors.Is over string-matching the client-library message text
+	// (which can drift across go-nats versions).
+	assert.ErrorIs(t, pubErr, nats.ErrMaxPayload,
+		"expected nats.ErrMaxPayload; got %v", pubErr)
 }
 
 // TestNegative_NonMemberSend: bob is removed from a channel, then attempts

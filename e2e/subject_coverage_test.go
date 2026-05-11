@@ -124,30 +124,78 @@ func TestSubject_MsgGet(t *testing.T) {
 	assert.Equal(t, alice.Account, msg.Sender.Account)
 }
 
-// TestSubject_MsgNext exercises subject.MsgNext -> history-service. Sends
-// one message, then queries "messages after t=0" which should include it.
+// TestSubject_MsgNext exercises subject.MsgNext -> history-service.
+// Two messages are sent so the `After` cursor can be proven functional:
+// querying After=msg1.createdAt must return msg2 but NOT msg1. A
+// previous version of this test used After=0 with one message, which
+// would pass even if the handler ignored the `After` filter entirely.
 func TestSubject_MsgNext(t *testing.T) {
 	ctx := t.Context()
 	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")
-	roomID, msgID := setupRoomWithOneMessage(t)
+	roomID, msgID1 := setupRoomWithOneMessage(t)
 
-	zero := int64(0)
+	// Second message in the same room, so we have two messages to
+	// discriminate via the After cursor.
+	js := site.JetStream(t)
+	canonical := stream.MessagesCanonical(site.SiteID).Name
+	preInfo, err := js.Stream(ctx, canonical)
+	require.NoError(t, err)
+	preSeq := preInfo.CachedInfo().State.LastSeq
+
+	msgID2 := idgen.GenerateMessageID()
+	reqID2 := idgen.GenerateRequestID()
+	require.NoError(t, sendAndAwaitReply(
+		t,
+		alice.Conn(),
+		alice.Account,
+		reqID2,
+		subject.MsgSend(alice.Account, roomID, site.SiteID),
+		model.SendMessageRequest{
+			ID:        msgID2,
+			Content:   "second message " + t.Name(),
+			RequestID: reqID2,
+		},
+		10*time.Second,
+	))
+	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+1)
+
+	// Find msg1's createdAt via the history endpoint so we can pass it as
+	// the After cursor.
+	var hist loadHistoryResponse
+	require.NoError(t, requestReply(
+		alice.Conn(),
+		subject.MsgHistory(alice.Account, roomID, site.SiteID),
+		loadHistoryRequest{Limit: 50},
+		5*time.Second, &hist,
+	))
+	var msg1Created int64
+	for _, m := range hist.Messages {
+		if m.MessageID == msgID1 {
+			msg1Created = m.CreatedAt.UnixMilli()
+			break
+		}
+	}
+	require.NotZero(t, msg1Created, "msg1 must appear in history")
+
 	var resp loadNextMessagesResponse
 	require.NoError(t, requestReply(
 		alice.Conn(),
 		subject.MsgNext(alice.Account, roomID, site.SiteID),
-		loadNextMessagesRequest{After: &zero, Limit: 100},
+		loadNextMessagesRequest{After: &msg1Created, Limit: 100},
 		5*time.Second, &resp,
 	))
-	var found bool
+	var sawMsg1, sawMsg2 bool
 	for _, m := range resp.Messages {
-		if m.MessageID == msgID {
-			found = true
-			break
+		switch m.MessageID {
+		case msgID1:
+			sawMsg1 = true
+		case msgID2:
+			sawMsg2 = true
 		}
 	}
-	assert.True(t, found, "MsgNext must return alice's message (got %d entries)", len(resp.Messages))
+	assert.True(t, sawMsg2, "MsgNext After=msg1.createdAt must return msg2 (got %d entries)", len(resp.Messages))
+	assert.False(t, sawMsg1, "MsgNext After=msg1.createdAt must NOT return msg1 itself")
 }
 
 // TestSubject_MsgSurrounding exercises subject.MsgSurrounding ->
