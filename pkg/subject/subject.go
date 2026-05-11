@@ -45,6 +45,14 @@ func MsgGet(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", account, roomID, siteID)
 }
 
+// MsgHistory returns the concrete subject for a LoadHistory request to
+// history-service on behalf of a given user/room. Pair with
+// MsgHistoryPattern (the natsrouter subscribe-side pattern with {account}/
+// {roomID} placeholders that history-service registers).
+func MsgHistory(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.history", account, roomID, siteID)
+}
+
 func UserResponse(account, requestID string) string {
 	return fmt.Sprintf("chat.user.%s.response.%s", account, requestID)
 }
