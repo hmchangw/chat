@@ -79,6 +79,11 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	if _, err := s.apps.Indexes().CreateOne(ctx, appsIndex); err != nil {
 		return fmt.Errorf("ensure apps index: %w", err)
 	}
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "lastSeenAt", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt) index: %w", err)
+	}
 	return nil
 }
 
@@ -736,4 +741,53 @@ func (s *MongoStore) UpdateRoomMinUserLastSeenAt(ctx context.Context, roomID str
 		return fmt.Errorf("update minUserLastSeenAt for room %q: %w", roomID, err)
 	}
 	return nil
+}
+
+func (s *MongoStore) ListReadReceipts(
+	ctx context.Context,
+	roomID string,
+	since time.Time,
+	excludeAccount string,
+	limit int,
+) ([]ReadReceiptRow, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"roomId":     roomID,
+			"lastSeenAt": bson.M{"$gte": since},
+			"u.account":  bson.M{"$ne": excludeAccount},
+		}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from": "users",
+			"let":  bson.M{"uid": "$u._id"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$eq": []any{"$_id", "$$uid"}}}},
+				bson.M{"$project": bson.M{"_id": 1, "account": 1, "chineseName": 1, "engName": 1}},
+			},
+			"as": "user",
+		}}},
+		{{Key: "$unwind", Value: bson.M{
+			"path":                       "$user",
+			"preserveNullAndEmptyArrays": false,
+		}}},
+		{{Key: "$replaceWith", Value: "$user"}},
+		{{Key: "$limit", Value: int64(limit)}},
+	}
+	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate read receipts for room %q: %w", roomID, err)
+	}
+	defer cursor.Close(ctx)
+
+	rows := make([]ReadReceiptRow, 0)
+	for cursor.Next(ctx) {
+		var r ReadReceiptRow
+		if err := cursor.Decode(&r); err != nil {
+			return nil, fmt.Errorf("decode read-receipt row for room %q: %w", roomID, err)
+		}
+		rows = append(rows, r)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("iterate read receipts for room %q: %w", roomID, err)
+	}
+	return rows, nil
 }

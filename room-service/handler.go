@@ -29,6 +29,7 @@ type Handler struct {
 	store             RoomStore
 	keyStore          RoomKeyStore
 	memberListClient  MemberListClient
+	msgReader         MessageReader
 	siteID            string
 	maxRoomSize       int
 	maxBatchSize      int
@@ -36,11 +37,12 @@ type Handler struct {
 	publishToStream   func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, publishToStream func(context.Context, string, []byte) error) *Handler {
+func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, publishToStream func(context.Context, string, []byte) error) *Handler {
 	return &Handler{
 		store:             store,
 		keyStore:          keyStore,
 		memberListClient:  memberListClient,
+		msgReader:         msgReader,
 		siteID:            siteID,
 		maxRoomSize:       maxRoomSize,
 		maxBatchSize:      maxBatchSize,
@@ -80,6 +82,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	}
 	if _, err := nc.QueueSubscribe(subject.MessageReadWildcard(h.siteID), queue, h.natsMessageRead); err != nil {
 		return fmt.Errorf("subscribe message read: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.MessageReadReceiptWildcard(h.siteID), queue, h.natsMessageReadReceipt); err != nil {
+		return fmt.Errorf("subscribe message read-receipt: %w", err)
 	}
 	if _, err := nc.QueueSubscribe(subject.MemberListWildcard(h.siteID), queue, h.natsListMembers); err != nil {
 		return fmt.Errorf("subscribe member list: %w", err)
@@ -1022,4 +1027,97 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) 
 	}
 
 	return json.Marshal(map[string]string{"status": "accepted"})
+}
+
+func (h *Handler) natsMessageReadReceipt(m otelnats.Msg) {
+	ctx := wrappedCtx(m)
+	resp, err := h.handleMessageReadReceipt(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("message read-receipt failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message read-receipt", "error", err)
+	}
+}
+
+func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	requesterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid message-read-receipt subject: %s", subj)
+	}
+
+	var req model.ReadReceiptRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if req.MessageID == "" {
+		return nil, fmt.Errorf("invalid request: messageId is required")
+	}
+
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("room.id", roomID),
+			attribute.String("message.id", req.MessageID),
+			attribute.String("site.id", h.siteID),
+		)
+	}
+
+	var (
+		msgRoomID    string
+		msgCreatedAt time.Time
+		msgSender    string
+		msgFound     bool
+		subErr       error
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		_, err := h.store.GetSubscription(gctx, requesterAccount, roomID)
+		subErr = err
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		msgRoomID, msgCreatedAt, msgSender, msgFound, err = h.msgReader.GetMessageRoomAndCreatedAt(gctx, req.MessageID)
+		if err != nil {
+			return fmt.Errorf("get message: %w", err)
+		}
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	if subErr != nil {
+		if errors.Is(subErr, model.ErrSubscriptionNotFound) {
+			return nil, errNotRoomMember
+		}
+		return nil, fmt.Errorf("get subscription: %w", subErr)
+	}
+	if !msgFound {
+		return nil, errMessageNotFound
+	}
+	if msgRoomID != roomID {
+		return nil, errMessageRoomMismatch
+	}
+	if msgSender != requesterAccount {
+		return nil, errNotMessageSender
+	}
+
+	rows, err := h.store.ListReadReceipts(ctx, roomID, msgCreatedAt, msgSender, h.maxRoomSize)
+	if err != nil {
+		return nil, fmt.Errorf("list read receipts: %w", err)
+	}
+
+	entries := make([]model.ReadReceiptEntry, len(rows))
+	for i, r := range rows {
+		entries[i] = model.ReadReceiptEntry{
+			UserID:      r.UserID,
+			Account:     r.Account,
+			ChineseName: r.ChineseName,
+			EngName:     r.EngName,
+		}
+	}
+
+	return json.Marshal(model.ReadReceiptResponse{Readers: entries})
 }
