@@ -40,95 +40,21 @@
 
 ---
 
-## Task 1: Add `model.Employee`
+## Task 1 (REMOVED): ~~Add `model.Employee`~~
 
-The consumer needs a typed Employee to unmarshal the `Payload` array into. Keep the struct narrow to the fields the spotlight-org projection reads. `SectID` is the dedup/doc-id key.
+**Status: superseded.** The original Task 1 added a `pkg/model.Employee`
+struct, but this would conflict on merge with the internal repo's
+already-existing `pkg/model/employee.go` (which defines a fuller
+`Employee` plus an `Org` type for that repo's other consumers).
 
-**Files:**
-- Create: `pkg/model/employee.go`
-- Modify: `pkg/model/model_test.go`
+Replacement: the consumer-side projection moves into
+`search-sync-worker/spotlight_org.go` as `SpotlightOrgIndex` (defined
+in Task 11). One struct serves three roles — unmarshal target for the
+wire payload, document body on ES write, and source of truth for the
+ES mapping. No public `pkg/model.Employee` is introduced in this PR.
 
-- [ ] **Step 1: Write the failing test**
-
-Append to `pkg/model/model_test.go`:
-
-```go
-func TestEmployeeJSON(t *testing.T) {
-	src := model.Employee{
-		SectID:          "S001",
-		SectTCName:      "工程部",
-		SectName:        "Engineering",
-		SectDescription: "Builds things",
-		DeptID:          "D01",
-		DeptTCName:      "技術",
-		DeptName:        "Tech",
-		DeptDescription: "All tech",
-		DivisionID:      "DV1",
-	}
-	roundTrip(t, &src, &model.Employee{})
-}
-
-// Partial-field marshaling must omit absent fields so doc-merge upsert
-// on the consumer side preserves stored values rather than overwriting
-// them with empty strings.
-func TestEmployeeJSON_PartialFieldsOmitted(t *testing.T) {
-	src := model.Employee{SectID: "S001", SectName: "Engineering"}
-	data, err := json.Marshal(&src)
-	require.NoError(t, err)
-
-	got := string(data)
-	assert.Contains(t, got, `"sectId":"S001"`)
-	assert.Contains(t, got, `"sectName":"Engineering"`)
-	assert.NotContains(t, got, "sectTCName")
-	assert.NotContains(t, got, "deptId")
-	assert.NotContains(t, got, "divisionId")
-}
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `make test SERVICE=pkg/model 2>&1 | tail -20`
-Expected: FAIL with `undefined: model.Employee` (or similar build error).
-
-- [ ] **Step 3: Create `pkg/model/employee.go`**
-
-```go
-package model
-
-// Employee is the consumer-side projection of an HR account payload
-// published on `hr.sync.{siteID}.employees.upsert`. Only the fields the
-// spotlight-org index reads are declared here; `hr-syncer` is free to
-// publish additional fields and they will be ignored.
-//
-// All fields are `string` with `omitempty`. Absent fields serialize to
-// absent JSON, which the consumer treats as "this field did not change"
-// for doc-merge upsert. An empty stored value cannot be cleared by this
-// contract — see the spec's Open Questions section.
-type Employee struct {
-	SectID          string `json:"sectId,omitempty"          bson:"sectId,omitempty"`
-	SectTCName      string `json:"sectTCName,omitempty"      bson:"sectTCName,omitempty"`
-	SectName        string `json:"sectName,omitempty"        bson:"sectName,omitempty"`
-	SectDescription string `json:"sectDescription,omitempty" bson:"sectDescription,omitempty"`
-	DeptID          string `json:"deptId,omitempty"          bson:"deptId,omitempty"`
-	DeptTCName      string `json:"deptTCName,omitempty"      bson:"deptTCName,omitempty"`
-	DeptName        string `json:"deptName,omitempty"        bson:"deptName,omitempty"`
-	DeptDescription string `json:"deptDescription,omitempty" bson:"deptDescription,omitempty"`
-	DivisionID      string `json:"divisionId,omitempty"      bson:"divisionId,omitempty"`
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `make test SERVICE=pkg/model 2>&1 | tail -10`
-Expected: PASS for both `TestEmployeeJSON` and `TestEmployeeJSON_PartialFieldsOmitted`.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-make lint
-git add pkg/model/employee.go pkg/model/model_test.go
-git commit -m "feat(model): add Employee with org fields for hr.sync consumer"
-```
+Commits `d9199cf` and `bd92d63` have been reverted (in a single combined
+revert commit). Skip Task 1 when executing.
 
 ---
 
@@ -1002,8 +928,15 @@ import (
 
 // spotlightOrgCollection implements Collection for the spotlight-org
 // search index. One document per `sectId` carries the nine org fields
-// projected from `model.Employee`. The doc ID is the sectId itself —
-// many employees collapse to one document via dedup in BuildAction.
+// projected from each HR account row in the batched payload. The doc
+// ID is the sectId itself — many employees collapse to one document
+// via dedup in BuildAction.
+//
+// The wire-side row type and the ES doc projection are the same struct
+// (SpotlightOrgIndex below), keeping the consumer loosely coupled to
+// hr-syncer's own internal Employee/Org types without taking a public
+// dependency on a pkg/model.Employee that would conflict on merge with
+// the internal repo's existing one.
 //
 // The HR_SYNC_{siteID} stream is owned by `hr-syncer`; this collection
 // is a pure consumer. main.go skips HR_SYNC in its bootstrap loop the
@@ -1045,10 +978,13 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 	return nil, errors.New("spotlightOrgCollection.BuildAction: not yet implemented")
 }
 
-// SpotlightOrgIndex is both the on-write doc projection and the source
-// of truth for the ES template mapping. Every field is `omitempty`
-// `string` so absent values serialize away and doc-merge upsert
-// preserves the stored value rather than overwriting with empty.
+// SpotlightOrgIndex serves three roles in the consumer: unmarshal
+// target for the wire-side row, document body on ES write, and source
+// of truth for the ES mapping via esPropertiesFromStruct. Every field
+// is `omitempty` `string` so absent values serialize away and
+// doc-merge upsert preserves the stored value rather than overwriting
+// with empty. Fields not in this struct are silently ignored by the
+// json decoder — hr-syncer is free to publish additional fields.
 type SpotlightOrgIndex struct {
 	SectID          string `json:"sectId,omitempty"          es:"search_as_you_type,custom_analyzer"`
 	SectTCName      string `json:"sectTCName,omitempty"      es:"search_as_you_type,custom_analyzer"`
@@ -1101,7 +1037,7 @@ git commit -m "feat(search-sync-worker): scaffold spotlight-org collection metad
 
 ## Task 12: Implement `BuildAction` happy path + dedup
 
-Parse the envelope (uncompressed only for now — gzip lands in Task 13), unmarshal `[]model.Employee`, dedup by `SectID`, emit one `_update` per unique sectId with `doc_as_upsert:true`.
+Parse the envelope (uncompressed only for now — gzip lands in Task 13), unmarshal `[]SpotlightOrgIndex` (defined in Task 11; the wire-side row and the ES doc projection are the same struct), dedup by `SectID`, emit one `_update` per unique sectId with `doc_as_upsert:true`.
 
 **Files:**
 - Modify: `search-sync-worker/spotlight_org.go`
@@ -1119,7 +1055,7 @@ import (
 // makeHRSyncEvent builds a plaintext (gzip=false) HRSyncEvent containing
 // the given employees. Used by every BuildAction test that doesn't
 // exercise the compression path.
-func makeHRSyncEvent(t *testing.T, ts int64, employees []model.Employee) []byte {
+func makeHRSyncEvent(t *testing.T, ts int64, employees []SpotlightOrgIndex) []byte {
 	t.Helper()
 	payload, err := json.Marshal(employees)
 	require.NoError(t, err)
@@ -1136,7 +1072,7 @@ func makeHRSyncEvent(t *testing.T, ts int64, employees []model.Employee) []byte 
 
 func TestSpotlightOrg_BuildAction_HappyPath(t *testing.T) {
 	coll := newSpotlightOrgCollection("spotlightorg-site-a", false)
-	data := makeHRSyncEvent(t, 1735689600000, []model.Employee{
+	data := makeHRSyncEvent(t, 1735689600000, []SpotlightOrgIndex{
 		{SectID: "S1", SectName: "Eng", DeptID: "D1", DeptName: "Tech"},
 		{SectID: "S2", SectName: "Sales", DeptID: "D2", DeptName: "Biz"},
 	})
@@ -1166,7 +1102,7 @@ func TestSpotlightOrg_BuildAction_HappyPath(t *testing.T) {
 // The kept row is the LAST occurrence so the most recent in-batch update wins.
 func TestSpotlightOrg_BuildAction_DedupBySectID(t *testing.T) {
 	coll := newSpotlightOrgCollection("spotlightorg-site-a", false)
-	data := makeHRSyncEvent(t, 1, []model.Employee{
+	data := makeHRSyncEvent(t, 1, []SpotlightOrgIndex{
 		{SectID: "S1", SectName: "Engineering"},
 		{SectID: "S1", SectName: "Engineering Renamed"},
 		{SectID: "S2", SectName: "Sales"},
@@ -1189,7 +1125,7 @@ func TestSpotlightOrg_BuildAction_DedupBySectID(t *testing.T) {
 
 func TestSpotlightOrg_BuildAction_EmptySectIDsSkipped(t *testing.T) {
 	coll := newSpotlightOrgCollection("spotlightorg-site-a", false)
-	data := makeHRSyncEvent(t, 1, []model.Employee{
+	data := makeHRSyncEvent(t, 1, []SpotlightOrgIndex{
 		{SectID: "", SectName: "no-section"},
 		{SectID: "S1", SectName: "Eng"},
 		{SectID: "", DeptID: "D9"},
@@ -1203,7 +1139,7 @@ func TestSpotlightOrg_BuildAction_EmptySectIDsSkipped(t *testing.T) {
 
 func TestSpotlightOrg_BuildAction_AllEmptySectIDs(t *testing.T) {
 	coll := newSpotlightOrgCollection("spotlightorg-site-a", false)
-	data := makeHRSyncEvent(t, 1, []model.Employee{
+	data := makeHRSyncEvent(t, 1, []SpotlightOrgIndex{
 		{SectName: "no-section-1"},
 		{SectName: "no-section-2"},
 	})
@@ -1215,7 +1151,7 @@ func TestSpotlightOrg_BuildAction_AllEmptySectIDs(t *testing.T) {
 
 func TestSpotlightOrg_BuildAction_EmptyEmployees(t *testing.T) {
 	coll := newSpotlightOrgCollection("spotlightorg-site-a", false)
-	data := makeHRSyncEvent(t, 1, []model.Employee{})
+	data := makeHRSyncEvent(t, 1, []SpotlightOrgIndex{})
 
 	actions, err := coll.BuildAction(data)
 	require.NoError(t, err)
@@ -1264,7 +1200,7 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 		return nil, fmt.Errorf("build spotlight-org action: missing timestamp")
 	}
 
-	var employees []model.Employee
+	var employees []SpotlightOrgIndex
 	if err := json.Unmarshal(envelope.Payload, &employees); err != nil {
 		return nil, fmt.Errorf("unmarshal hr-sync employees: %w", err)
 	}
@@ -1275,7 +1211,7 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 	// Dedup by SectID keeping the LAST occurrence — within one batch
 	// the most recent update wins. Empty SectID rows are skipped
 	// silently (employees not yet assigned to a section).
-	deduped := make(map[string]model.Employee, len(employees))
+	deduped := make(map[string]SpotlightOrgIndex, len(employees))
 	order := make([]string, 0, len(employees))
 	for _, emp := range employees {
 		if emp.SectID == "" {
@@ -1292,8 +1228,8 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 
 	actions := make([]searchengine.BulkAction, 0, len(deduped))
 	for _, sectID := range order {
-		emp := deduped[sectID]
-		body, err := buildSpotlightOrgUpdateBody(emp)
+		row := deduped[sectID]
+		body, err := buildSpotlightOrgUpdateBody(row)
 		if err != nil {
 			return nil, err
 		}
@@ -1309,25 +1245,15 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 	return actions, nil
 }
 
-// buildSpotlightOrgUpdateBody marshals an Employee into a
-// SpotlightOrgIndex projection and wraps it in an ES `_update` body
-// with `doc_as_upsert:true`. The projection's `omitempty` discipline
-// guarantees absent fields don't appear in the body and therefore
-// don't overwrite stored values on the merge.
-func buildSpotlightOrgUpdateBody(emp model.Employee) (json.RawMessage, error) {
-	doc := SpotlightOrgIndex{
-		SectID:          emp.SectID,
-		SectTCName:      emp.SectTCName,
-		SectName:        emp.SectName,
-		SectDescription: emp.SectDescription,
-		DeptID:          emp.DeptID,
-		DeptTCName:      emp.DeptTCName,
-		DeptName:        emp.DeptName,
-		DeptDescription: emp.DeptDescription,
-		DivisionID:      emp.DivisionID,
-	}
+// buildSpotlightOrgUpdateBody wraps the row in an ES `_update` body
+// with `doc_as_upsert:true`. The row is already the projection — the
+// json `omitempty` discipline guarantees absent fields don't appear
+// in the body and therefore don't overwrite stored values on the
+// merge. Errors here are theoretical (the inputs are plain strings),
+// but we return the wrapped error to keep the call site explicit.
+func buildSpotlightOrgUpdateBody(row SpotlightOrgIndex) (json.RawMessage, error) {
 	body := map[string]any{
-		"doc":           doc,
+		"doc":           row,
 		"doc_as_upsert": true,
 	}
 	data, err := json.Marshal(body)
@@ -1375,7 +1301,7 @@ import (
 
 // makeHRSyncEventGzip mirrors makeHRSyncEvent but gzip-compresses the
 // employee payload. Used to exercise the consumer's decompression path.
-func makeHRSyncEventGzip(t *testing.T, ts int64, employees []model.Employee) []byte {
+func makeHRSyncEventGzip(t *testing.T, ts int64, employees []SpotlightOrgIndex) []byte {
 	t.Helper()
 	raw, err := json.Marshal(employees)
 	require.NoError(t, err)
@@ -1397,7 +1323,7 @@ func makeHRSyncEventGzip(t *testing.T, ts int64, employees []model.Employee) []b
 
 func TestSpotlightOrg_BuildAction_Gzip(t *testing.T) {
 	coll := newSpotlightOrgCollection("spotlightorg-site-a", false)
-	data := makeHRSyncEventGzip(t, 1, []model.Employee{
+	data := makeHRSyncEventGzip(t, 1, []SpotlightOrgIndex{
 		{SectID: "S1", SectName: "Engineering"},
 	})
 
@@ -1418,7 +1344,7 @@ func TestSpotlightOrg_BuildAction_Gzip(t *testing.T) {
 // must be absent so doc-merge preserves their stored values.
 func TestSpotlightOrg_BuildAction_PartialFields(t *testing.T) {
 	coll := newSpotlightOrgCollection("spotlightorg-site-a", false)
-	data := makeHRSyncEvent(t, 1, []model.Employee{
+	data := makeHRSyncEvent(t, 1, []SpotlightOrgIndex{
 		{SectID: "S1", SectName: "Engineering"},
 	})
 
@@ -1450,7 +1376,7 @@ func TestSpotlightOrg_BuildAction_Errors(t *testing.T) {
 	})
 
 	t.Run("missing timestamp", func(t *testing.T) {
-		data := makeHRSyncEvent(t, 0, []model.Employee{{SectID: "S1"}})
+		data := makeHRSyncEvent(t, 0, []SpotlightOrgIndex{{SectID: "S1"}})
 		_, err := coll.BuildAction(data)
 		assert.Error(t, err)
 	})
@@ -1516,7 +1442,7 @@ Replace the body of `BuildAction` between the envelope unmarshal and the employe
 		payload = decompressed
 	}
 
-	var employees []model.Employee
+	var employees []SpotlightOrgIndex
 	if err := json.Unmarshal(payload, &employees); err != nil {
 		return nil, fmt.Errorf("unmarshal hr-sync employees: %w", err)
 	}
@@ -1724,7 +1650,7 @@ func TestSearchSync_SpotlightOrg_Integration(t *testing.T) {
 
 	// Publish event #1 with full org info for two sections.
 	subj := subject.HRSyncEmployeesUpsert(siteID)
-	publishHRSyncEvent(t, nc, subj, time.Now().UnixMilli(), []model.Employee{
+	publishHRSyncEvent(t, nc, subj, time.Now().UnixMilli(), []SpotlightOrgIndex{
 		{SectID: "S1", SectName: "Engineering", DeptID: "D1", DeptName: "Tech"},
 		{SectID: "S2", SectName: "Sales", DeptID: "D2", DeptName: "Biz"},
 	})
@@ -1740,7 +1666,7 @@ func TestSearchSync_SpotlightOrg_Integration(t *testing.T) {
 
 	// Publish event #2 — partial update for S1 with only SectName changed.
 	// The doc-merge contract says deptId/deptName must survive.
-	publishHRSyncEvent(t, nc, subj, time.Now().UnixMilli(), []model.Employee{
+	publishHRSyncEvent(t, nc, subj, time.Now().UnixMilli(), []SpotlightOrgIndex{
 		{SectID: "S1", SectName: "Engineering Renamed"},
 	})
 
@@ -1756,7 +1682,7 @@ func TestSearchSync_SpotlightOrg_Integration(t *testing.T) {
 // publishHRSyncEvent builds a gzipped HRSyncEvent and publishes it to
 // the given subject. The test owns the encoding so it can also exercise
 // the worker's decompression path.
-func publishHRSyncEvent(t *testing.T, nc *nats.Conn, subj string, ts int64, employees []model.Employee) {
+func publishHRSyncEvent(t *testing.T, nc *nats.Conn, subj string, ts int64, employees []SpotlightOrgIndex) {
 	t.Helper()
 	raw, err := json.Marshal(employees)
 	require.NoError(t, err)

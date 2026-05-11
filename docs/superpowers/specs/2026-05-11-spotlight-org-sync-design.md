@@ -87,13 +87,19 @@ Why an envelope rather than raw `[]Employee`:
 
 ### 3.3 Inner payload
 
-The `Payload` on `hr.sync.{siteID}.employees.upsert` is a JSON array of
-`pkg/model.Employee` (assumed to exist). `Employee` keeps `string`
-(not `*string`) fields with `omitempty` json/bson tags — that's already
-the codebase convention. Empty strings serialize to absent JSON which
-the consumer correctly treats as "field not present".
+The `Payload` on `hr.sync.{siteID}.employees.upsert` is a JSON array
+of HR account rows. The publisher (`hr-syncer`, owned by Mat) defines
+its own internal `Employee` / `Org` types with the full HR field set;
+those types live in the publisher's package and are not imported here.
 
-Nine `Employee` fields are projected into the spotlight-org doc:
+The consumer does **not** declare a public `pkg/model.Employee`. Doing
+so would conflict on merge with the internal repo's existing
+`pkg/model/employee.go` (which already defines a fuller `Employee` and
+`Org` for that repo's other consumers). Instead, `search-sync-worker`
+defines a local projection — `SpotlightOrgIndex` in
+`search-sync-worker/spotlight_org.go` — that carries only the nine org
+fields it reads, with matching json tags so the wire format is
+identical:
 
 ```
 sectId, sectTCName, sectName, sectDescription,
@@ -101,8 +107,14 @@ deptId, deptTCName, deptName, deptDescription,
 divisionId
 ```
 
-All `string` with `omitempty`. The spotlight-org index carries exactly
-these, nothing more.
+All `string` with `omitempty`. Same struct serves three roles in the
+consumer: wire-side row type to unmarshal into, ES doc projection on
+write, and source of truth for the ES mapping via
+`esPropertiesFromStruct[SpotlightOrgIndex]()`. One source of truth, no
+copying between shapes.
+
+Empty strings serialize to absent JSON — the consumer treats absent
+keys as "this field did not change" for doc-merge upsert.
 
 ## 4. Worker-side design
 
@@ -133,19 +145,21 @@ func (c *spotlightOrgCollection) FilterSubjects(siteID string) []string {
    with an error (NAK + redeliver).
 2. If `envelope.Gzip`, decompress `envelope.Payload` via
    `compress/gzip`. Corrupt gzip → error.
-3. Unmarshal the (possibly decompressed) bytes into `[]model.Employee`.
+3. Unmarshal the (possibly decompressed) bytes into
+   `[]SpotlightOrgIndex` — the local projection type defined alongside
+   the collection. Fields not in the projection are ignored by the
+   decoder.
 4. **Dedup by `SectID`.** Walk the slice and keep the last occurrence
-   per `SectID` in a `map[string]*model.Employee`. Rows with empty
+   per `SectID` in a `map[string]SpotlightOrgIndex`. Rows with empty
    `SectID` are silently skipped (employees not yet assigned to a
    section). If the result is empty, return `(nil, nil)` and the
    handler will ack the JS message with no ES write.
-5. For each unique `sectId`, build a `SpotlightOrgIndex` projection
-   carrying only the nine org fields (all `omitempty`), then build an
-   ES `_update` body:
+5. For each unique `sectId`, build the ES `_update` body using the
+   deduped row directly as `doc`:
 
    ```go
    body := map[string]any{
-       "doc":           projection,
+       "doc":           row, // SpotlightOrgIndex
        "doc_as_upsert": true,
    }
    ```
@@ -208,8 +222,11 @@ type SpotlightOrgIndex struct {
 }
 ```
 
-The same struct drives both write (via `json.Marshal`) and mapping (via
-`esPropertiesFromStruct[SpotlightOrgIndex]()`). One source of truth.
+The same struct drives THREE roles in the consumer: unmarshal target
+for the wire payload, document body on ES write (via `json.Marshal`),
+and mapping source for the index template (via
+`esPropertiesFromStruct[SpotlightOrgIndex]()`). One source of truth,
+no copying between shapes.
 
 ### 5.2 Analysis (shared with `spotlight`)
 
@@ -335,7 +352,6 @@ the other collections.
 | `pkg/subject/subject_test.go` | Edit | Tests for new subject builders |
 | `pkg/model/hrsync.go` | Create | `HRSyncEvent` envelope type |
 | `pkg/model/model_test.go` | Edit | Roundtrip test for `HRSyncEvent` |
-| `pkg/model/employee.go` | Assumed exists | `Employee` + `Org` types (no edits) |
 | `search-sync-worker/spotlight_org.go` | Create | New collection |
 | `search-sync-worker/spotlight_org_test.go` | Create | Unit tests for new collection |
 | `search-sync-worker/spotlight.go` | Edit | Thread `devMode`, use shared analyzer helper, add `token_chars` |

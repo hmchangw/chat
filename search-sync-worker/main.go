@@ -50,7 +50,9 @@ type config struct {
 	SearchTLSSkipVerify bool   `env:"SEARCH_TLS_SKIP_VERIFY" envDefault:"false"`
 	MsgIndexPrefix      string `env:"MSG_INDEX_PREFIX,required"`
 	SpotlightIndex      string `env:"SPOTLIGHT_INDEX" envDefault:""`
+	SpotlightOrgIndex   string `env:"SPOTLIGHT_ORG_INDEX" envDefault:""`
 	UserRoomIndex       string `env:"USER_ROOM_INDEX" envDefault:""`
+	DevMode             bool   `env:"DEV_MODE" envDefault:"false"`
 
 	// FetchBatchSize is the maximum number of JetStream messages to pull
 	// per Fetch() round-trip. Smaller values give lower latency per message
@@ -90,6 +92,9 @@ func main() {
 
 	if cfg.SpotlightIndex == "" {
 		cfg.SpotlightIndex = fmt.Sprintf("spotlight-%s-v1-chat", cfg.SiteID)
+	}
+	if cfg.SpotlightOrgIndex == "" {
+		cfg.SpotlightOrgIndex = fmt.Sprintf("spotlightorg-%s", cfg.SiteID)
 	}
 	if cfg.UserRoomIndex == "" {
 		cfg.UserRoomIndex = fmt.Sprintf("user-room-%s", cfg.SiteID)
@@ -135,9 +140,10 @@ func main() {
 	}
 
 	collections := []Collection{
-		newMessageCollection(cfg.MsgIndexPrefix, false),
-		newSpotlightCollection(cfg.SpotlightIndex, false),
-		newUserRoomCollection(cfg.UserRoomIndex, false),
+		newMessageCollection(cfg.MsgIndexPrefix, cfg.DevMode),
+		newSpotlightCollection(cfg.SpotlightIndex, cfg.DevMode),
+		newSpotlightOrgCollection(cfg.SpotlightOrgIndex, cfg.DevMode),
+		newUserRoomCollection(cfg.UserRoomIndex, cfg.DevMode),
 	}
 
 	for _, coll := range collections {
@@ -173,15 +179,15 @@ func main() {
 	// we don't redundantly call CreateOrUpdateStream per collection.
 	createdStreams := make(map[string]struct{}, len(collections))
 
-	// INBOX is owned by inbox-worker — see the skip in the loop below.
+	// INBOX is owned by inbox-worker; HR_SYNC is owned by hr-syncer.
+	// search-sync-worker is a pure consumer of both and must not create
+	// their schemas.
 	inboxName := stream.Inbox(cfg.SiteID).Name
+	hrSyncName := stream.HRSync(cfg.SiteID).Name
 
 	for _, coll := range collections {
 		streamCfg := coll.StreamConfig(cfg.SiteID)
-		// Skip INBOX bootstrap — inbox-worker owns its schema, ops/IaC
-		// owns its federation. Consumer creation still runs for
-		// INBOX-based collections (spotlight, user-room).
-		if cfg.Bootstrap.Enabled && streamCfg.Name != inboxName {
+		if cfg.Bootstrap.Enabled && streamCfg.Name != inboxName && streamCfg.Name != hrSyncName {
 			if _, alreadyCreated := createdStreams[streamCfg.Name]; !alreadyCreated {
 				if _, err := js.CreateOrUpdateStream(ctx, streamCfg); err != nil {
 					slog.Error("create stream failed", "stream", streamCfg.Name, "error", err)
@@ -220,7 +226,9 @@ func main() {
 		"site", cfg.SiteID,
 		"msgPrefix", cfg.MsgIndexPrefix,
 		"spotlightIndex", cfg.SpotlightIndex,
+		"spotlightOrgIndex", cfg.SpotlightOrgIndex,
 		"userRoomIndex", cfg.UserRoomIndex,
+		"devMode", cfg.DevMode,
 		"collections", len(collections),
 	)
 
