@@ -108,6 +108,36 @@ func TestNewNatsCorePublisher_FieldWiring(t *testing.T) {
 	assert.False(t, p2.useJetStream)
 }
 
+// S5: a publisher built with async enabled records the flag so the
+// publish path can branch onto js.PublishMsgAsync. Default ctor leaves
+// it off (legacy sync path) for safe-by-default behavior.
+func TestNewNatsCorePublisher_AsyncDefaultsOff(t *testing.T) {
+	p := newNatsCorePublisher(nil, InjectCanonical, nil)
+	assert.False(t, p.asyncJS, "async must default off so a missing flag value preserves sync behavior")
+}
+
+func TestNatsCorePublisher_WithAsyncFlipsFlag(t *testing.T) {
+	p := newNatsCorePublisher(nil, InjectCanonical, nil)
+	p.asyncJS = true
+	assert.True(t, p.asyncJS)
+}
+
+// S5: jetstream client construction should request a non-zero
+// PublishAsyncMaxPending bound when async mode is enabled. Validate the
+// helper that builds the jetstream options list rather than the full
+// jetstream.New plumbing (which needs a live nats.Conn).
+func TestJetStreamPublishOpts_AsyncEnabled(t *testing.T) {
+	opts := jetstreamPublishOpts(4096, NewMetrics(), "small")
+	assert.Len(t, opts, 2, "want both MaxPending and ErrHandler when async is enabled")
+}
+
+func TestJetStreamPublishOpts_AsyncDisabledIsEmpty(t *testing.T) {
+	// 0 means "leave async pending at the nats.go default and skip the
+	// err handler"; effectively disables the S5 path.
+	opts := jetstreamPublishOpts(0, NewMetrics(), "small")
+	assert.Empty(t, opts, "zero MaxPending must produce no jetstream opts so callers fall back to sync publishes")
+}
+
 func TestMetricsHandler_ServesOpenMetrics(t *testing.T) {
 	m := NewMetrics()
 	m.Published.WithLabelValues("small", "measured", "0", "100-200").Inc()

@@ -177,6 +177,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	livenessInterval := fs.Duration("liveness-interval", 10*time.Second, "mid-run SUT liveness probe interval; 0 disables. Default 10s × 3 failures = 30s detection so the watcher can fire on the default 60s --duration.")
 	livenessFailures := fs.Int("liveness-failures", 3, "consecutive liveness probe failures required to abort the run")
 	livenessTimeout := fs.Duration("liveness-timeout", 5*time.Second, "per-probe timeout. Aligned with --request-timeout default so a slow-but-up SUT trips the saturation watcher (exit 2) before the liveness watcher (exit 3).")
+	jsAsyncMaxPending := fs.Int("js-async-max-pending", 4096, "S5: max in-flight async JetStream publishes for canonical inject; 0 falls back to sync js.PublishMsg (legacy / bisection)")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	if err := parseScenarioFlag(*scenario); err != nil {
@@ -216,13 +217,18 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		slog.Error("nats connect", "error", err)
 		return 1
 	}
-	js, err := jetstream.New(nc.NatsConn())
+	metrics := NewMetrics()
+	// S5: when --js-async-max-pending>0, jetstream.New is built with an
+	// async-publish in-flight bound and an err-handler that bumps
+	// loadgen_publish_errors_total{reason="async_ack"} on per-publish
+	// failures. Built BEFORE jetstream.New so the handler is wired from
+	// the first publish.
+	jsOpts := jetstreamPublishOpts(*jsAsyncMaxPending, metrics, p.Name)
+	js, err := jetstream.New(nc.NatsConn(), jsOpts...)
 	if err != nil {
 		slog.Error("jetstream init", "error", err)
 		return 1
 	}
-
-	metrics := NewMetrics()
 	metricsSrv := &http.Server{
 		Addr:              cfg.MetricsAddr,
 		Handler:           metrics.Handler(),
@@ -417,6 +423,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	publisher := newNatsCorePublisher(pool, injectMode, js)
 	publisher.runID = runID
+	publisher.asyncJS = *jsAsyncMaxPending > 0 // S5: enable async path when bound is set
 	requester := &natsRequester{pool: pool, runID: runID}
 
 	// Ramp + rate flags are validated above (before any NATS connect).
@@ -632,6 +639,20 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	abortWG.Wait()
 	livenessWG.Wait()
 
+	// S5: when async JS publishes are enabled, the generator's Run-return
+	// only guarantees publishes are queued; their PubAcks may still be
+	// in flight. Wait for the in-flight window to drain before exiting so
+	// errors land in loadgen_publish_errors_total{reason="async_ack"}
+	// before the report is emitted. Bounded so a wedged stream doesn't
+	// hang the run forever — the explicit cap matches drainTrailingReplies'.
+	if publisher.asyncJS {
+		select {
+		case <-js.PublishAsyncComplete():
+		case <-time.After(5 * time.Second):
+			slog.Warn("jetstream async publish drain timed out", "pending", js.PublishAsyncPending())
+		}
+	}
+
 	// Trailing replies and broadcasts may still be in flight after gen.Run
 	// returns (the SUT's reply latency is independent of the generator's
 	// stop). Replace the previous time.Sleep(2s) — which was racy and
@@ -769,6 +790,11 @@ type natsCorePublisher struct {
 	useJetStream bool
 	js           jetstream.JetStream
 	runID        string // C3: stamped as an X-Loadgen-Run-ID header on every publish
+	// S5: when true, canonical-injection publishes use js.PublishMsgAsync
+	// (returns immediately; ack tracked via WithPublishAsyncErrHandler set
+	// on the JetStream client). When false, fall back to the legacy sync
+	// js.PublishMsg path so operators can bisect throughput regressions.
+	asyncJS bool
 }
 
 // natsRequester adapts nc.RequestWithContext to the Requester interface
@@ -803,6 +829,26 @@ func newNatsCorePublisher(pool *ConnPool, inject InjectMode, js jetstream.JetStr
 	return &natsCorePublisher{pool: pool, useJetStream: inject == InjectCanonical, js: js}
 }
 
+// jetstreamPublishOpts returns the JetStream client options that enable
+// the S5 async publish path. When maxPending<=0 the async path is
+// disabled and the helper returns nil so jetstream.New keeps its
+// defaults (sync publishes via PublishMsg). When enabled it wires both
+// the in-flight bound and the error handler that increments
+// loadgen_publish_errors_total{reason="async_ack"} on per-publish
+// failures (NoResponders, stream not found, max-pending stall, etc).
+func jetstreamPublishOpts(maxPending int, m *Metrics, presetName string) []jetstream.JetStreamOpt {
+	if maxPending <= 0 {
+		return nil
+	}
+	errHandler := func(_ jetstream.JetStream, _ *nats.Msg, _ error) {
+		m.PublishErrors.WithLabelValues(presetName, "async_ack").Inc()
+	}
+	return []jetstream.JetStreamOpt{
+		jetstream.WithPublishAsyncMaxPending(maxPending),
+		jetstream.WithPublishAsyncErrHandler(errHandler),
+	}
+}
+
 func (p *natsCorePublisher) Publish(ctx context.Context, subject string, data []byte) error {
 	if p.useJetStream {
 		// JetStream publishes go through one writer; canonical-injection
@@ -810,6 +856,19 @@ func (p *natsCorePublisher) Publish(ctx context.Context, subject string, data []
 		msg := &nats.Msg{Subject: subject, Data: data}
 		if p.runID != "" {
 			msg.Header = nats.Header{HeaderRunID: []string{p.runID}}
+		}
+		if p.asyncJS {
+			// S5: PublishMsgAsync returns immediately; the per-publish
+			// PubAck is processed off-loop. Errors land in the
+			// WithPublishAsyncErrHandler set at jetstream.New time, which
+			// updates loadgen_publish_errors_total{reason="async_ack"}.
+			// When the in-flight window is full (configured by
+			// WithPublishAsyncMaxPending), this call blocks — that's the
+			// designed backpressure path.
+			if _, err := p.js.PublishMsgAsync(msg); err != nil {
+				return fmt.Errorf("jetstream publish async: %w", err)
+			}
+			return nil
 		}
 		if _, err := p.js.PublishMsg(ctx, msg); err != nil {
 			return fmt.Errorf("jetstream publish: %w", err)

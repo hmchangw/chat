@@ -85,6 +85,7 @@ make -C tools/loadgen/deploy run-dashboards PRESET=medium
 | `--abort-p99-sustain=<dur>`       | `30s`   | Sustain window for the latency abort.                              |
 | `--abort-on-error-pct=F`          | 0       | Stop if error rate stays above F (0..1) for `--abort-error-sustain`. |
 | `--abort-error-sustain=<dur>`     | `10s`   | Sustain window for the error-rate abort.                           |
+| `--js-async-max-pending=N`        | 4096    | Canonical-inject only: in-flight cap for async JetStream publishes (S5). `0` falls back to sync `js.PublishMsg` (legacy / bisection). Failed acks land in `loadgen_publish_errors_total{reason="async_ack"}`. |
 
 ## Reading the summary
 
