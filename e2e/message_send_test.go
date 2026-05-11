@@ -34,7 +34,15 @@ type loadHistoryResponse struct {
 	MinUserLastSeenAt *int64              `json:"minUserLastSeenAt,omitempty"`
 }
 
-// TestMessage_SendAndBroadcast_SingleSite walks the full single-site channel
+// roomEventMessageID returns the embedded message ID or "" if absent.
+// Used so require.Equal compares against the EXPECTED ID even when the
+// loop ran out without ever assigning the event.
+func roomEventMessageID(e *model.RoomEvent) string {
+	if e == nil || e.Message == nil {
+		return ""
+	}
+	return e.Message.ID
+}
 // send path:
 //
 //	auth alice -> create channel room -> server invites bob -> bob auths ->
@@ -136,14 +144,31 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 		sendReq, 10*time.Second,
 	))
 
-	// 5. bob's per-room broadcast subscription receives the new_message event.
-	msg := awaitMessage(t, bobSub, 10*time.Second)
+	// 5. bob's per-room broadcast subscription. Channel-create emits system
+	// events (room_created, members_added) on the same subject; loop to
+	// find the broadcast that corresponds specifically to alice's user
+	// message. Without this filter the test is flaky -- under tight timing
+	// the system message can arrive before alice's send.
 	var roomEvent model.RoomEvent
-	require.NoError(t, json.Unmarshal(msg.Data, &roomEvent))
+	bcastDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(bcastDeadline) {
+		m, mErr := bobSub.NextMsg(2 * time.Second)
+		if mErr != nil {
+			break
+		}
+		var candidate model.RoomEvent
+		if jerr := json.Unmarshal(m.Data, &candidate); jerr != nil {
+			continue
+		}
+		if candidate.Message != nil && candidate.Message.ID == ids.MessageID {
+			roomEvent = candidate
+			break
+		}
+	}
+	require.Equal(t, ids.MessageID, roomEventMessageID(&roomEvent),
+		"bob never received broadcast for alice's specific message %s", ids.MessageID)
 	assert.Equal(t, model.RoomEventNewMessage, roomEvent.Type)
 	assert.Equal(t, roomID, roomEvent.RoomID)
-	require.NotNil(t, roomEvent.Message, "channel new_message must carry a Message")
-	assert.Equal(t, ids.MessageID, roomEvent.Message.ID)
 	assert.Equal(t, body, roomEvent.Message.Content)
 	assert.Equal(t, alice.Account, roomEvent.Message.UserAccount,
 		"broadcast carries pkg/model.Message (with UserAccount field) inside RoomEvent")
