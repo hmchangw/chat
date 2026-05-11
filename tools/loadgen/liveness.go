@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -29,10 +29,6 @@ type livenessConfig struct {
 	// Nil-safe.
 	Counter func(result string)
 }
-
-// ErrLivenessDegraded is returned via the cancel cause when the
-// watcher trips: ConsecutiveFails consecutive probe failures.
-var ErrLivenessDegraded = errors.New("liveness probe failed for the configured streak")
 
 // runLiveness probes the SUT periodically while a load run is in
 // progress. On `ConsecutiveFails` back-to-back failures, sets the
@@ -77,7 +73,7 @@ func runLiveness(ctx context.Context, cfg *livenessConfig, failed *atomic.Bool, 
 					failed.Store(true)
 					if onFail != nil {
 						onFail("liveness probe failed " +
-							strconvI(consecutive) + " consecutive times")
+							strconv.Itoa(consecutive) + " consecutive times")
 					}
 					return
 				}
@@ -89,29 +85,4 @@ func runLiveness(ctx context.Context, cfg *livenessConfig, failed *atomic.Bool, 
 			}
 		}
 	}
-}
-
-// strconvI keeps liveness.go free of strconv import — used once for the
-// trip reason string.
-func strconvI(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var buf [12]byte
-	pos := len(buf)
-	neg := false
-	if i < 0 {
-		neg = true
-		i = -i
-	}
-	for i > 0 {
-		pos--
-		buf[pos] = '0' + byte(i%10)
-		i /= 10
-	}
-	if neg {
-		pos--
-		buf[pos] = '-'
-	}
-	return string(buf[pos:])
 }

@@ -66,15 +66,15 @@ func TestBuildRamp_NoRampReturnsNil(t *testing.T) {
 func TestBuildRamp_PartialFieldsErrors(t *testing.T) {
 	_, err := buildRamp(100, 0, 5*time.Second, "linear")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errMissingRampFields))
+	assert.True(t, errors.Is(err, ErrMissingRampFields))
 
 	_, err = buildRamp(0, 1000, 5*time.Second, "linear")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errMissingRampFields))
+	assert.True(t, errors.Is(err, ErrMissingRampFields))
 
 	_, err = buildRamp(100, 1000, 0, "linear")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errMissingRampFields))
+	assert.True(t, errors.Is(err, ErrMissingRampFields))
 }
 
 func TestBuildRamp_AllFieldsHappyPath(t *testing.T) {

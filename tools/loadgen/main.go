@@ -406,14 +406,11 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		return 1
 	}
 	// C3: per-run UUIDv7. Stamped into every publish/request as
-	// X-Loadgen-Run-ID so SUT-side traces/logs correlate; recorded as
-	// the loadgen_run_info gauge so Grafana template variables can
-	// select a run; logged so an operator can grep for it.
+	// X-Loadgen-Run-ID so SUT-side traces/logs correlate. The actual
+	// start_unix label on RunInfo is set AFTER readiness completes
+	// (F9) so it agrees with the progress-reporter's elapsed/remaining
+	// math; the gauge stays unset for the readiness window.
 	runID := idgen.GenerateUUIDv7()
-	runStart := time.Now()
-	metrics.RunInfo.WithLabelValues(
-		runID, p.Name, *scenario, strconv.FormatInt(runStart.Unix(), 10),
-	).Set(1)
 	slog.Info("run started",
 		"run_id", runID, "preset", p.Name, "scenario", *scenario,
 		"rate", *rate, "duration", duration.String())
@@ -518,8 +515,27 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		}, *seed)
 	}
 
+	// F9: capture runStart AFTER readiness completes so the RunInfo
+	// gauge's start_unix label agrees with the progress reporter's
+	// elapsed/remaining math.
+	runStart := time.Now()
+	metrics.RunInfo.WithLabelValues(
+		runID, p.Name, *scenario, strconv.FormatInt(runStart.Unix(), 10),
+	).Set(1)
+
 	runCtx, cancelRun := context.WithTimeout(ctx, *duration)
 	defer cancelRun()
+
+	// F6: bridge runCtx → samplerCtx. samplerCtx is parented on the
+	// SIGINT root (created earlier so samplers can run before the
+	// generator); without this bridge, when runCtx cancels (timeout,
+	// saturation abort, or liveness abort), samplers keep polling
+	// JetStream — which blocks on dead NATS during a liveness-fail
+	// drain. Bridge cancels samplers as soon as the run ends.
+	go func() {
+		<-runCtx.Done()
+		cancelSamplers()
+	}()
 
 	// Phase 3 §3.2: live progress reporter. Off when interval <= 0.
 	var progressWG sync.WaitGroup
@@ -535,7 +551,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 				Ticks:       progressTicker.C,
 				Window:      latencyWindow,
 				WindowOver:  *abortP99Sustain,
-				RunStart:    time.Now(),
+				RunStart:    runStart,
 				RunDuration: *duration,
 				TargetRate:  *rate,
 			})
@@ -699,13 +715,16 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 
 	totalErrs := summary.PublishErrors + summary.GatekeeperErrors + summary.MissingReplies + summary.MissingBroadcasts
-	if abortTripped.Load() {
-		reason, _ := abortReason.Load().(string)
-		slog.Warn("run aborted by saturation watcher", "reason", reason)
-	}
-	if livenessFailed.Load() {
+	// F7: log emission follows the exit-code precedence. When both
+	// abort + liveness trip near-simultaneously the user gets the
+	// higher-priority message only, matching the exit code.
+	switch {
+	case livenessFailed.Load():
 		reason, _ := livenessReason.Load().(string)
 		slog.Error("run aborted by liveness watcher (SUT unreachable)", "reason", reason)
+	case abortTripped.Load():
+		reason, _ := abortReason.Load().(string)
+		slog.Warn("run aborted by saturation watcher", "reason", reason)
 	}
 	return exitCodeForFull(abortTripped.Load(), livenessFailed.Load(), summary.SentMeasured, totalErrs)
 }

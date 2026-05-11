@@ -59,10 +59,10 @@ func parseScenarioFlag(s string) error {
 	}
 }
 
-// errMissingRampFields is returned when only some --ramp-* fields are
+// ErrMissingRampFields is returned when only some --ramp-* fields are
 // set. Either all three of from/to/duration are positive, or all three
 // are zero (no ramp). Mixed input is a config error.
-var errMissingRampFields = errors.New("--ramp-from, --ramp-to, --ramp-duration must all be > 0 when ramping")
+var ErrMissingRampFields = errors.New("--ramp-from, --ramp-to, --ramp-duration must all be > 0 when ramping")
 
 // parseRampShape maps the --ramp-shape string to its enum.
 func parseRampShape(s string) (RampShape, error) {
@@ -85,7 +85,7 @@ func buildRamp(from, to int, dur time.Duration, shape string) (*Ramp, error) {
 		return nil, nil // no ramp configured
 	}
 	if from <= 0 || to <= 0 || dur <= 0 {
-		return nil, errMissingRampFields
+		return nil, ErrMissingRampFields
 	}
 	rs, err := parseRampShape(shape)
 	if err != nil {
