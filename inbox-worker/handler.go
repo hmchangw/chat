@@ -38,10 +38,12 @@ type InboxStore interface {
 }
 
 // RoomKeyStore is the local Valkey-backed keystore used by inbox-worker.
+// Replication adopts the origin's exact version via SetWithVersion so on-wire
+// message envelopes carry a version every client (across every site) holds —
+// inbox-worker never calls Rotate, since that would diverge from origin.
 type RoomKeyStore interface {
 	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
-	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
-	Rotate(ctx context.Context, roomID string, newPair roomkeystore.RoomKeyPair) (int, error)
+	SetWithVersion(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair, version int) error
 	Close() error
 }
 
@@ -149,7 +151,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 	// routes it to the user's home site. This call only ensures local Valkey
 	// has the key so broadcast-worker on this site can encrypt.
 	if err := h.replicateLocalKey(ctx, evt.SiteID, event.RoomID); err != nil {
-		slog.Error("replicate local key", "error", err, "roomId", event.RoomID, "originSiteID", evt.SiteID)
+		return fmt.Errorf("replicate local key for room %s from %s: %w", event.RoomID, evt.SiteID, err)
 	}
 
 	// No SubscriptionUpdateEvent is published here — room-worker already publishes
@@ -340,22 +342,31 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			if err := h.fetchAndStoreKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
-				slog.Error("replicate room key", "error", err, "roomId", data.RoomID, "originSiteID", data.HomeSiteID)
+				return fmt.Errorf("replicate room key for room %s from %s: %w", data.RoomID, data.HomeSiteID, err)
 			}
 			return nil
 		}
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
 	if err := h.fetchAndStoreKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
-		slog.Error("replicate room key", "error", err, "roomId", data.RoomID, "originSiteID", data.HomeSiteID)
+		return fmt.Errorf("replicate room key for room %s from %s: %w", data.RoomID, data.HomeSiteID, err)
 	}
 	return nil
 }
 
+// errKeyDepsMissing is returned when a key-handling helper is invoked on a
+// handler constructed without Valkey wiring. Callers (the JetStream consume
+// loop) treat it as a permanent error so the message Acks with a clear log
+// rather than NAK-looping a misconfigured worker.
+var errKeyDepsMissing = errors.New("room key dependencies not configured")
+
 // replicateLocalKey ensures the local Valkey has the room key, fetching from origin on a cache miss.
+// Returns errKeyDepsMissing if the handler was built without keyStore/interSiteClient — see main.go's
+// VALKEY_ADDR gate; the warning at startup tells the operator they must configure Valkey wiring
+// before key-bearing outbox events arrive.
 func (h *Handler) replicateLocalKey(ctx context.Context, originSiteID, roomID string) error {
 	if h.keyStore == nil || h.interSiteClient == nil {
-		return nil
+		return errKeyDepsMissing
 	}
 	pair, err := h.keyStore.Get(ctx, roomID)
 	if err != nil {
@@ -370,29 +381,32 @@ func (h *Handler) replicateLocalKey(ctx context.Context, originSiteID, roomID st
 	return h.fetchAndStoreKey(ctx, originSiteID, roomID)
 }
 
-// fetchAndStoreKey RPCs the origin for the latest key and stores it in local Valkey
-// using Rotate-with-Set-fallback to preserve version progression on pre-existing rooms.
+// fetchAndStoreKey RPCs the origin for its current key and replicates it into local Valkey
+// at the origin's exact version, so this site's broadcast-worker emits envelopes whose
+// version every client (across every site) already holds. Duplicate JetStream deliveries
+// no-op once the local copy is at or beyond the fetched version; never re-rotates.
 // No user-side fan-out — origin room-worker handles that via NATS supercluster.
-// Returns error so callers can decide whether to NAK (member_removed) or log-and-swallow (room_created).
 func (h *Handler) fetchAndStoreKey(ctx context.Context, originSiteID, roomID string) error {
 	if h.keyStore == nil || h.interSiteClient == nil {
-		return nil
+		return errKeyDepsMissing
 	}
 	fetched, err := h.interSiteClient.GetRoomKey(ctx, originSiteID, roomID)
 	if err != nil {
 		return fmt.Errorf("rpc origin: %w", err)
 	}
+	local, err := h.keyStore.Get(ctx, roomID)
+	if err != nil {
+		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+		return fmt.Errorf("get local key: %w", err)
+	}
+	if local != nil && local.Version >= fetched.Version {
+		// Local is current or ahead — redelivery / out-of-order; don't downgrade or re-bump.
+		return nil
+	}
 	pair := roomkeystore.RoomKeyPair{PublicKey: fetched.PublicKey, PrivateKey: fetched.PrivateKey}
-	if _, err := h.keyStore.Rotate(ctx, roomID, pair); err != nil {
-		if errors.Is(err, roomkeystore.ErrNoCurrentKey) {
-			if _, err := h.keyStore.Set(ctx, roomID, pair); err != nil {
-				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
-				return fmt.Errorf("set local key (fallback): %w", err)
-			}
-		} else {
-			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
-			return fmt.Errorf("rotate local key: %w", err)
-		}
+	if err := h.keyStore.SetWithVersion(ctx, roomID, pair, fetched.Version); err != nil {
+		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "SetWithVersion")))
+		return fmt.Errorf("set local key at version %d: %w", fetched.Version, err)
 	}
 	return nil
 }

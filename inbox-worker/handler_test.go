@@ -202,7 +202,8 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -271,7 +272,8 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 			{ID: "uid-carol", Account: "carol", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	joinedAt := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
@@ -320,7 +322,8 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 
 func TestHandleEvent_RoomSync(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	room := model.Room{
 		ID:        "room-1",
@@ -377,7 +380,8 @@ func TestHandleEvent_RoomSync(t *testing.T) {
 
 func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	// Insert initial room
 	room1 := model.Room{
@@ -422,7 +426,8 @@ func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 
 func TestHandleEvent_UnknownType(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	evt := model.OutboxEvent{
 		Type:       "unknown_type",
@@ -451,7 +456,8 @@ func TestHandleEvent_UnknownType(t *testing.T) {
 
 func TestHandleEvent_InvalidJSON(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	err := h.HandleEvent(context.Background(), []byte("not json"))
 	if err == nil {
@@ -461,7 +467,8 @@ func TestHandleEvent_InvalidJSON(t *testing.T) {
 
 func TestHandleEvent_MemberAdded_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	evt := model.OutboxEvent{
 		Type:       "member_added",
@@ -488,7 +495,8 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 			{ID: "uid-bob", Account: "account-bob", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -545,7 +553,8 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	joinedAt := time.Date(2026, 4, 5, 10, 30, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -623,7 +632,8 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 			{ID: "uid-dave", Account: "dave", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	change := model.MemberAddEvent{
 		Type:     "member_added",
@@ -659,7 +669,8 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 
 func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	evt := model.OutboxEvent{
 		Type:       "room_sync",
@@ -682,7 +693,8 @@ func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_RoleUpdated(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 	subEvt := model.SubscriptionUpdateEvent{
 		UserID: "u2",
 		Subscription: model.Subscription{
@@ -716,7 +728,8 @@ func TestHandleEvent_RoleUpdated(t *testing.T) {
 
 func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 	evt := model.OutboxEvent{
 		Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b",
 		Payload: []byte("not valid json"),
@@ -733,7 +746,8 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStore, client := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStore, client)
 
 	store.mu.Lock()
 	store.subscriptions = append(store.subscriptions, model.Subscription{
@@ -761,7 +775,8 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	evt := model.OutboxEvent{
 		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
@@ -775,7 +790,8 @@ func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStore, client := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStore, client)
 
 	// Pre-populate subscriptions for both accounts
 	store.mu.Lock()
@@ -808,7 +824,8 @@ func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_EmptyAccountsNoOp(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{}}
 	payload, _ := json.Marshal(memberEvt)
@@ -828,7 +845,8 @@ func (s *errorDeleteStore) DeleteSubscriptionsByAccounts(_ context.Context, _ st
 
 func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 	store := &errorDeleteStore{stubInboxStore: &stubInboxStore{}}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"alice"}}
 	payload, _ := json.Marshal(memberEvt)
@@ -842,7 +860,8 @@ func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 
 func TestHandler_HandleEvent_SubscriptionRead_HappyPath(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	inner := model.SubscriptionReadEvent{
 		Account:    "alice",
@@ -875,7 +894,8 @@ func TestHandler_HandleEvent_SubscriptionRead_HappyPath(t *testing.T) {
 
 func TestHandler_HandleEvent_SubscriptionRead_MalformedPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 	evt := model.OutboxEvent{Type: model.OutboxSubscriptionRead, Payload: []byte("not-json")}
 	data, _ := json.Marshal(evt)
 	require.Error(t, h.HandleEvent(context.Background(), data))
@@ -883,7 +903,8 @@ func TestHandler_HandleEvent_SubscriptionRead_MalformedPayload(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// SiteID is the room's home site (site-a), preserved across federation.
@@ -920,7 +941,8 @@ func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// SiteID is the room's home site (site-a), preserved across federation.
@@ -954,7 +976,8 @@ func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T
 
 func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	evt := model.OutboxEvent{
 		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
@@ -968,7 +991,8 @@ func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_StoreError(t *testing.T) {
 	store := &errorThreadSubStore{stubInboxStore: &stubInboxStore{}}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	sub := model.ThreadSubscription{
@@ -1030,7 +1054,8 @@ func TestSubscriptionIsSubscribed(t *testing.T) {
 
 func TestHandleRoomCreatedRequiresRequestID(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 	payload, _ := json.Marshal(model.RoomCreatedOutbox{
 		RoomID: "r1", RoomType: model.RoomTypeChannel,
 		Accounts: []string{"bob"},
@@ -1042,7 +1067,8 @@ func TestHandleRoomCreatedRequiresRequestID(t *testing.T) {
 
 func TestHandleRoomCreatedEmptyAccountsAcksWithWarn(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStoreT, clientT := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStoreT, clientT)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1058,7 +1084,8 @@ func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStore, client := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStore, client)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1091,7 +1118,8 @@ func TestHandleRoomCreatedChannelBulkInsert(t *testing.T) {
 			{ID: "u_ian", Account: "ian", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStore, client := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStore, client)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1122,7 +1150,8 @@ func TestHandleMemberAddedSetsNameAndRoomType(t *testing.T) {
 			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStore, client := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStore, client)
 
 	change := model.MemberAddEvent{
 		Type:      "member_added",
@@ -1166,7 +1195,8 @@ func TestHandleRoomCreatedBotDMBuildsRemoteBotSub(t *testing.T) {
 			{ID: "u_weather", Account: "weather.bot", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store, "site-test", nil, nil)
+	keyStore, client := newKeyDepsForTest()
+	h := NewHandler(store, "site-test", keyStore, client)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1362,7 +1392,7 @@ func TestHandleRoomCreated_ReplicatesLocalKey(t *testing.T) {
 	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
 }
 
-func TestFetchAndStoreKey_RotatesWhenLocalKeyExists(t *testing.T) {
+func TestFetchAndStoreKey_AdoptsOriginVersionWhenLocalLags(t *testing.T) {
 	// Pre-seed local store with a version 0 key.
 	keyStore := newStubKeyStore()
 	_, _ = keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
@@ -1382,23 +1412,54 @@ func TestFetchAndStoreKey_RotatesWhenLocalKeyExists(t *testing.T) {
 
 	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-origin", "r1"))
 
-	// Local key version should have advanced (not been reset to 0).
+	// Local must mirror origin's version so on-wire message envelopes match what clients hold.
 	pair, err := keyStore.Get(context.Background(), "r1")
 	require.NoError(t, err)
 	require.NotNil(t, pair)
-	assert.Equal(t, 1, pair.Version, "Rotate increments local version from 0 to 1")
+	assert.Equal(t, client.getResp.Version, pair.Version,
+		"replicated key must adopt origin's version, not bump local independently")
+	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
+}
+
+func TestFetchAndStoreKey_SkipsWhenLocalAtOrAheadOfOrigin(t *testing.T) {
+	keyStore := newStubKeyStore()
+	require.NoError(t, keyStore.SetWithVersion(context.Background(), "r1", roomkeystore.RoomKeyPair{
+		PublicKey:  bytes.Repeat([]byte{0x09}, 65),
+		PrivateKey: bytes.Repeat([]byte{0x0a}, 32),
+	}, 5))
+
+	client := &stubInterSiteClient{
+		getResp: &model.RoomKeyEvent{
+			RoomID: "r1", Version: 5,
+			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
+			PrivateKey: bytes.Repeat([]byte{0x03}, 32),
+		},
+	}
+	h := NewHandler(nil, "site-b", keyStore, client)
+
+	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-origin", "r1"))
+
+	pair, err := keyStore.Get(context.Background(), "r1")
+	require.NoError(t, err)
+	require.NotNil(t, pair)
+	// Redelivery must not bump or overwrite when versions match.
+	assert.Equal(t, 5, pair.Version)
+	assert.Equal(t, []byte{0x09}, pair.KeyPair.PublicKey[:1],
+		"local key bytes must not change when versions are equal")
 }
 
 // --- replicateLocalKey direct tests ---
 
-// TestReplicateLocalKey_NoOpsWhenDepsNil confirms the function is a
-// no-op when keyStore or interSiteClient are nil.
-func TestReplicateLocalKey_NoOpsWhenDepsNil(t *testing.T) {
+// TestReplicateLocalKey_FailsFastWhenDepsNil verifies that a handler built
+// without keyStore/interSiteClient surfaces a clear error rather than silently
+// no-oping on key-bearing events — a miswired worker must NOT Ack key-relevant
+// outbox events.
+func TestReplicateLocalKey_FailsFastWhenDepsNil(t *testing.T) {
 	store := &stubInboxStore{}
-	// Pass nil for keyStore and interSiteClient — function must return nil immediately.
 	h := NewHandler(store, "site-b", nil, nil)
 	err := h.replicateLocalKey(context.Background(), "site-a", "r1")
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errKeyDepsMissing)
 }
 
 // TestReplicateLocalKey_NoRPCOnCacheHit confirms that when the local key
@@ -1481,17 +1542,18 @@ func TestReplicateLocalKey_ReturnsErrorOnKeyStoreFailure(t *testing.T) {
 
 // --- fetchAndStoreKey direct tests ---
 
-// TestFetchAndStoreKey_NoOpsWhenDepsNil confirms the function is a no-op when
-// keyStore or interSiteClient are nil.
-func TestFetchAndStoreKey_NoOpsWhenDepsNil(t *testing.T) {
+// TestFetchAndStoreKey_FailsFastWhenDepsNil verifies fail-fast on a miswired handler.
+func TestFetchAndStoreKey_FailsFastWhenDepsNil(t *testing.T) {
 	h := NewHandler(nil, "site-b", nil, nil)
-	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-a", "r1"))
+	err := h.fetchAndStoreKey(context.Background(), "site-a", "r1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errKeyDepsMissing)
 }
 
-// TestFetchAndStoreKey_HappyPath verifies that on a fresh key store, fetchAndStoreKey
-// falls back to Set (ErrNoCurrentKey path) and stores the fetched key locally.
+// TestFetchAndStoreKey_HappyPath verifies that on an empty local store the
+// fetched key is written with origin's exact version (no Set-at-version-0 quirk).
 func TestFetchAndStoreKey_HappyPath(t *testing.T) {
-	keyStore := newStubKeyStore() // empty — Rotate will return ErrNoCurrentKey
+	keyStore := newStubKeyStore() // empty
 	client := &stubInterSiteClient{
 		getResp: &model.RoomKeyEvent{
 			RoomID:     "r1",
@@ -1507,13 +1569,15 @@ func TestFetchAndStoreKey_HappyPath(t *testing.T) {
 	pair, err := keyStore.Get(context.Background(), "r1")
 	require.NoError(t, err)
 	require.NotNil(t, pair)
+	assert.Equal(t, client.getResp.Version, pair.Version, "local must adopt origin's version exactly")
 	assert.Equal(t, client.getResp.PublicKey, pair.KeyPair.PublicKey)
 	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
 }
 
-// TestFetchAndStoreKey_RotatesWhenKeyPresent verifies that when a key already exists,
-// fetchAndStoreKey calls Rotate (not Set) and increments the version.
-func TestFetchAndStoreKey_RotatesWhenKeyPresent(t *testing.T) {
+// TestFetchAndStoreKey_AdvancesLocalWhenOriginNewer verifies version catch-up:
+// when origin is at version=3 but local is at version=0, fetchAndStoreKey writes
+// the fetched key at version=3 (not local+1).
+func TestFetchAndStoreKey_AdvancesLocalWhenOriginNewer(t *testing.T) {
 	keyStore := newStubKeyStore()
 	_, _ = keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
 		PublicKey:  bytes.Repeat([]byte{0x01}, 65),
@@ -1534,7 +1598,7 @@ func TestFetchAndStoreKey_RotatesWhenKeyPresent(t *testing.T) {
 	pair, err := keyStore.Get(context.Background(), "r1")
 	require.NoError(t, err)
 	require.NotNil(t, pair)
-	assert.Equal(t, 1, pair.Version, "Rotate increments version from 0 to 1")
+	assert.Equal(t, client.getResp.Version, pair.Version, "local must adopt origin's version exactly")
 	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
 }
 

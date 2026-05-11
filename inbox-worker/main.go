@@ -262,6 +262,13 @@ func main() {
 				"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
 			os.Exit(1)
 		}
+		if cfg.RoomKeyMaxRedeliver <= 0 {
+			// A zero or negative cap would satisfy the >= check on the very first
+			// delivery and silently terminate every event before the handler runs.
+			slog.Error("ROOM_KEY_MAX_REDELIVER must be a positive integer",
+				"room_key_max_redeliver", cfg.RoomKeyMaxRedeliver)
+			os.Exit(1)
+		}
 		ks, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
 			Addr: cfg.ValkeyAddr, Password: cfg.ValkeyPassword, GracePeriod: cfg.ValkeyKeyGracePeriod,
 		})
