@@ -24,7 +24,6 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
-	"github.com/hmchangw/chat/pkg/roomkeysender"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -45,7 +44,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, "site-b", nil, nil, nil)
+	handler := NewHandler(store, "site-b", nil, nil)
 
 	// Seed user for lookup
 	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u2", Account: "u2", SiteID: "site-b"})
@@ -93,7 +92,7 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, "site-b", nil, nil, nil)
+	handler := NewHandler(store, "site-b", nil, nil)
 
 	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeChannel, UserCount: 5}
 	roomData, _ := json.Marshal(room)
@@ -124,7 +123,7 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, "site-b", nil, nil, nil)
+	handler := NewHandler(store, "site-b", nil, nil)
 
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
@@ -174,7 +173,7 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
 	}
-	h := NewHandler(store, "site-b", nil, nil, nil)
+	h := NewHandler(store, "site-b", nil, nil)
 
 	ctx := context.Background()
 
@@ -309,7 +308,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := NewHandler(store, "site-b", nil, nil, nil)
+	handler := NewHandler(store, "site-b", nil, nil)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// Subscription.SiteID is the room's home site (site-a). Bob's home is site-b
@@ -353,7 +352,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := NewHandler(store, "site-b", nil, nil, nil)
+	handler := NewHandler(store, "site-b", nil, nil)
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 
 	// First event: HasMention=true. Subscription.SiteID is the room's site (site-a).
@@ -431,7 +430,7 @@ func newIntegrationHandler(t *testing.T, db *mongo.Database, sid string) *Handle
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	return NewHandler(store, sid, nil, nil, nil)
+	return NewHandler(store, sid, nil, nil)
 }
 
 func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
@@ -691,8 +690,7 @@ func TestIntegration_CrossSiteKeyReplication(t *testing.T) {
 		userCol: db.Collection("users"),
 	}
 	interSiteClient := newNatsInterSiteKeyClient(nc, 5*time.Second)
-	keySender := roomkeysender.NewSender(nc)
-	h := NewHandler(store, destSiteID, destKS, keySender, interSiteClient)
+	h := NewHandler(store, destSiteID, destKS, interSiteClient)
 
 	// Build and drive a room_created outbox event for bob on the destination site.
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0002"

@@ -278,7 +278,7 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 		PublicKey:  pubKeyBytes,
 		PrivateKey: privKeyBytes,
 	}
-	err = sender.Send(account, evt)
+	err = sender.Send(account, *evt)
 	require.NoError(t, err, "send room key event")
 
 	// 7. Small delay to ensure key is received before the encrypted message.
