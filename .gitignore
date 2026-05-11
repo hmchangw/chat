@@ -48,3 +48,8 @@ bin/
 # Frontend
 node_modules/
 chat-frontend/dist/
+
+# e2e suite failure-time log captures (harness.CaptureLogs writes here,
+# relative to the test package's CWD).
+e2e/logs/
+e2e/scenarios/logs/

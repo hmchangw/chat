@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/testcontainers/testcontainers-go"
 	tcompose "github.com/testcontainers/testcontainers-go/modules/compose"
 )
 
@@ -104,6 +105,21 @@ func (s *Stack) Stop(ctx context.Context) error {
 		tcompose.RemoveOrphans(true),
 		tcompose.RemoveVolumes(true),
 	)
+}
+
+// ServiceContainer returns the testcontainers handle for a compose-managed
+// service. Used by federation tests that need to Stop/Start individual
+// services (e.g. inbox-worker-b for the catch-up scenario) and by
+// CaptureLogs.
+//
+// Returns nil when the stack was reused via E2E_REUSE_STACK -- in that case
+// the harness doesn't own the compose project handle and per-service
+// container management isn't available. Tests gate on a non-nil return.
+func (s *Stack) ServiceContainer(ctx context.Context, name string) (testcontainers.Container, error) {
+	if s.compose == nil {
+		return nil, fmt.Errorf("stack reused (E2E_REUSE_STACK=1); ServiceContainer unavailable")
+	}
+	return s.compose.ServiceContainer(ctx, name)
 }
 
 // composeFilePath finds docker-local/e2e/compose.e2e.yaml by walking up from
