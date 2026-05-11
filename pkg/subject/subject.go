@@ -65,6 +65,18 @@ func MsgDelete(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.delete", account, roomID, siteID)
 }
 
+// MsgNext returns the concrete subject for a LoadNextMessages request to
+// history-service. Pair with MsgNextPattern.
+func MsgNext(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.next", account, roomID, siteID)
+}
+
+// MsgSurrounding returns the concrete subject for a LoadSurroundingMessages
+// request to history-service. Pair with MsgSurroundingPattern.
+func MsgSurrounding(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.surrounding", account, roomID, siteID)
+}
+
 func UserResponse(account, requestID string) string {
 	return fmt.Sprintf("chat.user.%s.response.%s", account, requestID)
 }

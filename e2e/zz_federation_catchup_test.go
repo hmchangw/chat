@@ -29,6 +29,13 @@ import (
 // running). Per R2.C item 7: cycles through the three OUTBOX event types
 // (member_added, member_removed, role_update) so a bug in one handler
 // can't pass under cover of the others.
+//
+// FILE PREFIX: this file is `zz_federation_catchup_test.go` (not
+// `federation_catchup_test.go`) so it runs LAST among federation tests.
+// Live-run discovery: the 20-event burst + worker stop/restart leaves
+// inbox-worker-b in a transient state (consumer re-attach + NATS reconnect)
+// where the NEXT federation test's cross-site invite can take >15s to
+// materialize on mongo-b. Running this last sidesteps that interaction.
 func TestFederation_CatchUpAfterOutage(t *testing.T) {
 	ctx := t.Context()
 	stack := stack
@@ -42,19 +49,17 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 	// 1. Stop inbox-worker-b. Cross-site events keep flowing into INBOX_siteB
 	// (gateway sourcing is independent of inbox-worker), but nothing
 	// processes them -- they pile up on the stream.
-	inboxB, err := stack.ServiceContainer(ctx, "inbox-worker-b")
-	if err != nil {
-		t.Skipf("ServiceContainer unavailable (likely E2E_REUSE_STACK=1): %v", err)
-	}
-	stopTimeout := 10 * time.Second
-	require.NoError(t, inboxB.Stop(ctx, &stopTimeout),
-		"stop inbox-worker-b")
+	//
+	// Container lifecycle: prefer the testcontainers compose handle (full
+	// e2e lifecycle) but fall back to shelling out `docker compose stop/start`
+	// when running with E2E_REUSE_STACK=1 (no compose handle owned). The
+	// behavior is identical from inbox-worker-b's perspective.
+	stopper := newWorkerLifecycle(t, ctx, "inbox-worker-b")
+	stopper.Stop(t, ctx)
 	t.Cleanup(func() {
-		// Start it again on test exit even if we panic, so the stack stays
-		// usable for subsequent tests.
 		startCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = inboxB.Start(startCtx)
+		stopper.Start(t, startCtx)
 	})
 
 	// 2. alice creates rooms + invites bob in each, generating
@@ -76,6 +81,10 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 			req, 5*time.Second, &reply,
 		))
 		roomIDs = append(roomIDs, reply.RoomID)
+		registerRoomCleanup(t, []SiteDB{
+			{SiteID: stack.SiteA.SiteID, DB: stack.SiteA.MongoDB(t)},
+			{SiteID: stack.SiteB.SiteID, DB: stack.SiteB.MongoDB(t)},
+		}, reply.RoomID)
 	}
 	t.Logf("created %d cross-site rooms; events queued on INBOX_siteB while worker is down", inviteRounds)
 
@@ -92,7 +101,7 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 		"INBOX_siteB must show queued messages (gateway sourcing should have delivered them)")
 
 	// 4. Restart inbox-worker-b.
-	require.NoError(t, inboxB.Start(ctx), "start inbox-worker-b")
+	stopper.Start(t, ctx)
 
 	// 5. Wait for the inbox-worker durable to drain the backlog.
 	require.Eventually(t, func() bool {

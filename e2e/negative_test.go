@@ -16,6 +16,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -173,6 +174,19 @@ func TestNegative_DuplicateMessageID(t *testing.T) {
 	// the regression obvious if dedup ever breaks. The response-sub reqID
 	// and the body's RequestID MUST be the same string (gatekeeper computes
 	// the reply subject from the body, not the sub registration).
+	//
+	// IMPORTANT: sendAndAwaitReply confirms only gatekeeper-side acceptance;
+	// the Cassandra write happens asynchronously in message-worker. Without
+	// awaitCanonicalAcked between sends + before the history query, the
+	// history query can race the cassandra write and observe 0 rows.
+	js := site.JetStream(t)
+	canonical := stream.MessagesCanonical(site.SiteID).Name
+	awaitDurableReady(t, ctx, js, canonical, "message-worker")
+
+	preInfo1, err := js.Stream(ctx, canonical)
+	require.NoError(t, err)
+	preSeq1 := preInfo1.CachedInfo().State.LastSeq
+
 	msgID := idgen.GenerateMessageID()
 	reqID1 := idgen.GenerateRequestID()
 	require.NoError(t, sendAndAwaitReply(
@@ -188,10 +202,15 @@ func TestNegative_DuplicateMessageID(t *testing.T) {
 		},
 		10*time.Second,
 	))
+	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq1+1)
 
 	// Second send with SAME message ID.
+	preInfo2, err := js.Stream(ctx, canonical)
+	require.NoError(t, err)
+	preSeq2 := preInfo2.CachedInfo().State.LastSeq
+
 	reqID2 := idgen.GenerateRequestID()
-	err := sendAndAwaitReply(
+	dupErr := sendAndAwaitReply(
 		t,
 		alice.Conn(),
 		alice.Account,
@@ -204,7 +223,16 @@ func TestNegative_DuplicateMessageID(t *testing.T) {
 		},
 		5*time.Second,
 	)
-	t.Logf("dup-MessageID second-send result: err=%v", err)
+	t.Logf("dup-MessageID second-send result: err=%v", dupErr)
+	// Whether the gatekeeper accepted the dup (relying on Cassandra PK to
+	// dedup) or rejected it (gatekeeper-side dedup), we need to wait for the
+	// canonical stream to settle before querying history -- but only if the
+	// second send actually produced a canonical message.
+	postInfo, perr := js.Stream(ctx, canonical)
+	require.NoError(t, perr)
+	if postInfo.CachedInfo().State.LastSeq > preSeq2 {
+		awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq2+1)
+	}
 
 	// Inspect history. Exactly one row for msgID.
 	var histResp loadHistoryResponse
