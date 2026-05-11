@@ -292,7 +292,28 @@ func TestNegative_HistoryNonMember(t *testing.T) {
 		return count == 0
 	}, 10*time.Second, 100*time.Millisecond, "bob removal must propagate")
 
-	// bob (non-member) requests history. Expect ErrorResponse or empty.
+	// Reviewer fix: alice sends a message FIRST so the room has content. Without
+	// this, the test passes vacuously -- "bob's empty history" is consistent
+	// with "history-service correctly rejected him" AND with "the room was
+	// empty all along, no auth was ever exercised."
+	msgID := idgen.GenerateMessageID()
+	reqID := idgen.GenerateRequestID()
+	require.NoError(t, sendAndAwaitReply(
+		t,
+		alice.Conn(),
+		alice.Account,
+		reqID,
+		subject.MsgSend(alice.Account, roomID, site.SiteID),
+		model.SendMessageRequest{
+			ID:        msgID,
+			Content:   "alice message that bob must NOT see",
+			RequestID: reqID,
+		},
+		10*time.Second,
+	))
+
+	// bob (non-member) requests history. Required outcome: ErrorResponse
+	// (preferred) OR a response with NO trace of alice's message.
 	var histResp loadHistoryResponse
 	err := requestReply(
 		bob.Conn(),
@@ -300,11 +321,16 @@ func TestNegative_HistoryNonMember(t *testing.T) {
 		loadHistoryRequest{Limit: 50},
 		5*time.Second, &histResp,
 	)
-	// Either non-nil error (auth rejection) OR empty result. The forbidden
-	// outcome is "returned messages bob shouldn't see."
-	if err == nil {
-		assert.Empty(t, histResp.Messages,
-			"history-service must not return messages for a non-member account")
+	if err != nil {
+		// Reject with ErrorResponse is the strong-form correct outcome.
+		er := asErrorReply(err)
+		require.NotNil(t, er, "non-member history rejection should be a structured ErrorResponse; got %T", err)
+		return
+	}
+	// If history-service didn't reject, it MUST not include alice's message.
+	for _, m := range histResp.Messages {
+		assert.NotEqual(t, msgID, m.MessageID,
+			"history-service must not return alice's message %s to a non-member", msgID)
 	}
 }
 
