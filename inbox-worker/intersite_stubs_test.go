@@ -66,23 +66,3 @@ func (s *stubInterSiteClient) GetRoomKey(_ context.Context, originSiteID, roomID
 	s.mu.Unlock()
 	return s.getResp, s.getErr
 }
-
-type stubRoomKeyPublisher struct {
-	mu       sync.Mutex
-	subjects []string
-	payloads [][]byte
-}
-
-func (p *stubRoomKeyPublisher) Publish(subj string, data []byte) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.subjects = append(p.subjects, subj)
-	p.payloads = append(p.payloads, append([]byte(nil), data...))
-	return nil
-}
-
-func (p *stubRoomKeyPublisher) count() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.subjects)
-}

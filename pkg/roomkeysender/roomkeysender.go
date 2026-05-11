@@ -5,23 +5,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nats-io/nats.go"
-
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // Publisher abstracts NATS publishing so the sender is testable.
+// *nats.Conn satisfies this interface directly.
 type Publisher interface {
 	Publish(subject string, data []byte) error
-}
-
-// NatsPublisher adapts *nats.Conn to the Publisher interface.
-type NatsPublisher struct{ Conn *nats.Conn }
-
-// Publish sends data to the given subject via the underlying NATS connection.
-func (p NatsPublisher) Publish(subj string, data []byte) error {
-	return p.Conn.Publish(subj, data)
 }
 
 // Sender publishes room key events to user NATS subjects.

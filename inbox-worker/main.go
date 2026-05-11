@@ -37,8 +37,9 @@ type config struct {
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 
 	// Valkey wiring; empty addr disables key handling.
-	ValkeyAddr           string        `env:"VALKEY_ADDR"`
-	ValkeyPassword       string        `env:"VALKEY_PASSWORD"           envDefault:""`
+	ValkeyAddr     string `env:"VALKEY_ADDR"`
+	ValkeyPassword string `env:"VALKEY_PASSWORD"           envDefault:""`
+	// ValkeyKeyGracePeriod controls how long the previous key remains readable after a rotation (TTL on the :prev slot).
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
 	RoomKeyRPCTimeout    time.Duration `env:"ROOM_KEY_RPC_TIMEOUT"      envDefault:"5s"`
 }
@@ -130,23 +131,6 @@ func (s *mongoInboxStore) UpdateSubscriptionRead(ctx context.Context, roomID, ac
 		return fmt.Errorf("update subscription read for %q in room %q: %w", account, roomID, err)
 	}
 	return nil
-}
-
-func (s *mongoInboxStore) ListByRoom(ctx context.Context, roomID, siteID string) ([]model.Subscription, error) {
-	filter := bson.M{"roomId": roomID}
-	if siteID != "" {
-		filter["siteId"] = siteID
-	}
-	cursor, err := s.subCol.Find(ctx, filter)
-	if err != nil {
-		return nil, fmt.Errorf("find subscriptions: %w", err)
-	}
-	defer cursor.Close(ctx)
-	var subs []model.Subscription
-	if err := cursor.All(ctx, &subs); err != nil {
-		return nil, fmt.Errorf("decode subscriptions: %w", err)
-	}
-	return subs, nil
 }
 
 // ensureIndexes creates the unique index on (threadRoomId, userId) used by

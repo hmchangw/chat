@@ -28,10 +28,10 @@ import (
 // errPermanent marks non-retryable errors (caller Acks instead of Nak).
 var errPermanent = errors.New("permanent")
 
-// Sentinel errors for handleGetRoomKey — callers can use errors.Is for branching.
+// Sentinel errors for handleGetRoomKey — internal only; NatsHandleGetRoomKey stringifies via err.Error() before crossing the wire.
 var (
-	ErrRoomKeyNotFound      = errors.New("room key not found")
-	ErrRoomKeyStoreInternal = errors.New("room key store internal error")
+	errRoomKeyNotFound      = errors.New("room key not found")
+	errRoomKeyStoreInternal = errors.New("room key store internal error")
 )
 
 // PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
@@ -253,8 +253,8 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal RemoveMemberRequest: %w", err)
 	}
 
-	// req.RoomType is set by room-service (post-Batch-3 senders). Guard with a
-	// non-empty check for federation backward compat: events from older senders
+	// RoomType was added in this release; zero value means a pre-upgrade sender, treat as channel.
+	// Guard with a non-empty check for federation backward compat: events from older senders
 	// omit the field (zero value ""); those are assumed channel-only since
 	// room-service already validated that before publishing.
 	if req.RoomType != "" && req.RoomType != model.RoomTypeChannel {
@@ -270,12 +270,13 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 			return fmt.Errorf("get room key: %w", err)
 		}
 		// Version gate assumes single-rotator semantics: only room-service originates rotations, so a scalar int suffices for ordering.
+		// First rotation (newVer=1) requires pair.Version >= 1; fallback-Set path stamps newVer=0 which trivially passes (room had no prior key to wait for).
 		if pair == nil || pair.Version < req.NewKeyVersion {
 			haveVersion := -1
 			if pair != nil {
 				haveVersion = pair.Version
 			}
-			return fmt.Errorf("stale key version (have=%d want>=%d); waiting for valkey propagation", haveVersion, req.NewKeyVersion)
+			return fmt.Errorf("stale key version (have=%d want>=%d); jetstream delivered before valkey settled, will retry", haveVersion, req.NewKeyVersion)
 		}
 		keyPair = pair
 	}
@@ -331,8 +332,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
 		if listErr != nil {
 			slog.Error("list survivors for key fan-out failed", "error", listErr, "roomId", req.RoomID)
-		} else if fanErr := h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors); fanErr != nil {
-			slog.Error("survivor key fan-out failed", "error", fanErr, "roomId", req.RoomID)
+		} else {
+			h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
 		}
 	}
 
@@ -485,8 +486,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
 		if listErr != nil {
 			slog.Error("list survivors for key fan-out failed", "error", listErr, "roomId", req.RoomID)
-		} else if fanErr := h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors); fanErr != nil {
-			slog.Error("survivor key fan-out failed", "error", fanErr, "roomId", req.RoomID)
+		} else {
+			h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
 		}
 	}
 
@@ -790,11 +791,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 
 	// Fan out current key to newly-added local-site accounts only.
-	newUserPtrs := make([]*model.User, len(users))
-	for i := range users {
-		newUserPtrs[i] = &users[i]
-	}
-	if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, newUserPtrs); err != nil {
+	if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, users); err != nil {
 		return fmt.Errorf("fan out room key: %w", err)
 	}
 
@@ -1073,7 +1070,7 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
-	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, other}, subs, requestID, now)
+	return h.finishCreateRoom(ctx, req, room, requester, []model.User{*requester, *other}, subs, requestID, now)
 }
 
 func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
@@ -1089,7 +1086,7 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
-	return h.finishCreateRoom(ctx, req, room, requester, []*model.User{requester, bot}, subs, requestID, now)
+	return h.finishCreateRoom(ctx, req, room, requester, []model.User{*requester, *bot}, subs, requestID, now)
 }
 
 func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
@@ -1122,14 +1119,13 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 		}
 	}
 
-	allUsers := make([]*model.User, 0, len(users)+1)
-	allUsers = append(allUsers, requester)
-	for i := range users {
-		allUsers = append(allUsers, &users[i])
-	}
+	allUsers := make([]model.User, 0, len(users)+1)
+	allUsers = append(allUsers, *requester)
+	allUsers = append(allUsers, users...)
 
 	subs := make([]*model.Subscription, 0, len(allUsers))
-	for _, u := range allUsers {
+	for i := range allUsers {
+		u := &allUsers[i]
 		roles := []model.Role{model.RoleMember}
 		if u.ID == requester.ID {
 			roles = []model.Role{model.RoleOwner}
@@ -1171,7 +1167,7 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	return h.finishCreateRoom(ctx, req, room, requester, allUsers, subs, requestID, now)
 }
 
-func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, allUsers []*model.User, subs []*model.Subscription, requestID string, now time.Time) error {
+func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, allUsers []model.User, subs []*model.Subscription, requestID string, now time.Time) error {
 	if err := h.store.ReconcileMemberCounts(ctx, room.ID); err != nil {
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
@@ -1231,7 +1227,8 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 
 	// Task 37: outbox per remote site
 	remoteSiteAccounts := map[string][]string{}
-	for _, u := range allUsers {
+	for i := range allUsers {
+		u := &allUsers[i]
 		if u.SiteID == h.siteID || u.SiteID == "" {
 			continue
 		}
@@ -1603,9 +1600,9 @@ func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
 // (local + remote). NATS supercluster routes user-subjects to home sites.
 // survivors is a pre-computed post-deletion snapshot supplied by the caller; pair must be non-nil.
 // Callers should skip the call when key handling is disabled.
-func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, survivors []model.Subscription) error {
+func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, survivors []model.Subscription) {
 	if h.keySender == nil || pair == nil {
-		return nil
+		return
 	}
 	evt := model.RoomKeyEvent{
 		RoomID:     roomID,
@@ -1619,7 +1616,6 @@ func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, p
 			roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
 		}
 	}
-	return nil
 }
 
 // handleGetRoomKey looks up the key for roomID and returns the event or an error.
@@ -1628,10 +1624,10 @@ func (h *Handler) handleGetRoomKey(ctx context.Context, roomID string) (*model.R
 	if err != nil {
 		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
 		slog.Error("get room key", "error", err, "roomId", roomID)
-		return nil, fmt.Errorf("get room key for %s: %w", roomID, ErrRoomKeyStoreInternal)
+		return nil, fmt.Errorf("get room key for %s: %w", roomID, errRoomKeyStoreInternal)
 	}
 	if pair == nil {
-		return nil, ErrRoomKeyNotFound
+		return nil, errRoomKeyNotFound
 	}
 	return &model.RoomKeyEvent{
 		RoomID:     roomID,
@@ -1665,7 +1661,7 @@ func (h *Handler) NatsHandleGetRoomKey(m otelnats.Msg) {
 // buildAndFanOutRoomKey fetches the current key from Valkey, builds the RoomKeyEvent,
 // and fans it out to every room member account in users (local + remote).
 // NATS supercluster routes user-subjects to home sites.
-func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, users []*model.User) error {
+func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, users []model.User) error {
 	if h.keyStore == nil || h.keySender == nil {
 		return nil
 	}
@@ -1683,7 +1679,8 @@ func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, user
 		PublicKey:  pair.KeyPair.PublicKey,
 		PrivateKey: pair.KeyPair.PrivateKey,
 	}
-	for _, u := range users {
+	for i := range users {
+		u := &users[i]
 		if err := h.keySender.Send(u.Account, evt); err != nil {
 			slog.Error("send room key", "error", err, "account", u.Account, "roomId", roomID)
 			roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))

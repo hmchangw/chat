@@ -3106,7 +3106,7 @@ func TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite(t *testing.T
 		siteID:    "site-A",
 	}
 
-	users := []*model.User{
+	users := []model.User{
 		{Account: "alice", SiteID: "site-A"},
 		{Account: "bob", SiteID: "site-A"},
 		{Account: "carol", SiteID: "site-B"}, // remote — also receives key
@@ -3456,7 +3456,7 @@ func TestFanOutRoomKeyToSurvivors_SendsToAllSurvivorsIncludingRemoteSite(t *test
 	}
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, keySender)
-	require.NoError(t, h.fanOutRoomKeyToSurvivors(context.Background(), "r1", pair, survivors))
+	h.fanOutRoomKeyToSurvivors(context.Background(), "r1", pair, survivors)
 	// alice, bob (site-a) and remote-carol (site-b) all receive the new key.
 	assert.Equal(t, 3, pub.publishCount())
 	subjects := pub.subjects
@@ -3502,7 +3502,7 @@ func TestHandler_handleGetRoomKey(t *testing.T) {
 			setupMock: func(ks *MockRoomKeyStore) {
 				ks.EXPECT().Get(gomock.Any(), "room-missing").Return(nil, nil)
 			},
-			wantSentinel: ErrRoomKeyNotFound,
+			wantSentinel: errRoomKeyNotFound,
 		},
 		{
 			name:   "get error — key store returns error",
@@ -3510,7 +3510,7 @@ func TestHandler_handleGetRoomKey(t *testing.T) {
 			setupMock: func(ks *MockRoomKeyStore) {
 				ks.EXPECT().Get(gomock.Any(), "room-err").Return(nil, errors.New("redis timeout"))
 			},
-			wantSentinel: ErrRoomKeyStoreInternal,
+			wantSentinel: errRoomKeyStoreInternal,
 		},
 	}
 

@@ -194,18 +194,6 @@ func (s *stubInboxStore) getThreadSubs() []model.ThreadSubscription {
 	return cp
 }
 
-func (s *stubInboxStore) ListByRoom(_ context.Context, roomID, _ string) ([]model.Subscription, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []model.Subscription
-	for i := range s.subscriptions {
-		if s.subscriptions[i].RoomID == roomID {
-			out = append(out, s.subscriptions[i])
-		}
-	}
-	return out, nil
-}
-
 // --- Tests ---
 
 func TestHandleEvent_MemberAdded(t *testing.T) {
@@ -1215,7 +1203,6 @@ func TestHandleMemberAdded_ReplicatesLocalKeyOnMiss(t *testing.T) {
 		{ID: "u-c", Account: "charlie", SiteID: "site-b"},
 	}
 	keyStore := newStubKeyStore()
-	pub := &stubRoomKeyPublisher{}
 	client := &stubInterSiteClient{
 		getResp: &model.RoomKeyEvent{
 			RoomID: "r1", Version: 2,
@@ -1240,9 +1227,6 @@ func TestHandleMemberAdded_ReplicatesLocalKeyOnMiss(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, pair, "key must be stored locally after RPC fetch")
 	assert.Equal(t, client.getResp.PublicKey, pair.KeyPair.PublicKey)
-
-	// No inbox-side fan-out — origin room-worker handles that via supercluster.
-	assert.Equal(t, 0, pub.count(), "inbox-worker must not fan out key events")
 }
 
 // TestHandleMemberAdded_NoRPCOnLocalHit verifies that when the key is already
@@ -1258,7 +1242,6 @@ func TestHandleMemberAdded_NoRPCOnLocalHit(t *testing.T) {
 		PublicKey:  bytes.Repeat([]byte{0x04}, 65),
 		PrivateKey: bytes.Repeat([]byte{0x09}, 32),
 	})
-	pub := &stubRoomKeyPublisher{}
 	client := &stubInterSiteClient{}
 
 	h := NewHandler(store, "site-b", keyStore, client)
@@ -1273,8 +1256,6 @@ func TestHandleMemberAdded_NoRPCOnLocalHit(t *testing.T) {
 	require.NoError(t, h.handleMemberAdded(context.Background(), envelope))
 	// RPC should NOT have been called (local hit).
 	assert.Empty(t, client.calls)
-	// No inbox-side fan-out.
-	assert.Equal(t, 0, pub.count(), "inbox-worker must not fan out key events")
 }
 
 // TestHandleMemberRemoved_RotatesLocalKey verifies that on member_removed the local
@@ -1290,7 +1271,6 @@ func TestHandleMemberRemoved_RotatesLocalKey(t *testing.T) {
 		PublicKey:  bytes.Repeat([]byte{0x04}, 65),
 		PrivateKey: bytes.Repeat([]byte{0x01}, 32),
 	})
-	pub := &stubRoomKeyPublisher{}
 	client := &stubInterSiteClient{
 		getResp: &model.RoomKeyEvent{
 			RoomID: "r1", Version: 5,
@@ -1311,9 +1291,6 @@ func TestHandleMemberRemoved_RotatesLocalKey(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, pair)
 	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey, "key must be rotated to new pair")
-
-	// No inbox-side fan-out — origin room-worker handles that via supercluster.
-	assert.Equal(t, 0, pub.count(), "inbox-worker must not fan out key events")
 }
 
 func TestHandleMemberRemoved_NaksOnRPCFailure(t *testing.T) {
@@ -1347,7 +1324,6 @@ func TestHandleRoomCreated_ReplicatesLocalKey(t *testing.T) {
 		},
 	}
 	keyStore := newStubKeyStore()
-	pub := &stubRoomKeyPublisher{}
 	client := &stubInterSiteClient{
 		getResp: &model.RoomKeyEvent{
 			RoomID:     "r1",
@@ -1384,9 +1360,6 @@ func TestHandleRoomCreated_ReplicatesLocalKey(t *testing.T) {
 	require.NotNil(t, pair)
 	assert.Equal(t, client.getResp.PublicKey, pair.KeyPair.PublicKey)
 	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
-
-	// No inbox-side fan-out — origin room-worker handles that via supercluster.
-	assert.Equal(t, 0, pub.count(), "inbox-worker must not fan out key events")
 }
 
 func TestReplicateRoomKey_RotatesWhenLocalKeyExists(t *testing.T) {
@@ -1529,8 +1502,6 @@ func TestHandleEvent_MemberRemoved_RotatesLocalKey(t *testing.T) {
 			PrivateKey: bytes.Repeat([]byte{0x03}, 32),
 		},
 	}
-	pub := &stubRoomKeyPublisher{}
-
 	h := NewHandler(store, "site-b", keyStore, client)
 
 	memberEvt := model.MemberRemoveEvent{
@@ -1558,7 +1529,4 @@ func TestHandleEvent_MemberRemoved_RotatesLocalKey(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, pair, "local key must be stored after rotation")
 	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
-
-	// No inbox-side fan-out — origin room-worker handles that via supercluster.
-	assert.Equal(t, 0, pub.count(), "inbox-worker must not fan out key events")
 }

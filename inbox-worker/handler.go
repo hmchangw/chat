@@ -352,11 +352,7 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 	return nil
 }
 
-// replicateLocalKey ensures the local Valkey has the room key. On cache hit it
-// is a no-op (key already replicated). On miss it calls replicateRoomKey to
-// fetch from origin and store locally. User-side fan-out is NOT performed here
-// — origin room-worker publishes chat.user.<account>.event.room.key for all
-// members; the NATS supercluster routes those events to home sites.
+// replicateLocalKey ensures the local Valkey has the room key, fetching from origin on a cache miss.
 func (h *Handler) replicateLocalKey(ctx context.Context, originSiteID, roomID string) error {
 	if h.keyStore == nil || h.interSiteClient == nil {
 		return nil

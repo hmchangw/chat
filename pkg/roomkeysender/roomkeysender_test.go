@@ -25,43 +25,6 @@ func (m *mockPublisher) Publish(subject string, data []byte) error {
 	return m.err
 }
 
-// multiPublisher captures all Publish calls for multi-send assertions.
-type multiPublisher struct {
-	payloads [][]byte
-}
-
-func (m *multiPublisher) Publish(_ string, data []byte) error {
-	m.payloads = append(m.payloads, append([]byte(nil), data...))
-	return nil
-}
-
-func TestSender_DoesNotMutateInputTimestamp(t *testing.T) {
-	pub := &multiPublisher{}
-	s := roomkeysender.NewSender(pub)
-
-	// Pass by value — language semantics guarantee no mutation; test serves as documentation.
-	evt := model.RoomKeyEvent{
-		RoomID:     "r1",
-		Version:    1,
-		PublicKey:  []byte("pk"),
-		PrivateKey: []byte("sk"),
-		Timestamp:  0,
-	}
-	require.NoError(t, s.Send("alice", evt))
-	require.NoError(t, s.Send("bob", evt))
-
-	// Caller's value must not be mutated (by-value semantics guarantee this).
-	assert.EqualValues(t, 0, evt.Timestamp, "Send must not mutate caller's Timestamp")
-
-	// Each published payload should carry its own timestamp.
-	require.Len(t, pub.payloads, 2)
-	var msg1, msg2 model.RoomKeyEvent
-	require.NoError(t, json.Unmarshal(pub.payloads[0], &msg1))
-	require.NoError(t, json.Unmarshal(pub.payloads[1], &msg2))
-	assert.Greater(t, msg1.Timestamp, int64(0))
-	assert.Greater(t, msg2.Timestamp, int64(0))
-}
-
 func TestSender_Send(t *testing.T) {
 	pub65 := make([]byte, 65)
 	pub65[0] = 0x04

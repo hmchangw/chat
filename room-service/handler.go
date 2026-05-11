@@ -28,7 +28,8 @@ import (
 )
 
 type Handler struct {
-	store             RoomStore
+	store RoomStore
+	// keyStore is set when VALKEY_ADDR is configured (always in production; tests may pass nil).
 	keyStore          RoomKeyStore
 	memberListClient  MemberListClient
 	msgReader         MessageReader
@@ -346,7 +347,6 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 	}
 
 	// Generate and store room key BEFORE canonical event so worker's Get gate succeeds.
-	// nil guard for test fixtures only; main.go requires VALKEY_ADDR (keyStore always set in production).
 	if h.keyStore != nil {
 		pair, err := generateRoomKeyPair()
 		if err != nil {
@@ -538,7 +538,6 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 
 	// Rotate before publish so broadcast-worker encrypts under the new key immediately.
 	// Skip rotation when target is dual-membership: no actual removal happens in that case.
-	// nil guard for test fixtures only; main.go requires VALKEY_ADDR (keyStore always set in production).
 	if h.keyStore != nil && !targetIsDualMembership {
 		pair, err := generateRoomKeyPair()
 		if err != nil {
@@ -552,14 +551,14 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 					roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 					return nil, fmt.Errorf("store room key (fallback): %w", setErr)
 				}
+				roomkeymetrics.KeyGenerated.Add(ctx, 1) // fallback = first-time key generation
 				newVer = 0
-				roomkeymetrics.KeyRotated.Add(ctx, 1)
 			} else {
 				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
 				return nil, fmt.Errorf("rotate room key: %w", err)
 			}
 		} else {
-			roomkeymetrics.KeyRotated.Add(ctx, 1)
+			roomkeymetrics.KeyRotated.Add(ctx, 1) // only true rotations
 		}
 		req.NewKeyVersion = newVer
 	}

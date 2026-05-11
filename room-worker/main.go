@@ -36,8 +36,9 @@ type config struct {
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 
 	// Valkey wiring; empty addr disables key handling.
-	ValkeyAddr           string        `env:"VALKEY_ADDR"`
-	ValkeyPassword       string        `env:"VALKEY_PASSWORD"           envDefault:""`
+	ValkeyAddr     string `env:"VALKEY_ADDR"`
+	ValkeyPassword string `env:"VALKEY_PASSWORD"           envDefault:""`
+	// ValkeyKeyGracePeriod controls how long the previous key remains readable after a rotation (TTL on the :prev slot).
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
 }
 
@@ -104,7 +105,7 @@ func main() {
 			os.Exit(1)
 		}
 		keyStore = ks
-		keySender = roomkeysender.NewSender(roomkeysender.NatsPublisher{Conn: nc.NatsConn()})
+		keySender = roomkeysender.NewSender(nc.NatsConn())
 	}
 
 	if cfg.ValkeyAddr == "" {
