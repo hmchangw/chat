@@ -19,6 +19,7 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -34,6 +35,12 @@ type config struct {
 	MongoPassword string                  `env:"MONGO_PASSWORD"  envDefault:""`
 	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+
+	// Valkey wiring; empty addr disables key handling.
+	ValkeyAddr           string        `env:"VALKEY_ADDR"`
+	ValkeyPassword       string        `env:"VALKEY_PASSWORD"           envDefault:""`
+	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
+	RoomKeyRPCTimeout    time.Duration `env:"ROOM_KEY_RPC_TIMEOUT"      envDefault:"5s"`
 }
 
 // mongoInboxStore implements InboxStore using MongoDB.
@@ -125,6 +132,23 @@ func (s *mongoInboxStore) UpdateSubscriptionRead(ctx context.Context, roomID, ac
 	return nil
 }
 
+func (s *mongoInboxStore) ListByRoom(ctx context.Context, roomID, siteID string) ([]model.Subscription, error) {
+	filter := bson.M{"roomId": roomID}
+	if siteID != "" {
+		filter["siteId"] = siteID
+	}
+	cursor, err := s.subCol.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("find subscriptions: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var subs []model.Subscription
+	if err := cursor.All(ctx, &subs); err != nil {
+		return nil, fmt.Errorf("decode subscriptions: %w", err)
+	}
+	return subs, nil
+}
+
 // ensureIndexes creates the unique index on (threadRoomId, userId) used by
 // UpsertThreadSubscription. The index name and shape match what message-worker
 // creates in its own threadStoreMongo so both services agree on the natural
@@ -192,6 +216,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	meterShutdown, err := otelutil.InitMeter("inbox-worker")
+	if err != nil {
+		slog.Error("init meter failed", "error", err)
+		os.Exit(1)
+	}
+
 	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		slog.Error("mongo connect failed", "error", err)
@@ -235,7 +265,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := NewHandler(store)
+	var keyStore RoomKeyStore
+	var interSiteClient InterSiteKeyClient
+	if cfg.ValkeyAddr != "" {
+		if cfg.ValkeyKeyGracePeriod <= 0 {
+			slog.Error("VALKEY_ADDR set but VALKEY_KEY_GRACE_PERIOD is not a positive duration",
+				"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
+			os.Exit(1)
+		}
+		ks, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+			Addr: cfg.ValkeyAddr, Password: cfg.ValkeyPassword, GracePeriod: cfg.ValkeyKeyGracePeriod,
+		})
+		if err != nil {
+			slog.Error("valkey connect failed", "error", err)
+			os.Exit(1)
+		}
+		keyStore = ks
+		interSiteClient = newNatsInterSiteKeyClient(nc.NatsConn(), cfg.RoomKeyRPCTimeout)
+	}
+
+	if cfg.ValkeyAddr == "" {
+		slog.Warn("room key distribution disabled — VALKEY_ADDR not set; create/add/remove members will skip key Valkey replication")
+	}
+
+	handler := NewHandler(store, cfg.SiteID, keyStore, interSiteClient)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
 		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
@@ -257,15 +310,21 @@ func main() {
 
 	slog.Info("inbox-worker started", "site", cfg.SiteID)
 
-	shutdown.Wait(ctx, 25*time.Second,
+	hooks := []func(ctx context.Context) error{
 		func(ctx context.Context) error {
 			cctx.Stop()
 			return nil
 		},
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(ctx context.Context) error { return meterShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-	)
+	}
+	if keyStore != nil {
+		hooks = append(hooks, func(ctx context.Context) error { return keyStore.Close() })
+	}
+
+	shutdown.Wait(ctx, 25*time.Second, hooks...)
 }
 
 // buildConsumerConfig returns the durable consumer config for
