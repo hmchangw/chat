@@ -1,0 +1,213 @@
+name: chat-e2e
+
+# Two-site backend e2e topology. See docs/superpowers/plans/2026-05-08-e2e-tests.md
+# and the companion amendments doc 2026-05-08-e2e-tests-amendments.md (R1-R4).
+#
+# Host port allocation (per amendment R2.A, with Mongo revised in R4.B to stay
+# below the Linux ephemeral range 32768+):
+#
+#   Service              Internal  Site-A host  Site-B host (chapter 5)
+#   NATS client          4222      14222        24222
+#   NATS HTTP monitoring 8222      18222        28222
+#   NATS gateway         7222      (network)    (network)
+#   NATS cluster         6222      (network)    (network)
+#   Mongo                27017     27117        27217
+#   Cassandra            9042      19042        29042
+#   Elasticsearch        9200      19200        29200
+#   Valkey               6379      16379        26379
+#   Keycloak             8080      18180        28180
+#   auth-service         8080      18080        28080
+#
+# `make deps-up` keeps stock ports (4222, 27017, 9042, 9200, 6379, 8180); the
+# e2e Makefile target refuses to start if `deps-up` is running.
+
+networks:
+  chat-e2e:
+    driver: bridge
+
+volumes:
+  mongo-a-data:
+  cass-a-data:
+  es-a-data:
+  keycloak-a-data:
+  nats-a-data:
+
+services:
+  # --- Site A dependencies (chapter 3) -----------------------------------
+
+  nats-a:
+    image: ${E2E_NATS_IMAGE:-nats:2.11-alpine}
+    container_name: nats-a
+    networks: [chat-e2e]
+    ports:
+      - "14222:4222"   # client (host-exposed for harness + manual debugging)
+      - "18222:8222"   # http monitoring
+    volumes:
+      - ./nats/nats-a.conf:/etc/nats/nats-server.conf:ro
+      - nats-a-data:/data/jetstream
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz | grep -q ok"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  mongo-a:
+    image: ${E2E_MONGO_IMAGE:-mongo:8}
+    container_name: mongo-a
+    networks: [chat-e2e]
+    ports:
+      - "27117:27017"
+    volumes:
+      - mongo-a-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  cass-a:
+    image: ${E2E_CASS_IMAGE:-cassandra:5}
+    container_name: cass-a
+    networks: [chat-e2e]
+    ports:
+      - "19042:9042"
+    volumes:
+      - cass-a-data:/var/lib/cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: chat-e2e-a
+      CASSANDRA_DC: dc-a
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      # Per amendment R1 3.C: cap the heap so two-site Cassandra fits on a
+      # 32GB box alongside Mongo, ES, Keycloak. Cassandra:5 otherwise sizes
+      # the heap to ~1/4 of host RAM (≈8GB) which OOMs the stack.
+      JVM_OPTS: "-Xms512m -Xmx1g"
+      MAX_HEAP_SIZE: "1G"
+      HEAP_NEWSIZE: "256M"
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  # Profile-gated init job that applies the keyspace + table DDL once cass-a
+  # is healthy. Per amendment R1 3.A: cassandra:5 has no docker-entrypoint
+  # init hook, so a one-shot job that shells out to `cqlsh` is the working
+  # pattern (mirrors docker-local/compose.deps.yaml's cassandra-init job).
+  # Invoked via `docker compose --profile init run --rm cassandra-init-a`
+  # from the e2e-up Makefile target.
+  cassandra-init-a:
+    image: ${E2E_CASS_IMAGE:-cassandra:5}
+    container_name: cassandra-init-a
+    networks: [chat-e2e]
+    depends_on:
+      cass-a: { condition: service_healthy }
+    volumes:
+      - ../cassandra/init:/init:ro
+    profiles: [init]
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        for f in $$(ls /init/*.cql | sort); do
+          echo "[cassandra-init-a] applying $$f"
+          cqlsh cass-a -f "$$f"
+        done
+        echo "[cassandra-init-a] done"
+
+  es-a:
+    image: ${E2E_ES_IMAGE:-elasticsearch:8.17.0}
+    container_name: es-a
+    networks: [chat-e2e]
+    ports:
+      - "19200:9200"
+    volumes:
+      - es-a-data:/usr/share/elasticsearch/data
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # Profile-gated init job that applies an index template to ES so messages
+  # indices have a 200ms refresh_interval (vs the 30s default). This makes
+  # search-after-write deterministic for the e2e suite. Per amendment R1 4.B.
+  # Invoked via `docker compose --profile init run --rm search-init-a`.
+  search-init-a:
+    image: curlimages/curl:8
+    container_name: search-init-a
+    networks: [chat-e2e]
+    depends_on:
+      es-a: { condition: service_healthy }
+    profiles: [init]
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        curl -fsS -X PUT http://es-a:9200/_index_template/messages-e2e \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "index_patterns": ["messages-siteA-v1-*", "messages-siteB-v1-*"],
+            "template": { "settings": { "index": { "refresh_interval": "200ms" } } },
+            "priority": 200
+          }'
+        echo "[search-init-a] template applied"
+
+  valkey-a:
+    image: ${E2E_VALKEY_IMAGE:-valkey/valkey:8}
+    container_name: valkey-a
+    networks: [chat-e2e]
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  keycloak-a:
+    image: ${E2E_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}
+    container_name: keycloak-a
+    networks: [chat-e2e]
+    ports:
+      - "18180:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      # Per amendment R1 3.D: align KC_HOSTNAME with the host-exposed URL so
+      # tokens minted by Keycloak carry an `iss` claim that matches what
+      # auth-service-a (in the docker network) verifies. host.docker.internal
+      # resolves from inside the container via extra_hosts:host-gateway
+      # (added on auth-service-a in chapter 4); on the host it resolves
+      # natively on Docker Desktop, or via a one-line /etc/hosts entry on
+      # plain Linux Docker Engine. The setup-e2e.sh script (chapter 4) warns
+      # the user if resolution is missing.
+      KC_HOSTNAME: "http://host.docker.internal:18180"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "false"
+    volumes:
+      - ../../auth-service/deploy/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - keycloak-a-data:/opt/keycloak/data
+    command: ["start-dev", "--import-realm"]
+    healthcheck:
+      # Per amendment R1 3.B: the official Keycloak 26 image runs `sh`, not
+      # bash, so the /dev/tcp exec idiom doesn't work. curl ships in the
+      # image and reads the management-port /health/ready endpoint cleanly.
+      test: ["CMD-SHELL", "curl -fs http://localhost:9000/health/ready | grep -q '\"status\": \"UP\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s

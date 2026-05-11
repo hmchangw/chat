@@ -206,7 +206,14 @@ e2e-only: $(E2E_ENV)
 
 # Manual stack control.
 e2e-up: $(E2E_ENV)
+	@docker compose -f $(DEPS_COMPOSE) ps -q nats >/dev/null 2>&1 && { \
+	  echo "ERROR: 'make deps-up' is running. Stop it first ('make deps-down')."; \
+	  echo "Even with non-overlapping host ports, dual-stack on one box risks OOM."; \
+	  exit 1; \
+	} || true
 	docker compose -f $(E2E_COMPOSE) up -d --wait
+	docker compose -f $(E2E_COMPOSE) --profile init run --rm cassandra-init-a
+	docker compose -f $(E2E_COMPOSE) --profile init run --rm search-init-a
 
 e2e-down:
 	docker compose -f $(E2E_COMPOSE) down -v
