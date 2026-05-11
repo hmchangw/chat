@@ -198,7 +198,10 @@ e2e: $(E2E_ENV)
 	go test -tags e2e -race -count=1 ./e2e/...
 
 # Iteration loop: assumes a stack already running via `make e2e-up`.
-e2e-only:
+e2e-only: $(E2E_ENV)
+	@docker compose -f $(E2E_COMPOSE) ps --status running --quiet nats-a >/dev/null 2>&1 || { \
+	  echo "E2E stack is not running. Run 'make e2e-up' first."; exit 1; \
+	}
 	E2E_REUSE_STACK=1 go test -tags e2e -race -count=1 ./e2e/...
 
 # Manual stack control.
