@@ -173,6 +173,11 @@ func RoomKeyUpdate(account string) string {
 	return fmt.Sprintf("chat.user.%s.event.room.key", account)
 }
 
+// Inter-site server-to-server RPC subject for fetching a room's keypair.
+func ServerRoomKeyGet(siteID string) string {
+	return fmt.Sprintf("chat.server.request.roomkey.%s.get", siteID)
+}
+
 // --- Room CRUD request builders ---
 
 func RoomsCreate(account string) string {
