@@ -517,7 +517,7 @@ func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
 func newIntegrationHandler(t *testing.T, store *MongoStore, siteID string) *Handler {
 	t.Helper()
 	noopPublish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
-	return NewHandler(store, siteID, noopPublish, nil, nil)
+	return NewHandler(store, siteID, noopPublish, testKeyStore, testKeySender)
 }
 
 func TestProcessCreateRoomChannelPersistsAllState(t *testing.T) {
@@ -621,7 +621,7 @@ func TestProcessCreateRoomChannel_OutboxPerRemoteSite(t *testing.T) {
 		EngName: "Ian", ChineseName: "伊恩"})
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn(), nil, nil)
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -711,7 +711,7 @@ func TestProcessCreateRoomDM_OutboxToCounterpartSite(t *testing.T) {
 		EngName: "Bob", ChineseName: "鲍勃"})
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn(), nil, nil)
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -809,7 +809,7 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	require.NoError(t, err)
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn(), nil, nil)
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -917,7 +917,7 @@ func TestProcessAddMembers_PublishesLocalInbox_Integration(t *testing.T) {
 	})
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn(), nil, nil)
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-aaaa00000001"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -979,7 +979,7 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn(), nil, nil)
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-aaaa00000002"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -1027,7 +1027,7 @@ func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
 	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: siteID, EngName: "Bob", ChineseName: "鮑勃"})
 
 	cap := &publishCapture{}
-	handler := NewHandler(store, siteID, cap.fn(), nil, nil)
+	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data, _ := json.Marshal(req)
@@ -1069,7 +1069,7 @@ func TestSyncCreateDM_BotDM_CrossSiteOutbox(t *testing.T) {
 	mustInsertUser(t, db, &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-B", EngName: "Helper", ChineseName: "助手"})
 
 	cap := &publishCapture{}
-	handler := NewHandler(store, siteID, cap.fn(), nil, nil)
+	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
 	data, _ := json.Marshal(req)
@@ -1090,7 +1090,7 @@ func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
 	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: siteID, EngName: "Bob", ChineseName: "鮑勃"})
 
 	cap := &publishCapture{}
-	handler := NewHandler(store, siteID, cap.fn(), nil, nil)
+	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data, _ := json.Marshal(req)
@@ -1127,7 +1127,7 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: "site-B", EngName: "Bob", ChineseName: "鮑勃"})
 
 	cap1 := &publishCapture{}
-	handler := NewHandler(store, siteID, cap1.fn(), nil, nil)
+	handler := NewHandler(store, siteID, cap1.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 	data, err := json.Marshal(req)
@@ -1158,7 +1158,7 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 	// 3. Replay with the same X-Request-ID produces the same Nats-Msg-Id —
 	//    on the wire, JetStream OUTBOX dedup would reject the second emit.
 	cap2 := &publishCapture{}
-	handler2 := NewHandler(store, siteID, cap2.fn(), nil, nil)
+	handler2 := NewHandler(store, siteID, cap2.fn(), testKeyStore, testKeySender)
 	_, err = handler2.handleSyncCreateDM(ctx, data)
 	require.NoError(t, err)
 	pubs2 := cap2.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxTypeRoomCreated))
