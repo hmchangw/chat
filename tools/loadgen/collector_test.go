@@ -413,6 +413,78 @@ func TestCollector_Correlation_ConcurrentPublishAndConsume(t *testing.T) {
 	assert.Equal(t, 0, c.outstandingCorrelations(), "all correlations consumed")
 }
 
+// S2 review-A WARN #2: N goroutines racing to consume the SAME
+// requestID must result in exactly one E1 match. The shard's
+// lookup-then-delete is the linearization point; this test asserts
+// no double-count under that contention.
+func TestCollector_RecordReply_SameIDRacingConsumers(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	t0 := time.Unix(100, 0)
+	c.RecordPublish("r-shared", "m-shared", t0)
+
+	const racers = 16
+	var wg sync.WaitGroup
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.RecordReply("r-shared", t0.Add(2*time.Millisecond))
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, 1, c.E1Count(), "exactly one of the %d racers must observe the entry", racers)
+}
+
+func TestCollector_RecordBroadcast_SameIDRacingConsumers(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	t0 := time.Unix(100, 0)
+	c.RecordPublish("r-shared", "m-shared", t0)
+
+	const racers = 16
+	var wg sync.WaitGroup
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.RecordBroadcast("m-shared", t0.Add(3*time.Millisecond))
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, 1, c.E2Count(), "exactly one of the %d racers must observe the entry", racers)
+}
+
+// S2 review-A WARN #3: RecordPublishFailed must accept empty
+// requestID and/or messageID without crashing or touching a real
+// shard. The S5 async err handler in main.go calls
+// RecordPublishFailed("", id) when an async ack fails, so the empty
+// case is a real production path.
+func TestCollector_RecordPublishFailed_EmptyIDsAreSafe(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	t0 := time.Unix(100, 0)
+	c.RecordPublish("r-1", "m-1", t0)
+
+	// Empty messageID — only the requestID should be evicted.
+	c.RecordPublishFailed("r-1", "")
+	missingR, missingB := c.Finalize()
+	assert.Equal(t, 0, missingR, "requestID evicted")
+	assert.Equal(t, 1, missingB, "messageID untouched because '' is a no-op")
+
+	// Empty requestID — drop the messageID. seenMessageIDs is pruned.
+	c.RecordPublishFailed("", "m-1")
+	missingR, missingB = c.Finalize()
+	assert.Equal(t, 0, missingR)
+	assert.Equal(t, 0, missingB, "messageID evicted via the '' requestID path")
+	assert.Empty(t, c.MessageIDs(), "seenMessageIDs pruned")
+
+	// Both empty — pure no-op, no panic.
+	require.NotPanics(t, func() {
+		c.RecordPublishFailed("", "")
+	})
+}
+
 // S2: PruneCorrelation must clear every shard, leaving the
 // seenMessageIDs and E1/E2 samples intact.
 func TestCollector_PruneCorrelation_ClearsAllShards(t *testing.T) {
