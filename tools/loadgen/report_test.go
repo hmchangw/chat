@@ -222,3 +222,31 @@ func TestDetermineExitCode(t *testing.T) {
 		})
 	}
 }
+
+func TestPrintSummary_IncludesRunID(t *testing.T) {
+	var buf bytes.Buffer
+	s := Summary{
+		RunID:      "0190bf99-aaaa-7bbb-cccc-deadbeef0001",
+		Preset:     "small",
+		Seed:       1,
+		Site:       "site-a",
+		TargetRate: 100, ActualRate: 99.9,
+		Duration: 30 * time.Second, Warmup: 10 * time.Second,
+		Inject: "frontdoor",
+	}
+	require.NoError(t, PrintSummary(&buf, &s))
+	assert.Contains(t, buf.String(), "run_id: 0190bf99-aaaa-7bbb-cccc-deadbeef0001")
+}
+
+func TestPrintSummary_OmitsRunIDLineWhenEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	s := Summary{
+		Preset:     "small",
+		Site:       "site-a",
+		TargetRate: 100, ActualRate: 99.9,
+		Duration: 30 * time.Second, Warmup: 10 * time.Second,
+		Inject: "frontdoor",
+	}
+	require.NoError(t, PrintSummary(&buf, &s))
+	assert.NotContains(t, buf.String(), "run_id:")
+}

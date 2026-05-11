@@ -98,3 +98,30 @@ func TestNewMetrics_LabelCardinalityIsBounded(t *testing.T) {
 		assert.Len(t, mf.GetMetric(), len(cases))
 	}
 }
+
+func TestNewMetrics_RunInfoGauge(t *testing.T) {
+	m := NewMetrics()
+	require.NotNil(t, m.RunInfo, "RunInfo gauge must exist")
+	m.RunInfo.WithLabelValues("uuid-abc-123", "small", "history-read", "1234567890").Set(1)
+
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+	var found bool
+	for _, mf := range mfs {
+		if mf.GetName() != "loadgen_run_info" {
+			continue
+		}
+		found = true
+		require.Len(t, mf.GetMetric(), 1)
+		labels := map[string]string{}
+		for _, lp := range mf.GetMetric()[0].GetLabel() {
+			labels[lp.GetName()] = lp.GetValue()
+		}
+		assert.Equal(t, "uuid-abc-123", labels["run_id"])
+		assert.Equal(t, "small", labels["preset"])
+		assert.Equal(t, "history-read", labels["scenario"])
+		assert.Equal(t, "1234567890", labels["start_unix"])
+		assert.Equal(t, 1.0, mf.GetMetric()[0].GetGauge().GetValue())
+	}
+	assert.True(t, found, "loadgen_run_info must be registered")
+}

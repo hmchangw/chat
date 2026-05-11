@@ -20,6 +20,12 @@ type Metrics struct {
 	ConsumerPending     *prometheus.GaugeVec
 	ConsumerAckPending  *prometheus.GaugeVec
 	ConsumerRedelivered *prometheus.GaugeVec
+	// RunInfo is an info-style gauge set to 1 per run with the labels
+	// (run_id, preset, scenario, start_unix). Grafana template variables
+	// pick a run by run_id; alerts join other counters against this
+	// metric to keep run identity available without inflating every
+	// counter's label cardinality.
+	RunInfo *prometheus.GaugeVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -72,12 +78,17 @@ func NewMetrics() *Metrics {
 			prometheus.GaugeOpts{Name: "loadgen_consumer_redelivered", Help: "JetStream consumer num_redelivered."},
 			[]string{"stream", "durable"},
 		),
+		RunInfo: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{Name: "loadgen_run_info", Help: "Per-run identification (value always 1)."},
+			[]string{"run_id", "preset", "scenario", "start_unix"},
+		),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
 		m.Requests, m.RequestErrors, m.RequestLatency,
 		m.E1Latency, m.E2Latency,
 		m.ConsumerPending, m.ConsumerAckPending, m.ConsumerRedelivered,
+		m.RunInfo,
 	)
 	return m
 }

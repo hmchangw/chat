@@ -61,6 +61,7 @@ type ConsumerStat struct {
 
 // Summary is the full end-of-run report.
 type Summary struct {
+	RunID                string // C3: UUIDv7 per-run identifier for SUT correlation
 	Preset, Site, Inject string
 	Seed                 int64
 	TargetRate           int
@@ -82,6 +83,9 @@ type Summary struct {
 // PrintSummary writes the terminal summary to w using text/tabwriter.
 func PrintSummary(w io.Writer, s *Summary) error {
 	fmt.Fprintln(w, "=== loadgen run complete ===")
+	if s.RunID != "" {
+		fmt.Fprintf(w, "run_id: %s\n", s.RunID)
+	}
 	fmt.Fprintf(w, "preset: %s    seed: %d    site: %s\n", s.Preset, s.Seed, s.Site)
 	fmt.Fprintf(w, "duration: %s (warmup: %s, measured: %s)    inject: %s\n",
 		s.Duration, s.Warmup, s.Duration-s.Warmup, s.Inject)

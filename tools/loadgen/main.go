@@ -23,6 +23,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -366,8 +367,22 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		slog.Error("conn pool init", "error", perr)
 		return 1
 	}
+	// C3: per-run UUIDv7. Stamped into every publish/request as
+	// X-Loadgen-Run-ID so SUT-side traces/logs correlate; recorded as
+	// the loadgen_run_info gauge so Grafana template variables can
+	// select a run; logged so an operator can grep for it.
+	runID := idgen.GenerateUUIDv7()
+	runStart := time.Now()
+	metrics.RunInfo.WithLabelValues(
+		runID, p.Name, *scenario, strconv.FormatInt(runStart.Unix(), 10),
+	).Set(1)
+	slog.Info("run started",
+		"run_id", runID, "preset", p.Name, "scenario", *scenario,
+		"rate", *rate, "duration", duration.String())
+
 	publisher := newNatsCorePublisher(pool, injectMode, js)
-	requester := &natsRequester{pool: pool}
+	publisher.runID = runID
+	requester := &natsRequester{pool: pool, runID: runID}
 
 	// Ramp + rate flags are validated above (before any NATS connect).
 
@@ -577,6 +592,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 
 	summary := Summary{
+		RunID:             runID,
 		Preset:            p.Name,
 		Seed:              *seed,
 		Site:              cfg.SiteID,
@@ -632,10 +648,16 @@ func exitCodeFor(aborted bool, sent, totalErrs int) int {
 	return DetermineExitCode(sent, totalErrs)
 }
 
+// HeaderRunID is the NATS header key stamped on every publish/request
+// so SUT services can correlate their traces / logs / metrics back to
+// the loadgen run that drove them. C3 fix.
+const HeaderRunID = "X-Loadgen-Run-ID"
+
 type natsCorePublisher struct {
 	pool         *ConnPool // Phase 3 §3.6 — picks the data conn per subject's userID
 	useJetStream bool
 	js           jetstream.JetStream
+	runID        string // C3: stamped as an X-Loadgen-Run-ID header on every publish
 }
 
 // natsRequester adapts nc.RequestWithContext to the Requester interface
@@ -644,7 +666,8 @@ type natsCorePublisher struct {
 // When the pool's Size > 1, the request is routed to the data connection
 // hashed from the subject's user-account segment.
 type natsRequester struct {
-	pool *ConnPool
+	pool  *ConnPool
+	runID string // C3: stamped as an X-Loadgen-Run-ID header on every request
 }
 
 func (r *natsRequester) Request(ctx context.Context, subject string, data []byte, timeout time.Duration) ([]byte, error) {
@@ -654,11 +677,15 @@ func (r *natsRequester) Request(ctx context.Context, subject string, data []byte
 		defer cancel()
 	}
 	conn := r.pool.For(UserFromSubject(subject))
-	msg, err := conn.RequestWithContext(ctx, subject, data)
+	msg := &nats.Msg{Subject: subject, Data: data}
+	if r.runID != "" {
+		msg.Header = nats.Header{HeaderRunID: []string{r.runID}}
+	}
+	reply, err := conn.RequestMsgWithContext(ctx, msg)
 	if err != nil {
 		return nil, fmt.Errorf("nats request: %w", err)
 	}
-	return msg.Data, nil
+	return reply.Data, nil
 }
 
 func newNatsCorePublisher(pool *ConnPool, inject InjectMode, js jetstream.JetStream) *natsCorePublisher {
@@ -669,13 +696,21 @@ func (p *natsCorePublisher) Publish(ctx context.Context, subject string, data []
 	if p.useJetStream {
 		// JetStream publishes go through one writer; canonical-injection
 		// is a single-stream concern, not a per-user concern.
-		if _, err := p.js.Publish(ctx, subject, data); err != nil {
+		msg := &nats.Msg{Subject: subject, Data: data}
+		if p.runID != "" {
+			msg.Header = nats.Header{HeaderRunID: []string{p.runID}}
+		}
+		if _, err := p.js.PublishMsg(ctx, msg); err != nil {
 			return fmt.Errorf("jetstream publish: %w", err)
 		}
 		return nil
 	}
 	conn := p.pool.For(UserFromSubject(subject))
-	if err := conn.Publish(subject, data); err != nil {
+	msg := &nats.Msg{Subject: subject, Data: data}
+	if p.runID != "" {
+		msg.Header = nats.Header{HeaderRunID: []string{p.runID}}
+	}
+	if err := conn.PublishMsg(msg); err != nil {
 		return fmt.Errorf("core publish: %w", err)
 	}
 	return nil
