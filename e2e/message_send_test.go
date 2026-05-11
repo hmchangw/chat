@@ -245,8 +245,13 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	// R4.D: cross-site negative LoadHistory. The site-A-local message must NOT
 	// be retrievable via siteB's history-service. Catches "wrote to wrong
 	// site's Cassandra" or "history-service reading wrong keyspace" regressions
-	// that the positive-only assertion above would miss. Uses siteB's system-
-	// creds NATS connection to issue the MsgHistory request scoped to siteB.
+	// that the positive-only assertion above would miss.
+	//
+	// Reviewer fix: explicitly require either an error reply (history-service-b
+	// rejects the unknown room) OR a non-error reply that genuinely doesn't
+	// contain our siteA message. The prior version only ran the inner check
+	// when err == nil, so a non-nil err meant the test passed without actually
+	// exercising the negative-isolation guarantee.
 	siteBConn := stack.SiteB.SystemConn(t)
 	histReqB := loadHistoryRequest{Limit: 50}
 	var histRespB loadHistoryResponse
@@ -255,10 +260,15 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 		subject.MsgHistory(alice.Account, roomID, stack.SiteB.SiteID),
 		histReqB, 5*time.Second, &histRespB,
 	)
-	// history-service-b may legitimately return an error (room not subscribed
-	// on siteB) OR return an empty result; either way is correct. The
-	// regression we guard against is "returns alice's siteA message."
-	if histErr == nil {
+	if histErr != nil {
+		// Reject with structured ErrorResponse is the cleanest negative-
+		// isolation outcome on a siteB-unknown room. Confirm the shape.
+		er := asErrorReply(histErr)
+		require.NotNil(t, er,
+			"siteB history rejection must be a structured ErrorResponse; got %T (%v)", histErr, histErr)
+	} else {
+		// If siteB DID accept the query, the response MUST not contain
+		// alice's siteA-local message.
 		for _, hm := range histRespB.Messages {
 			assert.NotEqual(t, ids.MessageID, hm.MessageID,
 				"siteB history must NOT contain alice's siteA-local message %s", ids.MessageID)
