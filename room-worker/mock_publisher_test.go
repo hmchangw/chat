@@ -30,14 +30,18 @@ func (p *mockPublisher) publishCount() int {
 	return len(p.subjects)
 }
 
-// stubRoomKeyStore is a zero-config RoomKeyStore that returns a valid
-// version-0 key for any roomID. Used by tests that don't exercise key behavior
-// (production now requires Valkey via the VALKEY_ADDR=required gate, so the
-// Handler can no longer be constructed with a nil keyStore). Tests that DO
-// exercise key behavior should build their own MockRoomKeyStore with explicit
-// EXPECTations rather than using this stub.
+// stubRoomKeyStore is a zero-config RoomKeyStore for tests that don't exercise
+// key behavior (production now requires Valkey via the VALKEY_ADDR=required
+// gate, so the Handler can no longer be constructed with a nil keyStore).
+// Tests that DO exercise key behavior should build their own MockRoomKeyStore
+// with explicit EXPECTations rather than using this stub.
 type stubRoomKeyStore struct{}
 
+// Get returns a synthetic version-0 `roomkeystore.VersionedKeyPair` whose
+// `roomkeystore.RoomKeyPair` byte fields are placeholder fill (0x04, 0x05) —
+// they are NOT valid P-256 key material and MUST NOT be used by any test that
+// performs real crypto. Use a real `generateRoomKeyPair`/`roomcrypto`-based
+// keypair for those.
 func (stubRoomKeyStore) Get(_ context.Context, _ string) (*roomkeystore.VersionedKeyPair, error) {
 	return &roomkeystore.VersionedKeyPair{
 		Version: 0,

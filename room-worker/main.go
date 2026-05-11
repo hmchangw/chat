@@ -53,6 +53,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.ValkeyKeyGracePeriod <= 0 {
+		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
+			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
+		os.Exit(1)
+	}
+
 	ctx := context.Background()
 
 	tracerShutdown, err := otelutil.InitTracer(ctx, "room-worker")
@@ -89,11 +95,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if cfg.ValkeyKeyGracePeriod <= 0 {
-		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
-			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
-		os.Exit(1)
-	}
 	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
 		Addr:        cfg.ValkeyAddr,
 		Password:    cfg.ValkeyPassword,
@@ -170,6 +171,9 @@ func main() {
 
 	slog.Info("room-worker running", "site", cfg.SiteID)
 
+	// Shutdown ordering: drain inbound work first, then close client connections,
+	// THEN flush observability exporters. Reverse order drops traces/metrics
+	// emitted during NATS drain, mongo disconnect, and keyStore close.
 	hooks := []func(ctx context.Context) error{
 		func(ctx context.Context) error {
 			iter.Stop()
@@ -185,11 +189,11 @@ func main() {
 				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
 		},
-		func(ctx context.Context) error { return tracerShutdown(ctx) },
-		func(ctx context.Context) error { return meterShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { return keyStore.Close() },
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(ctx context.Context) error { return meterShutdown(ctx) },
 	}
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)

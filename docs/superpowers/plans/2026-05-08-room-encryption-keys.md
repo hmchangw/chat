@@ -707,6 +707,13 @@ git commit -m "feat(room-service): rotate room key on channel member removal"
 
 # PART 2 — `room-worker`
 
+> **Drift notice:** the shipped implementation makes `VALKEY_ADDR` a hard
+> startup requirement (`env:"VALKEY_ADDR,required"`); there is no optional
+> "if `cfg.ValkeyAddr != ""`" wiring. `roomkeystore.NewValkeyStore` and
+> `roomkeysender.NewSender(nc.NatsConn())` always run, and the process exits
+> if Valkey is unreachable. The Step 2 code snippet below predates that
+> change — treat it as historical context rather than literal guidance.
+
 ## Task 8: Add Valkey + sender wiring to `room-worker/main.go`
 
 **Files:**
@@ -1169,7 +1176,11 @@ git commit -m "feat(room-worker): fan out current key to new channel members"
 Append:
 
 ```go
-func TestProcessRemoveMember_PermanentErrorWhenVersionStale(t *testing.T) {
+func TestProcessRemoveMember_TransientErrorWhenVersionStale(t *testing.T) {
+	// Stale version means room-service rotated but the worker's local Valkey
+	// read hasn't caught up yet — this is a propagation race, not a malformed
+	// event. The handler must return a non-permanent error so JetStream NAKs
+	// and retries until the rotated version becomes visible.
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 	keyStore := NewMockRoomKeyStore(ctrl)
@@ -1181,7 +1192,7 @@ func TestProcessRemoveMember_PermanentErrorWhenVersionStale(t *testing.T) {
 	data, _ := json.Marshal(req)
 	err := h.processRemoveMember(natsutil.ContextWithRequestID(context.Background(), "req-1"), data)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errPermanent))
+	assert.False(t, errors.Is(err, errPermanent), "stale-version must be transient (NAK + retry), not permanent")
 }
 
 func TestProcessRemoveMember_FansOutNewKeyToSurvivors(t *testing.T) {
@@ -1229,13 +1240,15 @@ In `room-worker/handler.go` `processRemoveMember`, before the existing `Org`/`In
 		return newPermanent("remove-member only valid on channel rooms, got %s", room.Type)
 	}
 	// Version assertion: room-service rotated; worker must see the new version.
+	// Stale-version is a Valkey propagation race, not a malformed event — return
+	// a plain (transient) error so JetStream NAKs and retries.
 	if h.keyStore != nil {
 		pair, err := h.keyStore.Get(ctx, req.RoomID)
 		if err != nil {
 			return fmt.Errorf("get room key: %w", err)
 		}
 		if pair == nil || pair.Version < req.NewKeyVersion {
-			return newPermanent("stale key version: have=%v want>=%d", pair, req.NewKeyVersion)
+			return fmt.Errorf("stale key version: have=%v want>=%d", pair, req.NewKeyVersion)
 		}
 	}
 ```
@@ -1472,6 +1485,36 @@ git commit -m "feat(room-worker): add NatsHandleGetRoomKey RPC for cross-site re
 ---
 
 # PART 3 — `inbox-worker` + integration + docs
+
+> **Drift notice — read first.** Part 3 below was drafted around an
+> earlier design in which `inbox-worker` ran its own `Set`/`Rotate` on
+> local Valkey, owned a `roomkeysender.Sender`, and fanned `RoomKeyEvent`s
+> out to local users. The shipped implementation is materially different:
+>
+> - The sole user-event publisher is the **origin** `room-worker`. The
+>   NATS supercluster routes `chat.user.{account}.event.room.key` to
+>   home sites, so a remote `inbox-worker` does **not** need (and does
+>   not have) a `Sender`. `inbox-worker.NewHandler` takes
+>   `(store, siteID, keyStore, interSiteClient)` — no sender argument.
+> - The cross-site replication primitive is `SetWithVersion(roomID, pair,
+>   originVersion)`, not `Set`/`Rotate`. `inbox-worker` mirrors origin's
+>   exact version into local Valkey so the local `broadcast-worker`'s
+>   on-wire envelopes carry the version every client across every site
+>   already holds. Calling `Rotate` locally would diverge versions and
+>   break cross-site decryption.
+> - `VALKEY_ADDR` is required at startup (`env:"VALKEY_ADDR,required"`);
+>   `ROOM_KEY_RPC_TIMEOUT`, `ROOM_KEY_MAX_REDELIVER`, and
+>   `VALKEY_KEY_GRACE_PERIOD` are validated for `> 0` at startup too. There
+>   is no "optional Valkey, silent skip" mode.
+> - On `member_removed` with empty `Accounts`, `inbox-worker` still calls
+>   `fetchAndStoreKey` — the key rotated on origin even when no local sub
+>   was deleted.
+>
+> Treat the per-task body that follows as historical implementation notes
+> rather than literal guidance. The authoritative descriptions live in
+> [`docs/superpowers/specs/2026-05-08-room-encryption-keys-design.md`](../specs/2026-05-08-room-encryption-keys-design.md)
+> ("Architecture & Data Flow", "Fan-out ownership summary") and the
+> shipped code under `inbox-worker/`.
 
 ## Task 15: `inbox-worker` Valkey + sender + inter-site client wiring
 

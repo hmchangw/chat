@@ -206,6 +206,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.ValkeyKeyGracePeriod <= 0 {
+		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
+			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
+		os.Exit(1)
+	}
+	if cfg.RoomKeyMaxRedeliver <= 0 {
+		// A zero or negative cap would satisfy the >= check on the very first
+		// delivery and silently terminate every event before the handler runs.
+		slog.Error("ROOM_KEY_MAX_REDELIVER must be a positive integer",
+			"room_key_max_redeliver", cfg.RoomKeyMaxRedeliver)
+		os.Exit(1)
+	}
+	if cfg.RoomKeyRPCTimeout <= 0 {
+		// A zero or negative timeout makes every inter-site key RPC fail immediately.
+		slog.Error("ROOM_KEY_RPC_TIMEOUT must be a positive duration",
+			"room_key_rpc_timeout", cfg.RoomKeyRPCTimeout)
+		os.Exit(1)
+	}
+
 	ctx := context.Background()
 
 	tracerShutdown, err := otelutil.InitTracer(ctx, "inbox-worker")
@@ -263,18 +282,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if cfg.ValkeyKeyGracePeriod <= 0 {
-		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
-			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
-		os.Exit(1)
-	}
-	if cfg.RoomKeyMaxRedeliver <= 0 {
-		// A zero or negative cap would satisfy the >= check on the very first
-		// delivery and silently terminate every event before the handler runs.
-		slog.Error("ROOM_KEY_MAX_REDELIVER must be a positive integer",
-			"room_key_max_redeliver", cfg.RoomKeyMaxRedeliver)
-		os.Exit(1)
-	}
 	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
 		Addr: cfg.ValkeyAddr, Password: cfg.ValkeyPassword, GracePeriod: cfg.ValkeyKeyGracePeriod,
 	})
@@ -323,16 +330,19 @@ func main() {
 
 	slog.Info("inbox-worker started", "site", cfg.SiteID)
 
+	// Shutdown ordering: drain inbound work first, then close client connections,
+	// THEN flush observability exporters. Reverse order drops traces/metrics
+	// emitted during NATS drain, mongo disconnect, and keyStore close.
 	hooks := []func(ctx context.Context) error{
 		func(ctx context.Context) error {
 			cctx.Stop()
 			return nil
 		},
 		func(ctx context.Context) error { return nc.Drain() },
-		func(ctx context.Context) error { return tracerShutdown(ctx) },
-		func(ctx context.Context) error { return meterShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { return keyStore.Close() },
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(ctx context.Context) error { return meterShutdown(ctx) },
 	}
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)

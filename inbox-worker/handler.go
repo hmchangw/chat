@@ -170,11 +170,15 @@ func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEven
 	if err := json.Unmarshal(evt.Payload, &memberEvt); err != nil {
 		return fmt.Errorf("unmarshal member removed payload: %w", err)
 	}
-	if len(memberEvt.Accounts) == 0 {
-		return nil
-	}
-	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
-		return fmt.Errorf("delete subscriptions for room %s: %w", memberEvt.RoomID, err)
+	// Skip the Mongo delete when nothing to delete, but ALWAYS pull the rotated
+	// key from origin: the removal happened on the origin site even when no
+	// subscription on this site is affected, and the local broadcast-worker
+	// would otherwise keep encrypting under an older version than the survivors
+	// hold.
+	if len(memberEvt.Accounts) > 0 {
+		if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
+			return fmt.Errorf("delete subscriptions for room %s: %w", memberEvt.RoomID, err)
+		}
 	}
 	// Rotate local Valkey key so broadcast-worker on this site uses the new pair.
 	// Origin room-worker already published chat.user.<account>.event.room.key to

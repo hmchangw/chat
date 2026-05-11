@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -675,18 +674,23 @@ func setupValkeyStore(t *testing.T) roomkeystore.RoomKeyStore {
 	return ks
 }
 
-// startEmbeddedNATS starts an in-process NATS server and returns a connected client.
-// Using an embedded server avoids Docker for tests that only need request/reply.
-func startEmbeddedNATS(t *testing.T) *nats.Conn {
+// startNATSContainer starts the standard testcontainers-go NATS module and returns
+// a connected core-NATS client tied to the test's lifetime. Used by tests that
+// need a real broker for request/reply rather than JetStream (see setupNATS for
+// the JetStream-backed flavor). Per CLAUDE.md: integration tests use the
+// testcontainers official module, not an embedded server.
+func startNATSContainer(t *testing.T) *nats.Conn {
 	t.Helper()
-	opts := &natsserver.Options{Port: -1}
-	ns, err := natsserver.NewServer(opts)
-	require.NoError(t, err)
-	ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second), "nats server did not become ready")
-	t.Cleanup(ns.Shutdown)
+	ctx := context.Background()
 
-	nc, err := nats.Connect(ns.ClientURL())
+	c, err := natsmod.Run(ctx, testimages.NATS)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Terminate(ctx) })
+
+	url, err := c.ConnectionString(ctx)
+	require.NoError(t, err)
+
+	nc, err := nats.Connect(url)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 	return nc
@@ -721,8 +725,8 @@ func TestIntegration_CrossSiteKeyReplication(t *testing.T) {
 	// Destination Valkey — this is what we assert on.
 	destKS := setupValkeyStore(t)
 
-	// Embedded NATS for both the origin RPC handler and the keySender fan-out.
-	nc := startEmbeddedNATS(t)
+	// Containerized NATS for both the origin RPC handler and the keySender fan-out.
+	nc := startNATSContainer(t)
 
 	// Seed a keypair that the "origin" will return via RPC.
 	originPub := []byte("origin-public-key-bytes")
