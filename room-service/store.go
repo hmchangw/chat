@@ -101,6 +101,10 @@ type RoomStore interface {
 // Only the methods room-service needs are declared here.
 type RoomKeyStore interface {
 	GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error)
+	// Set writes a fresh keypair as the room's current key (version 0).
+	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
+	// Rotate increments version and demotes current key to :prev with grace TTL.
+	Rotate(ctx context.Context, roomID string, newPair roomkeystore.RoomKeyPair) (int, error)
 }
 
 // MessageReader looks up a message by ID. found=false with err=nil means no row matched.
