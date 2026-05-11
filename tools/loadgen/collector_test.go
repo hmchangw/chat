@@ -2,6 +2,7 @@ package main
 
 import (
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -269,6 +270,101 @@ func TestCollector_AttachWindow_FeedsRecordRequest(t *testing.T) {
 		"AttachWindow must wire RecordRequest into the window")
 	rate := w.ErrorRate(t0.Add(1*time.Second), 10*time.Second)
 	assert.InDelta(t, 0.5, rate, 0.001, "one of two errored")
+}
+
+// S1: Collector's per-(scenario,kind) sample storage is now sharded
+// behind a per-key mutex so concurrent RecordRequest calls for
+// different keys don't serialize on a single Collector-wide mu. The
+// API contract is unchanged: RequestStats sees every sample, in
+// deterministic (scenario, kind) order, regardless of which goroutine
+// recorded it.
+func TestCollector_RecordRequest_ConcurrentDifferentKeys(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	t0 := time.Unix(100, 0)
+
+	const N = 100
+	keys := []struct{ scenario, kind string }{
+		{"history", "load_history"},
+		{"history", "get_message_by_id"},
+		{"search", "search_messages"},
+		{"room", "rooms_list"},
+	}
+	var wg sync.WaitGroup
+	for _, k := range keys {
+		wg.Add(1)
+		go func(scenario, kind string) {
+			defer wg.Done()
+			for i := 0; i < N; i++ {
+				c.RecordRequest(scenario, kind, t0, time.Duration(i)*time.Millisecond, i%10 == 0)
+			}
+		}(k.scenario, k.kind)
+	}
+	wg.Wait()
+
+	stats := c.RequestStats()
+	require.Len(t, stats, len(keys))
+	for _, s := range stats {
+		assert.Equal(t, N, s.Count, "all samples for key %s/%s must land in the shard", s.Scenario, s.Kind)
+		assert.Equal(t, N/10, s.Errors, "every 10th sample errored, so 10 errors per key")
+	}
+}
+
+// S1: concurrent recorders for the SAME key still serialize on the
+// per-shard mutex (correctness), but a stress run must not race or
+// drop samples. The -race build flag catches races; this test
+// asserts the sample count under high contention.
+func TestCollector_RecordRequest_ConcurrentSameKey(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	t0 := time.Unix(100, 0)
+
+	const goroutines = 16
+	const perGoroutine = 250
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				c.RecordRequest("history", "load_history", t0, time.Duration(i)*time.Microsecond, false)
+			}
+		}()
+	}
+	wg.Wait()
+
+	stats := c.RequestStats()
+	require.Len(t, stats, 1)
+	assert.Equal(t, goroutines*perGoroutine, stats[0].Count,
+		"per-shard mutex must serialize same-key writes without dropping samples")
+}
+
+// S1: DiscardBefore must filter across ALL shards. A bug where the
+// shard map iteration misses a key would surface as a phantom sample
+// in the warmup-discarded window.
+func TestCollector_DiscardBefore_AcrossShards(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	cutoff := time.Unix(200, 0)
+	beforeCutoff := time.Unix(100, 0)
+	afterCutoff := time.Unix(300, 0)
+
+	// One pre-cutoff and one post-cutoff sample per key, across 3 keys.
+	for _, k := range []struct{ scenario, kind string }{
+		{"history", "load_history"},
+		{"search", "search_messages"},
+		{"room", "rooms_list"},
+	} {
+		c.RecordRequest(k.scenario, k.kind, beforeCutoff, 1*time.Millisecond, false)
+		c.RecordRequest(k.scenario, k.kind, afterCutoff, 2*time.Millisecond, false)
+	}
+	c.DiscardBefore(cutoff)
+
+	stats := c.RequestStats()
+	require.Len(t, stats, 3)
+	for _, s := range stats {
+		assert.Equal(t, 1, s.Count, "post-cutoff sample only for %s/%s", s.Scenario, s.Kind)
+	}
 }
 
 func TestCollector_OutstandingCorrelations(t *testing.T) {

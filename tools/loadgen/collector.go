@@ -26,16 +26,32 @@ type requestSample struct {
 // requestKey identifies one (scenario, kind) cell.
 type requestKey struct{ scenario, kind string }
 
+// requestShard owns the samples for one (scenario, kind) cell. S1:
+// each shard has its own mutex so RecordRequest for different keys
+// runs without serializing on a single Collector-wide lock. The
+// shard map itself is protected by Collector.requestsMu (RWMutex);
+// hot-path readers/writers only take the inner shard.mu after a
+// brief RLock on the map.
+type requestShard struct {
+	mu      sync.Mutex
+	samples []requestSample
+}
+
 // Collector correlates publishes with replies (E1) and broadcasts (E2).
 type Collector struct {
-	m              *Metrics
-	preset         string
-	mu             sync.Mutex
-	byReqID        map[string]publishEntry
-	byMsgID        map[string]publishEntry
-	e1             []sample
-	e2             []sample
-	requests       map[requestKey][]requestSample
+	m       *Metrics
+	preset  string
+	mu      sync.Mutex
+	byReqID map[string]publishEntry
+	byMsgID map[string]publishEntry
+	e1      []sample
+	e2      []sample
+	// S1: requests is sharded per (scenario, kind). requestsMu protects
+	// the map structure (insertion of new shards on first write); each
+	// shard owns its own mu for the samples slice. Reads use RLock so
+	// concurrent RecordRequest for distinct keys don't contend.
+	requestsMu     sync.RWMutex
+	requests       map[requestKey]*requestShard
 	seenMessageIDs []string       // Phase 3 §3.1: append-only log; never deleted
 	window         *LatencyWindow // Phase 3 §3.5: sliding window for abort watcher
 }
@@ -56,21 +72,51 @@ func NewCollector(m *Metrics, preset string) *Collector {
 		m: m, preset: preset,
 		byReqID:  make(map[string]publishEntry),
 		byMsgID:  make(map[string]publishEntry),
-		requests: make(map[requestKey][]requestSample),
+		requests: make(map[requestKey]*requestShard),
 	}
+}
+
+// getOrCreateShard returns the shard for k, creating it on first
+// write. Fast path: RLock + map lookup. Slow path (shard missing):
+// promote to Lock, double-check, create.
+func (c *Collector) getOrCreateShard(k requestKey) *requestShard {
+	c.requestsMu.RLock()
+	sh, ok := c.requests[k]
+	c.requestsMu.RUnlock()
+	if ok {
+		return sh
+	}
+	c.requestsMu.Lock()
+	defer c.requestsMu.Unlock()
+	if sh, ok = c.requests[k]; ok {
+		return sh
+	}
+	sh = &requestShard{}
+	c.requests[k] = sh
+	return sh
 }
 
 // RecordRequest captures one read-scenario request observation under
 // (scenario, kind). errored is true when the underlying NATS request
 // returned a non-nil error or the reply payload encoded a server error.
+//
+// S1: this is the hot path. The per-shard mutex isolates one
+// (scenario, kind) cell from another, so two RecordRequest calls for
+// different keys never contend. The window-attach read takes the
+// Collector-wide mu briefly (atomic enough; AttachWindow is called
+// once at startup and never replaces, so the read is effectively
+// stable).
 func (c *Collector) RecordRequest(scenario, kind string, publishedAt time.Time, latency time.Duration, errored bool) {
-	c.mu.Lock()
-	k := requestKey{scenario: scenario, kind: kind}
-	c.requests[k] = append(c.requests[k], requestSample{
+	sh := c.getOrCreateShard(requestKey{scenario: scenario, kind: kind})
+	sh.mu.Lock()
+	sh.samples = append(sh.samples, requestSample{
 		publishedAt: publishedAt,
 		latency:     latency,
 		errored:     errored,
 	})
+	sh.mu.Unlock()
+
+	c.mu.Lock()
 	w := c.window
 	c.mu.Unlock()
 	if w != nil {
@@ -80,26 +126,42 @@ func (c *Collector) RecordRequest(scenario, kind string, publishedAt time.Time, 
 
 // RequestStats returns aggregated per-(scenario, kind) percentiles + counts.
 // Result is sorted by (scenario, kind) for deterministic output.
+//
+// S1: snapshot path takes the map RLock briefly, materializes the
+// shard list, then drops the RLock and locks each shard.mu in turn.
+// New shards appearing AFTER the snapshot don't show up in this
+// result — acceptable for a final-report call (caller is post-run).
 func (c *Collector) RequestStats() []RequestStat {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]RequestStat, 0, len(c.requests))
-	for k, samples := range c.requests {
-		if len(samples) == 0 {
+	c.requestsMu.RLock()
+	keys := make([]requestKey, 0, len(c.requests))
+	shards := make([]*requestShard, 0, len(c.requests))
+	for k, sh := range c.requests {
+		keys = append(keys, k)
+		shards = append(shards, sh)
+	}
+	c.requestsMu.RUnlock()
+
+	out := make([]RequestStat, 0, len(keys))
+	for i, k := range keys {
+		sh := shards[i]
+		sh.mu.Lock()
+		if len(sh.samples) == 0 {
+			sh.mu.Unlock()
 			continue
 		}
-		latencies := make([]time.Duration, len(samples))
+		latencies := make([]time.Duration, len(sh.samples))
 		errors := 0
-		for i := range samples {
-			latencies[i] = samples[i].latency
-			if samples[i].errored {
+		for j := range sh.samples {
+			latencies[j] = sh.samples[j].latency
+			if sh.samples[j].errored {
 				errors++
 			}
 		}
+		sh.mu.Unlock()
 		out = append(out, RequestStat{
 			Scenario: k.scenario,
 			Kind:     k.kind,
-			Count:    len(samples),
+			Count:    len(latencies),
 			Errors:   errors,
 			Latency:  ComputePercentiles(latencies),
 		})
@@ -205,13 +267,29 @@ func (c *Collector) RecordBroadcast(messageID string, at time.Time) {
 }
 
 // DiscardBefore drops any samples whose publish time is before cutoff (warmup).
+//
+// S1: iterates the shard map under RLock (no shard creation happens
+// in DiscardBefore), then locks each shard.mu individually to filter
+// its samples slice. The map RLock and the e1/e2 mu are held
+// briefly; the bulk of the work is inside per-shard critical
+// sections so a long DiscardBefore on one key doesn't block writes
+// to a different key.
 func (c *Collector) DiscardBefore(cutoff time.Time) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.e1 = filterAtOrAfter(c.e1, cutoff)
 	c.e2 = filterAtOrAfter(c.e2, cutoff)
-	for k, samples := range c.requests {
-		c.requests[k] = filterRequestsAtOrAfter(samples, cutoff)
+	c.mu.Unlock()
+
+	c.requestsMu.RLock()
+	shards := make([]*requestShard, 0, len(c.requests))
+	for _, sh := range c.requests {
+		shards = append(shards, sh)
+	}
+	c.requestsMu.RUnlock()
+	for _, sh := range shards {
+		sh.mu.Lock()
+		sh.samples = filterRequestsAtOrAfter(sh.samples, cutoff)
+		sh.mu.Unlock()
 	}
 }
 
@@ -290,29 +368,40 @@ type RequestSampleRow struct {
 // RequestSampleRows returns one row per recorded request, suitable for CSV
 // export. Order is per-bucket insertion order across deterministic
 // scenario+kind iteration.
+//
+// S1: snapshot path. Map RLock to materialize (key,shard) pairs,
+// then lock each shard briefly to copy its samples. Concurrent
+// writes to a different shard proceed unblocked.
 func (c *Collector) RequestSampleRows() []RequestSampleRow {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	keys := make([]requestKey, 0, len(c.requests))
-	for k := range c.requests {
-		keys = append(keys, k)
+	c.requestsMu.RLock()
+	type keyedShard struct {
+		key   requestKey
+		shard *requestShard
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].scenario != keys[j].scenario {
-			return keys[i].scenario < keys[j].scenario
+	pairs := make([]keyedShard, 0, len(c.requests))
+	for k, sh := range c.requests {
+		pairs = append(pairs, keyedShard{k, sh})
+	}
+	c.requestsMu.RUnlock()
+
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].key.scenario != pairs[j].key.scenario {
+			return pairs[i].key.scenario < pairs[j].key.scenario
 		}
-		return keys[i].kind < keys[j].kind
+		return pairs[i].key.kind < pairs[j].key.kind
 	})
 	var rows []RequestSampleRow
-	for _, k := range keys {
-		for _, s := range c.requests[k] {
+	for _, p := range pairs {
+		p.shard.mu.Lock()
+		for _, s := range p.shard.samples {
 			rows = append(rows, RequestSampleRow{
-				Scenario: k.scenario,
-				Kind:     k.kind,
+				Scenario: p.key.scenario,
+				Kind:     p.key.kind,
 				Latency:  s.latency,
 				Errored:  s.errored,
 			})
 		}
+		p.shard.mu.Unlock()
 	}
 	return rows
 }
