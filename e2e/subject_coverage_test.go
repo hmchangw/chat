@@ -108,6 +108,7 @@ func setupRoomWithOneMessage(t *testing.T) (roomID, msgID string) {
 // TestSubject_MsgGet exercises subject.MsgGet -> history-service.
 // Previously zero coverage of the get-by-id path.
 func TestSubject_MsgGet(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")
@@ -130,6 +131,7 @@ func TestSubject_MsgGet(t *testing.T) {
 // previous version of this test used After=0 with one message, which
 // would pass even if the handler ignored the `After` filter entirely.
 func TestSubject_MsgNext(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")
@@ -203,6 +205,7 @@ func TestSubject_MsgNext(t *testing.T) {
 // central message ID; with one message in the room the central message
 // itself is the only result.
 func TestSubject_MsgSurrounding(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")
@@ -228,6 +231,7 @@ func TestSubject_MsgSurrounding(t *testing.T) {
 // TestSubject_RoomsList exercises subject.RoomsList -> room-service. After
 // creating a room, alice's room list must include it.
 func TestSubject_RoomsList(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")
@@ -253,6 +257,7 @@ func TestSubject_RoomsList(t *testing.T) {
 // TestSubject_RoomsGet exercises subject.RoomsGet -> room-service. The
 // roomID is part of the subject; reply carries the Room struct.
 func TestSubject_RoomsGet(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")
@@ -275,6 +280,7 @@ func TestSubject_RoomsGet(t *testing.T) {
 // this test is to confirm the handler is wired and returns a structured
 // ListOrgMembersResponse, not the specific membership content.
 func TestSubject_OrgMembers(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")
@@ -303,6 +309,7 @@ func TestSubject_OrgMembers(t *testing.T) {
 // Here we just confirm the handler is wired; result-correctness is out of
 // scope until the deeper auth unwind from item 1.
 func TestSubject_SearchRooms(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")

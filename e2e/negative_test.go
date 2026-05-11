@@ -25,6 +25,7 @@ import (
 // rather than silently truncating or accepting it. Catches: gatekeeper's
 // size check regressing OR NATS max-payload misconfig.
 func TestNegative_OversizedPayload(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
@@ -77,6 +78,7 @@ func TestNegative_OversizedPayload(t *testing.T) {
 // handleCreateRoomChannel: errEmptyCreateRequest). So we use the "removed
 // member" angle instead of "third user."
 func TestNegative_NonMemberSend(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
@@ -264,6 +266,7 @@ func TestNegative_DuplicateMessageID(t *testing.T) {
 // Strong end-to-end coverage of expired-token rejection requires a small
 // helper to mint short-TTL tokens via Keycloak; deferred.
 func TestNegative_BadCredsAccount(t *testing.T) {
+	t.Parallel()
 	site := stack.SiteA
 	// nats.UserCredentials reads the file at connect time. A creds file
 	// containing junk produces a different failure mode than a missing
@@ -279,6 +282,7 @@ func TestNegative_BadCredsAccount(t *testing.T) {
 // that would let any account read any room. Uses bob as the non-member by
 // creating an alice-only solo channel.
 func TestNegative_HistoryNonMember(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 

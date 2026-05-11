@@ -106,6 +106,7 @@ func setupSingleSiteRoomWithMessage(t *testing.T) (roomID, msgID, body string, a
 // previously zero e2e coverage. alice sends, alice edits, LoadHistory
 // returns the edited content.
 func TestMessage_Edit(t *testing.T) {
+	t.Parallel()
 	site := stack.SiteA
 	roomID, msgID, _, alice, _ := setupSingleSiteRoomWithMessage(t)
 
@@ -145,6 +146,7 @@ func TestMessage_Edit(t *testing.T) {
 // alice sends, alice deletes, the message is filtered from subsequent
 // LoadHistory responses (Cassandra soft-delete on the message row).
 func TestMessage_Delete(t *testing.T) {
+	t.Parallel()
 	site := stack.SiteA
 	roomID, msgID, _, alice, _ := setupSingleSiteRoomWithMessage(t)
 
