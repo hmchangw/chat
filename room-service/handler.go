@@ -15,12 +15,14 @@ import (
 	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeymetrics"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -343,6 +345,20 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 		)
 	}
 
+	// Generate and store room key BEFORE canonical event so worker's Get gate succeeds.
+	// nil guard for test fixtures only; main.go requires VALKEY_ADDR (keyStore always set in production).
+	if h.keyStore != nil {
+		pair, err := generateRoomKeyPair()
+		if err != nil {
+			return nil, fmt.Errorf("generate room key: %w", err)
+		}
+		if _, err := h.keyStore.Set(ctx, req.RoomID, pair); err != nil {
+			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
+			return nil, fmt.Errorf("store room key: %w", err)
+		}
+		roomkeymetrics.KeyGenerated.Add(ctx, 1)
+	}
+
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal canonical event: %w", err)
@@ -459,11 +475,23 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	req.RoomID = roomID
 	req.Requester = requesterAccount
 
+	// Channel-only: DM/botDM removals are not supported.
+	room, err := h.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("get room: %w", err)
+	}
+	if room.Type != model.RoomTypeChannel {
+		return nil, fmt.Errorf("remove-member only supported on channel rooms, got %s", room.Type)
+	}
+	// Carry room type to room-worker to avoid a redundant GetRoom round-trip there.
+	req.RoomType = room.Type
+
 	// Exactly one of Account or OrgID must be set.
 	if (req.Account == "") == (req.OrgID == "") {
 		return nil, fmt.Errorf("exactly one of account or orgId must be set")
 	}
 
+	var targetIsDualMembership bool
 	if req.Account != "" {
 		// Individual removal: cheapest-first validation (target → requester → counts).
 		target, err := h.store.GetSubscriptionWithMembership(ctx, roomID, req.Account)
@@ -492,7 +520,9 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		if hasRole(target.Subscription.Roles, model.RoleOwner) && counts.OwnerCount <= 1 {
 			return nil, fmt.Errorf("last owner cannot leave the room")
 		}
+		targetIsDualMembership = target.HasIndividualMembership && target.HasOrgMembership
 	} else {
+		// Org removes rotate unconditionally; dual-membership users are filtered in room-worker after the rotation lands.
 		// Owner-removes-org: only the requester's owner role matters here; org members resolved downstream.
 		sub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
 		if err != nil {
@@ -506,8 +536,35 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	// Stable seed for room-worker's deterministic system-message IDs across JetStream redeliveries.
 	req.Timestamp = time.Now().UTC().UnixMilli()
 
+	// Rotate before publish so broadcast-worker encrypts under the new key immediately.
+	// Skip rotation when target is dual-membership: no actual removal happens in that case.
+	// nil guard for test fixtures only; main.go requires VALKEY_ADDR (keyStore always set in production).
+	if h.keyStore != nil && !targetIsDualMembership {
+		pair, err := generateRoomKeyPair()
+		if err != nil {
+			return nil, fmt.Errorf("generate new room key: %w", err)
+		}
+		newVer, err := h.keyStore.Rotate(ctx, req.RoomID, pair)
+		if err != nil {
+			if errors.Is(err, roomkeystore.ErrNoCurrentKey) {
+				// Pre-existing un-keyed room: fall back to Set (version 0).
+				if _, setErr := h.keyStore.Set(ctx, req.RoomID, pair); setErr != nil {
+					roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
+					return nil, fmt.Errorf("store room key (fallback): %w", setErr)
+				}
+				newVer = 0
+				roomkeymetrics.KeyRotated.Add(ctx, 1)
+			} else {
+				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
+				return nil, fmt.Errorf("rotate room key: %w", err)
+			}
+		} else {
+			roomkeymetrics.KeyRotated.Add(ctx, 1)
+		}
+		req.NewKeyVersion = newVer
+	}
+
 	// Publish to ROOMS stream for room-worker processing.
-	var err error
 	data, err = json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal remove member request: %w", err)
