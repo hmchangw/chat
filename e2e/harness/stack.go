@@ -15,6 +15,13 @@ import (
 	tcompose "github.com/testcontainers/testcontainers-go/modules/compose"
 )
 
+// ErrServiceContainerUnavailable is returned by Stack.ServiceContainer when
+// the stack was reused via E2E_REUSE_STACK=1 (no compose handle owned).
+// Tests that need lifecycle control over individual services (e.g. the
+// federation catch-up test that Stop/Starts inbox-worker-b) check for this
+// via errors.Is and t.Skip when present.
+var ErrServiceContainerUnavailable = errors.New("ServiceContainer unavailable: stack reused via E2E_REUSE_STACK=1")
+
 // Stack holds the running e2e topology: the compose project plus per-site
 // endpoint URLs the test code can use to talk to NATS, Mongo, Cassandra,
 // Elasticsearch, Valkey, Keycloak, and auth-service over the host network.
@@ -117,7 +124,7 @@ func (s *Stack) Stop(ctx context.Context) error {
 // container management isn't available. Tests gate on a non-nil return.
 func (s *Stack) ServiceContainer(ctx context.Context, name string) (testcontainers.Container, error) {
 	if s.compose == nil {
-		return nil, fmt.Errorf("stack reused (E2E_REUSE_STACK=1); ServiceContainer unavailable")
+		return nil, ErrServiceContainerUnavailable
 	}
 	return s.compose.ServiceContainer(ctx, name)
 }

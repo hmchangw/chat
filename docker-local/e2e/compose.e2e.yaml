@@ -177,7 +177,16 @@ services:
     command:
       - |
         set -e
-        curl -fsS -X PUT http://es-a:9200/_cluster/settings -H 'Content-Type: application/json' -d '{"persistent":{"cluster.routing.allocation.disk.threshold_enabled":false}}'
+        # Retry both PUTs because ES can be `yellow` (healthcheck-passing) for
+        # a few seconds before the master is ready to accept cluster-settings
+        # writes (ops reviewer finding). 15 * 2s = 30s budget.
+        for i in $$(seq 1 15); do
+          curl -fsS -X PUT http://es-a:9200/_cluster/settings \
+            -H 'Content-Type: application/json' \
+            -d '{"persistent":{"cluster.routing.allocation.disk.threshold_enabled":false}}' \
+            && break
+          sleep 2
+        done
         curl -fsS -X PUT http://es-a:9200/_index_template/messages-e2e \
           -H 'Content-Type: application/json' \
           -d '{
@@ -488,7 +497,6 @@ services:
       MSG_INDEX_PREFIX: messages-sitea-v1
       SPOTLIGHT_INDEX: spotlight-sitea-v1-chat
       USER_ROOM_INDEX: user-room-sitea
-      SEARCH_USER_ROOM_INDEX: user-room-sitea
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
     volumes:
@@ -612,7 +620,16 @@ services:
     command:
       - |
         set -e
-        curl -fsS -X PUT http://es-b:9200/_cluster/settings -H 'Content-Type: application/json' -d '{"persistent":{"cluster.routing.allocation.disk.threshold_enabled":false}}'
+        # Retry both PUTs because ES can be `yellow` (healthcheck-passing) for
+        # a few seconds before the master is ready to accept cluster-settings
+        # writes (ops reviewer finding). 15 * 2s = 30s budget.
+        for i in $$(seq 1 15); do
+          curl -fsS -X PUT http://es-b:9200/_cluster/settings \
+            -H 'Content-Type: application/json' \
+            -d '{"persistent":{"cluster.routing.allocation.disk.threshold_enabled":false}}' \
+            && break
+          sleep 2
+        done
         curl -fsS -X PUT http://es-b:9200/_index_template/messages-e2e \
           -H 'Content-Type: application/json' \
           -d '{
@@ -902,7 +919,6 @@ services:
       MSG_INDEX_PREFIX: messages-siteb-v1
       SPOTLIGHT_INDEX: spotlight-siteb-v1-chat
       USER_ROOM_INDEX: user-room-siteb
-      SEARCH_USER_ROOM_INDEX: user-room-siteb
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
     volumes:
