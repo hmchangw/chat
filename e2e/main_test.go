@@ -12,9 +12,6 @@ import (
 	"github.com/hmchangw/chat/e2e/harness"
 )
 
-// stack is the package-level singleton. Tests reach it via Stack(t).
-var stack *harness.Stack
-
 func TestMain(m *testing.M) {
 	os.Exit(runTestMain(m))
 }
@@ -45,7 +42,3 @@ func runTestMain(m *testing.M) int {
 	}
 	return code
 }
-
-// Stack returns the running stack handle. Test files call this to reach
-// per-site clients via stack.SiteA / stack.SiteB.
-func Stack() *harness.Stack { return stack }

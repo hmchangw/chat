@@ -1,0 +1,276 @@
+//go:build e2e
+
+package scenarios
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/e2e"
+	"github.com/hmchangw/chat/e2e/harness"
+	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/model/cassandra"
+	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
+)
+
+// loadHistoryRequest mirrors history-service/internal/models.LoadHistoryRequest.
+// Defined locally because that package is internal and not importable from
+// e2e/. Mirrors only the JSON-serialized fields, not Go-side types.
+type loadHistoryRequest struct {
+	Before *int64 `json:"before,omitempty"`
+	Limit  int    `json:"limit"`
+}
+
+// loadHistoryResponse mirrors history-service/internal/models.LoadHistoryResponse.
+// pkg/model/cassandra.Message is the concrete element type (public).
+type loadHistoryResponse struct {
+	Messages          []cassandra.Message `json:"messages"`
+	MinUserLastSeenAt *int64              `json:"minUserLastSeenAt,omitempty"`
+}
+
+// TestMessage_SendAndBroadcast_SingleSite walks the full single-site channel
+// send path:
+//
+//	auth alice -> create channel room -> server invites bob -> bob auths ->
+//	bob subscribes to chat.room.{roomID}.event -> alice sends message with
+//	@bob mention -> bob receives broadcast -> notification fires for bob ->
+//	history-service.LoadHistory returns the message with sender + mention.
+//
+// Per amendment R1 10.D: uses awaitCanonicalAcked between send and history
+// to close the message-worker -> Cassandra write race.
+//
+// Per amendment R2.C item 2: asserts m.MessageID + m.Sender.Account +
+// m.CreatedAt.IsZero on the cassandra.Message field shape (which differs
+// from pkg/model.Message's UserAccount / ID / etc -- LoadHistoryResponse
+// carries cassandra.Message via history-service/internal/models).
+//
+// Per amendment R2.C item 3 / R3.A: notification assertion reads
+// notif.Message.ID (not notif.MessageID -- the top-level field doesn't
+// exist) and notif.Message.Mentions for the @bob mention check.
+func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
+	ctx := t.Context()
+	site := e2e.Stack().SiteA
+
+	// Pre-conditions: workers must have subscribed to their durables before
+	// we publish. message-worker on MESSAGES_CANONICAL is the key one.
+	js := site.JetStream(t)
+	canonicalStream := stream.MessagesCanonical(site.SiteID).Name
+	awaitDurableReady(t, ctx, js, canonicalStream, "message-worker")
+
+	alice := site.Authenticate(t, ctx, "alice")
+	bob := site.Authenticate(t, ctx, "bob")
+
+	ids := harness.NewTestIDs(t)
+
+	// 1. alice creates a channel room with bob as the initial member. Non-
+	// empty Name + at least one user is sufficient to trigger channel-mode
+	// per room-service/helper.go:determineRoomType. Server assigns the
+	// roomID and returns it on the sync reply (R1 10.E -- harness doesn't
+	// pre-mint).
+	requestID := idgen.GenerateRequestID()
+	createReq := model.CreateRoomRequest{
+		Name:  "e2e-" + t.Name(),
+		Users: []string{bob.Account},
+	}
+	var createReply model.CreateRoomReply
+	require.NoError(t, requestReply(
+		alice.Conn(),
+		subject.RoomCreate(alice.Account, site.SiteID),
+		createReq, 5*time.Second, &createReply,
+	), "request_id=%s", requestID)
+	roomID := createReply.RoomID
+	require.NotEmpty(t, roomID, "server-assigned room ID must be non-empty")
+	t.Logf("created channel roomID=%s", roomID)
+
+	// 2. bob subscribes to the channel's room-event subject BEFORE alice
+	// sends. subject.RoomEvent(roomID) is the specific subject for this
+	// room; the wildcard RoomEventWildcard() (no args) is for cross-room
+	// observers. Per-room subscribe is more discriminating.
+	bobSub, err := bob.Conn().SubscribeSync(subject.RoomEvent(roomID))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = bobSub.Unsubscribe() })
+
+	// 2b. bob also subscribes to notifications BEFORE the send.
+	notifSub, err := bob.Conn().SubscribeSync(subject.Notification(bob.Account))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = notifSub.Unsubscribe() })
+
+	// 3. Snapshot the canonical stream's pre-send sequence so we can
+	// awaitCanonicalAcked after publish (R1 10.D).
+	preSendInfo, err := js.Stream(ctx, canonicalStream)
+	require.NoError(t, err)
+	preSendSeq := preSendInfo.CachedInfo().State.LastSeq
+
+	// 4. alice sends a message tagging bob. SendMessageRequest.RequestID
+	// is required by message-gatekeeper; idgen.GenerateRequestID returns
+	// a UUIDv7 in hyphenated form.
+	msgRequestID := idgen.GenerateRequestID()
+	body := "hello @bob, ping?"
+	sendReq := model.SendMessageRequest{
+		ID:        ids.MessageID,
+		Content:   body,
+		RequestID: msgRequestID,
+	}
+	require.NoError(t, sendAndAwaitReply(
+		t,
+		alice.Conn(),
+		alice.Account,
+		msgRequestID,
+		// subject.MsgSend(account, roomID, siteID) is the user-facing send subj.
+		// message-gatekeeper consumes it via the MESSAGES stream.
+		subject.MsgSend(alice.Account, roomID, site.SiteID),
+		sendReq, 10*time.Second,
+	))
+
+	// 5. bob's per-room broadcast subscription receives the new_message event.
+	msg := awaitMessage(t, bobSub, 10*time.Second)
+	var roomEvent model.RoomEvent
+	require.NoError(t, json.Unmarshal(msg.Data, &roomEvent))
+	assert.Equal(t, model.RoomEventNewMessage, roomEvent.Type)
+	assert.Equal(t, roomID, roomEvent.RoomID)
+	require.NotNil(t, roomEvent.Message, "channel new_message must carry a Message")
+	assert.Equal(t, ids.MessageID, roomEvent.Message.ID)
+	assert.Equal(t, body, roomEvent.Message.Content)
+	assert.Equal(t, alice.Account, roomEvent.Message.UserAccount,
+		"broadcast carries pkg/model.Message (with UserAccount field) inside RoomEvent")
+
+	// 6. notification-worker fires a notification to bob with the parsed
+	// mention attached (per amendment R3.A -- field path is .Message.ID
+	// and .Message.Mentions, not top-level).
+	notifMsg := awaitMessage(t, notifSub, 5*time.Second)
+	var notif model.NotificationEvent
+	require.NoError(t, json.Unmarshal(notifMsg.Data, &notif))
+	assert.Equal(t, "new_message", notif.Type)
+	assert.Equal(t, roomID, notif.RoomID)
+	assert.Equal(t, ids.MessageID, notif.Message.ID,
+		".Message.ID (not .MessageID) per R3.A: NotificationEvent has no top-level MessageID")
+	if assert.NotEmpty(t, notif.Message.Mentions,
+		"mention parsing must resolve @bob -- if empty, mention-resolution path is broken") {
+		var mentionAccounts []string
+		for _, p := range notif.Message.Mentions {
+			mentionAccounts = append(mentionAccounts, p.Account)
+		}
+		assert.Contains(t, mentionAccounts, bob.Account)
+	}
+
+	// 7. Wait for message-worker to ack the canonical event before reading
+	// history; otherwise LoadHistory races against the Cassandra write.
+	awaitCanonicalAcked(t, ctx, js, canonicalStream, "message-worker", preSendSeq+1)
+
+	// 8. history-service.LoadHistory returns the message. RoomID is in the
+	// subject; request body carries Before/Limit.
+	histReq := loadHistoryRequest{Limit: 50}
+	var histResp loadHistoryResponse
+	require.NoError(t, requestReply(
+		alice.Conn(),
+		subject.MsgHistory(alice.Account, roomID, site.SiteID),
+		histReq, 5*time.Second, &histResp,
+	))
+	require.Len(t, histResp.Messages, 1, "exactly one message visible in history")
+	m := histResp.Messages[0]
+	// cassandra.Message field shape: MessageID (not ID), Sender Participant
+	// (not UserAccount), Msg (not Content).
+	assert.Equal(t, ids.MessageID, m.MessageID)
+	assert.Equal(t, alice.Account, m.Sender.Account)
+	assert.Equal(t, body, m.Msg)
+	assert.False(t, m.CreatedAt.IsZero(), "history record must have CreatedAt set")
+	assert.Equal(t, roomID, m.RoomID,
+		"site is implicit via the subject + history-service keyspace; "+
+			"cassandra.Message intentionally has no SiteID field (R3.A finding)")
+}
+
+// TestMessage_SendAndBroadcast_DM walks the DM variant of the send path.
+// Per amendment R2.C item 1: this exercises broadcast-worker's DM branch
+// (handler.go:85-93 has a `switch room.Type` with distinct Channel vs DM
+// fan-out), which the channel-only happy path would not catch.
+//
+// Key differences from the channel test:
+//   - CreateRoomRequest{Name: "", Users: [bob]} triggers DM mode
+//     (per room-service/helper.go:determineRoomType).
+//   - bob subscribes to subject.UserRoomEvent(bob.Account) -- the DM
+//     broadcast envelope is per-user, not per-room.
+func TestMessage_SendAndBroadcast_DM(t *testing.T) {
+	ctx := t.Context()
+	site := e2e.Stack().SiteA
+
+	js := site.JetStream(t)
+	canonicalStream := stream.MessagesCanonical(site.SiteID).Name
+	awaitDurableReady(t, ctx, js, canonicalStream, "message-worker")
+
+	alice := site.Authenticate(t, ctx, "alice")
+	bob := site.Authenticate(t, ctx, "bob")
+	ids := harness.NewTestIDs(t)
+
+	// 1. alice creates a DM with bob. Empty Name + exactly one user + no
+	// orgs/channels => DM per determineRoomType.
+	createReq := model.CreateRoomRequest{
+		Name:  "",
+		Users: []string{bob.Account},
+	}
+	var createReply model.CreateRoomReply
+	require.NoError(t, requestReply(
+		alice.Conn(),
+		subject.RoomCreate(alice.Account, site.SiteID),
+		createReq, 5*time.Second, &createReply,
+	))
+	roomID := createReply.RoomID
+	require.NotEmpty(t, roomID)
+	assert.Equal(t, string(model.RoomTypeDM), createReply.RoomType,
+		"server must classify this as a DM (per determineRoomType)")
+
+	// 2. bob subscribes to the per-user DM event envelope BEFORE the send.
+	bobSub, err := bob.Conn().SubscribeSync(subject.UserRoomEvent(bob.Account))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = bobSub.Unsubscribe() })
+
+	// 3. alice sends a DM.
+	preSendInfo, err := js.Stream(ctx, canonicalStream)
+	require.NoError(t, err)
+	preSendSeq := preSendInfo.CachedInfo().State.LastSeq
+
+	msgRequestID := idgen.GenerateRequestID()
+	body := "DM hello from " + t.Name()
+	sendReq := model.SendMessageRequest{
+		ID:        ids.MessageID,
+		Content:   body,
+		RequestID: msgRequestID,
+	}
+	require.NoError(t, sendAndAwaitReply(
+		t,
+		alice.Conn(),
+		alice.Account,
+		msgRequestID,
+		subject.MsgSend(alice.Account, roomID, site.SiteID),
+		sendReq, 10*time.Second,
+	))
+
+	// 4. bob receives via the per-user DM envelope (NOT the per-room one).
+	msg := awaitMessage(t, bobSub, 10*time.Second)
+	var roomEvent model.RoomEvent
+	require.NoError(t, json.Unmarshal(msg.Data, &roomEvent))
+	assert.Equal(t, model.RoomEventNewMessage, roomEvent.Type)
+	assert.Equal(t, roomID, roomEvent.RoomID)
+	require.NotNil(t, roomEvent.Message)
+	assert.Equal(t, ids.MessageID, roomEvent.Message.ID)
+	assert.Equal(t, body, roomEvent.Message.Content)
+
+	// 5. Wait for ack + verify history. Identical to the channel path
+	// (history-service is room-type agnostic).
+	awaitCanonicalAcked(t, ctx, js, canonicalStream, "message-worker", preSendSeq+1)
+
+	histReq := loadHistoryRequest{Limit: 50}
+	var histResp loadHistoryResponse
+	require.NoError(t, requestReply(
+		alice.Conn(),
+		subject.MsgHistory(alice.Account, roomID, site.SiteID),
+		histReq, 5*time.Second, &histResp,
+	))
+	require.Len(t, histResp.Messages, 1)
+	assert.Equal(t, ids.MessageID, histResp.Messages[0].MessageID)
+}
