@@ -38,11 +38,18 @@ networks:
     driver: bridge
 
 volumes:
+  # site A (chapter 3)
   mongo-a-data:
   cass-a-data:
   es-a-data:
   keycloak-a-data:
   nats-a-data:
+  # site B (chapter 5)
+  mongo-b-data:
+  cass-b-data:
+  es-b-data:
+  keycloak-b-data:
+  nats-b-data:
 
 services:
   # --- Site A dependencies (chapter 3) -----------------------------------
@@ -479,6 +486,417 @@ services:
       SEARCH_BACKEND: elasticsearch
       MSG_INDEX_PREFIX: messages-siteA-v1
       SEARCH_USER_ROOM_INDEX: user-room-siteA
+      BOOTSTRAP_STREAMS: "true"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  # --- Site B dependencies (chapter 5) -----------------------------------
+  # Mirror of site A with port shifts per amendment R2.A (+20000 band) and
+  # R4.B (Mongo on 27217 to stay below the Linux ephemeral range). Both
+  # sites share the same auth.conf and backend.creds (generated once by
+  # setup-e2e.sh) so JWTs federate over the gateway. dc-b distinguishes the
+  # site-B Cassandra topology label.
+
+  nats-b:
+    image: ${E2E_NATS_IMAGE:-nats:2.11-alpine}
+    container_name: nats-b
+    networks: [chat-e2e]
+    ports:
+      - "24222:4222"
+      - "28222:8222"
+    volumes:
+      - ./nats/nats-b.conf:/etc/nats/nats-server.conf:ro
+      - ./secrets/auth.conf:/etc/nats/auth.conf:ro
+      - nats-b-data:/data/jetstream
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz | grep -q ok"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  mongo-b:
+    image: ${E2E_MONGO_IMAGE:-mongo:8}
+    container_name: mongo-b
+    networks: [chat-e2e]
+    ports:
+      - "27217:27017"
+    volumes:
+      - mongo-b-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  cass-b:
+    image: ${E2E_CASS_IMAGE:-cassandra:5}
+    container_name: cass-b
+    networks: [chat-e2e]
+    ports:
+      - "29042:9042"
+    volumes:
+      - cass-b-data:/var/lib/cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: chat-e2e-b
+      CASSANDRA_DC: dc-b
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      JVM_OPTS: "-Xms512m -Xmx1g"
+      MAX_HEAP_SIZE: "1G"
+      HEAP_NEWSIZE: "256M"
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  cassandra-init-b:
+    image: ${E2E_CASS_IMAGE:-cassandra:5}
+    container_name: cassandra-init-b
+    networks: [chat-e2e]
+    depends_on:
+      cass-b: { condition: service_healthy }
+    volumes:
+      - ../cassandra/init:/init:ro
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        for f in $$(ls /init/*.cql | sort); do
+          echo "[cassandra-init-b] applying $$f"
+          cqlsh cass-b -f "$$f"
+        done
+        echo "[cassandra-init-b] done"
+
+  es-b:
+    image: ${E2E_ES_IMAGE:-elasticsearch:8.17.0}
+    container_name: es-b
+    networks: [chat-e2e]
+    ports:
+      - "29200:9200"
+    volumes:
+      - es-b-data:/usr/share/elasticsearch/data
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # search-init-a (chapter 3) already applies the messages-* index template
+  # across both site-A and site-B index patterns (priority 200), so a
+  # site-B-specific search-init isn't strictly needed for the messages
+  # indices. But: search-init-a targets es-a, NOT es-b -- ES instances are
+  # independent in this topology (one ES per site, no replication). So
+  # site-B's ES needs its own template-application job.
+  search-init-b:
+    image: curlimages/curl:8
+    container_name: search-init-b
+    networks: [chat-e2e]
+    depends_on:
+      es-b: { condition: service_healthy }
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        curl -fsS -X PUT http://es-b:9200/_index_template/messages-e2e \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "index_patterns": ["messages-siteA-v1-*", "messages-siteB-v1-*"],
+            "template": { "settings": { "index": { "refresh_interval": "200ms" } } },
+            "priority": 200
+          }'
+        echo "[search-init-b] template applied"
+
+  valkey-b:
+    image: ${E2E_VALKEY_IMAGE:-valkey/valkey:8}
+    container_name: valkey-b
+    networks: [chat-e2e]
+    ports:
+      - "26379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  keycloak-b:
+    image: ${E2E_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}
+    container_name: keycloak-b
+    networks: [chat-e2e]
+    ports:
+      - "28180:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME: "http://host.docker.internal:28180"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "false"
+    volumes:
+      - ../../auth-service/deploy/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - keycloak-b-data:/opt/keycloak/data
+    command: ["start-dev", "--import-realm"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9000/health/ready | grep -q '\"status\": \"UP\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  # --- Site B services (chapter 5) ---------------------------------------
+  # Mechanical mirror of site-A blocks per amendment R1 4.B (OTEL_SDK_
+  # DISABLED on all), R2.A (auth-service-b on 28080:8080), and the trust-
+  # model deviation noted at the top of this file (shared chatapp account).
+
+  auth-service-b:
+    build: { context: ../.., dockerfile: auth-service/deploy/Dockerfile }
+    container_name: auth-service-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:     { condition: service_healthy }
+      keycloak-b: { condition: service_healthy }
+    env_file:
+      - ./secrets/e2e-secrets.env
+    environment:
+      PORT: "8080"
+      DEV_MODE: "false"
+      NATS_JWT_EXPIRY: "2h"
+      OIDC_ISSUER_URL: http://host.docker.internal:28180/realms/chatapp
+      OIDC_AUDIENCES: nats-chat
+      TLS_SKIP_VERIFY: "false"
+      SITE_ID: siteB
+      OTEL_SDK_DISABLED: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "28080:8080"
+
+  room-service-b:
+    build: { context: ../.., dockerfile: room-service/deploy/Dockerfile }
+    container_name: room-service-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:    { condition: service_healthy }
+      mongo-b:   { condition: service_healthy }
+      valkey-b:  { condition: service_healthy }
+    environment:
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      MONGO_URI: mongodb://mongo-b:27017
+      MONGO_DB: chat
+      MAX_ROOM_SIZE: "1000"
+      MAX_BATCH_SIZE: "500"
+      VALKEY_ADDR: valkey-b:6379
+      VALKEY_KEY_GRACE_PERIOD: 24h
+      BOOTSTRAP_STREAMS: "true"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  message-gatekeeper-b:
+    build: { context: ../.., dockerfile: message-gatekeeper/deploy/Dockerfile }
+    container_name: message-gatekeeper-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:  { condition: service_healthy }
+      mongo-b: { condition: service_healthy }
+    environment:
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      MONGO_URI: mongodb://mongo-b:27017
+      MONGO_DB: chat
+      CHAT_BASE_URL: http://localhost:3000
+      BOOTSTRAP_STREAMS: "true"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  message-worker-b:
+    build: { context: ../.., dockerfile: message-worker/deploy/Dockerfile }
+    container_name: message-worker-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:           { condition: service_healthy }
+      mongo-b:          { condition: service_healthy }
+      cass-b:           { condition: service_healthy }
+      cassandra-init-b: { condition: service_completed_successfully }
+    environment:
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      CASSANDRA_HOSTS: cass-b
+      CASSANDRA_KEYSPACE: chat
+      MONGO_URI: mongodb://mongo-b:27017
+      MONGO_DB: chat
+      BOOTSTRAP_STREAMS: "true"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  broadcast-worker-b:
+    build: { context: ../.., dockerfile: broadcast-worker/deploy/Dockerfile }
+    container_name: broadcast-worker-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:   { condition: service_healthy }
+      mongo-b:  { condition: service_healthy }
+      valkey-b: { condition: service_healthy }
+    environment:
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      MONGO_URI: mongodb://mongo-b:27017
+      MONGO_DB: chat
+      USER_CACHE_SIZE: "10000"
+      USER_CACHE_TTL: "5m"
+      VALKEY_ADDR: valkey-b:6379
+      VALKEY_KEY_GRACE_PERIOD: 24h
+      BOOTSTRAP_STREAMS: "true"
+      ENCRYPTION_ENABLED: "false"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  notification-worker-b:
+    build: { context: ../.., dockerfile: notification-worker/deploy/Dockerfile }
+    container_name: notification-worker-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:  { condition: service_healthy }
+      mongo-b: { condition: service_healthy }
+    environment:
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      MONGO_URI: mongodb://mongo-b:27017
+      MONGO_DB: chat
+      BOOTSTRAP_STREAMS: "true"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  history-service-b:
+    build: { context: ../.., dockerfile: history-service/deploy/Dockerfile }
+    container_name: history-service-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:           { condition: service_healthy }
+      mongo-b:          { condition: service_healthy }
+      cass-b:           { condition: service_healthy }
+      cassandra-init-b: { condition: service_completed_successfully }
+      valkey-b:         { condition: service_healthy }
+    environment:
+      CASSANDRA_HOSTS: cass-b
+      CASSANDRA_KEYSPACE: chat
+      MONGO_URI: mongodb://mongo-b:27017
+      MONGO_DB: chat
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      VALKEY_ADDR: valkey-b:6379
+      ENCRYPTION_ENABLED: "false"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  inbox-worker-b:
+    build: { context: ../.., dockerfile: inbox-worker/deploy/Dockerfile }
+    container_name: inbox-worker-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:  { condition: service_healthy }
+      mongo-b: { condition: service_healthy }
+    environment:
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      MONGO_URI: mongodb://mongo-b:27017
+      MONGO_DB: chat
+      BOOTSTRAP_STREAMS: "true"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  room-worker-b:
+    build: { context: ../.., dockerfile: room-worker/deploy/Dockerfile }
+    container_name: room-worker-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:  { condition: service_healthy }
+      mongo-b: { condition: service_healthy }
+    environment:
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      MONGO_URI: mongodb://mongo-b:27017
+      MONGO_DB: chat
+      BOOTSTRAP_STREAMS: "true"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  search-service-b:
+    build: { context: ../.., dockerfile: search-service/deploy/Dockerfile }
+    container_name: search-service-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:        { condition: service_healthy }
+      es-b:          { condition: service_healthy }
+      search-init-b: { condition: service_completed_successfully }
+      valkey-b:      { condition: service_healthy }
+    environment:
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      SEARCH_URL: http://es-b:9200
+      SEARCH_BACKEND: elasticsearch
+      SEARCH_USER_ROOM_INDEX: user-room-siteB
+      VALKEY_ADDR: valkey-b:6379
+      VALKEY_PASSWORD: ""
+      SEARCH_DOC_COUNTS: "25"
+      SEARCH_MAX_DOC_COUNTS: "100"
+      SEARCH_RESTRICTED_ROOMS_CACHE_TTL: 5m
+      SEARCH_RECENT_WINDOW: 8760h
+      SEARCH_REQUEST_TIMEOUT: 10s
+      SEARCH_METRICS_ADDR: ":9090"
+      OTEL_SDK_DISABLED: "true"
+    # No `ports:` block: site-B metrics are not host-exposed (avoids 9090
+    # collision with site-A's search-service-a). Reach via docker network
+    # from the harness if a future test needs it.
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
+  search-sync-worker-b:
+    build: { context: ../.., dockerfile: search-sync-worker/deploy/Dockerfile }
+    container_name: search-sync-worker-b
+    networks: [chat-e2e]
+    depends_on:
+      nats-b:        { condition: service_healthy }
+      es-b:          { condition: service_healthy }
+      search-init-b: { condition: service_completed_successfully }
+    environment:
+      NATS_URL: nats://nats-b:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteB
+      SEARCH_URL: http://es-b:9200
+      SEARCH_BACKEND: elasticsearch
+      MSG_INDEX_PREFIX: messages-siteB-v1
+      SEARCH_USER_ROOM_INDEX: user-room-siteB
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
     volumes:
