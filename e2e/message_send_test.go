@@ -62,6 +62,7 @@ func roomEventMessageID(e *model.RoomEvent) string {
 // notif.Message.ID (not notif.MessageID -- the top-level field doesn't
 // exist) and notif.Message.Mentions for the @bob mention check.
 func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 

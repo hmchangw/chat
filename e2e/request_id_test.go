@@ -26,6 +26,7 @@ import (
 // Header key is natsutil.RequestIDHeader (X-Request-ID; verified against
 // pkg/natsutil/request_id.go).
 func TestRequestID_PropagatesThroughBroadcastChain(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 

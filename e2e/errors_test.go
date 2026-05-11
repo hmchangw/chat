@@ -25,6 +25,7 @@ import (
 // in the gatekeeper. The test asserts only that ErrorResponse.Error is
 // non-empty, not that it matches a particular sanitized string.
 func TestErrors_SendToNonExistentRoom(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
@@ -59,6 +60,7 @@ func TestErrors_SendToNonExistentRoom(t *testing.T) {
 // The original "assert error reply" test is unworkable; we assert the
 // timeout instead.
 func TestErrors_MalformedPayload_TimesOut(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")
@@ -112,6 +114,7 @@ func TestErrors_MalformedPayload_TimesOut(t *testing.T) {
 // considerable complexity) with a simpler negative test that still proves
 // NATS rejects connections lacking valid creds.
 func TestErrors_BadCredsRejected(t *testing.T) {
+	t.Parallel()
 	site := stack.SiteA
 	_, err := nats.Connect(site.NATSURL, nats.UserCredentials("/tmp/does-not-exist.creds"))
 	require.Error(t, err, "NATS must reject connections without valid creds")

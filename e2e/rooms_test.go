@@ -24,6 +24,7 @@ import (
 // have already created the alice-bob DM. We handle both first-call and
 // already-exists paths.
 func TestRoom_DM_CreateIsIdempotent(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
@@ -72,6 +73,7 @@ func TestRoom_DM_CreateIsIdempotent(t *testing.T) {
 
 // TestRoom_Channel_InviteAndMemberList per R1 11.C.
 func TestRoom_Channel_InviteAndMemberList(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
@@ -120,6 +122,7 @@ func TestRoom_Channel_InviteAndMemberList(t *testing.T) {
 // shape. Bug-hunter HIGH: map[string]any{"account":"bob"} doesn't match the
 // service-side struct -- room-service requires Requester + Account fields.
 func TestRoom_Channel_RemoveMember(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
@@ -171,6 +174,7 @@ func TestRoom_Channel_RemoveMember(t *testing.T) {
 
 // TestRoom_MarkMessageRead: read-receipt RPC happy path per R2.C item 5.
 func TestRoom_MarkMessageRead(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 

@@ -43,6 +43,7 @@ type getThreadMessagesResponse struct {
 // thread_subscriptions) -- this test exercises the canonical-path write of
 // a reply tagged with ThreadParentMessageID.
 func TestThread_ParentAndReplies(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
