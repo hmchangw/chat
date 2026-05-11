@@ -2019,6 +2019,17 @@ func TestSyncCreateDMRequestJSON(t *testing.T) {
 	assert.Equal(t, src, dst)
 }
 
+func TestHRSyncEventJSON(t *testing.T) {
+	src := model.HRSyncEvent{
+		Timestamp: 1735689600000,
+		BatchID:   "0192a4f7-8c2d-7c9a-abcd-e0123456789f",
+		Gzip:      true,
+		Payload:   json.RawMessage(`[{"sectId":"S001"}]`),
+	}
+	var dst model.HRSyncEvent
+	roundTrip(t, &src, &dst)
+}
+
 func TestSyncCreateDMReplyJSON(t *testing.T) {
 	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
 	src := model.SyncCreateDMReply{

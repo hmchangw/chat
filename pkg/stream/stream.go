@@ -77,3 +77,16 @@ func Inbox(siteID string) Config {
 		},
 	}
 }
+
+// HRSync returns the canonical config for the `HR_SYNC_{siteID}` stream
+// that carries HR account sync events published daily by `hr-syncer`
+// (e.g., `hr.sync.{siteID}.employees.upsert`,
+// `hr.sync.{siteID}.users.upsert`). Schema is owned by `hr-syncer`;
+// consumers like `search-sync-worker` must skip this stream in their
+// bootstrap loop the same way they skip INBOX (owned by inbox-worker).
+func HRSync(siteID string) Config {
+	return Config{
+		Name:     fmt.Sprintf("HR_SYNC_%s", siteID),
+		Subjects: []string{fmt.Sprintf("hr.sync.%s.>", siteID)},
+	}
+}
