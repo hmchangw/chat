@@ -178,7 +178,7 @@ func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEven
 	// Rotate local Valkey key so broadcast-worker on this site uses the new pair.
 	// Origin room-worker already published chat.user.<account>.event.room.key to
 	// all survivors; the supercluster routes those events to home sites.
-	if err := h.rotateLocalKey(ctx, evt.SiteID, memberEvt.RoomID); err != nil {
+	if err := h.fetchAndStoreKey(ctx, evt.SiteID, memberEvt.RoomID); err != nil {
 		return fmt.Errorf("rotate local key (room %s, origin %s): %w", memberEvt.RoomID, evt.SiteID, err)
 	}
 	return nil
@@ -339,14 +339,14 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 	}
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			if err := h.replicateRoomKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
+			if err := h.fetchAndStoreKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
 				slog.Error("replicate room key", "error", err, "roomId", data.RoomID, "originSiteID", data.HomeSiteID)
 			}
 			return nil
 		}
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
-	if err := h.replicateRoomKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
+	if err := h.fetchAndStoreKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
 		slog.Error("replicate room key", "error", err, "roomId", data.RoomID, "originSiteID", data.HomeSiteID)
 	}
 	return nil
@@ -367,15 +367,14 @@ func (h *Handler) replicateLocalKey(ctx context.Context, originSiteID, roomID st
 		return nil
 	}
 	// Local miss → replicate from origin.
-	return h.replicateRoomKey(ctx, originSiteID, roomID)
+	return h.fetchAndStoreKey(ctx, originSiteID, roomID)
 }
 
-// rotateLocalKey RPCs the origin for the latest key and rotates local Valkey
-// so broadcast-worker on this site uses the new pair. User-side fan-out is NOT
-// performed here — origin room-worker already published chat.user.<account>.event.room.key
-// to all survivors; the NATS supercluster routes those events to home sites.
-// RPC failure is returned so the caller can NAK the JetStream message.
-func (h *Handler) rotateLocalKey(ctx context.Context, originSiteID, roomID string) error {
+// fetchAndStoreKey RPCs the origin for the latest key and stores it in local Valkey
+// using Rotate-with-Set-fallback to preserve version progression on pre-existing rooms.
+// No user-side fan-out — origin room-worker handles that via NATS supercluster.
+// Returns error so callers can decide whether to NAK (member_removed) or log-and-swallow (room_created).
+func (h *Handler) fetchAndStoreKey(ctx context.Context, originSiteID, roomID string) error {
 	if h.keyStore == nil || h.interSiteClient == nil {
 		return nil
 	}
@@ -393,32 +392,6 @@ func (h *Handler) rotateLocalKey(ctx context.Context, originSiteID, roomID strin
 		} else {
 			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
 			return fmt.Errorf("rotate local key: %w", err)
-		}
-	}
-	return nil
-}
-
-// replicateRoomKey pulls the keypair from origin and stores it in local Valkey
-// (Rotate-with-Set-fallback to preserve version progression on pre-existing rooms).
-// No user-side fan-out — origin room-worker handles that via NATS supercluster.
-func (h *Handler) replicateRoomKey(ctx context.Context, originSiteID, roomID string) error {
-	if h.keyStore == nil || h.interSiteClient == nil {
-		return nil
-	}
-	fetched, err := h.interSiteClient.GetRoomKey(ctx, originSiteID, roomID)
-	if err != nil {
-		return fmt.Errorf("rpc origin: %w", err)
-	}
-	pair := roomkeystore.RoomKeyPair{PublicKey: fetched.PublicKey, PrivateKey: fetched.PrivateKey}
-	if _, err := h.keyStore.Rotate(ctx, roomID, pair); err != nil {
-		if errors.Is(err, roomkeystore.ErrNoCurrentKey) {
-			if _, err := h.keyStore.Set(ctx, roomID, pair); err != nil {
-				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
-				return fmt.Errorf("set local (fallback): %w", err)
-			}
-		} else {
-			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
-			return fmt.Errorf("rotate local: %w", err)
 		}
 	}
 	return nil

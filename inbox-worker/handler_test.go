@@ -1362,7 +1362,7 @@ func TestHandleRoomCreated_ReplicatesLocalKey(t *testing.T) {
 	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
 }
 
-func TestReplicateRoomKey_RotatesWhenLocalKeyExists(t *testing.T) {
+func TestFetchAndStoreKey_RotatesWhenLocalKeyExists(t *testing.T) {
 	// Pre-seed local store with a version 0 key.
 	keyStore := newStubKeyStore()
 	_, _ = keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
@@ -1380,7 +1380,7 @@ func TestReplicateRoomKey_RotatesWhenLocalKeyExists(t *testing.T) {
 
 	h := NewHandler(nil, "site-b", keyStore, client)
 
-	require.NoError(t, h.replicateRoomKey(context.Background(), "site-origin", "r1"))
+	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-origin", "r1"))
 
 	// Local key version should have advanced (not been reset to 0).
 	pair, err := keyStore.Get(context.Background(), "r1")
@@ -1477,6 +1477,77 @@ func TestReplicateLocalKey_ReturnsErrorOnKeyStoreFailure(t *testing.T) {
 	nCalls := len(client.calls)
 	client.mu.Unlock()
 	assert.Equal(t, 0, nCalls, "interSiteClient must not be called on Valkey Get failure")
+}
+
+// --- fetchAndStoreKey direct tests ---
+
+// TestFetchAndStoreKey_NoOpsWhenDepsNil confirms the function is a no-op when
+// keyStore or interSiteClient are nil.
+func TestFetchAndStoreKey_NoOpsWhenDepsNil(t *testing.T) {
+	h := NewHandler(nil, "site-b", nil, nil)
+	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-a", "r1"))
+}
+
+// TestFetchAndStoreKey_HappyPath verifies that on a fresh key store, fetchAndStoreKey
+// falls back to Set (ErrNoCurrentKey path) and stores the fetched key locally.
+func TestFetchAndStoreKey_HappyPath(t *testing.T) {
+	keyStore := newStubKeyStore() // empty — Rotate will return ErrNoCurrentKey
+	client := &stubInterSiteClient{
+		getResp: &model.RoomKeyEvent{
+			RoomID:     "r1",
+			Version:    1,
+			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
+			PrivateKey: bytes.Repeat([]byte{0x05}, 32),
+		},
+	}
+	h := NewHandler(nil, "site-b", keyStore, client)
+
+	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-origin", "r1"))
+
+	pair, err := keyStore.Get(context.Background(), "r1")
+	require.NoError(t, err)
+	require.NotNil(t, pair)
+	assert.Equal(t, client.getResp.PublicKey, pair.KeyPair.PublicKey)
+	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
+}
+
+// TestFetchAndStoreKey_RotatesWhenKeyPresent verifies that when a key already exists,
+// fetchAndStoreKey calls Rotate (not Set) and increments the version.
+func TestFetchAndStoreKey_RotatesWhenKeyPresent(t *testing.T) {
+	keyStore := newStubKeyStore()
+	_, _ = keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
+		PublicKey:  bytes.Repeat([]byte{0x01}, 65),
+		PrivateKey: bytes.Repeat([]byte{0x02}, 32),
+	})
+	client := &stubInterSiteClient{
+		getResp: &model.RoomKeyEvent{
+			RoomID:     "r1",
+			Version:    3,
+			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
+			PrivateKey: bytes.Repeat([]byte{0x07}, 32),
+		},
+	}
+	h := NewHandler(nil, "site-b", keyStore, client)
+
+	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-origin", "r1"))
+
+	pair, err := keyStore.Get(context.Background(), "r1")
+	require.NoError(t, err)
+	require.NotNil(t, pair)
+	assert.Equal(t, 1, pair.Version, "Rotate increments version from 0 to 1")
+	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
+}
+
+// TestFetchAndStoreKey_RPCFailurePropagates verifies that an RPC error is returned.
+func TestFetchAndStoreKey_RPCFailurePropagates(t *testing.T) {
+	keyStore := newStubKeyStore()
+	rpcErr := fmt.Errorf("origin unreachable")
+	client := &stubInterSiteClient{getErr: rpcErr}
+	h := NewHandler(nil, "site-b", keyStore, client)
+
+	err := h.fetchAndStoreKey(context.Background(), "site-origin", "r1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rpcErr)
 }
 
 // TestHandleEvent_MemberRemoved_RotatesLocalKey verifies that a
