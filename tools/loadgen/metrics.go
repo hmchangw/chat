@@ -26,6 +26,10 @@ type Metrics struct {
 	// metric to keep run identity available without inflating every
 	// counter's label cardinality.
 	RunInfo *prometheus.GaugeVec
+	// LivenessProbes counts the mid-run liveness probe results.
+	// Labels: result="ok"|"fail". Separate from Requests so the
+	// watcher's own traffic doesn't pollute scenario measurements.
+	LivenessProbes *prometheus.CounterVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -82,13 +86,17 @@ func NewMetrics() *Metrics {
 			prometheus.GaugeOpts{Name: "loadgen_run_info", Help: "Per-run identification (value always 1)."},
 			[]string{"run_id", "preset", "scenario", "start_unix"},
 		),
+		LivenessProbes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Name: "loadgen_liveness_probes_total", Help: "Mid-run liveness probe results."},
+			[]string{"result"},
+		),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
 		m.Requests, m.RequestErrors, m.RequestLatency,
 		m.E1Latency, m.E2Latency,
 		m.ConsumerPending, m.ConsumerAckPending, m.ConsumerRedelivered,
-		m.RunInfo,
+		m.RunInfo, m.LivenessProbes,
 	)
 	return m
 }

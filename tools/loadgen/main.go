@@ -173,6 +173,8 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	abortP99Sustain := fs.Duration("abort-p99-sustain", 30*time.Second, "sustain window for the p99 abort threshold")
 	abortErrorPct := fs.Float64("abort-on-error-pct", 0, "abort the run if error rate stays over this fraction (0..1) for --abort-error-sustain; 0 disables")
 	abortErrorSustain := fs.Duration("abort-error-sustain", 10*time.Second, "sustain window for the error-rate abort threshold")
+	livenessInterval := fs.Duration("liveness-interval", 30*time.Second, "mid-run SUT liveness probe interval; 0 disables")
+	livenessFailures := fs.Int("liveness-failures", 3, "consecutive liveness probe failures required to abort the run")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	if err := parseScenarioFlag(*scenario); err != nil {
@@ -538,9 +540,39 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		}()
 	}
 
+	// C5: mid-run liveness watcher. Periodically probes the SUT with the
+	// same RPC the scenario uses. ConsecutiveFails back-to-back failures
+	// cancel the run with exit code 3 — distinguishes "SUT became
+	// unreachable" from "SUT got slow" (saturation/abort = exit 2).
+	var livenessFailed atomic.Bool
+	var livenessReason atomic.Value
+	var livenessWG sync.WaitGroup
+	if *livenessInterval > 0 && scenarioNeedsReadiness(*scenario) && len(fixtures.Subscriptions) > 0 {
+		probeSub := fixtures.Subscriptions[0]
+		liveProbe := buildReadinessProbe(*scenario, &probeSub, cfg.SiteID, requester)
+		livenessWG.Add(1)
+		go func() {
+			defer livenessWG.Done()
+			runLiveness(runCtx, &livenessConfig{
+				Probe:            liveProbe,
+				Interval:         *livenessInterval,
+				ConsecutiveFails: *livenessFailures,
+				Timeout:          2 * time.Second,
+				Counter: func(result string) {
+					metrics.LivenessProbes.WithLabelValues(result).Inc()
+				},
+			}, &livenessFailed, func(reason string) {
+				slog.Warn("liveness watcher fired", "reason", reason)
+				livenessReason.Store(reason)
+				cancelRun()
+			})
+		}()
+	}
+
 	genErr := gen.Run(runCtx)
 	progressWG.Wait()
 	abortWG.Wait()
+	livenessWG.Wait()
 
 	// Trailing replies and broadcasts may still be in flight after gen.Run
 	// returns (the SUT's reply latency is independent of the generator's
@@ -629,7 +661,11 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		reason, _ := abortReason.Load().(string)
 		slog.Warn("run aborted by saturation watcher", "reason", reason)
 	}
-	return exitCodeFor(abortTripped.Load(), summary.SentMeasured, totalErrs)
+	if livenessFailed.Load() {
+		reason, _ := livenessReason.Load().(string)
+		slog.Error("run aborted by liveness watcher (SUT unreachable)", "reason", reason)
+	}
+	return exitCodeForFull(abortTripped.Load(), livenessFailed.Load(), summary.SentMeasured, totalErrs)
 }
 
 // exitCodeFor maps the run's terminal state to the process exit code.
@@ -642,7 +678,21 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 // Extracted out of runRun so the policy is unit-testable in isolation
 // (see TestRunRun_ExitCodeOnAbort).
 func exitCodeFor(aborted bool, sent, totalErrs int) int {
-	if aborted {
+	return exitCodeForFull(aborted, false, sent, totalErrs)
+}
+
+// exitCodeForFull is the policy with the C5 liveness path added.
+// Precedence: liveness > saturation > clean-fail > clean-pass.
+//
+//	0 = clean pass (no errors above tolerance, no abort, SUT healthy)
+//	1 = clean fail (errors above tolerance, no abort)
+//	2 = aborted by the saturation watcher (SUT got slow)
+//	3 = aborted by the liveness watcher (SUT became unreachable)
+func exitCodeForFull(saturationAborted, livenessFailed bool, sent, totalErrs int) int {
+	if livenessFailed {
+		return 3
+	}
+	if saturationAborted {
 		return 2
 	}
 	return DetermineExitCode(sent, totalErrs)
