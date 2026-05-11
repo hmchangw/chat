@@ -13,27 +13,40 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeymetrics"
+	"github.com/hmchangw/chat/pkg/roomkeysender"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // errPermanent marks non-retryable errors (caller Acks instead of Nak).
 var errPermanent = errors.New("permanent")
 
+// Sentinel errors for handleGetRoomKey — callers can use errors.Is for branching.
+var (
+	ErrRoomKeyNotFound      = errors.New("room key not found")
+	ErrRoomKeyStoreInternal = errors.New("room key store internal error")
+)
+
 // PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
 type PublishFunc func(ctx context.Context, subj string, data []byte, msgID string) error
 
 type Handler struct {
-	store   SubscriptionStore
-	siteID  string
-	publish PublishFunc
+	store     SubscriptionStore
+	siteID    string
+	publish   PublishFunc
+	keyStore  RoomKeyStore
+	keySender *roomkeysender.Sender
 }
 
-func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc) *Handler {
-	return &Handler{store: store, siteID: siteID, publish: publish}
+func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc, keyStore RoomKeyStore, keySender *roomkeysender.Sender) *Handler {
+	return &Handler{store: store, siteID: siteID, publish: publish, keyStore: keyStore, keySender: keySender}
 }
 
 // messageDedupSeed returns the X-Request-ID from ctx, or payloadSeed when absent (partial-deployment safety, with a warn log).
@@ -240,13 +253,40 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal RemoveMemberRequest: %w", err)
 	}
 
-	if req.OrgID != "" {
-		return h.processRemoveOrg(ctx, &req)
+	// req.RoomType is set by room-service (post-Batch-3 senders). Guard with a
+	// non-empty check for federation backward compat: events from older senders
+	// omit the field (zero value ""); those are assumed channel-only since
+	// room-service already validated that before publishing.
+	if req.RoomType != "" && req.RoomType != model.RoomTypeChannel {
+		return newPermanent("remove-member only valid on channel rooms, got %s", req.RoomType)
 	}
-	return h.processRemoveIndividual(ctx, &req)
+	// Version assertion: room-service rotated the key before dispatching the remove; worker must see the new version.
+	// Fetch once here so callers (processRemoveIndividual / processRemoveOrg) can pass the same pair to fanOutRoomKeyToSurvivors.
+	var keyPair *roomkeystore.VersionedKeyPair
+	if h.keyStore != nil {
+		pair, err := h.keyStore.Get(ctx, req.RoomID)
+		if err != nil {
+			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+			return fmt.Errorf("get room key: %w", err)
+		}
+		// Version gate assumes single-rotator semantics: only room-service originates rotations, so a scalar int suffices for ordering.
+		if pair == nil || pair.Version < req.NewKeyVersion {
+			haveVersion := -1
+			if pair != nil {
+				haveVersion = pair.Version
+			}
+			return fmt.Errorf("stale key version (have=%d want>=%d); waiting for valkey propagation", haveVersion, req.NewKeyVersion)
+		}
+		keyPair = pair
+	}
+
+	if req.OrgID != "" {
+		return h.processRemoveOrg(ctx, &req, keyPair)
+	}
+	return h.processRemoveIndividual(ctx, &req, keyPair)
 }
 
-func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
+func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest, keyPair *roomkeystore.VersionedKeyPair) (err error) {
 	if req.Timestamp <= 0 {
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
@@ -285,6 +325,17 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
+	// Best-effort: fan out the new key to all surviving subscribers (all sites).
+	// ListByRoom after the delete returns the already-filtered survivor set.
+	if keyPair != nil {
+		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
+		if listErr != nil {
+			slog.Error("list survivors for key fan-out failed", "error", listErr, "roomId", req.RoomID)
+		} else if fanErr := h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors); fanErr != nil {
+			slog.Error("survivor key fan-out failed", "error", fanErr, "roomId", req.RoomID)
+		}
+	}
+
 	now := time.Now().UTC()
 
 	// Subscription update event. RoomType is fixed to channel: room-service
@@ -310,11 +361,12 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		evtType = "member_removed"
 	}
 	memberEvt := model.MemberRemoveEvent{
-		Type:      evtType,
-		RoomID:    req.RoomID,
-		Accounts:  []string{req.Account},
-		SiteID:    h.siteID,
-		Timestamp: now.UnixMilli(),
+		Type:          evtType,
+		RoomID:        req.RoomID,
+		Accounts:      []string{req.Account},
+		SiteID:        h.siteID,
+		Timestamp:     now.UnixMilli(),
+		NewKeyVersion: req.NewKeyVersion,
 	}
 	memberEvtData, _ := json.Marshal(memberEvt)
 	if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData, ""); err != nil {
@@ -387,7 +439,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	return nil
 }
 
-func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest) (err error) {
+func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest, keyPair *roomkeystore.VersionedKeyPair) (err error) {
 	if req.Timestamp <= 0 {
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
@@ -427,6 +479,17 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
+	// Best-effort: fan out the new key to all surviving subscribers (all sites).
+	// ListByRoom after the delete returns the already-filtered survivor set.
+	if keyPair != nil {
+		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
+		if listErr != nil {
+			slog.Error("list survivors for key fan-out failed", "error", listErr, "roomId", req.RoomID)
+		} else if fanErr := h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors); fanErr != nil {
+			slog.Error("survivor key fan-out failed", "error", fanErr, "roomId", req.RoomID)
+		}
+	}
+
 	now := time.Now().UTC()
 
 	// Publish per-account subscription update and collect cross-site accounts
@@ -453,12 +516,13 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	// Member change event with all removed accounts
 	if len(accounts) > 0 {
 		memberEvt := model.MemberRemoveEvent{
-			Type:      "member_removed",
-			RoomID:    req.RoomID,
-			Accounts:  accounts,
-			SiteID:    h.siteID,
-			OrgID:     req.OrgID,
-			Timestamp: now.UnixMilli(),
+			Type:          "member_removed",
+			RoomID:        req.RoomID,
+			Accounts:      accounts,
+			SiteID:        h.siteID,
+			OrgID:         req.OrgID,
+			Timestamp:     now.UnixMilli(),
+			NewKeyVersion: req.NewKeyVersion,
 		}
 		memberEvtData, _ := json.Marshal(memberEvt)
 		if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData, ""); err != nil {
@@ -513,12 +577,13 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 	for destSiteID, accounts := range siteAccounts {
 		evt := model.MemberRemoveEvent{
-			Type:      "member_removed",
-			RoomID:    req.RoomID,
-			Accounts:  accounts,
-			SiteID:    h.siteID,
-			OrgID:     req.OrgID,
-			Timestamp: now.UnixMilli(),
+			Type:          "member_removed",
+			RoomID:        req.RoomID,
+			Accounts:      accounts,
+			SiteID:        h.siteID,
+			OrgID:         req.OrgID,
+			Timestamp:     now.UnixMilli(),
+			NewKeyVersion: req.NewKeyVersion,
 		}
 		outbox := model.OutboxEvent{
 			Type:       "member_removed",
@@ -558,6 +623,10 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	room, err := h.store.GetRoom(ctx, req.RoomID)
 	if err != nil {
 		return fmt.Errorf("get room: %w", err)
+	}
+	// Defensive channel-only guard.
+	if room.Type != model.RoomTypeChannel {
+		return newPermanent("add-member only valid on channel rooms, got %s", room.Type)
 	}
 
 	// Expand org IDs + direct accounts to actual account list, excluding already-subscribed
@@ -718,6 +787,15 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	// leave the counter drifted forever, so we propagate the error.
 	if err := h.store.ReconcileMemberCounts(ctx, req.RoomID); err != nil {
 		return fmt.Errorf("reconcile member counts: %w", err)
+	}
+
+	// Fan out current key to newly-added local-site accounts only.
+	newUserPtrs := make([]*model.User, len(users))
+	for i := range users {
+		newUserPtrs[i] = &users[i]
+	}
+	if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, newUserPtrs); err != nil {
+		return fmt.Errorf("fan out room key: %w", err)
 	}
 
 	for _, sub := range subs {
@@ -897,6 +975,18 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	}
 	requesterAccount = req.RequesterAccount
 	roomID = req.RoomID
+
+	// Gate: key MUST exist before any Mongo write.
+	if h.keyStore != nil {
+		pair, err := h.keyStore.Get(ctx, req.RoomID)
+		if err != nil {
+			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+			return fmt.Errorf("get room key: %w", err)
+		}
+		if pair == nil {
+			return newPermanent("room key missing for %s", req.RoomID)
+		}
+	}
 
 	requester, err := h.store.GetUser(ctx, req.RequesterAccount)
 	if err != nil {
@@ -1206,6 +1296,11 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 		}
 	}
 
+	// Fan out current key to every local-site member.
+	if err := h.buildAndFanOutRoomKey(ctx, room.ID, allUsers); err != nil {
+		slog.Error("room key fan-out failed", "error", err, "roomId", room.ID)
+	}
+
 	return nil
 }
 
@@ -1502,4 +1597,97 @@ func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
 		return
 	}
 	natsutil.ReplyJSON(m.Msg, reply)
+}
+
+// fanOutRoomKeyToSurvivors sends the already-fetched room key to every room member in survivors
+// (local + remote). NATS supercluster routes user-subjects to home sites.
+// survivors is a pre-computed post-deletion snapshot supplied by the caller; pair must be non-nil.
+// Callers should skip the call when key handling is disabled.
+func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, survivors []model.Subscription) error {
+	if h.keySender == nil || pair == nil {
+		return nil
+	}
+	evt := model.RoomKeyEvent{
+		RoomID:     roomID,
+		Version:    pair.Version,
+		PublicKey:  pair.KeyPair.PublicKey,
+		PrivateKey: pair.KeyPair.PrivateKey,
+	}
+	for i := range survivors {
+		if err := h.keySender.Send(survivors[i].User.Account, evt); err != nil {
+			slog.Error("send room key", "error", err, "account", survivors[i].User.Account, "roomId", roomID)
+			roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
+		}
+	}
+	return nil
+}
+
+// handleGetRoomKey looks up the key for roomID and returns the event or an error.
+func (h *Handler) handleGetRoomKey(ctx context.Context, roomID string) (*model.RoomKeyEvent, error) {
+	pair, err := h.keyStore.Get(ctx, roomID)
+	if err != nil {
+		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+		slog.Error("get room key", "error", err, "roomId", roomID)
+		return nil, fmt.Errorf("get room key for %s: %w", roomID, ErrRoomKeyStoreInternal)
+	}
+	if pair == nil {
+		return nil, ErrRoomKeyNotFound
+	}
+	return &model.RoomKeyEvent{
+		RoomID:     roomID,
+		Version:    pair.Version,
+		PublicKey:  pair.KeyPair.PublicKey,
+		PrivateKey: pair.KeyPair.PrivateKey,
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}, nil
+}
+
+// NatsHandleGetRoomKey serves chat.server.request.roomkey.{siteID}.get for inbox-worker on remote sites.
+func (h *Handler) NatsHandleGetRoomKey(m otelnats.Msg) {
+	ctx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
+	if h.keyStore == nil {
+		natsutil.ReplyError(m.Msg, "key store not configured")
+		return
+	}
+	var req model.RoomKeyGetRequest
+	if err := json.Unmarshal(m.Msg.Data, &req); err != nil {
+		natsutil.ReplyError(m.Msg, "invalid request")
+		return
+	}
+	evt, err := h.handleGetRoomKey(ctx, req.RoomID)
+	if err != nil {
+		natsutil.ReplyError(m.Msg, err.Error())
+		return
+	}
+	natsutil.ReplyJSON(m.Msg, evt)
+}
+
+// buildAndFanOutRoomKey fetches the current key from Valkey, builds the RoomKeyEvent,
+// and fans it out to every room member account in users (local + remote).
+// NATS supercluster routes user-subjects to home sites.
+func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, users []*model.User) error {
+	if h.keyStore == nil || h.keySender == nil {
+		return nil
+	}
+	pair, err := h.keyStore.Get(ctx, roomID)
+	if err != nil {
+		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+		return fmt.Errorf("get room key: %w", err)
+	}
+	if pair == nil {
+		return newPermanent("room key missing for %s", roomID)
+	}
+	evt := model.RoomKeyEvent{
+		RoomID:     roomID,
+		Version:    pair.Version,
+		PublicKey:  pair.KeyPair.PublicKey,
+		PrivateKey: pair.KeyPair.PrivateKey,
+	}
+	for _, u := range users {
+		if err := h.keySender.Send(u.Account, evt); err != nil {
+			slog.Error("send room key", "error", err, "account", u.Account, "roomId", roomID)
+			roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
+		}
+	}
+	return nil
 }
