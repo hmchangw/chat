@@ -141,12 +141,12 @@ func PrintSummary(w io.Writer, s *Summary) error {
 }
 
 // CSVSample is one row in the per-sample CSV dump. RowIndex is just a
-// monotonically-increasing per-metric counter — pre-fix it was named
-// `TimestampNs`, which was misleading because it was never populated
-// with a real ns timestamp. Downstream tooling that read the column
-// expecting wall-clock would have got nonsense; keeping the value-shape
-// unchanged but renaming both the field and the CSV header.
+// monotonically-increasing per-metric counter. RunID is the C3 run
+// identifier — same value for every row in a given file, but stamped
+// per-row so post-hoc concatenation of multiple CSV exports keeps the
+// run-correlation join key intact (F2 fix).
 type CSVSample struct {
+	RunID     string
 	RowIndex  int64
 	RequestID string
 	Metric    string
@@ -161,10 +161,11 @@ func WriteCSV(w io.Writer, rows []CSVSample) error {
 	// Errors are intentionally discarded here: csv.Writer buffers all writes
 	// and accumulates the first error internally. cw.Error() below is the
 	// canonical way to retrieve it after Flush.
-	_ = cw.Write([]string{"row_index", "request_id", "metric", "latency_ns"})
+	_ = cw.Write([]string{"run_id", "row_index", "request_id", "metric", "latency_ns"})
 	for i := range rows {
 		r := &rows[i]
 		_ = cw.Write([]string{
+			r.RunID,
 			strconv.FormatInt(r.RowIndex, 10),
 			r.RequestID, r.Metric,
 			strconv.FormatInt(r.LatencyNs, 10),

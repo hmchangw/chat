@@ -184,6 +184,19 @@ func LoadCredsDir(dir string) ([]string, error) {
 // with NewConnPoolWithObserver.
 //
 // dataSize <= 1 collapses to {observer} (no data conns dialed).
+//
+// F3 known limitation: when both --nats-creds-dir and --connections > 1
+// are set, the data-conn-to-cred mapping is round-robin by index
+// (conns[i] uses credsFiles[i % len(credsFiles)]). The pool's
+// pool.For(userID) is hashed independently from the cred rotation —
+// so a publish for user "alice" lands on whatever conn-index alice
+// hashes to, NOT on the conn dialed with alice's credentials. Once
+// auth-service lands and enforces per-user JWT subjects, the SUT will
+// reject these requests with permission-denied. Mitigation today: use
+// either auth (--nats-creds-dir) OR per-user fan-out (--connections),
+// not both, until the user→creds binding lands as part of the full C2
+// follow-up. Liveness probes already work around this by routing
+// through pool.Observer(), which always uses the global creds.
 func NewConnPoolWithCreds(observer *nats.Conn, urls, credsFile string, credsFiles []string, dataSize int, dial func(url, creds string) (*nats.Conn, error)) (*ConnPool, error) {
 	if observer == nil {
 		return nil, fmt.Errorf("observer connection required")

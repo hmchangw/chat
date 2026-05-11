@@ -69,6 +69,38 @@ func buildReadinessProbe(scenario string, sub *model.Subscription, siteID string
 	}
 }
 
+// natsConnLike is the subset of *nats.Conn used by buildLivenessProbe.
+// Keeping it tight lets tests inject a fake without dragging the full
+// NATS connection lifecycle.
+type natsConnLike interface {
+	RTT() (time.Duration, error)
+}
+
+// buildLivenessProbe returns a scenario-aware liveness probe. For
+// scenarios with an RPC target the probe is the same shape as the
+// readiness probe (using the OBSERVER connection so it bypasses
+// per-user creds rotation — F3 fix). For messaging-pipeline (no RPC
+// surface), falls back to a NATS round-trip-time check on the observer
+// connection: if NATS itself is unreachable, RTT errors and the watcher
+// trips. F1 fix.
+//
+// The observer connection is the right choice for liveness even when
+// `--connections > 1` because: (a) we want to detect loss of the SUT,
+// not loss of a specific data conn; (b) auth-service permission denials
+// from misrouted creds would falsely register as liveness failures.
+func buildLivenessProbe(scenario string, sub *model.Subscription, siteID string, observerReq Requester, conn natsConnLike) func(context.Context) error {
+	if scenario == "messaging-pipeline" {
+		return func(_ context.Context) error {
+			if conn == nil {
+				return nil
+			}
+			_, err := conn.RTT()
+			return err
+		}
+	}
+	return buildReadinessProbe(scenario, sub, siteID, observerReq)
+}
+
 // ErrReadinessTimeout is returned when waitForReady gives up before the
 // probe succeeds. Distinct from context.DeadlineExceeded so callers can
 // differentiate "we hit our internal cap" from "ctx was cancelled

@@ -58,13 +58,13 @@ func TestWriteCSVFile_RoundTrip(t *testing.T) {
 	c.RecordBroadcast("m-1", now.Add(8*time.Millisecond))
 
 	path := filepath.Join(t.TempDir(), "out.csv")
-	require.NoError(t, writeCSVFile(path, c))
+	require.NoError(t, writeCSVFile(path, "test-run-id", c))
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	out := string(data)
 	// Header present
-	require.True(t, strings.HasPrefix(out, "row_index,request_id,metric,latency_ns"))
+	require.True(t, strings.HasPrefix(out, "run_id,row_index,request_id,metric,latency_ns"))
 	// At least one E1 row and one E2 row
 	require.Contains(t, out, ",E1,")
 	require.Contains(t, out, ",E2,")
@@ -75,13 +75,13 @@ func TestWriteCSVFile_EmptyCollector(t *testing.T) {
 	c := NewCollector(m, "small")
 
 	path := filepath.Join(t.TempDir(), "empty.csv")
-	require.NoError(t, writeCSVFile(path, c))
+	require.NoError(t, writeCSVFile(path, "test-run-id", c))
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	out := string(data)
 	// Header still present, no data rows
-	require.True(t, strings.HasPrefix(out, "row_index,request_id,metric,latency_ns"))
+	require.True(t, strings.HasPrefix(out, "run_id,row_index,request_id,metric,latency_ns"))
 	require.NotContains(t, out, ",E1,")
 	require.NotContains(t, out, ",E2,")
 }

@@ -81,7 +81,7 @@ make -C tools/loadgen/deploy run-dashboards PRESET=medium
 | `--ramp-from=N`, `--ramp-to=N`    | 0       | Ramp the rate from N rps to M rps (overrides `--rate` when set).   |
 | `--ramp-duration=<dur>`           | 0       | Time to climb across the ramp.                                     |
 | `--ramp-shape=linear\|exponential`| `linear`| Ramp curve.                                                        |
-| `--abort-on-p99-ms=N`             | 0       | Stop the run if median latency stays above N ms for `--abort-p99-sustain`. Exit code 2. |
+| `--abort-on-p99-ms=N`             | 0       | Stop the run if the p99 of the abort window stays above N ms for `--abort-p99-sustain`. Exit code 2. |
 | `--abort-p99-sustain=<dur>`       | `30s`   | Sustain window for the latency abort.                              |
 | `--abort-on-error-pct=F`          | 0       | Stop if error rate stays above F (0..1) for `--abort-error-sustain`. |
 | `--abort-error-sustain=<dur>`     | `10s`   | Sustain window for the error-rate abort.                           |
@@ -90,7 +90,11 @@ make -C tools/loadgen/deploy run-dashboards PRESET=medium
 
 - **messaging-pipeline:** `final_pending == 0` on every durable + zero errors → pipeline sustaining target rate. `final_pending` climbing or errors > 0 → over capacity or upstream regression.
 - **history-read / search-read / room-rpc:** the "request latency" section shows per-(scenario, kind) p50/p95/p99/max + count + errors. p99 climbing while count drops → service-side saturation.
-- **Exit codes:** 0 = clean pass, 1 = errors above tolerance, 2 = aborted by saturation watcher.
+- **Exit codes** (precedence: liveness > saturation > clean-fail > clean-pass):
+    - `0` clean pass
+    - `1` errors above tolerance
+    - `2` aborted by the saturation watcher (SUT got slow — `--abort-on-p99-ms` / `--abort-on-error-pct`)
+    - `3` aborted by the liveness watcher (SUT became unreachable — `--liveness-interval`)
 
 ### Saturation metric layout
 

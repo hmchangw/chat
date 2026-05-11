@@ -88,7 +88,7 @@ func NewMetrics() *Metrics {
 		),
 		LivenessProbes: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Name: "loadgen_liveness_probes_total", Help: "Mid-run liveness probe results."},
-			[]string{"result"},
+			[]string{"preset", "result"},
 		),
 	}
 	r.MustRegister(

@@ -174,8 +174,9 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	abortP99Sustain := fs.Duration("abort-p99-sustain", 30*time.Second, "sustain window for the p99 abort threshold")
 	abortErrorPct := fs.Float64("abort-on-error-pct", 0, "abort the run if error rate stays over this fraction (0..1) for --abort-error-sustain; 0 disables")
 	abortErrorSustain := fs.Duration("abort-error-sustain", 10*time.Second, "sustain window for the error-rate abort threshold")
-	livenessInterval := fs.Duration("liveness-interval", 30*time.Second, "mid-run SUT liveness probe interval; 0 disables")
+	livenessInterval := fs.Duration("liveness-interval", 10*time.Second, "mid-run SUT liveness probe interval; 0 disables. Default 10s × 3 failures = 30s detection so the watcher can fire on the default 60s --duration.")
 	livenessFailures := fs.Int("liveness-failures", 3, "consecutive liveness probe failures required to abort the run")
+	livenessTimeout := fs.Duration("liveness-timeout", 5*time.Second, "per-probe timeout. Aligned with --request-timeout default so a slow-but-up SUT trips the saturation watcher (exit 2) before the liveness watcher (exit 3).")
 	csvPath := fs.String("csv", "", "optional csv output path")
 	_ = fs.Parse(args)
 	if err := parseScenarioFlag(*scenario); err != nil {
@@ -369,8 +370,26 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		return 1
 	}
 	if len(credsFiles) > 0 {
-		slog.Info("rotating per-user nats creds",
-			"creds_count", len(credsFiles), "data_conns", *connections)
+		// F4: only log "rotating" when rotation can actually happen.
+		// With --connections<=1 the pool collapses to {observer} and the
+		// credsFiles slice is silently ignored — that path used to
+		// emit a misleading info-line claiming rotation was active.
+		if *connections > 1 {
+			// F3: the user-to-creds binding isn't implemented yet; refuse
+			// rather than silently mis-route per-user traffic. Liveness
+			// probes still work (they use pool.Observer with global creds);
+			// scenario traffic would get permission-denied once
+			// auth-service is enforcing. Operators wanting auth realism
+			// today should use --connections=1 + a single creds file via
+			// NATS_CREDS_FILE.
+			fmt.Fprintln(os.Stderr,
+				"--nats-creds-dir + --connections>1 is unsafe today: per-user→creds binding "+
+					"is not yet implemented (deferred until full C2 lands). Use --connections=1 with "+
+					"NATS_CREDS_FILE for shared-creds runs, or wait for the user-binding follow-up.")
+			return 2
+		}
+		slog.Warn("--nats-creds-dir ignored: --connections=1 routes all traffic through the observer (cfg.NatsCredsFile)",
+			"creds_count", len(credsFiles))
 	}
 	pool, perr := NewConnPoolWithCreds(
 		nc.NatsConn(), cfg.NatsURL, cfg.NatsCredsFile, credsFiles, *connections,
@@ -557,16 +576,22 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		}()
 	}
 
-	// C5: mid-run liveness watcher. Periodically probes the SUT with the
-	// same RPC the scenario uses. ConsecutiveFails back-to-back failures
-	// cancel the run with exit code 3 — distinguishes "SUT became
-	// unreachable" from "SUT got slow" (saturation/abort = exit 2).
+	// C5 + F1: mid-run liveness watcher. Probes the SUT periodically.
+	// For messaging-pipeline (no RPC target), falls back to a NATS RTT
+	// check on the observer conn so the same "SUT is gone" detector
+	// works for every scenario. Probes use the OBSERVER connection
+	// regardless of --connections / --nats-creds-dir so per-user creds
+	// rotation can't cause permission-denied false-positives (F3 fix).
 	var livenessFailed atomic.Bool
 	var livenessReason atomic.Value
 	var livenessWG sync.WaitGroup
-	if *livenessInterval > 0 && scenarioNeedsReadiness(*scenario) && len(fixtures.Subscriptions) > 0 {
+	if *livenessInterval > 0 && len(fixtures.Subscriptions) > 0 {
 		probeSub := fixtures.Subscriptions[0]
-		liveProbe := buildReadinessProbe(*scenario, &probeSub, cfg.SiteID, requester)
+		// Observer-routed requester so the probe uses the global creds
+		// (cfg.NatsCredsFile) regardless of pool fan-out and rotation.
+		observerPool := &ConnPool{observer: pool.Observer()}
+		observerReq := &natsRequester{pool: observerPool, runID: runID}
+		liveProbe := buildLivenessProbe(*scenario, &probeSub, cfg.SiteID, observerReq, pool.Observer())
 		livenessWG.Add(1)
 		go func() {
 			defer livenessWG.Done()
@@ -574,9 +599,9 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 				Probe:            liveProbe,
 				Interval:         *livenessInterval,
 				ConsecutiveFails: *livenessFailures,
-				Timeout:          2 * time.Second,
+				Timeout:          *livenessTimeout,
 				Counter: func(result string) {
-					metrics.LivenessProbes.WithLabelValues(result).Inc()
+					metrics.LivenessProbes.WithLabelValues(p.Name, result).Inc()
 				},
 			}, &livenessFailed, func(reason string) {
 				slog.Warn("liveness watcher fired", "reason", reason)
@@ -668,7 +693,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 
 	if *csvPath != "" {
-		if err := writeCSVFile(*csvPath, collector); err != nil {
+		if err := writeCSVFile(*csvPath, runID, collector); err != nil {
 			slog.Error("csv export", "error", err)
 		}
 	}
@@ -827,7 +852,7 @@ func drainTrailingReplies(c *Collector, maxWait, interval time.Duration, stableT
 	}
 }
 
-func writeCSVFile(path string, c *Collector) error {
+func writeCSVFile(path, runID string, c *Collector) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create csv: %w", err)
@@ -835,13 +860,14 @@ func writeCSVFile(path string, c *Collector) error {
 	defer func() { _ = f.Close() }()
 	var rows []CSVSample
 	for i, d := range c.E1Samples() {
-		rows = append(rows, CSVSample{RowIndex: int64(i), Metric: "E1", LatencyNs: d.Nanoseconds()})
+		rows = append(rows, CSVSample{RunID: runID, RowIndex: int64(i), Metric: "E1", LatencyNs: d.Nanoseconds()})
 	}
 	for i, d := range c.E2Samples() {
-		rows = append(rows, CSVSample{RowIndex: int64(i), Metric: "E2", LatencyNs: d.Nanoseconds()})
+		rows = append(rows, CSVSample{RunID: runID, RowIndex: int64(i), Metric: "E2", LatencyNs: d.Nanoseconds()})
 	}
 	for i, r := range c.RequestSampleRows() {
 		rows = append(rows, CSVSample{
+			RunID:     runID,
 			RowIndex:  int64(i),
 			Metric:    r.Scenario + "." + r.Kind,
 			LatencyNs: r.Latency.Nanoseconds(),
