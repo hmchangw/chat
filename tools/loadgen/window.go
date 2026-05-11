@@ -1,6 +1,8 @@
 package main
 
 import (
+	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -42,14 +44,35 @@ func NewLatencyWindow(retain time.Duration) *LatencyWindow {
 	return &LatencyWindow{retain: retain}
 }
 
-// SetMaxSamples caps the slice length at n (drop-oldest when full).
-// 0 disables the cap (legacy unbounded behavior). Intended for use
-// at construction time; concurrent updates are technically safe
-// (locked) but the new cap only takes effect on the next Add.
-func (w *LatencyWindow) SetMaxSamples(n int) {
+// WithMaxSamples caps the slice length at n (drop-oldest when full)
+// and returns the receiver for fluent construction:
+//
+//	w := NewLatencyWindow(retain).WithMaxSamples(10_000)
+//
+// 0 disables the cap (legacy unbounded behavior). Concurrent updates
+// are safe (locked) but the new cap only takes effect on the next
+// Add — there's no retroactive truncation. Designed for one-shot
+// construction-time setup; runtime mutation is supported but not the
+// expected use case.
+func (w *LatencyWindow) WithMaxSamples(n int) *LatencyWindow {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.maxSamples = n
+	return w
+}
+
+// Saturated reports whether the slice is currently at its cap (i.e.
+// the next Add will drop the oldest sample). Used by the abort
+// watcher to emit a structured diagnostic when the cap appears to
+// be masking a sustained breach: if Saturated() is true AND
+// P99WithCoverage returns covered=false, the watcher can't fire
+// because retention has been compressed below the sustain interval.
+// Returns false when no cap is set (uncapped windows are never
+// "saturated"; they grow without bound).
+func (w *LatencyWindow) Saturated() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.maxSamples > 0 && len(w.samples) >= w.maxSamples
 }
 
 // Add records one observation at time.Now(). Use AddAt in tests for
@@ -152,7 +175,8 @@ func (w *LatencyWindow) ErrorRateWithCoverage(now time.Time, over time.Duration)
 // percentileLocked must be called with w.mu held.
 func (w *LatencyWindow) percentileLocked(now time.Time, over time.Duration, q float64) time.Duration {
 	latencies := w.windowedLatenciesLocked(now, over)
-	return percentileFromSorted(sortedCopy(latencies), q)
+	sortInPlace(latencies)
+	return percentileFromSorted(latencies, q)
 }
 
 // Percentiles returns multiple quantiles over the same window in a
@@ -160,15 +184,16 @@ func (w *LatencyWindow) percentileLocked(now time.Time, over time.Duration, q fl
 // once. Progress reporting and other multi-percentile readouts MUST
 // prefer this over N separate P50/P95/P99 calls — each separate call
 // would re-take the lock, re-copy the slice, and re-sort it.
-// Returns a slice the same length as `qs`. An empty `qs` returns an
-// empty slice (no allocation beyond the zero-cap result header).
+// Returns a slice the same length as `qs`. When `qs` is empty the
+// return is nil (callers should treat empty/nil equivalently).
 func (w *LatencyWindow) Percentiles(now time.Time, over time.Duration, qs ...float64) []time.Duration {
 	if len(qs) == 0 {
 		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	latencies := sortedCopy(w.windowedLatenciesLocked(now, over))
+	latencies := w.windowedLatenciesLocked(now, over)
+	sortInPlace(latencies)
 	out := make([]time.Duration, len(qs))
 	for i, q := range qs {
 		out[i] = percentileFromSorted(latencies, q)
@@ -190,9 +215,12 @@ func (w *LatencyWindow) windowedLatenciesLocked(now time.Time, over time.Duratio
 	return latencies
 }
 
-func sortedCopy(latencies []time.Duration) []time.Duration {
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	return latencies
+// sortInPlace ascending-sorts the slice (no copy). The caller owns
+// the slice and the post-call ordering. Uses slices.Sort (no
+// reflection) which is ~25-30% faster than the older sort.Slice on
+// typed slices like []time.Duration.
+func sortInPlace(latencies []time.Duration) {
+	slices.Sort(latencies)
 }
 
 func percentileFromSorted(sorted []time.Duration, q float64) time.Duration {
@@ -241,7 +269,27 @@ type abortConfig struct {
 // window with the configured sustain duration: if every sample in
 // that sub-window is in breach, the threshold has been continuously
 // over.
+//
+// When the LatencyWindow is at its sample cap AND a breach is observed
+// without sustain coverage, this function emits a structured slog.Warn
+// ("abort watcher deafened by sample cap") so operators don't get a
+// silent no-fire surprise — the cap has compressed retention below
+// the sustain interval, so the watcher CAN'T see whether the breach
+// is sustained. Fix: raise --abort-window-max-samples for the target
+// publish rate, or disable the cap with 0.
 func abortShouldFire(cfg *abortConfig, now time.Time) (bool, string) {
+	tripped, reason, _ := abortShouldFireDiag(cfg, now)
+	return tripped, reason
+}
+
+// abortShouldFireDiag is the test-visible variant that also returns
+// whether the cap-masking-sustain diagnostic condition was detected.
+// Production callers use abortShouldFire which discards the flag (it
+// emits a slog.Warn instead). Returning the bool from the diag form
+// keeps tests deterministic without rummaging through captured log
+// output.
+func abortShouldFireDiag(cfg *abortConfig, now time.Time) (bool, string, bool) {
+	capMasked := false
 	if cfg.P99Limit > 0 {
 		// Atomic percentile + coverage check (W3 fix): without the
 		// combined call, an Add between two separate locks could prune
@@ -249,14 +297,34 @@ func abortShouldFire(cfg *abortConfig, now time.Time) (bool, string) {
 		// invariant inconsistently across the two reads.
 		p99, covered := cfg.Window.P99WithCoverage(now, cfg.P99Sustain)
 		if p99 > cfg.P99Limit && covered {
-			return true, "p99 over " + cfg.P99Limit.String() + " sustained for " + cfg.P99Sustain.String()
+			return true, "p99 over " + cfg.P99Limit.String() + " sustained for " + cfg.P99Sustain.String(), false
+		}
+		if p99 > cfg.P99Limit && !covered && cfg.Window.Saturated() {
+			capMasked = true
+			slog.Warn("abort watcher deafened by sample cap",
+				"check", "p99",
+				"p99", p99.String(),
+				"limit", cfg.P99Limit.String(),
+				"sustain", cfg.P99Sustain.String(),
+				"hint", "raise --abort-window-max-samples or set to 0 to disable the cap",
+			)
 		}
 	}
 	if cfg.ErrorPct > 0 {
 		rate, covered := cfg.Window.ErrorRateWithCoverage(now, cfg.ErrorSustain)
 		if rate > cfg.ErrorPct && covered {
-			return true, "error_rate over threshold sustained for " + cfg.ErrorSustain.String()
+			return true, "error_rate over threshold sustained for " + cfg.ErrorSustain.String(), capMasked
+		}
+		if rate > cfg.ErrorPct && !covered && cfg.Window.Saturated() {
+			capMasked = true
+			slog.Warn("abort watcher deafened by sample cap",
+				"check", "error_rate",
+				"rate", rate,
+				"limit", cfg.ErrorPct,
+				"sustain", cfg.ErrorSustain.String(),
+				"hint", "raise --abort-window-max-samples or set to 0 to disable the cap",
+			)
 		}
 	}
-	return false, ""
+	return false, "", capMasked
 }

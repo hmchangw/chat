@@ -305,8 +305,7 @@ func TestLatencyWindow_Percentiles_NoQuantilesReturnsEmpty(t *testing.T) {
 // HOW MANY). Adds remain monotonic-time so the binary-search prune
 // in AddAt continues to work.
 func TestLatencyWindow_MaxSamples_DropsOldestOverCap(t *testing.T) {
-	w := NewLatencyWindow(60 * time.Second)
-	w.SetMaxSamples(5)
+	w := NewLatencyWindow(60 * time.Second).WithMaxSamples(5)
 	t0 := time.Unix(100, 0)
 	// 10 samples 1..10ms — only the last 5 (6..10ms) should survive.
 	for i := 1; i <= 10; i++ {
@@ -330,4 +329,80 @@ func TestLatencyWindow_MaxSamples_ZeroMeansUnbounded(t *testing.T) {
 	// p99 over the full window — idx=floor(49*0.99)=48 → samples[48]=49ms.
 	end := t0.Add(60 * time.Millisecond)
 	assert.Equal(t, 49*time.Millisecond, w.P99(end, 60*time.Second))
+}
+
+// Reviewer B WARN #8: cap + retention prune may both trigger on a
+// single AddAt. The prune-by-time happens first, then the cap-truncate
+// happens AFTER the append. Lock that ordering in: retention=10ms,
+// cap=3, push samples at 1..15ms.
+func TestLatencyWindow_RetentionAndCapBothPruneInOneAdd(t *testing.T) {
+	w := NewLatencyWindow(10 * time.Millisecond).WithMaxSamples(3)
+	t0 := time.Unix(100, 0)
+	for i := 1; i <= 15; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*time.Millisecond), time.Duration(i)*time.Millisecond, false)
+	}
+	// After the 15th sample at t0+15ms:
+	//   - retention cutoff = 15ms - 10ms = 5ms. Samples with at < 5ms
+	//     are pruned. Samples 1..4ms drop; 5..15ms survive that step.
+	//   - append the 15th, now 11 samples in the slice.
+	//   - cap=3, keep last 3 → [13, 14, 15]ms.
+	end := t0.Add(16 * time.Millisecond)
+	got := w.Percentiles(end, 60*time.Second, 0.50, 0.99)
+	require.Len(t, got, 2)
+	// p50: idx=floor(2*0.50)=1 → sorted[1]=14ms.
+	// p99: idx=floor(2*0.99)=1 → sorted[1]=14ms. (3 samples is too few
+	// to distinguish p50 from p99; the test's purpose is to lock the
+	// SURVIVING set after combined pruning, not the percentile spread.)
+	assert.Equal(t, 14*time.Millisecond, got[0], "p50 of [13,14,15]")
+	assert.Equal(t, 14*time.Millisecond, got[1], "p99 of [13,14,15]")
+}
+
+// Reviewer A WARN #1 / B WARN #1: when the cap is full AND coverage
+// fails the sustain check, the abort watcher silently does NOT fire
+// even though a real sustained breach could be happening — the cap
+// is masking it. Saturated() is the introspection hook the watcher
+// uses to decide whether to emit a diagnostic.
+func TestLatencyWindow_Saturated_ReportsCapState(t *testing.T) {
+	uncapped := NewLatencyWindow(60 * time.Second)
+	uncapped.AddAt(time.Unix(100, 0), 1*time.Millisecond, false)
+	assert.False(t, uncapped.Saturated(), "uncapped windows are never saturated")
+
+	capped := NewLatencyWindow(60 * time.Second).WithMaxSamples(3)
+	t0 := time.Unix(100, 0)
+	for i := 1; i <= 3; i++ {
+		capped.AddAt(t0.Add(time.Duration(i)*time.Millisecond), time.Duration(i)*time.Millisecond, false)
+	}
+	assert.True(t, capped.Saturated(), "at-cap window must report saturated")
+
+	// Drop the cap-filling samples by waiting past retention — the
+	// window's length-based saturation flag is a snapshot of "right
+	// now," not a sticky bit. Once samples drain, Saturated returns
+	// false again.
+	// Add a sample 70s later that prunes everything older than 10s.
+	capped.AddAt(t0.Add(70*time.Second), 1*time.Millisecond, false)
+	assert.False(t, capped.Saturated(), "after retention drains, no longer saturated")
+}
+
+// Validates the abort-watcher's R1/B1 fix: when a sustained P99 breach
+// COULD be happening but the cap has compressed retention below the
+// sustain interval, the watcher emits a structured warning instead of
+// silently doing nothing.
+func TestAbortShouldFire_LogsWhenCapMasksSustain(t *testing.T) {
+	// Build a tiny cap that's guaranteed to deafen a 5s sustain.
+	w := NewLatencyWindow(60 * time.Second).WithMaxSamples(3)
+	t0 := time.Unix(100, 0)
+	// Three over-limit samples in the last 30ms — sustain is 5s, so
+	// coverage will be false (oldest sample is 30ms old, not 5s).
+	for i := 1; i <= 3; i++ {
+		w.AddAt(t0.Add(time.Duration(i)*10*time.Millisecond), 2*time.Second, false)
+	}
+	cfg := &abortConfig{
+		Window:     w,
+		P99Limit:   1 * time.Second,
+		P99Sustain: 5 * time.Second,
+	}
+	// Use the diagnostic form that returns whether a warning was emitted.
+	tripped, _, capMasked := abortShouldFireDiag(cfg, t0.Add(40*time.Millisecond))
+	assert.False(t, tripped, "coverage=false → watcher does not fire")
+	assert.True(t, capMasked, "saturated cap + breach + no coverage → cap-masked-sustain diagnostic")
 }
