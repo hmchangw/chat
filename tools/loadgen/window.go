@@ -61,8 +61,11 @@ func (w *LatencyWindow) WithMaxSamples(n int) *LatencyWindow {
 	return w
 }
 
-// Saturated reports whether the slice is currently at its cap (i.e.
-// the next Add will drop the oldest sample). Used by the abort
+// Saturated reports whether the slice is currently at or above its
+// cap (i.e. the next Add will drop the oldest sample). The predicate
+// fires one sample early — at len == cap, before the next Add grows
+// to cap+1 — which is intentional: better to fire the cap-masking
+// diagnostic one sample too soon than to miss it. Used by the abort
 // watcher to emit a structured diagnostic when the cap appears to
 // be masking a sustained breach: if Saturated() is true AND
 // P99WithCoverage returns covered=false, the watcher can't fire

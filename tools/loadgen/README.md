@@ -78,7 +78,7 @@ make -C tools/loadgen/deploy run-dashboards PRESET=medium
 | `--progress-interval=<dur>`       | `10s`   | Live progress log line cadence; `0` disables.                      |
 | `--skip-readiness`                | `false` | Skip the pre-run readiness probe.                                  |
 | `--readiness-timeout=<dur>`       | `30s`   | Deadline for the readiness probe.                                  |
-| `--ramp-from=N`, `--ramp-to=N`    | 0       | Ramp the rate from N rps to M rps (overrides `--rate` when set).   |
+| `--ramp-from=N`, `--ramp-to=N`    | 0       | Ramp the rate from N rps to M rps. **Mutually exclusive with `--rate`** — pass `--rate=0` together with `--ramp-from=N --ramp-to=M --ramp-duration=DUR` to ramp. |
 | `--ramp-duration=<dur>`           | 0       | Time to climb across the ramp.                                     |
 | `--ramp-shape=linear\|exponential`| `linear`| Ramp curve.                                                        |
 | `--abort-on-p99-ms=N`             | 0       | Stop the run if the p99 of the abort window stays above N ms for `--abort-p99-sustain`. Exit code 2. |
@@ -154,6 +154,61 @@ sum(rate(loadgen_publish_errors_total{reason="saturated"}[1m]))
 - The compose stack is substantial (NATS + Mongo + Cassandra +
   Elasticsearch + Valkey + 7 services). Plan for ~3GB of memory on
   Cassandra + Elasticsearch alone.
+- **Phase S scope notes.** S1 was originally framed as "streaming
+  aggregates" (per-bucket HDR-histograms replacing the per-sample
+  slices) but shipped as **per-key mutex sharding** — a 1-day change
+  that preserves exact-percentile reporting contracts instead of a
+  3-day rewrite. The full streaming-aggregate path is deferred to a
+  follow-up (S6/S7). Memory under sustained load is still bounded
+  by `--abort-window-max-samples` (which caps the watcher's slice)
+  but the Collector's per-(scenario,kind) request slices remain
+  unbounded for the duration of a single run. See commit `e7b7fe4`.
+
+## Troubleshooting
+
+First-run gotchas observed when standing up the loadtest compose stack
+on a fresh machine. Listed in rough order of likelihood.
+
+- **`apk add --no-cache ca-certificates` fails during `docker compose
+  build` with `certificate verify failed`.** Hits restricted-network
+  sandboxes where the Alpine CDN's TLS chain isn't validated by the
+  bare alpine image. Workaround: pre-build an `alpine-precerts:3.21`
+  base image with the host CA bundle baked in (`COPY
+  /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/`), then sed the
+  service Dockerfiles to use it. Long-term: switch the runtime stage
+  to `gcr.io/distroless/static-debian12` which ships with ca-certs
+  preinstalled. Tracked as a follow-up.
+
+- **`cassandra-init` exits with code 1 on first `up`.** Cassandra
+  4.1 occasionally races its own healthcheck on cold start — the
+  `nodetool status` check passes but the CQL listener isn't yet
+  accepting connections. The compose retry budget was bumped to
+  60 × 10s but you may still hit it on slow hosts. Recovery:
+  `docker compose up cassandra-init` once Cassandra is steadily
+  healthy.
+
+- **`search-sync-worker` error-loops with `INBOX_site-local stream
+  not found`.** The INBOX stream is owned by `inbox-worker` per
+  CLAUDE.md §6 ("Stream bootstrap ownership"). The loadtest compose
+  stack now includes `inbox-worker` to satisfy this dependency even
+  for single-site runs.
+
+- **`--ramp-from`/`--ramp-to` rejected with "`--rate` and
+  `--ramp-from/--ramp-to` cannot both be set".** `--rate` defaults
+  to 500. To use a ramp, pass `--rate=0 --ramp-from=N --ramp-to=M
+  --ramp-duration=DUR` together.
+
+- **`curl localhost:9099/metrics` returns empty / connection
+  refused.** The metrics HTTP server is started and stopped per
+  `loadgen run` invocation — it does NOT outlive the run. To capture
+  metrics during a run, bring up the `dashboards` profile so
+  Prometheus scrapes live: `make run-dashboards PRESET=...`.
+
+- **High `redelivered` count on `message-worker` in the consumer-lag
+  table.** This is a SUT signal (the worker can't ack at the offered
+  rate), not a loadgen bug. The S3 sample cap diagnostic (`abort
+  watcher deafened by sample cap`) is separate; check whether either
+  fires when interpreting a run.
 
 ## Non-goals
 

@@ -52,6 +52,24 @@ type requestShard struct {
 }
 
 // Collector correlates publishes with replies (E1) and broadcasts (E2).
+//
+// LOCK-ORDER INVARIANT (do not violate when adding methods):
+// Any method that needs both a shard mutex AND c.mu must acquire the
+// shard mutex FIRST, release it, then acquire c.mu. The two locks
+// are NEVER held simultaneously by any production path. This holds
+// across all sharded structures (requestsMu, requestShard.mu,
+// correlationShard.mu) and c.mu. Phase S commits S1 (e7b7fe4) and
+// S2 (ecb859f) follow this discipline; the round-trip pattern is:
+//
+//	sh.mu.Lock()
+//	... append / lookup / delete ...
+//	sh.mu.Unlock()
+//	c.mu.Lock()
+//	... touch e1 / e2 / seenMessageIDs / window ...
+//	c.mu.Unlock()
+//
+// Adding a method that holds shard.mu and c.mu nested would let a
+// concurrent caller deadlock.
 type Collector struct {
 	m      *Metrics
 	preset string

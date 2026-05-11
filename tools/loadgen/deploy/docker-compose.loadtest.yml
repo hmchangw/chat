@@ -35,11 +35,15 @@ services:
     ports:
       - "9042:9042"
     networks: [loadtest]
+    # Cassandra 4.1 can race the first `UN` flip — the keyspace init
+    # depends on service_healthy so a too-tight retry budget leaves
+    # cassandra-init exiting with code 1, requiring a manual re-run.
+    # 60 × 10s = 10min covers cold-start on slower hosts.
     healthcheck:
       test: ["CMD-SHELL", "nodetool status | grep -q '^UN'"]
       interval: 10s
       timeout: 5s
-      retries: 30
+      retries: 60
 
   cassandra-init:
     image: cassandra:4.1
@@ -107,6 +111,24 @@ services:
     build:
       context: ../../..
       dockerfile: notification-worker/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=loadgen
+      - BOOTSTRAP_STREAMS=true
+    depends_on: [nats, mongodb]
+    networks: [loadtest]
+
+  # inbox-worker owns the INBOX_site-local stream per CLAUDE.md §6 (Stream
+  # bootstrap ownership). Without it, search-sync-worker error-loops trying
+  # to attach a consumer to a non-existent INBOX stream. Even when no
+  # cross-site federation is configured, inbox-worker is needed to create
+  # the stream so downstream consumers can subscribe.
+  inbox-worker:
+    build:
+      context: ../../..
+      dockerfile: inbox-worker/deploy/Dockerfile
     environment:
       - NATS_URL=nats://nats:4222
       - SITE_ID=site-local
