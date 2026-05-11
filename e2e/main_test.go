@@ -28,6 +28,11 @@ func runTestMain(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "e2e: harness.Start: %v\n", err)
 		return 1
 	}
+	if err := harness.BootstrapFederation(ctx, s); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: BootstrapFederation: %v\n", err)
+		_ = s.Stop(context.Background())
+		return 1
+	}
 	stack = s
 
 	code := m.Run()
