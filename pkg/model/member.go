@@ -67,6 +67,10 @@ type RemoveMemberRequest struct {
 	OrgID     string `json:"orgId,omitempty"    bson:"orgId,omitempty"`
 	// Set by room-service at acceptance; stable seed for Message.ID + Nats-Msg-Id.
 	Timestamp int64 `json:"timestamp" bson:"timestamp"`
+	// New room-key version after room-service rotates on remove.
+	NewKeyVersion int `json:"newKeyVersion" bson:"newKeyVersion"`
+	// Set by room-service after the GetRoom check; carried to room-worker to avoid a redundant Mongo round-trip.
+	RoomType RoomType `json:"roomType,omitempty" bson:"roomType,omitempty"`
 }
 
 type SysMsgUser struct {

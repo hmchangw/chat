@@ -1010,20 +1010,31 @@ func TestRemoveMemberRequestJSON(t *testing.T) {
 		_, hasOrgID := raw["orgId"]
 		assert.False(t, hasOrgID, "orgId should be omitted when empty")
 	})
+
+	t.Run("RemoveMemberRequest with NewKeyVersion", func(t *testing.T) {
+		r := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob",
+			Timestamp: 1700000000000, NewKeyVersion: 3}
+		roundTrip(t, &r, &model.RemoveMemberRequest{})
+	})
 }
 
 func TestMemberRemoveEventJSON(t *testing.T) {
-	src := model.MemberRemoveEvent{
-		Type:     "member_removed",
-		RoomID:   "r1",
-		Accounts: []string{"alice", "bob"},
-		SiteID:   "site-a",
-	}
-	data, err := json.Marshal(&src)
-	require.NoError(t, err)
-	var dst model.MemberRemoveEvent
-	require.NoError(t, json.Unmarshal(data, &dst))
-	assert.Equal(t, src, dst)
+	t.Run("basic", func(t *testing.T) {
+		e := model.MemberRemoveEvent{
+			Type:     "member_removed",
+			RoomID:   "r1",
+			Accounts: []string{"alice", "bob"},
+			SiteID:   "site-a",
+		}
+		roundTrip(t, &e, &model.MemberRemoveEvent{})
+	})
+
+	t.Run("MemberRemoveEvent with NewKeyVersion", func(t *testing.T) {
+		e := model.MemberRemoveEvent{Type: "member_removed", RoomID: "r1",
+			Accounts: []string{"bob"}, SiteID: "site-a",
+			Timestamp: 1700000000000, NewKeyVersion: 3}
+		roundTrip(t, &e, &model.MemberRemoveEvent{})
+	})
 }
 
 func TestRoomTypeChannel(t *testing.T) {

@@ -174,6 +174,8 @@ type MemberRemoveEvent struct {
 	SiteID    string   `json:"siteId"          bson:"siteId"`
 	OrgID     string   `json:"orgId,omitempty" bson:"orgId,omitempty"`
 	Timestamp int64    `json:"timestamp"       bson:"timestamp"`
+	// Federated key version for inbox-worker's local rotation.
+	NewKeyVersion int `json:"newKeyVersion" bson:"newKeyVersion"`
 }
 
 // AsyncJobResult signals to the requester's client that an async room-worker job has completed.
@@ -214,6 +216,11 @@ const (
 	// AsyncJobStatusError indicates a failed async job result.
 	AsyncJobStatusError = "error"
 )
+
+// RoomKeyGetRequest is the inter-site RPC payload for the room key get endpoint.
+type RoomKeyGetRequest struct {
+	RoomID string `json:"roomId"`
+}
 
 // CreateRoomReply is the sync NATS reply returned after publishing the canonical create event.
 type CreateRoomReply struct {
