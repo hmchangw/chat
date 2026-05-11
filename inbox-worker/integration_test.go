@@ -34,6 +34,15 @@ func setupMongo(t *testing.T) *mongo.Database {
 	return testutil.MongoDB(t, "inbox_worker_test")
 }
 
+// newHandlerWithStubKeys constructs a Handler with the production-required key
+// wiring populated by in-process stubs. Production refuses to start without
+// Valkey (see main.go's VALKEY_ADDR=required gate), so integration tests that
+// don't otherwise exercise key behavior need non-nil dependencies here.
+func newHandlerWithStubKeys(_ *testing.T, store InboxStore, siteID string) *Handler {
+	ks, client := newKeyDepsForTest()
+	return NewHandler(store, siteID, ks, client)
+}
+
 func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
@@ -43,7 +52,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, "site-b", nil, nil)
+	handler := newHandlerWithStubKeys(t, store, "site-b")
 
 	// Seed user for lookup
 	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u2", Account: "u2", SiteID: "site-b"})
@@ -91,7 +100,7 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, "site-b", nil, nil)
+	handler := newHandlerWithStubKeys(t, store, "site-b")
 
 	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeChannel, UserCount: 5}
 	roomData, _ := json.Marshal(room)
@@ -122,7 +131,7 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, "site-b", nil, nil)
+	handler := newHandlerWithStubKeys(t, store, "site-b")
 
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
@@ -166,13 +175,76 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 	// user notification via NATS supercluster routing.
 }
 
+// TestInboxWorker_BulkCreateSubscriptions_IdempotentUpsert exercises the
+// upsert contract: a redelivered BulkCreateSubscriptions for an already-existing
+// (roomId, account) must be a no-op on Mongo — neither create a duplicate nor
+// overwrite read-state that accumulated since the first delivery.
+func TestInboxWorker_BulkCreateSubscriptions_IdempotentUpsert(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+
+	originalSeenAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	original := &model.Subscription{
+		ID:         "sub-existing",
+		User:       model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:     "r1",
+		SiteID:     "site-origin",
+		Roles:      []model.Role{model.RoleMember},
+		LastSeenAt: &originalSeenAt,
+		Alert:      true,
+		JoinedAt:   originalSeenAt,
+	}
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{original}))
+
+	// Re-issue with a "fresher" copy that has no LastSeenAt — simulates a
+	// redelivered outbox event materializing the same sub.
+	redelivered := &model.Subscription{
+		ID:       "sub-redelivered",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		SiteID:   "site-origin",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	newOne := &model.Subscription{
+		ID:       "sub-new",
+		User:     model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID:   "r1",
+		SiteID:   "site-origin",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{redelivered, newOne}))
+
+	// Exactly two subs in the room: alice (preserved) + bob (newly inserted).
+	count, err := store.subCol.CountDocuments(ctx, bson.M{"roomId": "r1"})
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, count, "redelivery must not duplicate")
+
+	var existing model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"roomId": "r1", "u.account": "alice"}).Decode(&existing))
+	assert.Equal(t, "sub-existing", existing.ID, "existing _id must not change")
+	require.NotNil(t, existing.LastSeenAt, "LastSeenAt must be preserved on upsert no-op")
+	assert.WithinDuration(t, originalSeenAt, *existing.LastSeenAt, time.Second)
+	assert.True(t, existing.Alert, "Alert flag must be preserved")
+
+	var fresh model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"roomId": "r1", "u.account": "bob"}).Decode(&fresh))
+	assert.Equal(t, "sub-new", fresh.ID, "new sub must be inserted with its caller-supplied _id")
+}
+
 func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := &mongoInboxStore{
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
 	}
-	h := NewHandler(store, "site-b", nil, nil)
+	h := newHandlerWithStubKeys(t, store, "site-b")
 
 	ctx := context.Background()
 
@@ -307,7 +379,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := NewHandler(store, "site-b", nil, nil)
+	handler := newHandlerWithStubKeys(t, store, "site-b")
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// Subscription.SiteID is the room's home site (site-a). Bob's home is site-b
@@ -351,7 +423,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := NewHandler(store, "site-b", nil, nil)
+	handler := newHandlerWithStubKeys(t, store, "site-b")
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 
 	// First event: HasMention=true. Subscription.SiteID is the room's site (site-a).
@@ -429,7 +501,7 @@ func newIntegrationHandler(t *testing.T, db *mongo.Database, sid string) *Handle
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	return NewHandler(store, sid, nil, nil)
+	return newHandlerWithStubKeys(t, store, sid)
 }
 
 func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {

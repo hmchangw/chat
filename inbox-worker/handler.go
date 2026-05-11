@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
@@ -339,13 +338,10 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 	if len(subs) == 0 {
 		return nil
 	}
+	// BulkCreateSubscriptions is now $setOnInsert-based: redeliveries are no-ops on
+	// Mongo, so we always proceed to (re-)attempt key replication. Earlier code had
+	// a duplicate-key escape hatch here; with idempotent upserts it's unreachable.
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			if err := h.fetchAndStoreKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
-				return fmt.Errorf("replicate room key for room %s from %s: %w", data.RoomID, data.HomeSiteID, err)
-			}
-			return nil
-		}
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
 	if err := h.fetchAndStoreKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
