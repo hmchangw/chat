@@ -69,6 +69,12 @@ func (s SiteEndpoints) Authenticate(t *testing.T, ctx context.Context, account s
 	require.NoError(t, err, "user-jwt nats connect on %s", s.SiteID)
 	t.Cleanup(conn.Close)
 
+	// Seed the user record into the site's mongo `users` collection so
+	// room-service / room-worker lookups succeed. Production has a separate
+	// user-replication mechanism out of scope here; the test environment
+	// simulates it on each Authenticate call. Idempotent upsert.
+	s.SeedRemoteUser(t, ctx, account, s.SiteID)
+
 	return &Identity{
 		Account: account,
 		NKey:    kp,

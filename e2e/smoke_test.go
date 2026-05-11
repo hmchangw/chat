@@ -1,6 +1,6 @@
 //go:build e2e
 
-package scenarios
+package e2e
 
 import (
 	"net/http"
@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
-	"github.com/hmchangw/chat/e2e"
+	
 )
 
 // TestSmoke_AllDepsReachable runs first; if it fails the rest of the suite
@@ -18,7 +18,7 @@ import (
 // network via the amended host-port band (R2.A / R4.B). Does NOT exercise
 // per-user auth -- that's TestAuth_KeycloakRoundTrip in chapter 11.
 func TestSmoke_AllDepsReachable(t *testing.T) {
-	stack := e2e.Stack()
+	stack := stack
 	require.NotNil(t, stack, "TestMain must have run harness.Start before scenarios")
 
 	for _, site := range []*struct {

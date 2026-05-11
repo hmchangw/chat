@@ -1,6 +1,6 @@
 //go:build e2e
 
-package scenarios
+package e2e
 
 import (
 	"context"
@@ -13,8 +13,12 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // requestReply is a thin wrapper over nats.Conn.Request that JSON-marshals
@@ -34,7 +38,16 @@ func requestReply(conn *nats.Conn, subj string, req any, timeout time.Duration, 
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
-	msg, err := conn.Request(subj, body, timeout)
+	// Every request carries an X-Request-ID header. room-service in
+	// particular rejects requests that lack one (errMissingRequestID).
+	// idgen.GenerateRequestID returns a UUIDv7 in hyphenated form, which
+	// matches the natsutil/idgen contract.
+	outbound := &nats.Msg{
+		Subject: subj,
+		Data:    body,
+		Header:  nats.Header{natsutil.RequestIDHeader: []string{idgen.GenerateRequestID()}},
+	}
+	msg, err := conn.RequestMsg(outbound, timeout)
 	if err != nil {
 		return fmt.Errorf("request %s: %w", subj, err)
 	}
@@ -166,4 +179,23 @@ func awaitMessage(t *testing.T, sub *nats.Subscription, timeout time.Duration) *
 	msg, err := sub.NextMsg(timeout)
 	require.NoError(t, err, "no message on %s within %s", sub.Subject, timeout)
 	return msg
+}
+
+// awaitSubscription waits until the named account has a subscription record
+// for the given roomID in the site's mongo. CreateRoomReply returns BEFORE
+// room-worker persists the subscriptions (it's a "request accepted"
+// acknowledgement, not a "data is durable" confirmation). Sending to the
+// room before this point trips the gatekeeper's "user is not subscribed"
+// check.
+func awaitSubscription(t *testing.T, ctx context.Context, db *mongo.Database, account, roomID string) {
+	t.Helper()
+	subs := db.Collection("subscriptions")
+	require.Eventually(t, func() bool {
+		count, err := subs.CountDocuments(ctx, bson.M{
+			"u.account": account,
+			"roomId":    roomID,
+		})
+		return err == nil && count > 0
+	}, 15*time.Second, 100*time.Millisecond,
+		"subscription for account=%s roomId=%s never persisted", account, roomID)
 }

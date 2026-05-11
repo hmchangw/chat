@@ -167,7 +167,7 @@ services:
   # reason as cassandra-init-a: search-service-a + search-sync-worker-a
   # depend on this completing.
   search-init-a:
-    image: curlimages/curl:8
+    image: curlimages/curl:8.20.0
     container_name: search-init-a
     networks: [chat-e2e]
     depends_on:
@@ -177,11 +177,12 @@ services:
     command:
       - |
         set -e
+        curl -fsS -X PUT http://es-a:9200/_cluster/settings -H 'Content-Type: application/json' -d '{"persistent":{"cluster.routing.allocation.disk.threshold_enabled":false}}'
         curl -fsS -X PUT http://es-a:9200/_index_template/messages-e2e \
           -H 'Content-Type: application/json' \
           -d '{
-            "index_patterns": ["messages-siteA-v1-*", "messages-siteB-v1-*"],
-            "template": { "settings": { "index": { "refresh_interval": "200ms" } } },
+            "index_patterns": ["messages-sitea-v1-*", "messages-siteb-v1-*"],
+            "template": { "settings": { "index": { "refresh_interval": "200ms", "number_of_replicas": 0 } } },
             "priority": 200
           }'
         echo "[search-init-a] template applied"
@@ -229,7 +230,7 @@ services:
       # Per amendment R1 3.B: the official Keycloak 26 image runs `sh`, not
       # bash, so the /dev/tcp exec idiom doesn't work. curl ships in the
       # image and reads the management-port /health/ready endpoint cleanly.
-      test: ["CMD-SHELL", "curl -fs http://localhost:9000/health/ready | grep -q '\"status\": \"UP\"'"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/9000 && printf \"GET /health/ready HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q UP <&3'"]
       interval: 5s
       timeout: 5s
       retries: 60
@@ -457,7 +458,7 @@ services:
       SEARCH_BACKEND: elasticsearch
       # Per amendment R1 4.B + R3.C: explicit override; matches the
       # auto-derived default (user-room-siteA) for clarity.
-      SEARCH_USER_ROOM_INDEX: user-room-siteA
+      SEARCH_USER_ROOM_INDEX: user-room-sitea
       VALKEY_ADDR: valkey-a:6379
       VALKEY_PASSWORD: ""
       SEARCH_DOC_COUNTS: "25"
@@ -484,8 +485,10 @@ services:
       SITE_ID: siteA
       SEARCH_URL: http://es-a:9200
       SEARCH_BACKEND: elasticsearch
-      MSG_INDEX_PREFIX: messages-siteA-v1
-      SEARCH_USER_ROOM_INDEX: user-room-siteA
+      MSG_INDEX_PREFIX: messages-sitea-v1
+      SPOTLIGHT_INDEX: spotlight-sitea-v1-chat
+      USER_ROOM_INDEX: user-room-sitea
+      SEARCH_USER_ROOM_INDEX: user-room-sitea
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
     volumes:
@@ -599,7 +602,7 @@ services:
   # independent in this topology (one ES per site, no replication). So
   # site-B's ES needs its own template-application job.
   search-init-b:
-    image: curlimages/curl:8
+    image: curlimages/curl:8.20.0
     container_name: search-init-b
     networks: [chat-e2e]
     depends_on:
@@ -609,11 +612,12 @@ services:
     command:
       - |
         set -e
+        curl -fsS -X PUT http://es-b:9200/_cluster/settings -H 'Content-Type: application/json' -d '{"persistent":{"cluster.routing.allocation.disk.threshold_enabled":false}}'
         curl -fsS -X PUT http://es-b:9200/_index_template/messages-e2e \
           -H 'Content-Type: application/json' \
           -d '{
-            "index_patterns": ["messages-siteA-v1-*", "messages-siteB-v1-*"],
-            "template": { "settings": { "index": { "refresh_interval": "200ms" } } },
+            "index_patterns": ["messages-sitea-v1-*", "messages-siteb-v1-*"],
+            "template": { "settings": { "index": { "refresh_interval": "200ms", "number_of_replicas": 0 } } },
             "priority": 200
           }'
         echo "[search-init-b] template applied"
@@ -650,7 +654,7 @@ services:
       - keycloak-b-data:/opt/keycloak/data
     command: ["start-dev", "--import-realm"]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:9000/health/ready | grep -q '\"status\": \"UP\"'"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/9000 && printf \"GET /health/ready HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q UP <&3'"]
       interval: 5s
       timeout: 5s
       retries: 60
@@ -865,7 +869,7 @@ services:
       SITE_ID: siteB
       SEARCH_URL: http://es-b:9200
       SEARCH_BACKEND: elasticsearch
-      SEARCH_USER_ROOM_INDEX: user-room-siteB
+      SEARCH_USER_ROOM_INDEX: user-room-siteb
       VALKEY_ADDR: valkey-b:6379
       VALKEY_PASSWORD: ""
       SEARCH_DOC_COUNTS: "25"
@@ -895,8 +899,10 @@ services:
       SITE_ID: siteB
       SEARCH_URL: http://es-b:9200
       SEARCH_BACKEND: elasticsearch
-      MSG_INDEX_PREFIX: messages-siteB-v1
-      SEARCH_USER_ROOM_INDEX: user-room-siteB
+      MSG_INDEX_PREFIX: messages-siteb-v1
+      SPOTLIGHT_INDEX: spotlight-siteb-v1-chat
+      USER_ROOM_INDEX: user-room-siteb
+      SEARCH_USER_ROOM_INDEX: user-room-siteb
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
     volumes:

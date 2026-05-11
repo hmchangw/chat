@@ -1,6 +1,6 @@
 //go:build e2e
 
-package scenarios
+package e2e
 
 import (
 	"errors"
@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/hmchangw/chat/e2e"
+	
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -26,7 +26,7 @@ import (
 // non-empty, not that it matches a particular sanitized string.
 func TestErrors_SendToNonExistentRoom(t *testing.T) {
 	ctx := t.Context()
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 
 	alice := site.Authenticate(t, ctx, "alice")
 
@@ -60,7 +60,7 @@ func TestErrors_SendToNonExistentRoom(t *testing.T) {
 // timeout instead.
 func TestErrors_MalformedPayload_TimesOut(t *testing.T) {
 	ctx := t.Context()
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 	alice := site.Authenticate(t, ctx, "alice")
 
 	requestID := idgen.GenerateRequestID()
@@ -87,7 +87,7 @@ func TestErrors_MalformedPayload_TimesOut(t *testing.T) {
 // considerable complexity) with a simpler negative test that still proves
 // NATS rejects connections lacking valid creds.
 func TestErrors_BadCredsRejected(t *testing.T) {
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 	_, err := nats.Connect(site.NATSURL, nats.UserCredentials("/tmp/does-not-exist.creds"))
 	require.Error(t, err, "NATS must reject connections without valid creds")
 }

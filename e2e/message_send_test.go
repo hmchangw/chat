@@ -1,6 +1,6 @@
 //go:build e2e
 
-package scenarios
+package e2e
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/hmchangw/chat/e2e"
+	
 	"github.com/hmchangw/chat/e2e/harness"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
@@ -55,7 +55,7 @@ type loadHistoryResponse struct {
 // exist) and notif.Message.Mentions for the @bob mention check.
 func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	ctx := t.Context()
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 
 	// Pre-conditions: workers must have subscribed to their durables before
 	// we publish. message-worker on MESSAGES_CANONICAL is the key one.
@@ -87,6 +87,14 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	roomID := createReply.RoomID
 	require.NotEmpty(t, roomID, "server-assigned room ID must be non-empty")
 	t.Logf("created channel roomID=%s", roomID)
+
+	// CreateRoomReply is "request accepted" not "data is durable" -- wait
+	// for room-worker to actually persist alice's + bob's subscriptions
+	// before sending (gatekeeper's "user is not subscribed" check races
+	// otherwise). Bug-hunter BLOCKER #2.
+	mongoA := site.MongoDB(t)
+	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
+	awaitSubscription(t, ctx, mongoA, bob.Account, roomID)
 
 	// 2. bob subscribes to the channel's room-event subject BEFORE alice
 	// sends. subject.RoomEvent(roomID) is the specific subject for this
@@ -140,24 +148,32 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	assert.Equal(t, alice.Account, roomEvent.Message.UserAccount,
 		"broadcast carries pkg/model.Message (with UserAccount field) inside RoomEvent")
 
-	// 6. notification-worker fires a notification to bob with the parsed
-	// mention attached (per amendment R3.A -- field path is .Message.ID
-	// and .Message.Mentions, not top-level).
-	notifMsg := awaitMessage(t, notifSub, 5*time.Second)
+	// 6. notification-worker fires a notification to bob. The subject is
+	// per-account (chat.user.{account}.notification) so stale notifications
+	// from prior tests can interleave -- loop until we find the matching
+	// MessageID. Mention resolution runs ASYNC of notification dispatch so
+	// we don't assert on notif.Message.Mentions here; that check happens on
+	// the history record below.
 	var notif model.NotificationEvent
-	require.NoError(t, json.Unmarshal(notifMsg.Data, &notif))
+	notifDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(notifDeadline) {
+		notifMsg, mErr := notifSub.NextMsg(2 * time.Second)
+		if mErr != nil {
+			break
+		}
+		var candidate model.NotificationEvent
+		if jerr := json.Unmarshal(notifMsg.Data, &candidate); jerr != nil {
+			continue
+		}
+		if candidate.Message.ID == ids.MessageID {
+			notif = candidate
+			break
+		}
+	}
 	assert.Equal(t, "new_message", notif.Type)
 	assert.Equal(t, roomID, notif.RoomID)
 	assert.Equal(t, ids.MessageID, notif.Message.ID,
-		".Message.ID (not .MessageID) per R3.A: NotificationEvent has no top-level MessageID")
-	if assert.NotEmpty(t, notif.Message.Mentions,
-		"mention parsing must resolve @bob -- if empty, mention-resolution path is broken") {
-		var mentionAccounts []string
-		for _, p := range notif.Message.Mentions {
-			mentionAccounts = append(mentionAccounts, p.Account)
-		}
-		assert.Contains(t, mentionAccounts, bob.Account)
-	}
+		"notification for our message must arrive on bob's notification subject")
 
 	// 7. Wait for message-worker to ack the canonical event before reading
 	// history; otherwise LoadHistory races against the Cassandra write.
@@ -172,17 +188,33 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 		subject.MsgHistory(alice.Account, roomID, site.SiteID),
 		histReq, 5*time.Second, &histResp,
 	))
-	require.Len(t, histResp.Messages, 1, "exactly one message visible in history")
-	m := histResp.Messages[0]
+	// History contains system messages (room_created, members_added) plus
+	// the user message. Filter to find ours specifically; don't assume Len==1.
+	var m *cassandra.Message
+	for i := range histResp.Messages {
+		if histResp.Messages[i].MessageID == ids.MessageID {
+			m = &histResp.Messages[i]
+			break
+		}
+	}
+	require.NotNil(t, m, "alice's message %s not found in history (got %d entries)",
+		ids.MessageID, len(histResp.Messages))
 	// cassandra.Message field shape: MessageID (not ID), Sender Participant
 	// (not UserAccount), Msg (not Content).
-	assert.Equal(t, ids.MessageID, m.MessageID)
 	assert.Equal(t, alice.Account, m.Sender.Account)
 	assert.Equal(t, body, m.Msg)
 	assert.False(t, m.CreatedAt.IsZero(), "history record must have CreatedAt set")
-	assert.Equal(t, roomID, m.RoomID,
-		"site is implicit via the subject + history-service keyspace; "+
-			"cassandra.Message intentionally has no SiteID field (R3.A finding)")
+	assert.Equal(t, roomID, m.RoomID)
+	// Mention resolution: the persisted message DOES carry resolved Mentions
+	// (in contrast to the notification, which can race). This is the strong
+	// assertion the bug-hunter HIGH flagged as belonging on a stable surface.
+	if assert.NotEmpty(t, m.Mentions, "history record's mention list must include bob") {
+		var mentionAccounts []string
+		for _, p := range m.Mentions {
+			mentionAccounts = append(mentionAccounts, p.Account)
+		}
+		assert.Contains(t, mentionAccounts, bob.Account)
+	}
 }
 
 // TestMessage_SendAndBroadcast_DM walks the DM variant of the send path.
@@ -197,7 +229,7 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 //     broadcast envelope is per-user, not per-room.
 func TestMessage_SendAndBroadcast_DM(t *testing.T) {
 	ctx := t.Context()
-	site := e2e.Stack().SiteA
+	site := stack.SiteA
 
 	js := site.JetStream(t)
 	canonicalStream := stream.MessagesCanonical(site.SiteID).Name
@@ -208,21 +240,35 @@ func TestMessage_SendAndBroadcast_DM(t *testing.T) {
 	ids := harness.NewTestIDs(t)
 
 	// 1. alice creates a DM with bob. Empty Name + exactly one user + no
-	// orgs/channels => DM per determineRoomType.
+	// orgs/channels => DM per determineRoomType. The DM may already exist
+	// from a prior test in this run; either path yields the roomID.
 	createReq := model.CreateRoomRequest{
 		Name:  "",
 		Users: []string{bob.Account},
 	}
+	var roomID string
 	var createReply model.CreateRoomReply
-	require.NoError(t, requestReply(
+	err := requestReply(
 		alice.Conn(),
 		subject.RoomCreate(alice.Account, site.SiteID),
 		createReq, 5*time.Second, &createReply,
-	))
-	roomID := createReply.RoomID
+	)
+	if err == nil {
+		roomID = createReply.RoomID
+		assert.Equal(t, string(model.RoomTypeDM), createReply.RoomType)
+	} else {
+		er := asErrorReply(err)
+		require.NotNil(t, er, "expected *errorReply, got %T: %v", err, err)
+		require.NotEmpty(t, er.Resp.RoomID, "existing-DM errorReply must carry RoomID")
+		roomID = er.Resp.RoomID
+		t.Logf("DM already exists from prior test; reusing RoomID=%s", roomID)
+	}
 	require.NotEmpty(t, roomID)
-	assert.Equal(t, string(model.RoomTypeDM), createReply.RoomType,
-		"server must classify this as a DM (per determineRoomType)")
+
+	// Wait for subscriptions to persist before sending.
+	mongoA := site.MongoDB(t)
+	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
+	awaitSubscription(t, ctx, mongoA, bob.Account, roomID)
 
 	// 2. bob subscribes to the per-user DM event envelope BEFORE the send.
 	bobSub, err := bob.Conn().SubscribeSync(subject.UserRoomEvent(bob.Account))
@@ -271,6 +317,16 @@ func TestMessage_SendAndBroadcast_DM(t *testing.T) {
 		subject.MsgHistory(alice.Account, roomID, site.SiteID),
 		histReq, 5*time.Second, &histResp,
 	))
-	require.Len(t, histResp.Messages, 1)
-	assert.Equal(t, ids.MessageID, histResp.Messages[0].MessageID)
+	// DM history accumulates across test runs (same alicebob roomID).
+	// Find our specific message.
+	var found bool
+	for _, m := range histResp.Messages {
+		if m.MessageID == ids.MessageID {
+			found = true
+			assert.Equal(t, body, m.Msg)
+			break
+		}
+	}
+	assert.True(t, found, "alice's DM message %s not in history (got %d entries)",
+		ids.MessageID, len(histResp.Messages))
 }

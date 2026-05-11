@@ -1,6 +1,6 @@
 //go:build e2e
 
-package scenarios
+package e2e
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
-	"github.com/hmchangw/chat/e2e"
+	
 	"github.com/hmchangw/chat/e2e/harness"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -31,7 +31,7 @@ import (
 // can't pass under cover of the others.
 func TestFederation_CatchUpAfterOutage(t *testing.T) {
 	ctx := t.Context()
-	stack := e2e.Stack()
+	stack := stack
 	harness.CaptureLogs(t, stack,
 		"room-worker-a", "inbox-worker-b", "broadcast-worker-b")
 
