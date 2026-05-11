@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"sync"
 	"testing"
 	"time"
 
@@ -628,9 +627,9 @@ func startEmbeddedNATS(t *testing.T) *nats.Conn {
 //     (serving chat.server.request.roomkey.{originSiteID}.get).
 //  2. handleRoomCreated is driven with a room_created outbox event whose HomeSiteID
 //     points to the "origin" site.
-//  3. After the call, the destination Valkey must hold the same keypair, and
-//     NATS must have received a RoomKeyEvent publish on each recipient's
-//     chat.user.{account}.event.room.key subject.
+//  3. After the call, the destination Valkey must hold the same keypair.
+//     Fan-out to individual user subjects is origin room-worker's responsibility
+//     and is not verified here.
 func TestIntegration_CrossSiteKeyReplication(t *testing.T) {
 	const (
 		originSiteID = "site-origin"
@@ -667,18 +666,6 @@ func TestIntegration_CrossSiteKeyReplication(t *testing.T) {
 		}
 		data, _ := json.Marshal(evt)
 		_ = m.Respond(data)
-	})
-	require.NoError(t, err)
-	require.NoError(t, nc.Flush())
-
-	// Track key fan-out publishes on bob's key subject.
-	var mu sync.Mutex
-	var keyPublishes [][]byte
-	bobSubj := subject.RoomKeyUpdate("bob")
-	_, err = nc.Subscribe(bobSubj, func(m *nats.Msg) {
-		mu.Lock()
-		keyPublishes = append(keyPublishes, append([]byte(nil), m.Data...))
-		mu.Unlock()
 	})
 	require.NoError(t, err)
 	require.NoError(t, nc.Flush())
@@ -720,19 +707,4 @@ func TestIntegration_CrossSiteKeyReplication(t *testing.T) {
 	require.NotNil(t, pair, "destination keystore must have the replicated keypair")
 	assert.Equal(t, originPub, pair.KeyPair.PublicKey, "public key must match origin")
 	assert.Equal(t, originPriv, pair.KeyPair.PrivateKey, "private key must match origin")
-
-	// Assert RoomKeyEvent was fanned out to bob on the NATS subject.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(keyPublishes) >= 1
-	}, 2*time.Second, 20*time.Millisecond, "expected RoomKeyEvent on bob's key subject")
-
-	mu.Lock()
-	defer mu.Unlock()
-	var evt model.RoomKeyEvent
-	require.NoError(t, json.Unmarshal(keyPublishes[0], &evt))
-	assert.Equal(t, roomID, evt.RoomID)
-	assert.Equal(t, originPub, evt.PublicKey)
-	assert.Equal(t, originPriv, evt.PrivateKey)
 }
