@@ -6,7 +6,59 @@
 
 **Architecture:** `room-service` is the sole writer of fresh keys (`Set` on create, `Rotate` on remove). `room-worker` (origin) reads the current key from local Valkey, gates Mongo writes on key presence, fans out `RoomKeyEvent` to **every** room member (local + remote) via `roomkeysender.Send` — the NATS supercluster routes `chat.user.{account}.event.*` to home sites — and serves the cross-site `chat.server.request.roomkey.{siteID}.get` RPC. `inbox-worker` on remote sites mirrors origin's key bytes and exact version into local Valkey via the RPC + `SetWithVersion` (no local `Rotate`, no user-side `Send` — origin `room-worker` already published).
 
-> **Implementation drift:** earlier drafts of this plan gave `inbox-worker` its own `Set`/`Rotate` path plus a redundant fan-out. The shipped implementation does neither — see the spec's "Fan-out ownership summary" for the authoritative model. Any leftover plan paragraphs that describe `Set`/`Rotate` on inbox-worker or a second fan-out step should be read as historical; treat the spec and the shipped code as the source of truth.
+> **Implementation drift — read before following any task literally.** The
+> sections below were written in TDD-style as the design evolved. The
+> shipped implementation diverges in a few places that matter; the
+> authoritative descriptions live in the spec and the code. Notable drifts:
+>
+> 1. **`VALKEY_ADDR` is a hard startup requirement on every worker** that
+>    touches keys (`room-service`, `room-worker`, `inbox-worker`) —
+>    `env:"VALKEY_ADDR,required"`. Snippets that show
+>    `if cfg.ValkeyAddr != ""` optional wiring (Task 8 originally,
+>    Task 15) are obsolete. `VALKEY_KEY_GRACE_PERIOD`,
+>    `ROOM_KEY_RPC_TIMEOUT`, and `ROOM_KEY_MAX_REDELIVER` are validated
+>    `> 0` immediately after config parse.
+> 2. **`room-worker` and `inbox-worker` handler code has NO `if h.keyStore != nil`
+>    nil-guards** — the dependencies are always non-nil in production
+>    (the startup gate above guarantees it). The plan's snippets that
+>    wrap key operations in those guards are pre-fix; the production
+>    code calls `h.keyStore.Get` / `h.keySender.Send` unconditionally.
+> 3. **`room-worker` fans out `RoomKeyEvent` to EVERY room member** —
+>    local and remote — via `roomkeysender.Send`. NATS supercluster
+>    routes `chat.user.{account}.event.*` to home sites. The plan's
+>    fan-out snippets that skip remote-site users (e.g. `if u.SiteID
+>    != h.siteID { continue }`) are pre-fix. The shipped helper is
+>    `buildAndFanOutRoomKey`; for remove-member it's
+>    `fanOutRoomKeyToSurvivors` using a `ListByRoom(roomID, "")` survivor
+>    snapshot.
+> 4. **`inbox-worker` mirrors keys via `SetWithVersion`, not
+>    `Set`/`Rotate`.** It pulls the key from origin via
+>    `chat.server.request.roomkey.{siteID}.get` RPC and writes the
+>    pair into local Valkey at the origin's exact version so this
+>    site's `broadcast-worker` emits envelopes whose version every
+>    client (across every site) already holds. `inbox-worker` does
+>    NOT instantiate or call a `roomkeysender.Sender`. `NewHandler`
+>    takes `(store, siteID, keyStore, interSiteClient)`.
+> 5. **Stale local key version on remove (`pair.Version <
+>    req.NewKeyVersion`) is a transient error** (`NAK + retry`), not
+>    permanent — it's a Valkey propagation race, not a malformed
+>    event. Some Task 12 snippets show `newPermanent`/`errPermanent`;
+>    that was changed.
+> 6. **Subscription writes are upserts**, not "InsertMany then ignore
+>    duplicate-key errors". `mongoInboxStore.BulkCreateSubscriptions`
+>    uses `bulkWrite` with `UpdateOne + $setOnInsert` keyed on
+>    `(roomId, u.account)` so redeliveries preserve `LastSeenAt`,
+>    `Alert`, and roles on the existing local sub.
+> 7. **Shutdown hook order**: OTel `tracerShutdown` / `meterShutdown`
+>    run AFTER `nc.Drain` / mongo disconnect / `keyStore.Close` so
+>    telemetry emitted during drain is captured.
+> 8. **Integration tests use the testcontainers-go NATS module**, not
+>    an embedded in-process server.
+>
+> Each task body is left intact as an implementation log. When the
+> code and a snippet disagree, the code wins. See
+> [`docs/superpowers/specs/2026-05-08-room-encryption-keys-design.md`](../specs/2026-05-08-room-encryption-keys-design.md)
+> for the design-level reference.
 
 **Tech Stack:** Go 1.25, `pkg/roomkeystore` (Valkey via `go-redis/v9`), `pkg/roomkeysender` (NATS), `crypto/ecdh.P256`, `caarlos0/env`, `go.uber.org/mock`, `stretchr/testify`, `testcontainers-go`.
 
@@ -707,12 +759,17 @@ git commit -m "feat(room-service): rotate room key on channel member removal"
 
 # PART 2 — `room-worker`
 
-> **Drift notice:** the shipped implementation makes `VALKEY_ADDR` a hard
-> startup requirement (`env:"VALKEY_ADDR,required"`); there is no optional
-> "if `cfg.ValkeyAddr != ""`" wiring. `roomkeystore.NewValkeyStore` and
-> `roomkeysender.NewSender(nc.NatsConn())` always run, and the process exits
-> if Valkey is unreachable. The Step 2 code snippet below predates that
-> change — treat it as historical context rather than literal guidance.
+> **Drift notice:** in addition to the top-level drift summary, the
+> per-task snippets in Tasks 10–14 still show the original
+> `if h.keyStore != nil` / `if h.keyStore == nil || h.keySender == nil`
+> nil-guards. Production code has none of those — the
+> `VALKEY_ADDR=required` startup gate guarantees non-nil deps. The
+> handler calls `h.keyStore.Get` / `h.keySender.Send` unconditionally.
+> Fan-out helpers are named `buildAndFanOutRoomKey` (create / add) and
+> `fanOutRoomKeyToSurvivors` (remove). The remove path's survivor list
+> comes from `h.store.ListByRoom(req.RoomID, "")` — empty `siteID` so
+> both local and remote subscribers receive the rotated key. ListByRoom
+> failure surfaces as an error (no Ack).
 
 ## Task 8: Add Valkey + sender wiring to `room-worker/main.go`
 
@@ -721,35 +778,44 @@ git commit -m "feat(room-service): rotate room key on channel member removal"
 
 - [ ] **Step 1: Extend config**
 
-In `room-worker/main.go`, add to the `config` struct:
+In `room-worker/main.go`, add to the `config` struct. `VALKEY_ADDR` is a hard
+startup requirement — there is no "silent skip" mode:
 
 ```go
-	// Valkey wiring; empty addr disables key handling.
-	ValkeyAddr           string        `env:"VALKEY_ADDR"`
+	// Valkey wiring; required. room-worker needs the key on every create /
+	// add / remove path and the inter-site
+	// `chat.server.request.roomkey.{siteID}.get` RPC handler depends on
+	// the keystore.
+	ValkeyAddr           string        `env:"VALKEY_ADDR,required"`
 	ValkeyPassword       string        `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
 ```
 
-- [ ] **Step 2: Wire keystore + sender after `nc` connect**
+Validate `VALKEY_KEY_GRACE_PERIOD > 0` immediately after `env.ParseAs[config]()`:
+
+```go
+	if cfg.ValkeyKeyGracePeriod <= 0 {
+		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
+			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
+		os.Exit(1)
+	}
+```
+
+- [ ] **Step 2: Wire keystore + sender after `nc` connect (fail-fast)**
 
 After the `nc, err := natsutil.Connect(...)` block and before the existing handler construction, add:
 
 ```go
-	var keyStore roomkeystore.RoomKeyStore
-	var keySender *roomkeysender.Sender
-	if cfg.ValkeyAddr != "" {
-		ks, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
-			Addr:        cfg.ValkeyAddr,
-			Password:    cfg.ValkeyPassword,
-			GracePeriod: cfg.ValkeyKeyGracePeriod,
-		})
-		if err != nil {
-			slog.Error("valkey connect failed", "error", err)
-			os.Exit(1)
-		}
-		keyStore = ks
-		keySender = roomkeysender.NewSender(nc.NatsConn())
+	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        cfg.ValkeyAddr,
+		Password:    cfg.ValkeyPassword,
+		GracePeriod: cfg.ValkeyKeyGracePeriod,
+	})
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
 	}
+	keySender := roomkeysender.NewSender(nc.NatsConn())
 ```
 
 `nc` here is the OpenTelemetry-wrapped connection returned by `natsutil.Connect`
@@ -762,13 +828,20 @@ Add imports: `"github.com/hmchangw/chat/pkg/roomkeystore"`, `"github.com/hmchang
 
 Update the `NewHandler` call site to pass the new dependencies (signature change in next task).
 
-- [ ] **Step 4: Add Close hook**
+- [ ] **Step 4: Append `keyStore.Close()` to the shutdown hook chain**
 
-In the existing shutdown block, append:
+Insert `keyStore.Close()` BEFORE the OTel `tracerShutdown` / `meterShutdown`
+hooks — telemetry must flush after client connections close so spans emitted
+during drain are captured. The full shipped ordering is `iter.Stop` → wait for
+in-flight workers → `nc.Drain` → mongo disconnect → `keyStore.Close` →
+`tracerShutdown` → `meterShutdown`.
 
 ```go
-	if keyStore != nil {
-		hooks = append(hooks, func(ctx context.Context) error { return keyStore.Close() })
+	hooks := []func(ctx context.Context) error{
+		// ... iter.Stop, wg.Wait, nc.Drain, mongoutil.Disconnect ...
+		func(ctx context.Context) error { return keyStore.Close() },
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(ctx context.Context) error { return meterShutdown(ctx) },
 	}
 ```
 
