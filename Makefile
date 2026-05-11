@@ -184,6 +184,7 @@ sast-semgrep:
 E2E_DIR     := docker-local/e2e
 E2E_COMPOSE := $(E2E_DIR)/compose.e2e.yaml
 E2E_ENV     := $(E2E_DIR)/.env
+E2E_SECRETS := $(E2E_DIR)/secrets/operator.jwt
 
 # Auto-create .env from .env.example on first run; idempotent.
 $(E2E_ENV):
@@ -191,10 +192,15 @@ $(E2E_ENV):
 	@echo "Created $@ from .env.example."
 	@echo "Edit it to point at an internal registry mirror, or leave defaults for upstream."
 
+# Generate NATS operator/account JWTs + backend.creds on first run; idempotent.
+# setup-e2e.sh exits 0 if secrets/operator.jwt already exists.
+$(E2E_SECRETS):
+	@$(E2E_DIR)/setup-e2e.sh
+
 .PHONY: e2e e2e-only e2e-up e2e-down e2e-down-clean e2e-logs
 
 # Full run: TestMain owns stack lifecycle.
-e2e: $(E2E_ENV)
+e2e: $(E2E_ENV) $(E2E_SECRETS)
 	go test -tags e2e -race -count=1 ./e2e/...
 
 # Iteration loop: assumes a stack already running via `make e2e-up`.
@@ -205,7 +211,7 @@ e2e-only: $(E2E_ENV)
 	E2E_REUSE_STACK=1 go test -tags e2e -race -count=1 ./e2e/...
 
 # Manual stack control.
-e2e-up: $(E2E_ENV)
+e2e-up: $(E2E_ENV) $(E2E_SECRETS)
 	@[ -n "$$(docker compose -f $(DEPS_COMPOSE) ps --status running --quiet nats 2>/dev/null)" ] && { \
 	  echo "ERROR: 'make deps-up' is running. Stop it first ('make deps-down')."; \
 	  echo "Even with non-overlapping host ports, dual-stack on one box risks OOM."; \
