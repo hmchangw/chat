@@ -15,22 +15,11 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// spotlightOrgCollection implements Collection for the spotlight-org
-// search index. One document per `sectId` carries the nine org fields
-// projected from each HR account row in the batched payload. The doc
-// ID is the sectId itself — many employees collapse to one document
-// via dedup in BuildAction.
-//
-// The wire-side row type and the ES doc projection are the same struct
-// (SpotlightOrgIndex below), keeping the consumer loosely coupled to
-// hr-syncer's own internal Employee/Org types without taking a public
-// dependency on a pkg/model.Employee that would conflict on merge with
-// the internal repo's existing one.
-//
-// The HR_SYNC_{siteID} stream is owned by `hr-syncer`; this collection
-// is a pure consumer. main.go skips HR_SYNC in its bootstrap loop
-// (added when the collection is wired in Task 14) the same way it
-// skips INBOX.
+// spotlightOrgCollection maintains the spotlight-org ES index, one
+// document per sectId, sourced from hr-syncer's batched HR account
+// publishes. The doc ID is the sectId; many employees collapse to one
+// document via dedup in BuildAction. The HR_SYNC stream is owned by
+// hr-syncer — this collection is a pure consumer.
 type spotlightOrgCollection struct {
 	indexName string
 	devMode   bool
@@ -61,16 +50,11 @@ func (c *spotlightOrgCollection) TemplateBody() json.RawMessage {
 	return spotlightOrgTemplateBody(c.indexName, c.devMode)
 }
 
-// BuildAction parses an HR sync envelope, dedupes employees by SectID
-// (keeping the last occurrence per sectId), and emits one ES `_update`
-// per unique sectId with `doc_as_upsert:true`. Doc-merge means absent
-// fields on the projection preserve the stored value rather than
-// overwriting with empty strings — partial-field events from
-// `hr-syncer` work without a painless script.
-//
-// Returns (nil, nil) for empty employee arrays or batches where every
-// row has an empty SectID; the handler then acks the JS message with
-// no ES write.
+// BuildAction parses an HR sync envelope, dedupes by SectID (last-wins),
+// and emits one ES _update per unique sectId with doc_as_upsert:true.
+// Doc-merge plus omitempty means partial-field publishes preserve the
+// stored values for unset fields. Empty SectID rows and empty batches
+// return (nil, nil) so the handler acks with no ES write.
 func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	var envelope model.HRSyncEvent
 	if err := json.Unmarshal(data, &envelope); err != nil {
@@ -82,9 +66,6 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 
 	var employees []SpotlightOrgIndex
 	if envelope.Gzip {
-		// Gzip payloads are base64-encoded binary in the JSON envelope.
-		// json.Unmarshal decodes the JSON string → raw bytes, then we
-		// decompress to get the JSON array.
 		var compressed []byte
 		if err := json.Unmarshal(envelope.Payload, &compressed); err != nil {
 			return nil, fmt.Errorf("decode gzip payload base64: %w", err)
@@ -96,19 +77,16 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 		if err := json.Unmarshal(decompressed, &employees); err != nil {
 			return nil, fmt.Errorf("unmarshal hr-sync employees: %w", err)
 		}
-	} else {
-		if err := json.Unmarshal(envelope.Payload, &employees); err != nil {
-			return nil, fmt.Errorf("unmarshal hr-sync employees: %w", err)
-		}
+	} else if err := json.Unmarshal(envelope.Payload, &employees); err != nil {
+		return nil, fmt.Errorf("unmarshal hr-sync employees: %w", err)
 	}
 	if len(employees) == 0 {
 		return nil, nil
 	}
 
-	// Dedup by SectID keeping the LAST occurrence — within one batch
-	// the most recent update wins. Empty SectID rows are skipped
-	// silently (employees not yet assigned to a section).
-	deduped := make(map[string]SpotlightOrgIndex, len(employees))
+	// Empty SectID rows are skipped silently (employees not yet
+	// assigned to a section). Last write per sectId wins within a batch.
+	deduped := make(map[string]*SpotlightOrgIndex, len(employees))
 	order := make([]string, 0, len(employees))
 	for i := range employees {
 		emp := &employees[i]
@@ -118,7 +96,7 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 		if _, seen := deduped[emp.SectID]; !seen {
 			order = append(order, emp.SectID)
 		}
-		deduped[emp.SectID] = *emp
+		deduped[emp.SectID] = emp
 	}
 	if len(deduped) == 0 {
 		return nil, nil
@@ -126,8 +104,7 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 
 	actions := make([]searchengine.BulkAction, 0, len(deduped))
 	for _, sectID := range order {
-		row := deduped[sectID]
-		body, err := buildSpotlightOrgUpdateBody(&row)
+		body, err := buildSpotlightOrgUpdateBody(deduped[sectID])
 		if err != nil {
 			return nil, err
 		}
@@ -136,19 +113,13 @@ func (c *spotlightOrgCollection) BuildAction(data []byte) ([]searchengine.BulkAc
 			Index:  c.indexName,
 			DocID:  sectID,
 			Doc:    body,
-			// No Version: ActionUpdate must not use external versioning.
-			// handler.go::isBulkItemSuccess depends on this.
 		})
 	}
 	return actions, nil
 }
 
-// buildSpotlightOrgUpdateBody wraps the row in an ES `_update` body
-// with `doc_as_upsert:true`. The row is already the projection — the
-// json `omitempty` discipline guarantees absent fields don't appear
-// in the body and therefore don't overwrite stored values on the
-// merge. Errors here are theoretical (the inputs are plain strings),
-// but we return the wrapped error to keep the call site explicit.
+// buildSpotlightOrgUpdateBody wraps row in {doc, doc_as_upsert:true}
+// for ES.
 func buildSpotlightOrgUpdateBody(row *SpotlightOrgIndex) (json.RawMessage, error) {
 	body := map[string]any{
 		"doc":           row,
@@ -161,10 +132,6 @@ func buildSpotlightOrgUpdateBody(row *SpotlightOrgIndex) (json.RawMessage, error
 	return data, nil
 }
 
-// gunzipBytes returns the gzip-decompressed contents of b. A corrupt
-// header or truncated stream returns an error; the caller turns that
-// into a NAK so JetStream retries — a transient publisher hiccup
-// should not silently drop the batch.
 func gunzipBytes(b []byte) ([]byte, error) {
 	gr, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
@@ -174,13 +141,11 @@ func gunzipBytes(b []byte) ([]byte, error) {
 	return io.ReadAll(gr)
 }
 
-// SpotlightOrgIndex serves three roles in the consumer: unmarshal
-// target for the wire-side row, document body on ES write, and source
-// of truth for the ES mapping via esPropertiesFromStruct. Every field
-// is `omitempty` `string` so absent values serialize away and
-// doc-merge upsert preserves the stored value rather than overwriting
-// with empty. Fields not in this struct are silently ignored by the
-// json decoder — hr-syncer is free to publish additional fields.
+// SpotlightOrgIndex is the wire row, ES document body, and ES mapping
+// source for the spotlight-org index. omitempty drives the partial-update
+// contract: absent fields don't appear in the ES doc and doc-merge
+// preserves the stored value. Fields not declared here are ignored when
+// unmarshaling, so hr-syncer may publish additional fields.
 type SpotlightOrgIndex struct {
 	SectID          string `json:"sectId,omitempty"          es:"search_as_you_type,custom_analyzer"`
 	SectTCName      string `json:"sectTCName,omitempty"      es:"search_as_you_type,custom_analyzer"`

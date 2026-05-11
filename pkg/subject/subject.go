@@ -161,16 +161,10 @@ func MsgCanonicalDeleted(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.deleted", siteID)
 }
 
-// HRSyncEmployeesUpsert returns the subject for batch HR-account
-// upsert events. Consumed by `search-sync-worker`'s spotlight-org
-// collection.
 func HRSyncEmployeesUpsert(siteID string) string {
 	return fmt.Sprintf("hr.sync.%s.employees.upsert", siteID)
 }
 
-// HRSyncUsersUpsert returns the subject for batch HR-user upsert
-// events. Consumed by a separate service that maintains the `users`
-// MongoDB collection (out of scope for this worker).
 func HRSyncUsersUpsert(siteID string) string {
 	return fmt.Sprintf("hr.sync.%s.users.upsert", siteID)
 }

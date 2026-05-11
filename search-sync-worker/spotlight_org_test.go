@@ -97,9 +97,6 @@ func TestSpotlightOrgTemplateProperties_MatchesStruct(t *testing.T) {
 	assert.Equal(t, 9, esFieldCount, "SpotlightOrgIndex should expose exactly 9 ES-mapped fields")
 }
 
-// makeHRSyncEvent builds a plaintext (gzip=false) HRSyncEvent containing
-// the given employees. Used by every BuildAction test that doesn't
-// exercise the compression path.
 func makeHRSyncEvent(t *testing.T, ts int64, employees []SpotlightOrgIndex) []byte {
 	t.Helper()
 	payload, err := json.Marshal(employees)
@@ -204,8 +201,6 @@ func TestSpotlightOrg_BuildAction_EmptyEmployees(t *testing.T) {
 	assert.Nil(t, actions)
 }
 
-// makeHRSyncEventGzip mirrors makeHRSyncEvent but gzip-compresses the
-// employee payload. Used to exercise the consumer's decompression path.
 func makeHRSyncEventGzip(t *testing.T, ts int64, employees []SpotlightOrgIndex) []byte {
 	t.Helper()
 	raw, err := json.Marshal(employees)

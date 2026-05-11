@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -653,25 +652,7 @@ func TestSearchSyncSpotlightOrg_Integration(t *testing.T) {
 
 	publish := func(employees []SpotlightOrgIndex, ts int64) {
 		t.Helper()
-		raw, marshalErr := json.Marshal(employees)
-		require.NoError(t, marshalErr)
-		var buf bytes.Buffer
-		gz := gzip.NewWriter(&buf)
-		_, writeErr := gz.Write(raw)
-		require.NoError(t, writeErr)
-		require.NoError(t, gz.Close())
-
-		envBytes, envErr := json.Marshal(buf.Bytes())
-		require.NoError(t, envErr)
-		envelope := model.HRSyncEvent{
-			Timestamp: ts,
-			BatchID:   fmt.Sprintf("test-%d", ts),
-			Gzip:      true,
-			Payload:   envBytes,
-		}
-		data, pubErr := json.Marshal(envelope)
-		require.NoError(t, pubErr)
-		_, err = js.Publish(ctx, subj, data)
+		_, err := js.Publish(ctx, subj, makeHRSyncEventGzip(t, ts, employees))
 		require.NoError(t, err, "publish hr-sync event")
 	}
 
