@@ -116,8 +116,8 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 	subs := stack.SiteB.MongoDB(t).Collection("subscriptions")
 	for _, rid := range roomIDs {
 		count, err := subs.CountDocuments(ctx, bson.M{
-			"account": bobOnB.Account,
-			"roomId":  rid,
+			"u.account": bobOnB.Account,
+			"roomId":    rid,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), count,

@@ -80,6 +80,31 @@ func TestErrors_MalformedPayload_TimesOut(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, nats.ErrTimeout),
 		"expected NATS timeout error on malformed payload; got %v", err)
+
+	// Liveness post-check (bug-hunter HIGH): the timeout above is also
+	// consistent with "gatekeeper crashed on garbage input." Prove it's
+	// "logged + dropped, still alive" by making a follow-up well-formed
+	// request and asserting normal behavior. Reuses alice's existing
+	// connection so we exercise the same code path.
+	bogusRoom := idgen.GenerateID()
+	livenessReqID := idgen.GenerateRequestID()
+	err = sendAndAwaitReply(
+		t,
+		alice.Conn(),
+		alice.Account,
+		livenessReqID,
+		subject.MsgSend(alice.Account, bogusRoom, site.SiteID),
+		model.SendMessageRequest{
+			ID:        idgen.GenerateMessageID(),
+			Content:   "liveness probe",
+			RequestID: livenessReqID,
+		},
+		5*time.Second,
+	)
+	// Expected: ErrorResponse (no subscription), NOT timeout/crash.
+	require.Error(t, err)
+	er := asErrorReply(err)
+	require.NotNil(t, er, "gatekeeper must still reply after malformed input; got %T", err)
 }
 
 // TestErrors_BadCredsRejected: per amendment R1 11.E -- replaces the

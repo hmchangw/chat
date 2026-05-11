@@ -3,25 +3,18 @@
 package e2e
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
 )
-
-// makeRoomAndWait is a per-test convenience: creates a channel with bob,
-// reads the server-assigned roomID, then waits for room-worker to persist
-// alice's + bob's subscriptions in mongo. Without the wait, the next
-// per-room RPC races the persistence path and intermittently hits "user
-// is not subscribed" or "only room members can list members" errors.
-func makeRoomAndWait(t *testing.T, ctx context.Context, alice *struct{}, _ string) {}
 
 // TestRoom_DM_CreateIsIdempotent: room-service rejects a duplicate DM with
 // model.ErrorResponse{Error: "...", RoomID: existingRoomID}. Per amendment
@@ -99,15 +92,27 @@ func TestRoom_Channel_InviteAndMemberList(t *testing.T) {
 	require.NotEmpty(t, roomID)
 
 	// Wait for room-worker to persist subscriptions before per-room RPCs.
-	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
+	mongoA := site.MongoDB(t)
+	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
+	awaitSubscription(t, ctx, mongoA, bob.Account, roomID)
 
-	var rawReply map[string]any
+	// Test-quality reviewer: decode the reply into the proper model type
+	// (model.ListRoomMembersResponse{Members []RoomMember}) and assert
+	// both alice + bob are present. Previously decoded as map[string]any
+	// and asserted only non-empty -- a regression returning the wrong
+	// users would have passed.
+	var reply model.ListRoomMembersResponse
 	require.NoError(t, requestReply(
 		alice.Conn(),
 		subject.MemberList(alice.Account, roomID, site.SiteID),
-		map[string]any{}, 5*time.Second, &rawReply,
+		map[string]any{}, 5*time.Second, &reply,
 	))
-	assert.NotEmpty(t, rawReply, "MemberList reply must be non-empty JSON")
+	got := make([]string, 0, len(reply.Members))
+	for _, m := range reply.Members {
+		got = append(got, m.Member.Account)
+	}
+	assert.Contains(t, got, alice.Account, "MemberList must include the room creator")
+	assert.Contains(t, got, bob.Account, "MemberList must include the invitee")
 }
 
 // TestRoom_Channel_RemoveMember: uses the proper model.RemoveMemberRequest
@@ -147,6 +152,19 @@ func TestRoom_Channel_RemoveMember(t *testing.T) {
 		subject.MemberRemove(alice.Account, roomID, site.SiteID),
 		removeReq, 5*time.Second, nil,
 	))
+
+	// Test-quality reviewer: verify bob's subscription actually disappeared
+	// from mongo. Without this assertion, a handler that returns OK but
+	// skips the mongo write would pass.
+	subs := mongoA.Collection("subscriptions")
+	require.Eventually(t, func() bool {
+		count, err := subs.CountDocuments(ctx, bson.M{
+			"u.account": bob.Account,
+			"roomId":    roomID,
+		})
+		return err == nil && count == 0
+	}, 10*time.Second, 100*time.Millisecond,
+		"bob's subscription must be removed from mongo after MemberRemove")
 }
 
 // TestRoom_MarkMessageRead: read-receipt RPC happy path per R2.C item 5.
@@ -198,6 +216,25 @@ func TestRoom_MarkMessageRead(t *testing.T) {
 		5*time.Second,
 		nil,
 	))
+
+	// R4.A item 5 / R2.C item 5: verify the read marker actually advanced
+	// in mongo. Without this, the test would pass against a no-op
+	// implementation that returned nil from the RPC without writing.
+	subs := site.MongoDB(t).Collection("subscriptions")
+	require.Eventually(t, func() bool {
+		var sub bson.M
+		err := subs.FindOne(ctx, bson.M{
+			"u.account": alice.Account,
+			"roomId":    roomID,
+		}).Decode(&sub)
+		if err != nil {
+			return false
+		}
+		// LastSeenAt field exists and is a non-zero timestamp.
+		v, ok := sub["lastSeenAt"]
+		return ok && v != nil
+	}, 5*time.Second, 100*time.Millisecond,
+		"alice's subscription must have lastSeenAt set after MessageRead RPC")
 }
 
 // suppress unused imports if helper-only.

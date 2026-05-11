@@ -65,26 +65,29 @@ docker-local/e2e/
 
 e2e/                    # Go test package, gated //go:build e2e
 ├── doc.go              # package documentation
-├── main_test.go        # TestMain: harness.Start + BootstrapFederation
-├── stack.go            # Stack() accessor for scenarios package
-├── harness/            # stack lifecycle + per-site clients + per-test IDs
-│   ├── stack.go        # Start, Stop, ServiceContainer, preflight
-│   ├── auth.go         # Authenticate -> Keycloak -> auth-service -> NATS user JWT
-│   ├── clients.go      # SystemConn, MongoDB, CassandraSession, ESClient, SeedRemoteUser
-│   ├── federation.go   # BootstrapFederation: cross-site INBOX Sources
-│   ├── ids.go          # NewTestIDs (test-scoped resource identifiers)
-│   └── logs.go         # CaptureLogs (failure-only log dumps)
-└── scenarios/          # actual tests, each focuses on one flow
-    ├── smoke_test.go              # every dep reachable
-    ├── helpers_test.go            # requestReply, sendAndAwaitReply, awaitDurableReady
-    ├── message_send_test.go       # single-site happy path (channel + DM)
-    ├── rooms_test.go              # DM idempotency, channel CRUD, MessageRead
-    ├── search_test.go             # send + index + search roundtrip
-    ├── errors_test.go             # negative paths
-    ├── request_id_test.go         # X-Request-ID propagation
-    ├── federation_invite_test.go  # cross-site invite + negative-isolation
-    └── federation_catchup_test.go # inbox-worker outage + drain
+├── main_test.go        # TestMain: harness.Start + BootstrapFederation + var stack
+├── smoke_test.go               # every dep reachable
+├── helpers_test.go             # requestReply, sendAndAwaitReply, awaitDurableReady
+├── message_send_test.go        # single-site happy path (channel + DM)
+├── rooms_test.go               # DM idempotency, channel CRUD, MessageRead
+├── search_test.go              # send + index + search roundtrip (skipped; user-room auth)
+├── errors_test.go              # negative paths
+├── request_id_test.go          # X-Request-ID propagation
+├── federation_invite_test.go   # cross-site invite + negative-isolation
+├── federation_catchup_test.go  # inbox-worker outage + drain
+└── harness/            # stack lifecycle + per-site clients + per-test IDs
+    ├── stack.go        # Start, Stop, ServiceContainer, preflight
+    ├── auth.go         # Authenticate -> Keycloak -> auth-service -> NATS user JWT
+    ├── clients.go      # SystemConn, MongoDB, CassandraSession, ESClient, SeedRemoteUser
+    ├── federation.go   # BootstrapFederation: cross-site INBOX Sources
+    ├── ids.go          # NewTestIDs (test-scoped resource identifiers)
+    └── logs.go         # CaptureLogs (failure-only log dumps)
 ```
+
+The scenarios + TestMain share one package so the singleton `stack` variable
+is visible to both. Earlier iterations had a `scenarios/` subpackage; that
+produced two separate test binaries with disjoint process state and was
+collapsed during live debug.
 
 ## Host port allocation
 
