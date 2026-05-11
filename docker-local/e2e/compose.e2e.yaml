@@ -101,7 +101,9 @@ services:
   # from the e2e-up Makefile target.
   cassandra-init-a:
     image: ${E2E_CASS_IMAGE:-cassandra:5}
-    container_name: cassandra-init-a
+    # container_name intentionally omitted: `docker compose run --rm` auto-
+    # generates a unique name per invocation. An explicit container_name
+    # would collide on re-run if the previous invocation didn't `--rm`.
     networks: [chat-e2e]
     depends_on:
       cass-a: { condition: service_healthy }
@@ -144,7 +146,7 @@ services:
   # Invoked via `docker compose --profile init run --rm search-init-a`.
   search-init-a:
     image: curlimages/curl:8
-    container_name: search-init-a
+    # container_name omitted -- see cassandra-init-a above for rationale.
     networks: [chat-e2e]
     depends_on:
       es-a: { condition: service_healthy }

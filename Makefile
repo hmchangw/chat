@@ -105,7 +105,7 @@ $(E2E_ENV):
 	@echo "Created $@ from .env.example."
 	@echo "Edit it to point at an internal registry mirror, or leave defaults for upstream."
 
-.PHONY: e2e e2e-only e2e-up e2e-down e2e-logs
+.PHONY: e2e e2e-only e2e-up e2e-down e2e-down-clean e2e-logs
 
 # Full run: TestMain owns stack lifecycle.
 e2e: $(E2E_ENV)
@@ -113,14 +113,14 @@ e2e: $(E2E_ENV)
 
 # Iteration loop: assumes a stack already running via `make e2e-up`.
 e2e-only: $(E2E_ENV)
-	@docker compose -f $(E2E_COMPOSE) ps --status running --quiet nats-a >/dev/null 2>&1 || { \
+	@[ -n "$$(docker compose -f $(E2E_COMPOSE) ps --status running --quiet nats-a 2>/dev/null)" ] || { \
 	  echo "E2E stack is not running. Run 'make e2e-up' first."; exit 1; \
 	}
 	E2E_REUSE_STACK=1 go test -tags e2e -race -count=1 ./e2e/...
 
 # Manual stack control.
 e2e-up: $(E2E_ENV)
-	@docker compose -f $(DEPS_COMPOSE) ps -q nats >/dev/null 2>&1 && { \
+	@[ -n "$$(docker compose -f $(DEPS_COMPOSE) ps --status running --quiet nats 2>/dev/null)" ] && { \
 	  echo "ERROR: 'make deps-up' is running. Stop it first ('make deps-down')."; \
 	  echo "Even with non-overlapping host ports, dual-stack on one box risks OOM."; \
 	  exit 1; \
@@ -129,7 +129,14 @@ e2e-up: $(E2E_ENV)
 	docker compose -f $(E2E_COMPOSE) --profile init run --rm cassandra-init-a
 	docker compose -f $(E2E_COMPOSE) --profile init run --rm search-init-a
 
+# Non-destructive: stops containers, preserves volumes (keycloak realm + cass
+# schema survive). Use this for fast iteration.
 e2e-down:
+	docker compose -f $(E2E_COMPOSE) down
+
+# Destructive: drops volumes too. Next `e2e-up` re-imports the Keycloak realm
+# and re-runs cassandra-init-a / search-init-a from a fresh state.
+e2e-down-clean:
 	docker compose -f $(E2E_COMPOSE) down -v
 
 # `make e2e-logs SERVICE=msg-gk-a` to tail one container.
