@@ -221,7 +221,36 @@ services:
           -d '{
             "index_patterns": ["messages-sitea-v1-*", "messages-siteb-v1-*"],
             "template": {
-              "settings": { "index": { "refresh_interval": "200ms", "number_of_replicas": 0 } },
+              "settings": {
+                "index": {
+                  "refresh_interval": "200ms",
+                  "number_of_replicas": 0,
+                  "analysis": {
+                    "filter": {
+                      "underscore_subword": {
+                        "type": "word_delimiter_graph",
+                        "split_on_case_change": "false",
+                        "split_on_numerics": "false",
+                        "preserve_original": "true"
+                      }
+                    },
+                    "analyzer": {
+                      "custom_analyzer": {
+                        "type": "custom",
+                        "tokenizer": "underscore_preserving",
+                        "filter": ["underscore_subword", "cjk_bigram", "lowercase"],
+                        "char_filter": ["html_strip"]
+                      }
+                    },
+                    "tokenizer": {
+                      "underscore_preserving": {
+                        "type": "pattern",
+                        "pattern": "[\\s,;!?()\\[\\]{}\"\u0027<>]+"
+                      }
+                    }
+                  }
+                }
+              },
               "mappings": {
                 "dynamic": false,
                 "properties": {
@@ -230,7 +259,7 @@ services:
                   "siteId":                      {"type": "keyword"},
                   "userId":                      {"type": "keyword"},
                   "userAccount":                 {"type": "keyword"},
-                  "content":                     {"type": "text"},
+                  "content":                     {"type": "text", "analyzer": "custom_analyzer"},
                   "createdAt":                   {"type": "date"},
                   "threadParentMessageId":       {"type": "keyword"},
                   "threadParentMessageCreatedAt":{"type": "date"},
@@ -704,7 +733,36 @@ services:
           -d '{
             "index_patterns": ["messages-sitea-v1-*", "messages-siteb-v1-*"],
             "template": {
-              "settings": { "index": { "refresh_interval": "200ms", "number_of_replicas": 0 } },
+              "settings": {
+                "index": {
+                  "refresh_interval": "200ms",
+                  "number_of_replicas": 0,
+                  "analysis": {
+                    "filter": {
+                      "underscore_subword": {
+                        "type": "word_delimiter_graph",
+                        "split_on_case_change": "false",
+                        "split_on_numerics": "false",
+                        "preserve_original": "true"
+                      }
+                    },
+                    "analyzer": {
+                      "custom_analyzer": {
+                        "type": "custom",
+                        "tokenizer": "underscore_preserving",
+                        "filter": ["underscore_subword", "cjk_bigram", "lowercase"],
+                        "char_filter": ["html_strip"]
+                      }
+                    },
+                    "tokenizer": {
+                      "underscore_preserving": {
+                        "type": "pattern",
+                        "pattern": "[\\s,;!?()\\[\\]{}\"\u0027<>]+"
+                      }
+                    }
+                  }
+                }
+              },
               "mappings": {
                 "dynamic": false,
                 "properties": {
@@ -713,7 +771,7 @@ services:
                   "siteId":                      {"type": "keyword"},
                   "userId":                      {"type": "keyword"},
                   "userAccount":                 {"type": "keyword"},
-                  "content":                     {"type": "text"},
+                  "content":                     {"type": "text", "analyzer": "custom_analyzer"},
                   "createdAt":                   {"type": "date"},
                   "threadParentMessageId":       {"type": "keyword"},
                   "threadParentMessageCreatedAt":{"type": "date"},
