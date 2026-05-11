@@ -3208,3 +3208,63 @@ func TestHandler_CreateRoom_AbortsOnKeyStoreSetError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "store room key")
 }
+
+func TestHandler_RemoveMember_Org_SkipsRotateWhenNoSubsToDelete(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(
+		&model.Subscription{User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1",
+			Roles: []model.Role{model.RoleOwner}}, nil)
+	// CountOrgOnlySubs returns 0 — every org member is dual-membership, so no subs will be deleted.
+	store.EXPECT().CountOrgOnlySubs(gomock.Any(), "r1", "finance-org").Return(0, nil)
+	// Rotate and Set must NOT be called.
+
+	var captured model.RemoveMemberRequest
+	publish := func(_ context.Context, _ string, data []byte) error {
+		require.NoError(t, json.Unmarshal(data, &captured))
+		return nil
+	}
+
+	h := &Handler{store: store, keyStore: keyStore, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: publish}
+
+	req := model.RemoveMemberRequest{OrgID: "finance-org"}
+	data, _ := json.Marshal(req)
+	_, err := h.handleRemoveMember(ctxWithReqID(),
+		"chat.user.alice.request.room.r1.site-a.member.remove", data)
+	require.NoError(t, err)
+	assert.Equal(t, 0, captured.NewKeyVersion, "NewKeyVersion must be 0 when rotation is skipped")
+}
+
+func TestHandler_RemoveMember_Org_RotatesWhenSubsExist(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(
+		&model.Subscription{User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1",
+			Roles: []model.Role{model.RoleOwner}}, nil)
+	// CountOrgOnlySubs returns 3 — there are org-only subs that will be removed.
+	store.EXPECT().CountOrgOnlySubs(gomock.Any(), "r1", "finance-org").Return(3, nil)
+	keyStore.EXPECT().Rotate(gomock.Any(), "r1", gomock.Any()).Return(5, nil)
+
+	var captured model.RemoveMemberRequest
+	publish := func(_ context.Context, _ string, data []byte) error {
+		require.NoError(t, json.Unmarshal(data, &captured))
+		return nil
+	}
+
+	h := &Handler{store: store, keyStore: keyStore, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: publish}
+
+	req := model.RemoveMemberRequest{OrgID: "finance-org"}
+	data, _ := json.Marshal(req)
+	_, err := h.handleRemoveMember(ctxWithReqID(),
+		"chat.user.alice.request.room.r1.site-a.member.remove", data)
+	require.NoError(t, err)
+	assert.Equal(t, 5, captured.NewKeyVersion, "NewKeyVersion must reflect the rotated version")
+}

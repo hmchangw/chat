@@ -43,6 +43,21 @@ func (m *MockRoomStore) EXPECT() *MockRoomStoreMockRecorder {
 	return m.recorder
 }
 
+// CountOrgOnlySubs mocks base method.
+func (m *MockRoomStore) CountOrgOnlySubs(ctx context.Context, roomID, orgID string) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountOrgOnlySubs", ctx, roomID, orgID)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountOrgOnlySubs indicates an expected call of CountOrgOnlySubs.
+func (mr *MockRoomStoreMockRecorder) CountOrgOnlySubs(ctx, roomID, orgID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountOrgOnlySubs", reflect.TypeOf((*MockRoomStore)(nil).CountOrgOnlySubs), ctx, roomID, orgID)
+}
+
 // CountMembersAndOwners mocks base method.
 func (m *MockRoomStore) CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error) {
 	m.ctrl.T.Helper()

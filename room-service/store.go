@@ -89,6 +89,11 @@ type RoomStore interface {
 
 	ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]ReadReceiptRow, error)
 
+	// CountOrgOnlySubs returns the count of subscriptions in roomID whose account
+	// is in orgID AND who do NOT have an individual room_members entry for roomID.
+	// These are the subs that an org-remove would actually delete.
+	CountOrgOnlySubs(ctx context.Context, roomID, orgID string) (int, error)
+
 	// GetUser returns the user by account, or ErrUserNotFound.
 	GetUser(ctx context.Context, account string) (*model.User, error)
 	// GetApp returns the app whose Assistant.Name == botAccount, or ErrAppNotFound.
