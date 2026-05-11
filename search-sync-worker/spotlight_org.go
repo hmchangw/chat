@@ -137,8 +137,17 @@ func gunzipBytes(b []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer gr.Close()
-	return io.ReadAll(gr)
+	// gzip.Reader.Close reports trailing checksum / truncation errors,
+	// which io.ReadAll can miss on a corrupted stream — surface both.
+	data, readErr := io.ReadAll(gr)
+	closeErr := gr.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return data, nil
 }
 
 // SpotlightOrgIndex is the wire row, ES document body, and ES mapping
