@@ -29,6 +29,13 @@ export function roomsCreate(account) {
   return `chat.user.${account}.request.rooms.create`
 }
 
+// roomCreate is the room-service create subject. The site segment is the
+// requester's site — room-service queue-subscribes on its own siteID, so a
+// caller from site-A always lands its create on the site-A room-service.
+export function roomCreate(account, siteId) {
+  return `chat.user.${account}.request.room.${siteId}.create`
+}
+
 export function subscriptionUpdate(account) {
   return `chat.user.${account}.event.subscription.update`
 }
@@ -55,6 +62,17 @@ export function memberRoleUpdate(account, roomId, siteId) {
 
 export function readReceipt(account, roomId, siteId) {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.message.read-receipt`
+}
+
+export function memberList(account, roomId, siteId) {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.member.list`
+}
+
+// userResponse is where room-worker publishes AsyncJobResult after finishing
+// a deferred operation. The client subscribes here before publishing the
+// request and X-Request-ID header so it can match the result back.
+export function userResponse(account, requestId) {
+  return `chat.user.${account}.response.${requestId}`
 }
 
 export function searchRooms(account) {

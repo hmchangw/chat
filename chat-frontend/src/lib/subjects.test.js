@@ -5,10 +5,13 @@ import {
   memberAdd,
   memberRemove,
   memberRoleUpdate,
+  memberList,
   searchRooms,
   searchMessages,
   msgSurrounding,
   readReceipt,
+  roomCreate,
+  userResponse,
 } from './subjects'
 
 describe('subjects', () => {
@@ -56,5 +59,19 @@ describe('subjects', () => {
     expect(readReceipt('alice', 'room1', 'site1')).toBe(
       'chat.user.alice.request.room.room1.site1.message.read-receipt'
     )
+  })
+
+  it('roomCreate builds the create-room request subject scoped to the requester site', () => {
+    expect(roomCreate('alice', 'site-A')).toBe('chat.user.alice.request.room.site-A.create')
+  })
+
+  it('memberList builds the list-members request subject', () => {
+    expect(memberList('alice', 'r1', 'site-A')).toBe(
+      'chat.user.alice.request.room.r1.site-A.member.list'
+    )
+  })
+
+  it('userResponse builds the per-request async-result subject', () => {
+    expect(userResponse('alice', 'req-123')).toBe('chat.user.alice.response.req-123')
   })
 })
