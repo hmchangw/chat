@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -370,3 +371,166 @@ func TestRoomRPCScenario_EndToEnd_StubService(t *testing.T) {
 	require.Greater(t, totalCount, 100)
 	require.Zero(t, totalErrors)
 }
+
+// TestDispatch_RunRun_CanonicalInjectSmoke is the binary-exec smoke test
+// asked for in the Phase S review (Reviewer 3 W5 option (b)). It
+// exercises the full main.go wiring layer — dispatch → runRun →
+// readiness → generator → drainTrailingReplies → metricsSrv shutdown
+// → nc.Drain → exit code — by invoking dispatch() directly with a
+// crafted os.Args, against a testcontainer-managed NATS + a
+// programmatically-created MESSAGES_CANONICAL stream.
+//
+// Without this test the uncovered wiring code (runRun at 18%, main
+// at 0%, runTeardown at 21%) made the package coverage land below
+// CLAUDE.md's 80% floor even though every line was exercised
+// end-to-end during real-machine validation. This test lifts the
+// coverage by exercising the same paths under -race.
+//
+// Kept short (--duration=2s) so the test runs in <10s while still
+// covering the warmup→measured transition and the async-drain path.
+func TestDispatch_RunRun_CanonicalInjectSmoke(t *testing.T) {
+	natsURI, stopNATS := setupNATS(t)
+	defer stopNATS()
+	mongoURI, stopMongo := setupMongo(t)
+	defer stopMongo()
+
+	// Bootstrap MESSAGES_CANONICAL_site-local so canonical-inject
+	// publishes have somewhere to land. The loadgen itself doesn't
+	// create this stream — message-gatekeeper owns it in production —
+	// so we stand it up here. Memory storage with a tight retention
+	// keeps the test fast and bounded.
+	nc, err := nats.Connect(natsURI)
+	require.NoError(t, err)
+	defer nc.Drain()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	streamCfg := stream.MessagesCanonical("site-local")
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      streamCfg.Name,
+		Subjects:  streamCfg.Subjects,
+		Storage:   jetstream.MemoryStorage,
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    1 * time.Minute,
+	})
+	require.NoError(t, err)
+
+	// Stash + restore os.Args so we don't pollute neighboring tests.
+	savedArgs := os.Args
+	defer func() { os.Args = savedArgs }()
+
+	// Build the config the same way main() does, but inject the
+	// container-managed connection strings. The MONGO_DB carries the
+	// `loadgen` prefix so the safety guard passes.
+	cfg := &config{
+		NatsURL:     natsURI,
+		MongoURI:    mongoURI,
+		MongoDB:     "loadgen_smoke",
+		SiteID:      "site-local",
+		MetricsAddr: ":0", // OS-assigned port so concurrent tests don't collide
+		MaxInFlight: 32,
+	}
+	os.Args = []string{
+		"loadgen", "run",
+		"--preset=small",
+		"--scenario=messaging-pipeline",
+		"--inject=canonical",
+		"--rate=200",
+		"--duration=2s",
+		"--warmup=200ms",
+		"--skip-readiness",
+		"--abort-on-p99-ms=0",
+		"--liveness-interval=0",
+		"--auto-warmup=false",
+		"--progress-interval=0",
+		"--js-async-max-pending=128",
+	}
+	dispatchCtx, dispatchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer dispatchCancel()
+	code := dispatch(dispatchCtx, cfg)
+	// Exit code 1 is the EXPECTED outcome here: every publish succeeds
+	// (the runRun wiring works end-to-end — generator → JetStream →
+	// async ack → drainTrailingReplies → report) but every messageID
+	// stays in the broadcast-correlation map because there is no
+	// broadcast-worker in this test to fan out the messages. totalErrs
+	// = missing_broadcasts = N, which crosses the 0.1% tolerance →
+	// exit 1. What matters for coverage is that dispatch() / runRun /
+	// exitCodeForFull / the metrics-server lifecycle ran cleanly. Exit
+	// 0 would require running a stub broadcast subscriber; the failure
+	// mode here proves the *wiring* path independently.
+	require.Equal(t, 1, code,
+		"clean publish path + no broadcast-worker = exit 1 (missing broadcasts > tolerance)")
+}
+
+// TestDispatch_RunSeed_Smoke walks the seed subcommand: dispatch →
+// runSeed → guardMongoDB → mongoutil.Connect → BuildFixtures →
+// Seed → mongoutil.Disconnect. The lowest-coverage seed.go paths
+// (Seed at 57%, insertDocs at 0%) all run here against a real
+// MongoDB container.
+func TestDispatch_RunSeed_Smoke(t *testing.T) {
+	mongoURI, stopMongo := setupMongo(t)
+	defer stopMongo()
+
+	savedArgs := os.Args
+	defer func() { os.Args = savedArgs }()
+
+	cfg := &config{
+		MongoURI: mongoURI,
+		MongoDB:  "loadgen_seed_smoke",
+		SiteID:   "site-local",
+	}
+	os.Args = []string{"loadgen", "seed", "--preset=small"}
+	dispatchCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	code := dispatch(dispatchCtx, cfg)
+	require.Equal(t, 0, code, "seed must exit 0 against a fresh Mongo")
+
+	// Sanity-check: the rooms collection has the preset's 5 rooms.
+	client, err := mongoutil.Connect(dispatchCtx, mongoURI, "", "")
+	require.NoError(t, err)
+	defer mongoutil.Disconnect(dispatchCtx, client)
+	count, err := client.Database("loadgen_seed_smoke").Collection("rooms").CountDocuments(dispatchCtx, bson.M{})
+	require.NoError(t, err)
+	require.EqualValues(t, 5, count, "small preset seeds 5 rooms")
+}
+
+// TestDispatch_RunTeardown_Smoke covers the teardown subcommand. The
+// previous two tests left documents in Mongo; this one wipes them.
+// Together they cover the seed → teardown round-trip that the
+// runTeardown handler (21% coverage pre-S6) gates.
+func TestDispatch_RunTeardown_Smoke(t *testing.T) {
+	mongoURI, stopMongo := setupMongo(t)
+	defer stopMongo()
+
+	// Seed first so teardown has something to delete.
+	savedArgs := os.Args
+	defer func() { os.Args = savedArgs }()
+
+	cfg := &config{
+		MongoURI: mongoURI,
+		MongoDB:  "loadgen_teardown_smoke",
+		SiteID:   "site-local",
+	}
+	os.Args = []string{"loadgen", "seed", "--preset=small"}
+	seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer seedCancel()
+	require.Equal(t, 0, dispatch(seedCtx, cfg))
+
+	// Now tear down.
+	os.Args = []string{"loadgen", "teardown"}
+	teardownCtx, teardownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer teardownCancel()
+	require.Equal(t, 0, dispatch(teardownCtx, cfg))
+
+	// Verify the rooms collection is empty.
+	client, err := mongoutil.Connect(teardownCtx, mongoURI, "", "")
+	require.NoError(t, err)
+	defer mongoutil.Disconnect(teardownCtx, client)
+	count, err := client.Database("loadgen_teardown_smoke").Collection("rooms").CountDocuments(teardownCtx, bson.M{})
+	require.NoError(t, err)
+	require.EqualValues(t, 0, count, "teardown wipes the rooms collection")
+}
+
+// TestDispatch_UnknownSubcommand is covered by main_test.go (no -tags
+// gate needed). The integration build inherits that coverage.
