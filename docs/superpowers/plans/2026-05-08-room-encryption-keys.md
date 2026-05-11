@@ -4,7 +4,9 @@
 
 **Goal:** Wire room encryption keys end-to-end across `room-service`, `room-worker`, and `inbox-worker`. After this plan ships, every newly-created room has a P-256 keypair stored in Valkey, channel `member.remove` rotates the key, channel `member.add` distributes the current key to new members, and remote sites replicate the keypair via a server-to-server NATS RPC so the keypair never enters JetStream.
 
-**Architecture:** `room-service` is the sole writer of fresh keys (Set on create, Rotate on remove). `room-worker` reads keys from local Valkey, gates Mongo writes on key presence, fans out `RoomKeyEvent` to local-site members, and serves a cross-site `chat.server.request.roomkey.{siteID}.get` RPC. `inbox-worker` on remote sites pulls keys from the origin via that RPC, writes its local Valkey, and fans out to its own users.
+**Architecture:** `room-service` is the sole writer of fresh keys (`Set` on create, `Rotate` on remove). `room-worker` (origin) reads the current key from local Valkey, gates Mongo writes on key presence, fans out `RoomKeyEvent` to **every** room member (local + remote) via `roomkeysender.Send` — the NATS supercluster routes `chat.user.{account}.event.*` to home sites — and serves the cross-site `chat.server.request.roomkey.{siteID}.get` RPC. `inbox-worker` on remote sites mirrors origin's key bytes and exact version into local Valkey via the RPC + `SetWithVersion` (no local `Rotate`, no user-side `Send` — origin `room-worker` already published).
+
+> **Implementation drift:** earlier drafts of this plan gave `inbox-worker` its own `Set`/`Rotate` path plus a redundant fan-out. The shipped implementation does neither — see the spec's "Fan-out ownership summary" for the authoritative model. Any leftover plan paragraphs that describe `Set`/`Rotate` on inbox-worker or a second fan-out step should be read as historical; treat the spec and the shipped code as the source of truth.
 
 **Tech Stack:** Go 1.25, `pkg/roomkeystore` (Valkey via `go-redis/v9`), `pkg/roomkeysender` (NATS), `crypto/ecdh.P256`, `caarlos0/env`, `go.uber.org/mock`, `stretchr/testify`, `testcontainers-go`.
 

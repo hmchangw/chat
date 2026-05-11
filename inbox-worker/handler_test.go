@@ -1247,7 +1247,8 @@ func TestHandleMemberAdded_ReplicatesLocalKeyOnMiss(t *testing.T) {
 		RoomID: "r1", Accounts: []string{"charlie"}, SiteID: "site-origin",
 		RoomName: "general", JoinedAt: time.Now().UnixMilli(),
 	}
-	pData, _ := json.Marshal(memberAdded)
+	pData, err := json.Marshal(memberAdded)
+	require.NoError(t, err)
 	envelope := &model.OutboxEvent{Type: "member_added", SiteID: "site-origin", DestSiteID: "site-b", Payload: pData}
 
 	require.NoError(t, h.handleMemberAdded(context.Background(), envelope))
@@ -1280,7 +1281,8 @@ func TestHandleMemberAdded_NoRPCOnLocalHit(t *testing.T) {
 		RoomID: "r1", Accounts: []string{"charlie"}, SiteID: "site-origin",
 		RoomName: "general", JoinedAt: time.Now().UnixMilli(),
 	}
-	pData, _ := json.Marshal(memberAdded)
+	pData, err := json.Marshal(memberAdded)
+	require.NoError(t, err)
 	envelope := &model.OutboxEvent{Type: "member_added", SiteID: "site-origin", DestSiteID: "site-b", Payload: pData}
 
 	require.NoError(t, h.handleMemberAdded(context.Background(), envelope))
@@ -1312,7 +1314,8 @@ func TestHandleMemberRemoved_RotatesLocalKey(t *testing.T) {
 	h := NewHandler(store, "site-b", keyStore, client)
 
 	rmv := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-origin", NewKeyVersion: 5}
-	pData, _ := json.Marshal(rmv)
+	pData, err := json.Marshal(rmv)
+	require.NoError(t, err)
 	envelope := &model.OutboxEvent{Type: "member_removed", SiteID: "site-origin", DestSiteID: "site-b", Payload: pData}
 	require.NoError(t, h.handleMemberRemoved(context.Background(), envelope))
 
@@ -1336,10 +1339,11 @@ func TestHandleMemberRemoved_NaksOnRPCFailure(t *testing.T) {
 	h := NewHandler(store, "site-b", keyStore, client)
 
 	rmv := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-origin"}
-	pData, _ := json.Marshal(rmv)
+	pData, err := json.Marshal(rmv)
+	require.NoError(t, err)
 	envelope := &model.OutboxEvent{Type: "member_removed", SiteID: "site-origin", DestSiteID: "site-b", Payload: pData}
 
-	err := h.handleMemberRemoved(context.Background(), envelope)
+	err = h.handleMemberRemoved(context.Background(), envelope)
 	require.Error(t, err, "expected error to be propagated for NAK")
 	assert.Contains(t, err.Error(), "rotate local key")
 	assert.Contains(t, err.Error(), "rpc timeout")
@@ -1373,7 +1377,8 @@ func TestHandleRoomCreated_ReplicatesLocalKey(t *testing.T) {
 		RequesterAccount: "alice",
 		Timestamp:        time.Now().UnixMilli(),
 	}
-	pData, _ := json.Marshal(outbox)
+	pData, err := json.Marshal(outbox)
+	require.NoError(t, err)
 	envelope := &model.OutboxEvent{
 		Type:       model.OutboxTypeRoomCreated,
 		SiteID:     "site-origin",
@@ -1444,8 +1449,10 @@ func TestFetchAndStoreKey_SkipsWhenLocalAtOrAheadOfOrigin(t *testing.T) {
 	require.NotNil(t, pair)
 	// Redelivery must not bump or overwrite when versions match.
 	assert.Equal(t, 5, pair.Version)
-	assert.Equal(t, []byte{0x09}, pair.KeyPair.PublicKey[:1],
-		"local key bytes must not change when versions are equal")
+	assert.Equal(t, bytes.Repeat([]byte{0x09}, 65), pair.KeyPair.PublicKey,
+		"local public key must not change when versions are equal")
+	assert.Equal(t, bytes.Repeat([]byte{0x0a}, 32), pair.KeyPair.PrivateKey,
+		"local private key must not change when versions are equal")
 }
 
 // --- replicateLocalKey direct tests ---
@@ -1626,7 +1633,8 @@ func TestHandleEvent_MemberRemoved_RotatesLocalKey(t *testing.T) {
 		SiteID:        "site-a",
 		NewKeyVersion: 5,
 	}
-	payload, _ := json.Marshal(memberEvt)
+	payload, err := json.Marshal(memberEvt)
+	require.NoError(t, err)
 	outboxEvt := model.OutboxEvent{
 		Type:       "member_removed",
 		SiteID:     "site-a",
@@ -1634,9 +1642,10 @@ func TestHandleEvent_MemberRemoved_RotatesLocalKey(t *testing.T) {
 		Payload:    payload,
 		Timestamp:  time.Now().UnixMilli(),
 	}
-	data, _ := json.Marshal(outboxEvt)
+	data, err := json.Marshal(outboxEvt)
+	require.NoError(t, err)
 
-	err := h.HandleEvent(context.Background(), data)
+	err = h.HandleEvent(context.Background(), data)
 	require.NoError(t, err)
 
 	// Valkey has the rotated key — proves dispatch reached rotation path.
