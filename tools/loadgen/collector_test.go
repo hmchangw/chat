@@ -367,6 +367,80 @@ func TestCollector_DiscardBefore_AcrossShards(t *testing.T) {
 	}
 }
 
+// S2: byReqID + byMsgID are sharded by ID hash. The API contract is
+// unchanged: RecordPublish from many goroutines + concurrent
+// RecordReply/RecordBroadcast must produce a consistent E1/E2 count
+// and zero outstanding correlations.
+func TestCollector_Correlation_ConcurrentPublishAndConsume(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	t0 := time.Unix(100, 0)
+
+	const N = 512 // multiple of 8 (producer count) so N/8 is exact
+	// Phase 1: publish N (req, msg) pairs concurrently from 8 producers.
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < N/8; i++ {
+				id := strconv.Itoa(base*1000 + i)
+				c.RecordPublish("r-"+id, "m-"+id, t0)
+			}
+		}(g)
+	}
+	wg.Wait()
+	assert.Equal(t, 2*N, c.outstandingCorrelations(), "8×N/8 publishes × 2 maps")
+
+	// Phase 2: consume all replies + broadcasts concurrently. Two
+	// readers per ID so we can race a hit against a miss without
+	// double-counting.
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < N/8; i++ {
+				id := strconv.Itoa(base*1000 + i)
+				c.RecordReply("r-"+id, t0.Add(2*time.Millisecond))
+				c.RecordBroadcast("m-"+id, t0.Add(5*time.Millisecond))
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	assert.Equal(t, N, c.E1Count(), "every publish must have produced one E1 match")
+	assert.Equal(t, N, c.E2Count(), "every publish must have produced one E2 match")
+	assert.Equal(t, 0, c.outstandingCorrelations(), "all correlations consumed")
+}
+
+// S2: PruneCorrelation must clear every shard, leaving the
+// seenMessageIDs and E1/E2 samples intact.
+func TestCollector_PruneCorrelation_ClearsAllShards(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "test")
+	t0 := time.Unix(100, 0)
+	// Spread IDs across many hash bucket positions to exercise shards.
+	for i := 0; i < 200; i++ {
+		id := strconv.Itoa(i)
+		c.RecordPublish("r-"+id, "m-"+id, t0)
+	}
+	// Match a few to populate E1/E2 — we want to confirm those aren't
+	// nuked by PruneCorrelation.
+	c.RecordReply("r-1", t0.Add(time.Millisecond))
+	c.RecordBroadcast("m-2", t0.Add(time.Millisecond))
+
+	require.Equal(t, 1, c.E1Count())
+	require.Equal(t, 1, c.E2Count())
+	require.Greater(t, c.outstandingCorrelations(), 0)
+
+	c.PruneCorrelation()
+
+	assert.Equal(t, 0, c.outstandingCorrelations(), "all shards must be cleared")
+	assert.Equal(t, 1, c.E1Count(), "E1 samples preserved across prune")
+	assert.Equal(t, 1, c.E2Count(), "E2 samples preserved across prune")
+	assert.Equal(t, 200, len(c.MessageIDs()), "seenMessageIDs preserved across prune")
+}
+
 func TestCollector_OutstandingCorrelations(t *testing.T) {
 	m := NewMetrics()
 	c := NewCollector(m, "test")

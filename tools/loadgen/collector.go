@@ -1,10 +1,25 @@
 package main
 
 import (
+	"hash/fnv"
 	"sort"
 	"sync"
 	"time"
 )
+
+// correlationShardCount is the number of hash-keyed sub-maps used to
+// shard byReqID + byMsgID. 16 picked because Go's sync.Map uses a
+// similar order of magnitude and 16 is a power of two so the FNV-32
+// hash maps to a shard via cheap bit-mask. At 16 shards × 5k rps
+// publishes the per-shard write rate is ~300 rps, far below the
+// contention threshold of a single sync.Mutex.
+const correlationShardCount = 16
+
+// correlationShard owns one chunk of the byReqID / byMsgID maps.
+type correlationShard struct {
+	mu      sync.Mutex
+	entries map[string]publishEntry
+}
 
 type publishEntry struct {
 	publishedAt time.Time
@@ -39,13 +54,17 @@ type requestShard struct {
 
 // Collector correlates publishes with replies (E1) and broadcasts (E2).
 type Collector struct {
-	m       *Metrics
-	preset  string
-	mu      sync.Mutex
-	byReqID map[string]publishEntry
-	byMsgID map[string]publishEntry
-	e1      []sample
-	e2      []sample
+	m      *Metrics
+	preset string
+	mu     sync.Mutex // protects e1, e2, seenMessageIDs, window
+	// S2: byReqID + byMsgID are sharded into correlationShardCount
+	// buckets by FNV-32 of the ID. Concurrent RecordPublish from
+	// different goroutines almost never lands on the same shard, so
+	// the per-shard lock is essentially uncontested in steady state.
+	byReqIDShards [correlationShardCount]*correlationShard
+	byMsgIDShards [correlationShardCount]*correlationShard
+	e1            []sample
+	e2            []sample
 	// S1: requests is sharded per (scenario, kind). requestsMu protects
 	// the map structure (insertion of new shards on first write); each
 	// shard owns its own mu for the samples slice. Reads use RLock so
@@ -68,12 +87,24 @@ func (c *Collector) AttachWindow(w *LatencyWindow) {
 
 // NewCollector returns a ready-to-use Collector.
 func NewCollector(m *Metrics, preset string) *Collector {
-	return &Collector{
+	c := &Collector{
 		m: m, preset: preset,
-		byReqID:  make(map[string]publishEntry),
-		byMsgID:  make(map[string]publishEntry),
 		requests: make(map[requestKey]*requestShard),
 	}
+	for i := 0; i < correlationShardCount; i++ {
+		c.byReqIDShards[i] = &correlationShard{entries: make(map[string]publishEntry)}
+		c.byMsgIDShards[i] = &correlationShard{entries: make(map[string]publishEntry)}
+	}
+	return c
+}
+
+// shardForID returns the index of the correlation shard for id.
+// FNV-32 is hot-path-cheap (one allocation-free Write call) and uniformly
+// distributes the request/message ID strings we use (UUIDv7 hex / base62).
+func shardForID(id string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	return int(h.Sum32()) & (correlationShardCount - 1)
 }
 
 // getOrCreateShard returns the shard for k, creating it on first
@@ -176,35 +207,64 @@ func (c *Collector) RequestStats() []RequestStat {
 }
 
 // RecordPublish stores the publish time under both correlation keys.
+//
+// S2: byReqID + byMsgID writes hit independent shards keyed by hash
+// of the ID. The Collector-wide c.mu is only taken to append to
+// seenMessageIDs (a single slice, can't easily shard without breaking
+// the auto-warmup pool's ordering contract).
 func (c *Collector) RecordPublish(requestID, messageID string, t time.Time) {
+	rs := c.byReqIDShards[shardForID(requestID)]
+	rs.mu.Lock()
+	rs.entries[requestID] = publishEntry{publishedAt: t}
+	rs.mu.Unlock()
+
+	ms := c.byMsgIDShards[shardForID(messageID)]
+	ms.mu.Lock()
+	ms.entries[messageID] = publishEntry{publishedAt: t}
+	ms.mu.Unlock()
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.byReqID[requestID] = publishEntry{publishedAt: t}
-	c.byMsgID[messageID] = publishEntry{publishedAt: t}
 	c.seenMessageIDs = append(c.seenMessageIDs, messageID)
+	c.mu.Unlock()
 }
 
 // RecordReply consumes one pending publish keyed by requestID.
+//
+// S2: lookup + delete happen under the per-shard mu (no Collector
+// mu held). The matched-sample append still takes c.mu — those are
+// merged into one shared e1 slice for final reporting; sharding e1
+// would complicate Finalize without a measurable contention win
+// (E1 lands at the inbound reply rate, ~5k/sec at peak, all from
+// one subscription handler goroutine).
 func (c *Collector) RecordReply(requestID string, at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	e, ok := c.byReqID[requestID]
+	sh := c.byReqIDShards[shardForID(requestID)]
+	sh.mu.Lock()
+	e, ok := sh.entries[requestID]
+	if ok {
+		delete(sh.entries, requestID)
+	}
+	sh.mu.Unlock()
 	if !ok {
 		return
 	}
-	delete(c.byReqID, requestID)
 	d := at.Sub(e.publishedAt)
+	c.mu.Lock()
 	c.e1 = append(c.e1, sample{publishedAt: e.publishedAt, latency: d})
+	c.mu.Unlock()
 	c.m.E1Latency.WithLabelValues(c.preset).Observe(d.Seconds())
 }
 
 // RecordPublishBroadcastOnly stores only the message-ID correlation, for
 // injection modes that bypass the gatekeeper (no reply is expected).
 func (c *Collector) RecordPublishBroadcastOnly(messageID string, t time.Time) {
+	ms := c.byMsgIDShards[shardForID(messageID)]
+	ms.mu.Lock()
+	ms.entries[messageID] = publishEntry{publishedAt: t}
+	ms.mu.Unlock()
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.byMsgID[messageID] = publishEntry{publishedAt: t}
 	c.seenMessageIDs = append(c.seenMessageIDs, messageID)
+	c.mu.Unlock()
 }
 
 // MessageIDs returns every message ID published during this Collector's
@@ -226,17 +286,30 @@ func (c *Collector) MessageIDs() []string {
 // Also prunes the failed messageID from seenMessageIDs so the auto-warmup
 // MessageIDs() pool doesn't hand history-read scenarios a message that
 // never made it to Cassandra.
+//
+// S2: each delete hits its own shard. Empty requestID / messageID is a
+// no-op (delete on absent key is a no-op in Go).
 func (c *Collector) RecordPublishFailed(requestID, messageID string) {
+	if requestID != "" {
+		rs := c.byReqIDShards[shardForID(requestID)]
+		rs.mu.Lock()
+		delete(rs.entries, requestID)
+		rs.mu.Unlock()
+	}
+	if messageID != "" {
+		ms := c.byMsgIDShards[shardForID(messageID)]
+		ms.mu.Lock()
+		delete(ms.entries, messageID)
+		ms.mu.Unlock()
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.byReqID, requestID)
-	delete(c.byMsgID, messageID)
 	for i, id := range c.seenMessageIDs {
 		if id == messageID {
 			c.seenMessageIDs = append(c.seenMessageIDs[:i], c.seenMessageIDs[i+1:]...)
 			break
 		}
 	}
+	c.mu.Unlock()
 }
 
 // PruneCorrelation clears byReqID / byMsgID. Call between phases (e.g.
@@ -245,24 +318,42 @@ func (c *Collector) RecordPublishFailed(requestID, messageID string) {
 // ends doesn't get attributed to the next phase, and so leftover
 // unmatched warmup orphans don't inflate Finalize's missing counts.
 // E1/E2 latency samples and seenMessageIDs are preserved.
+//
+// S2: visits every shard. Lock acquisition order matches the shard
+// index so concurrent PruneCorrelation calls (don't happen today,
+// defensive) cannot deadlock.
 func (c *Collector) PruneCorrelation() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.byReqID = make(map[string]publishEntry)
-	c.byMsgID = make(map[string]publishEntry)
+	for i := 0; i < correlationShardCount; i++ {
+		rs := c.byReqIDShards[i]
+		rs.mu.Lock()
+		rs.entries = make(map[string]publishEntry)
+		rs.mu.Unlock()
+
+		ms := c.byMsgIDShards[i]
+		ms.mu.Lock()
+		ms.entries = make(map[string]publishEntry)
+		ms.mu.Unlock()
+	}
 }
 
 // RecordBroadcast consumes one pending publish keyed by messageID.
+//
+// S2: lookup + delete under the per-shard mu; e2 append under c.mu.
 func (c *Collector) RecordBroadcast(messageID string, at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	e, ok := c.byMsgID[messageID]
+	sh := c.byMsgIDShards[shardForID(messageID)]
+	sh.mu.Lock()
+	e, ok := sh.entries[messageID]
+	if ok {
+		delete(sh.entries, messageID)
+	}
+	sh.mu.Unlock()
 	if !ok {
 		return
 	}
-	delete(c.byMsgID, messageID)
 	d := at.Sub(e.publishedAt)
+	c.mu.Lock()
 	c.e2 = append(c.e2, sample{publishedAt: e.publishedAt, latency: d})
+	c.mu.Unlock()
 	c.m.E2Latency.WithLabelValues(c.preset).Observe(d.Seconds())
 }
 
@@ -314,19 +405,31 @@ func filterRequestsAtOrAfter(in []requestSample, cutoff time.Time) []requestSamp
 }
 
 // Finalize returns the count of unmatched publishes as missing replies and broadcasts.
+//
+// S2: sums across all shards. Walks them in index order under each
+// shard's own lock so a concurrent RecordReply on shard 3 doesn't
+// block the count of shard 0.
 func (c *Collector) Finalize() (missingReplies int, missingBroadcasts int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.byReqID), len(c.byMsgID)
+	for i := 0; i < correlationShardCount; i++ {
+		rs := c.byReqIDShards[i]
+		rs.mu.Lock()
+		missingReplies += len(rs.entries)
+		rs.mu.Unlock()
+
+		ms := c.byMsgIDShards[i]
+		ms.mu.Lock()
+		missingBroadcasts += len(ms.entries)
+		ms.mu.Unlock()
+	}
+	return missingReplies, missingBroadcasts
 }
 
 // outstandingCorrelations reports the total count of unmatched
 // byReqID + byMsgID. Used by the quiescence drain in main.go to
 // decide when trailing replies / broadcasts have all landed.
 func (c *Collector) outstandingCorrelations() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.byReqID) + len(c.byMsgID)
+	mr, mb := c.Finalize()
+	return mr + mb
 }
 
 // E1Count returns the number of matched E1 samples.
