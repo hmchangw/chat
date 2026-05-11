@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-11
 **Status:** Draft
-**Services:** `room-worker`, `inbox-worker`
+**Services:** `room-worker`
 **Related specs:**
 - `2026-04-09-room-spotlight-user-room-design.md` (user-room and spotlight collections)
 - `2026-04-21-search-service-sync-worker-extension-design.md` (search-sync-worker INBOX consumer)
@@ -10,9 +10,9 @@
 
 ## Problem
 
-PR #145 closed the origin-site MV gap for `member.add` / `member.remove` operations by adding a local `chat.inbox.{siteID}.member_added` / `member_removed` publish from `room-worker`. That publish drives `search-sync-worker`'s `user-room-{siteID}` and `spotlight-{siteID}` ES indexes.
+PR #145 closed the origin-site MV gap for `member.add` / `member.remove` by adding a local `chat.inbox.{siteID}.member_added` / `member_removed` publish from `room-worker`, plus a per-remote-site `outbox.{origin}.to.{remote}.member_added` outbox event that arrives on every federated site's INBOX (via JetStream Sources + SubjectTransform) as `chat.inbox.{remote}.aggregate.member_added`. `search-sync-worker` on each site consumes both lanes and updates its `user-room-{siteID}` and `spotlight-{siteID}` ES indexes.
 
-The room-creation path still has the same gap. When a room is created — channel, DM, or botDM — `room-worker.finishCreateRoom` writes the auto-enrolled `Subscription` rows (creator + DM recipient + every initial channel member) but never publishes a `member_added` event for them. `inbox-worker.handleRoomCreated` has the symmetric gap on remote sites: it upserts the local-side `Subscription` rows for federated rooms but never publishes a `member_added` event for the locally-resolved members.
+The room-creation path still has the same gap. `room-worker.finishCreateRoom` writes the auto-enrolled `Subscription` rows (creator + DM recipient + every initial channel member) and emits a per-remote-site `outbox.{origin}.to.{remote}.room_created` for federation — but **never publishes a `member_added` event** on either the origin-INBOX local lane or the cross-site outbox. `search-sync-worker` never sees the create.
 
 Result: a freshly-created room is invisible to search until the next add/remove operation re-emits the event.
 
@@ -20,7 +20,7 @@ Result: a freshly-created room is invisible to search until the next add/remove 
 
 1. **Spotlight (room typeahead) returns nothing for the new room.** The creator types the room name; `search-sync-worker` has no spotlight doc; no result.
 2. **Cross-site message search returns empty for the new room.** CCS terms-lookup against the user's `user-room-{siteID}` doc reports the user as not subscribed; message hits are filtered out as unauthorized.
-3. **Self-corrects on churn.** Both indexes catch up on the next `member.add` or `member.remove` against the room (PR #145's publish fires there). Until then, the room is silently invisible to search.
+3. **Self-corrects on churn.** Both indexes catch up on the next `member.add` or `member.remove` (PR #145's publish fires). Until then, the room is silently invisible to search.
 
 ### Concrete trace
 
@@ -28,147 +28,130 @@ Alice on `s1` creates a channel `r1` with `Orgs: [eng-org]` (org expands to `[bo
 
 | Subject | Stream | Effect |
 |---|---|---|
-| `chat.user.{account}.event.subscription.update` × 4 | core | Frontend left-panel updates for alice, bob, charlie, dave (cross-site routes via supercluster) |
-| `chat.room.canonical.s1.create` | core (sys-message only, channel-only) | "alice created the room" |
-| `outbox.s1.to.s2.room_created` | OUTBOX_s1 | Federation: dave's site receives `room_created`, `inbox-worker.handleRoomCreated` upserts dave's local `Subscription` row |
+| `chat.user.{account}.event.subscription.update` × 4 | core | Frontend left-panel updates for alice, bob, charlie, dave |
+| `chat.room.canonical.s1.create` (sys-message only, channel-only) | core | "alice created the room" |
+| `outbox.s1.to.s2.room_created` | OUTBOX_s1 | `inbox-worker` on s2 mirrors dave's `Subscription` row |
 
-`s1`'s `user-room-s1` index gains zero entries. `s2`'s `user-room-s2` gains zero entries. Alice CCS-querying `r1` from any site fans out to `s1` and `s2` and finds no MV doc for any user → empty result.
+`s1`'s `user-room-s1` gains zero entries. `s2`'s `user-room-s2` gains zero entries. Alice CCS-querying `r1` from any site → empty result.
 
 ## Goals
 
-- `user-room-{siteID}` and `spotlight-{siteID}` on both the origin site and every federated remote site contain correct entries for every member auto-enrolled at room creation, regardless of room type.
-- Fix lives in `room-worker.finishCreateRoom` (origin) and `inbox-worker.handleRoomCreated` (remote) — no new services, no new model types, no new subjects, no changes to `search-sync-worker` or stream config.
-- Wire format byte-for-byte compatible with PR #145's existing publishes, so `search-sync-worker/inbox_stream.go::parseMemberEvent` decodes the new events identically.
+- `user-room-{siteID}` and `spotlight-{siteID}` on the origin site **and every federated remote site** contain correct entries for every member auto-enrolled at room creation, regardless of room type.
+- Fix lives **entirely in `room-worker.finishCreateRoom`** — no changes to `inbox-worker`, `search-sync-worker`, stream config, or any new model types.
+- Wire format byte-for-byte compatible with PR #145's existing publishes so `search-sync-worker/inbox_stream.go::parseMemberEvent` decodes all `member_added` events identically (whether create-time or add-member, origin-local or federated-aggregate).
 
 ## Non-Goals
 
-- **Backfilling pre-fix rooms.** Forward-only deployment per agreement with team. Rooms created before this fix lands stay missing in their origin/federated MV until any later add/remove churn re-emits the event. Not documenting under "Known Limitations" because the operational expectation is "if the rooms matter, run any add-member operation on them".
+- **Backfilling pre-fix rooms.** Forward-only deployment per agreement. Rooms created before this fix lands stay missing in their MV until any later add/remove churn re-emits the event.
 - **Changing `chat.user.{account}.event.subscription.update` or `chat.room.canonical.{siteID}.create`.** UI fan-out and sys-message paths are correct; not in scope.
-- **Refactoring `finishCreateRoom` or `handleRoomCreated`.** Both are narrow helpers; we're adding one publish to each.
+- **Refactoring `finishCreateRoom`** beyond the two added publishes.
 - **Mint-on-create for the room encryption key.** Separate concern, deferred until `ENCRYPTION_ENABLED=true` is required in prod.
 
 ## Design
 
-### NATS Subjects
+### Why this lives in room-worker alone
 
-No new subjects. PR #145 already exposed:
+The cross-site federation path for `member_added` already exists from PR #145:
 
-```go
-// chat.inbox.{siteID}.member_added — local lane
-subject.InboxMemberAdded(siteID)
+```
+outbox.{origin}.to.{remote}.member_added
+  → (JetStream Sources + SubjectTransform)
+  → chat.inbox.{remote}.aggregate.member_added
+  → search-sync-worker on {remote} updates user-room-{remote}/spotlight-{remote}
 ```
 
-Both `room-worker` and `inbox-worker` already import `pkg/subject`.
+`search-sync-worker` on the remote site already has `chat.inbox.{remote}.aggregate.member_added` in its consumer's `FilterSubjects`. By making `room-worker.finishCreateRoom` emit the **same** outbox event it already emits in `processAddMembers`, we reuse the entire federation lane end-to-end and `search-sync-worker` indexes the new room without any extra hop through `inbox-worker`.
+
+An alternative considered: have `inbox-worker.handleRoomCreated` re-emit a local `chat.inbox.{remote}.member_added` after creating the subs. Rejected because (i) it duplicates federation work `room-worker` already does for add-members; (ii) adds a second hop on the remote side; (iii) requires `inbox-worker.Handler` to grow a `publish` field and a `siteID` field with all the test churn that implies. The symmetric "publish the same outbox events as add-members" path is materially smaller.
+
+### NATS subjects (all already exist)
+
+```go
+// chat.inbox.{siteID}.member_added — origin-site local lane (PR #145 added)
+subject.InboxMemberAdded(siteID)
+
+// outbox.{origin}.to.{destSiteID}.member_added — federation lane (PR #145 added)
+subject.Outbox(siteID, destSiteID, model.OutboxMemberAdded)
+```
 
 ### Wire format
 
-The publish wraps `model.MemberAddEvent` in `model.OutboxEvent`, matching PR #145's federated-lane wire format byte-for-byte:
+Both publishes wrap `model.MemberAddEvent` in `model.OutboxEvent`. The local publish has `SiteID == DestSiteID == originSite` (self-loop convention); the cross-site publish has the per-remote `DestSiteID`. The inner `MemberAddEvent` carries:
 
-```go
-inner := model.MemberAddEvent{
-    Type:               "member_added",
-    RoomID:             room.ID,
-    RoomName:           room.Name,
-    Accounts:           accounts,        // see "Accounts list" below
-    SiteID:             room.SiteID,     // origin
-    JoinedAt:           req.Timestamp,
-    HistorySharedSince: nil,             // see "HistorySharedSince" below
-    Timestamp:          now.UnixMilli(),
-}
-outbox := model.OutboxEvent{
-    Type:       "member_added",
-    SiteID:     room.SiteID,             // origin
-    DestSiteID: room.SiteID,             // self — local publish
-    Payload:    mustMarshal(inner),
-    Timestamp:  now.UnixMilli(),
-}
-```
+| Field | Value |
+|---|---|
+| `Type` | `model.OutboxMemberAdded` |
+| `RoomID` | `room.ID` |
+| `RoomName` | `room.Name` (empty for DM/botDM) |
+| `Accounts` | Expanded individual accounts (see below) |
+| `SiteID` | `room.SiteID` — the origin |
+| `JoinedAt` | `req.Timestamp` |
+| `HistorySharedSince` | Always `nil` — no prior history at create time |
+| `Timestamp` | `now.UnixMilli()` |
 
 ### Accounts list
 
-For every room type, the `Accounts` slice carries **expanded individual account names**, not org IDs. This matches PR #145's `processAddMembers` behavior; `search-sync-worker`'s per-user MV needs accounts.
-
-| Room type | Accounts source |
+| Publish | `Accounts` source |
 |---|---|
-| Channel (with or without orgs) | `subs[].User.Account` — org expansion already happened upstream in `room-worker.processCreateRoomChannel` |
-| DM | `subs[].User.Account` — both creator and recipient |
-| botDM | `subs[].User.Account` — creator only (the bot account doesn't get a sub by design) |
+| **Origin-local INBOX** (`chat.inbox.{origin}.member_added`) | Every entry in `subs[]` (creator + every auto-enrolled member, including cross-site members for s1's own MV) |
+| **Cross-site OUTBOX** (`outbox.{origin}.to.{remote}.member_added`) | Only members whose `SiteID == remote` (per-destination split, matches PR #145's batched outbox shape) |
 
-In all three cases the source is the same: the `subs []*model.Subscription` already passed to `finishCreateRoom`.
+For channel rooms with `Orgs`, expansion has already happened in `processCreateRoomChannel` before `finishCreateRoom` runs. `subs[]` already carries expanded individual accounts.
 
-### HistorySharedSince
+### Dedup IDs
 
-Always `nil` (unrestricted) for the create-time event. No prior history exists at room creation, so "share history since this timestamp" is meaningless — every member sees everything from t=0. Channel restricted-history kicks in only at later add-member events, which are already covered by PR #145.
-
-### Dedup ID
-
-Same shape as PR #145's cross-site OUTBOX publishes. Reuse the existing `outboxDedupID` helper:
-
-```go
-payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, requester.Account, req.Timestamp)
-dedupID := outboxDedupID(ctx, room.SiteID, payloadSeed)
-```
-
-`outboxDedupID` prefers `X-Request-ID` from `ctx`, falling back to the seed. `destSiteID = room.SiteID` (self-loop) namespaces it so it can't collide with the per-remote-site OUTBOX dedup IDs the same `finishCreateRoom` invocation will emit.
-
-For `inbox-worker.handleRoomCreated`, the seed mirrors the room-worker side but uses the locally-resolved info:
-
-```go
-payloadSeed := fmt.Sprintf("%s:%s:%d", data.RoomID, data.RequesterAccount, data.Timestamp)
-dedupID := outboxDedupID(ctx, h.siteID, payloadSeed)
-```
-
-`X-Request-ID` is preserved across federation by `inbox-worker`'s consumer setup, so the dedup ID is stable across redeliveries.
+Reuse `natsutil.OutboxDedupID(ctx, destSiteID, payloadSeed)` with seed `"{roomID}:{requesterAccount}:{timestamp}"`. PR #145 uses the identical seed shape for the add-members path; identical seed at the same `{destSiteID}` is fine because there's exactly one create per room per requester per timestamp.
 
 ### End-to-end flow after the fix
 
-For the same `[bob@s1, charlie@s1, dave@s2]` channel-create on `s1`:
+For `[bob@s1, charlie@s1, dave@s2]` channel-create on `s1`:
 
 | Subject | Stream | Effect |
 |---|---|---|
 | `chat.user.{account}.event.subscription.update` × 4 | core | UI fan-out (unchanged) |
 | `chat.room.canonical.s1.create` (sys-message only) | core | "alice created the room" (unchanged) |
-| **`chat.inbox.s1.member_added`** (NEW) | INBOX_s1 (local lane) | s1's `user-room-sync` + `spotlight-sync` → s1's MV/spotlight gain docs for alice + bob + charlie + dave |
-| `outbox.s1.to.s2.room_created` | OUTBOX_s1 | SubjectTransform → `chat.inbox.s2.aggregate.room_created` → s2's `inbox-worker.handleRoomCreated` |
-| **`chat.inbox.s2.member_added`** (NEW, from inbox-worker) | INBOX_s2 (local lane) | s2's `user-room-sync` + `spotlight-sync` → s2's MV/spotlight gain a doc for dave |
+| **`chat.inbox.s1.member_added`** (NEW) | INBOX_s1 (local lane) | s1's `search-sync-worker` updates `user-room-s1` + `spotlight-s1` for alice + bob + charlie + dave |
+| `outbox.s1.to.s2.room_created` (existing) | OUTBOX_s1 | s2's `inbox-worker` mirrors dave's `Subscription` row |
+| **`outbox.s1.to.s2.member_added`** (NEW) | OUTBOX_s1 → INBOX_s2 aggregate lane | s2's `search-sync-worker` updates `user-room-s2` + `spotlight-s2` for dave |
 
-End state: every site's MV/spotlight indexes have docs for every locally-affected member. CCS terms-lookup queries from any user resolve correctly.
+End state: every site's MV/spotlight indexes contain the new room for every locally-affected member.
 
 ### Ordering
 
-The local-INBOX publish goes **after** the existing `subscription.update` loop and **before** the per-remote-site OUTBOX loop in `finishCreateRoom`. In `inbox-worker.handleRoomCreated`, the publish goes **after** `BulkCreateSubscriptions` (so the subs are durable before the search-sync event fires).
+Both new publishes go inside `finishCreateRoom`:
+
+- **Origin-local INBOX** publish: after the `subscription.update` loop, before the per-remote-site OUTBOX loop. Same position as PR #145's local INBOX publishes in `processAddMembers`/`processRemoveIndividual`/`processRemoveOrg`.
+- **Cross-site OUTBOX `member_added`** publish: inside the existing `for destSiteID, accounts := range remoteSiteAccounts` loop, immediately after the existing `room_created` publish for the same dest site.
+
+The federation lane delivers `room_created` and `member_added` to the remote site's INBOX in publish order. `inbox-worker` (which consumes the aggregate lane via `FilterSubjects: aggregate.>`) and `search-sync-worker` (whose `FilterSubjects` matches `aggregate.member_added` but not `aggregate.room_created`) operate on disjoint event types, so the order they execute relative to each other doesn't matter — `search-sync-worker` doesn't read MongoDB and doesn't depend on `Subscription` rows existing.
 
 ### Idempotency
 
-`outboxDedupID` produces a stable JetStream `Nats-Msg-Id` per (room, requester, timestamp, destSiteID) tuple. JetStream stream-level dedup drops redeliveries within its dedup window (default 2 minutes, configured per stream). Beyond that window, `search-sync-worker`'s Painless last-write-wins guard makes replay idempotent on the ES side.
+`natsutil.OutboxDedupID` produces a stable `Nats-Msg-Id` per `(room, requester, timestamp, destSiteID)`. JetStream stream-level dedup drops redeliveries within its dedup window. Beyond that window, `search-sync-worker`'s Painless last-write-wins guard makes ES replay idempotent.
 
 ## Code Changes
 
-### Change 1 — `room-worker/handler.go::finishCreateRoom`
+### Change 1 — `room-worker/handler.go::finishCreateRoom` (origin-local INBOX publish)
 
-After the existing `subscription.update` loop (line ~1117) and before the per-remote-site OUTBOX loop (line ~1129):
+After the existing `subscription.update` loop and channel sys-message publish, before the per-remote-site OUTBOX loop:
 
 ```go
-// NEW — local INBOX publish for search-sync-worker (origin-site MV update).
-// Mirrors PR #145's wire format; see docs/superpowers/specs/
-// 2026-05-11-create-room-origin-site-mv-fix-design.md.
 accounts := make([]string, 0, len(subs))
 for _, sub := range subs {
     accounts = append(accounts, sub.User.Account)
 }
 inner := model.MemberAddEvent{
-    Type:               "member_added",
-    RoomID:             room.ID,
-    RoomName:           room.Name,
-    Accounts:           accounts,
-    SiteID:             room.SiteID,
-    JoinedAt:           req.Timestamp,
-    HistorySharedSince: nil,
-    Timestamp:          now.UnixMilli(),
+    Type:      model.OutboxMemberAdded,
+    RoomID:    room.ID,
+    RoomName:  room.Name,
+    Accounts:  accounts,
+    SiteID:    room.SiteID,
+    JoinedAt:  req.Timestamp,
+    Timestamp: now.UnixMilli(),
 }
 innerData, _ := json.Marshal(inner)
 outbox := model.OutboxEvent{
-    Type:       "member_added",
+    Type:       model.OutboxMemberAdded,
     SiteID:     room.SiteID,
     DestSiteID: room.SiteID,
     Payload:    innerData,
@@ -176,134 +159,93 @@ outbox := model.OutboxEvent{
 }
 outboxData, _ := json.Marshal(outbox)
 payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, req.Timestamp)
-dedupID := outboxDedupID(ctx, room.SiteID, payloadSeed)
-if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), outboxData, dedupID); err != nil {
-    slog.Error("local inbox member_added publish failed",
-        "error", err, "roomID", room.ID, "requestID", requestID)
+if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), outboxData, natsutil.OutboxDedupID(ctx, room.SiteID, payloadSeed)); err != nil {
+    slog.Error("local inbox member_added publish failed", "error", err, "roomID", room.ID, "requestID", requestID)
 }
 ```
 
-`subs []*model.Subscription` is already in scope.
+Log-and-continue on publish failure — JetStream redelivery + `search-sync-worker`'s last-write-wins guard handle transient failures self-correctingly.
 
-### Change 2 — `inbox-worker/handler.go::handleRoomCreated`
+### Change 2 — `room-worker/handler.go::finishCreateRoom` (cross-site OUTBOX member_added publish)
 
-After the existing `BulkCreateSubscriptions` call (line ~310), before the function returns:
+Inside the existing per-remote-site loop, right after the existing `room_created` publish:
 
 ```go
-// NEW — local INBOX publish for search-sync-worker. Same wire format as
-// room-worker.finishCreateRoom; the locally-resolved member set is
-// data.Accounts (every account FindUsersByAccounts returned).
-accounts := make([]string, 0, len(data.Accounts))
-for _, account := range data.Accounts {
-    accounts = append(accounts, account)
+memberEvt := model.MemberAddEvent{
+    Type:      model.OutboxMemberAdded,
+    RoomID:    room.ID,
+    RoomName:  room.Name,
+    Accounts:  accounts, // per-dest accounts (loop variable)
+    SiteID:    room.SiteID,
+    JoinedAt:  req.Timestamp,
+    Timestamp: now.UnixMilli(),
 }
-inner := model.MemberAddEvent{
-    Type:               "member_added",
-    RoomID:             data.RoomID,
-    RoomName:           data.RoomName,
-    Accounts:           accounts,
-    SiteID:             data.HomeSiteID,
-    JoinedAt:           data.Timestamp,
-    HistorySharedSince: nil,
-    Timestamp:          time.Now().UTC().UnixMilli(),
+memberData, _ := json.Marshal(memberEvt)
+memberEnvelope := model.OutboxEvent{
+    Type:       model.OutboxMemberAdded,
+    SiteID:     room.SiteID,
+    DestSiteID: destSiteID,
+    Payload:    memberData,
+    Timestamp:  now.UnixMilli(),
 }
-innerData, _ := json.Marshal(inner)
-outbox := model.OutboxEvent{
-    Type:       "member_added",
-    SiteID:     h.siteID,
-    DestSiteID: h.siteID,
-    Payload:    innerData,
-    Timestamp:  inner.Timestamp,
-}
-outboxData, _ := json.Marshal(outbox)
-payloadSeed := fmt.Sprintf("%s:%s:%d", data.RoomID, data.RequesterAccount, data.Timestamp)
-dedupID := outboxDedupID(ctx, h.siteID, payloadSeed)
-if err := h.publish(ctx, subject.InboxMemberAdded(h.siteID), outboxData, dedupID); err != nil {
-    slog.Error("local inbox member_added publish failed",
-        "error", err, "roomID", data.RoomID, "requestID", requestID)
+memberOutboxData, _ := json.Marshal(memberEnvelope)
+memberSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, req.Timestamp)
+if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, model.OutboxMemberAdded), memberOutboxData, natsutil.OutboxDedupID(ctx, destSiteID, memberSeed)); err != nil {
+    return fmt.Errorf("publish member_added outbox to %s: %w", destSiteID, err)
 }
 ```
 
-`inbox-worker` does not currently import `pkg/subject`; add the import.
+The cross-site publish returns an error on failure (rather than log-and-continue) to match the surrounding `room_created` publish — JetStream NAKs the create, and `room-worker` redelivers from `MESSAGES_{siteID}`.
 
-`inbox-worker.Handler` does not currently have a `publish` field or an `outboxDedupID` helper — both will be added:
-- `Handler.publish PublishFunc` injected via `NewHandler`, signature `func(ctx, subj, data, msgID) error`. Wired in `inbox-worker/main.go` to `nc.Publish` on the existing `*otelnats.Conn`.
-- `outboxDedupID(ctx, destSiteID, payloadSeed)` — copy verbatim from `room-worker/handler.go:39`. Trivially small and avoids creating a new shared package for one helper.
+### Change 3 — `pkg/natsutil/request_id.go::OutboxDedupID`
 
-### Error handling
-
-Both publishes use the log-and-continue pattern from PR #145's existing local-INBOX publishes. The local publish failing must not fail the user-facing create request — JetStream redelivery (federation path) and `search-sync-worker`'s Painless guard (ES path) handle transient failures self-correctingly. Failing the whole create because the search index didn't update would be the wrong trade-off.
+Lift `room-worker`'s private `outboxDedupID` to `natsutil.OutboxDedupID` — pure logic, identical at both call sites in `room-worker` and consistent with `natsutil`'s ownership of `RequestIDFromContext` and `NewMsg`. Removes a copy I would otherwise introduce.
 
 ### What is NOT changed
 
-- `pkg/subject` — `InboxMemberAdded` already exists.
-- `pkg/stream` — `INBOX_{siteID}` already accepts `chat.inbox.{siteID}.*`.
-- `pkg/model` — no new types; reuses `OutboxEvent`, `MemberAddEvent`, `RoomCreatedOutbox`.
-- `inbox-worker` consumer FilterSubjects — PR #145 already scopes it to `chat.inbox.{siteID}.aggregate.>`, so the new local-lane publish stays out of `inbox-worker`'s own consumption (avoids self-feedback).
+- `pkg/subject`, `pkg/stream`, `pkg/model` — no new types/subjects.
+- `inbox-worker` — untouched. It continues to consume `aggregate.room_created` for sub creation (its current job) and ignores `aggregate.member_added` for fresh rooms because the BulkCreateSubscriptions path is gated on the room having been created via `aggregate.room_created` first (sub creation happens in `handleRoomCreated`; `handleMemberAdded` adds members to an existing room).
+
+  **Subtle:** if the remote site's `inbox-worker.handleMemberAdded` arrives **before** `handleRoomCreated` for a fresh room (out-of-order delivery), it will try to `BulkCreateSubscriptions` and either (a) the unique index `(roomId, u.account)` rejects the duplicate later when `handleRoomCreated` runs, or (b) the first delivery succeeds and the second is a no-op. Either way the end state is correct because both events carry the same `Accounts` list for the locally-resolved subset. JetStream publish order from `OUTBOX_{origin}` is preserved, so out-of-order delivery is unlikely in practice.
+
 - `search-sync-worker`, `message-worker`, `broadcast-worker`, `history-service` — untouched.
 
 ### Diff size estimate
 
-- `room-worker/handler.go`: +~22 lines.
-- `inbox-worker/handler.go`: +~28 lines (publish block + import).
-- `inbox-worker/main.go`: +~3 lines (wire publish).
-- `inbox-worker/handler_test.go` and `inbox-worker/mock_*.go` (if any): updated for `NewHandler` signature.
-- Tests: see Testing.
+- `room-worker/handler.go`: +~50 lines (two publish blocks).
+- `pkg/natsutil/request_id.go`: +~13 lines (new `OutboxDedupID` helper, called from 9 existing sites in `room-worker`).
+- `room-worker/handler.go` callers: 9 lines updated to use `natsutil.OutboxDedupID` instead of the private helper; private helper deleted.
+- Tests: 3 new unit tests (2 for origin-local INBOX publish: DM + channel; 1 for cross-site OUTBOX member_added).
 
 ## Testing
 
-Unit tests only, mirroring PR #145's pattern. Each handler injects `publish` as a field already (room-worker) or after this change (inbox-worker), so tests capture publishes into a slice and assert on the captured entries.
+Unit tests only. Handler tests inject `publish` as a field already; tests capture publishes and assert on the entries.
 
 ### Unit tests — `room-worker/handler_test.go`
 
-Two new tests against `processCreateRoom*` paths:
+- `TestProcessCreateRoom_DM_PublishesLocalInbox`: DM across sites; assert single publish to `subject.InboxMemberAdded(room.SiteID)` with both creator+recipient accounts, `RoomName` empty, `HistorySharedSince` nil, expected `Nats-Msg-Id`.
 
-- `TestHandler_processCreateRoom_Channel_PublishesLocalInbox`:
-  - Mixed-site channel create with orgs and direct accounts.
-  - Assert exactly one publish to `subject.InboxMemberAdded(room.SiteID)`.
-  - Decode the payload as `OutboxEvent` → inner `MemberAddEvent`.
-  - Verify: `OutboxEvent.{Type, SiteID, DestSiteID}` match origin self-loop; inner `Accounts` is the expanded set covering creator + every org-resolved account; inner `HistorySharedSince` is nil; inner `RoomName` matches `room.Name`; `Nats-Msg-Id` matches `outboxDedupID(ctx, siteID, "{rid}:{requester}:{ts}")`.
+- `TestProcessCreateRoom_Channel_PublishesLocalInbox`: channel mixed-site; assert single publish to `subject.InboxMemberAdded(room.SiteID)` with creator + every initial member (same-site + cross-site), expected `Nats-Msg-Id`.
 
-- `TestHandler_processCreateRoom_DM_PublishesLocalInbox`:
-  - DM create across sites (creator local, recipient remote).
-  - Assert one publish to `subject.InboxMemberAdded(room.SiteID)`.
-  - Verify `Accounts` contains both creator and recipient; `HistorySharedSince` is nil; `RoomName` is empty (DM convention).
-
-### Unit tests — `inbox-worker/handler_test.go`
-
-Two new tests against `handleRoomCreated`:
-
-- `TestHandler_handleRoomCreated_Channel_PublishesLocalInbox`:
-  - Channel arrives via federation with two locally-resolved accounts.
-  - Mock `FindUsersByAccounts` to return both.
-  - Assert one publish to `subject.InboxMemberAdded(h.siteID)`.
-  - Verify wire format matches the room-worker side; `Accounts` is the locally-resolved subset; `OutboxEvent.SiteID == DestSiteID == h.siteID`.
-
-- `TestHandler_handleRoomCreated_DM_PublishesLocalInbox`:
-  - DM arrives via federation with one locally-resolved account (the recipient on this site).
-  - Same assertions, single account in `Accounts`.
-
-Add a third negative test:
-- `TestHandler_handleRoomCreated_EmptyAccounts_NoPublish` — when `data.Accounts` is empty (early return on line 261), assert zero publishes.
+- `TestProcessCreateRoom_Channel_PublishesCrossSiteMemberAdded`: channel with at least one cross-site member; assert single publish to `subject.Outbox(origin, remote, model.OutboxMemberAdded)` carrying only the remote-site accounts, with `DestSiteID == remote`, `RoomName` set, `HistorySharedSince` nil. Confirms the existing `room_created` outbox is still emitted on the same loop.
 
 ### Out of scope for new tests
 
-- Integration tests against real NATS / Mongo — not in this PR's scope per agreement (would double diff size for marginal coverage gain).
-- `search-sync-worker`'s ES write path — already covered by `search-sync-worker/inbox_integration_test.go` against the federated lane. The local lane uses identical payload shape decoded by the same `parseMemberEvent`, so duplicating that test against the local lane adds little.
-- `processAddMembers` / `processRemoveIndividual` / `processRemoveOrg` paths — covered by PR #145's existing tests; this change does not touch them.
+- Integration tests against real NATS / Mongo — not in scope (would double diff size for marginal coverage gain).
+- `search-sync-worker`'s ES write path — already covered by `search-sync-worker/inbox_integration_test.go` against the aggregate lane.
 
 ### Coverage target
 
-Combined unit coverage for the two modified handler functions stays above the 80% project minimum (CLAUDE.md). Spot-check via `go tool cover -func=coverage.out` after implementation.
+Combined unit coverage for `finishCreateRoom` stays above the 80% project minimum.
 
 ## Rollout
 
 Both changes are backward-compatible:
 
-- `room-worker` publishing to `chat.inbox.{site}.member_added` is purely additive. PR #145 already created the subject and `search-sync-worker` already filters on it.
-- `inbox-worker` publishing to the same subject is also additive. The `inbox-worker` consumer's `FilterSubjects` (PR #145 / commit `c779ede`) is scoped to `chat.inbox.{siteID}.aggregate.>`, so its own publish stays off its own consumer — no self-feedback loop.
+- The origin-local INBOX publish is additive on the local site.
+- The cross-site OUTBOX `member_added` publish is additive on the federation lane. PR #145 already established this path for add-members; remote sites' `search-sync-worker` consumers already filter for `aggregate.member_added`.
 
-Recommended: deploy both services in the same release per site so the create-time MV update is symmetric across origin and remote on day one. No coordinated multi-site rollout needed.
+No coordinated multi-site rollout needed. Deploy `room-worker` and the rest of the stack normally.
 
 ### Per-site verification after deploy
 
@@ -315,11 +257,11 @@ Recommended: deploy both services in the same release per site so the create-tim
 
 ## Observability
 
-- **Logs:** new publishes use `slog.Error` log-and-continue. Failure messages: `"local inbox member_added publish failed"` (matches PR #145's exact string for grep parity). Search post-deploy to confirm zero failures.
-- **Metrics:** none added. Existing JetStream stream-level metrics on `INBOX_{siteID}` will show throughput on `chat.inbox.{siteID}.member_added` rise from "PR #145's add/remove rate" to "that plus the create rate" — that rise is itself the success signal.
-- **Traces:** the new publishes inherit the request context, so OTel trace IDs propagate end-to-end (`room-worker` → INBOX → `search-sync-worker` → ES bulk write all under one trace; `inbox-worker` extends the same trace from the federated arrival side).
+- **Logs:** new publishes use `slog.Error` log-and-continue (origin local) or return-error (cross-site OUTBOX, matching surrounding `room_created` publish). Failure message: `"local inbox member_added publish failed"` (origin) or `"publish member_added outbox to %s: %w"` (cross-site).
+- **Metrics:** none added. Existing JetStream stream-level metrics on `INBOX_{siteID}` and `OUTBOX_{siteID}` will show throughput on the `member_added` subject rise from "PR #145's add/remove rate" to "that plus the create rate".
+- **Traces:** the new publishes inherit the request context, so OTel trace IDs propagate end-to-end (room-worker → INBOX → search-sync-worker → ES bulk write all under one trace).
 
 ## Risks
 
-- **Federation duplicate publishes if a future bug routes a `room_created` event back to its origin site.** Today the OUTBOX → INBOX SubjectTransform plus the consumer FilterSubjects exclude the origin from the federated path, so this can't happen. Mitigation: the dedup ID uses `room.SiteID` (origin) on the room-worker side and `h.siteID` (this site) on the inbox-worker side — if a future config bug delivered the origin's own event to itself via federation, the two dedup IDs would still differ (origin vs. self), so JetStream would not collapse them. The `search-sync-worker` Painless last-write-wins guard would still produce the correct end state, but at the cost of one duplicate publish per federation cycle. Acceptable.
-- **Stale spec drift if room-worker's create path adds a new sub source.** If a future change adds members to a room outside the `subs []*model.Subscription` slice passed to `finishCreateRoom` (e.g., a parallel "channel preset members" feature), the new INBOX publish would miss them. Mitigation: keep `subs` as the single source of truth for "who got auto-enrolled at create time" — every code path that adds a sub to a freshly-created room must go through `subs` and therefore through the publish. Document this invariant inline as a one-line comment above the publish.
+- **Stale spec drift if the create path grows new sub sources.** If a future change adds members to a room outside the `subs []*model.Subscription` slice passed to `finishCreateRoom`, the new INBOX publish would miss them. Mitigation: keep `subs` as the single source of truth for "who got auto-enrolled at create time".
+- **Cross-site `member_added` for a brand-new room arriving before `room_created`.** Both events flow through OUTBOX in publish order, so JetStream preserves order on the federated stream — out-of-order delivery on the receiver side is theoretically possible only if `inbox-worker` parallelizes consumers across event types. Today it doesn't. If it ever does, the unique index on `(roomId, u.account)` makes the race idempotent.
