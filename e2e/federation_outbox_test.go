@@ -3,8 +3,11 @@
 // Tests for the two OUTBOX event types still uncovered after the prior
 // "cycling" pass landed member_added / member_removed / role_updated:
 //
-//   - subscription_read: alice marks-read on a cross-site channel, the read
-//     marker flows to siteB so bob's site sees alice's latest lastSeenAt.
+//   - subscription_read: bob (whose mongo-a record is overridden to
+//     siteId=siteB so room-service treats him as a federated user) marks-read
+//     on siteA; the OUTBOX event flows to siteB and inbox-worker-b updates
+//     bob's lastSeenAt on mongo-b. Both emission AND materialization are
+//     asserted.
 //   - thread_subscription_upserted: alice posts a thread reply that mentions
 //     bob; message-worker on siteA emits a thread_subscription event so
 //     siteB's mongo materializes bob's thread membership.
@@ -90,12 +93,8 @@ func TestFederation_CrossSiteSubscriptionRead(t *testing.T) {
 		5*time.Second, nil,
 	))
 
-	// 3. OUTBOX_siteA must have a NEW event (LastSeq incremented). The
-	// LIVE-RUN finding is that inbox-worker-b's UpdateSubscriptionRead
-	// no-ops when the federated user has no subscription on the destination
-	// site (alice has none on mongo-b -- only bob does). So we assert
-	// EMISSION rather than MATERIALIZATION. Stronger materialization would
-	// need a fixture where both users have subscriptions on both sites.
+	// 3. OUTBOX_siteA must have a NEW event (LastSeq incremented). This
+	// confirms emission at the room-service boundary.
 	require.Eventually(t, func() bool {
 		info, err := outbox.Info(ctx)
 		if err != nil {
@@ -121,7 +120,32 @@ func TestFederation_CrossSiteSubscriptionRead(t *testing.T) {
 		}
 	}
 	assert.True(t, found,
-		"OUTBOX_siteA must contain a subscription_read event after alice's mark-read")
+		"OUTBOX_siteA must contain a subscription_read event after bob's mark-read")
+
+	// 4. Materialization on mongo-b: bob already has a subscription on
+	// mongo-b (setupCrossSiteRoom waits for it). After inbox-worker-b
+	// consumes the subscription_read event, bob's row must carry a
+	// lastSeenAt >= the test's start instant. Use the start-of-test
+	// instant as the floor so we don't depend on a prior lastSeenAt being
+	// absent or older — UpdateSubscriptionRead's $or filter handles both
+	// missing and stale values, so we just assert the result.
+	floor := time.Now().Add(-5 * time.Second)
+	subsB := stack.SiteB.MongoDB(t).Collection("subscriptions")
+	require.Eventually(t, func() bool {
+		var sub struct {
+			LastSeenAt *time.Time `bson:"lastSeenAt"`
+		}
+		err := subsB.FindOne(ctx, bson.M{
+			"u.account": bobAccount,
+			"roomId":    roomID,
+		}).Decode(&sub)
+		if err != nil || sub.LastSeenAt == nil {
+			return false
+		}
+		return sub.LastSeenAt.After(floor)
+	}, 15*time.Second, 250*time.Millisecond,
+		"bob's lastSeenAt on mongo-b must update after subscription_read federation (floor=%s)",
+		floor.Format(time.RFC3339))
 }
 
 // TestFederation_CrossSiteThreadSubscriptionUpserted: alice posts a thread
