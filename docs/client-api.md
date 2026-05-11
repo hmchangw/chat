@@ -791,7 +791,7 @@ A **synchronous, sender-only** RPC. Returns the list of users on the local site 
 | `messageId` | string | Required. The message whose readers to enumerate. |
 
 ```json
-{ "messageId": "01970a4f8c2d7c9a01970a4f" }
+{ "messageId": "01970a4f8c2d7c9aQRST" }
 ```
 
 ##### Success response
