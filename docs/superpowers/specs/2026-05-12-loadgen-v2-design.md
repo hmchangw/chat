@@ -424,31 +424,47 @@ Preset: shares `messaging-pipeline` fixtures plus a new `RAWConfig` block (poll 
 
 ### 3.2 Large-room fan-out
 
-**Scenario name:** `large-room-broadcast`. New file `scenario_largeroom.go`. New preset `large-room` with one announce-style room containing 10 000 members (and 100 background rooms of normal size to keep the harness exercising realistic-ish member-list pressure).
+**Scenario name:** `large-room-broadcast`. New file `scenario_largeroom.go`. The chat-domain reviewer flagged that a single "10k announce room" shape misses three other large-room archetypes that stress different bottlenecks. v2 ships **three presets** sharing the scenario:
 
-Mechanism: 1 publish per second into the announce room. Subscribe to all 10 000 member inboxes (via a small connection pool with wildcard subjects). Measure publish → per-member-delivery latency distributions.
+- `announce-room` — 10 000 members, write-rate ~1/min, read-rate huge on each post. Stresses fan-out tables and subscription-collection read amplification.
+- `firehose-room` — 1 000 members, write-rate 50/sec sustained, read-rate moderate. Stresses broadcast-worker per-room semaphore and JetStream MaxAckPending.
+- `bot-room` — 100 members, write-rate 200/sec from 3 bot accounts. Stresses Cassandra hot-partition (`messages_by_room` writes), message-worker throughput.
 
-Output: per-message broadcast fan-out time histogram (p50/p99/max + completion-count distribution: "by p99 N% of members had received it").
+Mechanism: subscribe to all room members' inboxes via the `ConnPool` (10k subscriptions overflow a single NATS connection; spread across `--connections=N`). Measure publish → per-member-delivery latency.
 
-Memory note: 10 000 inbox subscriptions on a single connection saturates NATS subscription tables; reuse the existing `ConnPool` with `--connections=N` to spread.
+**Fan-out completion math (pinned per methodology reviewer).** Two metrics, both reported:
+
+- **Per-message completion ratio at the message's p99 mark.** For each broadcast, compute `delivered_count_at_msg_p99 / total_members`. Report the distribution: "by p99 of fan-out time, N% of members had received it." Histogram bucket: 0.0–1.0 in 0.01 steps.
+- **Per-recipient receive-latency p99.** For each (message, recipient) pair, record receive-latency. Report standard p50/p99/max histogram.
+
+Subscription churn during a run is *frozen* (members can't be added/removed mid-run for this scenario) or the denominator drifts; spec requires the scenario to refuse mutations on its target rooms.
+
+Output: `loadgen_largeroom_completion_ratio{quantile="p99",preset=...}` (Prometheus summary) + `loadgen_largeroom_receive_latency_seconds{preset=...}` histogram.
 
 ### 3.3 Presence / typing churn
 
 **Scenario name:** `presence-typing`. New file `scenario_presence.go`.
 
-Mechanism: per-user typing-indicator emit on a configurable cadence (e.g. one event per simulated keystroke at 5–15 events/second/user over a small subset of users-currently-typing). Subjects per `pkg/subject` (find whichever presence/typing subjects exist or stub them in if the SUT doesn't yet — this scenario may surface SUT-side missing implementation, which is signal not bug).
+**SUT readiness gate.** Phase 3 inventory: if `pkg/subject` does not yet define presence/typing subject builders, this scenario is **DEFERRED-UNTIL-SUT-READY** and tracked in `tools/loadgen/CHANGES.md` as a known gap. The plan must check this on entry and skip §3.3 if subjects are missing, not invent stub subjects.
 
-Metric: emit rate vs delivery rate, observer-side fan-out latency.
+Mechanism (when shippable): per-user typing-indicator emit, **rate-limited at the generator to model client-side throttling**. The chat-domain reviewer flagged that real clients throttle to ~1 typing event per (user, room) per 3 seconds (Slack/Discord). Default: 1 event / 3s per (user, room) for users-currently-typing. `--typing-unthrottled` knob disables the client-side limit for finding the SUT ceiling.
 
-Open question: if the SUT doesn't currently implement a presence/typing subject family, this scenario is gated on that work. Mark as **DEFERRED-UNTIL-SUT-READY** in the plan and add a `docs/` note.
+Metric: emit-rate vs delivered-rate ratio (single number per second + per-second histogram), observer-side fan-out p99. Pin the definition explicitly: `emit_at_loadgen → received_by_loadgen_observer_subscribed_to_room`.
+
+Output: `loadgen_presence_delivered_ratio` gauge, `loadgen_presence_fanout_seconds{preset=...}` histogram.
 
 ### 3.4 Notification fan-out
 
 **Scenario name:** `notification-fanout`. New file `scenario_notif.go`.
 
-Mechanism: publish messages with mentions at a configurable rate (extending the existing `MentionRate` preset field — already plumbed for `pipeline` but not measured as a separate latency path). Subscribe to the notification-worker's output (per `pkg/subject` notification subjects). Measure publish → notification-emit lag.
+Mechanism: publish messages with mentions at a configurable rate (extending the existing `MentionRate` preset field). Subscribe to the notification-worker's output. Measure publish → notification-emit lag, **per delivery channel**.
 
-Metric: `loadgen_notification_lag_seconds` histogram, per-(scenario, mention_count_bucket).
+The chat-domain reviewer flagged that single-path measurement is insufficient: production notifications fork into in-app event (always), mobile push (only if user offline + not DND), email digest (only if unread > N minutes). v2 ships:
+
+- **Phase 3.4a (immediate):** in-app notification lag — `publishedAt → loadgen_subscriber_received_at` on the notification subject. Pin: `subject.Notification(account)`.
+- **Phase 3.4b (later in Phase 3):** preset varies `offline_user_fraction` (default 0.3) and `dnd_user_fraction` (default 0.1) so the SUT's routing branches are exercised. Loadgen does *not* try to receive a real mobile push — instead measures notification-worker's branch-emit latency by subscribing to the per-channel routing subjects (if they exist; gate per §3.3 SUT-readiness pattern).
+
+Metric: `loadgen_notification_lag_seconds{channel="inapp|push|email"}` histogram, per-(scenario, mention_count_bucket).
 
 ### 3.5 Thread fan-out
 
@@ -500,6 +516,57 @@ Stack: doubles the compose footprint. Add `docker-compose.federation.yml` overla
 ### 3.10 WebSocket gateway
 
 **Status:** DEFERRED if no WS gateway exists in the SUT yet. If/when one ships, scenario `ws-fanout` measures WS-connect storm + per-connection broadcast-delivery latency.
+
+### 3.12 DM-vs-channel traffic split (chat-domain blocker)
+
+The chat-domain reviewer flagged that v1's "realistic" preset is channel-heavy (Zipf senders across a fixture of mostly channel rooms), while production chat is 50–80% DM-shaped. DMs are 2-member rooms (no fan-out cost) with 100% read-receipt + notification pressure per write — a fundamentally different SUT shape.
+
+**Design:**
+
+- Add `DMRatio float64` to `Preset` (e.g. `realistic` gets 0.6; `channel-heavy` 0.1; `dm-heavy` 0.85).
+- `messaging-pipeline` generator picks a room type per publish according to `DMRatio`, then picks within the type. DM rooms use `idgen.BuildDMRoomID(a, b)` ID semantics; channel rooms keep base62 IDs.
+- New preset `dm-heavy` (85% DM, mention rate proportional, no large rooms) for DM-tail capacity tests.
+- Headline summary line breaks down counters by room type: `Sent: 30000 (channel=12000, dm=18000)`.
+
+### 3.13 First-DM hot path (chat-domain blocker)
+
+Per CLAUDE.md §6, `idgen.BuildDMRoomID(a, b)` is deterministic but the room is created lazily on first send. "First message between A and B ever" goes through room-create + subscription-create + canonical publish in one tick — the #1 reported p99 outlier in DM-heavy products.
+
+**Scenario name:** `first-dm`. New file `scenario_firstdm.go`. New preset `first-dm` with a dedicated user pool consumed monotonically (so each (A, B) pair fires exactly once per run).
+
+Mechanism: pick (A, B) from the unconsumed pool, send the first message, measure `publishedAt → roomCreated, → subscriptionsCreated, → canonicalPersisted` as separate sub-lags.
+
+Metric: `loadgen_first_dm_lag_seconds{stage="room|subs|persist|e2e"}`.
+
+### 3.14 Room-open composite read amplification (chat-domain blocker)
+
+Real clients opening a room fire a correlated burst: `MsgHistory` + `RoomsGet` (or `RoomsInfoBatch`) + presence subscribe + `MessageRead` write + restricted-rooms cache lookup. v1 ran each as an independent open-loop ticker — the SUT never saw the correlated burst that drives Mongo `subscriptions` connect-storm and Valkey cache miss amplification.
+
+**Scenario name:** `room-open`. New file `scenario_roomopen.go`.
+
+Mechanism: per tick, simulate one client opening one room → issue the bundle (5 requests, fired in parallel from the same goroutine via `errgroup`). Report **slowest-leg p99** as the headline (because that's what the user experiences as "room loaded") plus per-leg p99 as a diagnostic table.
+
+Metric: `loadgen_room_open_seconds{leg="history|rooms_get|presence|read|restricted"}` histogram + `loadgen_room_open_e2e_seconds` for the slowest-leg.
+
+### 3.15 Bursty publish patterns
+
+The chat-domain reviewer flagged that p99 regressions hide under bursts, not steady load. v2 adds a **burst envelope** to the generator:
+
+- `Preset.BurstPeriod time.Duration` (e.g. 30s)
+- `Preset.BurstRatio float64` (e.g. 5.0 — peak rate is 5× baseline)
+- `Preset.BurstDuration time.Duration` (e.g. 10s of high rate)
+
+Generator's tick scheduler reads the burst envelope and rebuilds the ticker at boundaries. New preset `incident-burst` (5 rps baseline → 200 rps for 10s every 30s). Metric: existing `loadgen_rate_bucket` label already covers the rate split; no new metric needed.
+
+### 3.16 Read receipts
+
+The chat-domain reviewer flagged read receipts (1 read RPC per message-viewed per user) as the silent killer in chat. v2 adds:
+
+**Scenario name:** `read-receipts`. New file `scenario_readreceipts.go`.
+
+Mechanism: shares `messaging-pipeline` fixtures. Maintains a rolling set of recent message IDs from a co-running pipeline. Fires `MessageRead` for a configurable subset of recipients per message (default 60% — models the fraction of readers who actually see the message before notification mutes).
+
+Metric: `loadgen_message_read_seconds{room_type="channel|dm"}` histogram. Federation note: per `SubscriptionReadEvent` (OUTBOX type `subscription_read`), a `MessageRead` on a remote-homed room generates cross-site traffic. When `--federation` is on, the federation-lag scenario should pick up this load too.
 
 ### 3.11 Chaos / failure injection
 
