@@ -67,14 +67,20 @@ type Generator struct {
 	// by the rebuild goroutine when Ramp is active so publishOne can
 	// label each publish with the in-effect rate_bucket.
 	curRate atomic.Int64
+	// Bug 4: per-Generator sender picker + thread parent pool. Both
+	// honor preset config that pre-fix was silently ignored.
+	senders *senderPicker
+	threads *threadPool
 }
 
 // NewGenerator returns a Generator. The `seed` parameter is retained for
-// API compatibility but no longer seeds an instance Rand — per-tick
-// picks now use math/rand/v2 globals (S4). Fixture seeding still honors
+// API compatibility but no longer seeds an instance Rand for per-tick
+// picks under DistUniform — those use math/rand/v2 globals (S4). The
+// Zipf sender picker (Bug 4) does need a seeded source so the head
+// of the distribution is reproducible across runs of the same preset;
+// it consumes `seed` for that purpose. Fixture seeding still honors
 // the same seed via BuildFixtures.
 func NewGenerator(cfg *GeneratorConfig, seed int64) *Generator {
-	_ = seed
 	max := cfg.Preset.ContentBytes.Max
 	if max <= 0 {
 		max = 1
@@ -82,8 +88,15 @@ func NewGenerator(cfg *GeneratorConfig, seed int64) *Generator {
 	return &Generator{
 		cfg:     *cfg,
 		maxBody: strings.Repeat("x", max),
+		senders: newSenderPicker(len(cfg.Fixtures.Subscriptions), cfg.Preset.SenderDist, seed),
+		threads: newThreadPool(threadPoolCapacity),
 	}
 }
+
+// threadPoolCapacity bounds the per-Generator thread parent ring buffer.
+// 1024 is enough to avoid bias towards the most recent few publishes
+// while keeping the working set small.
+const threadPoolCapacity = 1024
 
 // drainGracePeriod bounds how long Run waits for in-flight publishes
 // to complete after ctx cancels.
@@ -184,11 +197,18 @@ func (g *Generator) publishOne(ctx context.Context) {
 	if len(g.cfg.Fixtures.Subscriptions) == 0 {
 		return
 	}
-	subIdx := randv2.IntN(len(g.cfg.Fixtures.Subscriptions))
+	// Bug 4 part A: honor SenderDist (pre-fix every preset got uniform).
+	// senderPicker maps an index in [0, len(subs)) under the preset's
+	// distribution; falls back to uniform when DistZipf isn't set.
+	subIdx := g.senders.pick()
 	sub := g.cfg.Fixtures.Subscriptions[subIdx]
 	content := g.content()
 	msgID := idgen.GenerateMessageID()
 	publishTime := time.Now()
+
+	// Bug 4 part B: honor ThreadRate. Pull a parent from the recent-pub
+	// ring buffer; nil when ThreadRate==0 or the pool is empty (warmup).
+	parentID, parentCreated := g.threads.maybeParent(g.cfg.Preset.ThreadRate)
 
 	var (
 		subj  string
@@ -199,12 +219,18 @@ func (g *Generator) publishOne(ctx context.Context) {
 	switch g.cfg.Inject {
 	case InjectCanonical:
 		now := time.Now().UTC()
+		msg := model.Message{
+			ID: msgID, RoomID: sub.RoomID,
+			UserID: sub.User.ID, UserAccount: sub.User.Account,
+			Content: content, CreatedAt: now,
+		}
+		if parentID != "" {
+			msg.ThreadParentMessageID = parentID
+			pc := parentCreated
+			msg.ThreadParentMessageCreatedAt = &pc
+		}
 		evt := model.MessageEvent{
-			Message: model.Message{
-				ID: msgID, RoomID: sub.RoomID,
-				UserID: sub.User.ID, UserAccount: sub.User.Account,
-				Content: content, CreatedAt: now,
-			},
+			Message:   msg,
 			SiteID:    g.cfg.SiteID,
 			Timestamp: now.UnixMilli(),
 		}
@@ -214,10 +240,20 @@ func (g *Generator) publishOne(ctx context.Context) {
 	default:
 		reqID = idgen.GenerateRequestID()
 		req := model.SendMessageRequest{ID: msgID, Content: content, RequestID: reqID}
+		if parentID != "" {
+			req.ThreadParentMessageID = parentID
+			ms := parentCreated.UnixMilli()
+			req.ThreadParentMessageCreatedAt = &ms
+		}
 		data, err = json.Marshal(req)
 		subj = subject.MsgSend(sub.User.Account, sub.RoomID, g.cfg.SiteID)
 		g.cfg.Collector.RecordPublish(reqID, msgID, publishTime)
 	}
+	// Track this publish as a candidate parent for future thread replies.
+	// Done before the publish error check so the pool reflects intent
+	// even if the broker rejects the publish (the caller's tests do not
+	// fail-publish, so the practical effect is just bookkeeping).
+	g.threads.add(msgID)
 	if err != nil {
 		g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "marshal").Inc()
 		return

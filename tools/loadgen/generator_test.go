@@ -46,6 +46,140 @@ func (r *recordingPublisher) snapshot() []publishCall {
 	return out
 }
 
+// Bug 4 part A: when the preset's SenderDist == DistZipf, the per-tick
+// sender selection must skew heavily towards the head of the list
+// instead of uniform. The realistic preset claims DistZipf but pre-fix
+// the generator silently used uniform IntN(len(subs)).
+func TestSenderPicker_ZipfSkewsTowardsTopUsers(t *testing.T) {
+	const n = 100
+	const draws = 20000
+	sp := newSenderPicker(n, DistZipf, 42)
+	counts := make([]int, n)
+	for i := 0; i < draws; i++ {
+		counts[sp.pick()]++
+	}
+	// Top sender should win at least 2x its uniform share (200 / 20000).
+	uniformShare := draws / n
+	assert.Greater(t, counts[0], 2*uniformShare,
+		"Zipf head should dominate by >=2x uniform; got top=%d uniform=%d", counts[0], uniformShare)
+	// Tail should be sparse: bottom 10% combined < top sender.
+	tail := 0
+	for i := n - n/10; i < n; i++ {
+		tail += counts[i]
+	}
+	assert.Less(t, tail, counts[0],
+		"Zipf tail (bottom 10%%) should be less than top sender alone")
+}
+
+func TestSenderPicker_UniformIsApproximatelyEven(t *testing.T) {
+	const n = 100
+	const draws = 20000
+	sp := newSenderPicker(n, DistUniform, 42)
+	counts := make([]int, n)
+	for i := 0; i < draws; i++ {
+		counts[sp.pick()]++
+	}
+	// No bucket should grossly dominate (uniform expectation = 200,
+	// allow 4x slack).
+	uniformShare := draws / n
+	for i := 0; i < n; i++ {
+		assert.Less(t, counts[i], 4*uniformShare,
+			"uniform draw at idx %d=%d should be near %d", i, counts[i], uniformShare)
+	}
+}
+
+func TestSenderPicker_EmptyReturnsZero(t *testing.T) {
+	sp := newSenderPicker(0, DistUniform, 42)
+	assert.Equal(t, 0, sp.pick(), "empty picker is a no-op; caller guards on len")
+}
+
+// Bug 4 part B: ThreadRate should mark a fraction of published messages
+// as thread replies. Pre-fix the field was unread; verify the threadPool
+// honors the rate within a tolerance band.
+func TestThreadPool_HonorsThreadRate(t *testing.T) {
+	tp := newThreadPool(64)
+	// Seed with parents so picks succeed.
+	for i := 0; i < 10; i++ {
+		tp.add(fmt.Sprintf("p-%d", i))
+	}
+	const draws = 5000
+	const rate = 0.30
+	hits := 0
+	for i := 0; i < draws; i++ {
+		if id, _ := tp.maybeParent(rate); id != "" {
+			hits++
+		}
+	}
+	frac := float64(hits) / float64(draws)
+	assert.InDelta(t, rate, frac, 0.04, "thread-pick fraction should be near rate; got %.3f", frac)
+}
+
+func TestThreadPool_ZeroRateNeverPicks(t *testing.T) {
+	tp := newThreadPool(64)
+	tp.add("p-1")
+	for i := 0; i < 100; i++ {
+		id, _ := tp.maybeParent(0.0)
+		assert.Empty(t, id, "rate=0 must never pick a parent")
+	}
+}
+
+func TestThreadPool_EmptyPoolReturnsEmpty(t *testing.T) {
+	tp := newThreadPool(64)
+	for i := 0; i < 100; i++ {
+		id, _ := tp.maybeParent(1.0)
+		assert.Empty(t, id, "empty pool returns empty even at rate=1.0")
+	}
+}
+
+func TestThreadPool_RingBufferBoundsMemory(t *testing.T) {
+	tp := newThreadPool(4)
+	for i := 0; i < 100; i++ {
+		tp.add(fmt.Sprintf("p-%d", i))
+	}
+	assert.LessOrEqual(t, tp.size(), 4, "ring buffer must cap at capacity")
+}
+
+// Bug 4 wiring: when a preset has ThreadRate>0 and the warmup phase
+// has populated some message IDs, a non-trivial share of published
+// SendMessageRequests should carry ThreadParentMessageID.
+func TestGenerator_ThreadRate_PopulatesParentField(t *testing.T) {
+	p := Preset{
+		Name: "thread-test", Users: 5, Rooms: 2,
+		RoomSizeDist: DistUniform, SenderDist: DistUniform,
+		ContentBytes: Range{Min: 50, Max: 50},
+		ThreadRate:   0.5, // half of messages should be replies
+	}
+	f := BuildFixtures(&p, 7, "site-local")
+	rp := &recordingPublisher{}
+	m := NewMetrics()
+	c := NewCollector(m, p.Name)
+	g := NewGenerator(&GeneratorConfig{
+		Preset: &p, Fixtures: f, SiteID: "site-local",
+		Rate: 500, Inject: InjectFrontdoor,
+		Publisher: rp, Metrics: m, Collector: c,
+	}, 7)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	require.NoError(t, g.Run(ctx))
+	calls := rp.snapshot()
+	require.NotEmpty(t, calls, "should have published")
+	threaded := 0
+	for _, c := range calls {
+		var req model.SendMessageRequest
+		if err := json.Unmarshal(c.data, &req); err != nil {
+			continue
+		}
+		if req.ThreadParentMessageID != "" {
+			threaded++
+		}
+	}
+	// We need a non-zero fraction. After the first publish the pool has
+	// one message, so subsequent publishes can thread off it. Expect at
+	// least ~20% threading in a 0.5-rate run (warmup of empty pool + RNG).
+	assert.Greater(t, threaded, len(calls)/5,
+		"expected >=20%% of messages to be thread replies; got %d/%d", threaded, len(calls))
+}
+
 type errorPublisher struct{}
 
 func (e *errorPublisher) Publish(_ context.Context, _ string, _ []byte) error {
