@@ -17,8 +17,11 @@ var (
 	errAlreadyOwner     = errors.New("user is already an owner")
 	errNotOwner         = errors.New("user is not an owner")
 	errCannotDemoteLast = errors.New("cannot demote the last owner")
-	errRoomTypeGuard    = errors.New("role update is only allowed in channel rooms")
-	errTargetNotMember  = errors.New("target user is not a member of this room")
+	// errLastOwner blocks an org removal that would leave the room without
+	// any owner. See handleRemoveMember's org-path guard.
+	errLastOwner       = errors.New("cannot remove org: room would have no owners left")
+	errRoomTypeGuard   = errors.New("role update is only allowed in channel rooms")
+	errTargetNotMember = errors.New("target user is not a member of this room")
 	// Used by both list-members (requester subscription check) and add-member
 	// channel-source expansion. Both contexts mean "the requester is not a
 	// member of the room they are asking about".
@@ -174,6 +177,7 @@ func sanitizeError(err error) string {
 		errors.Is(err, errAlreadyOwner),
 		errors.Is(err, errNotOwner),
 		errors.Is(err, errCannotDemoteLast),
+		errors.Is(err, errLastOwner),
 		errors.Is(err, errRoomTypeGuard),
 		errors.Is(err, errTargetNotMember),
 		errors.Is(err, errInvalidOrg),

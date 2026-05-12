@@ -58,13 +58,29 @@ func (s *stubValkey) Close() error { return nil }
 
 func TestValkeyCache_SetThenGet(t *testing.T) {
 	ctx := context.Background()
-	c := newValkeyCache(newStubValkey())
+	stub := newStubValkey()
+	c := newValkeyCache(stub)
 
-	require.NoError(t, c.SetRestricted(ctx, "alice", map[string]int64{"r1": 100}, time.Minute))
+	// Pick a non-default TTL so a regression that silently swaps in
+	// `time.Minute` (or drops the argument entirely) shows up in the
+	// equality assertion below — not just `assert.Greater(0)`.
+	wantTTL := 7*time.Minute + 42*time.Second
+	require.NoError(t, c.SetRestricted(ctx, "alice", map[string]int64{"r1": 100}, wantTTL))
+
+	// Round-trip the cached value through GetRestricted so this test
+	// continues to exercise the read path.
 	got, hit, err := c.GetRestricted(ctx, "alice")
 	require.NoError(t, err)
 	assert.True(t, hit)
 	assert.Equal(t, map[string]int64{"r1": 100}, got)
+
+	// TTL must reach the underlying redis client verbatim — neither
+	// truncated, defaulted, nor silently overridden by valkeyutil. Without
+	// this assertion the cache could leak entries forever (TTL=0) or
+	// thrash hot keys with a too-short TTL.
+	assert.Equal(t, 1, stub.setCalls, "exactly one Set must be issued")
+	assert.Equal(t, wantTTL, stub.lastTTL,
+		"valkeyCache must forward the caller's TTL to the underlying client unchanged")
 }
 
 func TestValkeyCache_GetMiss(t *testing.T) {

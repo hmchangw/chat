@@ -226,12 +226,16 @@ type CreateRoomReply struct {
 const CreateRoomReplyAccepted = "accepted"
 
 // RoomCreatedOutbox is the cross-site payload (wrapped in OutboxEvent) when a remote member exists.
+// HistorySharedSince is epoch-ms, nil for unrestricted history. Forward-compat for per-org
+// restricted-history DM policy — when non-nil the remote inbox-worker must stamp it on the
+// replicated subscription so cross-site members see the same history-cutoff as the origin.
 type RoomCreatedOutbox struct {
-	RoomID           string   `json:"roomId"`
-	RoomType         RoomType `json:"roomType"`
-	RoomName         string   `json:"roomName"`
-	HomeSiteID       string   `json:"homeSiteId"`
-	Accounts         []string `json:"accounts"`
-	RequesterAccount string   `json:"requesterAccount"`
-	Timestamp        int64    `json:"timestamp"`
+	RoomID             string   `json:"roomId"`
+	RoomType           RoomType `json:"roomType"`
+	RoomName           string   `json:"roomName"`
+	HomeSiteID         string   `json:"homeSiteId"`
+	Accounts           []string `json:"accounts"`
+	RequesterAccount   string   `json:"requesterAccount"`
+	Timestamp          int64    `json:"timestamp"`
+	HistorySharedSince *int64   `json:"historySharedSince,omitempty"`
 }

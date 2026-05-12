@@ -496,6 +496,17 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		if !hasRole(sub.Roles, model.RoleOwner) {
 			return nil, fmt.Errorf("only owners can remove members")
 		}
+		// Ownerless-invariant guard: reject the org removal if no owner would
+		// remain in the room. The "owners must hold an individual membership"
+		// invariant should make this case unreachable, but the defensive check
+		// preserves the invariant explicitly across schema or pipeline drift.
+		remainingOwners, err := h.store.CountOwnersOutsideOrg(ctx, roomID, req.OrgID)
+		if err != nil {
+			return nil, fmt.Errorf("count owners outside org: %w", err)
+		}
+		if remainingOwners <= 0 {
+			return nil, errLastOwner
+		}
 	}
 
 	// Stable seed for room-worker's deterministic system-message IDs across JetStream redeliveries.
@@ -676,6 +687,22 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	// 8. Capacity check — use room.UserCount (kept current by room-worker's
 	// ReconcileUserCount after each membership change) instead of issuing a
 	// separate CountSubscriptions query.
+	//
+	// Known TOCTOU: room.UserCount is read at step 3 above and is *not*
+	// refreshed inside a transaction here. Two concurrent AddMembers
+	// requests can both observe the same UserCount and both pass the cap,
+	// briefly overshooting maxRoomSize before room-worker reconciles.
+	// We tolerate this because:
+	//   (a) room-worker uses dedupID idempotency keys keyed on
+	//       (roomID, orgID|account, timestamp) — duplicate adds collapse
+	//       to a single subscription via the unique (roomId, u.account)
+	//       index in store_mongo.go EnsureIndexes;
+	//   (b) ReconcileMemberCounts re-establishes the true count after
+	//       each membership change.
+	// The remaining failure mode is a small temporary overshoot (bounded
+	// by the number of in-flight requesters). A strict guarantee would
+	// require a Mongo transaction wrapping fetch+capacity+insert in
+	// room-worker, which we have intentionally not introduced here.
 	if room.UserCount+newCount > h.maxRoomSize {
 		return nil, fmt.Errorf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, newCount, room.UserCount)
 	}

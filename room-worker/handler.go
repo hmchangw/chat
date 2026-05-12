@@ -1158,15 +1158,21 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 		}
 		remoteSiteAccounts[u.SiteID] = append(remoteSiteAccounts[u.SiteID], u.Account)
 	}
+	// Resolve once per request so DM/botDM outbox carries the same HSS as the
+	// local subs built by buildDMSubs/buildBotDMSubs. Channels still propagate
+	// HSS via MemberAddEvent on member.add — room_created outbox only matters
+	// for the initial DM/botDM materialization.
+	hssOutboxMs := historySharedSincePtr(req.History, req.Timestamp, req.RoomID)
 	for destSiteID, accounts := range remoteSiteAccounts {
 		payload := model.RoomCreatedOutbox{
-			RoomID:           room.ID,
-			RoomType:         room.Type,
-			RoomName:         room.Name,
-			HomeSiteID:       room.SiteID,
-			Accounts:         accounts,
-			RequesterAccount: requester.Account,
-			Timestamp:        req.Timestamp,
+			RoomID:             room.ID,
+			RoomType:           room.Type,
+			RoomName:           room.Name,
+			HomeSiteID:         room.SiteID,
+			Accounts:           accounts,
+			RequesterAccount:   requester.Account,
+			Timestamp:          req.Timestamp,
+			HistorySharedSince: hssOutboxMs,
 		}
 		pData, err := json.Marshal(payload)
 		if err != nil {
@@ -1367,11 +1373,14 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	}
 
 	// validateSyncCreateDMShape already gated this to {dm, botDM}.
+	// SyncCreateDMRequest has no History field today — sync DMs are always
+	// unrestricted, so pass nil HSS. The async path threads HSS from
+	// CreateRoomRequest.History for per-org policy forward-compat.
 	var subs []*model.Subscription
 	if req.RoomType == model.RoomTypeBotDM {
-		subs = buildBotDMSubs(requester, other, room, acceptedAt)
+		subs = buildBotDMSubs(requester, other, room, acceptedAt, nil)
 	} else {
-		subs = buildDMSubs(requester, other, room, acceptedAt)
+		subs = buildDMSubs(requester, other, room, acceptedAt, nil)
 	}
 
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {

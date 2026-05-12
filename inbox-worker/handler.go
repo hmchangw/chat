@@ -311,19 +311,25 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 	}
 
 	acceptedAt := time.UnixMilli(data.Timestamp).UTC()
+	var historySharedSince *time.Time
+	if data.HistorySharedSince != nil && *data.HistorySharedSince > 0 {
+		t := time.UnixMilli(*data.HistorySharedSince).UTC()
+		historySharedSince = &t
+	}
 	subs := make([]*model.Subscription, 0, len(data.Accounts))
 	for _, account := range data.Accounts {
 		u := userByAccount[account]
 		sub := &model.Subscription{
-			ID:           idgen.GenerateUUIDv7(),
-			User:         model.SubscriptionUser{ID: u.ID, Account: u.Account},
-			RoomID:       data.RoomID,
-			SiteID:       data.HomeSiteID,
-			Roles:        rolesForType(data.RoomType),
-			Name:         subscriptionName(&data, &u),
-			RoomType:     data.RoomType,
-			IsSubscribed: subscriptionIsSubscribed(&data, &u),
-			JoinedAt:     acceptedAt,
+			ID:                 idgen.GenerateUUIDv7(),
+			User:               model.SubscriptionUser{ID: u.ID, Account: u.Account},
+			RoomID:             data.RoomID,
+			SiteID:             data.HomeSiteID,
+			Roles:              rolesForType(data.RoomType),
+			Name:               subscriptionName(&data, &u),
+			RoomType:           data.RoomType,
+			IsSubscribed:       subscriptionIsSubscribed(&data, &u),
+			HistorySharedSince: historySharedSince,
+			JoinedAt:           acceptedAt,
 		}
 		subs = append(subs, sub)
 	}

@@ -64,15 +64,16 @@ func TestBootstrapStreams(t *testing.T) {
 	}}
 
 	tests := []struct {
-		name        string
-		enabled     bool
-		existing    map[string]bool
-		existingCfg map[string]jetstream.StreamConfig
-		failOn      string
-		failErr     error
-		wantCreated []string
-		wantSources []*jetstream.StreamSource
-		wantErrSub  string
+		name         string
+		enabled      bool
+		existing     map[string]bool
+		existingCfg  map[string]jetstream.StreamConfig
+		failOn       string
+		failErr      error
+		wantCreated  []string
+		wantSources  []*jetstream.StreamSource
+		wantSubjects []string // when nil, defaults to stream.Inbox("test").Subjects
+		wantErrSub   string
 	}{
 		{
 			name:        "disabled - verifies existing stream",
@@ -119,6 +120,29 @@ func TestBootstrapStreams(t *testing.T) {
 			failErr:    errors.New("nats down"),
 			wantErrSub: "create INBOX stream",
 		},
+		{
+			// Guards against narrowing the live stream's Subjects when ops/IaC
+			// has layered on an extra subject for a future federation event
+			// type. The schema-only update must preserve any superset of the
+			// declared baseline.
+			name:     "enabled - preserves existing extra subjects (union)",
+			enabled:  true,
+			existing: map[string]bool{"INBOX_test": true},
+			existingCfg: map[string]jetstream.StreamConfig{
+				"INBOX_test": {
+					Name: "INBOX_test",
+					Subjects: []string{
+						"chat.inbox.test.aggregate.>",
+						"chat.inbox.test.extra.>",
+					},
+				},
+			},
+			wantCreated: []string{"INBOX_test"},
+			wantSubjects: append(
+				append([]string(nil), stream.Inbox("test").Subjects...),
+				"chat.inbox.test.extra.>",
+			),
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,16 +165,23 @@ func TestBootstrapStreams(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Len(t, fake.created, len(tc.wantCreated))
-			wantSubjects := stream.Inbox("test").Subjects
+			wantSubjects := tc.wantSubjects
+			if wantSubjects == nil {
+				wantSubjects = stream.Inbox("test").Subjects
+			}
 			for i, wantName := range tc.wantCreated {
 				assert.Equal(t, wantName, fake.created[i].Name)
 				// App owns the schema (Name + Subjects). Federation
 				// (Sources + SubjectTransforms) belongs to ops/IaC, but
 				// when an existing stream already has Sources we
 				// PRESERVE them so a worker restart doesn't clear
-				// federation config (post-R3 follow-up).
+				// federation config (post-R3 follow-up). When the live
+				// stream has extra Subjects beyond the schema baseline,
+				// we UNION them so the schema-only update never narrows
+				// the live config back.
 				assert.Equal(t, wantSubjects, fake.created[i].Subjects,
-					"INBOX bootstrap must set Subjects from pkg/stream.Inbox")
+					"INBOX bootstrap must set Subjects to the union of "+
+						"pkg/stream.Inbox + any existing extras")
 				assert.Equal(t, tc.wantSources, fake.created[i].Sources,
 					"INBOX bootstrap must preserve existing Sources verbatim "+
 						"and never invent Sources of its own")

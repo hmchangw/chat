@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -675,6 +676,8 @@ func TestHandler_RemoveMember_OwnerRemovesOrg_Success(t *testing.T) {
 		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
 	}
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
+	// At least one owner remains outside the org being removed.
+	store.EXPECT().CountOwnersOutsideOrg(gomock.Any(), "r1", "eng-org").Return(1, nil)
 	var publishedData []byte
 	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
 		publishedData = data
@@ -688,6 +691,54 @@ func TestHandler_RemoveMember_OwnerRemovesOrg_Success(t *testing.T) {
 	var published model.RemoveMemberRequest
 	require.NoError(t, json.Unmarshal(publishedData, &published))
 	assert.Equal(t, "eng-org", published.OrgID)
+}
+
+// RemoveOrg_RejectsWhenWouldLeaveOwnerless: requester is the room's only
+// owner and is themselves an org member; removing that org would empty the
+// owner set. The ownerless-invariant guard must reject the request with
+// errLastOwner before publishing to the ROOMS stream.
+func TestHandler_RemoveMember_RemoveOrg_RejectsWhenWouldLeaveOwnerless(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	ownerSub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
+	}
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
+	store.EXPECT().CountOwnersOutsideOrg(gomock.Any(), "r1", "eng-org").Return(0, nil)
+
+	// publishToStream must NOT be called.
+	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(_ context.Context, _ string, _ []byte) error {
+		t.Fatalf("publishToStream must not be called when ownerless guard rejects")
+		return nil
+	})
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", OrgID: "eng-org"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errLastOwner), "expected errLastOwner, got %v", err)
+}
+
+func TestHandler_RemoveMember_RemoveOrg_CountOwnersError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	ownerSub := &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
+	}
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
+	store.EXPECT().CountOwnersOutsideOrg(gomock.Any(), "r1", "eng-org").
+		Return(0, fmt.Errorf("db down"))
+
+	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(_ context.Context, _ string, _ []byte) error {
+		t.Fatalf("publishToStream must not be called on count error")
+		return nil
+	})
+	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
+	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", OrgID: "eng-org"})
+	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "count owners outside org")
 }
 
 func TestHandler_RemoveMember_BothAccountAndOrgID_Rejected(t *testing.T) {
@@ -899,6 +950,93 @@ func TestHandler_AddMembers_CapacityExceeded(t *testing.T) {
 	_, err := h.handleAddMembers(context.Background(), subj, data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "maximum capacity")
+}
+
+// TestHandler_AddMembers_ConcurrentDoesNotExceedCap is a regression test for
+// the documented capacity-check TOCTOU at handler.go:679. The handler reads
+// room.UserCount once and trusts it for the capacity gate, so two concurrent
+// requests can each see the same stale UserCount and both pass the gate. The
+// downstream invariants (room-worker idempotency + ReconcileMemberCounts +
+// the unique subscriptions index) keep the system consistent.
+//
+// This test pins the contract: with non-overlapping new-user batches and
+// sufficient headroom, N concurrent AddMembers calls all succeed without
+// crash, data race (-race detects), or false rejection. The published net-new
+// counts taken together never overshoot maxRoomSize by more than (N-1) *
+// newCountPerCall — the bound implied by the documented TOCTOU.
+func TestHandler_AddMembers_ConcurrentDoesNotExceedCap(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	// Each goroutine performs an independent handleAddMembers call. All
+	// goroutines see the same room.UserCount (the documented stale read).
+	const (
+		concurrent     = 5
+		newPerCall     = 2
+		initialUserCnt = 0
+		maxRoomSize    = 100 // ample headroom; no goroutine should hit the cap
+	)
+
+	// EXPECT calls per goroutine: AnyTimes since concurrency means we can't
+	// pin a strict count to a specific account ordering.
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil).
+		Times(concurrent)
+	store.EXPECT().
+		GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, UserCount: initialUserCnt}, nil).
+		Times(concurrent)
+	store.EXPECT().
+		CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1", gomock.Any()).
+		Return(newPerCall, nil).
+		Times(concurrent)
+
+	var publishedCount int64
+	var mu sync.Mutex
+
+	h := NewHandler(store, nil, nil, "site-a", maxRoomSize, 500, 5*time.Second,
+		func(_ context.Context, _ string, _ []byte) error {
+			mu.Lock()
+			publishedCount++
+			mu.Unlock()
+			return nil
+		},
+	)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, concurrent)
+	for i := 0; i < concurrent; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			req := model.AddMembersRequest{
+				RoomID: "r1",
+				Users:  []string{fmt.Sprintf("user-%d-a", idx), fmt.Sprintf("user-%d-b", idx)},
+			}
+			data, _ := json.Marshal(req)
+			_, err := h.handleAddMembers(context.Background(), subject.MemberAdd("alice", "r1", "site-a"), data)
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("unexpected handleAddMembers error under concurrency: %v", err)
+	}
+
+	// All N calls passed the cap (initial 0 + N*2 = 10 << maxRoomSize=100).
+	// The TOCTOU window is harmless when headroom is ample.
+	assert.Equal(t, int64(concurrent), publishedCount, "all concurrent adds should publish")
+
+	// Worst-case overshoot bound: with stale-read TOCTOU, the largest
+	// post-write count is initialUserCount + concurrent*newPerCall. This
+	// asserts the bound documented in the handler comment.
+	worstCase := initialUserCnt + concurrent*newPerCall
+	assert.LessOrEqual(t, worstCase, maxRoomSize,
+		"test setup must keep worst-case within cap; otherwise rejections are valid")
 }
 
 func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {

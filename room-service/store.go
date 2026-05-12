@@ -43,6 +43,14 @@ type RoomStore interface {
 	GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error)
 	CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error)
 	CountOwners(ctx context.Context, roomID string) (int, error)
+	// CountOwnersOutsideOrg returns the count of subscriptions in roomID
+	// holding the owner role whose account is NOT a member of orgID.
+	// Drives the ownerless-after-org-removal guard in handleRemoveMember:
+	// if removing orgID would leave 0 owners, the request must be rejected.
+	// The invariant "owners must hold an individual membership source" makes
+	// the ownerless case theoretically unreachable, but this method backs the
+	// defensive check explicitly so the invariant cannot silently regress.
+	CountOwnersOutsideOrg(ctx context.Context, roomID, orgID string) (int, error)
 	// CountNewMembers returns the count of unique, non-bot, not-already-subscribed users
 	// that an add-members request would add to roomID for a given (orgIDs, directAccounts) tuple.
 	// excludeAccount is empty string to disable, or an account that must be

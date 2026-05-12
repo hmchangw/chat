@@ -1778,3 +1778,201 @@ func TestHistoryService_TShow_ThreadParentCreatedAtNil_ConservativeRedaction(t *
 	// ThreadParentCreatedAt nil → conservative redaction applied.
 	assert.Equal(t, service.UnavailableQuoteMsg, resp.Messages[0].QuotedParentMessage.Msg)
 }
+
+// --- LoadHistory: Limit boundary semantics ---
+
+// makeMessages builds n descending-time messages starting at joinTime+1min.
+// LoadHistory's store call returns DESC order; the count exposed to the caller
+// equals what the store returns (the service does not re-slice).
+func makeMessages(n int) []models.Message {
+	out := make([]models.Message, n)
+	for i := 0; i < n; i++ {
+		out[i] = models.Message{
+			MessageID: fmt.Sprintf("m%d", n-i),
+			RoomID:    "r1",
+			CreatedAt: joinTime.Add(time.Duration(n-i) * time.Minute),
+		}
+	}
+	return out
+}
+
+// pageReqPageSize returns a gomock matcher that asserts the cassrepo.PageRequest
+// argument's PageSize equals want. Mirrors the inline matcher used in the
+// existing LoadNextMessages_DefaultLimit / LoadNextMessages_LimitClampsToMax
+// tests but lifted to a helper so each Limit-boundary test reads cleanly.
+func pageReqPageSize(want int) gomock.Matcher {
+	return gomock.Cond(func(x any) bool {
+		pr, ok := x.(cassrepo.PageRequest)
+		return ok && pr.PageSize == want
+	})
+}
+
+// LoadHistory with Limit=0 → defaults to defaultPageSize (20). Verify by
+// asserting the PageSize passed to the store and the returned message count
+// from a store stub configured to return exactly defaultPageSize rows.
+func TestHistoryService_LoadHistory_LimitZero_DefaultsTo20(t *testing.T) {
+	svc, msgs, subs, _, _, _ := newService(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	page := makeMessages(20)
+	msgs.EXPECT().
+		GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), pageReqPageSize(20)).
+		Return(makePage(page, false), nil)
+
+	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{Limit: 0})
+	require.NoError(t, err)
+	assert.Len(t, resp.Messages, 20)
+}
+
+// LoadHistory with Limit=-1 mirrors Limit=0 — the `limit <= 0` branch in
+// messages.go normalises both to defaultPageSize. Asserts the actual
+// PageSize passed to the store is 20.
+func TestHistoryService_LoadHistory_LimitNegative_DefaultsTo20(t *testing.T) {
+	svc, msgs, subs, _, _, _ := newService(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().
+		GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), pageReqPageSize(20)).
+		Return(makePage(nil, false), nil)
+
+	resp, err := svc.LoadHistory(c, models.LoadHistoryRequest{Limit: -1})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Messages)
+}
+
+// LoadHistory with Limit > maxPageSize (100) → clamped to 100. Asserts the
+// PageSize passed to the store is exactly 100 — the clamp must happen in
+// the service layer so the Cassandra page-state stays bounded.
+func TestHistoryService_LoadHistory_LimitOverMax_ClampsTo100(t *testing.T) {
+	svc, msgs, subs, _, _, _ := newService(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().
+		GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), pageReqPageSize(100)).
+		Return(makePage(nil, false), nil)
+
+	_, err := svc.LoadHistory(c, models.LoadHistoryRequest{Limit: 9999})
+	require.NoError(t, err)
+}
+
+// LoadHistory: store returning context.DeadlineExceeded (Cassandra timeout)
+// must be sanitised through to the user-facing internal error. The handler
+// does not leak the underlying driver error to clients, but it MUST surface
+// an Internal RouteError so the caller can retry. This test guards against
+// silent error-eating regressions on the errgroup wait path.
+func TestHistoryService_LoadHistory_ContextDeadlineExceeded_WrapsInternal(t *testing.T) {
+	svc, msgs, subs, _, _, _ := newService(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().
+		GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).
+		Return(cassrepo.Page[models.Message]{}, context.DeadlineExceeded)
+
+	_, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
+	require.Error(t, err)
+	// User-facing message must not leak the raw driver error but must
+	// signal an internal failure so clients retry.
+	assertInternalErr(t, err, "failed to load message history")
+}
+
+// --- LoadSurroundingMessages: before/after split math ---
+
+// Limit=1 → only the central message; no before/after store calls. This
+// boundary asserts the `remaining <= 0` short-circuit in messages.go fires
+// before any PageRequest is constructed.
+func TestHistoryService_LoadSurroundingMessages_Limit1_NoSideQueries(t *testing.T) {
+	svc, msgs, subs, _, _, _ := newService(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	central := &models.Message{MessageID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m5").Return(central, nil)
+	// No GetMessagesBefore/Between/After expectations — Limit=1 short-circuits.
+
+	resp, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{
+		MessageID: "m5", Limit: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Messages, 1)
+	assert.Equal(t, "m5", resp.Messages[0].MessageID)
+}
+
+// Limit=2 → remaining=1 → beforeCount=(1+1)/2=1, afterCount=1/2=0. The
+// before-page query receives PageSize=1; the after-page receives afterCount=0
+// which `cassrepo.ParsePageRequest` normalises to defaultCassPageSize=50.
+// The math we care about is the test's caller-visible result: 1 before +
+// central + 0 after = 2 messages. The store-side after fetch is stubbed
+// empty since the service relies on the assembled slice length, not the
+// underlying PageSize, to honour the limit.
+func TestHistoryService_LoadSurroundingMessages_Limit2_SplitMath(t *testing.T) {
+	svc, msgs, subs, _, _, _ := newService(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	central := &models.Message{MessageID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m5").Return(central, nil)
+
+	// before: beforeCount=1 → PageSize=1.
+	beforeMsgs := []models.Message{{MessageID: "m4", RoomID: "r1", CreatedAt: joinTime.Add(4 * time.Minute)}}
+	msgs.EXPECT().
+		GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, central.CreatedAt, pageReqPageSize(1)).
+		Return(makePage(beforeMsgs, false), nil)
+	// after: afterCount=0 → cassrepo defaults PageSize to 50, but the store
+	// stub returns nothing so the assembled result has 0 after-rows.
+	msgs.EXPECT().
+		GetMessagesAfter(gomock.Any(), "r1", central.CreatedAt, gomock.Any()).
+		Return(makePage(nil, false), nil)
+
+	resp, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{
+		MessageID: "m5", Limit: 2,
+	})
+	require.NoError(t, err)
+	// Result = [m4, m5] — 1 before + central + 0 after.
+	require.Len(t, resp.Messages, 2)
+	assert.Equal(t, "m4", resp.Messages[0].MessageID)
+	assert.Equal(t, "m5", resp.Messages[1].MessageID)
+}
+
+// Limit=6 → remaining=5 → beforeCount=(5+1)/2=3, afterCount=5/2=2. Asserts
+// the asymmetric split (before gets the extra on odd remainder).
+func TestHistoryService_LoadSurroundingMessages_Limit6_AsymmetricSplit(t *testing.T) {
+	svc, msgs, subs, _, _, _ := newService(t, true)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	central := &models.Message{MessageID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m5").Return(central, nil)
+
+	// before: PageSize=3 — store returns 3 DESC messages.
+	beforeMsgs := []models.Message{
+		{MessageID: "m4", RoomID: "r1", CreatedAt: joinTime.Add(4 * time.Minute)},
+		{MessageID: "m3", RoomID: "r1", CreatedAt: joinTime.Add(3 * time.Minute)},
+		{MessageID: "m2", RoomID: "r1", CreatedAt: joinTime.Add(2 * time.Minute)},
+	}
+	msgs.EXPECT().
+		GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, central.CreatedAt, pageReqPageSize(3)).
+		Return(makePage(beforeMsgs, false), nil)
+	// after: PageSize=2 — store returns 2 ASC messages.
+	afterMsgs := []models.Message{
+		{MessageID: "m6", RoomID: "r1", CreatedAt: joinTime.Add(6 * time.Minute)},
+		{MessageID: "m7", RoomID: "r1", CreatedAt: joinTime.Add(7 * time.Minute)},
+	}
+	msgs.EXPECT().
+		GetMessagesAfter(gomock.Any(), "r1", central.CreatedAt, pageReqPageSize(2)).
+		Return(makePage(afterMsgs, false), nil)
+
+	resp, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{
+		MessageID: "m5", Limit: 6,
+	})
+	require.NoError(t, err)
+	// Assembled ASC: 3 before (reversed) + central + 2 after = 6 messages total.
+	require.Len(t, resp.Messages, 6)
+	wantIDs := []string{"m2", "m3", "m4", "m5", "m6", "m7"}
+	for i, want := range wantIDs {
+		assert.Equal(t, want, resp.Messages[i].MessageID, "position %d", i)
+	}
+}

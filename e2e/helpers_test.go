@@ -232,17 +232,33 @@ func awaitSubscription(t *testing.T, ctx context.Context, db *mongo.Database, ac
 		"subscription for account=%s roomId=%s never persisted", account, roomID)
 }
 
-// registerRoomCleanup deletes a room's rows from both sites' mongo on test
+// registerRoomCleanup deletes a room's rows from all listed sites on test
 // teardown. Without this, state accumulates across runs: subscriptions,
-// rooms, room_members, thread_subscriptions collections grow monotonically
-// and tests that count or list start to drift. Per test-quality reviewer's
-// must-fix #3.
+// rooms, room_members, thread_subscriptions collections grow monotonically,
+// Cassandra messages_by_room partitions stay forever, ES messages-* / user-
+// room-* docs persist, and Valkey room-key entries leak. Tests that count
+// or list start to drift.
 //
-// The harness has no way to drop Cassandra/ES state at the per-test level
-// without forcing structural changes to history-service / search-sync-worker;
-// for now this cleanup keeps the high-churn mongo collections bounded.
+// Cleanup is per-site and best-effort across four backends:
 //
-// Idempotent: safe to call even if some collections don't yet have rows.
+//   - Mongo (always): subscriptions, rooms, room_members, thread_subscriptions,
+//     thread_rooms. Matches roomId / rid / _id field names.
+//   - Cassandra (only when SiteDB.Cassandra is set): chat.messages_by_room and
+//     chat.thread_messages_by_room, partitioned by room_id, so they delete in
+//     O(1). The chat.messages_by_id dedup view CANNOT be cleaned by room (its
+//     PK is message_id, not room_id); rows leak there permanently — tests that
+//     count messages_by_id rows globally must account for that drift.
+//   - Elasticsearch (only when SiteDB.ESURL is set): delete-by-query
+//     {"term":{"roomId":"<rid>"}} against messages-* and user-room-* indices.
+//   - Valkey (only when SiteDB.ValkeyAddr is set): DEL room:<rid>:key and
+//     DEL room:<rid>:key:prev for the encryption room-key store.
+//
+// Every Cassandra/ES/Valkey step logs and continues on error so a failing
+// teardown can't mask the actual test failure. Mongo DeleteMany errors are
+// also swallowed (idempotent — safe to call even if no rows exist).
+//
+// Per test-quality reviewer's must-fix #3 + testing-automation reviewer's
+// expansion.
 func registerRoomCleanup(t *testing.T, sites []SiteDB, roomID string) {
 	t.Helper()
 	if roomID == "" {
@@ -254,29 +270,138 @@ func registerRoomCleanup(t *testing.T, sites []SiteDB, roomID string) {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		for _, sd := range sites {
-			for _, collName := range []string{
-				"subscriptions",
-				"rooms",
-				"room_members",
-				"thread_subscriptions",
-				"thread_rooms",
-			} {
-				coll := sd.DB.Collection(collName)
-				// Match a few common field names that carry the roomID.
-				// CountDocuments-style filter is cheaper than a $or here;
-				// the worst case is two passes per collection.
-				_, _ = coll.DeleteMany(cleanupCtx, bson.M{"roomId": roomID})
-				_, _ = coll.DeleteMany(cleanupCtx, bson.M{"rid": roomID})
-				_, _ = coll.DeleteMany(cleanupCtx, bson.M{"_id": roomID})
-			}
+			cleanupMongo(t, cleanupCtx, sd, roomID)
+			cleanupCassandra(t, cleanupCtx, sd, roomID)
+			cleanupElasticsearch(t, cleanupCtx, sd, roomID)
+			cleanupValkey(t, cleanupCtx, sd, roomID)
 		}
 	})
 }
 
-// SiteDB pairs a site label with its mongo database for cleanup. Tests
-// commonly want to clean both sites (cross-site invite leaves rows on
-// mongo-b) so this lets them pass a slice.
+// cleanupMongo deletes the per-room rows from the high-churn collections.
+// Errors are intentionally swallowed: cleanup must not mask test failures,
+// and DeleteMany on a missing match returns DeletedCount=0 (not an error).
+func cleanupMongo(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
+	t.Helper()
+	if sd.DB == nil {
+		return
+	}
+	for _, collName := range []string{
+		"subscriptions",
+		"rooms",
+		"room_members",
+		"thread_subscriptions",
+		"thread_rooms",
+	} {
+		coll := sd.DB.Collection(collName)
+		// Match a few common field names that carry the roomID.
+		// CountDocuments-style filter is cheaper than a $or here;
+		// the worst case is two passes per collection.
+		_, _ = coll.DeleteMany(ctx, bson.M{"roomId": roomID})
+		_, _ = coll.DeleteMany(ctx, bson.M{"rid": roomID})
+		_, _ = coll.DeleteMany(ctx, bson.M{"_id": roomID})
+	}
+}
+
+// cleanupCassandra drops message history for the room from the two by-room
+// tables. The messages_by_id dedup view has PK=message_id and CANNOT be
+// cleaned per-room without a full scan — accepted leak, documented above.
+func cleanupCassandra(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
+	t.Helper()
+	if sd.Cassandra == nil {
+		return
+	}
+	for _, table := range []string{
+		"chat.messages_by_room",
+		"chat.thread_messages_by_room",
+	} {
+		if err := sd.Cassandra.Query(
+			"DELETE FROM "+table+" WHERE room_id = ?", roomID,
+		).WithContext(ctx).Exec(); err != nil {
+			t.Logf("cleanup cassandra %s site=%s roomID=%s: %v (ignoring)",
+				table, sd.SiteID, roomID, err)
+		}
+	}
+}
+
+// cleanupElasticsearch removes per-room ES docs from both the message index
+// and the user-room index via best-effort delete-by-query. We hit the index
+// wildcards messages-* and user-room-* so the cleanup is robust to per-site
+// index naming. refresh=true forces visibility for any follow-up assertions.
+func cleanupElasticsearch(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
+	t.Helper()
+	if sd.ESURL == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]any{
+		"query": map[string]any{
+			"term": map[string]any{"roomId": roomID},
+		},
+	})
+	if err != nil {
+		t.Logf("cleanup es marshal site=%s roomID=%s: %v (ignoring)",
+			sd.SiteID, roomID, err)
+		return
+	}
+	for _, indexPattern := range []string{"messages-*", "user-room-*"} {
+		url := sd.ESURL + "/" + indexPattern + "/_delete_by_query?refresh=true&conflicts=proceed"
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			t.Logf("cleanup es new request site=%s index=%s: %v (ignoring)",
+				sd.SiteID, indexPattern, err)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Logf("cleanup es do site=%s index=%s roomID=%s: %v (ignoring)",
+				sd.SiteID, indexPattern, roomID, err)
+			continue
+		}
+		_ = resp.Body.Close()
+		// 404 is fine (index not yet created on this site). 409 is fine
+		// (conflicts=proceed is best-effort). Anything else: log + continue.
+		if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
+			t.Logf("cleanup es status site=%s index=%s roomID=%s: %d (ignoring)",
+				sd.SiteID, indexPattern, roomID, resp.StatusCode)
+		}
+	}
+}
+
+// cleanupValkey drops the room encryption key entries written by
+// SeedRoomKey / broadcast-worker. The key format mirrors
+// roomkeystore.ValkeyStore (`room:<rid>:key` and `room:<rid>:key:prev`);
+// DEL is idempotent so missing keys are a no-op.
+func cleanupValkey(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
+	t.Helper()
+	if sd.ValkeyAddr == "" {
+		return
+	}
+	client := redis.NewClient(&redis.Options{Addr: sd.ValkeyAddr})
+	defer func() { _ = client.Close() }()
+	for _, key := range []string{
+		"room:" + roomID + ":key",
+		"room:" + roomID + ":key:prev",
+	} {
+		if err := client.Del(ctx, key).Err(); err != nil {
+			t.Logf("cleanup valkey DEL site=%s key=%s: %v (ignoring)",
+				sd.SiteID, key, err)
+		}
+	}
+}
+
+// SiteDB pairs a site label with the per-backend handles registerRoomCleanup
+// uses for teardown. Tests commonly want to clean both sites (cross-site
+// invite leaves rows on mongo-b) so this lets them pass a slice.
+//
+// Only DB is required for backward compatibility with existing call sites.
+// Cassandra / ESURL / ValkeyAddr are optional: when zero, the corresponding
+// cleanup step is skipped silently. New tests should fill them in to keep
+// the four backends bounded across long REUSE sessions.
 type SiteDB struct {
-	SiteID string
-	DB     *mongo.Database
+	SiteID     string
+	DB         *mongo.Database
+	Cassandra  *gocql.Session
+	ESURL      string
+	ValkeyAddr string
 }

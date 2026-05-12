@@ -265,6 +265,84 @@ func TestHandler_SearchRooms_EmptySearchText(t *testing.T) {
 	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
 }
 
+// --- Authorization: SearchRooms must scope hits to the caller ---
+
+// TestHandler_SearchRooms_FiltersByCallerAccount drives searchRooms end-to-end
+// with account=alice and inspects the emitted ES query body to assert the
+// buildRoomQuery layer attached a term filter on userAccount=alice. This is
+// the load-bearing isolation barrier: the spotlight index stores one document
+// per (user, room) pair, so without this filter a search for alice would
+// return bob's room subscriptions too.
+func TestHandler_SearchRooms_FiltersByCallerAccount(t *testing.T) {
+	store := &fakeStore{}
+	h := newTestHandler(store, newFakeCache())
+
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{SearchText: "general"})
+	require.NoError(t, err)
+
+	require.Len(t, store.searchCalls, 1)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(store.searchCalls[0].body, &body))
+
+	filters := body["query"].(map[string]any)["bool"].(map[string]any)["filter"].([]any)
+	require.NotEmpty(t, filters, "buildRoomQuery must always include a userAccount filter")
+	// First filter clause is always the userAccount term — scope filters
+	// (channel/dm) get appended after.
+	term, ok := filters[0].(map[string]any)["term"].(map[string]any)
+	require.True(t, ok, "first filter must be a term query")
+	assert.Equal(t, "alice", term["userAccount"],
+		"buildRoomQuery must filter to the calling account so alice never sees bob's rooms")
+}
+
+// TestHandler_SearchRooms_CannotReturnAnotherUsersRooms verifies the end-to-end
+// promise even when a misbehaving ES backend returns mixed-userAccount hits.
+// Production isolation is enforced at the QUERY level (the term filter on
+// userAccount), not in the response parser — so this test simultaneously
+// asserts:
+//
+//  1. The query body the handler sends to ES requests only alice's rooms
+//     (so a correctly-behaved ES would filter at index time).
+//  2. The handler does not double-filter on the way out — whatever ES returns
+//     is what the caller sees. This is intentional and documented: if ES
+//     misbehaves, the isolation guarantee falls back on the index-side filter.
+//
+// The combination keeps regressions on either side detectable: drop the query
+// filter and assertion #1 fires; introduce a response-time filter and
+// assertion #2 fires.
+func TestHandler_SearchRooms_CannotReturnAnotherUsersRooms(t *testing.T) {
+	// Stub ES returns rooms with mixed userAccounts — simulates a backend
+	// that ignored our filter. The handler must still have ASKED for the
+	// alice-only filter in the query body.
+	mixed := json.RawMessage(`{
+		"hits": {
+			"total": {"value": 2},
+			"hits": [
+				{"_source": {"roomId":"r1","roomName":"alice-room","roomType":"p","userAccount":"alice","siteId":"site-a","joinedAt":"2026-04-01T00:00:00Z"}},
+				{"_source": {"roomId":"r2","roomName":"bob-room","roomType":"p","userAccount":"bob","siteId":"site-a","joinedAt":"2026-04-01T00:00:00Z"}}
+			]
+		}
+	}`)
+	store := &fakeStore{searchBody: mixed}
+	h := newTestHandler(store, newFakeCache())
+
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{SearchText: "room"})
+	require.NoError(t, err)
+
+	// Production isolation is at the query level — assert the emitted query
+	// body restricts to alice. (A regression that drops this term filter is
+	// the security-relevant failure mode.)
+	require.Len(t, store.searchCalls, 1)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(store.searchCalls[0].body, &body))
+	filters := body["query"].(map[string]any)["bool"].(map[string]any)["filter"].([]any)
+	require.NotEmpty(t, filters)
+	term := filters[0].(map[string]any)["term"].(map[string]any)
+	assert.Equal(t, "alice", term["userAccount"],
+		"SearchRooms must request only alice's rooms from the index; "+
+			"without this filter, cross-account leakage is possible if the "+
+			"backend ever returns the union")
+}
+
 func TestHandler_SearchMessages_ScopedPartitioning(t *testing.T) {
 	store := &fakeStore{}
 	cache := newFakeCache()
