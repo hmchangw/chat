@@ -1,0 +1,3 @@
+# Per-run artifacts written by `make integration-suite`.
+# Regenerated each run; never commit.
+reports/
