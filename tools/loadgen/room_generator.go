@@ -105,7 +105,7 @@ func (g *RoomRPCGenerator) tick(ctx context.Context) {
 		).Inc()
 	}
 	if g.cfg.Collector != nil {
-		g.cfg.Collector.RecordRequest("room", roomKindLabel(kind), start, latency, err != nil)
+		g.cfg.Collector.RecordRequest("room", roomKindLabel(kind), phase, latency, err != nil)
 	}
 }
 

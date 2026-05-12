@@ -30,25 +30,26 @@ type sample struct {
 	latency     time.Duration
 }
 
-// requestSample carries one (scenario, kind) read-scenario observation.
-type requestSample struct {
-	publishedAt time.Time
-	latency     time.Duration
-	errored     bool
-}
+// requestKey identifies one (scenario, kind, phase) cell.
+// Phase is "warmup" or "measured"; it is a first-class dimension of
+// the storage key so warmup traffic does not pollute measured-window
+// percentiles.
+type requestKey struct{ scenario, kind, phase string }
 
-// requestKey identifies one (scenario, kind) cell.
-type requestKey struct{ scenario, kind string }
-
-// requestShard owns the samples for one (scenario, kind) cell. S1:
-// each shard has its own mutex so RecordRequest for different keys
-// runs without serializing on a single Collector-wide lock. The
-// shard map itself is protected by Collector.requestsMu (RWMutex);
-// hot-path readers/writers only take the inner shard.mu after a
-// brief RLock on the map.
+// requestShard owns the HDR histogram cell for one (scenario, kind, phase)
+// triplet. The shard map (Collector.requests) is protected by
+// Collector.requestsMu (RWMutex); hot-path readers/writers hold the
+// inner shard.mu after a brief RLock on the outer map.
+//
+// S1 (HDR): replaced []requestSample with *CellHistogram so memory is
+// bounded (~30 KB per cell) regardless of sample count. Phase 1a.2.
+// errors counts error observations for the corresponding cell so that
+// RequestStats can still report per-(scenario,kind) error counts without
+// storing individual samples.
 type requestShard struct {
-	mu      sync.Mutex
-	samples []requestSample
+	mu     sync.Mutex
+	cell   *CellHistogram
+	errors int64
 }
 
 // Collector correlates publishes with replies (E1) and broadcasts (E2).
@@ -82,10 +83,11 @@ type Collector struct {
 	byMsgIDShards [correlationShardCount]*correlationShard
 	e1            []sample
 	e2            []sample
-	// S1: requests is sharded per (scenario, kind). requestsMu protects
-	// the map structure (insertion of new shards on first write); each
-	// shard owns its own mu for the samples slice. Reads use RLock so
-	// concurrent RecordRequest for distinct keys don't contend.
+	// S1 (HDR): requests is sharded per (scenario, kind, phase).
+	// requestsMu protects the map structure (insertion of new shards
+	// on first write); each shard owns its own mu for the CellHistogram.
+	// Reads use RLock so concurrent RecordRequest for distinct keys
+	// don't contend.
 	requestsMu     sync.RWMutex
 	requests       map[requestKey]*requestShard
 	seenMessageIDs []string       // Phase 3 §3.1: append-only log; never deleted
@@ -150,79 +152,123 @@ func (c *Collector) getOrCreateShard(k requestKey) *requestShard {
 	if sh, ok = c.requests[k]; ok {
 		return sh
 	}
-	sh = &requestShard{}
+	sh = &requestShard{cell: NewCellHistogram()} // errors starts at 0
 	c.requests[k] = sh
 	return sh
 }
 
 // RecordRequest captures one read-scenario request observation under
-// (scenario, kind). errored is true when the underlying NATS request
-// returned a non-nil error or the reply payload encoded a server error.
+// (scenario, kind, phase). phase is "warmup" when the observation falls
+// within the pre-measured warmup interval, and "measured" afterward.
+// errored is true when the underlying NATS request returned a non-nil
+// error or the reply payload encoded a server error.
 //
-// S1: this is the hot path. The per-shard mutex isolates one
-// (scenario, kind) cell from another, so two RecordRequest calls for
-// different keys never contend. The window-attach read takes the
-// Collector-wide mu briefly (atomic enough; AttachWindow is called
-// once at startup and never replaces, so the read is effectively
-// stable).
-func (c *Collector) RecordRequest(scenario, kind string, publishedAt time.Time, latency time.Duration, errored bool) {
-	sh := c.getOrCreateShard(requestKey{scenario: scenario, kind: kind})
+// S1 (HDR): records into a CellHistogram (bounded ~30 KB) instead of
+// appending to a []requestSample slice. Memory is constant regardless
+// of sample count. The window-attach read takes the Collector-wide mu
+// briefly; AttachWindow is called once at startup and never replaces,
+// so the read is effectively stable.
+func (c *Collector) RecordRequest(scenario, kind, phase string, latency time.Duration, errored bool) {
+	k := requestKey{scenario: scenario, kind: kind, phase: phase}
+	sh := c.getOrCreateShard(k)
 	sh.mu.Lock()
-	sh.samples = append(sh.samples, requestSample{
-		publishedAt: publishedAt,
-		latency:     latency,
-		errored:     errored,
-	})
+	sh.cell.Record(latency)
+	if errored {
+		sh.errors++
+	}
 	sh.mu.Unlock()
 
 	c.mu.Lock()
 	w := c.window
 	c.mu.Unlock()
 	if w != nil {
-		w.AddAt(publishedAt, latency, errored)
+		w.Add(latency, errored)
 	}
 }
 
-// RequestStats returns aggregated per-(scenario, kind) percentiles + counts.
-// Result is sorted by (scenario, kind) for deterministic output.
+// RequestPercentiles returns the latency quantiles for the given
+// (scenario, kind, phase) cell. qs is a slice of quantile values in
+// [0.0, 1.0]. Returns a slice of the same length as qs. If no samples
+// have been recorded for this cell, all values are zero.
+func (c *Collector) RequestPercentiles(scenario, kind, phase string, qs []float64) []time.Duration {
+	k := requestKey{scenario: scenario, kind: kind, phase: phase}
+	c.requestsMu.RLock()
+	sh, ok := c.requests[k]
+	c.requestsMu.RUnlock()
+	out := make([]time.Duration, len(qs))
+	if !ok {
+		return out
+	}
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	for i, q := range qs {
+		out[i] = sh.cell.Quantile(q)
+	}
+	return out
+}
+
+// RequestCount returns the total number of samples recorded for the
+// given (scenario, kind, phase) cell. Returns 0 if no samples have
+// been recorded.
+func (c *Collector) RequestCount(scenario, kind, phase string) int64 {
+	k := requestKey{scenario: scenario, kind: kind, phase: phase}
+	c.requestsMu.RLock()
+	sh, ok := c.requests[k]
+	c.requestsMu.RUnlock()
+	if !ok {
+		return 0
+	}
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	return sh.cell.Count()
+}
+
+// RequestStats returns aggregated per-(scenario, kind) percentiles + counts
+// for the "measured" phase only. Result is sorted by (scenario, kind)
+// for deterministic output.
 //
-// S1: snapshot path takes the map RLock briefly, materializes the
-// shard list, then drops the RLock and locks each shard.mu in turn.
-// New shards appearing AFTER the snapshot don't show up in this
-// result — acceptable for a final-report call (caller is post-run).
+// S1 (HDR): reads from CellHistogram cells for the "measured" phase.
+// The DiscardBefore warmup-cutoff pattern is superseded by phase labels:
+// callers no longer need to call DiscardBefore before RequestStats.
 func (c *Collector) RequestStats() []RequestStat {
 	c.requestsMu.RLock()
-	keys := make([]requestKey, 0, len(c.requests))
-	shards := make([]*requestShard, 0, len(c.requests))
+	type keyedShard struct {
+		key   requestKey
+		shard *requestShard
+	}
+	pairs := make([]keyedShard, 0, len(c.requests))
 	for k, sh := range c.requests {
-		keys = append(keys, k)
-		shards = append(shards, sh)
+		if k.phase != "measured" {
+			continue
+		}
+		pairs = append(pairs, keyedShard{k, sh})
 	}
 	c.requestsMu.RUnlock()
 
-	out := make([]RequestStat, 0, len(keys))
-	for i, k := range keys {
-		sh := shards[i]
-		sh.mu.Lock()
-		if len(sh.samples) == 0 {
-			sh.mu.Unlock()
-			continue
-		}
-		latencies := make([]time.Duration, len(sh.samples))
-		errors := 0
-		for j := range sh.samples {
-			latencies[j] = sh.samples[j].latency
-			if sh.samples[j].errored {
-				errors++
+	out := make([]RequestStat, 0, len(pairs))
+	for _, p := range pairs {
+		p.shard.mu.Lock()
+		count := p.shard.cell.Count()
+		errors := p.shard.errors
+		var latency Percentiles
+		if count > 0 {
+			latency = Percentiles{
+				P50: p.shard.cell.Quantile(0.50),
+				P95: p.shard.cell.Quantile(0.95),
+				P99: p.shard.cell.Quantile(0.99),
+				Max: p.shard.cell.Quantile(1.00),
 			}
 		}
-		sh.mu.Unlock()
+		p.shard.mu.Unlock()
+		if count == 0 {
+			continue
+		}
 		out = append(out, RequestStat{
-			Scenario: k.scenario,
-			Kind:     k.kind,
-			Count:    len(latencies),
-			Errors:   errors,
-			Latency:  ComputePercentiles(latencies),
+			Scenario: p.key.scenario,
+			Kind:     p.key.kind,
+			Count:    int(count),
+			Errors:   int(errors),
+			Latency:  latency,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -388,44 +434,18 @@ func (c *Collector) RecordBroadcast(messageID string, at time.Time) {
 	c.m.E2Latency.WithLabelValues(c.preset).Observe(d.Seconds())
 }
 
-// DiscardBefore drops any samples whose publish time is before cutoff (warmup).
-//
-// S1: iterates the shard map under RLock (no shard creation happens
-// in DiscardBefore), then locks each shard.mu individually to filter
-// its samples slice. The map RLock and the e1/e2 mu are held
-// briefly; the bulk of the work is inside per-shard critical
-// sections so a long DiscardBefore on one key doesn't block writes
-// to a different key.
+// DiscardBefore drops E1 and E2 samples whose publish time is before
+// cutoff (warmup). Request samples are now phase-keyed (HDR cells
+// identified by "warmup" / "measured") so no per-request filtering
+// is needed here.
 func (c *Collector) DiscardBefore(cutoff time.Time) {
 	c.mu.Lock()
 	c.e1 = filterAtOrAfter(c.e1, cutoff)
 	c.e2 = filterAtOrAfter(c.e2, cutoff)
 	c.mu.Unlock()
-
-	c.requestsMu.RLock()
-	shards := make([]*requestShard, 0, len(c.requests))
-	for _, sh := range c.requests {
-		shards = append(shards, sh)
-	}
-	c.requestsMu.RUnlock()
-	for _, sh := range shards {
-		sh.mu.Lock()
-		sh.samples = filterRequestsAtOrAfter(sh.samples, cutoff)
-		sh.mu.Unlock()
-	}
 }
 
 func filterAtOrAfter(in []sample, cutoff time.Time) []sample {
-	out := in[:0]
-	for i := range in {
-		if !in[i].publishedAt.Before(cutoff) {
-			out = append(out, in[i])
-		}
-	}
-	return out
-}
-
-func filterRequestsAtOrAfter(in []requestSample, cutoff time.Time) []requestSample {
 	out := in[:0]
 	for i := range in {
 		if !in[i].publishedAt.Before(cutoff) {
@@ -495,19 +515,20 @@ func (c *Collector) E2Samples() []time.Duration {
 type RequestSampleRow struct {
 	Scenario string
 	Kind     string
+	Phase    string
 	Latency  time.Duration
-	Errored  bool
 }
 
-// RequestSampleRows returns one row per recorded request, suitable for CSV
-// export. Order is per-bucket insertion order across deterministic
-// scenario+kind iteration.
+// RequestSampleRows returns one row per recorded request (approximated
+// from HDR histogram cells), suitable for CSV export. Because the
+// underlying storage is now HDR histograms (bounded memory, ~30 KB per
+// cell), individual sample values are not retained. This method returns
+// one synthetic row per (scenario, kind, phase) cell reporting the P50
+// as a representative latency — suitable for audit purposes but not for
+// sample-by-sample replay.
 //
-// S1: snapshot path. Map RLock to materialize (key,shard) pairs,
-// then lock each shard briefly to copy its samples. Concurrent
-// writes to a different shard proceed unblocked. New shards
-// appearing AFTER the materialization are excluded from this
-// snapshot — acceptable because this is a post-run CSV export.
+// TODO(Phase 1b §1.8): replace this stub with the HDR artifact-bundle
+// exporter once the Phase 1b log format is determined.
 func (c *Collector) RequestSampleRows() []RequestSampleRow {
 	c.requestsMu.RLock()
 	type keyedShard struct {
@@ -524,20 +545,26 @@ func (c *Collector) RequestSampleRows() []RequestSampleRow {
 		if pairs[i].key.scenario != pairs[j].key.scenario {
 			return pairs[i].key.scenario < pairs[j].key.scenario
 		}
-		return pairs[i].key.kind < pairs[j].key.kind
+		if pairs[i].key.kind != pairs[j].key.kind {
+			return pairs[i].key.kind < pairs[j].key.kind
+		}
+		return pairs[i].key.phase < pairs[j].key.phase
 	})
 	var rows []RequestSampleRow
 	for _, p := range pairs {
 		p.shard.mu.Lock()
-		for _, s := range p.shard.samples {
-			rows = append(rows, RequestSampleRow{
-				Scenario: p.key.scenario,
-				Kind:     p.key.kind,
-				Latency:  s.latency,
-				Errored:  s.errored,
-			})
-		}
+		count := p.shard.cell.Count()
+		p50 := p.shard.cell.Quantile(0.50)
 		p.shard.mu.Unlock()
+		if count == 0 {
+			continue
+		}
+		rows = append(rows, RequestSampleRow{
+			Scenario: p.key.scenario,
+			Kind:     p.key.kind,
+			Phase:    p.key.phase,
+			Latency:  p50,
+		})
 	}
 	return rows
 }

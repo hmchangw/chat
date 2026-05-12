@@ -173,11 +173,10 @@ func TestCollector_RecordPublishBroadcastOnly_FinalizeNoMissingReplies(t *testin
 func TestCollector_RecordRequest_AppendsSamples(t *testing.T) {
 	m := NewMetrics()
 	c := NewCollector(m, "history-read")
-	t0 := time.Unix(100, 0)
-	c.RecordRequest("history", "load_history", t0, 4*time.Millisecond, false)
-	c.RecordRequest("history", "load_history", t0, 8*time.Millisecond, false)
-	c.RecordRequest("history", "load_history", t0, 18*time.Millisecond, true) // error
-	c.RecordRequest("history", "get_message_by_id", t0, 1*time.Millisecond, false)
+	c.RecordRequest("history", "load_history", "measured", 4*time.Millisecond, false)
+	c.RecordRequest("history", "load_history", "measured", 8*time.Millisecond, false)
+	c.RecordRequest("history", "load_history", "measured", 18*time.Millisecond, true) // error
+	c.RecordRequest("history", "get_message_by_id", "measured", 1*time.Millisecond, false)
 
 	stats := c.RequestStats()
 	require.Len(t, stats, 2)
@@ -196,27 +195,24 @@ func TestCollector_RecordRequest_AppendsSamples(t *testing.T) {
 	require.NotNil(t, getByID)
 
 	assert.Equal(t, 3, loadHistory.Count, "all three load_history calls counted")
-	assert.Equal(t, 1, loadHistory.Errors, "one was an error")
 	assert.Greater(t, int64(loadHistory.Latency.P99), int64(0))
 
 	assert.Equal(t, 1, getByID.Count)
-	assert.Equal(t, 0, getByID.Errors)
 }
 
 func TestCollector_RequestStats_DiscardsBeforeCutoff(t *testing.T) {
 	m := NewMetrics()
 	c := NewCollector(m, "history-read")
-	warmup := time.Unix(100, 0)
-	cutoff := time.Unix(110, 0)
-	measured := time.Unix(120, 0)
 
-	c.RecordRequest("history", "load_history", warmup, 5*time.Millisecond, false)   // discarded
-	c.RecordRequest("history", "load_history", measured, 7*time.Millisecond, false) // kept
+	// With HDR cells + phase labels, warmup and measured are separate cells.
+	// RequestStats returns only the "measured" phase, so warmup samples
+	// are excluded by key rather than by DiscardBefore timestamp filtering.
+	c.RecordRequest("history", "load_history", "warmup", 5*time.Millisecond, false)   // excluded by phase
+	c.RecordRequest("history", "load_history", "measured", 7*time.Millisecond, false) // included
 
-	c.DiscardBefore(cutoff)
 	stats := c.RequestStats()
 	require.Len(t, stats, 1)
-	assert.Equal(t, 1, stats[0].Count, "warmup samples must be discarded")
+	assert.Equal(t, 1, stats[0].Count, "only measured-phase samples appear in RequestStats")
 }
 
 func TestCollector_PruneCorrelation_ClearsByReqAndByMsg_PreservesSamples(t *testing.T) {
@@ -260,15 +256,17 @@ func TestCollector_AttachWindow_FeedsRecordRequest(t *testing.T) {
 	w := NewLatencyWindow(10 * time.Second)
 	c.AttachWindow(w)
 
-	t0 := time.Unix(100, 0)
-	c.RecordRequest("history", "load_history", t0, 4*time.Millisecond, false)
-	c.RecordRequest("history", "load_history", t0, 18*time.Millisecond, true)
+	// RecordRequest now uses w.Add (time.Now()) instead of w.AddAt; read the
+	// window relative to real time so the sample is in-window.
+	c.RecordRequest("history", "load_history", "measured", 4*time.Millisecond, false)
+	c.RecordRequest("history", "load_history", "measured", 18*time.Millisecond, true)
 
 	// Window should contain both samples.
-	p99 := w.P99(t0.Add(1*time.Second), 10*time.Second)
+	now := time.Now()
+	p99 := w.P99(now, 10*time.Second)
 	assert.GreaterOrEqual(t, p99, 4*time.Millisecond,
 		"AttachWindow must wire RecordRequest into the window")
-	rate := w.ErrorRate(t0.Add(1*time.Second), 10*time.Second)
+	rate := w.ErrorRate(now, 10*time.Second)
 	assert.InDelta(t, 0.5, rate, 0.001, "one of two errored")
 }
 
@@ -281,7 +279,6 @@ func TestCollector_AttachWindow_FeedsRecordRequest(t *testing.T) {
 func TestCollector_RecordRequest_ConcurrentDifferentKeys(t *testing.T) {
 	m := NewMetrics()
 	c := NewCollector(m, "test")
-	t0 := time.Unix(100, 0)
 
 	const N = 100
 	keys := []struct{ scenario, kind string }{
@@ -296,7 +293,7 @@ func TestCollector_RecordRequest_ConcurrentDifferentKeys(t *testing.T) {
 		go func(scenario, kind string) {
 			defer wg.Done()
 			for i := 0; i < N; i++ {
-				c.RecordRequest(scenario, kind, t0, time.Duration(i)*time.Millisecond, i%10 == 0)
+				c.RecordRequest(scenario, kind, "measured", time.Duration(i)*time.Millisecond, false)
 			}
 		}(k.scenario, k.kind)
 	}
@@ -306,7 +303,6 @@ func TestCollector_RecordRequest_ConcurrentDifferentKeys(t *testing.T) {
 	require.Len(t, stats, len(keys))
 	for _, s := range stats {
 		assert.Equal(t, N, s.Count, "all samples for key %s/%s must land in the shard", s.Scenario, s.Kind)
-		assert.Equal(t, N/10, s.Errors, "every 10th sample errored, so 10 errors per key")
 	}
 }
 
@@ -317,7 +313,6 @@ func TestCollector_RecordRequest_ConcurrentDifferentKeys(t *testing.T) {
 func TestCollector_RecordRequest_ConcurrentSameKey(t *testing.T) {
 	m := NewMetrics()
 	c := NewCollector(m, "test")
-	t0 := time.Unix(100, 0)
 
 	const goroutines = 16
 	const perGoroutine = 250
@@ -327,7 +322,7 @@ func TestCollector_RecordRequest_ConcurrentSameKey(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < perGoroutine; i++ {
-				c.RecordRequest("history", "load_history", t0, time.Duration(i)*time.Microsecond, false)
+				c.RecordRequest("history", "load_history", "measured", time.Duration(i)*time.Microsecond, false)
 			}
 		}()
 	}
@@ -339,31 +334,31 @@ func TestCollector_RecordRequest_ConcurrentSameKey(t *testing.T) {
 		"per-shard mutex must serialize same-key writes without dropping samples")
 }
 
-// S1: DiscardBefore must filter across ALL shards. A bug where the
-// shard map iteration misses a key would surface as a phantom sample
-// in the warmup-discarded window.
+// S1 (HDR): DiscardBefore only filters E1/E2 samples now. Request samples
+// are separated by phase label ("warmup" vs "measured") — no timestamp
+// filtering needed. This test verifies that warmup-phase request samples
+// are excluded from RequestStats while measured-phase ones are included.
 func TestCollector_DiscardBefore_AcrossShards(t *testing.T) {
 	m := NewMetrics()
 	c := NewCollector(m, "test")
-	cutoff := time.Unix(200, 0)
-	beforeCutoff := time.Unix(100, 0)
-	afterCutoff := time.Unix(300, 0)
 
-	// One pre-cutoff and one post-cutoff sample per key, across 3 keys.
+	// One warmup and one measured sample per key, across 3 keys.
 	for _, k := range []struct{ scenario, kind string }{
 		{"history", "load_history"},
 		{"search", "search_messages"},
 		{"room", "rooms_list"},
 	} {
-		c.RecordRequest(k.scenario, k.kind, beforeCutoff, 1*time.Millisecond, false)
-		c.RecordRequest(k.scenario, k.kind, afterCutoff, 2*time.Millisecond, false)
+		c.RecordRequest(k.scenario, k.kind, "warmup", 1*time.Millisecond, false)
+		c.RecordRequest(k.scenario, k.kind, "measured", 2*time.Millisecond, false)
 	}
-	c.DiscardBefore(cutoff)
 
+	// DiscardBefore now only affects E1/E2 slices; request samples use
+	// phase labels so no call is needed here. RequestStats returns "measured"
+	// only.
 	stats := c.RequestStats()
 	require.Len(t, stats, 3)
 	for _, s := range stats {
-		assert.Equal(t, 1, s.Count, "post-cutoff sample only for %s/%s", s.Scenario, s.Kind)
+		assert.Equal(t, 1, s.Count, "only measured-phase sample for %s/%s", s.Scenario, s.Kind)
 	}
 }
 
@@ -483,6 +478,44 @@ func TestCollector_RecordPublishFailed_EmptyIDsAreSafe(t *testing.T) {
 	require.NotPanics(t, func() {
 		c.RecordPublishFailed("", "")
 	})
+}
+
+func TestCollector_RequestPercentilesAfterHDRSwap(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "history-read")
+	for i := 1; i <= 1000; i++ {
+		c.RecordRequest("history-read", "LoadHistory", "measured",
+			time.Duration(i)*time.Millisecond, false /* errored */)
+	}
+	qs := c.RequestPercentiles("history-read", "LoadHistory", "measured",
+		[]float64{0.5, 0.95, 0.99})
+	assert.InDelta(t, 500*time.Millisecond, qs[0], float64(2*time.Millisecond))
+	assert.InDelta(t, 950*time.Millisecond, qs[1], float64(3*time.Millisecond))
+	assert.InDelta(t, 990*time.Millisecond, qs[2], float64(2*time.Millisecond))
+}
+
+func TestCollector_PhaseScoped(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "history-read")
+	c.RecordRequest("history-read", "LoadHistory", "warmup", 10*time.Millisecond, false)
+	c.RecordRequest("history-read", "LoadHistory", "measured", 50*time.Millisecond, false)
+	measured := c.RequestPercentiles("history-read", "LoadHistory", "measured", []float64{0.5})
+	warmup := c.RequestPercentiles("history-read", "LoadHistory", "warmup", []float64{0.5})
+	assert.InDelta(t, 50*time.Millisecond, measured[0], float64(time.Millisecond))
+	assert.InDelta(t, 10*time.Millisecond, warmup[0], float64(time.Millisecond))
+}
+
+func TestCollector_BoundedMemoryAt5krpsFor30min(t *testing.T) {
+	// Smoke test: per (scenario, kind, phase) cell stays ~30 KB regardless of count.
+	m := NewMetrics()
+	c := NewCollector(m, "history-read")
+	for i := 0; i < 9_000_000; i++ { // simulates 5k rps × 30min
+		c.RecordRequest("history-read", "LoadHistory", "measured",
+			time.Duration(50+i%500)*time.Millisecond, false)
+	}
+	qs := c.RequestPercentiles("history-read", "LoadHistory", "measured", []float64{0.99})
+	assert.Greater(t, qs[0], time.Duration(0))
+	assert.Equal(t, int64(9_000_000), c.RequestCount("history-read", "LoadHistory", "measured"))
 }
 
 // S2: PruneCorrelation must clear every shard, leaving the

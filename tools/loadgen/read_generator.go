@@ -118,7 +118,7 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 		).Inc()
 	}
 	if g.cfg.Collector != nil {
-		g.cfg.Collector.RecordRequest("history", historyKindLabel(kind), start, latency, err != nil)
+		g.cfg.Collector.RecordRequest("history", historyKindLabel(kind), phase, latency, err != nil)
 	}
 }
 
@@ -241,7 +241,7 @@ func (g *SearchReadGenerator) tick(ctx context.Context) {
 		).Inc()
 	}
 	if g.cfg.Collector != nil {
-		g.cfg.Collector.RecordRequest("search", searchKindLabel(kind), start, latency, err != nil)
+		g.cfg.Collector.RecordRequest("search", searchKindLabel(kind), phase, latency, err != nil)
 	}
 }
 
