@@ -373,6 +373,100 @@ func TestRunTeardown_MongoDBGuardRefuses(t *testing.T) {
 	assert.Equal(t, 2, code, "guard must refuse teardown of non-loadgen DB")
 }
 
+// Bug 6: --abort-window-max-samples default of 10_000 deafens the abort
+// watcher at default --rate=500 × default --abort-p99-sustain=30s
+// (= 15_000 samples needed). Auto-size the cap when the user did not
+// pass the flag explicitly; honor an explicit --abort-window-max-samples
+// verbatim, including 0 (disabled).
+func TestResolveAbortWindowMaxSamples(t *testing.T) {
+	cases := []struct {
+		name       string
+		userSet    bool
+		userVal    int
+		peakRPS    int
+		maxSustain time.Duration
+		want       int
+	}{
+		{
+			name:    "default rate + default sustain auto-sized to >= peak*sustain",
+			userSet: false, userVal: 10000,
+			peakRPS: 500, maxSustain: 30 * time.Second,
+			// 500 * 30s = 15000; 2x headroom = 30000.
+			want: 30000,
+		},
+		{
+			name:    "high-rate run",
+			userSet: false, userVal: 10000,
+			peakRPS: 5000, maxSustain: 60 * time.Second,
+			want: 600000,
+		},
+		{
+			name:    "explicit user value preserved verbatim",
+			userSet: true, userVal: 10000,
+			peakRPS: 5000, maxSustain: 60 * time.Second,
+			want: 10000,
+		},
+		{
+			name:    "explicit user value 0 (disabled) preserved",
+			userSet: true, userVal: 0,
+			peakRPS: 5000, maxSustain: 60 * time.Second,
+			want: 0,
+		},
+		{
+			name:    "explicit user value above auto-size preserved",
+			userSet: true, userVal: 1000000,
+			peakRPS: 500, maxSustain: 30 * time.Second,
+			want: 1000000,
+		},
+		{
+			name:    "low-rate run gets a tighter auto-size",
+			userSet: false, userVal: 10000,
+			peakRPS: 100, maxSustain: 5 * time.Second,
+			// 2 * 100 * 5 = 1000 — wasted memory to inflate further.
+			want: 1000,
+		},
+		{
+			name:    "zero peak rate keeps the registered default",
+			userSet: false, userVal: 10000,
+			peakRPS: 0, maxSustain: 30 * time.Second,
+			// no traffic to bound: keep the registered default.
+			want: 10000,
+		},
+		{
+			name:    "zero sustain keeps the default",
+			userSet: false, userVal: 10000,
+			peakRPS: 500, maxSustain: 0,
+			want: 10000,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveAbortWindowMaxSamples(tc.userSet, tc.userVal, tc.peakRPS, tc.maxSustain)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// Bug 6 wiring: peakRPS picks the higher of --rate vs --ramp-to so a
+// ramp that climbs above the static rate isn't deafened mid-run.
+func TestResolveAbortPeakRPS(t *testing.T) {
+	cases := []struct {
+		name         string
+		rate, rampTo int
+		want         int
+	}{
+		{"no ramp, use rate", 500, 0, 500},
+		{"ramp-to higher than rate", 500, 2000, 2000},
+		{"rate higher than ramp-to", 1000, 200, 1000},
+		{"both zero", 0, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resolveAbortPeakRPS(tc.rate, tc.rampTo))
+		})
+	}
+}
+
 // Bug 2: actualRate must be computed per-scenario.
 //
 //   - messaging-pipeline + frontdoor: matched-replies + missing-replies / measured

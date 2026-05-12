@@ -293,7 +293,33 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// 10k keeps each percentile sort under ~150µs. The cap can mask a
 	// sustained breach when (peak_rps × max_sustain) > cap — see the
 	// "abort watcher deafened by sample cap" slog.Warn in window.go.
-	latencyWindow := NewLatencyWindow(windowRetain).WithMaxSamples(*abortWindowMaxSamples)
+	//
+	// Bug 6: auto-size the cap when the user did not explicitly pass
+	// --abort-window-max-samples so default flags ship in a non-deafened
+	// state. Detected via flag.Visit (the canonical "was this flag set"
+	// idiom). Operator overrides (including 0 = disabled) pass through
+	// verbatim.
+	userSetAbortCap := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "abort-window-max-samples" {
+			userSetAbortCap = true
+		}
+	})
+	abortMaxSustain := *abortP99Sustain
+	if *abortErrorSustain > abortMaxSustain {
+		abortMaxSustain = *abortErrorSustain
+	}
+	resolvedAbortCap := resolveAbortWindowMaxSamples(
+		userSetAbortCap, *abortWindowMaxSamples,
+		resolveAbortPeakRPS(*rate, *rampTo), abortMaxSustain,
+	)
+	if resolvedAbortCap != *abortWindowMaxSamples {
+		slog.Info("abort-window-max-samples auto-sized",
+			"original", *abortWindowMaxSamples, "resolved", resolvedAbortCap,
+			"peak_rps", resolveAbortPeakRPS(*rate, *rampTo),
+			"max_sustain", abortMaxSustain.String())
+	}
+	latencyWindow := NewLatencyWindow(windowRetain).WithMaxSamples(resolvedAbortCap)
 	collector.AttachWindow(latencyWindow)
 
 	// E1 subscription: gatekeeper replies.
@@ -816,6 +842,37 @@ func exitCodeForFull(saturationAborted, livenessFailed bool, sent, totalErrs int
 		return 2
 	}
 	return DetermineExitCode(sent, totalErrs)
+}
+
+// resolveAbortPeakRPS returns the peak rate the abort watcher must
+// retain samples for. When a ramp is configured (--ramp-to > 0), use
+// max(--rate, --ramp-to) so an ascending ramp doesn't deafen the watcher
+// mid-run. Bug 6.
+func resolveAbortPeakRPS(rate, rampTo int) int {
+	if rampTo > rate {
+		return rampTo
+	}
+	return rate
+}
+
+// resolveAbortWindowMaxSamples returns the effective ring-buffer cap.
+//
+// Bug 6: the registered default of 10_000 deafens the abort watcher
+// at the default --rate=500 × --abort-p99-sustain=30s = 15_000. When
+// the user did NOT pass --abort-window-max-samples, auto-size to
+// 2 × peak_rps × max_sustain (the README's rule of thumb). Otherwise
+// honor the user's value verbatim — including 0 (cap disabled).
+//
+// When peak_rps or maxSustain is zero, fall back to the registered
+// default (no traffic / no sustain ⇒ no need to inflate).
+func resolveAbortWindowMaxSamples(userSet bool, userVal, peakRPS int, maxSustain time.Duration) int {
+	if userSet {
+		return userVal
+	}
+	if peakRPS <= 0 || maxSustain <= 0 {
+		return userVal
+	}
+	return 2 * peakRPS * int(maxSustain.Seconds())
 }
 
 // computeActualRate returns the achieved request rate (req/sec) over the
