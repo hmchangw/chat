@@ -275,6 +275,45 @@ func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error
 	return int(count), nil
 }
 
+// CountOwnersOutsideOrg joins subscriptions (owner-role only) for roomID
+// against users on subscription.u.account = users.account, then filters out
+// rows whose users.sectId == orgID. The resulting count is the number of
+// owners who would remain in the room after orgID is removed.
+func (s *MongoStore) CountOwnersOutsideOrg(ctx context.Context, roomID, orgID string) (int, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"roomId": roomID, "roles": model.RoleOwner}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from":         "users",
+			"localField":   "u.account",
+			"foreignField": "account",
+			"as":           "userDoc",
+		}}},
+		// An owner subscription whose account does not resolve to any user
+		// (or to a user whose sectId is not orgID) survives the org removal.
+		// Owners whose account resolves only to users in orgID would be the
+		// only ones at risk — those are the rows we drop.
+		{{Key: "$match", Value: bson.M{
+			"userDoc": bson.M{"$not": bson.M{"$elemMatch": bson.M{"sectId": orgID}}},
+		}}},
+		{{Key: "$count", Value: "n"}},
+	}
+	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, fmt.Errorf("count owners outside org %q for room %q: %w", orgID, roomID, err)
+	}
+	defer cursor.Close(ctx)
+	var results []struct {
+		Count int `bson:"n"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return 0, fmt.Errorf("decode count owners outside org: %w", err)
+	}
+	if len(results) == 0 {
+		return 0, nil
+	}
+	return results[0].Count, nil
+}
+
 func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID, excludeAccount string) (int, error) {
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return 0, nil

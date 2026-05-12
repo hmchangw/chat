@@ -336,6 +336,65 @@ func TestHandler_ProcessRoleUpdate_PropagatesRequestID(t *testing.T) {
 		"publish wrapper must receive ctx that still carries the request ID")
 }
 
+// TestHandler_ProcessRoleUpdate_PromoteThenDemote_DistinctDedupIDs asserts that
+// a promote (owner) and a follow-up demote (member) for the same room+account
+// under the SAME X-Request-ID produce distinct Nats-Msg-Id values on the outbox
+// publish — otherwise JetStream stream-level dedup would collapse the second
+// event and the remote site would miss the demote.
+func TestHandler_ProcessRoleUpdate_PromoteThenDemote_DistinctDedupIDs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	// Promote leg
+	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
+		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").
+		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-b"}, nil)
+
+	// Demote leg
+	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleMember).Return(nil)
+	store.EXPECT().RemoveRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
+		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").
+		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-b"}, nil)
+
+	var dedupIDs []string
+	wantOutboxSubj := "outbox.site-a.to.site-b.role_updated"
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, _ []byte, msgID string) error {
+		if subj == wantOutboxSubj {
+			dedupIDs = append(dedupIDs, msgID)
+		}
+		return nil
+	}}
+
+	// Same X-Request-ID + same timestamp for both legs — the dedup ID MUST still
+	// differ because the discriminator is the role itself.
+	ctx := natsutil.WithRequestID(context.Background(), "req-promote-demote")
+	const ts = int64(123)
+
+	promoteData, _ := json.Marshal(model.UpdateRoleRequest{
+		RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: ts,
+	})
+	require.NoError(t, h.processRoleUpdate(ctx, promoteData))
+
+	demoteData, _ := json.Marshal(model.UpdateRoleRequest{
+		RoomID: "r1", Account: "bob", NewRole: model.RoleMember, Timestamp: ts,
+	})
+	require.NoError(t, h.processRoleUpdate(ctx, demoteData))
+
+	require.Len(t, dedupIDs, 2, "expected two outbox publishes (one per leg)")
+	assert.NotEqual(t, dedupIDs[0], dedupIDs[1],
+		"promote and demote outbox dedup IDs must differ so JetStream stream-level dedup keeps both")
+	// Belt-and-suspenders: the dedup ID must end with the role to make the
+	// difference visible at the wire/observability layer, not just a hash.
+	assert.Contains(t, dedupIDs[0], string(model.RoleOwner),
+		"promote dedupID must encode the owner role")
+	assert.Contains(t, dedupIDs[1], string(model.RoleMember),
+		"demote dedupID must encode the member role")
+}
+
 // --- processRemoveMember tests ---
 
 func TestHandler_ProcessRemoveMember_FallsBackToNowOnInvalidTimestamp(t *testing.T) {
@@ -2111,6 +2170,148 @@ func TestProcessCreateRoom_BotDM_HasIsSubscribed(t *testing.T) {
 	assert.False(t, botSub.IsSubscribed)
 
 	assert.Empty(t, messagesCanonical(getPublished(), "site-A"), "botDM must emit no sys-messages")
+}
+
+// TestProcessCreateRoom_DM_RestrictedHistory_PropagatesHSS asserts that when a
+// CreateRoomRequest for a DM carries History.Mode=none (per-org restricted-
+// history forward-compat), both per-user DM subs are stamped with
+// HistorySharedSince and the cross-site RoomCreatedOutbox payload carries the
+// same HSS so the remote inbox-worker can replicate it.
+func TestProcessCreateRoom_DM_RestrictedHistory_PropagatesHSS(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	// Counterpart on a remote site so the outbox path fires.
+	other := &model.User{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-B"}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-hss").Return(nil)
+
+	const reqTS = int64(1_700_000_000_000)
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID:           "room-dm-hss",
+		RequesterAccount: "alice",
+		Users:            []string{"bob"}, // DM
+		Timestamp:        reqTS,
+		History:          model.HistoryConfig{Mode: model.HistoryModeNone},
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	// Both DM subs carry the restricted HSS.
+	require.Len(t, capturedSubs, 2)
+	for i, s := range capturedSubs {
+		require.NotNilf(t, s.HistorySharedSince, "sub[%d] HistorySharedSince must be non-nil for restricted DM", i)
+		assert.Equalf(t, time.UnixMilli(reqTS).UTC(), *s.HistorySharedSince,
+			"sub[%d] HistorySharedSince must equal req.Timestamp", i)
+	}
+
+	// Outbox payload to bob's site must encode HSS so the remote inbox-worker can replicate it.
+	outboxes := outboxFor(getPublished(), "site-B", model.OutboxTypeRoomCreated)
+	require.Len(t, outboxes, 1, "expected exactly one room_created outbox for site-B")
+
+	var env model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outboxes[0].data, &env))
+	var payload model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(env.Payload, &payload))
+	require.NotNil(t, payload.HistorySharedSince, "outbox RoomCreatedOutbox.HistorySharedSince must be non-nil under HistoryModeNone")
+	assert.Equal(t, reqTS, *payload.HistorySharedSince,
+		"outbox HistorySharedSince must equal req.Timestamp")
+}
+
+// TestProcessCreateRoom_DM_UnrestrictedHistory_LeavesHSSNil sanity-checks that
+// the default (no History.Mode set) leaves HSS nil on subs AND on the outbox —
+// regression guard so the threading work above doesn't accidentally over-stamp
+// unrestricted DMs.
+func TestProcessCreateRoom_DM_UnrestrictedHistory_LeavesHSSNil(t *testing.T) {
+	h, mockStore, getPublished := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	other := &model.User{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-B"}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-nohss").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID:           "room-dm-nohss",
+		RequesterAccount: "alice",
+		Users:            []string{"bob"},
+		Timestamp:        time.Now().UnixMilli(),
+		// History intentionally zero-valued — unrestricted.
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	require.Len(t, capturedSubs, 2)
+	for i, s := range capturedSubs {
+		assert.Nilf(t, s.HistorySharedSince, "sub[%d] HistorySharedSince must be nil for unrestricted DM", i)
+	}
+
+	outboxes := outboxFor(getPublished(), "site-B", model.OutboxTypeRoomCreated)
+	require.Len(t, outboxes, 1)
+	var env model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outboxes[0].data, &env))
+	var payload model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(env.Payload, &payload))
+	assert.Nil(t, payload.HistorySharedSince,
+		"unrestricted DM outbox HistorySharedSince must remain nil")
+}
+
+// TestProcessCreateRoom_BotDM_RestrictedHistory_PropagatesHSS mirrors the DM
+// test for the bot-DM branch so buildBotDMSubs is covered too.
+func TestProcessCreateRoom_BotDM_RestrictedHistory_PropagatesHSS(t *testing.T) {
+	h, mockStore, _ := newCreateRoomTestHandler(t)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	bot := &model.User{ID: "u_bot", Account: "helper.bot", SiteID: "site-A"}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "helper.bot").Return(bot, nil)
+
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-botdm-hss").Return(nil)
+
+	const reqTS = int64(1_700_000_000_500)
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID:           "room-botdm-hss",
+		RequesterAccount: "alice",
+		Users:            []string{"helper.bot"},
+		Timestamp:        reqTS,
+		History:          model.HistoryConfig{Mode: model.HistoryModeNone},
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	require.Len(t, capturedSubs, 2)
+	for i, s := range capturedSubs {
+		require.NotNilf(t, s.HistorySharedSince, "sub[%d] HistorySharedSince must be non-nil for restricted botDM", i)
+		assert.Equalf(t, time.UnixMilli(reqTS).UTC(), *s.HistorySharedSince,
+			"sub[%d] HistorySharedSince must equal req.Timestamp", i)
+	}
 }
 
 // ---- Task 34: Channel branch tests ----

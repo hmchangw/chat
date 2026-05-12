@@ -176,6 +176,155 @@ func TestEncryption_OnSmoke(t *testing.T) {
 	t.Logf("decrypted plaintext: %s", plaintext)
 }
 
+// TestEncryption_TamperedCiphertextRejected proves the AEAD authentication
+// path is wired correctly end-to-end. Setup mirrors TestEncryption_OnSmoke
+// exactly — mint a room key, seed it, send a message, wait for the encrypted
+// broadcast. The new step: flip a byte in the captured ciphertext and assert
+// gcm.Open rejects it. If a future refactor swapped HKDF info strings,
+// changed the ECDH curve, or otherwise broke the cipher-binding to the
+// authenticator, this test would FAIL in one of two ways: (a) decryption
+// would fail even WITHOUT tampering (caught by the sister test); (b)
+// tampering would silently succeed (caught here). Either way the regression
+// surfaces immediately.
+func TestEncryption_TamperedCiphertextRejected(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	site := stack.SiteA
+
+	alice := site.Authenticate(t, ctx, "alice")
+	bob := site.Authenticate(t, ctx, "bob")
+
+	createReq := model.CreateRoomRequest{
+		Name:  "e2e-" + t.Name(),
+		Users: []string{bob.Account},
+	}
+	var createReply model.CreateRoomReply
+	require.NoError(t, requestReply(
+		alice.Conn(),
+		subject.RoomCreate(alice.Account, site.SiteID),
+		createReq, 5*time.Second, &createReply,
+	))
+	roomID := createReply.RoomID
+	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
+	awaitSubscription(t, ctx, site.MongoDB(t), bob.Account, roomID)
+
+	priv, err := ecdh.P256().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pair := roomkeystore.RoomKeyPair{
+		PublicKey:  priv.PublicKey().Bytes(),
+		PrivateKey: priv.Bytes(),
+	}
+	site.SeedRoomKey(t, roomID, pair)
+	t.Cleanup(func() { site.DeleteRoomKey(t, roomID) })
+
+	bobSub, err := bob.Conn().SubscribeSync(subject.RoomEvent(roomID))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = bobSub.Unsubscribe() })
+
+	msgID := idgen.GenerateMessageID()
+	reqID := idgen.GenerateRequestID()
+	body := "tamper test " + t.Name()
+	require.NoError(t, sendAndAwaitReply(
+		t,
+		alice.Conn(),
+		alice.Account,
+		reqID,
+		subject.MsgSend(alice.Account, roomID, site.SiteID),
+		model.SendMessageRequest{
+			ID:        msgID,
+			Content:   body,
+			RequestID: reqID,
+		},
+		10*time.Second,
+	))
+
+	// Capture the encrypted broadcast for our msgID.
+	deadline := time.Now().Add(10 * time.Second)
+	var env roomcrypto.EncryptedMessage
+	var found bool
+	for time.Now().Before(deadline) {
+		raw, mErr := bobSub.NextMsg(2 * time.Second)
+		if mErr != nil {
+			break
+		}
+		var evt model.RoomEvent
+		if jerr := json.Unmarshal(raw.Data, &evt); jerr != nil {
+			continue
+		}
+		if len(evt.EncryptedMessage) == 0 {
+			continue
+		}
+		require.Nil(t, evt.Message,
+			"RoomEvent with EncryptedMessage must have Message==nil")
+		var candidate roomcrypto.EncryptedMessage
+		if jerr := json.Unmarshal(evt.EncryptedMessage, &candidate); jerr != nil {
+			continue
+		}
+		// Decrypt-and-match approach mirrors the smoke test: we can't know
+		// our msgID without decrypting the payload (the wire envelope is
+		// opaque ciphertext + ECDH ephemeral + GCM nonce).
+		decrypted, derr := decryptForTest(&candidate, pair.PrivateKey)
+		if derr != nil {
+			continue
+		}
+		var clientMsg model.ClientMessage
+		if jerr := json.Unmarshal([]byte(decrypted), &clientMsg); jerr != nil {
+			continue
+		}
+		if clientMsg.ID != msgID {
+			continue
+		}
+		env = candidate
+		found = true
+		break
+	}
+	require.True(t, found,
+		"no encrypted RoomEvent for msgID=%s observed within 10s", msgID)
+
+	// Sanity check: the untampered envelope decrypts cleanly. Without this
+	// baseline, a tampering failure could be confused with a setup failure
+	// (e.g. wrong key, missing ephemeral pubkey).
+	cleartext, err := decryptForTest(&env, pair.PrivateKey)
+	require.NoError(t, err, "baseline decrypt of untampered envelope must succeed")
+	require.Contains(t, cleartext, body)
+
+	// --- Tamper with the ciphertext ---
+	// Flip a single byte in the AEAD ciphertext. AES-GCM's tag binds every
+	// ciphertext byte to the authenticator, so a one-bit flip MUST cause
+	// gcm.Open to return an authentication error. We deep-copy the bytes
+	// first so the baseline decrypt above isn't retroactively invalidated
+	// (NextMsg gives us shared []byte slices).
+	require.NotEmpty(t, env.Ciphertext, "ciphertext must be non-empty to tamper")
+	tampered := roomcrypto.EncryptedMessage{
+		Version:            env.Version,
+		EphemeralPublicKey: append([]byte(nil), env.EphemeralPublicKey...),
+		Nonce:              append([]byte(nil), env.Nonce...),
+		Ciphertext:         append([]byte(nil), env.Ciphertext...),
+	}
+	tampered.Ciphertext[0] ^= 0x01
+
+	_, err = decryptForTest(&tampered, pair.PrivateKey)
+	require.Error(t, err,
+		"tampered ciphertext MUST be rejected by gcm.Open — if this passes, "+
+			"the AEAD authentication is broken (HKDF parameters, AES key size, "+
+			"or curve has drifted from the encoder)")
+
+	// Belt-and-braces: also flip a nonce byte. Different decryption path
+	// (key derivation is unaffected, but the GCM counter shifts) — should
+	// likewise fail authentication.
+	tamperedNonce := roomcrypto.EncryptedMessage{
+		Version:            env.Version,
+		EphemeralPublicKey: append([]byte(nil), env.EphemeralPublicKey...),
+		Nonce:              append([]byte(nil), env.Nonce...),
+		Ciphertext:         append([]byte(nil), env.Ciphertext...),
+	}
+	tamperedNonce.Nonce[0] ^= 0x01
+	_, err = decryptForTest(&tamperedNonce, pair.PrivateKey)
+	require.Error(t, err,
+		"tampered nonce MUST also fail GCM authentication")
+}
+
 // decryptForTest mirrors the production decrypt path in pkg/roomcrypto +
 // broadcast-worker/testhelpers_test.go. We can't import _test.go files
 // across packages, so the algorithm is duplicated here. If

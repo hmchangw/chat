@@ -753,6 +753,118 @@ func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing
 	assert.Equal(t, "req-mg-test-id", capturedHeader.Get(natsutil.RequestIDHeader))
 }
 
+// fakeJSMsg is a minimal jetstream.Msg test double that records Ack/Nak calls.
+// It satisfies the interface contract just enough for HandleJetStreamMsg's
+// happy-path branches.
+type fakeJSMsg struct {
+	subj    string
+	data    []byte
+	ackErr  error
+	nakErr  error
+	ackCnt  int
+	nakCnt  int
+	termCnt int
+}
+
+func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, nil }
+func (m *fakeJSMsg) Data() []byte                              { return m.data }
+func (m *fakeJSMsg) Headers() nats.Header                      { return nil }
+func (m *fakeJSMsg) Subject() string                           { return m.subj }
+func (m *fakeJSMsg) Reply() string                             { return "" }
+func (m *fakeJSMsg) Ack() error                                { m.ackCnt++; return m.ackErr }
+func (m *fakeJSMsg) DoubleAck(context.Context) error           { m.ackCnt++; return m.ackErr }
+func (m *fakeJSMsg) Nak() error                                { m.nakCnt++; return m.nakErr }
+func (m *fakeJSMsg) NakWithDelay(time.Duration) error          { m.nakCnt++; return m.nakErr }
+func (m *fakeJSMsg) InProgress() error                         { return nil }
+func (m *fakeJSMsg) Term() error                               { m.termCnt++; return nil }
+func (m *fakeJSMsg) TermWithReason(string) error               { m.termCnt++; return nil }
+
+func TestHandler_HandleJetStreamMsg_ReplyFailureNAKsMessage(t *testing.T) {
+	validID := idgen.GenerateMessageID()
+	validSiteID := "site-a"
+	validRoomID := "room-1"
+	validAccount := "alice"
+
+	tests := []struct {
+		name        string
+		setupStore  func(s *MockStore)
+		setupPub    func() publishFunc
+		requestID   string
+		expectNak   bool
+		expectAck   bool
+		description string
+	}{
+		{
+			name: "success path: reply fails -> NAK",
+			setupStore: func(s *MockStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).
+					Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: validAccount}}, nil)
+			},
+			setupPub: func() publishFunc {
+				return makePublishFunc(nil, nil)
+			},
+			requestID:   "req-1",
+			expectNak:   true,
+			expectAck:   false,
+			description: "publish to canonical succeeds, but reply to client fails — client must be retried via NAK",
+		},
+		{
+			name: "validation-error path: reply fails -> NAK",
+			setupStore: func(s *MockStore) {
+				// invalid ID -> validation error before any store call
+			},
+			setupPub: func() publishFunc {
+				return makePublishFunc(nil, nil)
+			},
+			requestID:   "req-2",
+			expectNak:   true,
+			expectAck:   false,
+			description: "validation error reply send fails — must NAK rather than swallow",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			tc.setupStore(store)
+
+			// Reply function always errors to simulate a transient NATS failure.
+			reply := func(_ context.Context, _ *nats.Msg) error {
+				return fmt.Errorf("nats reply publish failed: connection closed")
+			}
+
+			h := NewHandler(store, tc.setupPub(), reply, validSiteID, nil)
+
+			msgID := validID
+			if tc.name == "validation-error path: reply fails -> NAK" {
+				msgID = "not-a-valid-id"
+			}
+			body, _ := json.Marshal(model.SendMessageRequest{
+				ID:        msgID,
+				Content:   "hello",
+				RequestID: tc.requestID,
+			})
+
+			jsMsg := &fakeJSMsg{
+				subj: subject.MsgSend(validAccount, validRoomID, validSiteID),
+				data: body,
+			}
+
+			h.HandleJetStreamMsg(context.Background(), jsMsg)
+
+			if tc.expectNak {
+				assert.Equal(t, 1, jsMsg.nakCnt, "expected NAK on reply failure: %s", tc.description)
+				assert.Equal(t, 0, jsMsg.ackCnt, "must not ACK when reply failed")
+			}
+			if tc.expectAck {
+				assert.Equal(t, 1, jsMsg.ackCnt, "expected ACK")
+				assert.Equal(t, 0, jsMsg.nakCnt, "must not NAK on success")
+			}
+		})
+	}
+}
+
 func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 	validID := idgen.GenerateMessageID()
 	validContent := "great point!"

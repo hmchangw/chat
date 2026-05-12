@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -1189,4 +1191,109 @@ func TestHandleMemberAdded_BulkCreate_NonDuplicateError_ReturnsError(t *testing.
 	err := h.HandleEvent(context.Background(), evtData)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bulk create subscriptions")
+}
+
+// fakeJSMsg is a minimal jetstream.Msg test double that records which of
+// Ack/Nak/Term was called so we can assert on the disposition chosen by
+// HandleJetStreamMsg. Mirrors message-worker/handler_test.go's fakeJSMsg.
+type fakeJSMsg struct {
+	data   []byte
+	hdr    nats.Header
+	acked  bool
+	naked  bool
+	termed bool
+}
+
+func (m *fakeJSMsg) Data() []byte { return m.data }
+func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) {
+	return &jetstream.MsgMetadata{}, nil
+}
+func (m *fakeJSMsg) Headers() nats.Header             { return m.hdr }
+func (m *fakeJSMsg) Subject() string                  { return "chat.inbox.test.aggregate.foo" }
+func (m *fakeJSMsg) Reply() string                    { return "" }
+func (m *fakeJSMsg) Ack() error                       { m.acked = true; return nil }
+func (m *fakeJSMsg) DoubleAck(context.Context) error  { m.acked = true; return nil }
+func (m *fakeJSMsg) Nak() error                       { m.naked = true; return nil }
+func (m *fakeJSMsg) NakWithDelay(time.Duration) error { m.naked = true; return nil }
+func (m *fakeJSMsg) InProgress() error                { return nil }
+func (m *fakeJSMsg) Term() error                      { m.termed = true; return nil }
+func (m *fakeJSMsg) TermWithReason(string) error      { m.termed = true; return nil }
+
+func TestHandleJetStreamMsg_AckNakTerm(t *testing.T) {
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+
+	// A valid member_removed event with empty Accounts is a silent no-op
+	// (see handleMemberRemoved), so HandleEvent returns nil → Ack path.
+	validPayload, err := json.Marshal(model.MemberRemoveEvent{RoomID: "r1", Accounts: nil})
+	require.NoError(t, err)
+	validEvent, err := json.Marshal(model.OutboxEvent{Type: "member_removed", Payload: validPayload})
+	require.NoError(t, err)
+
+	// A room_created event with no X-Request-ID in context returns an
+	// error wrapping errPermanent (handler.go:254) → Term path. We
+	// deliberately omit the X-Request-ID header so the handler can't
+	// recover one from msg.Headers().
+	permanentEvent, err := json.Marshal(model.OutboxEvent{
+		Type:    model.MessageTypeRoomCreated,
+		Payload: json.RawMessage(`{"roomId":"r1","accounts":["bob"]}`),
+	})
+	require.NoError(t, err)
+
+	// A role_updated event with empty Roles returns a plain (non-permanent)
+	// error from handleRoleUpdated → Nak path (transient — same event will
+	// be redelivered, though this particular payload won't get better; it
+	// stands in for any non-permanent handler error such as a transient
+	// store failure).
+	roleUpdatePayload, err := json.Marshal(model.SubscriptionUpdateEvent{
+		Subscription: model.Subscription{
+			RoomID: "r1",
+			User:   model.SubscriptionUser{Account: "bob"},
+			Roles:  nil,
+		},
+	})
+	require.NoError(t, err)
+	transientEvent, err := json.Marshal(model.OutboxEvent{
+		Type:    "role_updated",
+		Payload: roleUpdatePayload,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		data     []byte
+		ctx      context.Context
+		wantAck  bool
+		wantNak  bool
+		wantTerm bool
+	}{
+		{
+			name:    "success acks",
+			data:    validEvent,
+			ctx:     natsutil.WithRequestID(context.Background(), reqID),
+			wantAck: true,
+		},
+		{
+			name:     "errPermanent message is Term'd not Nak'd",
+			data:     permanentEvent,
+			ctx:      context.Background(), // no X-Request-ID -> errPermanent
+			wantTerm: true,
+		},
+		{
+			name:    "transient error naks",
+			data:    transientEvent,
+			ctx:     natsutil.WithRequestID(context.Background(), reqID),
+			wantNak: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &stubInboxStore{}
+			h := NewHandler(store)
+			m := &fakeJSMsg{data: tc.data}
+			h.HandleJetStreamMsg(tc.ctx, m)
+			assert.Equal(t, tc.wantAck, m.acked, "Ack")
+			assert.Equal(t, tc.wantNak, m.naked, "Nak")
+			assert.Equal(t, tc.wantTerm, m.termed, "Term")
+		})
+	}
 }

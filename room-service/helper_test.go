@@ -44,6 +44,7 @@ func TestSanitizeError(t *testing.T) {
 		{"sentinel: invalid role", errInvalidRole, "invalid role: must be owner or member"},
 		{"sentinel: only owners", errOnlyOwners, "only owners can update roles"},
 		{"sentinel: cannot demote", errCannotDemoteLast, "cannot demote the last owner"},
+		{"sentinel: last owner (org)", errLastOwner, "cannot remove org: room would have no owners left"},
 		{"sentinel: already owner", errAlreadyOwner, "user is already an owner"},
 		{"sentinel: not owner", errNotOwner, "user is not an owner"},
 		{"sentinel: room type", errRoomTypeGuard, "role update is only allowed in channel rooms"},
