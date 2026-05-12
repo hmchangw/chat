@@ -584,16 +584,38 @@ Phase 3 exit: README's "Non-goals" section is updated. Every disclaimed item is 
 
 ### Docker Compose v1 and v2 compatibility
 
-The harness must run unmodified on **both** `docker-compose` (v1, the Python tool, hyphenated CLI) and `docker compose` (v2, the Go plugin, space-delimited CLI). Many operator environments still ship v1 (some Ubuntu LTS, some RHEL with the legacy package), and some only have v2.
+The harness must run unmodified on **both** `docker-compose` (v1, the Python tool, hyphenated CLI; v1.29.2 floor) and `docker compose` (v2, the Go plugin, space-delimited CLI; v2.0 floor). Many operator environments still ship v1 (some Ubuntu LTS, some RHEL with the legacy package), and some only have v2.
 
-**Design:**
+**Design (revised against DevOps-reviewer findings):**
 
-- `tools/loadgen/scripts/*.sh` must auto-detect: define a `dc()` shell function near the top of each script that tries `docker compose version` first, falls back to `docker-compose --version`, then sets `DC=...` accordingly. All `docker-compose` / `docker compose` invocations in scripts go through `dc`.
-- The `Makefile` under `tools/loadgen/deploy/` does the same. Add a `DC ?= $(shell ./scripts/detect-compose.sh)` line that runs a tiny helper script.
-- The `docker-compose.loadtest.yml` file uses only directives supported by BOTH v1 (Compose spec ≤ 3.8) and v2. Forbid: top-level `name:` (v2-only), `profiles:` (works in both ≥ recent versions, OK), `develop:` block (v2-only), `extends:` outside the spec.
-- A new `scripts/detect-compose.sh` helper exits 0 with the correct CLI on stdout, 1 with a clear error if neither is installed. It is sourced by every other script.
-- README documents that BOTH v1 and v2 work. The "Known issues" section calls out the few directives that differ (we avoid them; if a contributor adds one, CI catches it).
-- CI: add a single `make -C tools/loadgen/deploy validate-compose` target that runs `docker compose -f docker-compose.loadtest.yml config -q` AND (if `docker-compose` v1 is present) `docker-compose -f docker-compose.loadtest.yml config -q`. Fails the build if either rejects the file.
+- Drop the first-draft "Compose spec ≤ 3.8" ceiling — it's obsolete. The Compose Specification superseded versioned schemas; the file **omits `version:` entirely**. Both v1.27+ and v2 accept this.
+- **Centralize compose detection.** Ship `tools/loadgen/scripts/lib/compose.sh` (sourced once by every other script and by `loadgen doctor`):
+
+```sh
+# lib/compose.sh — source me, don't exec me
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  v=$(docker compose version --short 2>/dev/null || echo 0)
+  case "$v" in 2.*|[3-9].*) export DC="docker compose"; export DC_KIND="v2" ;; *) ;; esac
+fi
+if [ -z "${DC:-}" ] && command -v docker-compose >/dev/null 2>&1; then
+  v=$(docker-compose version --short 2>/dev/null || echo 0)
+  case "$v" in 1.29.*|1.[3-9]*|[2-9].*) export DC="docker-compose"; export DC_KIND="v1" ;; *) ;; esac
+fi
+if [ -z "${DC:-}" ]; then
+  echo "ERROR: need docker compose (v2.0+) or docker-compose (v1.29.2+)" >&2; exit 2
+fi
+dc() { $DC "$@"; }
+export COMPOSE_PROJECT_NAME=loadgen
+```
+
+  Scripts source via `. "$(dirname "$0")/lib/compose.sh"`. The Makefile uses `DC ?= $(shell scripts/lib/compose.sh print-cmd)` (the same script when run with `print-cmd` arg, prints DC and exits).
+- **Compose file fixes (Blocker).** Current `deploy/docker-compose.loadtest.yml` has top-level `name: loadgen` — **v2-only, must be removed**. Project naming moves to `COMPOSE_PROJECT_NAME=loadgen` exported from `lib/compose.sh`.
+- **Floor enforcement.** `lib/compose.sh` rejects v1 below 1.29.2 (`profiles:` and `service_completed_successfully` require it) and v2 below 2.0 (some distros backport "v1.29.x" as the plugin name).
+- **`profiles:` works in both.** `dashboards`, `federation` (default-off), `auth` (default-off) profiles gate optional services.
+- **Healthcheck quirks.** Add `start_period: 30s` to Cassandra/Elasticsearch healthchecks (no-op on too-old v1, helps on supported versions). `condition: service_completed_successfully` (already in use) requires v1.29+ — covered by the floor.
+- **Nested-invocation env propagation.** `export COMPOSE_PROJECT_NAME=loadgen` in `lib/compose.sh` ensures child processes (umbrella scripts spawning per-scenario scripts) address the same network. `COMPOSE_PROFILES` does NOT stack across nested calls — child scripts re-pass `--profile` explicitly.
+- **CI validation.** `make -C tools/loadgen/deploy validate-compose` runs `dc config -q` under whichever CLI is present, plus (if both CLIs are installed in the CI image) a v1-and-v2 cross-check. A `make smoke` target additionally runs `dc up -d --wait && dc down` with a 60s timeout under v2 only (v1 install in CI is fragile).
+- **Operator UX for too-old plugin.** `loadgen doctor` prints the floor requirement and the install link if detection fails.
 
 ### Operator UX — discovery and diagnostics
 
@@ -719,3 +741,123 @@ Coverage floor (80%) and target (90% for `pkg/`) per CLAUDE.md §4 remain. Loadg
 - Cross-machine numeric comparability. Same rule as v1.
 - Becoming a CI gate.
 - Generating production-grade traffic. v2 closes the gap with realistic shapes; it does not become a production replay tool.
+
+## Rollout, migration, and rollback
+
+Each phase ships as an independent unit. v1 invocations continue to work through v2.0.x via the `--legacy-summary` flag; v3 removes it.
+
+| Phase | Ships behind | Breaking? | Migration | Rollback |
+|-------|--------------|-----------|-----------|----------|
+| Phase 0 | nothing — pure refactor | No, behavior-identical | None | Revert PR |
+| Phase 1 | `--legacy-summary=true` for v1 output | Yes — new exit code 4, summary block added at top, CSV default changes | CHANGES.md per-flag table; one v2.x release supports both summaries | Set `--legacy-summary=true` per-invocation; revert PR if widespread |
+| Phase 2 | nothing | No (internal refactor; tests pin behavior) | None | Revert PR |
+| Phase 3 | per-scenario `profiles:` in compose; new scenarios are opt-in via `--scenario=<new>` | No (new surface; existing scenarios unchanged) | Operators add `--profile federation` / `--profile auth` to opt in | Disable the relevant profile; the new scenarios stay un-shipped |
+
+**v2 rollout discipline:**
+
+1. Phase 0 lands first, before any new tests, so the substrate is clean.
+2. Phase 1 ships with `--legacy-summary` defaulting to **false** (v2 verdict by default) but operators with v1 tooling pin `LOADGEN_LEGACY_SUMMARY=1` in their runbooks for one v2.x release. v2.0 release notes call out the grace window.
+3. v2.1 deprecates `--legacy-summary` with a runtime `slog.Warn`. v3.0 removes it.
+4. Phase 2 lands silently — tests are the safety net (the test-strategy addendum below lists which existing tests are expected to need updates).
+5. Phase 3 ships per scenario; each new scenario is a separate PR with its own integration test.
+
+## Success criteria
+
+A phase is "done" only when its measurable criteria pass:
+
+| Phase | Criterion |
+|-------|-----------|
+| Phase 0 | `cloc tools/loadgen/main.go` ≤ 250 lines; `wc -l tools/loadgen/runRun` ≤ 100; existing test suite + binary-exec smoke tests green; zero diff to printed output, flag set, or Prometheus metric names/labels. |
+| Phase 1 | Canonical messaging-pipeline run on a known-good build prints `RUN QUALITY: TRUSTED`. An artificially-throttled build prints `DEGRADED`. A stopped-SUT run prints `UNTRUSTED` with exit code 4. Abort-watcher canary suite at three rps points shows ≤10% trip-time drift vs v1. Memory under sustained 5krps × 30min run is bounded (no growth past ~50 MB harness RSS). Every run produces a complete `runs/<run_id>/` bundle. Two operators on one machine can run concurrently without resource collisions. v2 Grafana dashboards render. Alert rules fire and clear correctly in a synthetic test. |
+| Phase 2 | Adding a new scenario touches ≤2 files in the loadgen package. `main.go` ≤ 200 lines. No remaining `switch scenarioName` in non-scenario files. |
+| Phase 3 | Every scenario has a unit test + an integration test (testcontainers). Every scenario has a `run-<name>.sh`. README "Non-goals" section shrinks; every previously-disclaimed item is implemented or has a follow-up issue. `loadgen scenarios` lists everything. |
+
+## Telemetry plan
+
+New Prometheus metrics shipped by v2 (cardinality bounded):
+
+| Metric | Type | Labels | Purpose | Phase |
+|--------|------|--------|---------|-------|
+| `loadgen_omission_deficit_seconds` | histogram | `dropped` ({false,true}), `scenario` | Coordinated-omission deficit | 1 |
+| `loadgen_run_quality` | gauge | `verdict` ({TRUSTED,DEGRADED,UNTRUSTED}) | Verdict — gauge so it survives the scrape window | 1 |
+| `loadgen_settle_probes_total` | counter | `path` ({history,search,getbyid}), `result` ({ok,fail}) | Settle phase outcomes | 1 |
+| `loadgen_raw_lag_seconds` | histogram | `path` ({history,search,getbyid}) | RAW timing | 3.1 |
+| `loadgen_raw_visibility_window_seconds` | histogram | `path` | RAW poll-interval upper bound | 3.1 |
+| `loadgen_largeroom_completion_ratio` | summary | `preset`, `quantile` | Large-room fan-out completion | 3.2 |
+| `loadgen_largeroom_receive_latency_seconds` | histogram | `preset` | Per-recipient latency | 3.2 |
+| `loadgen_presence_delivered_ratio` | gauge | — | Presence emit/deliver ratio | 3.3 |
+| `loadgen_presence_fanout_seconds` | histogram | `preset` | Presence fan-out | 3.3 |
+| `loadgen_notification_lag_seconds` | histogram | `channel` ({inapp,push,email}) | Notification fan-out per route | 3.4 |
+| `loadgen_first_dm_lag_seconds` | histogram | `stage` ({room,subs,persist,e2e}) | First-DM sub-lags | 3.13 |
+| `loadgen_room_open_seconds` | histogram | `leg` ({history,rooms_get,presence,read,restricted}) | Room-open composite | 3.14 |
+| `loadgen_room_open_e2e_seconds` | histogram | — | Room-open slowest-leg | 3.14 |
+| `loadgen_message_read_seconds` | histogram | `room_type` ({channel,dm}) | Read receipts | 3.16 |
+| `loadgen_federation_lag_seconds` | histogram | `stage` ({outbox,inbox,persist,visible}) | Federation sub-lags | 3.9 |
+| `loadgen_federation_e2e_lag_seconds` | histogram | — | Federation end-to-end | 3.9 |
+| `loadgen_federation_drain_seconds` | histogram | — | Federation flap drain | 3.9 |
+| `loadgen_federation_cross_read_seconds` | histogram | — | Cross-site remote-room read | 3.9 |
+
+Existing metrics gain a `phase` label (`{warmup, measured}`) per §1.7. **Existing dashboards must sum across `phase` to preserve their pre-v2 meaning** — covered in CHANGES.md.
+
+## On-call considerations
+
+The DX reviewer flagged that an on-call engineer at 2am seeing `RUN QUALITY: UNTRUSTED` needs an action, not vocabulary. v2 commits to:
+
+- **Runbook stub:** `docs/runbooks/loadgen-untrusted.md` — what UNTRUSTED means, decision tree (drain timeout → check SUT; settle incomplete → wait + retry; warmup error → fix SUT; watcher deafened with cap-blame → raise the cap and re-run). Phase 1 deliverable.
+- **Every UNTRUSTED Issues line carries a usage.md#anchor pointer** (§Operator UX — discovery and diagnostics).
+- **`--diagnose` flag** auto-re-runs and produces a diff vs original — operator gets a delta in one command (§Operator UX — discovery and diagnostics).
+- **Alerts route to the loadgen channel,** not the SUT channel — they describe loadgen health, not SUT health. Operators must understand the distinction.
+
+## API stability
+
+`Scenario`, `Runtime`, `ScenarioDeps` interfaces are `tools/loadgen/`-internal in v2.0. **Not exported for third-party scenarios** — that's a v3 consideration after the registry pattern has worn in. If a third-party scenario is desired before then, the implementer copies a scenario file into the loadgen tree and contributes upstream.
+
+## Test strategy (addendum)
+
+The test-architecture reviewer asked for a concrete plan:
+
+| Phase | Tests requiring update | New tests | Coverage gate |
+|-------|------------------------|-----------|---------------|
+| Phase 0 | `main_test.go` binary-exec smoke (string anchors may shift); `flags_test.go` (runFlags struct introduces parse path) | `runtime_test.go` (lifecycle), `flags_test.go` expansion | ≥81.4% (no regression) |
+| Phase 1 | `collector_test.go` exact-percentile asserts → range asserts; `window_test.go` ditto; binary-exec smoke for new summary block; integration tests assert `summary.json` + `histograms.hlog` written | Settle, RunQuality, omission, run-isolation, artifacts | ≥85% |
+| Phase 2 | `readiness_test.go`, `auto_warmup_test.go` migrate from string-switch to registry; integration tests pin scenario-registration | Scenario interface unit tests | ≥85% |
+| Phase 3 | Per scenario: scenario unit test + integration test under `//go:build integration`; large-room and federation tests need 2-node testcontainer setups | Per scenario | ≥80% per new file, 90% on shared `pkg/` if any |
+
+Integration test budget: 10 new testcontainer-driven tests added by Phase 3 is a real CI runtime hit. Plan for ~10 min added to CI. If it overshoots, gate the heavier scenarios (federation, large-room) behind `make test-integration-heavy` invoked nightly, not per-PR.
+
+## Review changelog
+
+The first-draft spec (commit b91b85f) was reviewed on 2026-05-12 by seven specialist agents. Material amendments below:
+
+| Source | Severity | Amendment |
+|--------|----------|-----------|
+| Methodology | Blocker | HDR memory math corrected (~3 OOM); recommended params `(100µs, 60s, 3 digits)` |
+| Methodology | Blocker | RAW poll-bias mitigation (visibility-window upper bound + 10ms default + DEGRADED guardrail) |
+| Methodology | Blocker | Federation expanded to 4 stage histograms + flap + cross-site-read |
+| Methodology | Blocker | RUN QUALITY thresholds tightened (warmup 5/20%; omission auto-scales to 25% of measured p99) |
+| Methodology | Important | Dispatch-deficit histogram split on `dropped` label |
+| Architecture | Blocker | Added Phase 0 (refactor first) so Phase 1 lands on clean substrate |
+| Architecture | Blocker | HDR third-party dep ask added explicitly per CLAUDE.md §5; t-digest fallback documented |
+| Architecture | Blocker | Abort-watcher semantic change called out as a known risk with acceptance criterion |
+| Architecture | Important | `Scenario` interface split into family (identity + optional probers + required factory) |
+| Architecture | Important | Carved out which scenarios extend Runtime (large-room, federation) vs use registry |
+| DevOps | Blocker | Dropped Compose spec ≤ 3.8 ceiling; removed top-level `name:`; floor v1≥1.29.2 / v2≥2.0 |
+| DevOps | Important | Centralized `lib/compose.sh` (sourced) instead of inlined `dc()` per script |
+| DevOps | Important | Healthcheck `start_period` added; nested-invocation env propagation pinned |
+| DX | Blocker | TRUSTED/DEGRADED/UNTRUSTED meaning communicated in-flow, not buried |
+| DX | Important | Subcommands: `loadgen scenarios|presets|recommend|doctor` |
+| DX | Important | Diagnostic scripts: `compare-runs.sh`, `triage.sh`, `bisect.sh`, `preflight.sh`, `new-scenario.sh` |
+| DX | Important | Remediation pointers on every UNTRUSTED Issues line; `--diagnose` flag; `--metrics-linger` |
+| SRE | Blocker | §1.8 Run artifacts bundle (summary.json, histograms.hlog, timeseries, settle, metrics) |
+| SRE | Blocker | §1.9 Run isolation for concurrent operators (per-run-id resource prefixing) |
+| SRE | Blocker | §1.11 Alert rules shipped with v2; §1.12 v2 dashboards as Phase 1 exit, not Phase 3 |
+| SRE | Important | §1.10 `teardown --force` for orphan recovery; §1.13 credentials story; §1.14 soak script |
+| Chat-domain | Blocker | §3.12 DM/channel split via `DMRatio`; `dm-heavy` preset |
+| Chat-domain | Blocker | §3.13 First-DM hot path scenario |
+| Chat-domain | Blocker | §3.14 Room-open composite (correlated 5-request burst) |
+| Chat-domain | Important | §3.15 Bursty publish (incident-burst preset); §3.16 read receipts; §3.2 expanded to 3 large-room shapes; §3.3 typing throttling; §3.4 multi-channel notification |
+| Tech-writing | Blocker | Rollout/migration/rollback table; Success criteria per phase; Telemetry plan; On-call section |
+| Tech-writing | Blocker | Documentation section contradiction resolved (README ≤80, USAGE per-scenario lives in `docs/scenarios/`, migration in USAGE) |
+| Tech-writing | Important | USAGE.md reordered: Recipes before Reference; Concepts page; Glossary last |
+| Tech-writing | Important | CHANGES.md formalized as Keep-a-Changelog 1.1.0 with per-flag deprecation table |
+| Tech-writing | Important | Diagrams committed as phase-exit deliverables (state, sequence, component graphs) |
