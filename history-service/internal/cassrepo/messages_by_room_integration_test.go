@@ -106,7 +106,7 @@ func TestRepository_GetAllMessagesAsc(t *testing.T) {
 	q, err := ParsePageRequest("", 3)
 	require.NoError(t, err)
 
-	page, err := repo.GetAllMessagesAsc(ctx, "r1", time.Time{}, time.Now().UTC().Add(time.Hour), q)
+	page, err := repo.GetAllMessagesAsc(ctx, "r1", base.Add(-time.Hour), time.Now().UTC().Add(time.Hour), q)
 	require.NoError(t, err)
 	assert.Len(t, page.Data, 3)
 	assert.True(t, page.Data[0].CreatedAt.Before(page.Data[1].CreatedAt)) // ASC order
