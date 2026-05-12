@@ -7,12 +7,12 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-const httpTimeout = 10 * time.Second
+const httpTimeout = 10 * time.Second //nolint:unused
 
 // newHTTPClient returns a Resty client with a 10s timeout and a
 // traceparent generator that runs on every request, recording the
 // generated value into world.
-func newHTTPClient(w *World) *resty.Client {
+func newHTTPClient(w *World) *resty.Client { //nolint:unused
 	c := resty.New().
 		SetTimeout(httpTimeout).
 		SetHeader("Accept", "application/json")
@@ -39,13 +39,13 @@ func newHTTPClient(w *World) *resty.Client {
 	return c
 }
 
-type traceparentKey struct{}
+type traceparentKey struct{} //nolint:unused
 
-func withTraceparent(ctx context.Context, tp string) context.Context {
+func withTraceparent(ctx context.Context, tp string) context.Context { //nolint:unused
 	return context.WithValue(ctx, traceparentKey{}, tp)
 }
 
-func traceparentFromContext(ctx context.Context) (string, bool) {
+func traceparentFromContext(ctx context.Context) (string, bool) { //nolint:unused
 	v, ok := ctx.Value(traceparentKey{}).(string)
 	return v, ok
 }

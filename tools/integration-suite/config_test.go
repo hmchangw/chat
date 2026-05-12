@@ -9,7 +9,9 @@ import (
 
 func TestLoadConfig_RequiresPrimarySite(t *testing.T) {
 	t.Setenv("SITES", "tw")
-	// PRIMARY_SITE intentionally unset
+	t.Setenv("PRIMARY_SITE", "") // intentionally unset
+	t.Setenv("AUTH_SERVICE_URL_TW", "")
+	t.Setenv("ROOM_SERVICE_URL_TW", "")
 
 	_, err := LoadConfig()
 	require.Error(t, err)
@@ -36,7 +38,8 @@ func TestLoadConfig_TwoSitesParsed(t *testing.T) {
 func TestLoadConfig_MissingServiceURLForSite(t *testing.T) {
 	t.Setenv("SITES", "tw")
 	t.Setenv("PRIMARY_SITE", "tw")
-	// AUTH_SERVICE_URL_TW intentionally unset
+	t.Setenv("AUTH_SERVICE_URL_TW", "") // intentionally unset
+	t.Setenv("ROOM_SERVICE_URL_TW", "")
 
 	_, err := LoadConfig()
 	require.Error(t, err)
