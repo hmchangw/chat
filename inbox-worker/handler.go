@@ -73,7 +73,11 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 	var evt model.OutboxEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
-		return fmt.Errorf("unmarshal outbox event: %w", err)
+		// Malformed JSON is a permanent payload defect; retrying it
+		// won't help and would keep an ack-pending slot forever. Wrap
+		// in errPermanent so HandleJetStreamMsg uses msg.Term() instead
+		// of msg.Nak().
+		return fmt.Errorf("unmarshal outbox event: %w: %w", err, errPermanent)
 	}
 
 	switch evt.Type {

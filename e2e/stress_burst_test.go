@@ -55,7 +55,7 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), bob.Account, roomID)
 
@@ -64,13 +64,9 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = bobSub.Unsubscribe() })
 
-	// Pre-snapshot canonical seq so we can wait on a single high-water mark.
+	// Wait for the worker durable to exist before firing the burst.
 	js := site.JetStream(t)
-	canonical := stream.MessagesCanonical(site.SiteID).Name
-	awaitDurableReady(t, ctx, js, canonical, "message-worker")
-	preInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq := preInfo.CachedInfo().State.LastSeq
+	awaitDurableReady(t, ctx, js, stream.MessagesCanonical(site.SiteID).Name, "message-worker")
 
 	const N = 100
 	msgIDs := make([]string, N)
@@ -119,11 +115,13 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 	t.Logf("100 sends in %s; failures=%d", time.Since(startSend), sendFails.Load())
 	require.Zero(t, sendFails.Load(), "all 100 gatekeeper-acks must succeed")
 
-	// Wait for message-worker to ack the full burst's worth of canonical
-	// events. We sent N user messages, but the create-room emitted system
-	// messages too (room_created + members_added); the simplest invariant
-	// is "ackFloor >= preSeq + N".
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+N)
+	// Wait for message-worker to write every burst message to Cassandra.
+	// Wait by msgID for parallel safety (the seq-based wait would race
+	// with sibling tests on the shared message-worker durable). Sample
+	// the last msgID we sent -- once it's in Cassandra, message-worker
+	// has processed everything emitted before it (in-order ack on a
+	// single-partition consumer).
+	awaitMessageOnSite(t, ctx, site, msgIDs[N-1])
 
 	// Drain bob's broadcasts. We may see system events + user messages
 	// interleaved; collect user-message IDs into a set.

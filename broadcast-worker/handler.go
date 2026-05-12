@@ -285,6 +285,19 @@ func (h *Handler) publishDMEvents(ctx context.Context, meta roommetacache.Meta, 
 		mentionSet[name] = struct{}{}
 	}
 
+	// Collect per-subscriber publish errors. If ANY subscriber fails to
+	// receive their copy, return an error so the canonical message is
+	// NAK'd and JetStream redelivers up to MAX_DELIVER. Without this,
+	// a partial failure (alice succeeds, bob's publish errors) Ack'd
+	// the canonical event and bob silently lost the message
+	// (broadcast-worker re-review finding).
+	//
+	// We still try every subscriber before returning so a transient
+	// per-subscriber error doesn't deprive others of their copy on
+	// the same delivery attempt. Redelivery may produce duplicates for
+	// subscribers who already succeeded -- that's the right trade-off:
+	// at-least-once is the broadcast contract.
+	var failures []string
 	for i := range subs {
 		_, hasMention := mentionSet[subs[i].User.Account]
 
@@ -297,7 +310,12 @@ func (h *Handler) publishDMEvents(ctx context.Context, meta roommetacache.Meta, 
 		}
 		if err := h.pub.Publish(ctx, subject.UserRoomEvent(subs[i].User.Account), payload); err != nil {
 			slog.Error("publish DM event failed", "error", err, "account", subs[i].User.Account)
+			failures = append(failures, subs[i].User.Account)
 		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("publish DM event failed for %d subscribers (%v) in room %s",
+			len(failures), failures, room.ID)
 	}
 	return nil
 }

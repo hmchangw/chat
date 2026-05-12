@@ -537,6 +537,10 @@ func (p *failingPublisher) Publish(_ context.Context, subj string, data []byte) 
 	return nil
 }
 
+// TestHandler_HandleMessage_DMRoom_PublishError: every subscriber's
+// publish fails. Post-R3 fix: this MUST surface as an error so the
+// canonical message is NAK'd. Per-subscriber attempts continue (so a
+// transient failure doesn't deprive subs that would succeed).
 func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	msgTime := time.Date(2026, 3, 26, 11, 0, 0, 0, time.UTC)
 
@@ -563,8 +567,10 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	data, _ := json.Marshal(evt)
 
 	err := h.HandleMessage(context.Background(), data)
-	require.NoError(t, err)
-	assert.Equal(t, 2, pub.callCount)
+	require.Error(t, err, "publish failures must surface so canonical is NAK'd")
+	assert.Contains(t, err.Error(), "publish DM event failed")
+	assert.Equal(t, 2, pub.callCount,
+		"every subscriber must be attempted even when prior subs fail")
 }
 
 func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {

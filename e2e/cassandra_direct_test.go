@@ -54,7 +54,7 @@ func TestCassandra_MessagesByRoomSingleRow(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 
 	js := site.JetStream(t)
@@ -119,7 +119,7 @@ func TestCassandra_MessagesByIdMatchesByRoom(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 
 	js := site.JetStream(t)
@@ -216,7 +216,7 @@ func TestCassandra_MessagesByIdDedup(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 
 	js := site.JetStream(t)

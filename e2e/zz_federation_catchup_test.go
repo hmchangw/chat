@@ -109,10 +109,7 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 			req, 5*time.Second, &reply,
 		))
 		roomIDs = append(roomIDs, reply.RoomID)
-		registerRoomCleanup(t, []SiteDB{
-			{SiteID: stack.SiteA.SiteID, DB: stack.SiteA.MongoDB(t)},
-			{SiteID: stack.SiteB.SiteID, DB: stack.SiteB.MongoDB(t)},
-		}, reply.RoomID)
+		registerRoomCleanup(t, []SiteDB{asSiteDB(t, stack.SiteA), asSiteDB(t, stack.SiteB)}, reply.RoomID)
 	}
 	t.Logf("created %d cross-site rooms; events queued on INBOX_siteB while worker is down", inviteRounds)
 
@@ -199,10 +196,7 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 		subject.RoomCreate(alice.Account, stack.SiteA.SiteID),
 		canaryReq, 5*time.Second, &canaryReply,
 	))
-	registerRoomCleanup(t, []SiteDB{
-		{SiteID: stack.SiteA.SiteID, DB: stack.SiteA.MongoDB(t)},
-		{SiteID: stack.SiteB.SiteID, DB: stack.SiteB.MongoDB(t)},
-	}, canaryReply.RoomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, stack.SiteA), asSiteDB(t, stack.SiteB)}, canaryReply.RoomID)
 	require.Eventually(t, func() bool {
 		count, err := subs.CountDocuments(ctx, bson.M{
 			"u.account": bobOnB.Account,

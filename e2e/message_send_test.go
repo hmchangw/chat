@@ -94,7 +94,7 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	), "request_id=%s", requestID)
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	require.NotEmpty(t, roomID, "server-assigned room ID must be non-empty")
 	t.Logf("created channel roomID=%s", roomID)
 
@@ -202,9 +202,10 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	assert.Equal(t, ids.MessageID, notif.Message.ID,
 		"notification for our message must arrive on bob's notification subject")
 
-	// 7. Wait for message-worker to ack the canonical event before reading
-	// history; otherwise LoadHistory races against the Cassandra write.
-	awaitCanonicalAcked(t, ctx, js, canonicalStream, "message-worker", preSendSeq+1)
+	// 7. Wait for the message to be in Cassandra before reading history.
+	// Wait by msgID (parallel-safe; the seq-based wait can be satisfied
+	// by a sibling test's message under the shared message-worker durable).
+	awaitMessageOnSite(t, ctx, site, ids.MessageID)
 
 	// 8. history-service.LoadHistory returns the message. RoomID is in the
 	// subject; request body carries Before/Limit.
@@ -366,9 +367,8 @@ func TestMessage_SendAndBroadcast_DM(t *testing.T) {
 	assert.Equal(t, ids.MessageID, roomEvent.Message.ID)
 	assert.Equal(t, body, roomEvent.Message.Content)
 
-	// 5. Wait for ack + verify history. Identical to the channel path
-	// (history-service is room-type agnostic).
-	awaitCanonicalAcked(t, ctx, js, canonicalStream, "message-worker", preSendSeq+1)
+	// 5. Wait for ack + verify history. By-msgID for parallel safety.
+	awaitMessageOnSite(t, ctx, site, ids.MessageID)
 
 	histReq := loadHistoryRequest{Limit: 50}
 	var histResp loadHistoryResponse

@@ -64,7 +64,7 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 
 	awaitSubscription(t, ctx, site.MongoDB(t), sender.Account, roomID)
 
@@ -76,11 +76,7 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 	// suffix; gatekeeper derives the reply subject from the body's
 	// RequestID, so they must agree.
 	js := site.JetStream(t)
-	canonical := stream.MessagesCanonical(site.SiteID).Name
-	awaitDurableReady(t, ctx, js, canonical, "message-sync")
-	preInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq := preInfo.CachedInfo().State.LastSeq
+	awaitDurableReady(t, ctx, js, stream.MessagesCanonical(site.SiteID).Name, "message-sync")
 
 	msgID := idgen.GenerateMessageID()
 	body := "pumpernickel xylophone " + t.Name()
@@ -98,10 +94,11 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	// Wait for search-sync-worker to ack the canonical event (it's the one
-	// that writes the messages-*-YYYY-MM ES doc; without this we may poll
-	// search-service before indexing has started).
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-sync", preSeq+1)
+	// Wait for the message to land in Cassandra (parallel-safe by msgID).
+	// search-sync-worker writes ES asynchronously after the canonical
+	// event lands; the subsequent search-service polling loop tolerates
+	// the ES refresh window.
+	awaitMessageOnSite(t, ctx, site, msgID)
 
 	// Poll search-service until the message is indexed. Subject is
 	// subject.SearchMessages(account) per R1 11.A. Each parallel test

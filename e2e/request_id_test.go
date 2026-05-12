@@ -44,7 +44,7 @@ func TestRequestID_PropagatesThroughBroadcastChain(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 
 	// Wait for subscriptions before sending; otherwise gatekeeper rejects.
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)

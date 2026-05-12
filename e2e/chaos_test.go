@@ -55,7 +55,7 @@ func TestChaos_MongoMidWriteRecovers(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 
 	// Pre-blip baseline send: confirms the room is healthy.
@@ -173,7 +173,7 @@ func TestChaos_CassandraMidWriteRecovers(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 
 	cass := newWorkerLifecycle(t, ctx, "cass-a")

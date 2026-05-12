@@ -63,7 +63,7 @@ func TestThread_ParentAndReplies(t *testing.T) {
 	))
 	roomID := createReply.RoomID
 	require.NotEmpty(t, roomID)
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 
 	mongoA := site.MongoDB(t)
 	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
@@ -74,10 +74,6 @@ func TestThread_ParentAndReplies(t *testing.T) {
 	awaitDurableReady(t, ctx, js, canonical, "message-worker")
 
 	// 2. Parent message.
-	parentInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	parentPreSeq := parentInfo.CachedInfo().State.LastSeq
-
 	parentID := idgen.GenerateMessageID()
 	parentReqID := idgen.GenerateRequestID()
 	require.NoError(t, sendAndAwaitReply(
@@ -93,7 +89,9 @@ func TestThread_ParentAndReplies(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", parentPreSeq+1)
+	// Wait by msgID (parallel-safe; the seq-based wait can be satisfied
+	// by a sibling test's message under shared message-worker durable).
+	awaitMessageOnSite(t, ctx, site, parentID)
 
 	// 3. Read parent's CreatedAt from history; the reply needs it as
 	// ThreadParentMessageCreatedAt (millisecond epoch).
@@ -114,10 +112,6 @@ func TestThread_ParentAndReplies(t *testing.T) {
 	require.NotZero(t, parentCreatedAtMs, "parent message must be findable in history")
 
 	// 4. Reply tagged with the parent's thread fields.
-	replyInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	replyPreSeq := replyInfo.CachedInfo().State.LastSeq
-
 	replyID := idgen.GenerateMessageID()
 	replyReqID := idgen.GenerateRequestID()
 	replyBody := "thread reply " + t.Name()
@@ -136,7 +130,7 @@ func TestThread_ParentAndReplies(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", replyPreSeq+1)
+	awaitMessageOnSite(t, ctx, site, replyID)
 
 	// 5. GetThreadMessages should return the reply.
 	require.Eventually(t, func() bool {
