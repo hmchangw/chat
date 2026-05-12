@@ -3,6 +3,7 @@ package integrationsuite
 import (
 	"testing"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -43,4 +44,45 @@ func TestClassifyHTTP_TimeoutHintInBodyIsTimeout(t *testing.T) {
 
 func TestClassifyHTTP_UnknownIsUnclassified(t *testing.T) {
 	assert.Equal(t, ClassUnclassified, ClassifyHTTP(418, nil))
+}
+
+func TestClassifyNATS_NilIsUnclassified(t *testing.T) {
+	assert.Equal(t, ClassUnclassified, ClassifyNATS(nil))
+}
+
+func TestClassifyNATS_NoErrorIsNone(t *testing.T) {
+	r := &LastResponse{Transport: "nats", Body: []byte(`{"id":"r1"}`)}
+	assert.Equal(t, ClassNone, ClassifyNATS(r))
+}
+
+func TestClassifyNATS_TransportErrorDominates(t *testing.T) {
+	r := &LastResponse{Transport: "nats", Err: nats.ErrTimeout, ErrorText: "should be ignored"}
+	assert.Equal(t, ClassTimeout, ClassifyNATS(r))
+}
+
+func TestClassifyNATS_HandlerErrorTextHeuristics(t *testing.T) {
+	cases := map[string]Class{
+		"room not found":              ClassHandlerError,
+		"mongo write failed":          ClassPersistence,
+		"cassandra timeout":           ClassPersistence,
+		"invalid roomID":              ClassValidation,
+		"unauthorized: missing token": ClassAuth,
+	}
+	for text, want := range cases {
+		got := ClassifyNATS(&LastResponse{Transport: "nats", ErrorText: text})
+		assert.Equal(t, want, got, "text: %q", text)
+	}
+}
+
+func TestLastResponse_Class_DispatchesByTransport(t *testing.T) {
+	httpR := &LastResponse{Transport: "http", StatusCode: 404}
+	assert.Equal(t, ClassHandlerError, httpR.Class())
+
+	natsR := &LastResponse{Transport: "nats", Err: nats.ErrNoResponders}
+	assert.Equal(t, ClassRouteNotFound, natsR.Class())
+}
+
+func TestLastResponse_Class_UnknownTransportIsUnclassified(t *testing.T) {
+	r := &LastResponse{Transport: ""}
+	assert.Equal(t, ClassUnclassified, r.Class())
 }

@@ -68,3 +68,56 @@ func bodyContainsCode(body []byte, needles ...string) bool {
 	}
 	return false
 }
+
+// ClassifyNATS classifies a NATS request/reply outcome.
+// Inspects r.Err first (transport-level), then r.ErrorText (handler-level).
+// Returns ClassNone when there is no error.
+func ClassifyNATS(r *LastResponse) Class {
+	if r == nil {
+		return ClassUnclassified
+	}
+	if r.Err != nil {
+		return MapNATSTransportError(r.Err)
+	}
+	if r.ErrorText == "" {
+		return ClassNone
+	}
+	// Heuristic refinement of handler-level errors based on the error text.
+	lower := strings.ToLower(r.ErrorText)
+	switch {
+	case containsAny(lower, "mongo", "cassandra", "db ", "database"):
+		return ClassPersistence
+	case containsAny(lower, "invalid", "malformed", "required"):
+		return ClassValidation
+	case containsAny(lower, "unauthorized", "forbidden", "permission"):
+		return ClassAuth
+	default:
+		return ClassHandlerError
+	}
+}
+
+// containsAny returns true if s contains any of the substrings.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// Class dispatches to the right classifier by transport.
+// Returns ClassUnclassified for an unset or unknown transport.
+func (r *LastResponse) Class() Class {
+	if r == nil {
+		return ClassUnclassified
+	}
+	switch r.Transport {
+	case "http":
+		return ClassifyHTTP(r.StatusCode, r.Body)
+	case "nats":
+		return ClassifyNATS(r)
+	default:
+		return ClassUnclassified
+	}
+}

@@ -29,6 +29,7 @@ func newHTTPClient(w *World) *resty.Client { //nolint:unused
 		tp, _ := traceparentFromContext(r.Request.Context())
 		traceID, _ := TraceIDFromTraceparent(tp)
 		w.SetLastResponse(&LastResponse{
+			Transport:  "http",
 			StatusCode: r.StatusCode(),
 			Body:       r.Body(),
 			TraceID:    traceID,

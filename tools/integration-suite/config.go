@@ -14,6 +14,7 @@ type Config struct {
 
 	authURLs map[string]string
 	roomURLs map[string]string
+	natsURLs map[string]string
 }
 
 // LoadConfig parses env vars and validates that every site has the
@@ -38,6 +39,7 @@ func LoadConfig() (*Config, error) {
 		PrimarySite: primary,
 		authURLs:    map[string]string{},
 		roomURLs:    map[string]string{},
+		natsURLs:    map[string]string{},
 	}
 
 	for _, site := range sites {
@@ -54,6 +56,12 @@ func LoadConfig() (*Config, error) {
 			return nil, fmt.Errorf("config: ROOM_SERVICE_URL_%s is required", up)
 		}
 		cfg.roomURLs[site] = room
+
+		natsURL := os.Getenv("NATS_URL_" + up)
+		if natsURL == "" {
+			return nil, fmt.Errorf("config: NATS_URL_%s is required", up)
+		}
+		cfg.natsURLs[site] = natsURL
 	}
 
 	if _, ok := cfg.authURLs[primary]; !ok {
@@ -77,6 +85,15 @@ func (c *Config) AuthServiceURL(site string) string {
 // Panics on unknown site — caller error, not a runtime condition.
 func (c *Config) RoomServiceURL(site string) string {
 	u, ok := c.roomURLs[site]
+	if !ok {
+		panic(fmt.Sprintf("config: unknown site %q", site))
+	}
+	return u
+}
+
+// NATSURL returns the NATS broker URL for the given site.
+func (c *Config) NATSURL(site string) string {
+	u, ok := c.natsURLs[site]
 	if !ok {
 		panic(fmt.Sprintf("config: unknown site %q", site))
 	}

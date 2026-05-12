@@ -26,13 +26,15 @@ func TestWorld_StoresLastResponse(t *testing.T) {
 	w.BeginScenario("Scenario A")
 
 	w.SetLastResponse(&LastResponse{
+		Transport:  "http",
 		StatusCode: 404,
-		Body:       []byte(`{"code":"ROOM_NOT_FOUND"}`),
+		Body:       []byte(`{"error":"room not found"}`),
 		TraceID:    "abc123",
 	})
 
 	got := w.LastResponse()
 	require.NotNil(t, got)
+	assert.Equal(t, "http", got.Transport)
 	assert.Equal(t, 404, got.StatusCode)
 	assert.Equal(t, "abc123", got.TraceID)
 }
