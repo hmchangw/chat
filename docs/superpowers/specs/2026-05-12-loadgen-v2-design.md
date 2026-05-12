@@ -4,6 +4,8 @@
 **Status:** scoping
 **Predecessor:** [2026-05-07-history-service-loadtest-design.md](2026-05-07-history-service-loadtest-design.md) shipped the v1 harness (Phases 1–3 of the original spec). This document covers the follow-up work surfaced by the post-ship code review.
 
+**Review history:** the first-draft spec was reviewed by seven specialist agents (methodology, architecture, DevOps/Docker, DX, SRE, chat-platform domain, technical writing) on 2026-05-12. Each section below has been revised against the blockers and important findings; the "Review changelog" at the bottom of the document maps each amendment back to the reviewer who raised it.
+
 ## Goal
 
 Take `tools/loadgen` from "useful internal tool" to "numbers a capacity planner can defend in a postmortem." The post-ship code review (four reviewers: bug, architecture, load-testing methodology, Go craft) identified three categories of work:
@@ -20,6 +22,23 @@ Six critical bugs surfaced by the same review are fixed under separate commits a
 - Becoming a CI regression gate. Still operator-invoked.
 - Cross-machine numerical comparisons. "Compare within one machine across changes" remains the rule.
 
+## Phase 0 — Refactor first (pre-trustworthiness)
+
+Goal: extract the lifecycle and flag surfaces *before* Phase 1 touches them, so Phase 1's new code lands on a clean substrate. Pure refactor, no behavior change, existing tests are the safety net.
+
+Originally the spec ran Phase 1 before Phase 2. The architecture reviewer flagged that as inverted: §1.4 (settle phase) belongs as a `Runtime.Settle()` method, §1.3 (`RunQuality`) accumulates state across phases, §1.7 (`phase` label) needs threading through every metric site that Phase 2 then rearranges into `publisher.go` / `requester.go`. We were paying the editing cost twice.
+
+Phase 0 lifts forward the *pure-refactor* pieces of what was Phase 2 (extract `Runtime`, extract `runFlags` struct, move transport adapters to dedicated files). The `Scenario` interface + registry stays in Phase 2 because it interacts with the new scenarios in Phase 3.
+
+Phase 0 deliverables:
+
+- `tools/loadgen/runtime.go` — `Runtime` struct + lifecycle methods (`Setup`, `Preflight`, `Run`, `Finalize`, `Close`). Same behavior as today's `runRun`.
+- `tools/loadgen/flags.go` (expanded) — `runFlags` typed struct with sub-structs (no new flags yet; just regroup the existing 30). `ParseRunFlags(args []string)` becomes unit-testable.
+- `tools/loadgen/publisher.go`, `requester.go` — move `natsCorePublisher`, `natsRequester`, `newAsyncErrHandler`, `jetstreamPublishOpts` out of `main.go`.
+- `tools/loadgen/metrics_helpers.go` — move `gatheredCounterValue`, `counterValue`, `counterValueLabeled` out of `main.go`.
+
+Phase 0 exit: `main.go` < 250 lines (down from 1,071), all existing unit + binary-exec tests still pass, no diff to printed output, no diff to flag set, no diff to Prometheus metric names/labels.
+
 ## Phase 1 — Trustworthiness
 
 Goal: a run that is not trustworthy refuses to print numbers that look trustworthy.
@@ -30,7 +49,9 @@ Today `Collector.requests` is a sharded map of `[]requestSample`, sorted at fina
 
 The same slice also drives small-sample percentile garbage: a 200-sample search-read run reports the 198th sorted value as "p99" with no caveat.
 
-**Design:** swap the per-cell `[]requestSample` for an HDR histogram (`HdrHistogram-go`, the Go port of HdrHistogram). Bounded memory (~2 KB per cell at the resolution we need), accurate percentiles at any sample count, mergeable across processes (which `run-mixed.sh` will exploit).
+**Third-party dependency ask.** CLAUDE.md §5 requires asking before adding a new third-party dependency. v2 adds `github.com/HdrHistogram/hdrhistogram-go`. **Justification:** the alternatives — t-digest (better tail accuracy, smaller memory, but harder to reason about fixed-budget reporting and less standard tooling for log-format interchange), KLL sketches (theoretical wins but no mature Go impl), Prometheus's own histogram (global buckets, can't extract per-(scenario, kind) percentiles client-side), stdlib (none) — each have a worse trade-off for this harness. HDR's `.hlog` log format is the industry-standard interchange for latency histograms, supported by external tooling (HdrHistogramVisualizer, the wrk2 ecosystem), and HDR merges across processes (which `run-mixed.sh` will exploit). The owner / operator should approve this dep before Phase 1 starts. If approval is withheld, the fallback is t-digest (`influxdata/tdigest`); the rest of the spec is unchanged.
+
+**Design:** swap the per-cell `[]requestSample` for an HDR histogram (`HdrHistogram-go`). Mergeable across processes, accurate percentiles at any sample count.
 
 API change inside `Collector`:
 
@@ -41,6 +62,8 @@ API change inside `Collector`:
 **Compatibility:** the printed report's "request latency" section keeps the same columns (`p50/p95/p99/max/count/errors`). CSV export changes: we no longer have raw per-sample latencies. Either we keep a *capped* raw-sample sidecar (for `--csv` only) or we change `--csv` semantics to "per-bucket histogram counts." Recommend the former — capped at `--csv-max-samples` (default 100 k) with a `csv truncated` warning if exceeded — since the typical `--csv` use case is offline analysis of an explicit smaller run.
 
 The same swap applies to `LatencyWindow` (the abort watcher's ring buffer). HDR's `SubtractWindow` operation lets us implement the rolling sustain check natively without the existing "drop oldest sample" cap-masking failure mode — though we keep the cap as a memory ceiling for the watcher's per-tick query.
+
+**Known risk — abort-watcher semantic change.** Replacing `LatencyWindow`'s slice-based percentile with HDR's `SubtractWindow` is *not* a transparent refactor. It will move the precise rps at which a real run aborts (HDR percentile at 3 sig digits differs from sorted-slice percentile by 1–2 ms at boundary conditions; the windowing semantics differ subtly between "sample within last N seconds" and "snapshot subtract snapshot from N seconds ago"). **Before Phase 1 lands, re-run the existing abort-watcher canary suite at three rps points (well-below, at, well-above the canonical abort threshold) and compare trip latency under the old and new implementations. Acceptance criterion: trip-time drift ≤ 10% at each point. If not, retune defaults before committing.**
 
 ### 1.2 Coordinated-omission tracking
 
@@ -138,9 +161,19 @@ Today `Sent`, `PublishErrors`, and a few derived numbers in the summary are pull
 
 Phase 1 exit: every run prints a verdict, every untrustworthy run is marked, no run silently reports clean numbers it cannot defend.
 
-## Phase 2 — Restructure
+## Phase 2 — Restructure (post-Phase-0)
 
-Goal: adding a new scenario touches ≤2 files. `main.go` < 200 lines. `runRun` < 100 lines.
+Goal: Phase 0 already extracted `Runtime`, `runFlags`, and the transport adapters. Phase 2 introduces the `Scenario` interface + registry (the *behavior* refactor that interacts with new scenarios in Phase 3), and migrates per-scenario string switches to the registry.
+
+Phase 2 deliverables:
+
+- `scenario.go` — interface family (§2.2).
+- `scenario_messaging.go`, `scenario_history.go`, `scenario_search.go`, `scenario_room.go` — one file per existing scenario, registered via `init()`.
+- Removal of every `switch *scenario` in `runRun`, `readiness.go`, `auto_warmup.go`, `flags.go` validators.
+- `runtime.Subscribers()` accessor for §3.2 large-room-broadcast.
+- `Runtime` parameterized over `[]SiteDeps` (default len 1).
+
+`runRun` < 100 lines.
 
 ### 2.1 Runtime lifecycle struct
 
@@ -173,16 +206,28 @@ The four watchers (progress / abort / liveness / async-drain) become methods on 
 
 ### 2.2 Scenario interface + registry
 
-Today the string `"history-read" | "search-read" | "room-rpc" | "messaging-pipeline"` switches in six files. Adding a fifth scenario is a 6-file diff. Replace with:
+Today the string `"history-read" | "search-read" | "room-rpc" | "messaging-pipeline"` switches in six files. Adding a fifth scenario is a 6-file diff. Replace with a **split** interface family (the architecture reviewer flagged a single 7-method interface as a god-interface in waiting):
 
 ```go
+// Identity — every scenario implements this.
 type Scenario interface {
     Name() string
     DefaultPreset() string
-    NeedsReadiness() bool
+}
+
+// Optional probe contracts; scenarios opt in by also implementing them.
+type ReadinessProber interface {
     BuildReadinessProbe(deps ScenarioDeps) func(context.Context) error
-    NeedsAutoWarmup(*Preset) bool
+}
+type LivenessProber interface {
     BuildLivenessProbe(deps ScenarioDeps) func(context.Context) error
+}
+type AutoWarmer interface {
+    NeedsAutoWarmup(p *Preset) bool
+}
+
+// Required: the generator factory.
+type GeneratorFactory interface {
     NewGenerator(deps ScenarioDeps, rf runFlags) (Runner, error)
 }
 
@@ -190,9 +235,21 @@ var scenarios = map[string]Scenario{}
 func RegisterScenario(s Scenario) { scenarios[s.Name()] = s }
 ```
 
-Each scenario lives in its own file (`scenario_messaging.go`, `scenario_history.go`, `scenario_search.go`, `scenario_room.go`, plus new ones from Phase 3). Each file registers in `init()`. `main.go` looks up the scenario by name from `*scenario` flag.
+Runtime probes for interfaces at call time:
 
-`ScenarioDeps` is a struct of injected dependencies (nc, js, pool, collector, metrics, fixtures, publisher, requester) so scenarios don't reach into `Runtime` internals.
+```go
+if pr, ok := sc.(ReadinessProber); ok && pr != nil { ... }
+```
+
+This keeps the surface honest — a federation scenario does not pretend to have a single readiness probe; an auth scenario does not pretend to use auto-warmup. Each new scenario lives in its own file (`scenario_messaging.go`, `scenario_history.go`, `scenario_search.go`, `scenario_room.go`, plus new ones from Phase 3) and registers in `init()`.
+
+`ScenarioDeps` is **also split** rather than a single fat struct — Phase 3.9 federation needs two NATS handles and two fixture sets, which a single struct cannot represent. Define narrow accessor interfaces (`Publisher()`, `Requester()`, `Collector()`, `Fixtures()`, `Sites() []SiteDeps` for federated scenarios) and let scenarios narrow to what they need.
+
+**Scenarios that extend Runtime.** The registry covers §3.1, §3.3, §3.4, §3.5, §3.6, §3.7, §3.8. It does *not* cover:
+
+- **§3.2 large-room-broadcast** needs a long-lived subscription manager spanning the whole run (10 000 wildcard subs across the pool). That's Runtime-shaped state; expose via `runtime.Subscribers()` accessor.
+- **§3.9 federation-lag** needs two sites. Either `Runtime` becomes parameterized over a slice of sites, or federation gets a `FederatedRuntime` wrapper. Pick the former (parameterized slice with `len==1` default).
+- **§3.11 chaos overlay** is correctly not a generator — a compose overlay plus a script. No `Scenario` impl.
 
 ### 2.3 Move transport adapters out of main.go
 
