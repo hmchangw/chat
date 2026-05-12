@@ -53,6 +53,13 @@ func TestCellHistogram_Merge(t *testing.T) {
 	assert.Equal(t, int64(200), a.Count())
 }
 
+func TestNewWindowHistogram_EmptyReturnsZero(t *testing.T) {
+	h := NewWindowHistogram()
+	require.NotNil(t, h)
+	assert.Equal(t, time.Duration(0), h.Quantile(0.99),
+		"empty WindowHistogram must return 0 to preserve abort-watcher 'no samples yet' semantics")
+}
+
 func TestNewWindowHistogram_TighterFloor(t *testing.T) {
 	h := NewWindowHistogram() // for the abort watcher
 	h.Record(50 * time.Microsecond)
