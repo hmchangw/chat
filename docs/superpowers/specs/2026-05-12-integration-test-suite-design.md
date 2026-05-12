@@ -184,6 +184,9 @@ tools/integration-suite/
     ├── mongo_steps.go           collection queries
     ├── cassandra_steps.go       row queries
     ├── chaos_steps.go           chaos-mesh + docker-compose fault verbs
+    ├── error_steps.go           error-class assertion steps
+    ├── classifier.go            response → error-class mapping
+    ├── tracing.go               traceparent propagation, trace-ID capture
     └── fixtures.go              ID generation, prefixing helpers
 ```
 
@@ -281,6 +284,100 @@ If JWT minting becomes a measurable bottleneck, the step implementation
 will cache JWTs per (run, account) inside the world struct. Caching is
 an internal optimization — never visible in feature files.
 
+## Traceability and error classification
+
+`pkg/natsrouter` is the request-handling spine of every NATS service in
+the system. Failures inside that mesh need to be **traceable** (so a
+failing scenario points to exactly one trace in Jaeger) and
+**classified** (so the report shows the *shape* of failures, not just
+a count).
+
+### Trace propagation
+
+- Every outbound request from the suite — HTTP and NATS — carries a
+  fresh `traceparent` header in W3C Trace Context format.
+- The trace ID is captured in the scenario's world struct at request
+  time, alongside the application request ID (`it-<runID>-<scenarioID>-<reqID>`).
+- On scenario failure, the reporter prints both the request ID and the
+  trace ID. A developer pastes the trace ID into Jaeger to see the
+  full mesh of spans across services.
+- The suite does **not** assert on trace structure in v1. Span-level
+  contract testing is a deliberate v2 layer (likely Tracetest), once
+  scenarios exist to motivate it.
+
+### Error classification
+
+Failed responses are classified into a fixed enum. Scenarios assert on
+the **class**, not just on the existence of a failure:
+
+| Class | Source | Example trigger |
+|---|---|---|
+| `RouteNotFound` | `pkg/natsrouter`: no handler registered for the subject | Request to an unknown subject pattern |
+| `Validation` | Handler binding/validation rejected the request | Malformed body, missing required field |
+| `Auth` | JWT missing, invalid, or unauthorized | Expired token, wrong NKey signature |
+| `HandlerError` | Application logic returned a typed `model.ErrorResponse` | Room not found, member already exists |
+| `Timeout` | NATS request timed out (no reply within `request.timeout`) | Worker stalled, consumer paused |
+| `Unreachable` | NATS connection error, no responders | Cluster down, all instances dead |
+| `Persistence` | Downstream store error surfaced through the handler | Mongo write conflict, Cassandra unavailable |
+| `Downstream` | Handler called another service and got a non-success | Room-service called auth-service and got 5xx |
+
+Classifier rules:
+
+- HTTP responses are classified by status code + body shape
+  (`model.ErrorResponse.Code`).
+- NATS request/reply responses are classified by the
+  `model.ErrorResponse.Code` field set by `natsutil.ReplyError`, plus
+  the NATS-level error (`nats.ErrNoResponders`, `nats.ErrTimeout`).
+- Anything that can't be classified is logged as
+  `Unclassified` and counts as a failure — the suite is expected to
+  evolve the classifier rather than absorb unclassified failures
+  silently.
+
+### Step shapes
+
+```
+Then the response is a <error-class> error
+Then the response is a <error-class> error with code "<error-code>"
+Then "<name>" receives an <error-class> reply for request "<reqID>"
+```
+
+`<error-class>` is one of the eight classes above.
+
+### Reporting
+
+The summary report breaks down failures by class so the failure shape
+is visible at a glance:
+
+```
+Failures:           12
+  HandlerError:      4
+  Timeout:           5
+  Persistence:       1
+  Unreachable:       2
+  Unclassified:      0     ← non-zero here is itself a problem
+
+Blindspot:           8     treated as zeros
+```
+
+Per-failure entries in the summary include the trace ID:
+
+```
+  - pipeline/room-member-ops.feature:18 "Idempotent add member"
+    class:    HandlerError
+    code:     ROOM_NOT_FOUND
+    trace:    4e1c7a83e4d3b8a2f6c1d2e3f4a5b6c7
+    request:  it-7a2c-pipeline-add-member-04-req-3
+```
+
+### Why this matters
+
+Since `pkg/natsrouter` underpins many services, errors propagate
+through a mesh. A timeout on one request might be a downstream
+service's `HandlerError`, which might be a Cassandra `Persistence`
+error, which might be a `Unreachable` symptom of partial NATS outage.
+Classified results make the shape of the cascade legible across many
+scenarios; a count of "12 failures" does not.
+
 ## Fault injection model
 
 Faults are expressed as ordinary Gherkin steps. The two drivers sit
@@ -367,13 +464,22 @@ After each run the suite writes three artifacts:
    Total:      158
    Passed:     138
    Failed:      12
-   Blindspot:    8        treated as zeros
-   Score:    87.3%        (138 / 158)
+     HandlerError:    4
+     Timeout:         5
+     Persistence:     1
+     Unreachable:     2
+     Unclassified:    0
+   Blindspot:    8         treated as zeros
+   Score:    87.3%         (138 / 158)
    Duration:  4m12s
 
    Failures (behavior diverged from design)
      - service/room.feature:55 "DM room ID is deterministic"
+       class: HandlerError  code: DM_ID_MISMATCH
+       trace: 4e1c7a83e4d3b8a2f6c1d2e3f4a5b6c7
      - pipeline/room-member-ops.feature:18 "Idempotent add member"
+       class: Timeout
+       trace: 9f2b5c91a7e4d8f6b3a2c1e9d7b8a4f3
      - …
 
    Blindspots (undocumented behavior — design owes an answer)
@@ -421,8 +527,13 @@ steps, not new infrastructure):
 
 Step files for v1: `auth_steps.go`, `room_steps.go`, `nats_steps.go`,
 `jetstream_steps.go`, `mongo_steps.go`, `cassandra_steps.go`,
-`chaos_steps.go`, plus `world.go`, `config.go`, `fixtures.go`,
-`reporter.go`, `main_test.go`.
+`chaos_steps.go`, `error_steps.go`, plus `world.go`, `config.go`,
+`fixtures.go`, `classifier.go`, `tracing.go`, `reporter.go`,
+`main_test.go`.
+
+The full 8-class classifier is implemented in v1 even though early
+scenarios will only exercise a few classes. The cost is small and it
+locks the vocabulary before scenarios proliferate.
 
 Makefile additions (in root `Makefile`):
 
