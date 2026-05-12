@@ -89,6 +89,121 @@ with a special reason. Adding a blindspot lowers the conformance score;
 filling in the design (and removing the tag, or codifying the
 expectation) raises it.
 
+## Blindspots
+
+A **blindspot** is a scenario whose expected outcome is not documented
+anywhere in the design. Blindspots are first-class artifacts of the
+suite — the way the system surfaces design gaps as quantifiable
+conformance failures.
+
+### Definition
+
+A scenario is a blindspot when the author cannot find a documented
+expected behavior in any of:
+
+- A spec in `docs/superpowers/specs/`
+- `CLAUDE.md`
+- A README in the service or `pkg/` package
+- A design comment in the source code
+
+If no source exists, the author must **not** invent behavior. They
+mark the scenario as a blindspot and log the open question.
+
+### What is and is not a blindspot
+
+| Situation | Blindspot? |
+|---|---|
+| Design says X should happen; implementation does Y | No — regular failure |
+| Design is silent on what should happen for this input | Yes |
+| Author too lazy to find the design | No — not an escape hatch |
+| Step library can't express the assertion (yet) | No — tooling gap |
+| Design says "best effort" without specifics | Yes — needs specifics |
+| Same scenario has documented and undocumented assertions | Yes — tag the undocumented part |
+
+### Mechanics — three places, in lock-step
+
+**1. The `.feature` file (the tag)**
+
+```gherkin
+@regional-resilience @blindspot:partial-history-contract
+Scenario: TW NATS partial outage degrades history but does not corrupt it
+  ...
+```
+
+Format: `@blindspot:<slug>`, where `<slug>` is kebab-case, unique
+across the suite, and serves as a stable handle. A scenario may carry
+multiple `@blindspot:` tags when it asks several open questions.
+
+**2. The runtime hook (the marker)**
+
+`main_test.go` registers a `BeforeScenario` hook:
+
+```
+For each tag on the scenario:
+  if tag starts with "@blindspot:":
+    mark scenario as FAILED
+    failure reason = "undocumented behavior: <slug>"
+    still execute all steps — the actual outcome is informative
+```
+
+Steps still execute. The hook only forces the result. Why run the
+steps when the outcome is predetermined?
+
+- If steps pass coincidentally, the report shows the implementation
+  *did* produce some behavior — useful evidence for the design
+  discussion (the current behavior could become the documented one).
+- If steps fail, the report shows both the blindspot reason and the
+  actual divergence — useful evidence the implementation already
+  disagrees with itself.
+
+**3. The register (`docs/integration-suite/blindspots.md`)**
+
+Every unique slug has one entry. Format:
+
+```markdown
+## partial-history-contract
+
+**Found in:** features/regional-resilience/partial-nats-tw.feature
+**Question:** When part of the NATS supercluster in a region is
+unavailable, what contract does history-service hold for partial reads?
+**Candidates:**
+  - Return whatever messages are reachable, no error
+  - Return whatever messages are reachable + a degraded-mode header
+  - Return 503 if any partition is unreachable
+  - Return 200 with an explicit `partial: true` field
+**Owner:** TBD
+**Target spec:** docs/superpowers/specs/<future>-history-degraded-mode.md
+**Status:** open
+**Added:** 2026-05-12
+```
+
+### Resolution workflow
+
+When the design is filled in, a **single PR** does all three:
+
+1. Adds the new spec doc.
+2. Updates `blindspots.md`: status → `resolved`, target spec links the
+   new doc.
+3. Updates the feature file: removes the `@blindspot:<slug>` tag,
+   replaces vague assertions with the now-documented contract.
+
+The score moves on the next run.
+
+### Guardrails
+
+- **Slug consistency check.** A `make integration-suite-lint` target
+  (also run in CI) verifies every `@blindspot:<slug>` in any feature
+  file has a matching entry in `blindspots.md`, and vice versa. PR
+  fails if inconsistent.
+- **Aging review.** Each entry has an `Added` date. A periodic
+  review (monthly recommended) closes stale entries — either by
+  codifying the behavior or by deleting the scenario as no longer
+  relevant.
+- **No blindspot filter.** The runner cannot skip blindspots — they
+  are always counted in the score. You *can* filter scenarios *to*
+  run only blindspots (useful for design sessions) but never *out of*
+  the totals.
+
 ## Tooling
 
 | Component | Choice | Why |
@@ -452,6 +567,163 @@ Scenario: Adding a US member to a TW room federates to US
 Multi-room is naturally covered by scenarios that create several rooms;
 no special folder is needed. Apply the tag `@multi-room` if filtering
 is useful.
+
+## Defining a test
+
+This is the playbook for adding a scenario to the suite. Designed to
+be followed by humans and by AI authoring agents. Every step is
+mandatory.
+
+### Step 1 — Pick a behavior
+
+Behaviors come from one of:
+
+- A user-facing flow the system supports ("a US member sees messages
+  a TW user posted to a shared channel")
+- An invariant ("DM room IDs are deterministic in the sorted
+  concatenation of the two user IDs")
+- A failure mode the architecture promises to handle ("a worker
+  redelivers a message after restart")
+- A regression motivated by a real bug
+
+### Step 2 — Find the documented expected behavior
+
+Sources, in order of authority:
+
+1. `docs/superpowers/specs/` — design specs
+2. `CLAUDE.md` — project conventions
+3. Service or `pkg/` `README.md`
+4. Design comments in source code
+
+If none of these say what should happen for the case at hand, **stop**
+and follow the blindspot workflow (see Blindspots section). Do not
+invent behavior.
+
+### Step 3 — Choose a scope
+
+Pick the most specific scope that contains the behavior:
+
+| Scope | Use when |
+|---|---|
+| `service/` | One service, no async pipeline, one site |
+| `pipeline/` | One async flow end-to-end (request → stream → worker → store), one site |
+| `journey/` | Multiple flows composed into a realistic user path, one site |
+| `federation/` | Multi-site, no faults |
+| `resilience/` | One site, faults included |
+| `regional-resilience/` | Multi-site with regional faults |
+
+### Step 4 — Reuse step vocabulary
+
+Step definitions in `steps/*.go` are shared across all scopes. Before
+writing a new step, search existing files for a matching phrase.
+Adding a near-duplicate (`Given user "alice" is logged in` next to an
+existing `Given user "alice" is authenticated`) fragments the
+vocabulary; godog treats them as different steps.
+
+If a new step is genuinely needed:
+
+1. Pick the right surface file (`auth_steps.go`, `room_steps.go`, ...).
+2. Follow the phrasing rules in Step 5.
+3. Place it next to related steps. Do not create a new file for one
+   step.
+
+### Step 5 — Phrasing rules
+
+- **Lowercase verbs.** `Given`, `When`, `Then`, `And` are Gherkin
+  keywords. The body starts with a lowercase verb.
+- **Quoted parameters.** Every variable goes in `"double quotes"` so
+  the step reads naturally and the regex stays simple.
+- **Site is explicit in multi-site scenarios.** When a step touches a
+  service or infra resource and the scenario uses more than one site,
+  append `in site "<id>"`. Single-site scenarios omit the suffix;
+  the world struct uses the primary site by default.
+- **Timed assertions declare a budget.** Any assertion observing an
+  async effect uses `within <duration>`:
+  `Then within 5s "<name>" is a member of room "<id>"`.
+- **No implementation details.** A scenario reads as user-visible
+  behavior, not as a description of code.
+  Good: `Then alice receives a success reply`.
+  Bad: `Then handler.PublishFunc was called`.
+
+### Step 6 — Use Background and Scenario Outline
+
+- **`Background`** for shared setup across all scenarios in one
+  feature file. Fixtures only — no behavior under test.
+- **`Scenario Outline`** for parameter permutations. Prefer one
+  outline with a table over five near-duplicate scenarios.
+
+### Step 7 — Tag the scenario
+
+- The **scope tag is implicit from the folder.** Do not duplicate it.
+- Optional tags:
+  - `@smoke` — fast, included in CI smoke runs
+  - `@slow` — run nightly only
+  - `@multi-room` — uses multiple rooms in one scenario
+  - `@blindspot:<slug>` — undocumented behavior (see Blindspots)
+  - `@error-class:<class>` — flags the dominant expected error class
+    when the scenario asserts on a failure mode
+
+### Step 8 — Verify before commit
+
+Run the new scenario locally:
+
+- For normal scenarios: confirm it passes.
+- For blindspots: confirm it fails with reason
+  `"undocumented behavior: <slug>"`, and confirm `blindspots.md` has
+  the matching entry.
+
+### Authoring template
+
+A complete scenario, annotated:
+
+```gherkin
+# features/pipeline/room-member-ops.feature   ← scope by folder
+Feature: Room member operations
+  Behavior driven by the design in docs/superpowers/specs/2026-04-14-add-member-design.md
+
+  Background:
+    Given user "alice" is authenticated                    # fixture, not behavior
+    And channel room "general" exists with member "alice"  # fixture, not behavior
+
+  @smoke
+  Scenario: Adding a new member persists a subscription and replies success
+    Given user "bob" is authenticated
+    When "alice" requests to add member "bob" to room "general"
+    Then within 3s "bob" is a member of room "general"     # async observation, bounded
+    And "alice" receives a success reply
+
+  Scenario Outline: Adding a member to a non-existent room replies <class>
+    Given user "<requester>" is authenticated
+    When "<requester>" requests to add member "<target>" to room "nonexistent"
+    Then "<requester>" receives a <class> reply with code "<code>"
+
+    Examples:
+      | requester | target | class        | code           |
+      | alice     | bob    | HandlerError | ROOM_NOT_FOUND |
+```
+
+### Adding tests with AI
+
+The spec is the AI agent's authoring context. A prompt that produces
+conformant scenarios includes, at minimum:
+
+1. **The exact behavior to test** — one sentence or paragraph,
+   unambiguous.
+2. **The source where the expected behavior is documented** — file
+   path and section, so the AI can verify rather than invent.
+3. **The list of currently registered steps** — produced by
+   `make integration-suite-steps` (prints every registered step regex
+   on startup). The AI must prefer matching an existing step over
+   adding a new one.
+4. **The target scope folder.**
+
+The AI follows the same rules as a human author: reuse vocabulary,
+prefer outlines, tag blindspots, no invented behavior. If the
+documented behavior pointed at does not actually exist, the AI must
+register a blindspot — never fill the gap from training data.
+
+A short reference prompt for AI authoring lives in
+`tools/integration-suite/README.md` alongside the canonical phrasings.
 
 ## Reporting and scoring
 
