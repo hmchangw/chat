@@ -57,7 +57,7 @@ func NewHistoryReadGenerator(cfg *HistoryReadConfig, seed int64) *HistoryReadGen
 // loop body to the shared tickLoop helper (Cleanup B) so the three read
 // generators share dispatch + saturation accounting.
 func (g *HistoryReadGenerator) Run(ctx context.Context) error {
-	if g.cfg.Rate <= 0 {
+	if g.cfg.Rate <= 0 && g.cfg.Ramp == nil {
 		return ErrInvalidRate
 	}
 	tickLoop(ctx, tickLoopConfig{
@@ -182,7 +182,7 @@ func NewSearchReadGenerator(cfg *SearchReadConfig, seed int64) *SearchReadGenera
 // Run ticks at the configured rate until ctx is cancelled. Delegates to
 // the shared tickLoop helper (Cleanup B).
 func (g *SearchReadGenerator) Run(ctx context.Context) error {
-	if g.cfg.Rate <= 0 {
+	if g.cfg.Rate <= 0 && g.cfg.Ramp == nil {
 		return ErrInvalidRate
 	}
 	tickLoop(ctx, tickLoopConfig{

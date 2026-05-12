@@ -73,6 +73,24 @@ func TestRoomRPCGenerator_NoFixtures_NoRequests(t *testing.T) {
 	assert.Equal(t, 0, rr.count())
 }
 
+func TestRoomRPCGenerator_RampWithZeroRate_RunsInsteadOfErroring(t *testing.T) {
+	// Bug 1: ramp-only configuration (Rate=0, Ramp != nil) used to fail
+	// the Rate <= 0 guard and exit immediately with ErrInvalidRate.
+	p, _ := BuiltinPreset("room-rpc")
+	f := BuildFixtures(&p, 42, "site-local")
+	rr := &recordingRequester{}
+	m := NewMetrics()
+	gen := NewRoomRPCGenerator(&RoomRPCConfig{
+		Preset: &p, Fixtures: f, SiteID: "site-local",
+		Rate: 0, Requester: rr, Metrics: m, Timeout: 1 * time.Second,
+		Ramp: &Ramp{From: 100, To: 200, Duration: 200 * time.Millisecond},
+	}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	require.NoError(t, gen.Run(ctx))
+	assert.Greater(t, rr.count(), 0, "ramped room scenario should issue some requests")
+}
+
 func TestRoomRPCGenerator_ZeroRate_ReturnsErrInvalidRate(t *testing.T) {
 	p, _ := BuiltinPreset("room-rpc")
 	gen := NewRoomRPCGenerator(&RoomRPCConfig{

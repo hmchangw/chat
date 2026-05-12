@@ -187,6 +187,41 @@ func TestHistoryReadGenerator_ZeroRate_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "rate must be > 0")
 }
 
+func TestHistoryReadGenerator_RampWithZeroRate_RunsInsteadOfErroring(t *testing.T) {
+	// Bug 1: ramp-only configuration (Rate=0, Ramp != nil) used to fail
+	// the Rate <= 0 guard and exit immediately with ErrInvalidRate.
+	p, _ := BuiltinPreset("history-read")
+	f := BuildFixtures(&p, 42, "site-local")
+	rr := &recordingRequester{}
+	m := NewMetrics()
+	gen := NewHistoryReadGenerator(&HistoryReadConfig{
+		Preset: &p, Fixtures: f, SiteID: "site-local",
+		Rate: 0, Requester: rr, Metrics: m,
+		MessageIDs: []string{"m-x"}, Timeout: 1 * time.Second,
+		Ramp: &Ramp{From: 100, To: 200, Duration: 200 * time.Millisecond},
+	}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	require.NoError(t, gen.Run(ctx))
+	assert.Greater(t, rr.count(), 0, "ramped read scenario should issue some requests")
+}
+
+func TestSearchReadGenerator_RampWithZeroRate_RunsInsteadOfErroring(t *testing.T) {
+	p, _ := BuiltinPreset("search-read")
+	f := BuildFixtures(&p, 42, "site-local")
+	rr := &recordingRequester{}
+	m := NewMetrics()
+	gen := NewSearchReadGenerator(&SearchReadConfig{
+		Preset: &p, Fixtures: f, SiteID: "site-local",
+		Rate: 0, Requester: rr, Metrics: m, Timeout: 1 * time.Second,
+		Ramp: &Ramp{From: 100, To: 200, Duration: 200 * time.Millisecond},
+	}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	require.NoError(t, gen.Run(ctx))
+	assert.Greater(t, rr.count(), 0, "ramped search scenario should issue some requests")
+}
+
 func TestSearchReadGenerator_ProducesValidSubjects(t *testing.T) {
 	p, ok := BuiltinPreset("search-read")
 	require.True(t, ok)

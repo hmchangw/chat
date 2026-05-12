@@ -44,7 +44,7 @@ func NewRoomRPCGenerator(cfg *RoomRPCConfig, seed int64) *RoomRPCGenerator {
 
 // Run ticks at the configured rate until ctx is cancelled.
 func (g *RoomRPCGenerator) Run(ctx context.Context) error {
-	if g.cfg.Rate <= 0 {
+	if g.cfg.Rate <= 0 && g.cfg.Ramp == nil {
 		return ErrInvalidRate
 	}
 	tickLoop(ctx, tickLoopConfig{
