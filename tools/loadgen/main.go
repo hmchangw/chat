@@ -716,19 +716,24 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	sentWarmup := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "warmup"))
 	sentMeasured := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "measured"))
 	sent := sentWarmup + sentMeasured
-	measured := *duration - *warmup
-	actualRate := 0.0
-	if measured > 0 {
-		// In canonical mode, byReqID is never populated, so E1Count/missingReplies
-		// are both 0. Fall back to sentMeasured to compute the true publish rate
-		// for the measured window only.
-		switch injectMode {
-		case InjectCanonical:
-			actualRate = float64(sentMeasured) / measured.Seconds()
-		default:
-			actualRate = float64(collector.E1Count()+missingReplies) / measured.Seconds()
-		}
+	// Bug 2: per-scenario measured-window math.
+	//   - messaging-pipeline: warmup is carved out of the run window, so
+	//     measured = duration - warmup.
+	//   - read scenarios with auto-warmup: warmup ran BEFORE runCtx, then
+	//     warmupDeadline was reset (line ~496) and the read scenario used
+	//     the full *duration. Use time.Since(warmupDeadline) clamped to
+	//     [0, *duration] so an early-abort run still reports the fraction
+	//     of the window that actually elapsed.
+	//   - read scenarios without auto-warmup: warmupDeadline is still in
+	//     the future relative to runStart, so the same Since(warmupDeadline)
+	//     formula collapses to the post-warmup measured window.
+	measured := time.Since(warmupDeadline)
+	if measured > *duration {
+		measured = *duration
 	}
+	requestStats := collector.RequestStats()
+	actualRate := computeActualRate(*scenario, injectMode, measured,
+		collector.E1Count(), missingReplies, sentMeasured, requestStats)
 
 	summary := Summary{
 		RunID:             runID,
@@ -751,7 +756,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		E1Count:           collector.E1Count(),
 		E2Count:           collector.E2Count(),
 		Consumers:         consumerSnapshots(samplers),
-		Requests:          collector.RequestStats(),
+		Requests:          requestStats,
 	}
 	if err := PrintSummary(os.Stdout, &summary); err != nil {
 		slog.Warn("print summary", "error", err)
@@ -806,6 +811,44 @@ func exitCodeForFull(saturationAborted, livenessFailed bool, sent, totalErrs int
 		return 2
 	}
 	return DetermineExitCode(sent, totalErrs)
+}
+
+// computeActualRate returns the achieved request rate (req/sec) over the
+// measured window. Bug 2: pre-fix, the formula was hard-wired to the
+// messaging-pipeline correlation counts (E1+missing or sentMeasured for
+// canonical), which read 0 for read scenarios because no E1/JS-publish
+// traffic flows there. Read scenarios now sum per-(scenario, kind)
+// post-warmup counts from the Collector instead.
+//
+// Returns 0 when measured <= 0 to avoid divide-by-zero in early-abort
+// or warmup-only runs.
+func computeActualRate(scenario string, inject InjectMode, measured time.Duration,
+	e1Count, missingReplies, sentMeasured int, requestStats []RequestStat,
+) float64 {
+	if measured <= 0 {
+		return 0
+	}
+	secs := measured.Seconds()
+	if scenarioNeedsReadiness(scenario) {
+		// Read scenarios: count post-warmup requests across all kinds for
+		// this scenario. RequestStats are already DiscardBefore-trimmed.
+		total := 0
+		for _, rs := range requestStats {
+			if rs.Scenario == scenario {
+				total += rs.Count
+			}
+		}
+		return float64(total) / secs
+	}
+	// Messaging-pipeline path.
+	switch inject {
+	case InjectCanonical:
+		// In canonical mode, byReqID is never populated, so E1Count and
+		// missingReplies are both 0; sentMeasured is the only ground truth.
+		return float64(sentMeasured) / secs
+	default:
+		return float64(e1Count+missingReplies) / secs
+	}
 }
 
 // HeaderRunID is the NATS header key stamped on every publish/request

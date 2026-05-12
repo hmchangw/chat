@@ -372,3 +372,89 @@ func TestRunTeardown_MongoDBGuardRefuses(t *testing.T) {
 	code := runTeardown(t.Context(), cfg)
 	assert.Equal(t, 2, code, "guard must refuse teardown of non-loadgen DB")
 }
+
+// Bug 2: actualRate must be computed per-scenario.
+//
+//   - messaging-pipeline + frontdoor: matched-replies + missing-replies / measured
+//   - messaging-pipeline + canonical: sentMeasured / measured (no RPC traffic)
+//   - read scenarios:                 sum of post-warmup request counts / measured
+//
+// Pre-fix the read path was forced through the messaging branch and read
+// 0 (no E1 traffic); fix routes by scenario classification.
+func TestComputeActualRate(t *testing.T) {
+	mkStat := func(scenario, kind string, count int) RequestStat {
+		return RequestStat{Scenario: scenario, Kind: kind, Count: count}
+	}
+	cases := []struct {
+		name           string
+		scenario       string
+		inject         InjectMode
+		measured       time.Duration
+		e1Count        int
+		missingReplies int
+		sentMeasured   int
+		requestStats   []RequestStat
+		want           float64
+	}{
+		{
+			name:     "messaging frontdoor uses E1+missing",
+			scenario: "messaging-pipeline", inject: InjectFrontdoor,
+			measured: 10 * time.Second, e1Count: 80, missingReplies: 20, sentMeasured: 999,
+			want: 10.0,
+		},
+		{
+			name:     "messaging canonical falls back to sentMeasured",
+			scenario: "messaging-pipeline", inject: InjectCanonical,
+			measured: 10 * time.Second, e1Count: 0, missingReplies: 0, sentMeasured: 250,
+			want: 25.0,
+		},
+		{
+			name:     "history-read sums request stats across kinds",
+			scenario: "history-read", inject: InjectFrontdoor,
+			measured: 10 * time.Second,
+			requestStats: []RequestStat{
+				mkStat("history-read", "history", 200),
+				mkStat("history-read", "page", 50),
+			},
+			want: 25.0,
+		},
+		{
+			name:     "search-read with auto-warmup canonical inject still uses request stats",
+			scenario: "search-read", inject: InjectCanonical,
+			measured: 5 * time.Second,
+			requestStats: []RequestStat{
+				mkStat("search-read", "search", 100),
+			},
+			want: 20.0,
+		},
+		{
+			name:     "room-rpc uses request stats",
+			scenario: "room-rpc", inject: InjectFrontdoor,
+			measured: 4 * time.Second,
+			requestStats: []RequestStat{
+				mkStat("room-rpc", "create", 40),
+			},
+			want: 10.0,
+		},
+		{
+			name:     "zero measured returns zero",
+			scenario: "messaging-pipeline", inject: InjectFrontdoor,
+			measured: 0, e1Count: 100, missingReplies: 0,
+			want: 0.0,
+		},
+		{
+			name:     "negative measured returns zero",
+			scenario: "history-read", inject: InjectFrontdoor,
+			measured:     -1 * time.Second,
+			requestStats: []RequestStat{mkStat("history-read", "history", 100)},
+			want:         0.0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := computeActualRate(tc.scenario, tc.inject, tc.measured,
+				tc.e1Count, tc.missingReplies, tc.sentMeasured, tc.requestStats)
+			assert.InDelta(t, tc.want, got, 0.0001)
+		})
+	}
+}
