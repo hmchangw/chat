@@ -990,21 +990,3 @@ func gatheredCounterValue(mfs []*dto.MetricFamily, name string, labelName, label
 	}
 	return total
 }
-
-func counterValue(m *Metrics, name string) float64 {
-	mfs, err := m.Registry.Gather()
-	if err != nil {
-		slog.Warn("metrics gather", "error", err)
-		return 0
-	}
-	return gatheredCounterValue(mfs, name, "", "")
-}
-
-func counterValueLabeled(m *Metrics, name, labelName, labelValue string) float64 {
-	mfs, err := m.Registry.Gather()
-	if err != nil {
-		slog.Warn("metrics gather", "error", err)
-		return 0
-	}
-	return gatheredCounterValue(mfs, name, labelName, labelValue)
-}
