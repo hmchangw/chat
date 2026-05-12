@@ -42,15 +42,21 @@ type streamManager interface {
 // cross-site OUTBOX→INBOX sourcing) belongs to ops/IaC and is layered on in
 // production. App code never sets it -- but it must not ERASE it either.
 //
-// When the stream already exists, this helper reads its current Sources +
-// SubjectTransforms and merges them into the schema-only update so that
-// CreateOrUpdateStream preserves federation config across worker restarts.
-// Without this preservation, every worker restart would briefly clear
-// INBOX_<siteID>.Sources, breaking cross-site sourcing for any in-flight
-// gateway deliveries until the next ops/IaC reconciliation. (The e2e
-// harness's BootstrapFederation hits this race directly when
-// inbox-worker-b is stop/started under E2E_REUSE_STACK; production
-// rarely restarts inbox-worker, but the same window exists at deploy.)
+// When the stream already exists, this helper reads its current Sources
+// (and the SubjectTransforms nested inside each StreamSource) and merges
+// them into the schema-only update so CreateOrUpdateStream preserves the
+// cross-site federation config across worker restarts. Without this,
+// every worker restart would briefly clear INBOX_<siteID>.Sources,
+// breaking cross-site sourcing for any in-flight gateway deliveries
+// until the next ops/IaC reconciliation. The e2e harness's
+// BootstrapFederation hits this race directly when inbox-worker-b is
+// stop/started under E2E_REUSE_STACK; production rarely restarts
+// inbox-worker, but the same window exists at deploy.
+//
+// NARROW CONTRACT: this preserves Sources only. INBOX is Sources-based
+// today (per pkg/stream.Inbox). Top-level `Mirror` and top-level
+// `SubjectTransform` on the StreamConfig are NOT preserved -- if ops
+// ever switches INBOX to a Mirror-based federation, expand this helper.
 func bootstrapStreams(ctx context.Context, js streamManager, siteID string, enabled bool) error {
 	inboxCfg := stream.Inbox(siteID)
 	if enabled {

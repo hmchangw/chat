@@ -19,9 +19,11 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,12 +31,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// authResponse mirrors the success payload from auth-service/handler.go.
-// We don't import the service-internal type because it's package-local.
-type authResponse struct {
-	NATSJWT string `json:"natsJwt"`
-}
 
 // TestAuthHTTP_HealthzReturnsOK verifies the basic ping contract that the
 // docker-compose healthcheck depends on. Status 200 + "ok" body keyword.
@@ -126,28 +122,40 @@ func TestAuthHTTP_AuthRejectsBadSSOToken(t *testing.T) {
 }
 
 // TestAuthHTTP_AuthHappyPath round-trips a real Keycloak password grant
-// + auth-service POST /auth and asserts the returned natsJwt is non-empty
-// + decodes as a JWT (has two dots). Mirrors what harness.Authenticate
-// does internally but as a black-box assertion.
+// + auth-service POST /auth and asserts the returned natsJwt decodes as
+// a NATS JWT with the expected `sub` (account == "alice").
 func TestAuthHTTP_AuthHappyPath(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
-	// Borrow the harness's keycloak client to obtain a real SSO token.
 	id := site.Authenticate(t, ctx, "alice")
-	require.NotEmpty(t, id.NATSJWT,
-		"harness Authenticate already proves /auth happy path; "+
-			"this test exists so a future refactor of Authenticate doesn't lose direct coverage")
+	require.NotEmpty(t, id.NATSJWT)
 
-	// Verify the JWT shape (header.payload.signature => 2 dots).
-	dots := 0
-	for _, ch := range id.NATSJWT {
-		if ch == '.' {
-			dots++
-		}
+	// JWT shape: header.payload.signature
+	parts := strings.Split(id.NATSJWT, ".")
+	require.Len(t, parts, 3, "natsJwt must be a 3-segment JWT; got %q", id.NATSJWT)
+
+	// Decode the payload (base64-url, no padding) and verify the
+	// auth-service-controlled NATS permissions encode the realm
+	// account. NATS user JWTs embed permissions under `nats.pub.allow`
+	// / `nats.sub.allow`; auth-service writes account-scoped subjects
+	// like `chat.user.{account}.>` -- a strong proxy for "this JWT is
+	// for this user." `name` is NOT a standard claim in NATS user JWTs.
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err, "JWT payload must be base64-url")
+	var claims struct {
+		Iss  string `json:"iss"`
+		NATS struct {
+			Pub struct {
+				Allow []string `json:"allow"`
+			} `json:"pub"`
+		} `json:"nats"`
 	}
-	assert.Equal(t, 2, dots, "natsJwt must be a 3-segment JWT; got %q", id.NATSJWT)
+	require.NoError(t, json.Unmarshal(payloadBytes, &claims))
+	assert.NotEmpty(t, claims.Iss, "JWT must have iss claim (the signing operator/account)")
+	assert.Contains(t, claims.NATS.Pub.Allow, "chat.user.alice.>",
+		"JWT permissions must scope to the realm account; allow=%v", claims.NATS.Pub.Allow)
 }
 
 // httpGet / httpPostJSON: minimal non-Resty helpers so we exercise the raw
@@ -165,9 +173,3 @@ func httpPostJSON(t *testing.T, url string, body any, timeout time.Duration) (*h
 	c := &http.Client{Timeout: timeout}
 	return c.Post(url, "application/json", bytes.NewReader(buf))
 }
-
-// Compile-time guard: authResponse decode shape stays in sync with
-// auth-service's success payload. If the field name ever drifts, the
-// compiler will flag a referenced-but-unused struct here -- a forcing
-// function to update both sides.
-var _ = authResponse{}

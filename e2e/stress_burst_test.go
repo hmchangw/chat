@@ -157,17 +157,21 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 	sort.Strings(missing)
 	assert.Empty(t, missing, "broadcasts must reach bob for every msgID; missing=%v", missing)
 
-	// Cassandra: 100 distinct rows in messages_by_id (PK enforces dedup
-	// per ID; concurrent inserts of distinct IDs must land 100 distinct
-	// rows).
+	// Cassandra: each msgID must have EXACTLY ONE row in messages_by_id
+	// (the dedup table; PK = message_id). Counting messages_by_room with
+	// `>= N` would have been ambiguous because room_created +
+	// members_added system events pad that count by ~2 -- a regression
+	// dropping up to 2 user messages would still pass. Per-msgID lookup
+	// in messages_by_id (the dedup view) is the tight assertion.
 	sess := site.CassandraSession(t)
 	defer sess.Close()
-	var rowCount int
-	require.NoError(t, sess.Query(
-		`SELECT COUNT(*) FROM chat.messages_by_room WHERE room_id = ?`,
-		roomID,
-	).WithContext(ctx).Scan(&rowCount))
-	assert.GreaterOrEqual(t, rowCount, N,
-		"messages_by_room must have at least %d rows for room=%s (system events may push higher)",
-		N, roomID)
+	for _, id := range msgIDs {
+		var c int
+		require.NoError(t, sess.Query(
+			`SELECT COUNT(*) FROM chat.messages_by_id WHERE message_id = ?`,
+			id,
+		).WithContext(ctx).Scan(&c))
+		require.Equal(t, 1, c,
+			"messages_by_id must have exactly 1 row for msgID=%s; got %d", id, c)
+	}
 }

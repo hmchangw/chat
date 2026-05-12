@@ -52,6 +52,12 @@ import (
 // previous "skipped because no encrypted worker exists" rationale is
 // resolved by the new DURABLE_NAME env var (post-R3 production change).
 func TestEncryption_OnSmoke(t *testing.T) {
+	// Single-site, per-test room + per-test seeded valkey key under a
+	// unique roomID. broadcast-worker-a-enc is a shared consumer
+	// (durable "broadcast-worker-enc"); each parallel test pulls only
+	// its own room's events because the broadcast subject is keyed by
+	// roomID. Safe for parallel.
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
@@ -136,7 +142,11 @@ func TestEncryption_OnSmoke(t *testing.T) {
 			continue
 		}
 		// Encrypted variant: Message must be nil per handler.go:127.
-		assert.Nil(t, evt.Message,
+		// require (not assert) -- subsequent Unmarshal into
+		// roomcrypto.EncryptedMessage is meaningful only when Message==nil;
+		// continuing past a non-nil Message produces a confusing downstream
+		// failure.
+		require.Nil(t, evt.Message,
 			"RoomEvent with EncryptedMessage must have Message==nil")
 		var env roomcrypto.EncryptedMessage
 		require.NoError(t, json.Unmarshal(evt.EncryptedMessage, &env),

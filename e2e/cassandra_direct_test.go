@@ -16,9 +16,11 @@
 package e2e
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/gocql/gocql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -148,17 +150,23 @@ func TestCassandra_MessagesByIdMatchesByRoom(t *testing.T) {
 	sess := site.CassandraSession(t)
 	defer sess.Close()
 
-	var byRoomMsg, byRoomRID string
-	require.NoError(t, sess.Query(
+	// Use Iter() not Scan() -- Scan() silently picks the first row, which
+	// would mask a hypothetical duplicate-write regression. Iter() with
+	// an explicit row count catches it.
+	byRoomMsg, byRoomRID, byRoomCount := scanOneRow(t, ctx, sess,
 		`SELECT message_id, room_id FROM chat.messages_by_room WHERE room_id = ? AND message_id = ? ALLOW FILTERING`,
 		roomID, msgID,
-	).WithContext(ctx).Scan(&byRoomMsg, &byRoomRID))
+	)
+	require.Equal(t, 1, byRoomCount,
+		"messages_by_room must have exactly 1 row for (room=%s, msg=%s); got %d",
+		roomID, msgID, byRoomCount)
 
-	var byIdMsg, byIdRID string
-	require.NoError(t, sess.Query(
+	byIdMsg, byIdRID, byIdCount := scanOneRow(t, ctx, sess,
 		`SELECT message_id, room_id FROM chat.messages_by_id WHERE message_id = ?`,
 		msgID,
-	).WithContext(ctx).Scan(&byIdMsg, &byIdRID))
+	)
+	require.Equal(t, 1, byIdCount,
+		"messages_by_id must have exactly 1 row for msg=%s; got %d", msgID, byIdCount)
 
 	assert.Equal(t, msgID, byRoomMsg)
 	assert.Equal(t, msgID, byIdMsg)
@@ -166,6 +174,23 @@ func TestCassandra_MessagesByIdMatchesByRoom(t *testing.T) {
 		"messages_by_room and messages_by_id must agree on room_id "+
 			"(message-worker writes both; denormalization broken if they diverge)")
 	assert.Equal(t, roomID, byRoomRID)
+}
+
+// scanOneRow runs a SELECT message_id, room_id query and returns the row's
+// fields plus the total row count. Caller asserts count==1 to catch
+// hypothetical duplicates that Scan() would mask.
+func scanOneRow(t *testing.T, ctx context.Context, sess *gocql.Session, cql string, args ...any) (msg, room string, count int) {
+	t.Helper()
+	iter := sess.Query(cql, args...).WithContext(ctx).Iter()
+	var m, r string
+	for iter.Scan(&m, &r) {
+		if count == 0 {
+			msg, room = m, r
+		}
+		count++
+	}
+	require.NoError(t, iter.Close(), "iter close")
+	return
 }
 
 // TestCassandra_MessagesByIdDedup: send the SAME messageID twice. The

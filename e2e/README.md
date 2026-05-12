@@ -31,7 +31,7 @@ every time. The cost is one skipped test (catchup -- see below).
 The compose file (`docker-local/e2e/compose.e2e.yaml`) provisions:
 
 - **Per site**: NATS (+ JetStream), MongoDB, Cassandra, Elasticsearch,
-  Valkey, Keycloak, auth-service, plus 8 backend workers:
+  Valkey, Keycloak, auth-service, plus 10 backend workers:
   - message-gatekeeper, message-worker, history-service
   - room-service, room-worker
   - broadcast-worker, notification-worker, search-service, search-sync-worker
