@@ -57,7 +57,7 @@ func TestRepository_GetThreadMessages_IsolatesByThreadRoomID(t *testing.T) {
 	q, err := ParsePageRequest("", 100)
 	require.NoError(t, err)
 
-	page1, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
+	page1, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(0, 0, -1), q)
 	require.NoError(t, err)
 	assert.Len(t, page1.Data, 3)
 	for _, m := range page1.Data {
@@ -65,7 +65,7 @@ func TestRepository_GetThreadMessages_IsolatesByThreadRoomID(t *testing.T) {
 		assert.Equal(t, "m-parent-1", m.ThreadParentID)
 	}
 
-	page2, err := repo.GetThreadMessages(ctx, "r-A", "tr-2", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
+	page2, err := repo.GetThreadMessages(ctx, "r-A", "tr-2", base.Add(time.Hour), base.AddDate(0, 0, -1), q)
 	require.NoError(t, err)
 	assert.Len(t, page2.Data, 5)
 	for _, m := range page2.Data {
@@ -85,14 +85,14 @@ func TestRepository_GetThreadMessages_IsolatesByRoomID(t *testing.T) {
 	q, err := ParsePageRequest("", 100)
 	require.NoError(t, err)
 
-	pageA, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
+	pageA, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(0, 0, -1), q)
 	require.NoError(t, err)
 	assert.Len(t, pageA.Data, 2)
 	for _, m := range pageA.Data {
 		assert.Equal(t, "r-A", m.RoomID)
 	}
 
-	pageB, err := repo.GetThreadMessages(ctx, "r-B", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
+	pageB, err := repo.GetThreadMessages(ctx, "r-B", "tr-1", base.Add(time.Hour), base.AddDate(0, 0, -1), q)
 	require.NoError(t, err)
 	assert.Len(t, pageB.Data, 4)
 	for _, m := range pageB.Data {
@@ -111,7 +111,7 @@ func TestRepository_GetThreadMessages_OrdersDescByCreatedAt(t *testing.T) {
 	q, err := ParsePageRequest("", 100)
 	require.NoError(t, err)
 
-	page, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
+	page, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(0, 0, -1), q)
 	require.NoError(t, err)
 	require.Len(t, page.Data, 4)
 	for i := 0; i < len(page.Data)-1; i++ {
@@ -228,7 +228,7 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	q, err := ParsePageRequest("", 10)
 	require.NoError(t, err)
 
-	page, err := repo.GetThreadMessages(ctx, "r-thread-full", "tr-full", ts.Add(time.Hour), ts.AddDate(-10, 0, 0), q)
+	page, err := repo.GetThreadMessages(ctx, "r-thread-full", "tr-full", ts.Add(time.Hour), ts.AddDate(0, 0, -1), q)
 	require.NoError(t, err)
 	require.Len(t, page.Data, 1)
 	msg := page.Data[0]

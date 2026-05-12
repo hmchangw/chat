@@ -70,13 +70,20 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		ceiling = ceiling.Add(time.Millisecond)
 	}
 
-	// Floor: room.createdAt for full-access, or max(createdAt, accessSince) for restricted.
+	// Floor: max(createdAt, accessSince) for restricted access, clamped up to
+	// historyFloor so an ancient createdAt can't push the walk further back
+	// than configured. Mirrors walkBounds in room_times.go.
+	historyFloor := now.Add(-s.historyFloor)
 	floor := createdAt
 	if accessSince != nil && accessSince.After(floor) {
 		floor = *accessSince
 	}
-	if floor.IsZero() {
-		floor = now.Add(-s.historyFloor)
+	if floor.IsZero() || floor.Before(historyFloor) {
+		floor = historyFloor
+	}
+	// Guard against inverted range: collapsed thread on a room older than historyFloor.
+	if ceiling.Before(floor) {
+		ceiling = floor
 	}
 
 	page, err := s.msgReader.GetThreadMessages(c, roomID, msg.ThreadRoomID, ceiling, floor, pageReq)

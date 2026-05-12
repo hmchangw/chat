@@ -86,6 +86,9 @@ type HistoryService struct {
 }
 
 // New creates a HistoryService with the given repositories and event publisher.
+// When encrypt is true, keyProvider must be non-nil — encryptEditMsg would
+// otherwise nil-panic at first edit. We enforce this at construction so the
+// invariant fails fast at startup rather than mid-request.
 func New(
 	msgs MessageRepository,
 	subs SubscriptionRepository,
@@ -96,6 +99,9 @@ func New(
 	historyFloor time.Duration,
 	encrypt bool,
 ) *HistoryService {
+	if encrypt && keyProvider == nil {
+		panic("service.New: encrypt=true but keyProvider is nil")
+	}
 	return &HistoryService{
 		msgReader:     msgs,
 		msgWriter:     msgs,
