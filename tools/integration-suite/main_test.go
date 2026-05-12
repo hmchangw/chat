@@ -2,9 +2,12 @@ package integrationsuite
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/cucumber/godog"
 )
@@ -16,11 +19,8 @@ var (
 )
 
 func TestFeatures(t *testing.T) {
-	// Skip when env vars are unset so `make test` (whole-repo) can pass
-	// without a live integration stack. The suite is invoked explicitly
-	// via `make integration-suite`.
 	if os.Getenv("SITES") == "" {
-		t.Skip("integration-suite: SITES env var unset; run via `make integration-suite`")
+		t.Skip("integration suite skipped: SITES env not set")
 	}
 
 	cfg, err := LoadConfig()
@@ -32,19 +32,61 @@ func TestFeatures(t *testing.T) {
 	suiteWorld = NewWorld(suiteRunID)
 	slog.Info("integration-suite: starting", "runID", suiteRunID, "sites", cfg.Sites)
 
+	if err := os.MkdirAll("reports", 0o755); err != nil {
+		t.Fatalf("reports dir: %v", err)
+	}
+
 	suite := godog.TestSuite{
 		Name:                 "integration-suite",
 		ScenarioInitializer:  InitializeScenario,
 		TestSuiteInitializer: InitializeTestSuite,
 		Options: &godog.Options{
-			Format:   "pretty",
+			Format:   "pretty,cucumber:reports/cucumber.json,junit:reports/junit.xml",
 			Paths:    []string{"features"},
 			TestingT: t,
 		},
 	}
-	if status := suite.Run(); status != 0 {
-		t.Fatalf("integration-suite: godog exited with status %d", status)
+
+	startedAt := time.Now().UTC()
+	exit := suite.Run()
+	duration := time.Since(startedAt).Round(time.Second)
+
+	// Post-run: build human summary regardless of exit code.
+	if err := writeHumanSummary(startedAt, duration); err != nil {
+		t.Logf("integration-suite: writing human summary: %v", err)
 	}
+
+	if exit != 0 {
+		t.Fatalf("integration-suite: exit %d", exit)
+	}
+}
+
+func writeHumanSummary(startedAt time.Time, duration time.Duration) error {
+	doc, err := os.ReadFile("reports/cucumber.json")
+	if err != nil {
+		return fmt.Errorf("read cucumber.json: %w", err)
+	}
+	summary, failures, err := ParseCucumber(doc)
+	if err != nil {
+		return err
+	}
+	summary.RunID = suiteRunID
+	summary.StartISO = startedAt.Format(time.RFC3339)
+	summary.Duration = duration.String()
+	summary.Failures = failures
+
+	out := RenderSummary(summary)
+
+	// Tests run with CWD=tools/integration-suite — walk up to repo root.
+	targetDir := filepath.Join("..", "..", "docs", "integration-suite")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", targetDir, err)
+	}
+	target := filepath.Join(targetDir, "last-run.md")
+	if err := os.WriteFile(target, []byte(out), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", target, err)
+	}
+	return nil
 }
 
 // InitializeTestSuite is a placeholder; config is loaded in TestFeatures
