@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,4 +47,28 @@ func TestNATSRequester_PoolRouting(t *testing.T) {
 	// IndexFor is deterministic regardless of the runID.
 	assert.Equal(t, 0, r.pool.IndexFor("alice"))
 	assert.Equal(t, 0, r.pool.IndexFor("bob"))
+}
+
+// TestNATSRequester_Request_WrapsTransportError exercises the Request method
+// error-wrapping path. A size-1 pool backed by a zero-value *nats.Conn will
+// cause RequestMsgWithContext to return an error, which we verify is wrapped
+// with the "nats request" prefix. This tests the error-handling path that was
+// missing from the original requester_test.go suite.
+func TestNATSRequester_Request_WrapsTransportError(t *testing.T) {
+	// Build a requester with a size-1 pool backed by a zero-value conn.
+	pool := NewTestConnPool(1)
+	pool.observer = &nats.Conn{} // zero-value conn → RequestMsgWithContext will error
+	r := &natsRequester{
+		pool:  pool,
+		runID: "test-run",
+	}
+
+	// Call Request with a short timeout — the zero-value conn will cause an error.
+	ctx := context.Background()
+	_, err := r.Request(ctx, "test.subject", []byte("{}"), 100*time.Millisecond)
+
+	// Verify the error is wrapped with the "nats request" prefix.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nats request",
+		"Request error must be wrapped with 'nats request' prefix")
 }
