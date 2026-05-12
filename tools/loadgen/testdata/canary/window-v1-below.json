@@ -1,0 +1,8 @@
+{
+  "name": "below",
+  "rps": 200,
+  "breachMs": 50,
+  "sustainS": 30,
+  "wantTrip": false,
+  "v1ElapsedS": -1e-9
+}

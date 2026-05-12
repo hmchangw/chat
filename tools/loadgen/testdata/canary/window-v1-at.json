@@ -1,0 +1,8 @@
+{
+  "name": "at",
+  "rps": 500,
+  "breachMs": 250,
+  "sustainS": 30,
+  "wantTrip": true,
+  "v1ElapsedS": 31
+}

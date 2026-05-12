@@ -2,80 +2,94 @@ package main
 
 import (
 	"log/slog"
-	"slices"
-	"sort"
 	"sync"
 	"time"
 )
 
-// windowSample is one observation in the LatencyWindow ring buffer.
-type windowSample struct {
-	at      time.Time
-	latency time.Duration
-	errored bool
-}
-
-// LatencyWindow is a goroutine-safe ring buffer of recent
+// LatencyWindow is a goroutine-safe rolling time window of recent
 // (latency, errored, at) observations. Phase 3 §3.5 calls for this
 // because Prometheus Histograms expose only cumulative bucket counts —
 // we cannot extract a sliding-window p99 from a Gather() snapshot
 // alone. The watcher reads from this in-process buffer; Prometheus
 // scrape continues to read from the parallel histogram.
 //
-// S3: maxSamples bounds the slice length so the periodic percentile
-// sort cost stays bounded at high publish rates (e.g. 5k rps × 60s
-// retention would otherwise hold 300k samples). When 0, no cap is
-// applied (legacy behavior). The cap policy is drop-oldest, which
-// preserves sliding-window semantics — we lose the early end of the
-// retention window once the rate × retention exceeds the cap, but
-// the abort watcher only consults the tail (the sustain interval),
-// which is much shorter than the retention.
+// Internals: the ring buffer stores (at, latency, errored) entries.
+// Percentile queries build a temporary WindowHistogram (HDR) over the
+// requested sub-window — O(n) per query where n is the window size.
+// Coverage (whether the oldest tracked sample is older than `sustain`)
+// is answered directly from the ring's head pointer in O(1).
+//
+// The HDR histogram gives O(1) Record and O(1) Quantile, eliminating
+// the O(n log n) sort that the v1 slice implementation required. The
+// O(n) rebuild per query matches the v1 O(n) slice copy cost, with the
+// sort cost eliminated.
+//
+// maxSamples bounds the ring buffer length so retention stays bounded
+// at high publish rates. When 0, no cap is applied. WARNING: when
+// peak_rps × max_sustain > cap, the ring compresses below the sustain
+// interval and the abort watcher cannot fire; it emits a slog.Warn
+// "abort watcher deafened by sample cap". Size cap >=
+// peak_rps × max_sustain to keep the watcher functional.
 type LatencyWindow struct {
 	mu         sync.Mutex
 	retain     time.Duration
-	samples    []windowSample
 	maxSamples int
+
+	// ring is the entry store. Entries are appended in monotonic time
+	// order. For bounded rings (maxSamples > 0), head and tail index
+	// into the fixed-size slice using modular arithmetic. For unbounded
+	// rings (maxSamples == 0), head=0 and the slice grows via append.
+	ring    []ringEntry
+	head    int // index of oldest live entry (bounded only)
+	tail    int // index of next write slot (bounded only)
+	ringLen int // number of live entries
+}
+
+// ringEntry records one observation.
+type ringEntry struct {
+	at      time.Time
+	latency time.Duration
+	errored bool
 }
 
 // NewLatencyWindow returns a buffer that retains samples for the
 // specified retention window. Samples older than `retain` are pruned
-// lazily on each Add.
+// lazily on each AddAt.
 func NewLatencyWindow(retain time.Duration) *LatencyWindow {
 	return &LatencyWindow{retain: retain}
 }
 
-// WithMaxSamples caps the slice length at n (drop-oldest when full)
-// and returns the receiver for fluent construction:
+// WithMaxSamples caps the ring buffer at n entries (drop-oldest when
+// full) and returns the receiver for fluent construction:
 //
 //	w := NewLatencyWindow(retain).WithMaxSamples(10_000)
 //
 // 0 disables the cap (legacy unbounded behavior). Concurrent updates
 // are safe (locked) but the new cap only takes effect on the next
-// Add — there's no retroactive truncation. Designed for one-shot
-// construction-time setup; runtime mutation is supported but not the
-// expected use case.
+// Add — there's no retroactive truncation.
 func (w *LatencyWindow) WithMaxSamples(n int) *LatencyWindow {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.maxSamples = n
+	if n > 0 {
+		// Pre-allocate bounded ring; existing ring is discarded (no
+		// retroactive truncation per the documented contract).
+		w.ring = make([]ringEntry, n)
+		w.head = 0
+		w.tail = 0
+		w.ringLen = 0
+	}
 	return w
 }
 
-// Saturated reports whether the slice is currently at or above its
-// cap (i.e. the next Add will drop the oldest sample). The predicate
-// fires one sample early — at len == cap, before the next Add grows
-// to cap+1 — which is intentional: better to fire the cap-masking
-// diagnostic one sample too soon than to miss it. Used by the abort
-// watcher to emit a structured diagnostic when the cap appears to
-// be masking a sustained breach: if Saturated() is true AND
-// P99WithCoverage returns covered=false, the watcher can't fire
-// because retention has been compressed below the sustain interval.
-// Returns false when no cap is set (uncapped windows are never
-// "saturated"; they grow without bound).
+// Saturated reports whether the ring is currently at or above its cap.
+// Fires one sample early (at len == cap) — better to fire the
+// cap-masking diagnostic one sample too soon than to miss it.
+// Returns false when no cap is set.
 func (w *LatencyWindow) Saturated() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.maxSamples > 0 && len(w.samples) >= w.maxSamples
+	return w.maxSamples > 0 && w.ringLen >= w.maxSamples
 }
 
 // Add records one observation at time.Now(). Use AddAt in tests for
@@ -84,25 +98,16 @@ func (w *LatencyWindow) Add(latency time.Duration, errored bool) {
 	w.AddAt(time.Now(), latency, errored)
 }
 
-// AddAt records one observation at the given clock time. Prunes
-// samples older than (at - retain) before appending.
+// AddAt records one observation at the given clock time. Prunes samples
+// older than (at - retain) before appending.
 func (w *LatencyWindow) AddAt(at time.Time, latency time.Duration, errored bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	cutoff := at.Add(-w.retain)
-	// Drop everything older than cutoff. Samples are appended in
-	// monotonic time, so the first index >= cutoff is a binary search.
-	idx := sort.Search(len(w.samples), func(i int) bool {
-		return !w.samples[i].at.Before(cutoff)
-	})
-	if idx > 0 {
-		w.samples = w.samples[idx:]
-	}
-	w.samples = append(w.samples, windowSample{at: at, latency: latency, errored: errored})
-	// S3: cap the slice (drop-oldest) so the periodic percentile sort
-	// stays bounded under sustained high publish rates.
-	if w.maxSamples > 0 && len(w.samples) > w.maxSamples {
-		w.samples = w.samples[len(w.samples)-w.maxSamples:]
+	w.pruneByTimeLocked(at)
+	w.appendLocked(ringEntry{at: at, latency: latency, errored: errored})
+	// S3: cap the ring (drop-oldest) so retention stays bounded.
+	if w.maxSamples > 0 && w.ringLen > w.maxSamples {
+		w.advanceHeadLocked()
 	}
 }
 
@@ -111,150 +116,204 @@ func (w *LatencyWindow) AddAt(at time.Time, latency time.Duration, errored bool)
 func (w *LatencyWindow) P99(now time.Time, over time.Duration) time.Duration {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.percentileLocked(now, over, 0.99)
+	return w.quantileInWindowLocked(now, over, 0.99)
 }
 
-// P50 returns the median latency over the window. Used by the abort
-// watcher's sustain check: if more than half the samples breach the
-// limit, the median is over it — the breach is dominant rather than
-// a transient spike.
+// P50 returns the median latency over the window.
 func (w *LatencyWindow) P50(now time.Time, over time.Duration) time.Duration {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.percentileLocked(now, over, 0.50)
+	return w.quantileInWindowLocked(now, over, 0.50)
 }
 
 // percentileAt returns an arbitrary quantile over the window, used by
-// the progress reporter to surface p95 alongside p50/p99. The Phase 3
-// §3.2 spec lists these three percentile fields on every progress line.
+// the progress reporter to surface p95 alongside p50/p99.
 func (w *LatencyWindow) percentileAt(now time.Time, over time.Duration, q float64) time.Duration {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.percentileLocked(now, over, q)
+	return w.quantileInWindowLocked(now, over, q)
 }
 
 // P99WithCoverage returns the p99 AND whether the window covers the
 // full sustain interval, in a single locked operation. Avoids the
 // TOCTOU race where a separate P99() and a separate "is the oldest
-// sample old enough" check could interleave with an Add that prunes
-// the head between them.
+// sample old enough" check could interleave with an Add.
 func (w *LatencyWindow) P99WithCoverage(now time.Time, over time.Duration) (time.Duration, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.samples) == 0 {
+	if w.ringLen == 0 {
 		return 0, false
 	}
-	covered := !w.samples[0].at.After(now.Add(-over))
-	return w.percentileLocked(now, over, 0.99), covered
+	covered := !w.oldestEntryLocked().at.After(now.Add(-over))
+	return w.quantileInWindowLocked(now, over, 0.99), covered
 }
 
-// ErrorRateWithCoverage is the error-rate companion to P99WithCoverage:
-// returns the error fraction over the last `over` window AND whether
-// the window has accumulated full coverage, atomically.
+// ErrorRateWithCoverage returns the error fraction over the last `over`
+// window AND whether the window has accumulated full coverage, atomically.
 func (w *LatencyWindow) ErrorRateWithCoverage(now time.Time, over time.Duration) (float64, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.samples) == 0 {
+	if w.ringLen == 0 {
 		return 0, false
 	}
-	covered := !w.samples[0].at.After(now.Add(-over))
+	covered := !w.oldestEntryLocked().at.After(now.Add(-over))
 	cutoff := now.Add(-over)
 	total, errs := 0, 0
-	for i := range w.samples {
-		if w.samples[i].at.Before(cutoff) || w.samples[i].at.After(now) {
-			continue
+	w.iterLocked(func(e ringEntry) {
+		if e.at.Before(cutoff) || e.at.After(now) {
+			return
 		}
 		total++
-		if w.samples[i].errored {
+		if e.errored {
 			errs++
 		}
-	}
+	})
 	if total == 0 {
 		return 0, covered
 	}
 	return float64(errs) / float64(total), covered
 }
 
-// percentileLocked must be called with w.mu held.
-func (w *LatencyWindow) percentileLocked(now time.Time, over time.Duration, q float64) time.Duration {
-	latencies := w.windowedLatenciesLocked(now, over)
-	sortInPlace(latencies)
-	return percentileFromSorted(latencies, q)
-}
-
 // Percentiles returns multiple quantiles over the same window in a
-// single locked operation, sorting the in-window latencies exactly
-// once. Progress reporting and other multi-percentile readouts MUST
-// prefer this over N separate P50/P95/P99 calls — each separate call
-// would re-take the lock, re-copy the slice, and re-sort it.
-// Returns a slice the same length as `qs`. When `qs` is empty the
-// return is nil (callers should treat empty/nil equivalently).
+// single locked operation. Returns a slice the same length as `qs`.
+// When `qs` is empty, returns nil.
 func (w *LatencyWindow) Percentiles(now time.Time, over time.Duration, qs ...float64) []time.Duration {
 	if len(qs) == 0 {
 		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	latencies := w.windowedLatenciesLocked(now, over)
-	sortInPlace(latencies)
+	// Build the in-window histogram once; query all quantiles from it.
+	tmp := w.buildWindowHistLocked(now, over)
 	out := make([]time.Duration, len(qs))
 	for i, q := range qs {
-		out[i] = percentileFromSorted(latencies, q)
+		out[i] = tmp.Quantile(q)
 	}
 	return out
 }
 
-// windowedLatenciesLocked returns the in-window latencies (unsorted).
-// Caller must hold w.mu.
-func (w *LatencyWindow) windowedLatenciesLocked(now time.Time, over time.Duration) []time.Duration {
-	cutoff := now.Add(-over)
-	latencies := make([]time.Duration, 0, len(w.samples))
-	for i := range w.samples {
-		if w.samples[i].at.Before(cutoff) || w.samples[i].at.After(now) {
-			continue
-		}
-		latencies = append(latencies, w.samples[i].latency)
-	}
-	return latencies
-}
-
-// sortInPlace ascending-sorts the slice (no copy). The caller owns
-// the slice and the post-call ordering. Uses slices.Sort (no
-// reflection) which is ~25-30% faster than the older sort.Slice on
-// typed slices like []time.Duration.
-func sortInPlace(latencies []time.Duration) {
-	slices.Sort(latencies)
-}
-
-func percentileFromSorted(sorted []time.Duration, q float64) time.Duration {
-	if len(sorted) == 0 {
-		return 0
-	}
-	idx := int(float64(len(sorted)-1) * q)
-	return sorted[idx]
-}
-
-// ErrorRate returns the fraction of errored samples over the last
-// `over` window ending at `now`. Returns 0 when the window is empty.
+// ErrorRate returns the fraction of errored samples over the last `over`
+// window ending at `now`. Returns 0 when the window is empty.
 func (w *LatencyWindow) ErrorRate(now time.Time, over time.Duration) float64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	cutoff := now.Add(-over)
 	total, errs := 0, 0
-	for i := range w.samples {
-		if w.samples[i].at.Before(cutoff) || w.samples[i].at.After(now) {
-			continue
+	w.iterLocked(func(e ringEntry) {
+		if e.at.Before(cutoff) || e.at.After(now) {
+			return
 		}
 		total++
-		if w.samples[i].errored {
+		if e.errored {
 			errs++
 		}
-	}
+	})
 	if total == 0 {
 		return 0
 	}
 	return float64(errs) / float64(total)
 }
+
+// ── internal helpers ─────────────────────────────────────────────────────────
+
+// quantileInWindowLocked builds a temporary HDR histogram from ring
+// entries within [now-over, now] and returns the requested quantile.
+// O(n) where n is the number of in-window entries. The HDR eliminates
+// the O(n log n) sort required by the v1 sorted-slice implementation.
+// Caller must hold w.mu.
+func (w *LatencyWindow) quantileInWindowLocked(now time.Time, over time.Duration, q float64) time.Duration {
+	return w.buildWindowHistLocked(now, over).Quantile(q)
+}
+
+// buildWindowHistLocked returns a fresh WindowHistogram populated with
+// the latencies of ring entries in [now-over, now]. Returns an empty
+// histogram when the ring is empty or no entries fall in the window.
+// Caller must hold w.mu.
+func (w *LatencyWindow) buildWindowHistLocked(now time.Time, over time.Duration) *WindowHistogram {
+	tmp := NewWindowHistogram()
+	cutoff := now.Add(-over)
+	w.iterLocked(func(e ringEntry) {
+		if e.at.Before(cutoff) || e.at.After(now) {
+			return
+		}
+		tmp.Record(e.latency)
+	})
+	return tmp
+}
+
+// pruneByTimeLocked removes ring entries older than (at - retain).
+// Must be called with w.mu held.
+func (w *LatencyWindow) pruneByTimeLocked(at time.Time) {
+	if w.ringLen == 0 {
+		return
+	}
+	cutoff := at.Add(-w.retain)
+	for w.ringLen > 0 && w.oldestEntryLocked().at.Before(cutoff) {
+		w.advanceHeadLocked()
+	}
+}
+
+// appendLocked adds a new entry to the ring. For bounded rings this
+// writes at tail and wraps; for unbounded rings it appends to the slice.
+func (w *LatencyWindow) appendLocked(e ringEntry) {
+	if w.maxSamples == 0 {
+		// Unbounded: simple append.
+		w.ring = append(w.ring, e)
+		w.ringLen = len(w.ring)
+		w.tail = w.ringLen
+		return
+	}
+	// Bounded ring buffer: write at tail, advance tail.
+	w.ring[w.tail] = e
+	w.tail = (w.tail + 1) % w.maxSamples
+	w.ringLen++
+}
+
+// advanceHeadLocked drops the oldest entry by advancing the head pointer.
+func (w *LatencyWindow) advanceHeadLocked() {
+	if w.ringLen == 0 {
+		return
+	}
+	if w.maxSamples == 0 {
+		// Unbounded: drop first element.
+		w.ring = w.ring[1:]
+		w.ringLen = len(w.ring)
+		w.tail = w.ringLen
+		w.head = 0
+		return
+	}
+	w.head = (w.head + 1) % w.maxSamples
+	w.ringLen--
+}
+
+// oldestEntryLocked returns the oldest (head) ring entry.
+// Caller must ensure ringLen > 0.
+func (w *LatencyWindow) oldestEntryLocked() ringEntry {
+	if w.maxSamples == 0 {
+		return w.ring[0]
+	}
+	return w.ring[w.head]
+}
+
+// iterLocked calls fn for each live entry in insertion order (oldest first).
+// Must be called with w.mu held.
+func (w *LatencyWindow) iterLocked(fn func(ringEntry)) {
+	if w.ringLen == 0 {
+		return
+	}
+	if w.maxSamples == 0 {
+		for i := 0; i < w.ringLen; i++ {
+			fn(w.ring[i])
+		}
+		return
+	}
+	// Bounded ring: iterate from head to tail (wrapping).
+	for i := 0; i < w.ringLen; i++ {
+		fn(w.ring[(w.head+i)%w.maxSamples])
+	}
+}
+
+// ── abort watcher ─────────────────────────────────────────────────────────
 
 // abortConfig is the saturation auto-detect configuration. P99Limit==0
 // disables the latency check; ErrorPct==0 disables the error-rate check.

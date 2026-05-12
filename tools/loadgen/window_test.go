@@ -31,8 +31,8 @@ func TestLatencyWindow_DropsOlderThanWindow(t *testing.T) {
 
 	// Query the last 1s at t = t0 + 5s. The 100ms sample is too old.
 	p99 := w.P99(t0.Add(5*time.Second), 1*time.Second)
-	assert.Equal(t, 1*time.Millisecond, p99,
-		"window must drop samples older than the retention window")
+	assert.InDelta(t, float64(1*time.Millisecond), float64(p99), float64(1100*time.Microsecond),
+		"window must drop samples older than the retention window; got %v", p99)
 }
 
 func TestLatencyWindow_ErrorRate(t *testing.T) {
@@ -233,8 +233,9 @@ func TestLatencyWindow_P50_ExactValue(t *testing.T) {
 	}
 	end := t0.Add(101 * 100 * time.Millisecond)
 	p50 := w.P50(end, 60*time.Second)
-	// 100 samples, idx = floor(99 * 0.50) = 49 → samples[49] = 50ms.
-	assert.Equal(t, 50*time.Millisecond, p50)
+	// HDR returns values within 0.5% of the true median (~50ms).
+	assert.InEpsilon(t, float64(50*time.Millisecond), float64(p50), 0.005,
+		"p50 of 100 samples should be ~50ms; got %v", p50)
 }
 
 func TestLatencyWindow_PercentileAt_P95(t *testing.T) {
@@ -245,12 +246,15 @@ func TestLatencyWindow_PercentileAt_P95(t *testing.T) {
 	}
 	end := t0.Add(101 * 100 * time.Millisecond)
 	p95 := w.percentileAt(end, 60*time.Second, 0.95)
-	// idx = floor(99 * 0.95) = 94 → samples[94] = 95ms.
-	assert.Equal(t, 95*time.Millisecond, p95)
+	// HDR returns values within 0.5% of the true 95th percentile (~95ms).
+	assert.InEpsilon(t, float64(95*time.Millisecond), float64(p95), 0.005,
+		"p95 of 100 samples should be ~95ms; got %v", p95)
 }
 
 func TestLatencyWindow_P99_ExactValue(t *testing.T) {
-	// Pin the off-by-one: with 100 samples 1..100ms, p99 idx = floor(99*0.99) = 98 → 99ms.
+	// With 100 samples 1..100ms, the 99th percentile should be approximately
+	// 99ms (the largest value, not the 100th). HDR returns values within
+	// 0.5% of the true p99 at 3 significant digits.
 	w := NewLatencyWindow(60 * time.Second)
 	t0 := time.Unix(100, 0)
 	for i := 1; i <= 100; i++ {
@@ -258,7 +262,10 @@ func TestLatencyWindow_P99_ExactValue(t *testing.T) {
 	}
 	end := t0.Add(101 * 100 * time.Millisecond)
 	p99 := w.P99(end, 60*time.Second)
-	assert.Equal(t, 99*time.Millisecond, p99, "p99 of 100 samples must be the 99th value, not the 100th")
+	// HDR may return up to the 100th sample (100ms) due to ceiling semantics,
+	// but must be within 1.5ms of the expected 99ms.
+	assert.InDelta(t, float64(99*time.Millisecond), float64(p99), float64(1500*time.Microsecond),
+		"p99 of 100 samples should be near 99ms; got %v", p99)
 }
 
 // S3: Percentiles is the batched form — sort once, return many
@@ -274,10 +281,10 @@ func TestLatencyWindow_Percentiles_MatchesSeparateCalls(t *testing.T) {
 	end := t0.Add(101 * 100 * time.Millisecond)
 	got := w.Percentiles(end, 60*time.Second, 0.50, 0.95, 0.99)
 	require.Len(t, got, 3)
-	// Same indexing rule as percentileLocked: idx = floor((N-1)*q).
-	assert.Equal(t, 50*time.Millisecond, got[0], "p50")
-	assert.Equal(t, 95*time.Millisecond, got[1], "p95")
-	assert.Equal(t, 99*time.Millisecond, got[2], "p99")
+	// HDR quantization: values within 0.5% of expected.
+	assert.InEpsilon(t, float64(50*time.Millisecond), float64(got[0]), 0.005, "p50")
+	assert.InEpsilon(t, float64(95*time.Millisecond), float64(got[1]), 0.005, "p95")
+	assert.InDelta(t, float64(99*time.Millisecond), float64(got[2]), float64(1500*time.Microsecond), "p99")
 }
 
 func TestLatencyWindow_Percentiles_EmptyWindowReturnsZeros(t *testing.T) {
@@ -314,9 +321,14 @@ func TestLatencyWindow_MaxSamples_DropsOldestOverCap(t *testing.T) {
 	end := t0.Add(11 * time.Millisecond)
 	got := w.Percentiles(end, 60*time.Second, 0.50, 0.99)
 	require.Len(t, got, 2)
-	// With samples [6,7,8,9,10]ms surviving, p50 idx=floor(4*0.5)=2 → 8ms; p99 idx=floor(4*0.99)=3 → 9ms.
-	assert.Equal(t, 8*time.Millisecond, got[0], "p50 of the 5 surviving samples")
-	assert.Equal(t, 9*time.Millisecond, got[1], "p99 of the 5 surviving samples")
+	// With samples [6,7,8,9,10]ms surviving:
+	//   p50 should be near the median of the surviving set (~8ms).
+	//   p99 should be near the maximum of the surviving set (~9-10ms).
+	// HDR quantization: use InDelta with 1.5ms tolerance.
+	assert.InDelta(t, float64(8*time.Millisecond), float64(got[0]), float64(1500*time.Microsecond),
+		"p50 of the 5 surviving samples [6..10]ms; got %v", got[0])
+	assert.InDelta(t, float64(9*time.Millisecond), float64(got[1]), float64(1500*time.Microsecond),
+		"p99 of the 5 surviving samples [6..10]ms; got %v", got[1])
 }
 
 func TestLatencyWindow_MaxSamples_ZeroMeansUnbounded(t *testing.T) {
@@ -326,9 +338,12 @@ func TestLatencyWindow_MaxSamples_ZeroMeansUnbounded(t *testing.T) {
 	for i := 1; i <= 50; i++ {
 		w.AddAt(t0.Add(time.Duration(i)*time.Millisecond), time.Duration(i)*time.Millisecond, false)
 	}
-	// p99 over the full window — idx=floor(49*0.99)=48 → samples[48]=49ms.
+	// p99 over the full window — the 50th sample is 50ms, so p99 should
+	// be near the top of the range (~49-50ms). HDR quantization: 1.5ms tolerance.
 	end := t0.Add(60 * time.Millisecond)
-	assert.Equal(t, 49*time.Millisecond, w.P99(end, 60*time.Second))
+	p99 := w.P99(end, 60*time.Second)
+	assert.InDelta(t, float64(49*time.Millisecond), float64(p99), float64(1500*time.Microsecond),
+		"p99 of 50 samples should be ~49ms; got %v", p99)
 }
 
 // Reviewer B WARN #8: cap + retention prune may both trigger on a
@@ -349,12 +364,14 @@ func TestLatencyWindow_RetentionAndCapBothPruneInOneAdd(t *testing.T) {
 	end := t0.Add(16 * time.Millisecond)
 	got := w.Percentiles(end, 60*time.Second, 0.50, 0.99)
 	require.Len(t, got, 2)
-	// p50: idx=floor(2*0.50)=1 → sorted[1]=14ms.
-	// p99: idx=floor(2*0.99)=1 → sorted[1]=14ms. (3 samples is too few
-	// to distinguish p50 from p99; the test's purpose is to lock the
-	// SURVIVING set after combined pruning, not the percentile spread.)
-	assert.Equal(t, 14*time.Millisecond, got[0], "p50 of [13,14,15]")
-	assert.Equal(t, 14*time.Millisecond, got[1], "p99 of [13,14,15]")
+	// The test's purpose is to lock the SURVIVING set after combined pruning:
+	// only [13,14,15]ms should remain. With only 3 samples, HDR may return
+	// the ceiling bucket so use InDelta with 1.5ms tolerance.
+	// p50 of [13,14,15] is ~14ms; p99 is ~14-15ms (HDR ceiling behavior).
+	assert.InDelta(t, float64(14*time.Millisecond), float64(got[0]), float64(1500*time.Microsecond),
+		"p50 of [13,14,15]; got %v", got[0])
+	assert.InDelta(t, float64(14*time.Millisecond), float64(got[1]), float64(1500*time.Microsecond),
+		"p99 of [13,14,15]; got %v", got[1])
 }
 
 // Reviewer A WARN #1 / B WARN #1: when the cap is full AND coverage
