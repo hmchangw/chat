@@ -725,6 +725,139 @@ register a blindspot — never fill the gap from training data.
 A short reference prompt for AI authoring lives in
 `tools/integration-suite/README.md` alongside the canonical phrasings.
 
+## Test validity: status and confusion metric
+
+The suite must distinguish behaviors the system **commits to** from
+behaviors that have only been **proposed by an author** (AI or human)
+and not yet ratified. Without this distinction, AI-authored scenarios
+would pollute the conformance score from the moment they are
+committed, regardless of whether their expectations are correct.
+
+Two mechanisms working together:
+
+- **Status tag** decides which scenarios count as authoritative.
+- **Confusion-metric audit** calibrates how trustworthy the
+  authoritative set actually is, by sampling outcomes and having a
+  human classify them as TP / TN / FP / FN.
+
+### Status
+
+Every scenario has one of two statuses:
+
+| State | Tag | Meaning |
+|---|---|---|
+| **draft** | (no `@status:` tag — the default) | An author proposed this as expected behavior. The system is not yet committed to it. |
+| **approved** | `@status:approved` | The team has accepted this as a contract the system must honor. A failure here is a defect. |
+
+AI-created scenarios always enter as **draft**. Promotion to
+**approved** is a one-line edit (adding the tag) in a human-reviewed
+PR. No automated process can promote a scenario.
+
+The **draft list** is the natural review queue: as the AI adds
+scenarios, the list grows. Humans walk it and decide which
+expectations are real contracts and which are not.
+
+### Two scores per run
+
+The runner reports two scores side by side:
+
+```
+APPROVED score:   93.1%   (108 / 116)    ← authoritative; gates CI
+DRAFT score:      71.4%   (30 / 42)      ← informational; what AI proposes
+```
+
+The **APPROVED score** is the system's measured conformance to its
+accepted contracts. CI gates on this score (or on a configured
+threshold).
+
+The **DRAFT score** is informational only. Draft failures are visible
+(authors iterate against them) but never block.
+
+The blindspot rule applies within each status group: blindspots in
+draft count as zeros toward the draft score; blindspots in approved
+count as zeros toward the approved score.
+
+### Confusion-metric audit
+
+The status tag controls *which* scenarios count. The audit calibrates
+*how reliable* those scenarios are as oracles.
+
+For each approved scenario's outcome, a human classifies against
+reality:
+
+|  | Reality: system correct | Reality: system broken |
+|---|---|---|
+| **Scenario passed** | TP (good) | FP (false confidence) |
+| **Scenario failed** | FN (false alarm) | TN (good) |
+
+Workflow:
+
+```bash
+make integration-suite-audit SAMPLE=30
+```
+
+Produces a markdown checklist of 30 randomly-sampled approved
+scenarios from the most recent run, with each scenario's outcome
+pre-filled and two empty columns for the reviewer:
+
+```markdown
+# Suite Audit — 2026-05-12
+
+Sampled 30 of 116 approved scenarios from run 7a2c.
+
+| Scenario | Outcome | Reviewer says | Class |
+|---|---|---|---|
+| pipeline/room-member-ops.feature:18 | Passed | Behavior correct | TP |
+| pipeline/room-member-ops.feature:42 | Passed | Assertion too loose; behavior was actually wrong | FP |
+| resilience/worker-restart.feature:25 | Failed | Behavior correct; scenario expects wrong reply | FN |
+| service/room.feature:12 | Failed | Behavior actually broken | TN |
+| … |
+```
+
+The reviewer fills the last two columns in a markdown editor.
+`make integration-suite-audit-tally` reads the file and produces:
+
+```
+Confusion matrix (n=30):
+              | actually correct | actually broken
+test passed   |       TP=22      |      FP=2
+test failed   |       FN=1       |      TN=5
+
+Accuracy:                 90.0%
+False-positive rate:      28.6%   ← scenarios passing on broken behavior
+False-negative rate:       4.3%   ← scenarios failing on correct behavior
+```
+
+The result is appended to `docs/integration-suite/audit-log.md`.
+Tracking FP and FN rates over time tells you whether the suite is
+becoming more or less reliable as it grows.
+
+### Interpretation
+
+- **High FP rate** → the approved set is too lenient. Review more
+  strictly; sharpen assertions; tighten `within <duration>` bounds.
+- **High FN rate** → the approved set is over-strict or points at the
+  wrong source of truth. Revisit cited sources; relax unnecessary
+  preconditions; or fix the cited design where the design itself is
+  wrong.
+
+### Recommended cadence
+
+- Audit monthly, or after a large batch of new approvals.
+- Sample size ≥ 30 for a useful matrix; sample more after big changes.
+- An FP rate > 10% should trigger a focused review of the approved
+  set before expanding it further.
+
+### What is deliberately not done
+
+- **No automated drift detection** when cited specs change. If FP
+  rates show silent drift is a real problem, a `sources.lock`-style
+  mechanism can be added later. Until then, the habit on a spec
+  change is to `grep` for citing scenarios and re-review them.
+- **No per-assertion source quoting.** The scenario-level `# Source:`
+  comment plus human review is the v1 oracle. Per-assertion citation
+  enforcement can be layered in if reviews prove insufficient.
+
 ## Reporting and scoring
 
 After each run the suite writes three artifacts:
@@ -734,28 +867,43 @@ After each run the suite writes three artifacts:
    ```
    Run:        2026-05-12T14:22:11Z   (runID 7a2c)
    Total:      158
-   Passed:     138
-   Failed:      12
-     HandlerError:    4
-     Timeout:         5
-     Persistence:     1
-     Unreachable:     2
-     Unclassified:    0
-   Blindspot:    8         treated as zeros
-   Score:    87.3%         (138 / 158)
-   Duration:  4m12s
+   Duration:   4m12s
+
+   APPROVED   116 scenarios       ← authoritative; gates CI
+     Passed:        108
+     Failed:          5
+       HandlerError:    2
+       Timeout:         2
+       Persistence:     1
+     Blindspot:       3
+     Score:        93.1%   (108 / 116)
+
+   DRAFT       42 scenarios       ← informational; never gates
+     Passed:         30
+     Failed:          7
+       HandlerError:    2
+       Timeout:         3
+       Unreachable:     2
+     Blindspot:       5
+     Score:        71.4%   ( 30 /  42)
+
+   Last audit: 2026-04-29 (n=30) — accuracy 90.0%, FP 6.7%, FN 3.3%
 
    Failures (behavior diverged from design)
-     - service/room.feature:55 "DM room ID is deterministic"
+     [APPROVED] service/room.feature:55 "DM room ID is deterministic"
        class: HandlerError  code: DM_ID_MISMATCH
        trace: 4e1c7a83e4d3b8a2f6c1d2e3f4a5b6c7
-     - pipeline/room-member-ops.feature:18 "Idempotent add member"
+     [APPROVED] pipeline/room-member-ops.feature:18 "Idempotent add member"
        class: Timeout
        trace: 9f2b5c91a7e4d8f6b3a2c1e9d7b8a4f3
+     [DRAFT]    federation/cross-site-add-member.feature:22 "US member ack"
+       class: Unreachable
+       trace: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d
      - …
 
    Blindspots (undocumented behavior — design owes an answer)
-     - regional-resilience/partial-nats-tw.feature: partial-history-contract
+     [APPROVED] regional-resilience/partial-nats-tw.feature: partial-history-contract
+     [DRAFT]    pipeline/room-member-ops.feature: retry-on-mongo-conflict
      - …
    ```
 
@@ -801,11 +949,37 @@ Step files for v1: `auth_steps.go`, `room_steps.go`, `nats_steps.go`,
 `jetstream_steps.go`, `mongo_steps.go`, `cassandra_steps.go`,
 `chaos_steps.go`, `error_steps.go`, plus `world.go`, `config.go`,
 `fixtures.go`, `classifier.go`, `tracing.go`, `reporter.go`,
-`main_test.go`.
+`status.go` (status-tag parsing + score split), `audit.go` (audit
+checklist generation + tally), `main_test.go`.
 
 The full 8-class classifier is implemented in v1 even though early
 scenarios will only exercise a few classes. The cost is small and it
 locks the vocabulary before scenarios proliferate.
+
+The status / audit machinery is implemented in v1 because AI-authored
+scenarios start landing immediately and the suite must not let them
+pollute the authoritative score from day one.
+
+Makefile targets added in v1:
+
+```
+make integration-suite [SCOPE=<scope>] [TAGS=<expr>] [SITE=<id>]
+make integration-suite-purge
+make integration-suite-lint
+make integration-suite-steps
+make integration-suite-audit       SAMPLE=<n>
+make integration-suite-audit-tally
+```
+
+Documentation deliverables in v1:
+
+- `tools/integration-suite/README.md` — user flow (setup, env vars,
+  common commands, troubleshooting)
+- `tools/integration-suite/AUTHORING.md` — AI + human authoring
+  playbook (rules, step vocabulary discovery, scope decision tree,
+  template, anti-patterns, checklist, AI prompt template)
+- `docs/integration-suite/blindspots.md` — initial empty register
+- `docs/integration-suite/audit-log.md` — initial empty log
 
 Makefile additions (in root `Makefile`):
 
