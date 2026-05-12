@@ -45,3 +45,29 @@ func TestWorld_ResponseClearsBetweenScenarios(t *testing.T) {
 	w.BeginScenario("Scenario B")
 	assert.Nil(t, w.LastResponse(), "last response must reset between scenarios")
 }
+
+func TestWorld_CredentialsStoredAndRetrieved(t *testing.T) {
+	w := NewWorld("7a2c")
+	w.BeginScenario("Authentication")
+	w.SetCredentials("alice", &Credentials{Account: "alice-prefixed", JWT: "jwt-x", Seed: "SU..."})
+
+	got := w.Credentials("alice")
+	require.NotNil(t, got)
+	assert.Equal(t, "alice-prefixed", got.Account)
+	assert.Equal(t, "jwt-x", got.JWT)
+}
+
+func TestWorld_CredentialsReturnNilForUnknownAccount(t *testing.T) {
+	w := NewWorld("7a2c")
+	w.BeginScenario("Anything")
+	assert.Nil(t, w.Credentials("bob"))
+}
+
+func TestWorld_CredentialsResetBetweenScenarios(t *testing.T) {
+	w := NewWorld("7a2c")
+	w.BeginScenario("First")
+	w.SetCredentials("alice", &Credentials{Account: "alice", JWT: "x"})
+
+	w.BeginScenario("Second")
+	assert.Nil(t, w.Credentials("alice"), "credentials must reset between scenarios")
+}

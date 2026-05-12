@@ -58,6 +58,8 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return c, nil
 	})
 
+	registerAuthSteps(ctx)
+
 	ctx.After(func(c context.Context, sc *godog.Scenario, stepErr error) (context.Context, error) {
 		tagNames := make([]string, 0, len(sc.Tags))
 		for _, t := range sc.Tags {
