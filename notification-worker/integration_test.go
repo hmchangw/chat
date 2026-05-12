@@ -36,11 +36,13 @@ func TestNotificationWorker_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
 
-	// Seed subscriptions
+	// Seed subscriptions. Alert=true + IsSubscribed=true required for
+	// the post-R3 gating fix (handler.go skips subs missing either
+	// flag). Without these the test silently gets 0 notifications.
 	db.Collection("subscriptions").InsertMany(ctx, []interface{}{
-		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
-		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
-		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"}, RoomID: "r1"},
+		model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Alert: true, IsSubscribed: true},
+		model.Subscription{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Alert: true, IsSubscribed: true},
+		model.Subscription{ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"}, RoomID: "r1", Alert: true, IsSubscribed: true},
 	})
 
 	memberLookup := &mongoMemberLookup{col: db.Collection("subscriptions")}

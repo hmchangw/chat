@@ -20,6 +20,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/e2e/harness"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -185,6 +186,23 @@ func awaitMessage(t *testing.T, sub *nats.Subscription, timeout time.Duration) *
 	return msg
 }
 
+// awaitMessageOnSite is the ergonomic wrapper most callers should use.
+// It opens (and registers cleanup for) a Cassandra session on the given
+// site, then delegates to awaitMessageByID. Replaces the 3-line boilerplate
+//
+//	sess := site.CassandraSession(t)
+//	defer sess.Close()
+//	awaitMessageByID(t, ctx, sess, msgID)
+//
+// with a single call. The deferred Close is unnecessary because
+// CassandraSession registers t.Cleanup(sess.Close); the wrapper keeps
+// that promise so callers don't have to remember.
+func awaitMessageOnSite(t *testing.T, ctx context.Context, site harness.SiteEndpoints, msgID string) {
+	t.Helper()
+	sess := site.CassandraSession(t)
+	awaitMessageByID(t, ctx, sess, msgID)
+}
+
 // awaitMessageByID polls Cassandra's messages_by_id table until a row with
 // the given message_id appears. Use this INSTEAD of awaitCanonicalAcked
 // when the test runs under t.Parallel() on a shared canonical durable
@@ -196,6 +214,8 @@ func awaitMessage(t *testing.T, sub *nats.Subscription, timeout time.Duration) *
 // Polls the dedup view directly: PRIMARY KEY (message_id, created_at)
 // returns exactly one row when the write has landed. Times out after
 // 15s — typical observed latency is sub-second.
+//
+// Most callers should use awaitMessageOnSite (handles session lifecycle).
 func awaitMessageByID(t *testing.T, ctx context.Context, sess *gocql.Session, msgID string) {
 	t.Helper()
 	require.Eventually(t, func() bool {
@@ -327,7 +347,13 @@ func cleanupCassandra(t *testing.T, ctx context.Context, sd SiteDB, roomID strin
 // cleanupElasticsearch removes per-room ES docs from both the message index
 // and the user-room index via best-effort delete-by-query. We hit the index
 // wildcards messages-* and user-room-* so the cleanup is robust to per-site
-// index naming. refresh=true forces visibility for any follow-up assertions.
+// index naming.
+//
+// NO refresh=true (per perf review): each forced refresh costs 50-150ms on
+// containerized ES; with 23 parallel tests × 2 sites × 2 indices that adds
+// 5-15s wall-clock per run. The deleted docs become invisible at the next
+// auto-refresh (200ms via the e2e search-init template); no test reads ES
+// post-cleanup within that window.
 func cleanupElasticsearch(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
 	t.Helper()
 	if sd.ESURL == "" {
@@ -344,7 +370,7 @@ func cleanupElasticsearch(t *testing.T, ctx context.Context, sd SiteDB, roomID s
 		return
 	}
 	for _, indexPattern := range []string{"messages-*", "user-room-*"} {
-		url := sd.ESURL + "/" + indexPattern + "/_delete_by_query?refresh=true&conflicts=proceed"
+		url := sd.ESURL + "/" + indexPattern + "/_delete_by_query?conflicts=proceed"
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			t.Logf("cleanup es new request site=%s index=%s: %v (ignoring)",
@@ -404,4 +430,24 @@ type SiteDB struct {
 	Cassandra  *gocql.Session
 	ESURL      string
 	ValkeyAddr string
+}
+
+// asSiteDB returns a fully-populated SiteDB for the given site. Use this
+// at every `registerRoomCleanup` call site instead of constructing a
+// partial `{SiteID, DB}` literal -- the partial form silently skips the
+// Cassandra/ES/Valkey cleanup paths (DX reviewer noted that 16 of 18
+// callsites were leaving the new cleanups as dead code).
+//
+// The harness handles register the corresponding cleanup hooks
+// (MongoDB, CassandraSession), so the test doesn't need to think about
+// session lifetime.
+func asSiteDB(t *testing.T, site harness.SiteEndpoints) SiteDB {
+	t.Helper()
+	return SiteDB{
+		SiteID:     site.SiteID,
+		DB:         site.MongoDB(t),
+		Cassandra:  site.CassandraSession(t),
+		ESURL:      site.ESURL,
+		ValkeyAddr: site.ValkeyAddr,
+	}
 }

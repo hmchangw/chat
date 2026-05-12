@@ -133,13 +133,15 @@ func main() {
 		// CANONICAL's history; per JetStream semantics: skip everything
 		// before the consumer existed.
 		DeliverPolicy: jetstream.DeliverNewPolicy,
-		// MaxDeliver caps redelivery attempts. Default -1 = unlimited
-		// (existing behavior). broadcast-worker is best-effort delivery
+		// MaxDeliver caps redelivery attempts. Default 5 (post-R3 perf
+		// review: -1 = unlimited was a throughput cliff -- a single
+		// poison message could NAK forever and eventually starve every
+		// in-flight slot). broadcast-worker is best-effort delivery
 		// (the source of truth is MESSAGES_CANONICAL); a permanently-
-		// poisoned message (e.g. a deleted room) shouldn't NAK forever
-		// and starve other messages. Operators set MAX_DELIVER>0 in
-		// environments where consumer NAK accumulation is a concern;
-		// e2e sets it on the encryption variant for that exact reason.
+		// poisoned message (e.g. a deleted room) drops after 5 attempts.
+		// Operators set MAX_DELIVER=-1 explicitly only in environments
+		// that can't tolerate ANY drop AND have monitoring for stuck
+		// messages.
 		MaxDeliver: cfg.MaxDeliver,
 	})
 	if err != nil {

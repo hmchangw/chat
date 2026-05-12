@@ -53,11 +53,7 @@ func TestFederation_CrossSiteSubscriptionRead(t *testing.T) {
 
 	// 1. alice sends a message so there's something to mark read.
 	js := stack.SiteA.JetStream(t)
-	canonical := stream.MessagesCanonical(stack.SiteA.SiteID).Name
-	awaitDurableReady(t, ctx, js, canonical, "message-worker")
-	preInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq := preInfo.CachedInfo().State.LastSeq
+	awaitDurableReady(t, ctx, js, stream.MessagesCanonical(stack.SiteA.SiteID).Name, "message-worker")
 
 	msgID := idgen.GenerateMessageID()
 	reqID := idgen.GenerateRequestID()
@@ -74,7 +70,8 @@ func TestFederation_CrossSiteSubscriptionRead(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+1)
+	// Wait by msgID (parallel-safe).
+	awaitMessageOnSite(t, ctx, stack.SiteA, msgID)
 
 	// 2. Snapshot OUTBOX_siteA's pre-mark-read msg count so we can prove
 	// the next operation incremented it.
@@ -164,11 +161,7 @@ func TestFederation_CrossSiteThreadSubscriptionUpserted(t *testing.T) {
 
 	// 1. alice sends a parent message + waits for ack.
 	js := stack.SiteA.JetStream(t)
-	canonical := stream.MessagesCanonical(stack.SiteA.SiteID).Name
-	awaitDurableReady(t, ctx, js, canonical, "message-worker")
-	preInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq := preInfo.CachedInfo().State.LastSeq
+	awaitDurableReady(t, ctx, js, stream.MessagesCanonical(stack.SiteA.SiteID).Name, "message-worker")
 
 	parentID := idgen.GenerateMessageID()
 	parentReqID := idgen.GenerateRequestID()
@@ -185,7 +178,7 @@ func TestFederation_CrossSiteThreadSubscriptionUpserted(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+1)
+	awaitMessageOnSite(t, ctx, stack.SiteA, parentID)
 
 	// 2. Read parent's CreatedAt (needed for the reply's
 	// ThreadParentMessageCreatedAt field).
@@ -209,10 +202,6 @@ func TestFederation_CrossSiteThreadSubscriptionUpserted(t *testing.T) {
 	// siteA emits outbox.siteA.to.siteB.thread_subscription_upserted for
 	// bob; inbox-worker-b consumes it and upserts the ThreadSubscription
 	// in mongo-b.
-	replyPreInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	replyPreSeq := replyPreInfo.CachedInfo().State.LastSeq
-
 	replyID := idgen.GenerateMessageID()
 	replyReqID := idgen.GenerateRequestID()
 	require.NoError(t, sendAndAwaitReply(
@@ -230,7 +219,7 @@ func TestFederation_CrossSiteThreadSubscriptionUpserted(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", replyPreSeq+1)
+	awaitMessageOnSite(t, ctx, stack.SiteA, replyID)
 
 	// 4. mongo-b's thread_subscriptions must contain a record for bob in
 	// this thread.

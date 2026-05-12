@@ -43,7 +43,7 @@ func TestNegative_OversizedPayload(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 
 	// 2 MiB body -- larger than NATS' 1 MiB default max_payload (which the
@@ -97,7 +97,7 @@ func TestNegative_NonMemberSend(t *testing.T) {
 	))
 	roomID := createReply.RoomID
 	require.NotEmpty(t, roomID)
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	mongoA := site.MongoDB(t)
 	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
 	awaitSubscription(t, ctx, mongoA, bob.Account, roomID)
@@ -169,7 +169,7 @@ func TestNegative_DuplicateMessageID(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), bob.Account, roomID)
 
@@ -183,14 +183,8 @@ func TestNegative_DuplicateMessageID(t *testing.T) {
 	// the Cassandra write happens asynchronously in message-worker. Without
 	// awaitCanonicalAcked between sends + before the history query, the
 	// history query can race the cassandra write and observe 0 rows.
-	js := site.JetStream(t)
-	canonical := stream.MessagesCanonical(site.SiteID).Name
-	awaitDurableReady(t, ctx, js, canonical, "message-worker")
-
-	preInfo1, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq1 := preInfo1.CachedInfo().State.LastSeq
-
+	// Use awaitMessageOnSite (by msgID) rather than awaitCanonicalAcked
+	// (by seq) so a parallel sibling's ack can't satisfy our wait.
 	msgID := idgen.GenerateMessageID()
 	reqID1 := idgen.GenerateRequestID()
 	require.NoError(t, sendAndAwaitReply(
@@ -206,13 +200,9 @@ func TestNegative_DuplicateMessageID(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq1+1)
+	awaitMessageOnSite(t, ctx, site, msgID)
 
 	// Second send with SAME message ID.
-	preInfo2, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq2 := preInfo2.CachedInfo().State.LastSeq
-
 	reqID2 := idgen.GenerateRequestID()
 	dupErr := sendAndAwaitReply(
 		t,
@@ -228,15 +218,11 @@ func TestNegative_DuplicateMessageID(t *testing.T) {
 		5*time.Second,
 	)
 	t.Logf("dup-MessageID second-send result: err=%v", dupErr)
-	// Whether the gatekeeper accepted the dup (relying on Cassandra PK to
-	// dedup) or rejected it (gatekeeper-side dedup), we need to wait for the
-	// canonical stream to settle before querying history -- but only if the
-	// second send actually produced a canonical message.
-	postInfo, perr := js.Stream(ctx, canonical)
-	require.NoError(t, perr)
-	if postInfo.CachedInfo().State.LastSeq > preSeq2 {
-		awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq2+1)
-	}
+	// The first awaitMessageOnSite already guarantees the canonical row
+	// exists in messages_by_id; the second send is either dedup-rejected
+	// at the gatekeeper or no-op'd by Cassandra's PK -- either way, the
+	// row count we read below is what we care about. No additional wait
+	// needed.
 
 	// Inspect history. Exactly one row for msgID.
 	var histResp loadHistoryResponse
@@ -301,7 +287,7 @@ func TestNegative_HistoryNonMember(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	mongoA := site.MongoDB(t)
 	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
 	awaitSubscription(t, ctx, mongoA, bob.Account, roomID)

@@ -55,10 +55,7 @@ func setupCrossSiteRoom(t *testing.T) (roomID string, bobAccount string) {
 	roomID = createReply.RoomID
 	require.NotEmpty(t, roomID)
 
-	registerRoomCleanup(t, []SiteDB{
-		{SiteID: stack.SiteA.SiteID, DB: stack.SiteA.MongoDB(t)},
-		{SiteID: stack.SiteB.SiteID, DB: stack.SiteB.MongoDB(t)},
-	}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, stack.SiteA), asSiteDB(t, stack.SiteB)}, roomID)
 
 	// Wait for the cross-site subscription mirror to materialize on mongo-b.
 	subsB := stack.SiteB.MongoDB(t).Collection("subscriptions")

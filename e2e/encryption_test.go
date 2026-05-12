@@ -77,7 +77,7 @@ func TestEncryption_OnSmoke(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), bob.Account, roomID)
 
@@ -205,7 +205,7 @@ func TestEncryption_TamperedCiphertextRejected(t *testing.T) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), bob.Account, roomID)
 

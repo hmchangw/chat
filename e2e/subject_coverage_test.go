@@ -74,7 +74,7 @@ func setupRoomWithOneMessage(t *testing.T) (roomID, msgID string) {
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID = createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 	mongoA := site.MongoDB(t)
 	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
 	awaitSubscription(t, ctx, mongoA, bob.Account, roomID)

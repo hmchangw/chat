@@ -61,7 +61,7 @@ func setupSingleSiteRoomWithMessage(t *testing.T) (roomID, msgID, body string, a
 	))
 	roomID = createReply.RoomID
 	require.NotEmpty(t, roomID)
-	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
 
 	mongoA := site.MongoDB(t)
 	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
