@@ -90,3 +90,30 @@ ifdef SERVICE
 else
 	docker compose -f $(SERVICES_COMPOSE) down
 endif
+
+# ── integration-suite ─────────────────────────────────────────────
+# A scenario-driven black-box integration test suite. See
+# tools/integration-suite/README.md.
+
+INTEGRATION_SUITE_DIR := tools/integration-suite
+
+.PHONY: integration-suite integration-suite-steps integration-suite-lint integration-suite-audit integration-suite-audit-tally
+
+integration-suite:
+	@cd $(INTEGRATION_SUITE_DIR) && \
+		go test -v -run TestFeatures $(if $(SCOPE),-godog.paths=features/$(SCOPE)) \
+		                              $(if $(TAGS),-godog.tags="$(TAGS)") \
+		                              $(if $(FEATURE),-godog.paths=$(FEATURE))
+
+integration-suite-steps:
+	@go run ./$(INTEGRATION_SUITE_DIR)/cmd/steps
+
+integration-suite-lint:
+	@go run ./$(INTEGRATION_SUITE_DIR)/cmd/lint
+
+integration-suite-audit:
+	@go run ./$(INTEGRATION_SUITE_DIR)/cmd/audit -sample=$(or $(SAMPLE),30)
+
+integration-suite-audit-tally:
+	@if [ -z "$(IN)" ]; then echo "usage: make integration-suite-audit-tally IN=<path>"; exit 2; fi
+	@go run ./$(INTEGRATION_SUITE_DIR)/cmd/audit-tally -in=$(IN)
