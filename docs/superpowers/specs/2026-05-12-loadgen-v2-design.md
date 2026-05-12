@@ -595,6 +595,35 @@ The harness must run unmodified on **both** `docker-compose` (v1, the Python too
 - README documents that BOTH v1 and v2 work. The "Known issues" section calls out the few directives that differ (we avoid them; if a contributor adds one, CI catches it).
 - CI: add a single `make -C tools/loadgen/deploy validate-compose` target that runs `docker compose -f docker-compose.loadtest.yml config -q` AND (if `docker-compose` v1 is present) `docker-compose -f docker-compose.loadtest.yml config -q`. Fails the build if either rejects the file.
 
+### Operator UX — discovery and diagnostics
+
+The DX reviewer flagged that ship-and-document-later is too late for a tool that prints TRUSTED / DEGRADED / UNTRUSTED verdicts; operators need self-service paths the moment v2 lands. v2 ships:
+
+**Subcommands (extending the `loadgen` binary, not new scripts):**
+
+- `loadgen scenarios` — prints `name | preset | what it loads | typical duration | SUT deps` for every registered scenario. Reads the registry from §2.2 — trivial post-Phase-2.
+- `loadgen presets` — same shape for presets.
+- `loadgen recommend --target-rps=N --duration=5m` — picks a preset, suggests `--abort-window-max-samples`, warns if host doesn't have enough RAM.
+- `loadgen doctor` — runs the host preflight (Docker version, free RAM, free disk, port collisions, compose v1/v2 detection) and prints a remediation checklist.
+
+**Diagnostic scripts (under `scripts/`):**
+
+- `compare-runs.sh OLD_RUN_ID NEW_RUN_ID` — diffs two artifact bundles (§1.8). Prints per-(scenario, kind) Δp50/p95/p99, verdict transition, omission delta, RAW-lag delta. Leverages HDR's merge story.
+- `triage.sh RUN_ID` — auto-collects diagnostics for an UNTRUSTED run: `docker logs --since=Nm` for each SUT service, NATS `varz`/`connz`/`jsz`, the loadgen metrics endpoint snapshot, the abort-watcher deafened-by-cap log lines. Writes to `runs/<run_id>/diagnostics.tgz`.
+- `bisect.sh GIT_SHA_OLD GIT_SHA_NEW SCENARIO` — operator hands two SHAs; script checks out each, rebuilds the loadgen-targeted services, runs the same scenario, prints a Δ against `compare-runs.sh` math.
+- `preflight.sh` — host check (invoked from `up.sh` and `loadgen doctor`).
+- `new-scenario.sh NAME` — scaffolder that writes `scenario_NAME.go` (with `Scenario` interface stubbed against the §2.2 registry), adds a preset entry, copies `run-history.sh` as `run-NAME.sh`, prints next steps. Makes "≤2-file change" a real promise rather than a footnote.
+
+**Remediation pointers on every UNTRUSTED Issues line.** When the summary prints `"abort watcher deafened by sample cap"`, it appends `→ see USAGE.md#abort-watcher-deafened`. Same for every Issues string; the pointer is part of the string template.
+
+**`--diagnose` flag.** When a run ends UNTRUSTED, `--diagnose` auto-re-runs at half the rate with `--progress-interval=2s --liveness-interval=5s --csv=runs/<run_id>/diagnose.csv` and writes a markdown comparison vs the original run.
+
+**`--metrics-linger=30s` (default).** Keeps the `/metrics` server alive past `runFinalize()` so post-hoc curl-scrapes work without bringing up the dashboards profile. Closes the v1 "metrics endpoint dies with the run" gap.
+
+**`--legacy-summary` flag** for one v2.x release: prints the v1-shape summary (no verdict block, no omission line, no queued/acked split) for teams whose tooling can't be updated in lockstep. Removed in v3.
+
+**`scripts/README.md`** — categorized index of every script (Lifecycle, Per-scenario, Umbrella, Diagnostic, Dev). Generated from each script's `--help` output via `make docs-scripts`.
+
 ### Operator UX — scripts and presets
 
 `tools/loadgen/scripts/` ships 13 helper scripts today. v2 keeps every existing script working (per the backwards-compatibility rule) and adds one per new scenario. Audit and update them as part of each phase:
@@ -608,27 +637,55 @@ Two new umbrella scripts:
 - `scripts/run-trustworthy-baseline.sh` — runs the canonical "is this build sane?" set: messaging-pipeline + history-read + search-read + room-rpc at conservative rates, asserting RUN QUALITY=TRUSTED for each. Single-command full sanity check. Used by operators after a deploy.
 - `scripts/run-saturation-sweep.sh` — runs ramp scenarios for each read service to find each one's saturation knee, prints a per-service table at the end.
 
-### Documentation — `USAGE.md`
+### Documentation — README split, USAGE.md, CHANGES.md
 
-The current `tools/loadgen/README.md` (233 lines) bundles operator usage, scenario reference, internal architecture, troubleshooting, and non-goals. It's grown too dense for a first-time reader.
+The current `tools/loadgen/README.md` (233 lines) bundles operator usage, scenario reference, internal architecture, troubleshooting, and non-goals. The tech-writing reviewer flagged that v2 expands this further (RUN QUALITY, new scenarios, glossary), and that a recipes-after-reference order is wrong for first-time readers — recipes should come *before* the reference encyclopedia.
 
-**Design:** split into two documents in the same folder.
+**Design:** split into three documents in the same folder. Each has a strict budget; per-scenario long-form discussion (if it exceeds the budget) spills into `tools/loadgen/docs/scenarios/<scenario>.md` rather than bloating USAGE.md.
 
-- `tools/loadgen/README.md` — short orientation (≤80 lines). What is loadgen, when to use it, where to find more, link to USAGE.md and to the design spec. Quick-start (5 commands). Single "Choose your scenario" table.
-- `tools/loadgen/USAGE.md` — comprehensive operator guide (the new doc, target ≤500 lines). Covers:
-  - **Prerequisites**: Docker (v1 OR v2), disk, RAM (3 GB minimum, 8 GB for `realistic`+ presets), open ports, host architecture caveats.
-  - **First run**: copy-paste flow from clone to a TRUSTED messaging-pipeline run. Verbatim commands, expected output.
-  - **The 4 + N scenarios**: per-scenario page with: what it loads, what the SUT must support, how to interpret the summary, common failure modes, recommended starting rates.
-  - **Presets** table: what each preset is for, how big, how long it takes, how much RAM.
-  - **Reading the summary**: the new RUN QUALITY block, every section line-by-line, what each column means, what TRUSTED / DEGRADED / UNTRUSTED imply for operator action.
-  - **Tuning knobs**: every `--abort-*`, `--ramp-*`, `--auto-warmup-*`, `--settle-*`, `--quality-*` flag with worked examples.
-  - **Live dashboards**: Grafana + Prometheus setup, the per-panel guide, what to alert on.
-  - **Common pitfalls**: a rewrite of the existing "Troubleshooting" section, plus new entries for v2 (`UNTRUSTED` verdict, sample-cap auto-sizing, settle timeouts, Docker compose v1/v2 detection failures).
-  - **Per-script reference**: every `scripts/run-*.sh` with a paragraph on what it does, what env vars it accepts, expected runtime, exit codes.
-  - **Recipes**: 5–10 worked end-to-end recipes for the most common operator workflows ("baseline against new SUT build," "find the saturation knee for history-service," "compare two builds across one machine," "investigate a p99 regression," etc.).
-- `tools/loadgen/CHANGES.md` — v2 changelog with migration notes for v1 invocations.
+#### `tools/loadgen/README.md` (≤80 lines)
 
-USAGE.md is part of every phase's exit criterion: a phase is not done until the operator-visible surface it changed is documented.
+- One-paragraph statement of what loadgen is.
+- The three commands of quick-start (up / quickstart / down).
+- A pointer table: "For X, see Y" (Recipes / Concepts / Scenarios / Reference / Migration).
+- Non-goals (operators don't open issues asking for k6 parity).
+- **Does NOT contain:** per-scenario tables (lives in USAGE.md), the v2 changelog (lives in CHANGES.md), the migration note (lives in USAGE.md's Migrating-from-v1 subsection).
+
+#### `tools/loadgen/USAGE.md` (≤700 lines; spilling per-scenario content to `docs/scenarios/` if tight)
+
+Ordered for a first-time reader (recipes before reference):
+
+1. **Prerequisites** — Docker (v1 ≥ 1.29.2 OR v2 ≥ 2.0), 3 GB min RAM (8 GB for `realistic`+ presets), open ports, host arch caveats.
+2. **Concepts** — single page on: open-loop vs closed-loop, coordinated omission, warmup vs measured window, verdict tiers, abort vs liveness watcher, settle phase, frontdoor vs canonical injection. Vocabulary the rest of the doc references.
+3. **5-minute tour** — single-screen copy-paste flow, annotated expected output, what TRUSTED means in the next line.
+4. **Recipes** — 5–10 worked end-to-end flows ("baseline against new SUT build", "find the saturation knee for history-service", "compare two builds on one machine", "investigate a p99 regression", "run a soak campaign overnight", "set up live dashboards", "triage an UNTRUSTED run"). Recipes-first matches Terraform/kubectl/gh doc shape and is what an operator under time pressure reaches for.
+5. **Pick a scenario** — decision tree (regression-testing? → run-trustworthy-baseline. Saturation knee? → run-saturation-sweep. New scenario? → contributor guide).
+6. **Scenarios** — encyclopedia: per-scenario page (what it loads, what the SUT must support, how to interpret the summary, common failure modes, recommended starting rates). Ordered by frequency of operator use, not by ship order. Per-scenario sections target ~25 lines; spillover to `docs/scenarios/<name>.md`.
+7. **Presets** — table: what each preset is for, how big, how long it takes, how much RAM. Includes `dm-heavy`, `incident-burst`, large-room shapes from §3.
+8. **Reading the summary** — line-by-line. RUN QUALITY block (with both empty and populated Issues examples). p99 vs omission p99 worked example. Published-queued vs acked. Saturation events table.
+9. **Tuning knobs** — every `--abort-*`, `--ramp-*`, `--auto-warmup-*`, `--settle-*`, `--quality-*`, `--raw-poll-interval`, `--omission-budget-ms` with worked examples.
+10. **Live dashboards** — Grafana + Prometheus setup, per-panel guide, alert rules from §1.11, "Ports and what's on each" table.
+11. **Per-script reference** — every `scripts/run-*.sh` with a paragraph; generated from `--help` via `make docs-scripts`.
+12. **Migrating from v1** — exit-code 4 added (was 0–3), `--csv` semantics change, `--legacy-summary` for one release.
+13. **Pitfalls / troubleshooting** — UNTRUSTED verdict actions, sample-cap auto-sizing, settle timeouts, compose v1/v2 detection failures, dashboard port collisions. Every entry's anchor matches the `→ see USAGE.md#anchor` pointers emitted by the harness (§Operator UX — discovery and diagnostics).
+14. **Numbers you can defend / numbers you can't** — one page on what comparisons are valid (within machine, within run-id) and what aren't (across hosts, across compose-stack versions).
+15. **Glossary** — HdrHistogram, coordinated omission, dispatch deficit, p50/p95/p99, JetStream async ack, OUTBOX/INBOX stream, settle phase, RUN QUALITY tiers, open-loop vs closed-loop, saturation knee, sample cap, drop-oldest, sustain window, frontdoor vs canonical injection. One paragraph each. Cross-linked from every section that uses the term.
+
+#### `tools/loadgen/CHANGES.md` (Keep-a-Changelog 1.1.0 format)
+
+- Per-flag deprecation / replacement table at the top (a `--csv` user can grep their runbook and find the v2 mapping in 10 seconds).
+- Sections per release: Added / Changed / Deprecated / Removed / Fixed / Security.
+- v2.0 entry includes: exit-code 4 breaking change, RUN QUALITY block at top of summary, `--csv` default change with `--csv-raw` bridge, sample-cap default auto-sizes, new metrics (`loadgen_omission_deficit_seconds`, `loadgen_run_quality`, etc.), removed (none planned).
+
+#### Diagrams (Mermaid, in-tree)
+
+The spec is pure prose; the tech-writing reviewer asked for diagrams where they pay for themselves. Each phase's exit criterion includes shipping the relevant diagram:
+
+- **Phase 0 exit:** component dependency graph showing `Runtime → ScenarioDeps → {publisher, requester, collector, ...}`. Lives in USAGE.md or `docs/architecture.md`.
+- **Phase 1 exit:** state diagram for RUN QUALITY verdict transitions (accumulator → terminal node). Sequence diagram for settle-phase timeouts.
+- **Phase 3 exit:** component diagram for federation (two-site, OUTBOX→INBOX flow with the four sub-latencies from §3.9).
+
+USAGE.md is part of every phase's exit criterion: a phase is not done until the operator-visible surface it changed is documented. README.md is updated only when the orientation paragraph or quick-start commands change.
 
 ### Test strategy
 
