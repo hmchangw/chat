@@ -3,6 +3,7 @@ module github.com/hmchangw/chat
 go 1.25.8
 
 require (
+	github.com/HdrHistogram/hdrhistogram-go v1.2.0
 	github.com/Marz32onE/instrumentation-go/otel-nats v0.2.0
 	github.com/caarlos0/env/v11 v11.4.0
 	github.com/coreos/go-oidc/v3 v3.17.0
