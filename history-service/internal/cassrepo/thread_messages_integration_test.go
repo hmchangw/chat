@@ -131,7 +131,7 @@ func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 	q, err := ParsePageRequest("", 3)
 	require.NoError(t, err)
 
-	page1, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q)
+	page1, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(0, 0, -1), q)
 	require.NoError(t, err)
 	assert.Len(t, page1.Data, 3)
 	assert.True(t, page1.HasNext)
@@ -139,13 +139,13 @@ func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 
 	q2, err := ParsePageRequest(page1.NextCursor, 3)
 	require.NoError(t, err)
-	page2, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q2)
+	page2, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(0, 0, -1), q2)
 	require.NoError(t, err)
 	assert.Len(t, page2.Data, 3)
 
 	q3, err := ParsePageRequest(page2.NextCursor, 3)
 	require.NoError(t, err)
-	page3, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(-10, 0, 0), q3)
+	page3, err := repo.GetThreadMessages(ctx, "r-A", "tr-1", base.Add(time.Hour), base.AddDate(0, 0, -1), q3)
 	require.NoError(t, err)
 	assert.Len(t, page3.Data, 1)
 	assert.False(t, page3.HasNext)
@@ -174,7 +174,7 @@ func TestRepository_GetThreadMessages_EmptyWhenThreadUnknown(t *testing.T) {
 	q, err := ParsePageRequest("", 10)
 	require.NoError(t, err)
 
-	page, err := repo.GetThreadMessages(ctx, "r-A", "tr-nonexistent", time.Now().UTC().Add(time.Hour), time.Now().UTC().AddDate(-10, 0, 0), q)
+	page, err := repo.GetThreadMessages(ctx, "r-A", "tr-nonexistent", time.Now().UTC().Add(time.Hour), time.Now().UTC().AddDate(0, 0, -1), q)
 	require.NoError(t, err)
 	assert.Empty(t, page.Data)
 	assert.False(t, page.HasNext)

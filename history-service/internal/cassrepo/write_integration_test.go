@@ -319,13 +319,15 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 	).Scan(&gotDeleted))
 	assert.True(t, gotDeleted)
 
-	// messages_by_room must NOT have a phantom row for this thread reply
-	var roomCount int
+	// messages_by_room must NOT have a phantom row for this thread reply. Scoped
+	// to the reply's exact PK because the parent (a top-level message) legitimately
+	// shares the same daily bucket and would otherwise be counted.
+	var replyInRoom int
 	require.NoError(t, session.Query(
-		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND bucket = ?`,
-		roomID, msgbucket.New(24*time.Hour).Of(replyCreatedAt),
-	).Scan(&roomCount))
-	assert.Equal(t, 0, roomCount, "thread-reply soft-delete must not write to messages_by_room")
+		`SELECT COUNT(*) FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		roomID, msgbucket.New(24*time.Hour).Of(replyCreatedAt), replyCreatedAt, replyID,
+	).Scan(&replyInRoom))
+	assert.Equal(t, 0, replyInRoom, "thread-reply soft-delete must not write to messages_by_room")
 
 	// Parent's tcount should have been decremented from 1 to 0 — see Task 7.
 	var gotTcount int
