@@ -12,6 +12,23 @@
 
 ---
 
+## Revision — 2026-05-12 (after Task 10)
+
+**Architectural finding during Task 10 execution:** the only service in this repo with HTTP routes is `auth-service`. Every other service — `room-service`, `room-worker`, `history-service`, `search-service`, all workers — is **NATS-only** (handlers registered as `natsCreateRoom(m otelnats.Msg)` etc.). The original plan's Tasks 11–14 incorrectly assumed `room-service` had HTTP endpoints.
+
+**Resolution (per user directive):** The integration suite is a **platform**, not a service-specific harness. The framework provides primitives for whatever transport a service speaks; per-scenario steps choose the right primitive. So:
+
+- **Tasks 1–10** (config, world, fixtures, status, classifier, tracing, HTTP helper, godog wiring, blindspot hook) stay as-is — all transport-agnostic.
+- **Task 11** is reworked: auth flow is HTTP because that's how `auth-service` speaks. Mints a NATS JWT via `POST /auth` after generating an nkey keypair locally.
+- **New Task 11b** adds NATS primitives to the platform: per-user NATS connection, NATS request/reply with traceparent in headers, unified `LastResponse` extension.
+- **Task 12** is reworked: room steps use NATS request/reply on subjects like `chat.user.<account>.room.create` — because that's how `room-service` speaks.
+- **Task 13** is generalized: `Then the response is a <Class> error` dispatches by transport via `LastResponse.Class()`. Adds `ClassifyNATS`.
+- **Task 14** smoke scenario uses HTTP auth + NATS room ops — exactly what the architecture says.
+
+Tasks 15+ are unaffected. Detailed reworked specs follow inline in this document.
+
+---
+
 ## Scope of THIS plan (Part 1)
 
 | Area | In | Out (Part 2) |
