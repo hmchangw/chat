@@ -81,7 +81,7 @@ func (s *HistoryService) resolveRoomTimes(
 	}
 
 	if last == nil || created == nil {
-		l, c, gerr := s.roomTimes.GetRoomTimes(ctx, roomID)
+		l, c, gerr := s.rooms.GetRoomTimes(ctx, roomID)
 		if gerr != nil {
 			return time.Time{}, time.Time{}, fmt.Errorf("resolve room times for %s: %w", roomID, gerr)
 		}
@@ -100,7 +100,7 @@ func (s *HistoryService) resolveRoomTimes(
 	// where lastMsgAt is unset and stays zero), normalise last = created so
 	// downstream walks see a non-empty range collapsed to the creation moment.
 	if !last.IsZero() && created.After(*last) {
-		l, c, gerr := s.roomTimes.GetRoomTimes(ctx, roomID)
+		l, c, gerr := s.rooms.GetRoomTimes(ctx, roomID)
 		if gerr != nil {
 			return time.Time{}, time.Time{}, fmt.Errorf("resolve room times for %s (consistency refetch): %w", roomID, gerr)
 		}

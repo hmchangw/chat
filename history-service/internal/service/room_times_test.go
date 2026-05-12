@@ -45,13 +45,13 @@ func TestResolveRoomTimes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
-			mockResolver := mocks.NewMockRoomTimeResolver(ctrl)
+			mockResolver := mocks.NewMockRoomRepository(ctrl)
 			mockResolver.EXPECT().
 				GetRoomTimes(gomock.Any(), "room-1").
 				Return(last, created, nil).
 				Times(tc.mongoCalls)
 
-			s := &HistoryService{roomTimes: mockResolver}
+			s := &HistoryService{rooms: mockResolver}
 			gotLast, gotCreated, err := s.resolveRoomTimes(context.Background(), "room-1", tc.hints, now)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantLast.UTC(), gotLast.UTC())
@@ -66,13 +66,13 @@ func TestResolveRoomTimes_MongoError(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	mockResolver := mocks.NewMockRoomTimeResolver(ctrl)
+	mockResolver := mocks.NewMockRoomRepository(ctrl)
 	mockResolver.EXPECT().
 		GetRoomTimes(gomock.Any(), "room-1").
 		Return(time.Time{}, time.Time{}, wantErr).
 		Times(1)
 
-	s := &HistoryService{roomTimes: mockResolver}
+	s := &HistoryService{rooms: mockResolver}
 	_, _, err := s.resolveRoomTimes(context.Background(), "room-1", nil, now)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, wantErr, "wrapped mongo error must propagate via errors.Is")
