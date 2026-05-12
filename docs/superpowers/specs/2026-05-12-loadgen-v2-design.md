@@ -71,10 +71,10 @@ Today the latency clock starts inside the dispatched goroutine, after `sem <- st
 
 **Design:** capture `intendedAt = time.Now()` at the tick site *before* the `sem` send. Pass it to the dispatched closure. The closure measures `actualStart - intendedAt` as **dispatch deficit** and records it in:
 
-- A new `loadgen_omission_deficit_seconds` histogram (Prometheus + HDR-internal).
-- The end-of-run summary as `omission p99: Xms (Y% of measured wall time)`.
+- A new `loadgen_omission_deficit_seconds{dropped="false|true"}` histogram (Prometheus + HDR-internal). The `dropped` label keeps serviced-tick deficit and dropped-tick deficit queryable separately — the methodology reviewer flagged that conflating them into one histogram corrupts p99 reasoning.
+- The end-of-run summary as two lines: `omission p99 (serviced): Xms` and `omission p99 (dropped): Yms` so operators can distinguish "the generator queued briefly under load" from "the generator dropped this many ticks entirely."
 
-For dropped ticks (sem full), record `intendedAt` and the moment the tick was dropped into the same deficit histogram with `dropped=true`. The deficit is then `now - intendedAt`.
+For dropped ticks (sem full), record `intendedAt` and the moment the tick was dropped (i.e. `time.Now()` at the `default:` branch of the sem-send select) into the same histogram with `dropped=true`.
 
 The latency-of-interest reported in the existing histograms remains `actualStart → reply`; we do NOT shift it to `intendedAt → reply` (that's wrk2-style correction, which would change every reported number on every chart and break "compare within a machine across changes"). Operators get *both* numbers and choose the one that matches their question.
 
@@ -100,11 +100,15 @@ type RunQuality struct {
 }
 ```
 
-Rules:
+Rules (refined against methodology-reviewer feedback — original first-draft thresholds were too lax):
 
-- **UNTRUSTED:** drain timed out **or** measured window < `abort-p99-sustain` **or** warmup error rate > 50%.
-- **DEGRADED:** abort watcher deafened **or** omission p99 > 100ms (configurable via `--omission-budget-ms`) **or** ≥1 liveness probe failed but watcher didn't trip.
+- **UNTRUSTED:** drain timed out **or** measured window < `abort-p99-sustain` **or** warmup error rate > 20% **or** settle phase incomplete (§1.4) **or** abort watcher deafened with `peak_rps × sustain > 2 × cap` (deaf for ≥50% of window).
+- **DEGRADED:** warmup error rate 5–20% **or** abort watcher deafened with `peak_rps × sustain ≤ 2 × cap` (deaf for <50% of window) **or** omission p99 > 25% of measured p99 (budget auto-scales by default; `--omission-budget-ms=N` overrides with a fixed budget; the previous default 100ms was wrong for tight scenarios like `room-rpc` targeting 20ms p99) **or** ≥1 liveness probe failed but watcher didn't trip.
 - **TRUSTED:** otherwise.
+
+Counters used in verdict rules are computed over the **measured window only**; warmup samples are filtered out per §1.7 phase labels. Window definitions: warmup error rate is `failed_in_warmup / total_in_warmup`; the measured-window predicate uses Collector counters scoped to `phase="measured"`.
+
+Verdict interaction with exit codes: the verdict is always printed and emitted as `loadgen_run_quality{verdict="..."} 1`. Exit codes 2 (saturation abort) and 3 (liveness abort) still take precedence over the verdict-derived exit code 4 (UNTRUSTED); a saturated+UNTRUSTED run exits 2 *and* prints UNTRUSTED in the summary.
 
 Print at the top of the summary, color-coded if stdout is a TTY:
 
@@ -307,9 +311,15 @@ Each scenario gets its own file (per §2.2), its own preset (or shares an existi
 
 Mechanism: publish a message via the frontdoor (gatekeeper) and immediately enter a poll loop calling `LoadHistory` for that room until the message appears. Record `publishedAt → firstVisibleAt` lag in a histogram. Same for `SearchMessages` (separate histogram) and `GetMessageByID` (separate histogram).
 
+**Poll-interval bias — must be controlled.** The naive poll loop has uniform [0, `poll_interval`] additive bias: observed p50 is `real_p50 + poll_interval/2`. The methodology reviewer flagged this as a blocker for the scenario's defensibility. v2 ships both mitigations:
+
+1. **Tight default poll interval.** Default `--raw-poll-interval=10ms`. The expected p50 for in-process history reads is ≥5ms, so the bias is ≤2ms — small relative to the measurement.
+2. **Visibility-window upper bound, reported alongside the lag.** Each RAW probe records two numbers: `firstVisibleAt - publishedAt` (the reported lag) AND `firstVisibleAt - lastNotVisibleAt` (the upper-bound width). Summary prints both: `RAW lag p99: 145ms (visibility-window p99: 25ms)`. Operators see the uncertainty explicitly.
+3. **Hard guardrail.** If `poll_interval > 0.2 × measured_p50` at run end, RunQuality records `raw poll-interval too coarse` and downgrades to DEGRADED.
+
 Backpressure: bounded concurrent in-flight RAW probes via the existing sem pattern.
 
-Metric: `loadgen_raw_lag_seconds{path="history|search|getbyid"}` histogram. Summary table: median, p95, p99, max, count, timeouts.
+Metric: `loadgen_raw_lag_seconds{path="history|search|getbyid"}` histogram + `loadgen_raw_visibility_window_seconds{path=...}` companion histogram.
 
 Preset: shares `messaging-pipeline` fixtures plus a new `RAWConfig` block (poll interval, timeout, max in-flight).
 
@@ -373,9 +383,20 @@ Stack: requires `auth-service` + its DB in the compose file. Adds it.
 
 **Scenario name:** `federation-lag`. New file `scenario_federation.go`.
 
-Mechanism: bring up *two* sites in compose (site-a, site-b) with OUTBOX/INBOX wiring. Publish a message on site-a, measure time until it appears in site-b's history.
+Mechanism: bring up *two* sites in compose (site-a, site-b) with OUTBOX/INBOX wiring. The methodology reviewer flagged "one number summing four sub-latencies" as a blocker — the reported "federation lag is 800 ms" tells operators nothing about whether the bottleneck is outbox queueing, source-lag, remote-persist, or read-visibility. v2 measures all four sub-paths, in addition to the end-to-end:
 
-Stack: doubles the compose footprint. Add `docker-compose.federation.yml` overlay and a `--federation` flag on the run-* scripts.
+1. `publishedAt_site_a → outbox_queued_on_a` (local OUTBOX append visible — subscribe to `outbox.{siteA}.>` on site-a's NATS).
+2. `outbox_queued_on_a → inbox_received_on_b` (cross-site sourcing — subscribe to `INBOX_{siteB}` stream on site-b).
+3. `inbox_received_on_b → persisted_on_b` (remote write — observe via the `chat.msg.canonical.{siteB}.created` subject on site-b).
+4. `persisted_on_b → visible_via_read_on_b` (read-after-write fence on the remote — poll `LoadHistory` like §3.1).
+
+Reported as four separate histograms `loadgen_federation_lag_seconds{stage="outbox|inbox|persist|visible"}`, plus an end-to-end `loadgen_federation_e2e_lag_seconds`. Summary prints all five lines.
+
+**Federation flap.** A second mode (`--federation-flap`) cycles site-b down/up every N seconds for the duration of the run, measures INBOX backlog drain time when site-b returns, and reports `loadgen_federation_drain_seconds`.
+
+**Cross-site read of remote room.** A third sub-scenario (separate run) — a user on site-a reads history of a room homed on site-b. Exercises a different code path than local read; reported as `loadgen_federation_cross_read_seconds`.
+
+Stack: doubles the compose footprint. Add `docker-compose.federation.yml` overlay (default-off, gated by Compose `profiles:`) and a `--federation` flag on the run-* scripts.
 
 ### 3.10 WebSocket gateway
 
@@ -459,7 +480,12 @@ Coverage floor (80%) and target (90% for `pkg/`) per CLAUDE.md §4 remain. Loadg
 
 ## Open questions
 
-1. **HDR histogram resolution.** Need to pick a sensible `lowestDiscernibleValue` / `highestTrackableValue` / `significantValueDigits`. Default to `(1µs, 1min, 3 digits)` matching wrk2's choice and verify on a representative run.
+1. **HDR histogram resolution.** Need to pick a sensible `lowestDiscernibleValue` / `highestTrackableValue` / `significantValueDigits`. The methodology reviewer caught the first-draft memory estimate ("~2 KB per cell" with `(1µs, 1min, 3 digits)`) as off by ~3 orders of magnitude — that combination is ~3 MB per cell, not 2 KB, and with ~40 cells (scenarios × kinds × {warmup, measured}) that's 120 MB just for histograms before sub-process merge. The defensible choices for this SUT (p50 1–5 ms, want sub-ms resolution there):
+   - `(100µs, 60s, 3 sig digits)` → ~30 KB/cell, ~1.2 MB total. Lower bound loses sub-100µs resolution, which is fine for this SUT.
+   - `(1µs, 10s, 2 sig digits)` → ~150 KB/cell, ~6 MB total. Sub-µs floor, but `>10s` clamps (we cap at 10s anyway for liveness).
+   - `(1µs, 60s, 3 sig digits)` → ~3 MB/cell, ~120 MB total. Highest fidelity, highest cost.
+
+   **Recommendation: `(100µs, 60s, 3 sig digits)` for per-(scenario, kind, phase) cells; `(10µs, 60s, 3 sig digits)` for the abort-watcher window (tighter floor on the safety-critical path).** Verify on a representative run before locking in.
 2. **Drop or keep raw `--csv` samples?** Recommend default off in v2 (HDR-only), `--csv-raw=true` to opt in. Open for operator review.
 3. **Phase 3 ordering.** Recommend the order listed (RAW → large-room → presence → notification → thread → edit/delete → subs-churn → auth → federation → chaos). Open to reorder by operator priority.
 4. **Federation compose footprint** doubles RAM. Mark as a "two-machine-friendly" scenario in docs, not the default.
