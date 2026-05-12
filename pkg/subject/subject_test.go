@@ -3,6 +3,8 @@ package subject_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -373,4 +375,14 @@ func TestRoomCreateDMSync(t *testing.T) {
 	if got != want {
 		t.Errorf("RoomCreateDMSync: got %q, want %q", got, want)
 	}
+}
+
+func TestHRSyncEmployeesUpsert(t *testing.T) {
+	got := subject.HRSyncEmployeesUpsert("site-a")
+	assert.Equal(t, "hr.sync.site-a.employees.upsert", got)
+}
+
+func TestHRSyncUsersUpsert(t *testing.T) {
+	got := subject.HRSyncUsersUpsert("site-a")
+	assert.Equal(t, "hr.sync.site-a.users.upsert", got)
 }

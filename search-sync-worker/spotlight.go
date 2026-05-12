@@ -17,10 +17,11 @@ import (
 type spotlightCollection struct {
 	inboxMemberCollection
 	indexName string
+	devMode   bool
 }
 
-func newSpotlightCollection(indexName string) *spotlightCollection {
-	return &spotlightCollection{indexName: indexName}
+func newSpotlightCollection(indexName string, devMode bool) *spotlightCollection {
+	return &spotlightCollection{indexName: indexName, devMode: devMode}
 }
 
 func (c *spotlightCollection) ConsumerName() string {
@@ -32,7 +33,7 @@ func (c *spotlightCollection) TemplateName() string {
 }
 
 func (c *spotlightCollection) TemplateBody() json.RawMessage {
-	return spotlightTemplateBody(c.indexName)
+	return spotlightTemplateBody(c.indexName, c.devMode)
 }
 
 // BuildAction fans a member_added / member_removed event out into one ES
@@ -124,36 +125,21 @@ func newSpotlightSearchIndex(account string, evt *model.InboxMemberEvent) Spotli
 }
 
 // spotlightTemplateBody builds the ES index template for the spotlight
-// collection. The `index_patterns` field is set to the exact configured
-// index name so a custom SPOTLIGHT_INDEX value still receives the correct
-// mapping (no broad wildcard that might catch unrelated indices).
-func spotlightTemplateBody(indexName string) json.RawMessage {
+// (room-typeahead) collection. Analyzer config is shared with the
+// spotlight-org template via customAnalyzerSettings(). The
+// `index_patterns` field is set to the exact configured index name so
+// a custom SPOTLIGHT_INDEX value still receives the correct mapping.
+func spotlightTemplateBody(indexName string, devMode bool) json.RawMessage {
+	shards, replicas := indexTopology(3, 1, devMode)
 	tmpl := map[string]any{
 		"index_patterns": []string{indexName},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"index": map[string]any{
-					"number_of_shards":   3,
-					"number_of_replicas": 1,
+					"number_of_shards":   shards,
+					"number_of_replicas": replicas,
 				},
-				"analysis": map[string]any{
-					"analyzer": map[string]any{
-						"custom_analyzer": map[string]any{
-							"type":      "custom",
-							"tokenizer": "custom_tokenizer",
-							"filter":    []string{"lowercase"},
-						},
-					},
-					"tokenizer": map[string]any{
-						// Whitespace tokenizer only supports max_token_length
-						// (default 255). `token_chars` is valid on ngram /
-						// edge_ngram tokenizers, not whitespace — sending it
-						// here would reject the UpsertTemplate request.
-						"custom_tokenizer": map[string]any{
-							"type": "whitespace",
-						},
-					},
-				},
+				"analysis": customAnalyzerSettings(),
 			},
 			"mappings": map[string]any{
 				"dynamic":    false,
@@ -161,8 +147,6 @@ func spotlightTemplateBody(indexName string) json.RawMessage {
 			},
 		},
 	}
-	// tmpl is built entirely from map/slice/string/int literals that are
-	// always JSON-marshalable, so the error cannot occur in practice.
 	data, _ := json.Marshal(tmpl)
 	return data
 }

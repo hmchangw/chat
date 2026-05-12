@@ -161,6 +161,14 @@ func MsgCanonicalDeleted(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.deleted", siteID)
 }
 
+func HRSyncEmployeesUpsert(siteID string) string {
+	return fmt.Sprintf("hr.sync.%s.employees.upsert", siteID)
+}
+
+func HRSyncUsersUpsert(siteID string) string {
+	return fmt.Sprintf("hr.sync.%s.users.upsert", siteID)
+}
+
 func RoomEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event", roomID)
 }

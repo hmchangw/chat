@@ -26,10 +26,11 @@ import (
 type userRoomCollection struct {
 	inboxMemberCollection
 	indexName string
+	devMode   bool
 }
 
-func newUserRoomCollection(indexName string) *userRoomCollection {
-	return &userRoomCollection{indexName: indexName}
+func newUserRoomCollection(indexName string, devMode bool) *userRoomCollection {
+	return &userRoomCollection{indexName: indexName, devMode: devMode}
 }
 
 func (c *userRoomCollection) ConsumerName() string {
@@ -41,7 +42,7 @@ func (c *userRoomCollection) TemplateName() string {
 }
 
 func (c *userRoomCollection) TemplateBody() json.RawMessage {
-	return userRoomTemplateBody(c.indexName)
+	return userRoomTemplateBody(c.indexName, c.devMode)
 }
 
 // addRoomScript / removeRoomScript implement application-level last-write-wins
@@ -233,14 +234,15 @@ func buildRemoveRoomUpdateBody(roomID string, ts int64) (json.RawMessage, error)
 // index name so a custom USER_ROOM_INDEX value still receives the correct
 // mapping. The `roomTimestamps` field is mapped as `flattened` so new
 // roomIds don't balloon the mapping with per-key dynamic sub-fields.
-func userRoomTemplateBody(indexName string) json.RawMessage {
+func userRoomTemplateBody(indexName string, devMode bool) json.RawMessage {
+	shards, replicas := indexTopology(1, 1, devMode)
 	tmpl := map[string]any{
 		"index_patterns": []string{indexName},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"index": map[string]any{
-					"number_of_shards":   1,
-					"number_of_replicas": 1,
+					"number_of_shards":   shards,
+					"number_of_replicas": replicas,
 				},
 			},
 			"mappings": map[string]any{

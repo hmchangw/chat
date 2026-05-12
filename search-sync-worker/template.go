@@ -41,3 +41,33 @@ func esPropertiesFromStruct[T any]() map[string]any {
 	}
 	return props
 }
+
+// customAnalyzerSettings is the analysis block shared by the spotlight
+// and spotlight-org templates: a whitespace tokenizer with permissive
+// token_chars feeding a lowercase-folding analyzer.
+func customAnalyzerSettings() map[string]any {
+	return map[string]any{
+		"analyzer": map[string]any{
+			"custom_analyzer": map[string]any{
+				"type":      "custom",
+				"tokenizer": "custom_tokenizer",
+				"filter":    []string{"lowercase"},
+			},
+		},
+		"tokenizer": map[string]any{
+			"custom_tokenizer": map[string]any{
+				"type":        "whitespace",
+				"token_chars": []string{"letter", "digit", "punctuation", "symbol"},
+			},
+		},
+	}
+}
+
+// indexTopology returns (shards, replicas) for an ES index template.
+// In dev mode every template collapses to 1/0 regardless of prod values.
+func indexTopology(prodShards, prodReplicas int, devMode bool) (int, int) {
+	if devMode {
+		return 1, 0
+	}
+	return prodShards, prodReplicas
+}

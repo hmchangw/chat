@@ -77,3 +77,12 @@ func Inbox(siteID string) Config {
 		},
 	}
 }
+
+// HRSync is the HR_SYNC_{siteID} stream, populated by hr-syncer's daily
+// publishes on hr.sync.{siteID}.>. Schema is owned by hr-syncer.
+func HRSync(siteID string) Config {
+	return Config{
+		Name:     fmt.Sprintf("HR_SYNC_%s", siteID),
+		Subjects: []string{fmt.Sprintf("hr.sync.%s.>", siteID)},
+	}
+}
