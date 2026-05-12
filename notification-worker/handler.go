@@ -62,6 +62,22 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		if subs[i].User.ID == senderID {
 			continue
 		}
+		// Gate fan-out on the subscription's per-user notification
+		// preferences. Per notification-worker review: this was a
+		// production bug -- broadcast-to-all-members regardless of
+		// `Alert` and `IsSubscribed`.
+		//
+		// Alert: explicit user-level "send me notifications for this
+		// room" flag. Default false; users opt in.
+		//
+		// IsSubscribed: when explicitly set false (DM "I left this
+		// conversation" semantics), suppress notifications.
+		if !subs[i].Alert {
+			continue
+		}
+		if !subs[i].IsSubscribed {
+			continue
+		}
 		subj := subject.Notification(subs[i].User.Account)
 		if err := h.pub.Publish(ctx, subj, notifData); err != nil {
 			slog.Error("publish notification failed", "error", err, "account", subs[i].User.Account)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -39,6 +40,33 @@ type Handler struct {
 // NewHandler creates a Handler with the given store.
 func NewHandler(store InboxStore) *Handler {
 	return &Handler{store: store}
+}
+
+// HandleJetStreamMsg dispatches a JetStream message to HandleEvent and then
+// signals the appropriate acknowledgement back to the broker:
+//   - success → Ack (delivery complete)
+//   - errors.Is(err, errPermanent) → Term (do NOT redeliver; the payload is
+//     structurally invalid and will never succeed on retry — e.g. bad JSON,
+//     missing required header. Letting these NACK forever would clog the
+//     consumer's ack-pending state)
+//   - any other error → Nak (transient; redeliver per the consumer's policy)
+func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
+	if err := h.HandleEvent(ctx, msg.Data()); err != nil {
+		slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(ctx))
+		if errors.Is(err, errPermanent) {
+			if termErr := msg.Term(); termErr != nil {
+				slog.Error("failed to term message", "error", termErr)
+			}
+			return
+		}
+		if nakErr := msg.Nak(); nakErr != nil {
+			slog.Error("failed to nak message", "error", nakErr)
+		}
+		return
+	}
+	if err := msg.Ack(); err != nil {
+		slog.Error("failed to ack message", "error", err)
+	}
 }
 
 // HandleEvent processes a single JetStream message payload.

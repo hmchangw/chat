@@ -57,6 +57,12 @@ type streamManager interface {
 // today (per pkg/stream.Inbox). Top-level `Mirror` and top-level
 // `SubjectTransform` on the StreamConfig are NOT preserved -- if ops
 // ever switches INBOX to a Mirror-based federation, expand this helper.
+//
+// SUBJECTS UNION: the schema-declared Subjects from pkg/stream.Inbox are
+// the baseline this service knows it needs to consume; the live stream
+// may have additional Subjects layered on by ops/IaC for a future
+// federation event type. We union the two so a schema-only update never
+// narrows the live Subjects back, and we preserve any superset.
 func bootstrapStreams(ctx context.Context, js streamManager, siteID string, enabled bool) error {
 	inboxCfg := stream.Inbox(siteID)
 	if enabled {
@@ -70,8 +76,11 @@ func bootstrapStreams(ctx context.Context, js streamManager, siteID string, enab
 		// federation, and the federation layer's first reconciliation sets
 		// Sources after.
 		if existing, err := js.Stream(ctx, inboxCfg.Name); err == nil && existing != nil {
-			if info := existing.CachedInfo(); info != nil && len(info.Config.Sources) > 0 {
-				newCfg.Sources = info.Config.Sources
+			if info := existing.CachedInfo(); info != nil {
+				if len(info.Config.Sources) > 0 {
+					newCfg.Sources = info.Config.Sources
+				}
+				newCfg.Subjects = unionSubjects(inboxCfg.Subjects, info.Config.Subjects)
 			}
 		}
 		if _, err := js.CreateOrUpdateStream(ctx, newCfg); err != nil {
@@ -86,4 +95,30 @@ func bootstrapStreams(ctx context.Context, js streamManager, siteID string, enab
 		return fmt.Errorf("verify INBOX stream: %w", err)
 	}
 	return nil
+}
+
+// unionSubjects returns the union of declared (schema-owned by this service)
+// and existing (live on the stream, possibly with extras layered on by
+// ops/IaC). Order is stable: declared first in their original order, then
+// any existing entry not already present. Deduplication is exact-string
+// (NATS does not normalize subject equivalence, so e.g. "foo.*" and "foo.>"
+// remain distinct entries — same as how the server treats them).
+func unionSubjects(declared, existing []string) []string {
+	seen := make(map[string]struct{}, len(declared)+len(existing))
+	out := make([]string, 0, len(declared)+len(existing))
+	for _, s := range declared {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	for _, s := range existing {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }

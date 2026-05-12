@@ -23,7 +23,8 @@ type bulkResponse struct {
 }
 
 type bulkItemResult struct {
-	Status int `json:"status"`
+	ID     string `json:"_id"`
+	Status int    `json:"status"`
 	Error  struct {
 		Type   string `json:"type"`
 		Reason string `json:"reason"`
@@ -120,6 +121,7 @@ func (a *httpAdapter) Bulk(ctx context.Context, actions []BulkAction) ([]BulkRes
 	for i, item := range bulkResp.Items {
 		for _, detail := range item {
 			results[i] = BulkResult{
+				DocID:     detail.ID,
 				Status:    detail.Status,
 				ErrorType: detail.Error.Type,
 				Error:     detail.Error.Reason,

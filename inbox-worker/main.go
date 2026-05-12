@@ -245,16 +245,7 @@ func main() {
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
 		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
-		if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
-			slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
-			if err := m.Nak(); err != nil {
-				slog.Error("failed to nak message", "error", err)
-			}
-			return
-		}
-		if err := m.Ack(); err != nil {
-			slog.Error("failed to ack message", "error", err)
-		}
+		handler.HandleJetStreamMsg(handlerCtx, m.Msg)
 	})
 	if err != nil {
 		slog.Error("consume failed", "error", err)

@@ -1,7 +1,10 @@
 package otelutil
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,12 +16,41 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// TestInitTracer_Modes covers the three operator modes documented on
+// resetUpgradeWarnOnce replaces the package-level sync.Once used by
+// InitTracer to gate its upgrade-warning slog.Warn. Tests need this so
+// that each subtest exercising the upgrade path sees a fresh "fires once"
+// gate; otherwise the order of subtests would determine which one
+// observes the log.
+func resetUpgradeWarnOnce(t *testing.T) {
+	t.Helper()
+	prev := upgradeWarnOnce
+	upgradeWarnOnce = &sync.Once{}
+	t.Cleanup(func() { upgradeWarnOnce = prev })
+}
+
+// captureSlog redirects the default slog logger to an in-memory buffer
+// at Warn level. Returns the buffer plus a cleanup that restores the
+// previous default logger.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	h := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// TestInitTracer_Modes covers the four operator modes documented on
 // InitTracer:
 //
-//   - Mode 2 (SDK disabled, no propagation-only): no provider, no propagator.
-//   - Mode 3 (SDK disabled + propagation-only): real provider w/o exporter
-//   - W3C propagator.
+//   - Mode 2 (SDK disabled + PROPAGATION_ONLY=false explicit): no provider,
+//     no propagator, no warning.
+//   - Mode 3 (SDK disabled + PROPAGATION_ONLY=true): real provider w/o
+//     exporter + W3C propagator, no warning.
+//   - Mode 4 (SDK disabled + PROPAGATION_ONLY unset): propagation-only +
+//     a one-time slog.Warn so upgrading operators don't silently drop
+//     traceparent.
 //   - Mode 1 (default, no envs): would attach OTLP exporter; we exercise the
 //     hot path that DOESN'T require an actual collector by checking the
 //     propagator + provider are both set after init. The exporter constructor
@@ -35,13 +67,15 @@ func TestInitTracer_Modes(t *testing.T) {
 		otel.SetTextMapPropagator(origProp)
 	})
 
-	t.Run("fully silent (SDK_DISABLED=true, no propagation-only)", func(t *testing.T) {
+	t.Run("fully silent (SDK_DISABLED=true, PROPAGATION_ONLY=false explicit)", func(t *testing.T) {
 		// Reset globals to known no-op state for the assertion.
 		otel.SetTracerProvider(noop.NewTracerProvider())
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+		resetUpgradeWarnOnce(t)
+		logBuf := captureSlog(t)
 
 		t.Setenv("OTEL_SDK_DISABLED", "true")
-		t.Setenv("OTEL_PROPAGATION_ONLY", "")
+		t.Setenv("OTEL_PROPAGATION_ONLY", "false")
 
 		shutdown, err := InitTracer(context.Background(), "test")
 		require.NoError(t, err)
@@ -62,11 +96,17 @@ func TestInitTracer_Modes(t *testing.T) {
 		defer span.End()
 		assert.False(t, span.SpanContext().IsValid(),
 			"no-op provider must not produce a valid SpanContext in silent mode")
+
+		// No warning -- the operator made an explicit choice.
+		assert.Empty(t, logBuf.String(),
+			"explicit PROPAGATION_ONLY=false must not emit the upgrade warning")
 	})
 
 	t.Run("propagation-only (SDK_DISABLED=true + PROPAGATION_ONLY=true)", func(t *testing.T) {
 		otel.SetTracerProvider(noop.NewTracerProvider())
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+		resetUpgradeWarnOnce(t)
+		logBuf := captureSlog(t)
 
 		t.Setenv("OTEL_SDK_DISABLED", "true")
 		t.Setenv("OTEL_PROPAGATION_ONLY", "true")
@@ -87,6 +127,54 @@ func TestInitTracer_Modes(t *testing.T) {
 		defer span.End()
 		assert.True(t, span.SpanContext().IsValid(),
 			"real provider in propagation-only mode must produce a valid SpanContext")
+
+		// Explicit choice -- no warning.
+		assert.Empty(t, logBuf.String(),
+			"explicit PROPAGATION_ONLY=true must not emit the upgrade warning")
+	})
+
+	t.Run("legacy upgrade (SDK_DISABLED=true, PROPAGATION_ONLY unset) warns and installs propagator", func(t *testing.T) {
+		otel.SetTracerProvider(noop.NewTracerProvider())
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+		resetUpgradeWarnOnce(t)
+		logBuf := captureSlog(t)
+
+		t.Setenv("OTEL_SDK_DISABLED", "true")
+		t.Setenv("OTEL_PROPAGATION_ONLY", "")
+
+		shutdown, err := InitTracer(context.Background(), "test")
+		require.NoError(t, err)
+		require.NotNil(t, shutdown)
+		t.Cleanup(func() { _ = shutdown(context.Background()) })
+
+		// Behaves like mode 3: propagator installed, real provider, valid
+		// SpanContext. Without this default, an operator who set only
+		// SDK_DISABLED=true under the pre-split version would silently
+		// drop traceparent after upgrade.
+		assert.Contains(t, otel.GetTextMapPropagator().Fields(), "traceparent",
+			"unset PROPAGATION_ONLY must default to propagation-only mode")
+
+		_, span := otel.Tracer("test").Start(context.Background(), "legacy-upgrade")
+		defer span.End()
+		assert.True(t, span.SpanContext().IsValid(),
+			"legacy upgrade mode must produce a valid SpanContext")
+
+		// One-time warning must have fired.
+		got := logBuf.String()
+		assert.Contains(t, got, "OTEL_PROPAGATION_ONLY",
+			"upgrade warning should mention the new knob; got: %s", got)
+		assert.Contains(t, got, `"level":"WARN"`,
+			"upgrade message must be at WARN level; got: %s", got)
+
+		// Second InitTracer call in the same process must NOT re-emit the
+		// warning (sync.Once gate). Capture a fresh buffer to be precise.
+		secondBuf := captureSlog(t)
+		shutdown2, err := InitTracer(context.Background(), "test")
+		require.NoError(t, err)
+		require.NotNil(t, shutdown2)
+		t.Cleanup(func() { _ = shutdown2(context.Background()) })
+		assert.Empty(t, secondBuf.String(),
+			"upgrade warning must fire at most once per process")
 	})
 
 	t.Run("default mode (no envs) installs propagator and provider", func(t *testing.T) {
@@ -98,6 +186,7 @@ func TestInitTracer_Modes(t *testing.T) {
 		// installed; we don't verify the exporter writes anywhere.
 		otel.SetTracerProvider(noop.NewTracerProvider())
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+		resetUpgradeWarnOnce(t)
 
 		// Clear both envs to exercise the default branch.
 		t.Setenv("OTEL_SDK_DISABLED", "")
@@ -150,6 +239,30 @@ func TestEnvTrue(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("X_OTEL_TEST_ENV", tc.value)
 			assert.Equal(t, tc.want, envTrue("X_OTEL_TEST_ENV"))
+		})
+	}
+}
+
+// TestEnvSet covers the "is this knob present" helper used to
+// distinguish "operator explicitly set this to false" from "operator
+// left it unset" -- the two cases have different defaults for
+// OTEL_PROPAGATION_ONLY.
+func TestEnvSet(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"unset", "", false},
+		{"whitespace only", "   ", false},
+		{"false", "false", true},
+		{"true", "true", true},
+		{"arbitrary", "yes", true},
+		{"true with surrounding whitespace", "  true  ", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("X_OTEL_TEST_ENV", tc.value)
+			assert.Equal(t, tc.want, envSet("X_OTEL_TEST_ENV"))
 		})
 	}
 }

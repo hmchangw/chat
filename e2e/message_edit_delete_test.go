@@ -74,9 +74,6 @@ func setupSingleSiteRoomWithMessage(t *testing.T) (roomID, msgID, body string, a
 	js := site.JetStream(t)
 	canonicalStream := stream.MessagesCanonical(site.SiteID).Name
 	awaitDurableReady(t, ctx2, js, canonicalStream, "message-worker")
-	preInfo, err := js.Stream(ctx2, canonicalStream)
-	require.NoError(t, err)
-	preSeq := preInfo.CachedInfo().State.LastSeq
 
 	msgID = idgen.GenerateMessageID()
 	reqID := idgen.GenerateRequestID()
@@ -95,9 +92,11 @@ func setupSingleSiteRoomWithMessage(t *testing.T) (roomID, msgID, body string, a
 		10*time.Second,
 	))
 
-	// Wait for the canonical ack so the message exists in Cassandra before
-	// subsequent edit/delete RPCs hit history-service.
-	awaitCanonicalAcked(t, ctx2, js, canonicalStream, "message-worker", preSeq+1)
+	// Wait by msgID for the cassandra row (parallel-safe; the seq-based
+	// awaitCanonicalAcked can be satisfied by a sibling test's message).
+	sess := site.CassandraSession(t)
+	defer sess.Close()
+	awaitMessageByID(t, ctx2, sess, msgID)
 
 	return roomID, msgID, body, alice, bob
 }

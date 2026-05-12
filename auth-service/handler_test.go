@@ -305,6 +305,42 @@ func TestHandleAuth_DevMode_InvalidNKey(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "invalid natsPublicKey")
 }
 
+// TestHandleAuth_AccountValidation verifies HandleAuth rejects account names
+// that would be unsafe to interpolate into NATS subject permissions. The
+// signNATSJWT function builds `chat.user.%s.>`, so any account containing
+// NATS subject wildcards (`*`, `>`), separators (`.`), control characters,
+// or empty values must be rejected with 400 before signing.
+func TestHandleAuth_AccountValidation(t *testing.T) {
+	signingKP := mustAccountKP(t)
+
+	tests := []struct {
+		name    string
+		account string
+	}{
+		{"AccountWithSubjectWildcardRejected", "alice*"},
+		{"AccountWithDotRejected", "alice.bob"},
+		{"EmptyAccountRejected", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			validator := &fakeValidator{account: tt.account, subject: "uuid-x"}
+			handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
+			router := setupRouter(t, handler)
+
+			userPub := mustUserNKey(t)
+			body := `{"ssoToken":"tok","natsPublicKey":"` + userPub + `"}`
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "invalid account name")
+		})
+	}
+}
+
 func TestHandleHealth(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	handler := NewAuthHandler(&fakeValidator{}, signingKP, 2*time.Hour, false)

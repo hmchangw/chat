@@ -47,6 +47,12 @@ type BulkAction struct {
 // is a benign "doc already absent" or a fatal "index missing") should match
 // on ErrorType rather than parsing the human-readable Error string.
 type BulkResult struct {
+	// DocID echoes back the document `_id` from the bulk item response so
+	// callers can defensively verify that response items align with their
+	// submitted actions in order (ES bulk normally preserves order, but a
+	// mismatch indicates a protocol-level anomaly and should not be silently
+	// trusted).
+	DocID     string
 	Status    int
 	ErrorType string
 	Error     string

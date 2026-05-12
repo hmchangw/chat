@@ -410,6 +410,41 @@ func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
 	})
 }
 
+// TestHandler_Flush_ResultDocIDMismatchTriggersNak verifies the defensive
+// alignment check: if the ES bulk response items come back in a different
+// order than the submitted actions (DocID echoed in the result doesn't
+// match the submitted action's DocID at the same index), the handler must
+// NAK the entire batch rather than risk acking the wrong source message
+// based on a misaligned status.
+func TestHandler_Flush_ResultDocIDMismatchTriggersNak(t *testing.T) {
+	t.Run("ResultDocIDMismatchTriggersNak", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		// fanOutCollection emits actions with DocIDs "id-0", "id-1", "id-2".
+		// Return results whose echoed DocIDs are SHUFFLED — index 1 carries
+		// "id-2" instead of the expected "id-1". The handler must detect
+		// this and NAK the source message, even though every status code
+		// indicates success.
+		store.EXPECT().
+			Bulk(gomock.Any(), gomock.Len(3)).
+			Return([]searchengine.BulkResult{
+				{DocID: "id-0", Status: 201},
+				{DocID: "id-2", Status: 201}, // wrong: should be id-1
+				{DocID: "id-1", Status: 201}, // wrong: should be id-2
+			}, nil)
+
+		coll := fanOutCollection{actionsPerMessage: 3}
+		h := NewHandler(store, coll, 500)
+		msg := &stubMsg{data: []byte(`{}`)}
+		h.Add(msg)
+		h.Flush(context.Background())
+
+		assert.False(t, msg.acked, "misaligned bulk results must not ack")
+		assert.True(t, msg.nacked, "misaligned bulk results must NAK for redelivery")
+		assert.Equal(t, 0, h.MessageCount(), "buffer must be drained even on mismatch")
+	})
+}
+
 // TestHandler_FanOut exercises the per-message action-range bookkeeping with
 // a fan-out collection (one message → N actions). The handler must:
 //   - track message count and action count independently

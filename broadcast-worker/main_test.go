@@ -25,7 +25,7 @@ func TestConfig_DefaultsAndOverrides(t *testing.T) {
 			name:         "defaults",
 			envs:         nil,
 			wantDurable:  "broadcast-worker",
-			wantMaxDeliv: -1,
+			wantMaxDeliv: 5, // poison-cliff guard per perf review (was -1)
 			wantEncrypt:  false,
 		},
 		{
