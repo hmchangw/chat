@@ -19,9 +19,12 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
 // mongoOptionsReplaceUpsert returns ReplaceOptions with Upsert(true). Wrapped
@@ -104,7 +107,7 @@ func (s SiteEndpoints) HTTPClient(t *testing.T) *resty.Client {
 	t.Helper()
 	return resty.New().
 		SetBaseURL(s.AuthURL).
-		SetTimeout(15 * time.Second).
+		SetTimeout(15*time.Second).
 		SetHeader("Accept", "application/json")
 }
 
@@ -134,7 +137,7 @@ func (s SiteEndpoints) SeedRemoteUser(t *testing.T, ctx context.Context, account
 		"_id":         account,
 		"account":     account,
 		"siteId":      siteID,
-		"engName":     account,                  // satisfies "missing required name fields"
+		"engName":     account, // satisfies "missing required name fields"
 		"chineseName": account,
 		"sectId":      "test",
 		"sectName":    "test",
@@ -213,5 +216,54 @@ func (s SiteEndpoints) FlushSearchRestrictedCache(t *testing.T, account string) 
 	key := fmt.Sprintf("searchservice:restrictedrooms:%s", account)
 	if err := client.Del(ctx, key).Err(); err != nil {
 		t.Fatalf("flush search restricted cache key=%s: %v", key, err)
+	}
+}
+
+// SeedRoomKey writes a room encryption key pair into this site's Valkey so
+// broadcast-worker (running with ENCRYPTION_ENABLED=true) can pick it up
+// when it processes a message for the room. Uses the production
+// roomkeystore.NewValkeyStore + Set path so this stays in lockstep with the
+// real wire format (hash key `room:{roomID}:key`, base64-encoded `pub` +
+// `priv` fields, version=0 on first Set).
+//
+// Per-call connection: cheap, called once per encryption test. The
+// underlying go-redis client closes via defer so there's no leak across
+// repeated test runs.
+func (s SiteEndpoints) SeedRoomKey(t *testing.T, roomID string, pair roomkeystore.RoomKeyPair) {
+	t.Helper()
+	store, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        s.ValkeyAddr,
+		GracePeriod: 24 * time.Hour, // unused by Set, required by Config
+	})
+	require.NoError(t, err, "open valkey for SeedRoomKey")
+	defer func() { _ = store.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := store.Set(ctx, roomID, pair); err != nil {
+		t.Fatalf("seed room key for %s: %v", roomID, err)
+	}
+}
+
+// DeleteRoomKey removes a room key from this site's Valkey. Best-effort
+// cleanup -- a leftover key is harmless across runs (rooms are unique per
+// test) but tidy teardown helps when grepping live valkey state during
+// debugging.
+func (s SiteEndpoints) DeleteRoomKey(t *testing.T, roomID string) {
+	t.Helper()
+	store, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        s.ValkeyAddr,
+		GracePeriod: 24 * time.Hour,
+	})
+	if err != nil {
+		t.Logf("DeleteRoomKey open valkey: %v (ignoring)", err)
+		return
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := store.Delete(ctx, roomID); err != nil {
+		t.Logf("DeleteRoomKey for %s: %v (ignoring)", roomID, err)
 	}
 }

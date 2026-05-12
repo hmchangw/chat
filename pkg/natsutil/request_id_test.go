@@ -84,7 +84,11 @@ func TestNewMsg_AttachesHeaderFromContext(t *testing.T) {
 	assert.Equal(t, "req-newmsg-test", msg.Header.Get(natsutil.RequestIDHeader))
 }
 
-func TestNewMsg_NoIDLeavesHeaderNil(t *testing.T) {
+func TestNewMsg_NoIDStillAllocatesHeader(t *testing.T) {
+	// Header must be ALWAYS allocated (never nil) so otelnats's
+	// propagator.Inject has a writable HeaderCarrier for traceparent.
+	// A nil header silently drops traceparent on every outbound publish.
 	msg := natsutil.NewMsg(context.Background(), "chat.foo.bar", []byte("payload"))
-	assert.Nil(t, msg.Header)
+	assert.NotNil(t, msg.Header, "Header must be non-nil so otelnats can inject traceparent")
+	assert.Empty(t, msg.Header, "Header should be empty when no X-Request-ID in ctx")
 }

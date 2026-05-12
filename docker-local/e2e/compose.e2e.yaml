@@ -453,6 +453,47 @@ services:
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
+  # Encryption-enabled broadcast worker for the e2e encryption smoke test.
+  # Per the post-R3 follow-up to Item 2: a new DURABLE_NAME env var on
+  # broadcast-worker (default "broadcast-worker") lets a second worker form
+  # an INDEPENDENT durable consumer on MESSAGES_CANONICAL, so it gets its
+  # own copy of every event rather than splitting them with broadcast-worker-a.
+  # The e2e suite seeds a room key in valkey then sends a message, asserts
+  # both workers emit broadcasts -- the encrypted one carries
+  # `evt.EncryptedMessage` and nils `evt.Message`. Production keeps the
+  # default durable + a single worker, so this is e2e-only.
+  broadcast-worker-a-enc:
+    build: { context: ../.., dockerfile: broadcast-worker/deploy/Dockerfile }
+    container_name: broadcast-worker-a-enc
+    logging: *default-logging
+    networks: [chat-e2e]
+    depends_on:
+      nats-a:   { condition: service_healthy }
+      mongo-a:  { condition: service_healthy }
+      valkey-a: { condition: service_healthy }
+    environment:
+      NATS_URL: nats://nats-a:4222
+      NATS_CREDS_FILE: /etc/nats/backend.creds
+      SITE_ID: siteA
+      MONGO_URI: mongodb://mongo-a:27017
+      MONGO_DB: chat
+      USER_CACHE_SIZE: "10000"
+      USER_CACHE_TTL: "5m"
+      VALKEY_ADDR: valkey-a:6379
+      VALKEY_KEY_GRACE_PERIOD: 24h
+      BOOTSTRAP_STREAMS: "true"
+      DURABLE_NAME: "broadcast-worker-enc"
+      ENCRYPTION_ENABLED: "true"
+      # MAX_DELIVER caps NAK retries. Other e2e tests delete rooms in
+      # cleanup; the encrypted worker NAKs forever on those orphan
+      # messages and accumulates ack-pending state, eventually starving
+      # the new messages this test cares about. With MAX_DELIVER=2 the
+      # poisoned messages drop after one retry.
+      MAX_DELIVER: "2"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./secrets/backend.creds:/etc/nats/backend.creds:ro
+
   notification-worker-a:
     build: { context: ../.., dockerfile: notification-worker/deploy/Dockerfile }
     container_name: notification-worker-a

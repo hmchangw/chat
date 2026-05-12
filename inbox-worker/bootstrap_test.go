@@ -15,10 +15,11 @@ import (
 )
 
 type fakeStreamManager struct {
-	created  []jetstream.StreamConfig
-	existing map[string]bool // streams that "exist" for the disabled path
-	failOn   string          // stream name to fail on; empty = never fail
-	failErr  error           // error to return when failing
+	created     []jetstream.StreamConfig
+	existing    map[string]bool                   // streams that "exist" for the disabled path
+	existingCfg map[string]jetstream.StreamConfig // existing stream configs (for Sources preservation)
+	failOn      string                            // stream name to fail on; empty = never fail
+	failErr     error                             // error to return when failing
 }
 
 // Returns nil for the Stream value because bootstrapStreams discards it.
@@ -32,19 +33,45 @@ func (f *fakeStreamManager) CreateOrUpdateStream(_ context.Context, cfg jetstrea
 
 func (f *fakeStreamManager) Stream(_ context.Context, name string) (oteljetstream.Stream, error) {
 	if f.existing[name] {
+		if cfg, ok := f.existingCfg[name]; ok {
+			return &fakeStream{cfg: cfg}, nil
+		}
 		return nil, nil
 	}
 	return nil, jetstream.ErrStreamNotFound
 }
 
+// fakeStream returns a canned StreamInfo so bootstrap can read existing
+// federation Sources without needing a real oteljetstream.Stream impl.
+// All other Stream methods are inherited from the embedded interface
+// and will panic on nil if invoked -- bootstrap only calls CachedInfo.
+type fakeStream struct {
+	oteljetstream.Stream
+	cfg jetstream.StreamConfig
+}
+
+func (s *fakeStream) CachedInfo() *jetstream.StreamInfo {
+	return &jetstream.StreamInfo{Config: s.cfg}
+}
+
 func TestBootstrapStreams(t *testing.T) {
+	preservedSources := []*jetstream.StreamSource{{
+		Name: "OUTBOX_peer",
+		SubjectTransforms: []jetstream.SubjectTransformConfig{{
+			Source:      "outbox.peer.to.test.>",
+			Destination: "chat.inbox.test.aggregate.>",
+		}},
+	}}
+
 	tests := []struct {
 		name        string
 		enabled     bool
 		existing    map[string]bool
+		existingCfg map[string]jetstream.StreamConfig
 		failOn      string
 		failErr     error
 		wantCreated []string
+		wantSources []*jetstream.StreamSource
 		wantErrSub  string
 	}{
 		{
@@ -60,9 +87,28 @@ func TestBootstrapStreams(t *testing.T) {
 			wantErrSub: "verify INBOX stream",
 		},
 		{
-			name:        "enabled - creates INBOX with Name and Subjects",
+			name:        "enabled - creates INBOX with Name and Subjects (no existing stream)",
 			enabled:     true,
 			existing:    map[string]bool{},
+			wantCreated: []string{"INBOX_test"},
+		},
+		{
+			name:     "enabled - preserves existing federation Sources",
+			enabled:  true,
+			existing: map[string]bool{"INBOX_test": true},
+			existingCfg: map[string]jetstream.StreamConfig{
+				"INBOX_test": {Name: "INBOX_test", Sources: preservedSources},
+			},
+			wantCreated: []string{"INBOX_test"},
+			wantSources: preservedSources,
+		},
+		{
+			name:     "enabled - empty Sources on existing stream stays empty",
+			enabled:  true,
+			existing: map[string]bool{"INBOX_test": true},
+			existingCfg: map[string]jetstream.StreamConfig{
+				"INBOX_test": {Name: "INBOX_test"},
+			},
 			wantCreated: []string{"INBOX_test"},
 		},
 		{
@@ -76,7 +122,12 @@ func TestBootstrapStreams(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fake := &fakeStreamManager{failOn: tc.failOn, failErr: tc.failErr, existing: tc.existing}
+			fake := &fakeStreamManager{
+				failOn:      tc.failOn,
+				failErr:     tc.failErr,
+				existing:    tc.existing,
+				existingCfg: tc.existingCfg,
+			}
 			err := bootstrapStreams(context.Background(), fake, "test", tc.enabled)
 			if tc.wantErrSub != "" {
 				require.Error(t, err)
@@ -94,12 +145,15 @@ func TestBootstrapStreams(t *testing.T) {
 			for i, wantName := range tc.wantCreated {
 				assert.Equal(t, wantName, fake.created[i].Name)
 				// App owns the schema (Name + Subjects). Federation
-				// (Sources + SubjectTransforms) belongs to ops/IaC and
-				// must not appear here.
+				// (Sources + SubjectTransforms) belongs to ops/IaC, but
+				// when an existing stream already has Sources we
+				// PRESERVE them so a worker restart doesn't clear
+				// federation config (post-R3 follow-up).
 				assert.Equal(t, wantSubjects, fake.created[i].Subjects,
 					"INBOX bootstrap must set Subjects from pkg/stream.Inbox")
-				assert.Empty(t, fake.created[i].Sources,
-					"federation Sources are owned by ops/IaC and must not be set in app code")
+				assert.Equal(t, tc.wantSources, fake.created[i].Sources,
+					"INBOX bootstrap must preserve existing Sources verbatim "+
+						"and never invent Sources of its own")
 			}
 		})
 	}
