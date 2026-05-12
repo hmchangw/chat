@@ -35,7 +35,7 @@ The redundancy is a layering artifact: PR #142 (Vinayak, `feat(create-room): DM,
 - **Backward compatibility for cross-tree consumers of `RoomCreatedOutbox` / `OutboxTypeRoomCreated`.** Grep confirms no out-of-tree consumer exists today.
 - **Bridging in-flight `room_created` events during the deploy window.** Both ends ship in the same release per site; any straggler federated event arriving at a new `inbox-worker` pod hits the existing `default` case in the event-type switch and logs `"unknown event type, skipping"`. The corresponding `member_added` for the same room arrives moments later and does the right thing.
 - **Refactoring `MemberRemoveEvent`** the same way. Remove is already type-agnostic in `inbox-worker.handleMemberRemoved`; only `member_added` needs the per-type sub-shape logic.
-- **Search-sync-worker code changes.** Zero structural change required. One regression test added to lock in the latent-bug fix.
+- **Search-sync-worker code changes.** Zero structural change required. No new tests added; existing spotlight coverage already asserts `roomType` via `baseInboxMemberEvent`.
 
 ## Design
 
@@ -144,7 +144,9 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
     }
 
     if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-        return fmt.Errorf("bulk create subscriptions: %w", err)
+        if !mongo.IsDuplicateKeyError(err) {
+            return fmt.Errorf("bulk create subscriptions: %w", err)
+        }
     }
     return nil
 }
@@ -163,7 +165,7 @@ The old `handleRoomCreated` function is **deleted**. The `case model.MessageType
   - Delete the `case model.MessageTypeRoomCreated:` arm.
   - Refactor `subscriptionName` / `subscriptionIsSubscribed` to take primitives.
 - `inbox-worker/handler_test.go`: delete `TestHandleRoomCreated*` cases (5 of them per grep). Replace with new `TestHandleMemberAdded_DM*` / `TestHandleMemberAdded_BotDM*` cases.
-- `inbox-worker/integration_test.go`: delete `TestHandleRoomCreatedPersistsRemoteSubs` and `TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub` (2 cases). Replace with `TestHandleMemberAddedDM_PersistsCorrectShape_Integration`.
+- `inbox-worker/integration_test.go`: delete `TestHandleRoomCreatedPersistsRemoteSubs` and `TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub` (2 cases). Replace with `TestHandleMemberAdded_Channel_PersistsRemoteSubs` and `TestHandleMemberAdded_DM_PersistsRemoteCounterpartSub` going through the public `HandleEvent` entry point.
 - `room-worker/handler.go::finishCreateRoom`: delete the per-remote-site `room_created` publish block. Add `RoomType` + `RequesterAccount` to the existing `member_added` publishes (both local-INBOX and cross-site OUTBOX).
 - `room-worker/handler.go::processAddMembers`: add `RoomType` + `RequesterAccount` to all three publish sites (local INBOX, cross-site OUTBOX, the older add-members publish if separate).
 - `room-worker/handler_test.go`: assert `RoomType` is populated on every `member_added` publish capture; delete any test that asserted on the `room_created` outbox publishes.
@@ -173,35 +175,15 @@ The old `handleRoomCreated` function is **deleted**. The `case model.MessageType
 
 Zero structural change. `model.InboxMemberEvent` (the struct `search-sync-worker.parseMemberEvent` decodes into) already has `RoomType` — it's the publisher side that didn't populate it. Once `room-worker` starts setting `RoomType` on every `member_added` publish, the existing `string(evt.RoomType)` write at `spotlight.go:120` produces the correct value for the first time.
 
-One regression test added to `search-sync-worker/spotlight_test.go`:
-
-- `TestSpotlightCollection_BuildAction_PopulatesRoomType` — builds an `InboxMemberEvent` with `RoomType: model.RoomTypeChannel`, runs `BuildAction`, asserts the resulting ES doc carries `roomType: "channel"`. Pure regression guard against the publishers reverting to empty `RoomType`.
+No new search-sync-worker tests needed. The existing `TestSpotlightCollection_BuildAction_MemberAdded` already asserts `assert.Equal(t, "channel", doc["roomType"])` via `baseInboxMemberEvent()` (which sets `RoomType: model.RoomTypeChannel`), so the regression guard for the latent spotlight-roomType-empty bug is already in place.
 
 ### Idempotency
 
-No change. The unique index on `subscriptions.(roomId, u.account)` already handles concurrent or redelivered creates idempotently. The dedup-key fall-through fix from PR #169 (CodeRabbit's catch) still applies — `mongo.IsDuplicateKeyError` is swallowed and execution continues so search-sync-worker's MV update still fires on replays.
-
-Wait — that fix is in `handleRoomCreated`. After deleting `handleRoomCreated`, the dup-key handling needs to be present in `handleMemberAdded` too. Today `handleMemberAdded` returns the bulk-create error on any failure, including dup-key:
-
-```go
-if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-    return fmt.Errorf("bulk create subscriptions: %w", err)
-}
-```
-
-Apply PR #169's fix here as well: treat `mongo.IsDuplicateKeyError` as idempotent and continue (no publish to fall through to in this handler, but the explicit nil return matches the intent and prevents JetStream nak-loops).
-
-```go
-if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-    if !mongo.IsDuplicateKeyError(err) {
-        return fmt.Errorf("bulk create subscriptions: %w", err)
-    }
-}
-```
+The unique index on `subscriptions.(roomId, u.account)` keeps concurrent and redelivered creates idempotent. `handleMemberAdded` swallows `mongo.IsDuplicateKeyError` (see the bulk-create branch in the code example above) and continues, so JetStream replays of `member_added` after a crashed prior delivery do not nak-loop. Non-duplicate errors propagate so JetStream retries until success or `MaxDeliver` is hit.
 
 ## Testing
 
-Unit only, per spec.
+Unit + integration coverage, per spec.
 
 ### `inbox-worker/handler_test.go`
 
@@ -217,7 +199,7 @@ Delete `TestHandleRoomCreated*` cases (5 total per current `grep`).
 
 ### `inbox-worker/integration_test.go`
 
-Delete `TestHandleRoomCreatedPersistsRemoteSubs` and `TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub`. Replace with `TestHandleMemberAddedDM_PersistsCorrectShape_Integration` — exercises the full DM flow against real Mongo: `member_added` event with `RoomType=DM`, asserts the persisted Subscription row has `Name = RequesterAccount`, `Roles = nil`, `IsSubscribed = false`.
+Delete `TestHandleRoomCreatedPersistsRemoteSubs` and `TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub`. Replace with `TestHandleMemberAdded_Channel_PersistsRemoteSubs` and `TestHandleMemberAdded_DM_PersistsRemoteCounterpartSub` — both go through the public `HandleEvent` entry point with `member_added` payloads carrying the new `RoomType` + `RequesterAccount` fields, and assert the persisted Subscription rows have the right shape.
 
 ### `room-worker/handler_test.go`
 
@@ -232,7 +214,7 @@ Update existing PR #169 tests to assert `RoomType` and `RequesterAccount` are po
 
 ### `search-sync-worker/spotlight_test.go`
 
-- `TestSpotlightCollection_BuildAction_PopulatesRoomType` (NEW): builds an `InboxMemberEvent` with `RoomType: model.RoomTypeChannel`, runs `BuildAction`, asserts the resulting ES doc carries `roomType: "channel"`. Locks in the consolidation's latent-bug fix.
+No new tests. The existing `TestSpotlightCollection_BuildAction_MemberAdded` already asserts `doc["roomType"] == "channel"` via `baseInboxMemberEvent()`, so the regression guard for the latent spotlight-roomType-empty bug is in place without code change.
 
 ## Rollout
 
@@ -247,11 +229,6 @@ For belt-and-suspenders correctness in case federation traffic does materialize 
 In-flight `room_created` events that arrive at the new `inbox-worker` (because they were redelivered from before its deploy) hit the existing `default` case in the event-type switch → `slog.Warn("unknown event type, skipping")` + ack. No nak-loop, no behavior regression.
 
 ### Per-site verification after deploy
-
-1. Create a federated DM (alice@s1 → bob@s2). Verify on s2 the recipient's `Subscription` doc has `Name = "alice"`, `Roles = nil`, `IsSubscribed = false`.
-2. Create a federated channel with one cross-site member. Verify on the remote site the member's `Subscription` doc has `Name = roomName`, `Roles = ["member"]`, `IsSubscribed = false`.
-3. Query the spotlight ES index for the new rooms — confirm `roomType` is `"channel"` / `"dm"` / `"botDM"` (not empty).
-4. `nats stream info OUTBOX_{site}` should show `member_added` events flowing at room-creation rate; `room_created` subject should report zero new messages.
 
 1. Create a federated DM (alice@s1 → bob@s2). Verify on s2 the recipient's `Subscription` doc has `Name = "alice"`, `Roles = nil`, `IsSubscribed = false`.
 2. Create a federated channel with one cross-site member. Verify on the remote site the member's `Subscription` doc has `Name = roomName`, `Roles = ["member"]`, `IsSubscribed = false`.
