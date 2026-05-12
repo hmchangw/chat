@@ -40,14 +40,35 @@ type streamManager interface {
 // Ownership rule: this helper sets only the stream schema (Name + Subjects)
 // from pkg/stream.Inbox. Federation config (Sources + SubjectTransforms for
 // cross-site OUTBOX→INBOX sourcing) belongs to ops/IaC and is layered on in
-// production. App code never sets it.
+// production. App code never sets it -- but it must not ERASE it either.
+//
+// When the stream already exists, this helper reads its current Sources +
+// SubjectTransforms and merges them into the schema-only update so that
+// CreateOrUpdateStream preserves federation config across worker restarts.
+// Without this preservation, every worker restart would briefly clear
+// INBOX_<siteID>.Sources, breaking cross-site sourcing for any in-flight
+// gateway deliveries until the next ops/IaC reconciliation. (The e2e
+// harness's BootstrapFederation hits this race directly when
+// inbox-worker-b is stop/started under E2E_REUSE_STACK; production
+// rarely restarts inbox-worker, but the same window exists at deploy.)
 func bootstrapStreams(ctx context.Context, js streamManager, siteID string, enabled bool) error {
 	inboxCfg := stream.Inbox(siteID)
 	if enabled {
-		if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		newCfg := jetstream.StreamConfig{
 			Name:     inboxCfg.Name,
 			Subjects: inboxCfg.Subjects,
-		}); err != nil {
+		}
+		// Preserve federation config that was layered on by ops/IaC (or by
+		// the e2e harness's BootstrapFederation) before this worker restarted.
+		// A missing stream is fine -- first-time bootstrap creates it without
+		// federation, and the federation layer's first reconciliation sets
+		// Sources after.
+		if existing, err := js.Stream(ctx, inboxCfg.Name); err == nil && existing != nil {
+			if info := existing.CachedInfo(); info != nil && len(info.Config.Sources) > 0 {
+				newCfg.Sources = info.Config.Sources
+			}
+		}
+		if _, err := js.CreateOrUpdateStream(ctx, newCfg); err != nil {
 			return fmt.Errorf("create INBOX stream: %w", err)
 		}
 		return nil

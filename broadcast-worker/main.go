@@ -36,6 +36,8 @@ type config struct {
 	MongoUsername        string           `env:"MONGO_USERNAME"            envDefault:""`
 	MongoPassword        string           `env:"MONGO_PASSWORD"            envDefault:""`
 	MaxWorkers           int              `env:"MAX_WORKERS"               envDefault:"100"`
+	DurableName          string           `env:"DURABLE_NAME"              envDefault:"broadcast-worker"`
+	MaxDeliver           int              `env:"MAX_DELIVER"               envDefault:"-1"`
 	UserCacheSize        int              `env:"USER_CACHE_SIZE"           envDefault:"10000"`
 	UserCacheTTL         time.Duration    `env:"USER_CACHE_TTL"            envDefault:"5m"`
 	ValkeyAddr           string           `env:"VALKEY_ADDR"`
@@ -116,8 +118,23 @@ func main() {
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
-		Durable:   "broadcast-worker",
+		Durable:   cfg.DurableName,
 		AckPolicy: jetstream.AckExplicitPolicy,
+		// DeliverPolicy only applies at FIRST consumer creation. Existing
+		// durable consumers resume from their last ack regardless. On a
+		// truly-fresh consumer (e.g. a new broadcast-worker variant or a
+		// disaster-recovery rebuild) this avoids re-broadcasting all of
+		// CANONICAL's history; per JetStream semantics: skip everything
+		// before the consumer existed.
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+		// MaxDeliver caps redelivery attempts. Default -1 = unlimited
+		// (existing behavior). broadcast-worker is best-effort delivery
+		// (the source of truth is MESSAGES_CANONICAL); a permanently-
+		// poisoned message (e.g. a deleted room) shouldn't NAK forever
+		// and starve other messages. Operators set MAX_DELIVER>0 in
+		// environments where consumer NAK accumulation is a concern;
+		// e2e sets it on the encryption variant for that exact reason.
+		MaxDeliver: cfg.MaxDeliver,
 	})
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)

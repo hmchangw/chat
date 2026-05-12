@@ -16,25 +16,23 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
-// noopShutdown is returned when the SDK is disabled; safe to call.
-func noopShutdown(context.Context) error { return nil }
-
-// InitTracer creates and registers a TracerProvider with OTLP gRPC exporter.
-// Returns a shutdown function.
+// InitTracer registers a TracerProvider + TextMap propagator. Returns a
+// shutdown function.
 //
-// Honors OTEL_SDK_DISABLED=true (the standard OTel SDK env var): when set,
-// the tracer provider is left as the global no-op and no OTLP exporter is
-// constructed. This lets the e2e suite run without an OTLP collector
-// container and without log noise from failed export attempts.
+// Honors OTEL_SDK_DISABLED=true: when set, the TracerProvider is created
+// WITHOUT any exporter so no spans are emitted off-host -- but the
+// provider is still REAL, so tracer.Start produces real SpanContexts
+// that the propagator can carry as `traceparent` to downstream
+// services. The OTel-no-op fallback used previously prevented cross-
+// process correlation because no-op spans inject nothing. Real-provider-
+// without-exporter is the standard pattern for "I want correlation
+// across services but no telemetry sink set up" (the e2e default).
+//
+// The TextMap propagator is registered unconditionally -- propagator
+// and tracer provider are independent concerns: the provider creates
+// spans, the propagator carries their context across boundaries.
 func InitTracer(ctx context.Context, serviceName string) (func(context.Context) error, error) {
-	if strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") {
-		return noopShutdown, nil
-	}
-
-	exp, err := otlptracegrpc.New(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("otlp exporter: %w", err)
-	}
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	res, err := resource.New(ctx, resource.WithAttributes(
 		semconv.ServiceNameKey.String(serviceName),
@@ -43,13 +41,18 @@ func InitTracer(ctx context.Context, serviceName string) (func(context.Context) 
 		return nil, fmt.Errorf("resource: %w", err)
 	}
 
-	tp := trace.NewTracerProvider(
-		trace.WithBatcher(exp),
-		trace.WithResource(res),
-	)
+	tpOpts := []trace.TracerProviderOption{trace.WithResource(res)}
 
+	if !strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") {
+		exp, err := otlptracegrpc.New(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("otlp exporter: %w", err)
+		}
+		tpOpts = append(tpOpts, trace.WithBatcher(exp))
+	}
+
+	tp := trace.NewTracerProvider(tpOpts...)
 	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	return tp.Shutdown, nil
 }

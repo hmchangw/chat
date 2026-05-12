@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	
 	"github.com/hmchangw/chat/e2e/harness"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
@@ -43,6 +42,7 @@ func roomEventMessageID(e *model.RoomEvent) string {
 	}
 	return e.Message.ID
 }
+
 // send path:
 //
 //	auth alice -> create channel room -> server invites bob -> bob auths ->

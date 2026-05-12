@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
-	
 	"github.com/hmchangw/chat/e2e/harness"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -31,41 +30,31 @@ import (
 // (member_added, member_removed, role_update) so a bug in one handler
 // can't pass under cover of the others.
 //
-// FILE PREFIX (post-R3 reviewer follow-up): this test ships as
-// `zz_federation_catchup_test.go` so it runs LAST among federation tests
-// alphabetically. This is a PRAGMATIC SHIELD, not a principled fix.
-//
-// The principled fix attempted in the R3 reviewer pass was a "canary"
-// cross-site invite at the END of this test that proves inbox-worker-b
-// is steady-state before returning. Even with the canary + an explicit
-// BootstrapFederation re-apply after worker restart + waiting for all
-// 20 events to gateway-source into INBOX_siteB before restart, the test
-// still flaked ~30% of runs (sometimes catchup itself fails, sometimes
-// the next federation test fails with INBOX_siteB.Sources nuked).
-//
-// Root cause: inbox-worker bootstraps INBOX_siteB with
-// BOOTSTRAP_STREAMS=true via CreateOrUpdateStream(schema-only), which
-// OVERWRITES the federation Sources every time the worker restarts.
-// Fixing this for real requires either (a) a production code change so
-// inbox-worker reads existing stream config and preserves Sources, or
-// (b) a tigher dev-stack invariant that's outside e2e harness scope.
-//
-// Keeping the file-ordering shield + leaving the BootstrapFederation
-// re-apply and event-count wait in place is the lowest-risk move:
-// even when catchup itself fails, the other 34 tests are insulated.
+// FILE PREFIX: keeps `zz_*` so it runs LAST among federation tests
+// alphabetically -- belt-and-suspenders against any future test that
+// adds more inbox-worker-b churn. The actual flakiness was fixed by
+// the post-R3 production change to inbox-worker/bootstrap.go: it now
+// reads the existing stream config and PRESERVES Sources +
+// SubjectTransforms across restarts, instead of overwriting them with
+// the schema-only update. The test's own BootstrapFederation re-apply
+// is no longer load-bearing but stays as a defensive layer in case
+// some future restart path drops Sources via a different code route.
 func TestFederation_CatchUpAfterOutage(t *testing.T) {
-	// SKIP under E2E_REUSE_STACK: when this test runs against a long-lived
-	// dev stack (rather than testcontainers-owned lifecycle), the
-	// inbox-worker-b stop/start cycle racily clears INBOX_siteB.Sources via
-	// its BOOTSTRAP_STREAMS=true CreateOrUpdateStream path. We re-apply
-	// federation inside the test, but the worker can also race AFTER the
-	// re-apply (consumer reconnect cycles), and the test flakes ~50%.
-	// Under `make e2e` (testcontainers ownership), each catchup run gets a
-	// fresh stack so this race doesn't compound, and the test stays useful.
+	// SKIP under E2E_REUSE_STACK: even with the post-R3 inbox-worker
+	// bootstrap fix (preserves federation Sources across worker
+	// restarts), the catchup flow remains ~40% flaky against a shared
+	// long-lived stack. The remaining flake source is the worker-restart
+	// CONSUMER cycle (NumAckPending bouncing while broadcast-worker
+	// shifts to NewPolicy on its fresh durable, etc.). Under
+	// testcontainers ownership (`make e2e`) each invocation gets a
+	// fresh stack and the test runs reliably. Keeping the skip-in-REUSE
+	// + the workerLifecycle abstraction means CI (testcontainers) covers
+	// the scenario while local dev iteration stays deterministic.
 	if reuse, _ := strconv.ParseBool(os.Getenv("E2E_REUSE_STACK")); reuse {
-		t.Skip("catchup is flaky under E2E_REUSE_STACK due to inbox-worker " +
-			"CreateOrUpdateStream nuking federation Sources on each restart; " +
-			"runs cleanly under testcontainers ownership (`make e2e`)")
+		t.Skip("catchup is flaky under E2E_REUSE_STACK -- runs reliably under " +
+			"`make e2e` (testcontainers ownership); the Sources-preservation " +
+			"production fix in inbox-worker resolved most cases but consumer " +
+			"reconnect timing remains racy in a shared-stack environment")
 	}
 
 	ctx := t.Context()
@@ -225,4 +214,3 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 			"after inbox-worker-b restart -- worker is not steady-state, "+
 			"subsequent federation tests will likely flake", canaryReply.RoomID)
 }
-

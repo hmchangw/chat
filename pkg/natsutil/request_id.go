@@ -49,11 +49,20 @@ func HeaderForContext(ctx context.Context) nats.Header {
 	return nats.Header{RequestIDHeader: []string{id}}
 }
 
-// NewMsg builds a *nats.Msg with subj, data, and X-Request-ID drawn from ctx (nil header if no ID).
+// NewMsg builds a *nats.Msg with subj, data, and X-Request-ID drawn from
+// ctx. The Header is ALWAYS allocated (never nil) -- downstream
+// interceptors, specifically otelnats's propagator.Inject, silently
+// no-op on a nil HeaderCarrier so a nil header would drop traceparent
+// from every outbound publish that didn't already carry an X-Request-ID.
+// Allocating an empty header costs ~16 bytes and preserves correlation.
 func NewMsg(ctx context.Context, subj string, data []byte) *nats.Msg {
+	hdr := nats.Header{}
+	if id := RequestIDFromContext(ctx); id != "" {
+		hdr.Set(RequestIDHeader, id)
+	}
 	return &nats.Msg{
 		Subject: subj,
 		Data:    data,
-		Header:  HeaderForContext(ctx),
+		Header:  hdr,
 	}
 }
