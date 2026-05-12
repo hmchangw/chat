@@ -10,6 +10,7 @@ require (
 	github.com/docker/docker v27.1.1+incompatible
 	github.com/elastic/go-elasticsearch/v8 v8.19.3
 	github.com/gin-gonic/gin v1.12.0
+	github.com/go-resty/resty/v2 v2.17.2
 	github.com/gocql/gocql v1.7.0
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/jwt/v2 v2.8.1
