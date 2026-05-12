@@ -16,22 +16,49 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
-// InitTracer registers a TracerProvider + TextMap propagator. Returns a
-// shutdown function.
+// noopShutdown is the shutdown function returned when no TracerProvider
+// is constructed (the fully-disabled mode).
+func noopShutdown(context.Context) error { return nil }
+
+// envTrue returns true when the named env var, after trimming whitespace and
+// folding case, is "true".
+func envTrue(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(name)), "true")
+}
+
+// InitTracer registers a TracerProvider + TextMap propagator and returns
+// a shutdown function. Three operator modes are supported:
 //
-// Honors OTEL_SDK_DISABLED=true: when set, the TracerProvider is created
-// WITHOUT any exporter so no spans are emitted off-host -- but the
-// provider is still REAL, so tracer.Start produces real SpanContexts
-// that the propagator can carry as `traceparent` to downstream
-// services. The OTel-no-op fallback used previously prevented cross-
-// process correlation because no-op spans inject nothing. Real-provider-
-// without-exporter is the standard pattern for "I want correlation
-// across services but no telemetry sink set up" (the e2e default).
+//  1. Default (no env): real TracerProvider + OTLP gRPC exporter + W3C
+//     propagator. Spans created, batched to the configured OTLP
+//     endpoint. This is the production deployment.
 //
-// The TextMap propagator is registered unconditionally -- propagator
-// and tracer provider are independent concerns: the provider creates
-// spans, the propagator carries their context across boundaries.
+//  2. OTEL_SDK_DISABLED=true (and OTEL_PROPAGATION_ONLY unset / false):
+//     fully silent. No TracerProvider, no propagator, no span allocation.
+//     Honors the literal OTel SDK contract -- operators who explicitly
+//     disable the SDK get zero per-operation overhead.
+//
+//  3. OTEL_SDK_DISABLED=true AND OTEL_PROPAGATION_ONLY=true: a real
+//     TracerProvider WITHOUT an exporter, plus the W3C propagator.
+//     Spans are allocated and discarded after each operation; their
+//     SpanContext flows in `traceparent` headers across services. This
+//     is the e2e harness default: it gives cross-service correlation
+//     without requiring an OTLP collector container.
+//
+// Why not collapse 2 and 3? Reviewer feedback (post-R3): operators who
+// set OTEL_SDK_DISABLED=true expected zero overhead. Folding the
+// propagation-only behavior under the same flag surprised them. A
+// second knob preserves the literal SDK_DISABLED contract while still
+// letting the e2e harness opt into propagation.
 func InitTracer(ctx context.Context, serviceName string) (func(context.Context) error, error) {
+	sdkDisabled := envTrue("OTEL_SDK_DISABLED")
+	propagationOnly := envTrue("OTEL_PROPAGATION_ONLY")
+
+	// Mode 2: fully silent. No global propagator, no provider.
+	if sdkDisabled && !propagationOnly {
+		return noopShutdown, nil
+	}
+
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	res, err := resource.New(ctx, resource.WithAttributes(
@@ -43,7 +70,9 @@ func InitTracer(ctx context.Context, serviceName string) (func(context.Context) 
 
 	tpOpts := []trace.TracerProviderOption{trace.WithResource(res)}
 
-	if !strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") {
+	// Mode 1: real exporter. Mode 3: no exporter, but real provider so
+	// tracer.Start produces real SpanContexts the propagator can inject.
+	if !sdkDisabled {
 		exp, err := otlptracegrpc.New(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("otlp exporter: %w", err)

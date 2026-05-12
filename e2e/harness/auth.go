@@ -4,7 +4,11 @@ package harness
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -88,4 +92,96 @@ func mustSeed(t *testing.T, kp nkeys.KeyPair) string {
 	seed, err := kp.Seed()
 	require.NoError(t, err)
 	return string(seed)
+}
+
+// MintEphemeralUser creates a fresh Keycloak realm user (and registers
+// cleanup to delete it at test-end). The returned account name can be
+// passed to Authenticate to obtain a NATS conn scoped to a per-test
+// identity, enabling parallel federation tests that previously had to
+// run serial because they shared the realm-fixed `alice` / `bob`.
+//
+// Implementation: gets an admin token via the master realm
+// password-grant (admin/admin -- e2e Keycloak bootstrap admin), POSTs
+// to /admin/realms/chatapp/users to create the user with password
+// "password", returns the username. Caller usually feeds this directly
+// into Authenticate. Cleanup deletes the user via the admin API even
+// when the test fails.
+//
+// Username pattern: "u-{8-char-hex}". Short to fit Keycloak's username
+// constraints + readable in logs.
+//
+// Concurrency: safe for parallel callers. Keycloak's user-create
+// endpoint serializes server-side; per-test users have disjoint
+// usernames so no collisions.
+func (s SiteEndpoints) MintEphemeralUser(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	kc := keycloak.NewClient(s.KeycloakURL, s.Realm())
+
+	// Admin token from master realm. Keycloak's bootstrap admin is the
+	// only credential we have in the e2e harness; production would
+	// rotate to a service-account client.
+	adminKC := keycloak.NewClient(s.KeycloakURL, "master")
+	adminTok, err := adminKC.AccessToken(ctx, "admin-cli", "admin", "admin")
+	require.NoError(t, err, "obtain Keycloak master-realm admin token")
+
+	username := ephemeralUsername()
+	require.NoError(t, kc.CreateUser(ctx, adminTok, username, "password"),
+		"create ephemeral user %s on %s", username, s.SiteID)
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		// Best-effort: re-obtain admin token in case the test ran past
+		// the original token's expiry.
+		if tok, err := adminKC.AccessToken(cleanupCtx, "admin-cli", "admin", "admin"); err == nil {
+			_ = kc.DeleteUser(cleanupCtx, tok, username)
+		}
+	})
+
+	return username
+}
+
+// MintEphemeralUserAs creates a Keycloak user with an EXPLICIT username,
+// rather than the random ephemeral name MintEphemeralUser generates.
+// Useful when a cross-site test needs the same username present in BOTH
+// sites' Keycloak instances (federation keys off the account string, so
+// the username must match). Cleanup is registered to delete the user on
+// test end. Idempotent: a 409 dup-name from a prior test's leftover is
+// treated as success.
+func (s SiteEndpoints) MintEphemeralUserAs(t *testing.T, ctx context.Context, username string) {
+	t.Helper()
+	kc := keycloak.NewClient(s.KeycloakURL, s.Realm())
+	adminKC := keycloak.NewClient(s.KeycloakURL, "master")
+	adminTok, err := adminKC.AccessToken(ctx, "admin-cli", "admin", "admin")
+	require.NoError(t, err, "obtain Keycloak master-realm admin token on %s", s.SiteID)
+
+	if err := kc.CreateUser(ctx, adminTok, username, "password"); err != nil {
+		// 409 is fine (a sibling test or earlier run already created it).
+		if !strings.Contains(err.Error(), "409") {
+			t.Fatalf("create user %s on %s: %v", username, s.SiteID, err)
+		}
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if tok, err := adminKC.AccessToken(cleanupCtx, "admin-cli", "admin", "admin"); err == nil {
+			_ = kc.DeleteUser(cleanupCtx, tok, username)
+		}
+	})
+}
+
+// Realm returns the well-known chat realm name. Centralised so callers
+// don't sprinkle the literal "chatapp" string and a future realm rename
+// is a single-edit change.
+func (s SiteEndpoints) Realm() string { return "chatapp" }
+
+// ephemeralUsername returns a short unique username. 8 hex chars gives
+// 2^32 keyspace; collisions are statistically negligible for a test
+// suite that mints at most a few hundred users across the lifetime of
+// a long-lived dev stack.
+func ephemeralUsername() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("u-%x", b)
 }

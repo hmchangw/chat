@@ -31,13 +31,17 @@ import (
 //  7. Poll mongo-b's subscriptions for bob+roomID; assert it appears with
 //     the expected fields.
 func TestFederation_CrossSiteInvite(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	stack := stack
 	harness.CaptureLogs(t, stack,
 		"room-worker-a", "inbox-worker-b", "broadcast-worker-b")
 
 	alice := stack.SiteA.Authenticate(t, ctx, "alice")
-	bobOnB := stack.SiteB.Authenticate(t, ctx, "bob")
+	// Per-test ephemeral siteB user so this test can run in parallel
+	// with other federation tests without contention on a shared bob.
+	ephemeral := stack.SiteB.MintEphemeralUser(t, ctx)
+	bobOnB := stack.SiteB.Authenticate(t, ctx, ephemeral)
 
 	// Per R1 12.D: simulate cross-site user discovery by seeding mongo-a's
 	// users collection. Without this, room-worker-a's invite path would
@@ -98,12 +102,16 @@ func TestFederation_CrossSiteInvite(t *testing.T) {
 // Catches the regression class "inbox-worker-b receives + materializes events
 // that should have stayed siteA-local."
 func TestFederation_NegativeIsolation_StateStaysSiteLocal(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	stack := stack
 	harness.CaptureLogs(t, stack, "room-worker-a", "inbox-worker-b")
 
 	alice := stack.SiteA.Authenticate(t, ctx, "alice")
-	bob := stack.SiteA.Authenticate(t, ctx, "bob") // bob is a SITE-A user here
+	// Ephemeral siteA-local user -- this test asserts NO cross-site
+	// materialization, so a fresh per-test account avoids contention.
+	ephemeral := stack.SiteA.MintEphemeralUser(t, ctx)
+	bob := stack.SiteA.Authenticate(t, ctx, ephemeral) // siteA-local user
 
 	createReq := model.CreateRoomRequest{
 		Name:  "e2e-" + t.Name(),

@@ -16,15 +16,30 @@ import (
 )
 
 // setupCrossSiteRoom is a shared fixture for the role-update / member-remove
-// federation tests. Creates a channel on siteA with bob (a siteB user) as a
+// federation tests. Creates a channel on siteA with a fresh siteB user as a
 // member, waits for the cross-site subscription to land on mongo-b, returns
-// the roomID + bob's identity. Registers cleanup on both sites.
+// the roomID + the siteB user's account. Registers cleanup on both sites.
+//
+// Per-test users (post-R3 Item 2): rather than reuse the realm-fixed
+// alice/bob, the fixture mints a fresh ephemeral siteB user via the
+// Keycloak admin API. This lets the federation tests run in parallel
+// without contention on shared inbox-worker-b consumer state being
+// amplified by reused account names.
 func setupCrossSiteRoom(t *testing.T) (roomID string, bobAccount string) {
 	t.Helper()
 	ctx := t.Context()
 
 	alice := stack.SiteA.Authenticate(t, ctx, "alice")
-	bobOnB := stack.SiteB.Authenticate(t, ctx, "bob")
+	// Mint the same username on BOTH sites' Keycloaks. SubscriptionRead
+	// + a few sibling tests authenticate the cross-site user on siteA
+	// too (bob marks-read on siteA), so the user has to exist in
+	// siteA's Keycloak. MintEphemeralUser is per-site, so we call it
+	// twice. The username is taken from siteB's mint so the realm
+	// usernames are identical (cross-site federation keys off the
+	// account string, not a Keycloak user-id).
+	ephemeral := stack.SiteB.MintEphemeralUser(t, ctx)
+	stack.SiteA.MintEphemeralUserAs(t, ctx, ephemeral)
+	bobOnB := stack.SiteB.Authenticate(t, ctx, ephemeral)
 	stack.SiteA.SeedRemoteUser(t, ctx, bobOnB.Account, stack.SiteB.SiteID)
 
 	createReq := model.CreateRoomRequest{
@@ -65,6 +80,7 @@ func setupCrossSiteRoom(t *testing.T) (roomID string, bobAccount string) {
 // regression in inbox-worker-b's handleRoleUpdated handler would ship
 // unobserved.
 func TestFederation_CrossSiteRoleUpdate(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	harness.CaptureLogs(t, stack, "room-worker-a", "inbox-worker-b")
 
@@ -124,6 +140,7 @@ func TestFederation_CrossSiteRoleUpdate(t *testing.T) {
 // bob (siteB) from a cross-site channel; we assert bob's subscription
 // disappears from mongo-b.
 func TestFederation_CrossSiteMemberRemove(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	harness.CaptureLogs(t, stack, "room-worker-a", "inbox-worker-b")
 

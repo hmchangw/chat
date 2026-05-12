@@ -157,6 +157,92 @@ func (c *Client) tokenRequest(ctx context.Context, form url.Values) (Tokens, err
 	return tokens, nil
 }
 
+// CreateUser provisions a fresh realm user via the Keycloak admin API.
+// adminToken must be an access token issued by the master realm for an
+// admin user (typically obtained via PasswordGrant against
+// `realms/master` with client_id=admin-cli). The new user is created
+// with the supplied password, enabled, email-verified, AND with a
+// synthesized email + first/last name so realm-level required-action
+// rules ("Account is not fully set up") don't block the subsequent
+// password-grant. Returns nil on success or a wrapped error on
+// non-2xx (including 409 dup-name).
+func (c *Client) CreateUser(ctx context.Context, adminToken, username, password string) error {
+	path := fmt.Sprintf("/admin/realms/%s/users", c.realm)
+	resp, err := c.http.R().
+		SetContext(ctx).
+		SetHeader("Authorization", "Bearer "+adminToken).
+		SetHeader("Content-Type", "application/json").
+		SetBody(map[string]any{
+			"username":      username,
+			"enabled":       true,
+			"emailVerified": true,
+			// Email + names are required by the chatapp realm's
+			// "Account is not fully set up" rule -- a user missing
+			// any of these gets a server-side required-action
+			// inserted at login time that returns invalid_grant from
+			// the direct-access-grant flow. Synthesizing them keeps
+			// the user immediately usable.
+			"email":     username + "@example.test",
+			"firstName": username,
+			"lastName":  username,
+			"credentials": []map[string]any{{
+				"type":      "password",
+				"value":     password,
+				"temporary": false,
+			}},
+		}).
+		Post(path)
+	if err != nil {
+		return fmt.Errorf("keycloak create user: %w", err)
+	}
+	if resp.IsError() {
+		return fmt.Errorf("keycloak create user: %d %s", resp.StatusCode(), resp.String())
+	}
+	return nil
+}
+
+// DeleteUser removes a realm user via the Keycloak admin API. Looks up
+// the user ID by username first (Keycloak's admin DELETE takes an ID,
+// not a username). 404 is treated as success so cleanup is idempotent.
+func (c *Client) DeleteUser(ctx context.Context, adminToken, username string) error {
+	searchPath := fmt.Sprintf("/admin/realms/%s/users", c.realm)
+	resp, err := c.http.R().
+		SetContext(ctx).
+		SetHeader("Authorization", "Bearer "+adminToken).
+		SetQueryParam("username", username).
+		SetQueryParam("exact", "true").
+		Get(searchPath)
+	if err != nil {
+		return fmt.Errorf("keycloak lookup user: %w", err)
+	}
+	if resp.StatusCode() == http.StatusNotFound {
+		return nil
+	}
+	if resp.IsError() {
+		return fmt.Errorf("keycloak lookup user: %d %s", resp.StatusCode(), resp.String())
+	}
+	var users []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(resp.Body(), &users); err != nil {
+		return fmt.Errorf("decode user list: %w", err)
+	}
+	for _, u := range users {
+		delPath := fmt.Sprintf("/admin/realms/%s/users/%s", c.realm, u.ID)
+		dResp, dErr := c.http.R().
+			SetContext(ctx).
+			SetHeader("Authorization", "Bearer "+adminToken).
+			Delete(delPath)
+		if dErr != nil {
+			return fmt.Errorf("keycloak delete user %s: %w", u.ID, dErr)
+		}
+		if dResp.IsError() && dResp.StatusCode() != http.StatusNotFound {
+			return fmt.Errorf("keycloak delete user %s: %d %s", u.ID, dResp.StatusCode(), dResp.String())
+		}
+	}
+	return nil
+}
+
 // parseErrorResponse builds a *Error from a non-2xx response, attempting
 // to decode the standard OAuth error JSON. Non-JSON bodies (e.g. Keycloak's
 // 404 "Realm does not exist" plain-text page) leave OAuthError/Description empty.

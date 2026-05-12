@@ -27,70 +27,50 @@ import (
 //
 // The 200ms refresh_interval (set by search-init-a per R1 4.B) keeps the
 // poll window small. 10s is generous; typical observed catch-up is under 1s.
+//
+// Parallelism: each invocation mints a fresh Keycloak user via
+// MintEphemeralUser so the per-account valkey cache + ES user-room doc
+// don't collide with sibling parallel tests. Previously serial because
+// it mutated alice's shared state.
 func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
-	// LIVE-RUN FINDING (post cheap-#3 SeedUserRoom attempt):
-	//
-	// search-service has THREE layers of authorization caching that
-	// independently need to be coherent for a search to return results:
-	//
-	//   1. Mongo-side restricted-rooms (per room.HistorySharedSince).
-	//   2. Valkey-cached restricted-rooms set (TTL 5 min, key
-	//      `searchservice:restrictedrooms:{account}`).
-	//   3. ES user-room doc (per-user; populated by search-sync-worker from
-	//      INBOX events; we seed it directly via SeedUserRoom).
-	//
-	// Even after pre-seeding (3), flushing (2), and restarting
-	// search-service-a to drop its in-process cache, the search query
-	// returns 0 results. The user-room doc has alice + the test roomID
-	// correctly; the messages index has alice's pumpernickel message with
-	// the same roomID; but the final search returns empty.
-	//
-	// The remaining hypothesis is search-service's query builder
-	// (`buildMessageQuery`) combines the user-room rooms[] list with
-	// restricted-rooms hss-window filtering and the roomTimestamps
-	// last-write-wins guard in a way the e2e harness can't yet replicate
-	// without a deeper seed. Unblocking this needs a follow-up plan that
-	// either (a) writes a fuller user-room doc including roomTimestamps
-	// for system messages too, or (b) drops the 5-minute valkey TTL to a
-	// test-friendly window via env override, or (c) authenticates alice
-	// on siteB so cross-site sync populates user-room properly.
-	// Unblock attempt (per R3): the missing piece in earlier runs was that
-	// search-service's per-account valkey cache (key
-	// `searchservice:restrictedrooms:{account}`, TTL 5m) can be populated
-	// from a prior test with an empty/wrong rooms set. The terms-lookup uses
-	// the user-room ES doc (which we DO seed), but the cache short-circuits
-	// the doc fetch when warm. Flushing the cache for alice forces
-	// search-service to re-read the doc we just seeded.
-
+	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
-	alice := site.Authenticate(t, ctx, "alice")
-	_ = site.Authenticate(t, ctx, "bob")
+	// Ephemeral user: avoids the shared-alice state (per-account
+	// valkey restricted-rooms cache + ES user-room doc) that forced
+	// this test to run serial.
+	senderName := site.MintEphemeralUser(t, ctx)
+	sender := site.Authenticate(t, ctx, senderName)
+	otherName := site.MintEphemeralUser(t, ctx)
+	other := site.Authenticate(t, ctx, otherName)
 
-	site.FlushSearchRestrictedCache(t, alice.Account)
+	// Flush the cache for sender (defensive -- a fresh user shouldn't
+	// have a cache entry, but a prior failed run leaving stale state
+	// would be silent otherwise).
+	site.FlushSearchRestrictedCache(t, sender.Account)
 
 	// Set up a channel + send a message with two unique two-token strings.
 	// `pumpernickel xylophone` won't appear in any other test fixture and
 	// is highly unlikely to be a false-positive in other suites.
 	createReq := model.CreateRoomRequest{
 		Name:  "e2e-" + t.Name(),
-		Users: []string{"bob"},
+		Users: []string{other.Account},
 	}
 	var createReply model.CreateRoomReply
 	require.NoError(t, requestReply(
-		alice.Conn(),
-		subject.RoomCreate(alice.Account, site.SiteID),
+		sender.Conn(),
+		subject.RoomCreate(sender.Account, site.SiteID),
 		createReq, 5*time.Second, &createReply,
 	))
 	roomID := createReply.RoomID
 	registerRoomCleanup(t, []SiteDB{{SiteID: site.SiteID, DB: site.MongoDB(t)}}, roomID)
 
-	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
+	awaitSubscription(t, ctx, site.MongoDB(t), sender.Account, roomID)
 
-	// Pre-seed alice's user-room ES doc with this roomID so search-service
+	// Pre-seed sender's user-room ES doc with this roomID so search-service
 	// authorizes her query. See SeedUserRoom for why this is needed.
-	site.SeedUserRoom(t, alice.Account, []string{roomID})
+	site.SeedUserRoom(t, sender.Account, []string{roomID})
 
 	// Same RequestID for both the request body and the response-subject
 	// suffix; gatekeeper derives the reply subject from the body's
@@ -107,10 +87,10 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 	reqID := idgen.GenerateRequestID()
 	require.NoError(t, sendAndAwaitReply(
 		t,
-		alice.Conn(),
-		alice.Account,
+		sender.Conn(),
+		sender.Account,
 		reqID,
-		subject.MsgSend(alice.Account, roomID, site.SiteID),
+		subject.MsgSend(sender.Account, roomID, site.SiteID),
 		model.SendMessageRequest{
 			ID:        msgID,
 			Content:   body,
@@ -124,14 +104,16 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 	awaitCanonicalAcked(t, ctx, js, canonical, "message-sync", preSeq+1)
 
 	// Poll search-service until the message is indexed. Subject is
-	// subject.SearchMessages(account) per R1 11.A.
+	// subject.SearchMessages(account) per R1 11.A. Each parallel test
+	// uses a UNIQUE sender + body string, so the search-by-substring is
+	// safe to dispatch on the body keyword without cross-test collisions.
 	deadline := time.Now().Add(15 * time.Second)
 	var resp model.SearchMessagesResponse
 	for time.Now().Before(deadline) {
 		resp = model.SearchMessagesResponse{}
 		err := requestReply(
-			alice.Conn(),
-			subject.SearchMessages(alice.Account),
+			sender.Conn(),
+			subject.SearchMessages(sender.Account),
 			model.SearchMessagesRequest{SearchText: "pumpernickel", Size: 25},
 			3*time.Second,
 			&resp,
