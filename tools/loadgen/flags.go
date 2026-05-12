@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -92,4 +94,145 @@ func buildRamp(from, to int, dur time.Duration, shape string) (*Ramp, error) {
 		return nil, err
 	}
 	return &Ramp{From: from, To: to, Duration: dur, Shape: rs}, nil
+}
+
+// runFlags holds all parsed CLI flags for the "run" subcommand. It is
+// populated by ParseRunFlags and consumed by runRun.
+type runFlags struct {
+	Scenario       string
+	Preset         string
+	Seed           int64
+	Rate           int
+	Duration       time.Duration
+	Warmup         time.Duration
+	Inject         string
+	RequestTimeout time.Duration
+	CSV            string
+	NATSCredsDir   string
+	Abort          abortFlags
+	Ramp           rampFlags
+	AutoWarmup     autoWarmupFlags
+	Liveness       livenessFlags
+	Readiness      readinessFlags
+	Progress       progressFlags
+	Conn           connFlags
+	JS             jetStreamFlags
+}
+
+type abortFlags struct {
+	P99Ms               int
+	P99Sustain          time.Duration
+	ErrorPct            float64
+	ErrorSustain        time.Duration
+	WindowMaxSamples    int
+	WindowMaxSamplesSet bool // true when --abort-window-max-samples was explicitly passed
+}
+
+type rampFlags struct {
+	From     int
+	To       int
+	Duration time.Duration
+	Shape    string
+}
+
+type autoWarmupFlags struct {
+	Enabled bool
+	Rate    int
+}
+
+type livenessFlags struct {
+	Interval time.Duration
+	Failures int
+	Timeout  time.Duration
+}
+
+type readinessFlags struct {
+	Skip    bool
+	Timeout time.Duration
+}
+
+type progressFlags struct {
+	Interval time.Duration
+}
+
+type connFlags struct {
+	Connections int
+}
+
+type jetStreamFlags struct {
+	AsyncMaxPending int
+}
+
+// PrintRunHelp writes the run-subcommand flag usage to w in the same
+// format that the standard flag package uses for ExitOnError FlagSets:
+//
+//	Usage of run:
+//	  -flag-name type
+//	    	description (default value)
+//
+// This is called by runRun when ParseRunFlags returns flag.ErrHelp so that
+// `loadgen run --help` produces the canonical flag listing.
+func PrintRunHelp(w io.Writer) {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(w)
+	var rf runFlags
+	rf.registerOn(fs)
+	fmt.Fprintf(w, "Usage of run:\n")
+	fs.PrintDefaults()
+}
+
+// ParseRunFlags parses the given argument slice into a runFlags struct.
+// It uses ContinueOnError with discarded output so callers can handle
+// errors themselves without spurious flag-package output.
+func ParseRunFlags(args []string) (runFlags, error) {
+	var rf runFlags
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	rf.registerOn(fs)
+	if err := fs.Parse(args); err != nil {
+		return rf, fmt.Errorf("parsing run flags: %w", err)
+	}
+	// Detect whether --abort-window-max-samples was explicitly passed so the
+	// auto-size logic in runRun can distinguish "user set" from "default".
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "abort-window-max-samples" {
+			rf.Abort.WindowMaxSamplesSet = true
+		}
+	})
+	return rf, nil
+}
+
+// registerOn binds all run-subcommand flags to the given FlagSet.
+// Defaults and help strings exactly match the original inline flag.*Var
+// block in runRun to preserve the --help output.
+func (rf *runFlags) registerOn(fs *flag.FlagSet) {
+	fs.StringVar(&rf.Preset, "preset", "", "preset name")
+	fs.Int64Var(&rf.Seed, "seed", 42, "RNG seed")
+	fs.DurationVar(&rf.Duration, "duration", 60*time.Second, "run duration")
+	fs.IntVar(&rf.Rate, "rate", 500, "target msgs/sec")
+	fs.DurationVar(&rf.Warmup, "warmup", 10*time.Second, "warmup window (samples discarded)")
+	fs.StringVar(&rf.Inject, "inject", "frontdoor", "injection point: frontdoor|canonical")
+	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc")
+	fs.DurationVar(&rf.RequestTimeout, "request-timeout", 5*time.Second, "per-request timeout for read scenarios")
+	fs.BoolVar(&rf.AutoWarmup.Enabled, "auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
+	fs.IntVar(&rf.AutoWarmup.Rate, "auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
+	fs.DurationVar(&rf.Progress.Interval, "progress-interval", 10*time.Second, "live progress log interval; 0 disables")
+	fs.BoolVar(&rf.Readiness.Skip, "skip-readiness", false, "skip the pre-run readiness probe for read scenarios")
+	fs.DurationVar(&rf.Readiness.Timeout, "readiness-timeout", 30*time.Second, "deadline for the readiness probe to succeed")
+	fs.IntVar(&rf.Ramp.From, "ramp-from", 0, "starting rate (rps) for a ramped run; 0 disables ramping")
+	fs.IntVar(&rf.Ramp.To, "ramp-to", 0, "ending rate (rps) for a ramped run; 0 disables ramping")
+	fs.DurationVar(&rf.Ramp.Duration, "ramp-duration", 0, "time to climb from --ramp-from to --ramp-to")
+	fs.StringVar(&rf.Ramp.Shape, "ramp-shape", "linear", "ramp curve: linear|exponential")
+	fs.IntVar(&rf.Conn.Connections, "connections", 1, "number of NATS data connections (per-user fan-out); 1 reuses the observer connection")
+	fs.StringVar(&rf.NATSCredsDir, "nats-creds-dir", "", "directory of *.creds files; data conns rotate through them (C2 prep — auth-service must be in compose stack for SUT-side validation)")
+	fs.IntVar(&rf.Abort.P99Ms, "abort-on-p99-ms", 0, "abort the run if the p99 of the abort window's latency stays over this for --abort-p99-sustain; 0 disables")
+	fs.DurationVar(&rf.Abort.P99Sustain, "abort-p99-sustain", 30*time.Second, "sustain window for the p99 abort threshold")
+	fs.Float64Var(&rf.Abort.ErrorPct, "abort-on-error-pct", 0, "abort the run if error rate stays over this fraction (0..1) for --abort-error-sustain; 0 disables")
+	fs.DurationVar(&rf.Abort.ErrorSustain, "abort-error-sustain", 10*time.Second, "sustain window for the error-rate abort threshold")
+	fs.DurationVar(&rf.Liveness.Interval, "liveness-interval", 10*time.Second, "mid-run SUT liveness probe interval; 0 disables. Default 10s × 3 failures = 30s detection so the watcher can fire on the default 60s --duration.")
+	fs.IntVar(&rf.Liveness.Failures, "liveness-failures", 3, "consecutive liveness probe failures required to abort the run")
+	fs.DurationVar(&rf.Liveness.Timeout, "liveness-timeout", 5*time.Second, "per-probe timeout. Aligned with --request-timeout default so a slow-but-up SUT trips the saturation watcher (exit 2) before the liveness watcher (exit 3).")
+	fs.IntVar(&rf.JS.AsyncMaxPending, "js-async-max-pending", 4096, "S5: max in-flight async JetStream publishes for canonical inject; 0 falls back to sync js.PublishMsg (legacy / bisection)")
+	fs.IntVar(&rf.Abort.WindowMaxSamples, "abort-window-max-samples", 10000, "S3: cap on the abort/progress latency ring buffer; 0 disables the cap (legacy). Bounds the per-tick percentile sort under sustained high publish rates. WARNING: when peak_rps × max(abort-*-sustain) > cap, retention is compressed below the sustain interval and the abort watcher cannot fire; it emits a slog.Warn 'abort watcher deafened by sample cap' so the silent no-fire is detectable. Size cap >= peak_rps × max_sustain to keep the watcher functional.")
+	fs.StringVar(&rf.CSV, "csv", "", "optional csv output path")
 }

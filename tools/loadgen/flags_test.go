@@ -111,3 +111,32 @@ func TestGuardMongoDB_OverrideBypasses(t *testing.T) {
 	assert.NoError(t, guardMongoDB("production", true),
 		"override must allow operations on non-loadgen DBs")
 }
+
+func TestParseRunFlags_AllExistingFlags(t *testing.T) {
+	args := []string{
+		"--scenario=history-read", "--preset=medium", "--rate=750",
+		"--duration=2m", "--warmup=15s", "--inject=frontdoor",
+		"--abort-on-p99-ms=200", "--abort-p99-sustain=45s",
+		"--abort-on-error-pct=0.01", "--abort-error-sustain=20s",
+		"--abort-window-max-samples=20000",
+		"--ramp-from=0", "--ramp-to=0", "--ramp-duration=0",
+		"--auto-warmup=true", "--auto-warmup-rate=250",
+		"--progress-interval=5s",
+		"--skip-readiness=false", "--readiness-timeout=20s",
+		"--liveness-interval=10s", "--liveness-failures=2",
+		"--js-async-max-pending=2048",
+		"--connections=4", "--csv=/tmp/x.csv",
+		"--nats-creds-dir=", "--ramp-shape=linear",
+	}
+	rf, err := ParseRunFlags(args)
+	require.NoError(t, err)
+	assert.Equal(t, "history-read", rf.Scenario)
+	assert.Equal(t, "medium", rf.Preset)
+	assert.Equal(t, 750, rf.Rate)
+	assert.Equal(t, 2*time.Minute, rf.Duration)
+	assert.Equal(t, 200, rf.Abort.P99Ms)
+	assert.Equal(t, 45*time.Second, rf.Abort.P99Sustain)
+	assert.Equal(t, 20000, rf.Abort.WindowMaxSamples)
+	assert.Equal(t, 250, rf.AutoWarmup.Rate)
+	assert.Equal(t, 4, rf.Conn.Connections)
+}

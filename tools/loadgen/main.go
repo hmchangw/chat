@@ -150,51 +150,32 @@ func runTeardown(ctx context.Context, cfg *config) int {
 }
 
 func runRun(ctx context.Context, cfg *config, args []string) int {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	preset := fs.String("preset", "", "preset name")
-	seed := fs.Int64("seed", 42, "RNG seed")
-	duration := fs.Duration("duration", 60*time.Second, "run duration")
-	rate := fs.Int("rate", 500, "target msgs/sec")
-	warmup := fs.Duration("warmup", 10*time.Second, "warmup window (samples discarded)")
-	inject := fs.String("inject", "frontdoor", "injection point: frontdoor|canonical")
-	scenario := fs.String("scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc")
-	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "per-request timeout for read scenarios")
-	autoWarmup := fs.Bool("auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
-	autoWarmupRate := fs.Int("auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
-	progressInterval := fs.Duration("progress-interval", 10*time.Second, "live progress log interval; 0 disables")
-	skipReadiness := fs.Bool("skip-readiness", false, "skip the pre-run readiness probe for read scenarios")
-	readinessTimeout := fs.Duration("readiness-timeout", 30*time.Second, "deadline for the readiness probe to succeed")
-	rampFrom := fs.Int("ramp-from", 0, "starting rate (rps) for a ramped run; 0 disables ramping")
-	rampTo := fs.Int("ramp-to", 0, "ending rate (rps) for a ramped run; 0 disables ramping")
-	rampDuration := fs.Duration("ramp-duration", 0, "time to climb from --ramp-from to --ramp-to")
-	rampShape := fs.String("ramp-shape", "linear", "ramp curve: linear|exponential")
-	connections := fs.Int("connections", 1, "number of NATS data connections (per-user fan-out); 1 reuses the observer connection")
-	natsCredsDir := fs.String("nats-creds-dir", "", "directory of *.creds files; data conns rotate through them (C2 prep — auth-service must be in compose stack for SUT-side validation)")
-	abortP99Ms := fs.Int("abort-on-p99-ms", 0, "abort the run if the p99 of the abort window's latency stays over this for --abort-p99-sustain; 0 disables")
-	abortP99Sustain := fs.Duration("abort-p99-sustain", 30*time.Second, "sustain window for the p99 abort threshold")
-	abortErrorPct := fs.Float64("abort-on-error-pct", 0, "abort the run if error rate stays over this fraction (0..1) for --abort-error-sustain; 0 disables")
-	abortErrorSustain := fs.Duration("abort-error-sustain", 10*time.Second, "sustain window for the error-rate abort threshold")
-	livenessInterval := fs.Duration("liveness-interval", 10*time.Second, "mid-run SUT liveness probe interval; 0 disables. Default 10s × 3 failures = 30s detection so the watcher can fire on the default 60s --duration.")
-	livenessFailures := fs.Int("liveness-failures", 3, "consecutive liveness probe failures required to abort the run")
-	livenessTimeout := fs.Duration("liveness-timeout", 5*time.Second, "per-probe timeout. Aligned with --request-timeout default so a slow-but-up SUT trips the saturation watcher (exit 2) before the liveness watcher (exit 3).")
-	jsAsyncMaxPending := fs.Int("js-async-max-pending", 4096, "S5: max in-flight async JetStream publishes for canonical inject; 0 falls back to sync js.PublishMsg (legacy / bisection)")
-	abortWindowMaxSamples := fs.Int("abort-window-max-samples", 10000, "S3: cap on the abort/progress latency ring buffer; 0 disables the cap (legacy). Bounds the per-tick percentile sort under sustained high publish rates. WARNING: when peak_rps × max(abort-*-sustain) > cap, retention is compressed below the sustain interval and the abort watcher cannot fire; it emits a slog.Warn 'abort watcher deafened by sample cap' so the silent no-fire is detectable. Size cap >= peak_rps × max_sustain to keep the watcher functional.")
-	csvPath := fs.String("csv", "", "optional csv output path")
-	_ = fs.Parse(args)
-	if err := parseScenarioFlag(*scenario); err != nil {
+	rf, err := ParseRunFlags(args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			// Print the canonical --help output to stderr and exit 0 so
+			// `go run ./tools/loadgen run --help` does not emit "exit status N"
+			// (go run only emits that suffix on non-zero exits).
+			PrintRunHelp(os.Stderr)
+			return 0
+		}
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
-	if *preset == "" {
+	if err := parseScenarioFlag(rf.Scenario); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+	if rf.Preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
 		return 2
 	}
-	p, ok := BuiltinPreset(*preset)
+	p, ok := BuiltinPreset(rf.Preset)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", rf.Preset)
 		return 2
 	}
-	injectMode, err := parseInjectMode(*inject)
+	injectMode, err := parseInjectMode(rf.Inject)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
@@ -203,12 +184,12 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// Validate ramp + rate flags BEFORE opening any external connections —
 	// fail fast on config errors so the operator doesn't wait for a NATS
 	// timeout to learn they typo'd a flag.
-	ramp, rerr := buildRamp(*rampFrom, *rampTo, *rampDuration, *rampShape)
+	ramp, rerr := buildRamp(rf.Ramp.From, rf.Ramp.To, rf.Ramp.Duration, rf.Ramp.Shape)
 	if rerr != nil {
 		fmt.Fprintln(os.Stderr, rerr.Error())
 		return 2
 	}
-	if err := validateRampVsRate(*rate, ramp); err != nil {
+	if err := validateRampVsRate(rf.Rate, ramp); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
@@ -234,7 +215,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// unused ring buffer (R2 NIT #5).
 	var jsOpts []jetstream.JetStreamOpt
 	if injectMode == InjectCanonical {
-		jsOpts = jetstreamPublishOpts(*jsAsyncMaxPending, metrics, p.Name, collector)
+		jsOpts = jetstreamPublishOpts(rf.JS.AsyncMaxPending, metrics, p.Name, collector)
 	}
 	js, err := jetstream.New(nc.NatsConn(), jsOpts...)
 	if err != nil {
@@ -278,15 +259,15 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		slog.Info("pprof server listening", "addr", cfg.PProfAddr)
 	}
 
-	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
+	fixtures := BuildFixtures(&p, rf.Seed, cfg.SiteID)
 	// Phase 3 §3.5: in-process latency ring buffer for the abort watcher.
 	// Sized to retain max(--abort-p99-sustain, --abort-error-sustain, 60s).
 	windowRetain := 60 * time.Second
-	if *abortP99Sustain > windowRetain {
-		windowRetain = *abortP99Sustain
+	if rf.Abort.P99Sustain > windowRetain {
+		windowRetain = rf.Abort.P99Sustain
 	}
-	if *abortErrorSustain > windowRetain {
-		windowRetain = *abortErrorSustain
+	if rf.Abort.ErrorSustain > windowRetain {
+		windowRetain = rf.Abort.ErrorSustain
 	}
 	// S3: bound the sort cost at high publish rates. At 5k rps × 60s
 	// retain the unbounded slice would hold 300k samples; cap default
@@ -296,27 +277,21 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	//
 	// Bug 6: auto-size the cap when the user did not explicitly pass
 	// --abort-window-max-samples so default flags ship in a non-deafened
-	// state. Detected via flag.Visit (the canonical "was this flag set"
-	// idiom). Operator overrides (including 0 = disabled) pass through
-	// verbatim.
-	userSetAbortCap := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "abort-window-max-samples" {
-			userSetAbortCap = true
-		}
-	})
-	abortMaxSustain := *abortP99Sustain
-	if *abortErrorSustain > abortMaxSustain {
-		abortMaxSustain = *abortErrorSustain
+	// state. Detected via ParseRunFlags (WindowMaxSamplesSet records whether
+	// the flag was explicitly passed). Operator overrides (including 0 =
+	// disabled) pass through verbatim.
+	abortMaxSustain := rf.Abort.P99Sustain
+	if rf.Abort.ErrorSustain > abortMaxSustain {
+		abortMaxSustain = rf.Abort.ErrorSustain
 	}
 	resolvedAbortCap := resolveAbortWindowMaxSamples(
-		userSetAbortCap, *abortWindowMaxSamples,
-		resolveAbortPeakRPS(*rate, *rampTo), abortMaxSustain,
+		rf.Abort.WindowMaxSamplesSet, rf.Abort.WindowMaxSamples,
+		resolveAbortPeakRPS(rf.Rate, rf.Ramp.To), abortMaxSustain,
 	)
-	if resolvedAbortCap != *abortWindowMaxSamples {
+	if resolvedAbortCap != rf.Abort.WindowMaxSamples {
 		slog.Info("abort-window-max-samples auto-sized",
-			"original", *abortWindowMaxSamples, "resolved", resolvedAbortCap,
-			"peak_rps", resolveAbortPeakRPS(*rate, *rampTo),
+			"original", rf.Abort.WindowMaxSamples, "resolved", resolvedAbortCap,
+			"peak_rps", resolveAbortPeakRPS(rf.Rate, rf.Ramp.To),
 			"max_sustain", abortMaxSustain.String())
 	}
 	latencyWindow := NewLatencyWindow(windowRetain).WithMaxSamples(resolvedAbortCap)
@@ -412,7 +387,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// today this rotates whatever pre-minted creds the operator
 	// supplies. Empty dir → fall back to cfg.NatsCredsFile for every
 	// dial (existing behavior).
-	credsFiles, credsErr := LoadCredsDir(*natsCredsDir)
+	credsFiles, credsErr := LoadCredsDir(rf.NATSCredsDir)
 	if credsErr != nil {
 		slog.Error("nats creds dir", "error", credsErr)
 		return 1
@@ -422,7 +397,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		// With --connections<=1 the pool collapses to {observer} and the
 		// credsFiles slice is silently ignored — that path used to
 		// emit a misleading info-line claiming rotation was active.
-		if *connections > 1 {
+		if rf.Conn.Connections > 1 {
 			// F3: the user-to-creds binding isn't implemented yet; refuse
 			// rather than silently mis-route per-user traffic. Liveness
 			// probes still work (they use pool.Observer with global creds);
@@ -440,7 +415,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			"creds_count", len(credsFiles))
 	}
 	pool, perr := NewConnPoolWithCreds(
-		nc.NatsConn(), cfg.NatsURL, cfg.NatsCredsFile, credsFiles, *connections,
+		nc.NatsConn(), cfg.NatsURL, cfg.NatsCredsFile, credsFiles, rf.Conn.Connections,
 		func(url, creds string) (*nats.Conn, error) {
 			c, derr := natsutil.Connect(url, creds)
 			if derr != nil {
@@ -460,12 +435,12 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// math; the gauge stays unset for the readiness window.
 	runID := idgen.GenerateUUIDv7()
 	slog.Info("run started",
-		"run_id", runID, "preset", p.Name, "scenario", *scenario,
-		"rate", *rate, "duration", duration.String())
+		"run_id", runID, "preset", p.Name, "scenario", rf.Scenario,
+		"rate", rf.Rate, "duration", rf.Duration.String())
 
 	publisher := newNatsCorePublisher(pool, injectMode, js)
 	publisher.runID = runID
-	publisher.asyncJS = *jsAsyncMaxPending > 0 // S5: enable async path when bound is set
+	publisher.asyncJS = rf.JS.AsyncMaxPending > 0 // S5: enable async path when bound is set
 	requester := &natsRequester{pool: pool, runID: runID}
 
 	// Ramp + rate flags are validated above (before any NATS connect).
@@ -473,33 +448,33 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// Phase 3 §3.3: readiness probe for read scenarios. Skipped for
 	// messaging-pipeline (which doesn't request/reply to a service) and
 	// when --skip-readiness is set.
-	if !*skipReadiness && scenarioNeedsReadiness(*scenario) && len(fixtures.Subscriptions) > 0 {
+	if !rf.Readiness.Skip && scenarioNeedsReadiness(rf.Scenario) && len(fixtures.Subscriptions) > 0 {
 		probeSub := fixtures.Subscriptions[0]
-		probe := buildReadinessProbe(*scenario, &probeSub, cfg.SiteID, requester)
-		probeCtx, probeCancel := context.WithTimeout(ctx, *readinessTimeout)
+		probe := buildReadinessProbe(rf.Scenario, &probeSub, cfg.SiteID, requester)
+		probeCtx, probeCancel := context.WithTimeout(ctx, rf.Readiness.Timeout)
 		if err := waitForReady(probeCtx, &readinessConfig{
 			Probe: probe, MinBackoff: 200 * time.Millisecond, MaxBackoff: 2 * time.Second,
 		}); err != nil {
 			probeCancel()
-			slog.Error("readiness probe failed", "scenario", *scenario, "error", err)
+			slog.Error("readiness probe failed", "scenario", rf.Scenario, "error", err)
 			return 1
 		}
 		probeCancel()
-		slog.Info("readiness probe succeeded", "scenario", *scenario)
+		slog.Info("readiness probe succeeded", "scenario", rf.Scenario)
 	}
 
-	warmupDeadline := time.Now().Add(*warmup)
+	warmupDeadline := time.Now().Add(rf.Warmup)
 
 	type runner interface {
 		Run(ctx context.Context) error
 	}
 	var gen runner
-	switch *scenario {
+	switch rf.Scenario {
 	case "history-read":
 		var msgIDs []string
-		if *autoWarmup && needsAutoWarmup(*scenario, &p) {
+		if rf.AutoWarmup.Enabled && needsAutoWarmup(rf.Scenario, &p) {
 			slog.Info("auto-warmup phase starting",
-				"rate", *autoWarmupRate, "duration", *warmup)
+				"rate", rf.AutoWarmup.Rate, "duration", rf.Warmup)
 			// Bug 3: auto-warmup must always go through the frontdoor
 			// even when --inject=canonical, otherwise PublishMsgAsync
 			// targets a non-stream subject and the message-ID pool stays
@@ -507,10 +482,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			warmupPublisher := newWarmupPublisher(publisher)
 			ids, werr := runAutoWarmup(ctx, &autoWarmupConfig{
 				Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
-				Rate:      *autoWarmupRate,
+				Rate:      rf.AutoWarmup.Rate,
 				Publisher: warmupPublisher, Metrics: metrics, Collector: collector,
-				Duration: *warmup,
-				Seed:     *seed,
+				Duration: rf.Warmup,
+				Seed:     rf.Seed,
 			})
 			if werr != nil {
 				slog.Warn("auto-warmup failed; proceeding with empty pool", "error", werr)
@@ -528,34 +503,34 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		}
 		gen = NewHistoryReadGenerator(&HistoryReadConfig{
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
-			Rate: *rate, Requester: requester, Metrics: metrics,
+			Rate: rf.Rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
 			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp,
-			Timeout:    *requestTimeout,
+			Timeout:    rf.RequestTimeout,
 			MessageIDs: msgIDs,
-		}, *seed)
+		}, rf.Seed)
 	case "search-read":
 		gen = NewSearchReadGenerator(&SearchReadConfig{
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
-			Rate: *rate, Requester: requester, Metrics: metrics,
+			Rate: rf.Rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
 			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp,
-			Timeout: *requestTimeout,
-		}, *seed)
+			Timeout: rf.RequestTimeout,
+		}, rf.Seed)
 	case "room-rpc":
 		gen = NewRoomRPCGenerator(&RoomRPCConfig{
 			Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
-			Rate: *rate, Requester: requester, Metrics: metrics,
+			Rate: rf.Rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
 			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp,
-			Timeout: *requestTimeout,
-		}, *seed)
+			Timeout: rf.RequestTimeout,
+		}, rf.Seed)
 	default:
 		gen = NewGenerator(&GeneratorConfig{
 			Preset:         &p,
 			Fixtures:       fixtures,
 			SiteID:         cfg.SiteID,
-			Rate:           *rate,
+			Rate:           rf.Rate,
 			Inject:         injectMode,
 			Publisher:      publisher,
 			Metrics:        metrics,
@@ -566,7 +541,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 			ConnIDFor: func(userID string) string {
 				return strconv.Itoa(pool.IndexFor(userID))
 			},
-		}, *seed)
+		}, rf.Seed)
 	}
 
 	// F9: capture runStart AFTER readiness completes so the RunInfo
@@ -574,10 +549,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	// elapsed/remaining math.
 	runStart := time.Now()
 	metrics.RunInfo.WithLabelValues(
-		runID, p.Name, *scenario, strconv.FormatInt(runStart.Unix(), 10),
+		runID, p.Name, rf.Scenario, strconv.FormatInt(runStart.Unix(), 10),
 	).Set(1)
 
-	runCtx, cancelRun := context.WithTimeout(ctx, *duration)
+	runCtx, cancelRun := context.WithTimeout(ctx, rf.Duration)
 	defer cancelRun()
 
 	// F6: bridge runCtx → samplerCtx. samplerCtx is parented on the
@@ -593,8 +568,8 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	// Phase 3 §3.2: live progress reporter. Off when interval <= 0.
 	var progressWG sync.WaitGroup
-	if *progressInterval > 0 {
-		progressTicker := time.NewTicker(*progressInterval)
+	if rf.Progress.Interval > 0 {
+		progressTicker := time.NewTicker(rf.Progress.Interval)
 		defer progressTicker.Stop()
 		progressWG.Add(1)
 		go func() {
@@ -604,10 +579,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 				Logger:      slog.Default(),
 				Ticks:       progressTicker.C,
 				Window:      latencyWindow,
-				WindowOver:  *abortP99Sustain,
+				WindowOver:  rf.Abort.P99Sustain,
 				RunStart:    runStart,
-				RunDuration: *duration,
-				TargetRate:  *rate,
+				RunDuration: rf.Duration,
+				TargetRate:  rf.Rate,
 			})
 		}()
 	}
@@ -616,16 +591,16 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	var abortTripped atomic.Bool
 	var abortReason atomic.Value // string
 	var abortWG sync.WaitGroup
-	if *abortP99Ms > 0 || *abortErrorPct > 0 {
+	if rf.Abort.P99Ms > 0 || rf.Abort.ErrorPct > 0 {
 		abortWG.Add(1)
 		go func() {
 			defer abortWG.Done()
 			abortCfg := &abortConfig{
 				Window:       latencyWindow,
-				P99Limit:     time.Duration(*abortP99Ms) * time.Millisecond,
-				P99Sustain:   *abortP99Sustain,
-				ErrorPct:     *abortErrorPct,
-				ErrorSustain: *abortErrorSustain,
+				P99Limit:     time.Duration(rf.Abort.P99Ms) * time.Millisecond,
+				P99Sustain:   rf.Abort.P99Sustain,
+				ErrorPct:     rf.Abort.ErrorPct,
+				ErrorSustain: rf.Abort.ErrorSustain,
 			}
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
@@ -655,21 +630,21 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	var livenessFailed atomic.Bool
 	var livenessReason atomic.Value
 	var livenessWG sync.WaitGroup
-	if *livenessInterval > 0 && len(fixtures.Subscriptions) > 0 {
+	if rf.Liveness.Interval > 0 && len(fixtures.Subscriptions) > 0 {
 		probeSub := fixtures.Subscriptions[0]
 		// Observer-routed requester so the probe uses the global creds
 		// (cfg.NatsCredsFile) regardless of pool fan-out and rotation.
 		observerPool := &ConnPool{observer: pool.Observer()}
 		observerReq := &natsRequester{pool: observerPool, runID: runID}
-		liveProbe := buildLivenessProbe(*scenario, &probeSub, cfg.SiteID, observerReq, pool.Observer())
+		liveProbe := buildLivenessProbe(rf.Scenario, &probeSub, cfg.SiteID, observerReq, pool.Observer())
 		livenessWG.Add(1)
 		go func() {
 			defer livenessWG.Done()
 			runLiveness(runCtx, &livenessConfig{
 				Probe:            liveProbe,
-				Interval:         *livenessInterval,
-				ConsecutiveFails: *livenessFailures,
-				Timeout:          *livenessTimeout,
+				Interval:         rf.Liveness.Interval,
+				ConsecutiveFails: rf.Liveness.Failures,
+				Timeout:          rf.Liveness.Timeout,
 				Counter: func(result string) {
 					metrics.LivenessProbes.WithLabelValues(p.Name, result).Inc()
 				},
@@ -706,7 +681,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		case <-time.After(asyncDrainTimeout):
 			slog.Warn("jetstream async publish drain timed out",
 				"pending", js.PublishAsyncPending(),
-				"max_pending", *jsAsyncMaxPending,
+				"max_pending", rf.JS.AsyncMaxPending,
 				"drain_timeout", asyncDrainTimeout.String(),
 			)
 		}
@@ -752,30 +727,30 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	//     measured = duration - warmup.
 	//   - read scenarios with auto-warmup: warmup ran BEFORE runCtx, then
 	//     warmupDeadline was reset (line ~496) and the read scenario used
-	//     the full *duration. Use time.Since(warmupDeadline) clamped to
-	//     [0, *duration] so an early-abort run still reports the fraction
+	//     the full rf.Duration. Use time.Since(warmupDeadline) clamped to
+	//     [0, rf.Duration] so an early-abort run still reports the fraction
 	//     of the window that actually elapsed.
 	//   - read scenarios without auto-warmup: warmupDeadline is still in
 	//     the future relative to runStart, so the same Since(warmupDeadline)
 	//     formula collapses to the post-warmup measured window.
 	measured := time.Since(warmupDeadline)
-	if measured > *duration {
-		measured = *duration
+	if measured > rf.Duration {
+		measured = rf.Duration
 	}
 	requestStats := collector.RequestStats()
-	actualRate := computeActualRate(*scenario, injectMode, measured,
+	actualRate := computeActualRate(rf.Scenario, injectMode, measured,
 		collector.E1Count(), missingReplies, sentMeasured, requestStats)
 
 	summary := Summary{
 		RunID:             runID,
 		Preset:            p.Name,
-		Seed:              *seed,
+		Seed:              rf.Seed,
 		Site:              cfg.SiteID,
-		TargetRate:        *rate,
+		TargetRate:        rf.Rate,
 		ActualRate:        actualRate,
-		Duration:          *duration,
-		Warmup:            *warmup,
-		Inject:            *inject,
+		Duration:          rf.Duration,
+		Warmup:            rf.Warmup,
+		Inject:            rf.Inject,
 		Sent:              sent,
 		SentMeasured:      sentMeasured,
 		PublishErrors:     int(publishErrs - gkErrs),
@@ -793,8 +768,8 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		slog.Warn("print summary", "error", err)
 	}
 
-	if *csvPath != "" {
-		if err := writeCSVFile(*csvPath, runID, collector); err != nil {
+	if rf.CSV != "" {
+		if err := writeCSVFile(rf.CSV, runID, collector); err != nil {
 			slog.Error("csv export", "error", err)
 		}
 	}
