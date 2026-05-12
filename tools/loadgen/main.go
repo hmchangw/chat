@@ -474,10 +474,15 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		if *autoWarmup && needsAutoWarmup(*scenario, &p) {
 			slog.Info("auto-warmup phase starting",
 				"rate", *autoWarmupRate, "duration", *warmup)
+			// Bug 3: auto-warmup must always go through the frontdoor
+			// even when --inject=canonical, otherwise PublishMsgAsync
+			// targets a non-stream subject and the message-ID pool stays
+			// empty.
+			warmupPublisher := newWarmupPublisher(publisher)
 			ids, werr := runAutoWarmup(ctx, &autoWarmupConfig{
 				Preset: &p, Fixtures: fixtures, SiteID: cfg.SiteID,
 				Rate:      *autoWarmupRate,
-				Publisher: publisher, Metrics: metrics, Collector: collector,
+				Publisher: warmupPublisher, Metrics: metrics, Collector: collector,
 				Duration: *warmup,
 				Seed:     *seed,
 			})
@@ -904,6 +909,23 @@ func (r *natsRequester) Request(ctx context.Context, subject string, data []byte
 
 func newNatsCorePublisher(pool *ConnPool, inject InjectMode, js jetstream.JetStream) *natsCorePublisher {
 	return &natsCorePublisher{pool: pool, useJetStream: inject == InjectCanonical, js: js}
+}
+
+// newWarmupPublisher returns a publisher dedicated to the auto-warmup
+// phase. Bug 3: auto-warmup always publishes to frontdoor subjects
+// (chat.user.{account}.room.…msg.send) which are NOT in any JetStream
+// stream, so the run-level publisher's useJetStream / asyncJS flags
+// MUST be ignored or PublishMsgAsync will silently drop the warmup
+// publishes and leave the message-ID pool empty. We reuse the same
+// conn pool + runID for trace correlation.
+func newWarmupPublisher(run *natsCorePublisher) *natsCorePublisher {
+	return &natsCorePublisher{
+		pool:         run.pool,
+		useJetStream: false,
+		asyncJS:      false,
+		js:           nil,
+		runID:        run.runID,
+	}
 }
 
 // newAsyncErrHandler returns the WithPublishAsyncErrHandler closure used

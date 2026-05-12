@@ -51,6 +51,52 @@ func TestNeedsAutoWarmup_False_ForOtherScenarios(t *testing.T) {
 	assert.False(t, needsAutoWarmup("messaging-pipeline", &p3))
 }
 
+// Bug 3: auto-warmup must always publish via the frontdoor (NATS core),
+// regardless of whether the run-level publisher is configured for
+// canonical/JetStream injection. Pre-fix the auto-warmup phase reused
+// the run-level *natsCorePublisher with useJetStream=true, sending its
+// frontdoor subjects through js.PublishMsgAsync — which targets a
+// non-stream subject and silently fails or errors, leaving the
+// message-ID pool empty for the read scenario.
+func TestNewWarmupPublisher_AlwaysFrontdoor(t *testing.T) {
+	cases := []struct {
+		name string
+		run  *natsCorePublisher
+	}{
+		{
+			name: "run-level publisher in canonical+async mode",
+			run: &natsCorePublisher{
+				useJetStream: true, asyncJS: true, runID: "run-xyz",
+			},
+		},
+		{
+			name: "run-level publisher in canonical sync mode",
+			run: &natsCorePublisher{
+				useJetStream: true, asyncJS: false, runID: "run-xyz",
+			},
+		},
+		{
+			name: "run-level publisher already frontdoor",
+			run: &natsCorePublisher{
+				useJetStream: false, asyncJS: false, runID: "run-xyz",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wp := newWarmupPublisher(tc.run)
+			assert.False(t, wp.useJetStream,
+				"warmup publisher must never route through JetStream")
+			assert.False(t, wp.asyncJS,
+				"warmup publisher must never use async-JS path")
+			assert.Equal(t, tc.run.runID, wp.runID,
+				"warmup publisher must inherit the run ID for trace correlation")
+			assert.Same(t, tc.run.pool, wp.pool,
+				"warmup publisher must reuse the run's conn pool")
+		})
+	}
+}
+
 func TestRunAutoWarmup_PopulatesMessageIDsViaPublisher(t *testing.T) {
 	p, _ := BuiltinPreset("history-read")
 	f := BuildFixtures(&p, 1, "site-local")
