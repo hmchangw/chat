@@ -236,59 +236,22 @@ Update existing PR #169 tests to assert `RoomType` and `RequesterAccount` are po
 
 ## Rollout
 
-⚠️ **Genuine tradeoff in this PR's scope** — see "Open rollout question" at the bottom of this section.
+Single PR, both publisher and consumer changes shipped together.
 
-Same-release deploy with no ordering is **unsafe**. Walking the two possible orders:
+**Pre-production context**: cross-site federation is not yet integrated end-to-end in any deployed environment. No live cross-site DM traffic exists today, so the theoretical mixed-version DM-sub-malformation window during a mid-deploy creation has no real-world incidence. This rollout plan is therefore straightforward — when federation does go live in prod, both this PR and its schema extension will already be in place everywhere.
 
-| Deploy order | What happens during the rollout window |
-|---|---|
-| `room-worker` first | New room-worker stops publishing `room_created` and starts publishing `member_added` with `RoomType` + `RequesterAccount`. Old `inbox-worker` still has `handleMemberAdded` channel-hardcoded — when it receives a DM `member_added` from new room-worker, it builds the recipient sub with `Name=""`, `RoomType=channel`. **Malformed DM subs on the remote side.** |
-| `inbox-worker` first | Old room-worker still publishes `room_created` for DM creations. New `inbox-worker` no longer handles `room_created` (default-arm warn-log). The corresponding `member_added` from old room-worker arrives without `RoomType` set; new `handleMemberAdded` defaults empty → channel. **Same malformed DM subs.** |
+### Deploy order (defensive, not strictly required)
 
-There is **no deploy order** that fully avoids the malformed-DM window in a single PR, because the wire-shape contract for DM federation changes between old and new schemas. The only correctness-preserving rollouts require keeping either the `room_created` publisher OR the `handleRoomCreated` handler alive through the transition — meaning a 2-PR split.
+For belt-and-suspenders correctness in case federation traffic does materialize during a rolling deploy, prefer deploying `room-worker` ahead of `inbox-worker` per site. This ensures any new `member_added` events on the wire already carry `RoomType` + `RequesterAccount` before the consumer side starts dispatching on those fields.
 
-### Severity of the malformed-DM window
+In-flight `room_created` events that arrive at the new `inbox-worker` (because they were redelivered from before its deploy) hit the existing `default` case in the event-type switch → `slog.Warn("unknown event type, skipping")` + ack. No nak-loop, no behavior regression.
 
-- **Defect**: cross-site DM created during the deploy window has `Name=""` (empty counterpart name) on the recipient site instead of the requester's account.
-- **Impact**: frontend shows an unnamed DM in the recipient's left panel until manually fixed.
-- **Scope**: bounded by the deploy duration (typically minutes per site). For a large org with multiple federated sites, the affected window per pair-of-sites is each site's individual deploy.
-- **Recovery**: identifiable via `db.subscriptions.find({roomType: 'channel', name: ''})` on each remote site; fixable by either a one-shot script that re-derives `Name` from the room's home-site `Subscription` record, or by churn (any later add-member on the room re-emits with correct schema).
+### Per-site verification after deploy
 
-### Open rollout question
-
-The Q1 design decision was "full removal in one PR". CodeRabbit (correctly) flagged that this isn't safe without one of these adjustments:
-
-| Option | Single PR? | DM malformation window? | Trade-off |
-|---|---|---|---|
-| **(A)** Ship as-is, accept the malformed-DM window, document recovery | Yes | Yes (bounded, recoverable) | Simplest; one operator burden during deploy |
-| **(B)** Split: PR1 adds new fields + handleMemberAdded RoomType dispatch + populates publishes; PR2 removes `room_created` publish + handler + model | No (2 PRs) | No | Cleanest correctness; slower delivery |
-| **(C)** Single PR but room-worker keeps publishing `room_created` AND adds the new fields to `member_added`; inbox-worker deletes `handleRoomCreated` and learns RoomType dispatch. Deploy order: room-worker first, then inbox-worker. Follow-up PR later deletes the `room_created` publish from room-worker. | Yes (this PR), with follow-up | No | One transition PR + one cleanup PR; intermediate state is wire-compatible |
-
-**Recommendation: option (C).** This PR removes the consumer's reliance on `room_created` and prepares the publisher to be removable in a follow-up, without any data-loss window. The follow-up PR to remove the publisher is mechanical (delete-only) once everyone's on the new inbox-worker.
-
-This requires the user to confirm whether to amend the spec to (C) before proceeding to implementation. The sections below describe option (A) for completeness; flip to (C) on user confirmation.
-
-### Step 1 — Deploy `room-worker` globally first (option A)
-
-Roll the new `room-worker` image to every replica on every site. After this step, every `member_added` publish from any healthy `room-worker` pod carries the new `RoomType` + `RequesterAccount` fields, and every room creation emits the cross-site `member_added` event (not just channels).
-
-Old `room-worker` pods are still publishing `room_created` for DM/botDM creations; that's fine because old `inbox-worker` pods (yet to be replaced) still handle it.
-
-### Step 2 — Verify step 1 completion before starting step 3
-
-Per site, all sites:
-
-- **Replica check**: confirm the new `room-worker` image tag is uniform across every replica.
-- **Schema check**: `nats stream get OUTBOX_{site} --last-by-subject 'outbox.*.to.*.member_added'` — the inner `MemberAddEvent` payload must contain a non-empty `roomType` field, and for DM/botDM creations a non-empty `requesterAccount`. If `roomType` is empty, a pre-deploy `room-worker` pod is still publishing — block step 3 until resolved.
-- **Lane check**: `nats stream info OUTBOX_{site}` shows `member_added` subject traffic at the room-creation rate.
-
-Step 3 MUST NOT begin until every site is green on the three checks above. This minimizes (but does not eliminate) the malformed-DM window.
-
-### Step 3 — Deploy `inbox-worker` globally second
-
-Roll the new `inbox-worker` image. This release deletes the `case model.MessageTypeRoomCreated:` switch arm and the `handleRoomCreated` function. After this step, new `inbox-worker` pods route every `member_added` through `handleMemberAdded` with RoomType dispatch.
-
-### Per-site verification after step 3
+1. Create a federated DM (alice@s1 → bob@s2). Verify on s2 the recipient's `Subscription` doc has `Name = "alice"`, `Roles = nil`, `IsSubscribed = false`.
+2. Create a federated channel with one cross-site member. Verify on the remote site the member's `Subscription` doc has `Name = roomName`, `Roles = ["member"]`, `IsSubscribed = false`.
+3. Query the spotlight ES index for the new rooms — confirm `roomType` is `"channel"` / `"dm"` / `"botDM"` (not empty).
+4. `nats stream info OUTBOX_{site}` should show `member_added` events flowing at room-creation rate; `room_created` subject should report zero new messages.
 
 1. Create a federated DM (alice@s1 → bob@s2). Verify on s2 the recipient's `Subscription` doc has `Name = "alice"`, `Roles = nil`, `IsSubscribed = false`.
 2. Create a federated channel with one cross-site member. Verify on the remote site the member's `Subscription` doc has `Name = roomName`, `Roles = ["member"]`, `IsSubscribed = false`.
@@ -303,6 +266,5 @@ Roll the new `inbox-worker` image. This release deletes the `case model.MessageT
 
 ## Risks
 
-- **Federated event missing `RoomType` during deploy window.** Older publishers (pre-deploy) emit `member_added` without `RoomType`. The `roomType == ""` → `RoomTypeChannel` defaulting in `handleMemberAdded` keeps channel-create-and-add-member paths correct. The only risk is a pre-deploy DM federation: an old publisher sends `room_created` (which the new consumer drops as unknown) but no `member_added` for DMs (because the old publisher doesn't emit `member_added` for DMs at all — that's net-new in this PR). Mitigation: deploy `room-worker` first so all DM creates after that point emit the new event.
-- **Search-sync-worker reading old InboxMemberEvent payloads from before the publisher rolled out.** Spotlight docs indexed during the window keep their empty `roomType` until the next event touches the room. Acceptable — consistent with the pre-deploy state, and the next add/remove on the room re-emits with the correct type.
+- **Mixed-version deploy window** (theoretical, no real-world incidence today). Cross-site federation is not yet integrated end-to-end, so no DM federation traffic exists during a rolling deploy of this PR. If federation traffic did flow during the window, a DM creation initiated by a new `room-worker` pod could be consumed by an old `inbox-worker` pod's channel-hardcoded `handleMemberAdded` and produce a recipient sub with `Name=""` (empty counterpart name). The defect would be bounded to the deploy duration and recoverable via either a manual script that re-derives `Name` from the room's home-site sub, or by churn (any later add-member re-emits with correct schema). Not blocking under current operational reality.
 - **Removal of `RoomCreatedOutbox` is a one-way ratchet.** No out-of-tree consumer exists today (`grep` confirms). If we ever want to reintroduce the dedicated event, the cost is just adding the type back; the lane is unchanged.
