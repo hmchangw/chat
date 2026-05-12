@@ -40,14 +40,17 @@ type bootstrapConfig struct {
 }
 
 type config struct {
-	NatsURL        string `env:"NATS_URL,required"`
-	NatsCredsFile  string `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID         string `env:"SITE_ID,required"`
-	SearchURL      string `env:"SEARCH_URL,required"`
-	SearchBackend  string `env:"SEARCH_BACKEND"  envDefault:"elasticsearch"`
-	MsgIndexPrefix string `env:"MSG_INDEX_PREFIX,required"`
-	SpotlightIndex string `env:"SPOTLIGHT_INDEX" envDefault:""`
-	UserRoomIndex  string `env:"USER_ROOM_INDEX" envDefault:""`
+	NatsURL             string `env:"NATS_URL,required"`
+	NatsCredsFile       string `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID              string `env:"SITE_ID,required"`
+	SearchURL           string `env:"SEARCH_URL,required"`
+	SearchBackend       string `env:"SEARCH_BACKEND"         envDefault:"elasticsearch"`
+	SearchUsername      string `env:"SEARCH_USERNAME"        envDefault:""`
+	SearchPassword      string `env:"SEARCH_PASSWORD"        envDefault:""`
+	SearchTLSSkipVerify bool   `env:"SEARCH_TLS_SKIP_VERIFY" envDefault:"false"`
+	MsgIndexPrefix      string `env:"MSG_INDEX_PREFIX,required"`
+	SpotlightIndex      string `env:"SPOTLIGHT_INDEX" envDefault:""`
+	UserRoomIndex       string `env:"USER_ROOM_INDEX" envDefault:""`
 
 	// FetchBatchSize is the maximum number of JetStream messages to pull
 	// per Fetch() round-trip. Smaller values give lower latency per message
@@ -72,7 +75,8 @@ type config struct {
 	// idle / low-traffic periods.
 	BulkFlushInterval int `env:"BULK_FLUSH_INTERVAL" envDefault:"5"`
 
-	Bootstrap bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	Consumer  stream.ConsumerSettings `envPrefix:"CONSUMER_"`
+	Bootstrap bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 }
 
 func main() {
@@ -118,7 +122,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	engine, err := searchengine.New(ctx, cfg.SearchBackend, cfg.SearchURL)
+	engine, err := searchengine.New(ctx, searchengine.Config{
+		Backend:       cfg.SearchBackend,
+		URL:           cfg.SearchURL,
+		Username:      cfg.SearchUsername,
+		Password:      cfg.SearchPassword,
+		TLSSkipVerify: cfg.SearchTLSSkipVerify,
+	})
 	if err != nil {
 		slog.Error("search engine connect failed", "error", err)
 		os.Exit(1)
@@ -182,14 +192,7 @@ func main() {
 			}
 		}
 
-		consumerCfg := jetstream.ConsumerConfig{
-			Durable:   coll.ConsumerName(),
-			AckPolicy: jetstream.AckExplicitPolicy,
-			BackOff:   []time.Duration{1 * time.Second, 5 * time.Second, 30 * time.Second},
-		}
-		if filters := coll.FilterSubjects(cfg.SiteID); len(filters) > 0 {
-			consumerCfg.FilterSubjects = filters
-		}
+		consumerCfg := buildConsumerConfig(cfg.Consumer, coll, cfg.SiteID)
 		cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, consumerCfg)
 		if err != nil {
 			slog.Error("create consumer failed",
@@ -347,4 +350,27 @@ type engineAdapter struct {
 
 func (a *engineAdapter) Bulk(ctx context.Context, actions []searchengine.BulkAction) ([]searchengine.BulkResult, error) {
 	return a.engine.Bulk(ctx, actions)
+}
+
+// consumerSource is the subset of Collection that buildConsumerConfig
+// needs. Narrowing keeps the helper unit-testable with a small fake.
+type consumerSource interface {
+	ConsumerName() string
+	FilterSubjects(siteID string) []string
+}
+
+// buildConsumerConfig returns the durable consumer config for one
+// search-sync-worker collection. Custom BackOff is intentional: ES
+// indexing benefits from progressive retries on transient failures.
+// With MaxDeliver=5 from defaults and 3 BackOff entries, NATS reuses
+// the last entry (30s) for the 4th and 5th retries — do not extend
+// BackOff to length 5 to "fix" this; the reuse is the intended pattern.
+func buildConsumerConfig(s stream.ConsumerSettings, coll consumerSource, siteID string) jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults(s)
+	cc.Durable = coll.ConsumerName()
+	cc.BackOff = []time.Duration{1 * time.Second, 5 * time.Second, 30 * time.Second}
+	if filters := coll.FilterSubjects(siteID); len(filters) > 0 {
+		cc.FilterSubjects = filters
+	}
+	return cc
 }

@@ -21,17 +21,19 @@ import (
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type config struct {
-	NatsURL       string          `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
-	NatsCredsFile string          `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID        string          `env:"SITE_ID"         envDefault:"default"`
-	MongoURI      string          `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
-	MongoDB       string          `env:"MONGO_DB"        envDefault:"chat"`
-	MongoUsername string          `env:"MONGO_USERNAME"  envDefault:""`
-	MongoPassword string          `env:"MONGO_PASSWORD"  envDefault:""`
-	Bootstrap     bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	NatsURL       string                  `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
+	NatsCredsFile string                  `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID        string                  `env:"SITE_ID"         envDefault:"default"`
+	MongoURI      string                  `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
+	MongoDB       string                  `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername string                  `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword string                  `env:"MONGO_PASSWORD"  envDefault:""`
+	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
+	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 }
 
 // mongoInboxStore implements InboxStore using MongoDB.
@@ -103,6 +105,22 @@ func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*m
 	_, err := s.subCol.InsertMany(ctx, docs, opts)
 	if err != nil && !mongo.IsDuplicateKeyError(err) {
 		return fmt.Errorf("bulk create subscriptions: %w", err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error {
+	filter := bson.M{
+		"roomId":    roomID,
+		"u.account": account,
+		"$or": bson.A{
+			bson.M{"lastSeenAt": bson.M{"$exists": false}},
+			bson.M{"lastSeenAt": bson.M{"$lt": lastSeenAt}},
+		},
+	}
+	update := bson.M{"$set": bson.M{"lastSeenAt": lastSeenAt, "alert": alert}}
+	if _, err := s.subCol.UpdateOne(ctx, filter, update); err != nil {
+		return fmt.Errorf("update subscription read for %q in room %q: %w", account, roomID, err)
 	}
 	return nil
 }
@@ -210,10 +228,8 @@ func main() {
 
 	inboxCfg := stream.Inbox(cfg.SiteID)
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, jetstream.ConsumerConfig{
-		Durable:   "inbox-worker",
-		AckPolicy: jetstream.AckExplicitPolicy,
-	})
+	// Local lane is reserved for search-sync-worker; scope to aggregate.> only.
+	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, buildConsumerConfig(cfg.Consumer, cfg.SiteID))
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -250,4 +266,15 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
+}
+
+// buildConsumerConfig returns the durable consumer config for
+// inbox-worker. The site-scoped FilterSubjects keeps inbox-worker on the
+// federated `aggregate.>` lane only; same-site direct publishes are
+// reserved for search-sync-worker.
+func buildConsumerConfig(s stream.ConsumerSettings, siteID string) jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults(s)
+	cc.Durable = "inbox-worker"
+	cc.FilterSubjects = []string{subject.InboxAggregateAll(siteID)}
+	return cc
 }

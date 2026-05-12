@@ -127,6 +127,16 @@ func InboxMemberRemovedAggregate(siteID string) string {
 	return fmt.Sprintf("chat.inbox.%s.aggregate.member_removed", siteID)
 }
 
+// InboxAggregateAll returns the wildcard pattern matching every federated
+// (aggregate-lane) event on a site's INBOX stream:
+// `chat.inbox.{siteID}.aggregate.>`. Use with
+// jetstream.ConsumerConfig.FilterSubjects to scope a consumer to the
+// federated lane only — excluding local-lane publishes that are reserved
+// for search-sync-worker.
+func InboxAggregateAll(siteID string) string {
+	return fmt.Sprintf("chat.inbox.%s.aggregate.>", siteID)
+}
+
 // InboxMemberEventSubjects returns the subject filters a consumer should use
 // to receive both local and federated member_added/member_removed events for
 // the given site. Use with jetstream.ConsumerConfig.FilterSubjects (NATS 2.10+).
@@ -180,6 +190,11 @@ func RoomsGet(account, roomID string) string {
 // RoomsInfoBatch is the server-to-server request subject for batch room info lookups.
 func RoomsInfoBatch(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
+}
+
+// RoomCreateDMSync is the server-to-server request subject for synchronous DM/botDM creation.
+func RoomCreateDMSync(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.create.dm", siteID)
 }
 
 // --- Wildcard patterns for subscriptions ---
@@ -320,6 +335,35 @@ func MemberAddWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.add", siteID)
 }
 
+// MessageRead returns the concrete subject for the per-user message-read RPC.
+// Pair with MessageReadWildcard for room-service's QueueSubscribe.
+func MessageRead(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.message.read", account, roomID, siteID)
+}
+
+// MessageReadWildcard is the per-site subscription pattern for the message-read RPC.
+func MessageReadWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.message.read", siteID)
+}
+
+func MessageReadReceipt(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.message.read-receipt", account, roomID, siteID)
+}
+
+func MessageReadReceiptWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.message.read-receipt", siteID)
+}
+
+// RoomCreate: client→room-service create subject; siteID is the requester's site.
+func RoomCreate(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.create", account, siteID)
+}
+
+// RoomCreateWildcard is the queue-subscribe pattern for room-service.
+func RoomCreateWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.%s.create", siteID)
+}
+
 func RoomMemberEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event.member", roomID)
 }
@@ -353,4 +397,44 @@ func SearchMessagesPattern() string {
 // SearchRoomsPattern is the natsrouter pattern for room search.
 func SearchRoomsPattern() string {
 	return "chat.user.{account}.request.search.rooms"
+}
+
+// isValidAccountToken rejects empty tokens and tokens containing NATS wildcard
+// characters ('*' or '>'). Subject parsers use it as the boundary guard for the
+// account token so wildcard semantics never leak into identity parsing.
+func isValidAccountToken(token string) bool {
+	return token != "" && !strings.ContainsAny(token, "*>")
+}
+
+// ParseRoomCreateSubject extracts the account from chat.user.{account}.request.room.{siteID}.create.
+func ParseRoomCreateSubject(s string) (account string, ok bool) {
+	parts := strings.Split(s, ".")
+	if len(parts) != 7 {
+		return "", false
+	}
+	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" || parts[4] != "room" || parts[6] != "create" {
+		return "", false
+	}
+	if !isValidAccountToken(parts[2]) {
+		return "", false
+	}
+	return parts[2], true
+}
+
+// RoomCanonicalOperation returns the trailing op (e.g. "member.add") from chat.room.canonical.{siteID}.{op}.
+func RoomCanonicalOperation(s string) (string, bool) {
+	const prefix = "chat.room.canonical."
+	if !strings.HasPrefix(s, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(s, prefix)
+	dot := strings.IndexByte(rest, '.')
+	if dot == -1 {
+		return "", false
+	}
+	op := rest[dot+1:]
+	if op == "" {
+		return "", false
+	}
+	return op, true
 }

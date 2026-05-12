@@ -47,6 +47,9 @@ vi.mock('../components/InRoomSearch', () => ({
     <div data-testid="in-room-search" data-room-id={roomId} />
   ),
 }))
+vi.mock('../components/ThemeToggle', () => ({
+  default: () => <button data-testid="theme-toggle" />,
+}))
 
 import { useNats } from '../context/NatsContext'
 import { useRoomSummaries } from '../context/RoomEventsContext'

@@ -9,13 +9,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
@@ -191,6 +198,98 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 	// No publish — room-worker handles user notification via NATS supercluster.
 }
 
+func TestInbox_UpdateSubscriptionRead_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:       db.Collection("subscriptions"),
+		roomCol:      db.Collection("rooms"),
+		userCol:      db.Collection("users"),
+		threadSubCol: db.Collection("thread_subscriptions"),
+	}
+
+	joined := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	_, err := store.subCol.InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", JoinedAt: joined,
+	})
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", now, true))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	require.NotNil(t, got.LastSeenAt)
+	assert.WithinDuration(t, now, *got.LastSeenAt, time.Second)
+	assert.True(t, got.Alert)
+}
+
+func TestInbox_UpdateSubscriptionRead_OutOfOrderSkipped(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:       db.Collection("subscriptions"),
+		roomCol:      db.Collection("rooms"),
+		userCol:      db.Collection("users"),
+		threadSubCol: db.Collection("thread_subscriptions"),
+	}
+
+	t2 := time.Now().UTC().Truncate(time.Millisecond)
+	_, err := store.subCol.InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", JoinedAt: t2.Add(-time.Hour), LastSeenAt: &t2, Alert: true,
+	})
+	require.NoError(t, err)
+
+	t1 := t2.Add(-time.Minute)
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", t1, false))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	require.NotNil(t, got.LastSeenAt)
+	assert.WithinDuration(t, t2, *got.LastSeenAt, time.Second) // unchanged
+	assert.True(t, got.Alert)                                  // unchanged
+}
+
+func TestInbox_UpdateSubscriptionRead_EqualTimestampSkipped(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:       db.Collection("subscriptions"),
+		roomCol:      db.Collection("rooms"),
+		userCol:      db.Collection("users"),
+		threadSubCol: db.Collection("thread_subscriptions"),
+	}
+
+	t1 := time.Now().UTC().Truncate(time.Millisecond)
+	_, err := store.subCol.InsertOne(ctx, model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", JoinedAt: t1.Add(-time.Hour), LastSeenAt: &t1, Alert: true,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", t1, false))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.True(t, got.Alert) // unchanged
+}
+
+func TestInbox_UpdateSubscriptionRead_MissingSubscriptionNoOp(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:       db.Collection("subscriptions"),
+		roomCol:      db.Collection("rooms"),
+		userCol:      db.Collection("users"),
+		threadSubCol: db.Collection("thread_subscriptions"),
+	}
+
+	now := time.Now().UTC()
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "missing-room", "ghost", now, false))
+}
+
 func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
@@ -308,4 +407,165 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 		Decode(&got))
 	assert.True(t, got.HasMention)
 	assert.True(t, got.UpdatedAt.Equal(evenLater))
+}
+
+// mustInsertUser inserts a user document directly into the users collection.
+func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
+	t.Helper()
+	_, err := db.Collection("users").InsertOne(context.Background(), u)
+	require.NoError(t, err)
+}
+
+// newIntegrationHandler creates a Handler wired to the given database for integration tests.
+func newIntegrationHandler(t *testing.T, db *mongo.Database, _ string) *Handler {
+	t.Helper()
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+	return NewHandler(store)
+}
+
+func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
+		SiteID: "site-B", EngName: "Bob", ChineseName: "鲍勃"})
+	mustInsertUser(t, db, &model.User{ID: "u_ian", Account: "ian",
+		SiteID: "site-B", EngName: "Ian", ChineseName: "伊恩"})
+
+	h := newIntegrationHandler(t, db, "site-B")
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	payload, err := json.Marshal(model.RoomCreatedOutbox{
+		RoomID: "r_xyz", RoomType: model.RoomTypeChannel,
+		RoomName: "deal team", HomeSiteID: "site-A",
+		Accounts:         []string{"bob", "ian"},
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": "r_xyz"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount)
+
+	roomCount, err := db.Collection("rooms").CountDocuments(ctx, bson.M{"_id": "r_xyz"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), roomCount, "inbox-worker must not create room mirror")
+
+	var bobSub model.Subscription
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx,
+		bson.M{"roomId": "r_xyz", "u.account": "bob"}).Decode(&bobSub))
+	assert.Equal(t, "deal team", bobSub.Name)
+	assert.Equal(t, "site-A", bobSub.SiteID)
+	assert.Equal(t, model.RoomTypeChannel, bobSub.RoomType)
+}
+
+func TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
+		SiteID: "site-B", EngName: "Bob", ChineseName: "鲍勃"})
+
+	h := newIntegrationHandler(t, db, "site-B")
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	const roomID = "u_aliceu_bob"
+	payload, err := json.Marshal(model.RoomCreatedOutbox{
+		RoomID:           roomID,
+		RoomType:         model.RoomTypeDM,
+		RoomName:         "",
+		HomeSiteID:       "site-A",
+		Accounts:         []string{"bob"},
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), subCount)
+
+	roomCount, err := db.Collection("rooms").CountDocuments(ctx, bson.M{"_id": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), roomCount, "inbox-worker must not create room mirror")
+
+	var bobSub model.Subscription
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx,
+		bson.M{"roomId": roomID, "u.account": "bob"}).Decode(&bobSub))
+	assert.Equal(t, "bob", bobSub.User.Account)
+	assert.Equal(t, "alice", bobSub.Name, "DM Subscription.Name = counterpart account")
+	assert.Equal(t, "site-A", bobSub.SiteID, "sub SiteID is room's home, not this site")
+	assert.Equal(t, model.RoomTypeDM, bobSub.RoomType)
+	assert.Nil(t, bobSub.Roles, "DMs have no roles")
+	assert.False(t, bobSub.IsSubscribed, "DM does not set IsSubscribed=true")
+}
+
+// setupNATS starts a NATS container with JetStream enabled and returns a
+// JetStream client tied to the test's lifetime.
+func setupNATS(t *testing.T) (context.Context, jetstream.JetStream) {
+	t.Helper()
+	ctx := context.Background()
+
+	c, err := natsmod.Run(ctx, testimages.NATS)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Terminate(ctx) })
+
+	url, err := c.ConnectionString(ctx)
+	require.NoError(t, err)
+
+	nc, err := nats.Connect(url)
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Close() })
+
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+
+	return ctx, js
+}
+
+// TestInboxWorker_FilterScoping_Integration verifies the consumer filters
+// out the local lane: a local-lane publish stays unreachable to inbox-worker.
+func TestInboxWorker_FilterScoping_Integration(t *testing.T) {
+	const siteID = "site-filter"
+
+	ctx, js := setupNATS(t)
+
+	inboxCfg := stream.Inbox(siteID)
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     inboxCfg.Name,
+		Subjects: inboxCfg.Subjects,
+	})
+	require.NoError(t, err)
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, jetstream.ConsumerConfig{
+		Durable:        "inbox-worker",
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		FilterSubjects: []string{subject.InboxAggregateAll(siteID)},
+	})
+	require.NoError(t, err)
+
+	_, err = js.Publish(ctx, subject.InboxMemberAdded(siteID), []byte(`{"type":"member_added"}`))
+	require.NoError(t, err)
+	_, err = js.Publish(ctx, subject.InboxMemberAddedAggregate(siteID), []byte(`{"type":"member_added"}`))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		info, err := js.Stream(ctx, inboxCfg.Name)
+		if err != nil {
+			return false
+		}
+		return info.CachedInfo().State.Msgs >= 2
+	}, 2*time.Second, 50*time.Millisecond, "stream must accept both publishes")
+
+	info, err := cons.Info(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, info.NumPending,
+		"FilterSubjects must scope inbox-worker to the aggregate.> lane only")
 }

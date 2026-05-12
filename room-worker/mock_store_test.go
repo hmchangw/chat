@@ -83,6 +83,20 @@ func (mr *MockSubscriptionStoreMockRecorder) BulkCreateSubscriptions(ctx, subs a
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkCreateSubscriptions", reflect.TypeOf((*MockSubscriptionStore)(nil).BulkCreateSubscriptions), ctx, subs)
 }
 
+// CreateRoom mocks base method.
+func (m *MockSubscriptionStore) CreateRoom(ctx context.Context, room *model.Room) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateRoom", ctx, room)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CreateRoom indicates an expected call of CreateRoom.
+func (mr *MockSubscriptionStoreMockRecorder) CreateRoom(ctx, room any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).CreateRoom), ctx, room)
+}
+
 // CreateRoomMember mocks base method.
 func (m *MockSubscriptionStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
 	m.ctrl.T.Helper()
@@ -153,6 +167,21 @@ func (m *MockSubscriptionStore) DeleteSubscriptionsByAccounts(ctx context.Contex
 func (mr *MockSubscriptionStoreMockRecorder) DeleteSubscriptionsByAccounts(ctx, roomID, accounts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSubscriptionsByAccounts", reflect.TypeOf((*MockSubscriptionStore)(nil).DeleteSubscriptionsByAccounts), ctx, roomID, accounts)
+}
+
+// FindDMSubscription mocks base method.
+func (m *MockSubscriptionStore) FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindDMSubscription", ctx, account, targetName)
+	ret0, _ := ret[0].(*model.Subscription)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindDMSubscription indicates an expected call of FindDMSubscription.
+func (mr *MockSubscriptionStoreMockRecorder) FindDMSubscription(ctx, account, targetName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindDMSubscription", reflect.TypeOf((*MockSubscriptionStore)(nil).FindDMSubscription), ctx, account, targetName)
 }
 
 // FindUsersByAccounts mocks base method.
@@ -305,18 +334,33 @@ func (mr *MockSubscriptionStoreMockRecorder) ListNewMembers(ctx, orgIDs, directA
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListNewMembers", reflect.TypeOf((*MockSubscriptionStore)(nil).ListNewMembers), ctx, orgIDs, directAccounts, roomID)
 }
 
-// ReconcileUserCount mocks base method.
-func (m *MockSubscriptionStore) ReconcileUserCount(ctx context.Context, roomID string) error {
+// ListNewMembersForNewRoom mocks base method.
+func (m *MockSubscriptionStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ReconcileUserCount", ctx, roomID)
+	ret := m.ctrl.Call(m, "ListNewMembersForNewRoom", ctx, orgIDs, accounts, excludeAccount)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListNewMembersForNewRoom indicates an expected call of ListNewMembersForNewRoom.
+func (mr *MockSubscriptionStoreMockRecorder) ListNewMembersForNewRoom(ctx, orgIDs, accounts, excludeAccount any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListNewMembersForNewRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).ListNewMembersForNewRoom), ctx, orgIDs, accounts, excludeAccount)
+}
+
+// ReconcileMemberCounts mocks base method.
+func (m *MockSubscriptionStore) ReconcileMemberCounts(ctx context.Context, roomID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReconcileMemberCounts", ctx, roomID)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// ReconcileUserCount indicates an expected call of ReconcileUserCount.
-func (mr *MockSubscriptionStoreMockRecorder) ReconcileUserCount(ctx, roomID any) *gomock.Call {
+// ReconcileMemberCounts indicates an expected call of ReconcileMemberCounts.
+func (mr *MockSubscriptionStoreMockRecorder) ReconcileMemberCounts(ctx, roomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReconcileUserCount", reflect.TypeOf((*MockSubscriptionStore)(nil).ReconcileUserCount), ctx, roomID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReconcileMemberCounts", reflect.TypeOf((*MockSubscriptionStore)(nil).ReconcileMemberCounts), ctx, roomID)
 }
 
 // RemoveRole mocks base method.

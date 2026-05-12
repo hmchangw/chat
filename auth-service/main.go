@@ -23,9 +23,9 @@ type config struct {
 	NATSJWTExpiry  time.Duration `env:"NATS_JWT_EXPIRY"       envDefault:"2h"`
 
 	// OIDC settings — required when DEV_MODE is false.
-	OIDCIssuerURL string `env:"OIDC_ISSUER_URL"`
-	OIDCAudience  string `env:"OIDC_AUDIENCE"`
-	TLSSkipVerify bool   `env:"TLS_SKIP_VERIFY"           envDefault:"false"`
+	OIDCIssuerURL string   `env:"OIDC_ISSUER_URL"`
+	OIDCAudiences []string `env:"OIDC_AUDIENCES" envSeparator:","`
+	TLSSkipVerify bool     `env:"TLS_SKIP_VERIFY"           envDefault:"false"`
 }
 
 func main() {
@@ -56,14 +56,14 @@ func run() error {
 		slog.Info("dev mode enabled — OIDC validation disabled")
 		handler = NewAuthHandler(nil, signingKP, cfg.NATSJWTExpiry, true)
 	} else {
-		if cfg.OIDCIssuerURL == "" || cfg.OIDCAudience == "" {
-			return fmt.Errorf("OIDC_ISSUER_URL and OIDC_AUDIENCE are required when DEV_MODE is false")
+		if cfg.OIDCIssuerURL == "" || len(cfg.OIDCAudiences) == 0 {
+			return fmt.Errorf("OIDC_ISSUER_URL and OIDC_AUDIENCES are required when DEV_MODE is false")
 		}
 
 		// Initialize OIDC validator — connects to issuer and fetches JWKS keys.
 		oidcValidator, err := pkgoidc.NewValidator(ctx, pkgoidc.Config{
 			IssuerURL:     cfg.OIDCIssuerURL,
-			Audience:      cfg.OIDCAudience,
+			Audiences:     cfg.OIDCAudiences,
 			TLSSkipVerify: cfg.TLSSkipVerify,
 		})
 		if err != nil {

@@ -22,8 +22,11 @@ import (
 // ESConfig bundles the search backend knobs. BACKEND is the key
 // `pkg/searchengine.New` reads to choose between elasticsearch/opensearch.
 type ESConfig struct {
-	URL     string `env:"URL,required"`
-	Backend string `env:"BACKEND" envDefault:"elasticsearch"`
+	URL           string `env:"URL,required"`
+	Backend       string `env:"BACKEND"          envDefault:"elasticsearch"`
+	Username      string `env:"USERNAME"         envDefault:""`
+	Password      string `env:"PASSWORD"         envDefault:""`
+	TLSSkipVerify bool   `env:"TLS_SKIP_VERIFY"  envDefault:"false"`
 }
 
 type ValkeyConfig struct {
@@ -45,7 +48,8 @@ type SearchConfig struct {
 	RestrictedRoomsCacheTTL time.Duration `env:"RESTRICTED_ROOMS_CACHE_TTL" envDefault:"5m"`
 	RecentWindow            time.Duration `env:"RECENT_WINDOW"              envDefault:"8760h"`
 	RequestTimeout          time.Duration `env:"REQUEST_TIMEOUT"            envDefault:"10s"`
-	UserRoomIndex           string        `env:"USER_ROOM_INDEX"            envDefault:""`
+	UserRoomIndex           string        `env:"USER_ROOM_INDEX,required"`
+	SpotlightIndex          string        `env:"SPOTLIGHT_INDEX,required"`
 	MetricsAddr             string        `env:"METRICS_ADDR"               envDefault:":9090"`
 }
 
@@ -80,7 +84,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	engine, err := searchengine.New(ctx, cfg.ES.Backend, cfg.ES.URL)
+	engine, err := searchengine.New(ctx, searchengine.Config{
+		Backend:       cfg.ES.Backend,
+		URL:           cfg.ES.URL,
+		Username:      cfg.ES.Username,
+		Password:      cfg.ES.Password,
+		TLSSkipVerify: cfg.ES.TLSSkipVerify,
+	})
 	if err != nil {
 		slog.Error("search engine connect failed", "error", err)
 		os.Exit(1)
@@ -107,6 +117,7 @@ func main() {
 		RecentWindow:            cfg.Search.RecentWindow,
 		RequestTimeout:          cfg.Search.RequestTimeout,
 		UserRoomIndex:           cfg.Search.UserRoomIndex,
+		SpotlightIndex:          cfg.Search.SpotlightIndex,
 	})
 
 	router := natsrouter.New(nc, "search-service")
@@ -152,14 +163,12 @@ func main() {
 	)
 
 	shutdown.Wait(ctx, 25*time.Second,
-		// Drain NATS first so no new requests are accepted while metrics
-		// keep recording the in-flight ones.
+		// Wait for in-flight handlers BEFORE nc.Drain so they can't touch torn-down deps.
+		func(ctx context.Context) error { return router.Shutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
-		// tracerShutdown + valkey disconnect: internal plumbing, any order.
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(_ context.Context) error { valkeyutil.Disconnect(valkey); return nil },
-		// Keep /metrics open LAST so Prometheus can scrape the final
-		// drain-window observations before the listener closes.
+		// /metrics last so Prometheus can scrape the final drain-window observations.
 		func(ctx context.Context) error { return metricsServer.Shutdown(ctx) },
 	)
 }

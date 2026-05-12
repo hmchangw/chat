@@ -8,12 +8,13 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,EventPublisher,ThreadRoomRepository,RoomKeyProvider,RoomTimeResolver
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository,RoomKeyProvider
 
 type MessageReader interface {
 	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
@@ -44,6 +45,14 @@ type SubscriptionRepository interface {
 	GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error)
 }
 
+// RoomRepository reads room metadata required by history handlers:
+// MinUserLastSeenAt as a per-user read-receipt floor surfaced to clients, and
+// GetRoomTimes (lastMsgAt, createdAt) for bucket-walk bounds.
+type RoomRepository interface {
+	GetMinUserLastSeenAt(ctx context.Context, roomID string) (*time.Time, error)
+	GetRoomTimes(ctx context.Context, roomID string) (lastMsgAt, createdAt time.Time, err error)
+}
+
 // EventPublisher publishes live events to a NATS subject. Implemented by a
 // thin wrapper around *otelnats.Conn in main.go.
 type EventPublisher interface {
@@ -51,9 +60,9 @@ type EventPublisher interface {
 }
 
 type ThreadRoomRepository interface {
-	GetThreadRooms(ctx context.Context, roomID string, accessSince *time.Time, req mongorepo.OffsetPageRequest) (mongorepo.OffsetPage[pkgmodel.ThreadRoom], error)
-	GetFollowingThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongorepo.OffsetPageRequest) (mongorepo.OffsetPage[pkgmodel.ThreadRoom], error)
-	GetUnreadThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongorepo.OffsetPageRequest) (mongorepo.OffsetPage[pkgmodel.ThreadRoom], error)
+	GetThreadRooms(ctx context.Context, roomID string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
+	GetFollowingThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
+	GetUnreadThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
 }
 
 // RoomKeyProvider fetches the current encryption key for a room.
@@ -63,44 +72,40 @@ type RoomKeyProvider interface {
 	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
 }
 
-// RoomTimeResolver returns the last-message and creation timestamps for a room.
-// Implemented by *mongorepo.RoomRepo; defined here to keep the dependency
-// contract narrow — only GetRoomTimes is used by history-service.
-type RoomTimeResolver interface {
-	GetRoomTimes(ctx context.Context, roomID string) (lastMsgAt, createdAt time.Time, err error)
-}
-
 // HistoryService handles message history queries and mutations. Transport-agnostic.
 type HistoryService struct {
 	msgReader     MessageReader
 	msgWriter     MessageWriter
 	subscriptions SubscriptionRepository
+	rooms         RoomRepository
 	publisher     EventPublisher
 	threadRooms   ThreadRoomRepository
 	keyProvider   RoomKeyProvider
-	roomTimes     RoomTimeResolver
 	historyFloor  time.Duration // from MESSAGE_HISTORY_FLOOR_DAYS
+	encrypt       bool
 }
 
 // New creates a HistoryService with the given repositories and event publisher.
 func New(
 	msgs MessageRepository,
 	subs SubscriptionRepository,
+	rooms RoomRepository,
 	pub EventPublisher,
 	threadRooms ThreadRoomRepository,
 	keyProvider RoomKeyProvider,
-	roomTimes RoomTimeResolver,
 	historyFloor time.Duration,
+	encrypt bool,
 ) *HistoryService {
 	return &HistoryService{
 		msgReader:     msgs,
 		msgWriter:     msgs,
 		subscriptions: subs,
+		rooms:         rooms,
 		publisher:     pub,
 		threadRooms:   threadRooms,
 		keyProvider:   keyProvider,
-		roomTimes:     roomTimes,
 		historyFloor:  historyFloor,
+		encrypt:       encrypt,
 	}
 }
 
@@ -116,5 +121,6 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MsgThreadParentPattern(siteID), s.GetThreadParentMessages)
 }
 
-// Compile-time check: *cassrepo.Repository must satisfy MessageRepository.
+// Compile-time checks.
 var _ MessageRepository = (*cassrepo.Repository)(nil)
+var _ RoomRepository = (*mongorepo.RoomRepo)(nil)

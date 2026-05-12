@@ -94,6 +94,15 @@ type MembersAdded struct {
 	AddedUsersCount int          `json:"addedUsersCount"`
 }
 
+// RoomCreated is the sys-message payload emitted on channel creation.
+type RoomCreated struct {
+	Name            string       `json:"name"`
+	Users           []string     `json:"users"`
+	Orgs            []string     `json:"orgs"`
+	Channels        []ChannelRef `json:"channels"`
+	AddedUsersCount int          `json:"addedUsersCount"`
+}
+
 type ListRoomMembersRequest struct {
 	Limit  *int `json:"limit,omitempty"`
 	Offset *int `json:"offset,omitempty"`
@@ -118,4 +127,37 @@ type OrgMember struct {
 
 type ListOrgMembersResponse struct {
 	Members []OrgMember `json:"members"`
+}
+
+// CreateRoomRequest is the canonical event payload (X-Request-ID rides on the NATS header).
+// Users/Orgs/Channels are the literal client request; ResolvedUsers/ResolvedOrgs carry the
+// post-expansion (channel-ref-merged, requester-stripped, dedup'd) sets the worker uses for
+// member materialization. Sys-message payloads use the literal lists.
+type CreateRoomRequest struct {
+	Name     string       `json:"name"     bson:"name"`
+	Users    []string     `json:"users"    bson:"users"`
+	Orgs     []string     `json:"orgs"     bson:"orgs"`
+	Channels []ChannelRef `json:"channels" bson:"channels"`
+
+	ResolvedUsers []string `json:"resolvedUsers,omitempty" bson:"resolvedUsers,omitempty"`
+	ResolvedOrgs  []string `json:"resolvedOrgs,omitempty"  bson:"resolvedOrgs,omitempty"`
+
+	RoomID           string `json:"roomId"            bson:"roomId"`
+	RequesterID      string `json:"requesterId"       bson:"requesterId"`
+	RequesterAccount string `json:"requesterAccount"  bson:"requesterAccount"`
+	Timestamp        int64  `json:"timestamp"         bson:"timestamp"`
+}
+
+// SyncCreateDMRequest is the request payload for chat.server.request.room.{siteID}.create.dm.
+// Caller (user-service) is responsible for all data-integrity validation before issuing.
+type SyncCreateDMRequest struct {
+	RoomType         RoomType `json:"roomType"         bson:"roomType"`
+	RequesterAccount string   `json:"requesterAccount" bson:"requesterAccount"`
+	OtherAccount     string   `json:"otherAccount"     bson:"otherAccount"`
+}
+
+// SyncCreateDMReply is the success reply; errors flow via natsutil.ReplyError instead.
+type SyncCreateDMReply struct {
+	Success      bool         `json:"success"      bson:"success"`
+	Subscription Subscription `json:"subscription" bson:"subscription"`
 }

@@ -90,9 +90,9 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	waitForRemoteConnected(t, localURL, "remote1", 120*time.Second)
 	t.Logf("CCS fixture: remote1 connected")
 
-	localEngine, err := searchengine.New(ctx, "elasticsearch", localURL)
+	localEngine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: localURL})
 	require.NoError(t, err, "build searchengine for local")
-	remoteEngine, err := searchengine.New(ctx, "elasticsearch", remoteURL)
+	remoteEngine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: remoteURL})
 	require.NoError(t, err, "build searchengine for remote")
 
 	t.Logf("CCS fixture: starting valkey")
@@ -125,6 +125,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 		RestrictedRoomsCacheTTL: 5 * time.Minute,
 		RecentWindow:            365 * 24 * time.Hour,
 		UserRoomIndex:           userRoomIndex,
+		SpotlightIndex:          "spotlight-test",
 	})
 
 	router := natsrouter.New(serverNC, "search-service-test")

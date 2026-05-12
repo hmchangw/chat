@@ -119,12 +119,16 @@ func (alwaysSubscribedRepo) GetHistorySharedSince(_ context.Context, _, _ string
 	return nil, true, nil
 }
 
-// stubRoomTimeResolver returns sensible defaults so handlers can derive bucket bounds
-// without a real Mongo room document. Tests that exercise per-room time resolution
-// should use a mock instead.
-type stubRoomTimeResolver struct{}
+// stubRoomRepo returns sensible defaults so the edit/delete integration tests
+// don't need a Mongo container: MinUserLastSeenAt is absent (no read floor),
+// and GetRoomTimes returns a wide enough range to never clip fixtures.
+type stubRoomRepo struct{}
 
-func (stubRoomTimeResolver) GetRoomTimes(_ context.Context, _ string) (lastMsgAt, createdAt time.Time, err error) {
+func (stubRoomRepo) GetMinUserLastSeenAt(_ context.Context, _ string) (*time.Time, error) {
+	return nil, nil
+}
+
+func (stubRoomRepo) GetRoomTimes(_ context.Context, _ string) (lastMsgAt, createdAt time.Time, err error) {
 	now := time.Now().UTC()
 	return now, now.AddDate(-1, 0, 0), nil
 }
@@ -133,7 +137,7 @@ func TestEditMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
 	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	pub := &recordingPublisher{}
-	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil, stubRoomTimeResolver{}, 730*24*time.Hour)
+	svc := service.New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, nil, 730*24*time.Hour, false)
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
 	roomID := "r-integ"
@@ -195,7 +199,7 @@ func TestDeleteMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
 	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	pub := &recordingPublisher{}
-	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil, stubRoomTimeResolver{}, 730*24*time.Hour)
+	svc := service.New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, nil, 730*24*time.Hour, false)
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
 	roomID := "r-del-integ"
@@ -255,7 +259,7 @@ func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 	session := setupCassandra(t)
 	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	pub := &recordingPublisher{}
-	svc := service.New(repo, alwaysSubscribedRepo{}, pub, nil, nil, stubRoomTimeResolver{}, 730*24*time.Hour)
+	svc := service.New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, nil, 730*24*time.Hour, false)
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
 	roomID := "r-parent-cascade"

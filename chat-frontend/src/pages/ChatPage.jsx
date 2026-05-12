@@ -10,6 +10,7 @@ import LeaveRoomButton from '../components/LeaveRoomButton'
 import SearchBar from '../components/SearchBar'
 import SearchResultsPane from './SearchResultsPane'
 import InRoomSearch from '../components/InRoomSearch'
+import ThemeToggle from '../components/ThemeToggle'
 
 export default function ChatPage() {
   const { user, disconnect } = useNats()
@@ -105,6 +106,7 @@ export default function ChatPage() {
         <span className="chat-header-user">
           {user?.account} &middot; {user?.siteId}
         </span>
+        <ThemeToggle />
         <button className="chat-header-logout" onClick={disconnect}>
           Logout
         </button>

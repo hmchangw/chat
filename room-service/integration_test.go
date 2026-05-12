@@ -13,15 +13,19 @@ import (
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+	"github.com/gocql/gocql"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
@@ -53,6 +57,55 @@ func setupValkey(t *testing.T) *roomkeystore.Config {
 		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
 		GracePeriod: time.Hour,
 	}
+}
+
+func setupCassandra(t *testing.T) *gocql.Session {
+	t.Helper()
+	keyspace, adminSession, host := testutil.CassandraKeyspace(t, "room_service_test")
+	cql := func(format string) string { return fmt.Sprintf(format, keyspace) }
+
+	require.NoError(t, adminSession.Query(cql(`CREATE TYPE IF NOT EXISTS %s."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT)`)).Exec())
+	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.messages_by_id (
+		message_id TEXT,
+		room_id TEXT,
+		sender FROZEN<"Participant">,
+		created_at TIMESTAMP,
+		PRIMARY KEY (message_id, created_at)
+	) WITH CLUSTERING ORDER BY (created_at DESC)`)).Exec())
+
+	cluster := gocql.NewCluster(host)
+	cluster.Consistency = gocql.One
+	cluster.DisableInitialHostLookup = true
+	cluster.Keyspace = keyspace
+	ksSession, err := cluster.CreateSession()
+	require.NoError(t, err)
+	t.Cleanup(func() { ksSession.Close() })
+	return ksSession
+}
+
+func TestCassMessageReader_GetMessageRoomAndCreatedAt_Integration(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+
+	createdAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender) VALUES (?, ?, ?, ?)`,
+		"m1", "r1", createdAt,
+		map[string]interface{}{"account": "alice", "id": "uA", "eng_name": "Alice"},
+	).WithContext(ctx).Exec())
+
+	reader := NewCassMessageReader(session)
+
+	roomID, ts, sender, found, err := reader.GetMessageRoomAndCreatedAt(ctx, "m1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "r1", roomID)
+	require.True(t, ts.Equal(createdAt), "createdAt mismatch: got %v, want %v", ts, createdAt)
+	require.Equal(t, "alice", sender)
+
+	_, _, _, found, err = reader.GetMessageRoomAndCreatedAt(ctx, "missing")
+	require.NoError(t, err)
+	require.False(t, found)
 }
 
 func setupNATS(t *testing.T) string {
@@ -258,7 +311,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Fatalf("seed subscriptions: %v", err)
 	}
 
-	count, err := store.CountNewMembers(ctx, []string{"org1"}, nil, "r1")
+	count, err := store.CountNewMembers(ctx, []string{"org1"}, nil, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers org1: %v", err)
 	}
@@ -266,7 +319,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 2 (bob, charlie; alice already subscribed; bots excluded), got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, nil, []string{"eve"}, "r1")
+	count, err = store.CountNewMembers(ctx, nil, []string{"eve"}, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers direct: %v", err)
 	}
@@ -274,7 +327,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 1 (eve), got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, []string{"org2"}, []string{"dave"}, "r1")
+	count, err = store.CountNewMembers(ctx, []string{"org2"}, []string{"dave"}, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers dedup: %v", err)
 	}
@@ -282,7 +335,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 1 (dave; deduped between org2 and direct), got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, nil, nil, "r1")
+	count, err = store.CountNewMembers(ctx, nil, nil, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers empty: %v", err)
 	}
@@ -290,7 +343,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 0 for empty inputs, got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, nil, []string{"alice"}, "r1")
+	count, err = store.CountNewMembers(ctx, nil, []string{"alice"}, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers all existing: %v", err)
 	}
@@ -298,7 +351,7 @@ func TestMongoStore_CountNewMembers_Integration(t *testing.T) {
 		t.Errorf("expected 0 when all accounts already members, got %d", count)
 	}
 
-	count, err = store.CountNewMembers(ctx, nil, []string{"helper.bot", "p_webhook"}, "r1")
+	count, err = store.CountNewMembers(ctx, nil, []string{"helper.bot", "p_webhook"}, "r1", "")
 	if err != nil {
 		t.Fatalf("CountNewMembers bots: %v", err)
 	}
@@ -846,7 +899,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, publish)
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, publish)
 
 	req := model.AddMembersRequest{
 		Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}},
@@ -913,7 +966,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, publish)
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, publish)
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -958,7 +1011,7 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 
 	// Same-site only: nil memberListClient is safe — request fails on the same-site
 	// GetSubscription check before reaching the cross-site branch.
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -1016,7 +1069,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb3", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
 	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
-	handlerB := NewHandler(storeB, keyStore, nil, "site-b", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handlerB := NewHandler(storeB, keyStore, nil, nil, "site-b", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handlerB.RegisterCRUD(otelNCb))
 	require.NoError(t, otelNCb.NatsConn().Flush())
 
@@ -1036,7 +1089,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handlerA := NewHandler(storeA, keyStore, memberListClient, "site-a", 1000, 500, publish)
+	handlerA := NewHandler(storeA, keyStore, memberListClient, nil, "site-a", 1000, 500, 5*time.Second, publish)
 
 	// Call add-members on site-A with a site-B source channel
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
@@ -1090,15 +1143,16 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	t.Cleanup(func() { nc.Close() })
 	// Sleep just past the 200ms client timeout so the responder doesn't outlive the test
 	// and flag as a goroutine leak under -race/leak detectors.
-	sub, err := nc.Subscribe(subject.MemberList("alice", "source", "site-b"), func(m *nats.Msg) {
-		time.Sleep(400 * time.Millisecond)
-		_ = m.Respond([]byte(`{}`))
-	})
+	// Subscriber that intentionally never replies — exercises the client-side
+	// timeout path without time.Sleep coordination (CLAUDE.md forbids sleep
+	// for goroutine sync). t.Cleanup unsubscribes so the responder doesn't
+	// outlive the test.
+	sub, err := nc.Subscribe(subject.MemberList("alice", "source", "site-b"), func(_ *nats.Msg) {})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, memberListClient, nil, "site-a", 1000, 500, 200*time.Millisecond, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
 	data, err := json.Marshal(req)
@@ -1106,9 +1160,13 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 
 	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected deadline exceeded, got %v", err)
-	assert.Contains(t, err.Error(), "expand channels")
-	assert.Contains(t, err.Error(), "remote list-members")
+	// Cross-site member.list deadline → typed channelExpandTimeoutError naming
+	// the offending site+roomId. sanitizeError surfaces the message verbatim.
+	var te *channelExpandTimeoutError
+	require.ErrorAs(t, err, &te, "expected channelExpandTimeoutError, got %v", err)
+	assert.Equal(t, "site-b", te.SiteID)
+	assert.Equal(t, "source", te.RoomID)
+	assert.Equal(t, "timeout listing members of channel source@site-b", sanitizeError(err))
 }
 
 func TestRoomsInfoBatchRPC(t *testing.T) {
@@ -1145,7 +1203,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNC.Drain() })
 
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handler.RegisterCRUD(otelNC))
 	require.NoError(t, otelNC.NatsConn().Flush())
 
@@ -1189,4 +1247,288 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	assert.Nil(t, resp.Rooms[3].LastMsgAt)
 	assert.Nil(t, resp.Rooms[3].PrivateKey)
 	assert.Nil(t, resp.Rooms[3].KeyVersion)
+}
+
+// mustInsertUser inserts a user document directly into the users collection.
+func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
+	t.Helper()
+	_, err := db.Collection("users").InsertOne(context.Background(), u)
+	require.NoError(t, err)
+}
+
+// mustInsertRoom inserts a room document directly into the rooms collection.
+func mustInsertRoom(t *testing.T, db *mongo.Database, r *model.Room) {
+	t.Helper()
+	_, err := db.Collection("rooms").InsertOne(context.Background(), r)
+	require.NoError(t, err)
+}
+
+// mustInsertSub inserts a subscription document directly into the subscriptions collection.
+func mustInsertSub(t *testing.T, db *mongo.Database, sub *model.Subscription) {
+	t.Helper()
+	_, err := db.Collection("subscriptions").InsertOne(context.Background(), sub)
+	require.NoError(t, err)
+}
+
+// newRoomServiceHandler wires a Handler with a capture closure for published events.
+// Returns the handler and a func that returns the most recently published (subject, data).
+func newRoomServiceHandler(t *testing.T, store *MongoStore, keyStore RoomKeyStore, siteID string) (*Handler, func() (string, []byte)) {
+	t.Helper()
+	var lastSubj string
+	var lastData []byte
+	publish := func(_ context.Context, subj string, data []byte) error {
+		lastSubj = subj
+		lastData = data
+		return nil
+	}
+	h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, publish)
+	return h, func() (string, []byte) { return lastSubj, lastData }
+}
+
+func TestCreateRoomChannelEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	valCfg := setupValkey(t)
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_bob", Account: "bob", SiteID: "site-A",
+		EngName: "Bob", ChineseName: "鲍勃",
+	})
+
+	h, published := newRoomServiceHandler(t, store, keyStore, "site-A")
+
+	reqID := idgen.GenerateRequestID()
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{
+		Name:  "deal team",
+		Users: []string{"bob"},
+	})
+	require.NoError(t, err)
+
+	resp, err := h.handleCreateRoom(ctx, subject.RoomCreate("alice", "site-A"), body)
+	require.NoError(t, err)
+
+	var got model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(resp, &got))
+	assert.Equal(t, model.CreateRoomReplyAccepted, got.Status)
+	assert.Equal(t, "channel", got.RoomType)
+	assert.NotEmpty(t, got.RoomID)
+
+	publishedSubj, publishedData := published()
+	assert.Equal(t, subject.RoomCanonical("site-A", "create"), publishedSubj)
+	var canonical model.CreateRoomRequest
+	require.NoError(t, json.Unmarshal(publishedData, &canonical))
+	assert.Equal(t, got.RoomID, canonical.RoomID)
+	assert.Equal(t, "alice", canonical.RequesterAccount)
+}
+
+func TestCreateRoomDMAlreadyExists(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	valCfg := setupValkey(t)
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice",
+		EngName: "Alice", ChineseName: "爱丽丝", SiteID: "site-A"})
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
+		EngName: "Bob", ChineseName: "鲍勃", SiteID: "site-A"})
+
+	roomID := idgen.BuildDMRoomID("u_alice", "u_bob")
+	mustInsertRoom(t, db, &model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-A"})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-A",
+		User: model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		Name: "bob", RoomType: model.RoomTypeDM,
+	})
+
+	h, _ := newRoomServiceHandler(t, store, keyStore, "site-A")
+
+	reqID := idgen.GenerateRequestID()
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
+	require.NoError(t, err)
+
+	_, herr := h.handleCreateRoom(ctx, subject.RoomCreate("alice", "site-A"), body)
+	require.Error(t, herr)
+
+	var dmErr *dmExistsError
+	require.True(t, errors.As(herr, &dmErr), "expected dmExistsError, got %T: %v", herr, herr)
+	assert.Equal(t, "dm already exists", dmErr.Error())
+	assert.Equal(t, roomID, dmErr.RoomID())
+}
+
+func TestMongoStore_UpdateSubscriptionRead_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		SiteID:   "site-a",
+		JoinedAt: time.Now().UTC().Add(-time.Hour),
+		Alert:    true,
+	}))
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", now, false))
+
+	got, err := store.GetSubscription(ctx, "alice", "r1")
+	require.NoError(t, err)
+	assert.Equal(t, false, got.Alert)
+	require.NotNil(t, got.LastSeenAt)
+	assert.WithinDuration(t, now, *got.LastSeenAt, time.Second)
+
+	err = store.UpdateSubscriptionRead(ctx, "r1", "missing", now, false)
+	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+}
+
+func TestMongoStore_GetUserSiteID_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	_, err := db.Collection("users").InsertOne(ctx, model.User{
+		ID:      "u1",
+		Account: "alice",
+		SiteID:  "site-b",
+	})
+	require.NoError(t, err)
+
+	got, err := store.GetUserSiteID(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, "site-b", got)
+
+	got, err = store.GetUserSiteID(ctx, "missing")
+	require.NoError(t, err)
+	assert.Equal(t, "", got)
+}
+
+func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	earliest := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	mid := earliest.Add(15 * time.Minute)
+	latest := earliest.Add(45 * time.Minute)
+
+	// Two subs with explicit lastSeenAt + one sub that has never been read
+	// (no lastSeenAt). The unread sub MUST be excluded — being invited into a
+	// room doesn't mean the user has read anything, so its joinedAt must not
+	// pull the room floor down.
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", JoinedAt: earliest, LastSeenAt: &mid,
+	}))
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: "r1", JoinedAt: earliest, LastSeenAt: &latest,
+	}))
+	// Never-read sub: joined at `earliest` but never opened the room.
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"},
+		RoomID: "r1", JoinedAt: earliest,
+	}))
+
+	got, err := store.MinSubscriptionLastSeenByRoomID(ctx, "r1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.WithinDuration(t, mid, *got, time.Second)
+
+	// Room with subs but none has lastSeenAt — return nil so the caller can
+	// $unset rooms.minUserLastSeenAt.
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID: "s4", User: model.SubscriptionUser{ID: "u4", Account: "dave"},
+		RoomID: "r2", JoinedAt: earliest,
+	}))
+	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "r2")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	// Empty room → nil.
+	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "empty")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestMongoStore_UpdateRoomMinUserLastSeenAt_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, store.CreateRoom(ctx, &model.Room{
+		ID: "r1", Name: "x", Type: model.RoomTypeChannel, CreatedAt: now, UpdatedAt: now,
+	}))
+
+	require.NoError(t, store.UpdateRoomMinUserLastSeenAt(ctx, "r1", &now))
+	r, err := store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
+	require.NotNil(t, r.MinUserLastSeenAt)
+	assert.WithinDuration(t, now, *r.MinUserLastSeenAt, time.Second)
+
+	require.NoError(t, store.UpdateRoomMinUserLastSeenAt(ctx, "r1", nil))
+	r, err = store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
+	assert.Nil(t, r.MinUserLastSeenAt)
+}
+
+func TestMongoStore_ListReadReceipts_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	_, err := db.Collection("users").InsertMany(ctx, []any{
+		bson.M{"_id": "uA", "account": "alice", "chineseName": "愛麗絲", "engName": "Alice"},
+		bson.M{"_id": "uB", "account": "bob", "chineseName": "鮑勃", "engName": "Bob"},
+		bson.M{"_id": "uC", "account": "carol", "chineseName": "卡羅", "engName": "Carol"},
+	})
+	require.NoError(t, err)
+
+	msgTime := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	_, err = db.Collection("subscriptions").InsertMany(ctx, []any{
+		bson.M{"_id": "sA", "roomId": "r1", "u": bson.M{"_id": "uA", "account": "alice"}, "lastSeenAt": msgTime.Add(time.Hour)},
+		bson.M{"_id": "sB", "roomId": "r1", "u": bson.M{"_id": "uB", "account": "bob"}, "lastSeenAt": msgTime.Add(time.Minute)},
+		bson.M{"_id": "sC", "roomId": "r1", "u": bson.M{"_id": "uC", "account": "carol"}, "lastSeenAt": msgTime.Add(-time.Minute)},
+	})
+	require.NoError(t, err)
+
+	rows, err := store.ListReadReceipts(ctx, "r1", msgTime, "alice", 100)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "uB", rows[0].UserID)
+	require.Equal(t, "bob", rows[0].Account)
+	require.Equal(t, "鮑勃", rows[0].ChineseName)
+	require.Equal(t, "Bob", rows[0].EngName)
+
+	rows, err = store.ListReadReceipts(ctx, "r1", msgTime.Add(2*time.Hour), "alice", 100)
+	require.NoError(t, err)
+	require.Empty(t, rows)
 }

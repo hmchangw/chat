@@ -11,6 +11,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -32,6 +33,10 @@ type config struct {
 	ValkeyAddr        string          `env:"VALKEY_ADDR,required"`
 	ValkeyPassword    string          `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyGracePeriod time.Duration   `env:"VALKEY_KEY_GRACE_PERIOD,required"`
+	CassandraHosts    string          `env:"CASSANDRA_HOSTS,required"`
+	CassandraKeyspace string          `env:"CASSANDRA_KEYSPACE"        envDefault:"chat"`
+	CassandraUsername string          `env:"CASSANDRA_USERNAME"        envDefault:""`
+	CassandraPassword string          `env:"CASSANDRA_PASSWORD"        envDefault:""`
 	Bootstrap         bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 }
 
@@ -98,8 +103,21 @@ func main() {
 		os.Exit(1)
 	}
 	ensureCancel()
+
+	cassSession, err := cassutil.Connect(
+		cfg.CassandraHosts,
+		cfg.CassandraKeyspace,
+		cfg.CassandraUsername,
+		cfg.CassandraPassword,
+	)
+	if err != nil {
+		slog.Error("cassandra connect failed", "error", err)
+		os.Exit(1)
+	}
+	cassReader := NewCassMessageReader(cassSession)
+
 	memberListClient := NewNATSMemberListClient(nc.NatsConn(), cfg.MemberListTimeout)
-	handler := NewHandler(store, keyStore, memberListClient, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, func(ctx context.Context, subj string, data []byte) error {
+	handler := NewHandler(store, keyStore, memberListClient, cassReader, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, cfg.MemberListTimeout, func(ctx context.Context, subj string, data []byte) error {
 		if _, err := js.PublishMsg(ctx, natsutil.NewMsg(ctx, subj, data)); err != nil {
 			return fmt.Errorf("publish to %q: %w", subj, err)
 		}
@@ -123,5 +141,6 @@ func main() {
 			return nil
 		},
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 	)
 }
