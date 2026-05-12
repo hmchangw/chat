@@ -163,7 +163,106 @@ Today `Sent`, `PublishErrors`, and a few derived numbers in the summary are pull
 - Add a `phase` label (`warmup|measured`) to all such counters. Already exists on `loadgen_published_total`; extend to errors, requests, reply correlations. Sum `{phase="measured"}` for the summary. (Recommended — Prometheus-side filtering is already how the dashboards work.)
 - Snapshot counters at `warmupDeadline` and subtract at finalize. (Avoid — fragile, hides the warmup numbers entirely.)
 
-Phase 1 exit: every run prints a verdict, every untrustworthy run is marked, no run silently reports clean numbers it cannot defend.
+### 1.8 Run artifacts persisted to a bundle
+
+The SRE reviewer flagged that today, after `loadgen run` exits, everything that produced the verdict is gone (HDR bin counts in-process, Prometheus scrape ends with the metrics server, `--csv` is opt-in and capped at 100k samples). "Why was that run DEGRADED at 14:02" has no answer.
+
+**Design:** every run writes to `tools/loadgen/runs/<run_id>/` (configurable via `--runs-dir`). The bundle contains:
+
+- `summary.json` — verdict, settle outcomes, ack-vs-queued counts, omission p99, exit reason, full flag set, git SHA of loadgen, SUT image digests (read from `docker inspect`).
+- `histograms.hlog` — HDR log file in the native HdrHistogram log format. One block per (scenario, kind, phase) cell. Mergeable across runs via `hdrhistogramlogprocessor` and the planned `scripts/compare-runs.sh`.
+- `timeseries.parquet` (or jsonl if parquet adds dep weight) — per-second snapshot of rate, p99, errors. Source: Collector ticker, not Prometheus scrape, so it survives metrics-server shutdown.
+- `settle.json` — N/M probe outcomes per RAW path.
+- `flags.txt`, `env.txt` (secrets redacted), `stdout.log`, `stderr.log`.
+- `metrics.prom` — final scrape snapshot, written at finalize *before* the metrics server stops (closes the gap the DX reviewer also flagged: today `/metrics` dies with the run).
+
+Storage: local filesystem default. `--runs-s3=s3://bucket/prefix/` opts into S3 / MinIO upload (the MinIO container is already in the compose stack via `pkg/minioutil`). Spec does not mandate Mongo — wrong shape for blobs.
+
+Retention: bundle directories survive `loadgen teardown`. A `loadgen runs prune --older-than=14d` subcommand handles housekeeping.
+
+### 1.9 Run isolation for concurrent operators
+
+The SRE reviewer flagged that two engineers running loadgen against the same SUT today collide on: same Mongo `loadgen` DB, same deterministic fixture IDs (`--seed=42`), same JetStream durable consumer names, same correlation tracker.
+
+**Design:** every loadgen-owned resource is prefixed by a short `run_id` (7-char prefix of the UUIDv7):
+
+- `MONGO_DB=loadgen_<short_run_id>` (the existing `loadgen` DB-name isolation guard widens to accept any `loadgen_*` prefix).
+- Durable consumer names `loadgen_<short_run_id>_<purpose>` (e.g. `loadgen_a1b2c3d_e1obs`).
+- Correlation tracker filters incoming canonical/broadcast messages by their `X-Loadgen-Run-ID` header — messages from another concurrent run are ignored.
+- `--allow-concurrent=false` default: at startup, the harness writes a row into a shared `loadgen_runs` Mongo collection (`{run_id, started_at, host, scenario}`). Refuses to proceed if another row is active for the same SUT URL within the last `--run-ttl=2h`. `--allow-concurrent=true` overrides for two-machine campaigns.
+
+Phase 1 exit: every run prints a verdict, every untrustworthy run is marked, no run silently reports clean numbers it cannot defend; every run persists a bundle; two operators on the same machine can run concurrently without stomping each other.
+
+### 1.10 Teardown --force for orphan recovery
+
+A crashed loadgen (OOM, network partition, host reboot) leaves: seeded Mongo collections, JetStream durable consumers (no current cleanup), `loadgen_*` rooms in shared Mongo, pending async-publish acks.
+
+**Design:** `loadgen teardown --force [--older-than=24h] [--run-id=X]`:
+
+1. Enumerates Mongo databases matching `loadgen_*` and JetStream durable consumers matching `loadgen_*` via NATS JSAPI.
+2. Cross-references against `loadgen_runs` Mongo collection (§1.9) to identify orphans (no live process for `run_id`, or `started_at + --run-ttl < now`).
+3. Drops each idempotently, logs what it removed, exits 0.
+
+`teardown --force --run-id=X` skips heuristics and drops a specific run's resources by ID.
+
+### 1.11 Alert rules shipped with v2
+
+The SRE reviewer flagged that `prometheus.yml` has no rule files and the dashboard has no alert blocks. v2 ships `deploy/prometheus/rules/loadgen.yml` with the rules below, enabled by default in the dashboards profile:
+
+```promql
+# UNTRUSTED run in progress (gauge set at finalize, scraped before metrics-server stops)
+- alert: LoadgenUntrustedRunActive
+  expr: loadgen_run_quality{verdict="UNTRUSTED"} == 1
+  for: 30s
+
+# Coordinated omission exceeding budget
+- alert: LoadgenOmissionBudgetExceeded
+  expr: histogram_quantile(0.99, sum(rate(loadgen_omission_deficit_seconds_bucket{dropped="false"}[1m])) by (le)) > 0.1
+  for: 2m
+
+# Async ack drain wedging
+- alert: LoadgenAsyncAckBacklog
+  expr: rate(loadgen_publish_errors_total{reason="async_ack"}[1m]) > 1
+  for: 2m
+
+# RAW lag regression (Phase 3.1)
+- alert: LoadgenRAWHistoryLagP99
+  expr: histogram_quantile(0.99, sum(rate(loadgen_raw_lag_seconds_bucket{path="history"}[2m])) by (le)) > 1
+  for: 3m
+
+# Loadgen self-saturation (back-pressure on the harness)
+- alert: LoadgenSelfSaturated
+  expr: |
+    sum(rate(loadgen_publish_errors_total{reason="saturated"}[1m]))
+    + sum(rate(loadgen_request_errors_total{reason="saturated"}[1m])) > 10
+  for: 1m
+```
+
+### 1.12 v2 Grafana dashboards as Phase 1 deliverables
+
+The SRE reviewer flagged that today's dashboard is a scalar grid; an operator under fire wants heatmaps, omission-vs-throughput correlation, RAW-lag panels, RUN QUALITY annotations.
+
+**Design:** `tools/loadgen/deploy/grafana/dashboards/v2/` ships:
+
+- `loadgen-overview.json` — RUN QUALITY annotation strip, per-scenario rate, p99 heatmap (`loadgen_request_latency_seconds_bucket`), omission p99 (split by `dropped` label).
+- `loadgen-raw.json` — per-path RAW lag heatmaps, visibility-window distributions.
+- `loadgen-federation.json` — four sub-stage histograms, end-to-end lag.
+- `loadgen-system.json` — cAdvisor scrape (added to `prometheus.yml` as a new job), NATS JetStream consumer lag via `prometheus-nats-exporter` (now a hard dep, not a TODO), Cassandra commit-log latency via `cassandra-exporter`.
+
+These are part of **Phase 1 exit**, not Phase 3 — without them v2 is operationally regressing from v1.
+
+### 1.13 Security and credentials
+
+Phase 3.8 (`auth-load`) and 3.9 (`federation-lag`) introduce credential-management requirements. v2 commits to:
+
+- **Per-fixture-user JWTs**: `loadgen seed --with-jwts` mints them into `tools/loadgen/runs/<run_id>/creds/` (mode 0600, gitignored). The directory is removed by `teardown`. Auth-service's signer is invoked over its admin RPC; no signing keys ship in the loadgen process.
+- **Federation peer NKey**: `seed --with-federation` provisions ephemeral peer NKeys, written to the same per-run creds dir, registered with both sites' auth-services, revoked at teardown.
+- **.gitignore additions** as a Phase-1 deliverable: `tools/loadgen/runs/`, `tools/loadgen/creds/`.
+- **No secrets in `summary.json` or stdout.log.** A redaction allow-list (`AUTH_TOKEN`, `NATS_CREDS_FILE`, `MONGO_URI` password) is applied at finalize. CLAUDE.md §5 forbids committing `.env`; this just extends the rule to artifact bundles.
+
+### 1.14 Soak campaign script
+
+`scripts/run-soak.sh` (default DURATION=8h, rotates artifact bundles hourly, re-evaluates RUN QUALITY every hour and logs trajectory). `scripts/run-campaign.sh` orchestrates baseline → ramp → 60-min sustained → soak as four phases of one campaign with a single rolled-up verdict. Without this, "trustworthy" stops at minute 5.
 
 ## Phase 2 — Restructure (post-Phase-0)
 
