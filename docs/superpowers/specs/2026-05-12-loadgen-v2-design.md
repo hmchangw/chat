@@ -16,6 +16,22 @@ Take `tools/loadgen` from "useful internal tool" to "numbers a capacity planner 
 
 Six critical bugs surfaced by the same review are fixed under separate commits ahead of this spec and are not in scope here.
 
+## Canonical vocabulary
+
+To avoid drift across this spec and downstream docs (coherence reviewer flagged variants):
+
+| Concept | Canonical term | Used in |
+|---|---|---|
+| The TRUSTED / DEGRADED / UNTRUSTED outcome | **verdict** (prose), **RUN QUALITY** (operator-facing UI strings only) | §1.3, USAGE.md |
+| The post-warmup probe loop | **settle phase** | §1.4 |
+| Generator-side queuing latency | **coordinated omission** (concept), **dispatch deficit** (metric / number) | §1.2 |
+| `frontdoor` vs `canonical` injection | **frontdoor** (via gatekeeper) and **canonical** (direct to MESSAGES_CANONICAL) | §1.5, §3.x |
+| `runs/<run_id>/` directory | **artifact bundle** | §1.8 |
+| `--abort-window-max-samples` retention | **sample cap** | §1.1 / Open Qs |
+| The "numbers a planner can defend" promise | **trustworthy** (concept), **TRUSTED** (verdict value) | §1, USAGE.md |
+
+USAGE.md's glossary uses these terms verbatim.
+
 ## Non-goals
 
 - Replacing `tools/loadgen` with an off-the-shelf tool (k6, Vegeta, ghz). v1 is intentionally chat-shaped; v2 deepens the shaping, doesn't abandon it.
@@ -42,6 +58,13 @@ Phase 0 exit: `main.go` < 250 lines (down from 1,071), all existing unit + binar
 ## Phase 1 — Trustworthiness
 
 Goal: a run that is not trustworthy refuses to print numbers that look trustworthy.
+
+**Phase 1 ships in two cohorts** (plan-readiness reviewer flagged that 14 sub-items in one merge cohort risks the abort-watcher canary blocking the entire phase):
+
+- **Phase 1a — Trust core (§1.1–§1.7):** HDR, omission, RUN QUALITY verdict, settle, ack-vs-queued, app-error decode, phase labels. The "refuse to print numbers that lie" promise. Lands as one PR train. Exit gate: canary suite passes (§1.1 known-risk acceptance criterion), a TRUSTED canonical run prints clean, a throttled build prints DEGRADED, a stopped SUT prints UNTRUSTED.
+- **Phase 1b — Operability (§1.8–§1.14):** artifact bundles, run isolation, teardown-force, alert rules, v2 dashboards, security/creds, soak script. Builds on 1a outputs (HDR histograms feed `histograms.hlog`; verdict feeds `loadgen_run_quality` gauge; settle outcomes go into `settle.json`). Lands once 1a is stable.
+
+Both cohorts together satisfy the **Phase 1 exit criterion** at the bottom of §1.14.
 
 ### 1.1 HDR histograms replace per-(scenario, kind) sample slices
 
@@ -171,7 +194,7 @@ The SRE reviewer flagged that today, after `loadgen run` exits, everything that 
 
 - `summary.json` — verdict, settle outcomes, ack-vs-queued counts, omission p99, exit reason, full flag set, git SHA of loadgen, SUT image digests (read from `docker inspect`).
 - `histograms.hlog` — HDR log file in the native HdrHistogram log format. One block per (scenario, kind, phase) cell. Mergeable across runs via `hdrhistogramlogprocessor` and the planned `scripts/compare-runs.sh`.
-- `timeseries.parquet` (or jsonl if parquet adds dep weight) — per-second snapshot of rate, p99, errors. Source: Collector ticker, not Prometheus scrape, so it survives metrics-server shutdown.
+- `timeseries.jsonl` — per-second snapshot of rate, p99, errors. Source: Collector ticker, not Prometheus scrape, so it survives metrics-server shutdown. **Format: JSONL (newline-delimited JSON), not parquet.** Per CLAUDE.md §5 ("Ask before adding new third-party dependencies") parquet would add `github.com/apache/arrow/go` or `github.com/xitongsys/parquet-go`; jsonl uses stdlib `encoding/json`. If operator demand for parquet arises post-v2, file a separate dep-ask matching §1.1's pattern.
 - `settle.json` — N/M probe outcomes per RAW path.
 - `flags.txt`, `env.txt` (secrets redacted), `stdout.log`, `stderr.log`.
 - `metrics.prom` — final scrape snapshot, written at finalize *before* the metrics server stops (closes the gap the DX reviewer also flagged: today `/metrics` dies with the run).
@@ -190,8 +213,6 @@ The SRE reviewer flagged that two engineers running loadgen against the same SUT
 - Durable consumer names `loadgen_<short_run_id>_<purpose>` (e.g. `loadgen_a1b2c3d_e1obs`).
 - Correlation tracker filters incoming canonical/broadcast messages by their `X-Loadgen-Run-ID` header — messages from another concurrent run are ignored.
 - `--allow-concurrent=false` default: at startup, the harness writes a row into a shared `loadgen_runs` Mongo collection (`{run_id, started_at, host, scenario}`). Refuses to proceed if another row is active for the same SUT URL within the last `--run-ttl=2h`. `--allow-concurrent=true` overrides for two-machine campaigns.
-
-Phase 1 exit: every run prints a verdict, every untrustworthy run is marked, no run silently reports clean numbers it cannot defend; every run persists a bundle; two operators on the same machine can run concurrently without stomping each other.
 
 ### 1.10 Teardown --force for orphan recovery
 
@@ -263,6 +284,8 @@ Phase 3.8 (`auth-load`) and 3.9 (`federation-lag`) introduce credential-manageme
 ### 1.14 Soak campaign script
 
 `scripts/run-soak.sh` (default DURATION=8h, rotates artifact bundles hourly, re-evaluates RUN QUALITY every hour and logs trajectory). `scripts/run-campaign.sh` orchestrates baseline → ramp → 60-min sustained → soak as four phases of one campaign with a single rolled-up verdict. Without this, "trustworthy" stops at minute 5.
+
+**Phase 1 exit (full).** Phase 1a passes its trust-core gate AND Phase 1b ships its operability suite. Concretely: every run prints a RUN QUALITY verdict; every untrustworthy run is marked and exits 4; every run persists a complete `runs/<run_id>/` artifact bundle; two operators on one machine can run concurrently without resource collisions; `teardown --force` cleans orphans from a crashed run; v2 Grafana dashboards render and at least the UNTRUSTED + omission-budget + async-ack-backlog alerts fire and clear correctly in a synthetic test; `scripts/run-soak.sh` completes an 8h run with bounded harness RSS.
 
 ## Phase 2 — Restructure (post-Phase-0)
 
@@ -445,7 +468,12 @@ Output: `loadgen_largeroom_completion_ratio{quantile="p99",preset=...}` (Prometh
 
 **Scenario name:** `presence-typing`. New file `scenario_presence.go`.
 
-**SUT readiness gate.** Phase 3 inventory: if `pkg/subject` does not yet define presence/typing subject builders, this scenario is **DEFERRED-UNTIL-SUT-READY** and tracked in `tools/loadgen/CHANGES.md` as a known gap. The plan must check this on entry and skip §3.3 if subjects are missing, not invent stub subjects.
+**SUT readiness gate.** Phase 3 plan opens with a 1-day audit task: grep `pkg/subject` for presence / typing builders. **Two outcomes are pre-decided** so the planner doesn't re-debate:
+
+- **Subjects exist** → scenario lands as specified below.
+- **Subjects missing** → §3.3 ships only its harness skeleton behind a `//go:build presence_ready` build tag; the build tag is flipped when SUT adds the builders. CHANGES.md notes this as a deferred-with-skeleton gap. The audit task's output is `docs/scenarios/presence-typing.md` documenting which SUT subject names the scenario consumes.
+
+This same `//go:build <feature>_ready` pattern applies to §3.4b push/email channels and any other SUT-gated work — no inventing stub subjects, no inline TODOs.
 
 Mechanism (when shippable): per-user typing-indicator emit, **rate-limited at the generator to model client-side throttling**. The chat-domain reviewer flagged that real clients throttle to ~1 typing event per (user, room) per 3 seconds (Slack/Discord). Default: 1 event / 3s per (user, room) for users-currently-typing. `--typing-unthrottled` knob disables the client-side limit for finding the SUT ceiling.
 
@@ -490,9 +518,11 @@ Note: this scenario must NOT consume the seeded fixture pool destructively — i
 
 **Scenario name:** `auth-load`. New file `scenario_auth.go`.
 
-Mechanism: HTTP benchmark against `auth-service` (`/login`, `/refresh`, `/validate` per actual API surface — read `auth-service/main.go` for endpoints). Resty-driven open-loop ticker. Add reconnect-storm preset: spin up M idle connections, drop them all, measure recovery.
+Mechanism: HTTP benchmark against `auth-service`. Plan opens with a 0.5-day audit task that reads `auth-service/main.go` and writes the canonical endpoint table into `docs/scenarios/auth-load.md` before implementation begins. Expected endpoints based on the current SUT: `POST /login`, `POST /refresh`, `GET /validate` — the plan task confirms or amends. Resty-driven open-loop ticker per endpoint with the same `--rate` / `--ramp-*` flag semantics as the read scenarios.
 
-Stack: requires `auth-service` + its DB in the compose file. Adds it.
+**Reconnect-storm preset** (`auth-reconnect-storm`): spin up M=1000 idle NATS connections via a dedicated `ConnPool` (separate from the data-traffic pool), drop them all at T+30s, measure recovery — time from drop to `M` successful re-handshakes. Reported as `loadgen_auth_reconnect_seconds` histogram + `loadgen_auth_reconnects_completed` counter. M is preset-configurable; storm cadence (single drop vs periodic) controlled by `--auth-storm-period`.
+
+Stack: requires `auth-service` + its DB (Postgres or whatever `auth-service` uses — audit task confirms) in a new `docker-compose.auth.yml` overlay, gated by Compose profile `auth` (default-off).
 
 ### 3.9 Cross-site federation
 
@@ -512,6 +542,8 @@ Reported as four separate histograms `loadgen_federation_lag_seconds{stage="outb
 **Cross-site read of remote room.** A third sub-scenario (separate run) — a user on site-a reads history of a room homed on site-b. Exercises a different code path than local read; reported as `loadgen_federation_cross_read_seconds`.
 
 Stack: doubles the compose footprint. Add `docker-compose.federation.yml` overlay (default-off, gated by Compose `profiles:`) and a `--federation` flag on the run-* scripts.
+
+**Testing plan (plan-readiness reviewer asked for clarity here).** The integration test stands up a **real 2-node testcontainer setup** — not mocked INBOX delivery. CLAUDE.md §6 reserves `Sources + SubjectTransforms` for ops/IaC; the federation testcontainer therefore embeds the federation wiring as a **fixture file** (`tools/loadgen/testdata/federation/streams.json`) loaded by a small setup helper before each integration test, NOT by inventing federation config inside loadgen's `bootstrap.go`. This keeps loadgen blind to federation policy (matches the SUT's separation of concerns) while still exercising the real INBOX-sourcing code path. `inbox-worker` runs in the test compose so it owns the INBOX stream as in production. Unit-level scenario tests use a fake federation `Sites()` accessor that returns two `SiteDeps` against an in-memory NATS server.
 
 ### 3.10 WebSocket gateway
 
@@ -566,11 +598,11 @@ The chat-domain reviewer flagged read receipts (1 read RPC per message-viewed pe
 
 Mechanism: shares `messaging-pipeline` fixtures. Maintains a rolling set of recent message IDs from a co-running pipeline. Fires `MessageRead` for a configurable subset of recipients per message (default 60% — models the fraction of readers who actually see the message before notification mutes).
 
-Metric: `loadgen_message_read_seconds{room_type="channel|dm"}` histogram. Federation note: per `SubscriptionReadEvent` (OUTBOX type `subscription_read`), a `MessageRead` on a remote-homed room generates cross-site traffic. When `--federation` is on, the federation-lag scenario should pick up this load too.
+Metric: `loadgen_message_read_seconds{room_type="channel|dm"}` histogram. Federation note: per `SubscriptionReadEvent` (OUTBOX type `subscription_read`), a `MessageRead` on a remote-homed room generates cross-site traffic. **Cross-reference §3.9:** when `--federation` is on, the `subscription_read` OUTBOX event is observed by the federation-lag scenario's `stage="outbox"` subscriber, so cross-site read-receipt lag falls out of the existing four-stage histogram without additional metrics. The federation testcontainer for §3.9 must therefore also subscribe to `outbox.{siteA}.>.subscription_read` (not only `.created`) — pinned here so the planner doesn't miss it.
 
-### 3.11 Chaos / failure injection
+### 3.17 Chaos / failure injection
 
-**Scenario:** not a new generator — an overlay. New file `tools/loadgen/deploy/docker-compose.chaos.yml` adding `pumba` or `toxiproxy` between services. Add `scripts/run-chaos.sh` driving a baseline `messaging-pipeline` with periodic network partitions / packet loss / slow links applied to a chosen service. Measure SUT graceful-degradation behavior.
+**Scenario:** not a new generator — an overlay. New file `tools/loadgen/deploy/docker-compose.chaos.yml` adding **toxiproxy** between services (plan-readiness reviewer asked for a pick; toxiproxy chosen over pumba because it offers a richer fault matrix — latency, bandwidth, slow_close, timeout, slicer, limit_data — controllable via its HTTP API and a `loadgen chaos` subcommand, and has a viable K8s deployment story should we ever want to reuse the chaos profile against a real cluster). Add `scripts/run-chaos.sh` driving a baseline `messaging-pipeline` with periodic network partitions / packet loss / slow links applied to a chosen service. Measure SUT graceful-degradation behavior.
 
 Phase 3 exit: README's "Non-goals" section is updated. Every disclaimed item is either implemented or has a follow-up issue link.
 
@@ -716,12 +748,6 @@ USAGE.md is part of every phase's exit criterion: a phase is not done until the 
 - Phase 3: each new scenario gets a unit test (generator behavior with mocked publisher/requester) and an integration test (testcontainers, single happy path) per CLAUDE.md §4.
 
 Coverage floor (80%) and target (90% for `pkg/`) per CLAUDE.md §4 remain. Loadgen lives under `tools/`, so it follows the same conventions but is not in `pkg/`.
-
-### Documentation
-
-- README.md gets a `## v2 changes` section with the verdict semantics, new scenarios, and a `## migration` note for operators on a v1 invocation that now sees verdict output.
-- Each new scenario lands a section in README's "Scenarios" table.
-- Non-goals list shrinks: items moved to "Implemented" or "Deferred — see <follow-up>".
 
 ## Open questions
 
