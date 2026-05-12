@@ -40,6 +40,10 @@ func TestResolveRoomTimes(t *testing.T) {
 		{name: "lastMsgAt too far in future → ignored", hints: &models.RoomHints{LastMsgAt: tsPtr(future), CreatedAt: tsPtr(created)}, mongoCalls: 1, wantLast: last, wantCreated: created},
 		{name: "createdAt in future → ignored", hints: &models.RoomHints{LastMsgAt: tsPtr(last), CreatedAt: tsPtr(future)}, mongoCalls: 1, wantLast: last, wantCreated: created},
 		{name: "implausibly old values (pre-2020) → ignored", hints: &models.RoomHints{LastMsgAt: msPtr(0), CreatedAt: msPtr(0)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		// Hint pair is internally inconsistent (createdAt > lastMsgAt). Both hints are
+		// individually sane, so they pass sanitization; the consistency-refetch path
+		// kicks in and replaces both with Mongo's coherent values.
+		{name: "createdAt > lastMsgAt → mongo refetch", hints: &models.RoomHints{LastMsgAt: tsPtr(created), CreatedAt: tsPtr(last)}, mongoCalls: 1, wantLast: last, wantCreated: created},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

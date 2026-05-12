@@ -62,6 +62,13 @@ func (s *HistoryService) walkBounds(lastMsgAt, createdAt, now time.Time) (ceilin
 	if floor.IsZero() || floor.Before(historyFloor) {
 		floor = historyFloor
 	}
+	// Guard against inverted ranges: a room whose lastMsgAt predates the
+	// configured historyFloor cap would otherwise emit ceiling < floor, which
+	// the walker handles silently (empty result, no cursor). Clamp ceiling up
+	// to floor so the range collapses to a single bucket instead of inverted.
+	if ceiling.Before(floor) {
+		ceiling = floor
+	}
 	return ceiling, floor
 }
 
@@ -75,9 +82,16 @@ func (s *HistoryService) resolveRoomTimes(
 	now time.Time,
 ) (lastMsgAt, createdAt time.Time, err error) {
 	var last, created *time.Time
+	var hintLast, hintCreated bool
 	if hints != nil {
-		last = sanitizeLastMsgAt(hints.LastMsgAt, now)
-		created = sanitizeCreatedAt(hints.CreatedAt, now)
+		if v := sanitizeLastMsgAt(hints.LastMsgAt, now); v != nil {
+			last = v
+			hintLast = true
+		}
+		if v := sanitizeCreatedAt(hints.CreatedAt, now); v != nil {
+			created = v
+			hintCreated = true
+		}
 	}
 
 	if last == nil || created == nil {
@@ -95,18 +109,22 @@ func (s *HistoryService) resolveRoomTimes(
 
 	// Mixed sources can produce inconsistent values (e.g. a stale hint LastMsgAt
 	// older than a Mongo-fetched CreatedAt). When the merged pair is internally
-	// inconsistent — created > last — refetch both from Mongo to get a coherent
-	// snapshot. If Mongo still reports created > last (genuinely empty room
-	// where lastMsgAt is unset and stays zero), normalise last = created so
-	// downstream walks see a non-empty range collapsed to the creation moment.
-	if !last.IsZero() && created.After(*last) {
-		l, c, gerr := s.rooms.GetRoomTimes(ctx, roomID)
-		if gerr != nil {
-			return time.Time{}, time.Time{}, fmt.Errorf("resolve room times for %s (consistency refetch): %w", roomID, gerr)
+	// inconsistent — created > last — refetch from Mongo IF at least one value
+	// came from a hint, so we get a coherent snapshot. When both already came
+	// from Mongo (no hints in play) the snapshot is by definition coherent
+	// already; an inverted result there means the room is genuinely empty
+	// (lastMsgAt unset), so we just normalise last = created.
+	if created.After(*last) {
+		if hintLast || hintCreated {
+			l, c, gerr := s.rooms.GetRoomTimes(ctx, roomID)
+			if gerr != nil {
+				return time.Time{}, time.Time{}, fmt.Errorf("resolve room times for %s (consistency refetch): %w", roomID, gerr)
+			}
+			last = &l
+			created = &c
 		}
-		last = &l
-		created = &c
-		if !last.IsZero() && created.After(*last) {
+		// Empty room or hint-refetch still inconsistent — collapse the range.
+		if created.After(*last) {
 			last = created
 		}
 	}

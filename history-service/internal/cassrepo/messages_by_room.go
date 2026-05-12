@@ -87,7 +87,7 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, befor
 	floorBucket := r.bucket.Of(floor)
 	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkDesc, r.bucket.Of(before), floorBucket)
 	if err != nil {
-		return Page[models.Message]{}, err
+		return Page[models.Message]{}, fmt.Errorf("get messages before: %w", err)
 	}
 
 	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
@@ -117,7 +117,7 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 	floorBucket := r.bucket.Of(since)
 	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkDesc, r.bucket.Of(before), floorBucket)
 	if err != nil {
-		return Page[models.Message]{}, err
+		return Page[models.Message]{}, fmt.Errorf("get messages between desc: %w", err)
 	}
 
 	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
@@ -164,7 +164,7 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 	ceilingBucket := r.bucket.Of(ceiling)
 	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkAsc, r.bucket.Of(after), ceilingBucket)
 	if err != nil {
-		return Page[models.Message]{}, err
+		return Page[models.Message]{}, fmt.Errorf("get messages after: %w", err)
 	}
 
 	queryFn := func(bucket int64, firstBucket bool) *gocql.Query {
@@ -194,7 +194,7 @@ func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, floor
 	ceilingBucket := r.bucket.Of(ceiling)
 	startBucket, initialPageState, err := startBucketFromCursor(pageReq, walkAsc, r.bucket.Of(floor), ceilingBucket)
 	if err != nil {
-		return Page[models.Message]{}, err
+		return Page[models.Message]{}, fmt.Errorf("get all messages asc: %w", err)
 	}
 
 	queryFn := func(bucket int64, _ bool) *gocql.Query {
