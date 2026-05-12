@@ -338,6 +338,54 @@ Phase 3 exit: README's "Non-goals" section is updated. Every disclaimed item is 
 - Printed-summary table layout: existing columns stay, new lines are *additions* (RUN QUALITY block at the top, published_acked beside published_queued, omission block in a new section). Operator tooling that greps `^P99` / `^MissingBroadcasts` keeps working.
 - CSV column set: unchanged for existing columns; if HDR sidecar drops raw samples by default, `--csv-raw=true` opts back into the old behavior.
 
+### Docker Compose v1 and v2 compatibility
+
+The harness must run unmodified on **both** `docker-compose` (v1, the Python tool, hyphenated CLI) and `docker compose` (v2, the Go plugin, space-delimited CLI). Many operator environments still ship v1 (some Ubuntu LTS, some RHEL with the legacy package), and some only have v2.
+
+**Design:**
+
+- `tools/loadgen/scripts/*.sh` must auto-detect: define a `dc()` shell function near the top of each script that tries `docker compose version` first, falls back to `docker-compose --version`, then sets `DC=...` accordingly. All `docker-compose` / `docker compose` invocations in scripts go through `dc`.
+- The `Makefile` under `tools/loadgen/deploy/` does the same. Add a `DC ?= $(shell ./scripts/detect-compose.sh)` line that runs a tiny helper script.
+- The `docker-compose.loadtest.yml` file uses only directives supported by BOTH v1 (Compose spec ≤ 3.8) and v2. Forbid: top-level `name:` (v2-only), `profiles:` (works in both ≥ recent versions, OK), `develop:` block (v2-only), `extends:` outside the spec.
+- A new `scripts/detect-compose.sh` helper exits 0 with the correct CLI on stdout, 1 with a clear error if neither is installed. It is sourced by every other script.
+- README documents that BOTH v1 and v2 work. The "Known issues" section calls out the few directives that differ (we avoid them; if a contributor adds one, CI catches it).
+- CI: add a single `make -C tools/loadgen/deploy validate-compose` target that runs `docker compose -f docker-compose.loadtest.yml config -q` AND (if `docker-compose` v1 is present) `docker-compose -f docker-compose.loadtest.yml config -q`. Fails the build if either rejects the file.
+
+### Operator UX — scripts and presets
+
+`tools/loadgen/scripts/` ships 13 helper scripts today. v2 keeps every existing script working (per the backwards-compatibility rule) and adds one per new scenario. Audit and update them as part of each phase:
+
+- **Phase 1 deliverable:** every existing script gains a `--quality-budget` env var (default sane) and the run output is filtered through a `summary-with-verdict` wrapper that surfaces the new RUN QUALITY block. Scripts gain `set -euo pipefail` if any are missing it, and a `--help` flag printing usage.
+- **Phase 2 deliverable:** scripts switch to the `dc()` shell function so they work under both compose v1 and v2. No interface changes for operators.
+- **Phase 3 deliverable:** one new `scripts/run-<scenario>.sh` for each new scenario from §3.1–§3.11. Naming pattern matches existing: `run-raw.sh`, `run-largeroom.sh`, `run-presence.sh`, `run-notif.sh`, `run-mutate.sh`, `run-subschurn.sh`, `run-auth.sh`, `run-federation.sh`, `run-chaos.sh`. Each follows the existing template (env-var knobs with defaults, sensible 30–120s duration, prints final summary + verdict).
+
+Two new umbrella scripts:
+
+- `scripts/run-trustworthy-baseline.sh` — runs the canonical "is this build sane?" set: messaging-pipeline + history-read + search-read + room-rpc at conservative rates, asserting RUN QUALITY=TRUSTED for each. Single-command full sanity check. Used by operators after a deploy.
+- `scripts/run-saturation-sweep.sh` — runs ramp scenarios for each read service to find each one's saturation knee, prints a per-service table at the end.
+
+### Documentation — `USAGE.md`
+
+The current `tools/loadgen/README.md` (233 lines) bundles operator usage, scenario reference, internal architecture, troubleshooting, and non-goals. It's grown too dense for a first-time reader.
+
+**Design:** split into two documents in the same folder.
+
+- `tools/loadgen/README.md` — short orientation (≤80 lines). What is loadgen, when to use it, where to find more, link to USAGE.md and to the design spec. Quick-start (5 commands). Single "Choose your scenario" table.
+- `tools/loadgen/USAGE.md` — comprehensive operator guide (the new doc, target ≤500 lines). Covers:
+  - **Prerequisites**: Docker (v1 OR v2), disk, RAM (3 GB minimum, 8 GB for `realistic`+ presets), open ports, host architecture caveats.
+  - **First run**: copy-paste flow from clone to a TRUSTED messaging-pipeline run. Verbatim commands, expected output.
+  - **The 4 + N scenarios**: per-scenario page with: what it loads, what the SUT must support, how to interpret the summary, common failure modes, recommended starting rates.
+  - **Presets** table: what each preset is for, how big, how long it takes, how much RAM.
+  - **Reading the summary**: the new RUN QUALITY block, every section line-by-line, what each column means, what TRUSTED / DEGRADED / UNTRUSTED imply for operator action.
+  - **Tuning knobs**: every `--abort-*`, `--ramp-*`, `--auto-warmup-*`, `--settle-*`, `--quality-*` flag with worked examples.
+  - **Live dashboards**: Grafana + Prometheus setup, the per-panel guide, what to alert on.
+  - **Common pitfalls**: a rewrite of the existing "Troubleshooting" section, plus new entries for v2 (`UNTRUSTED` verdict, sample-cap auto-sizing, settle timeouts, Docker compose v1/v2 detection failures).
+  - **Per-script reference**: every `scripts/run-*.sh` with a paragraph on what it does, what env vars it accepts, expected runtime, exit codes.
+  - **Recipes**: 5–10 worked end-to-end recipes for the most common operator workflows ("baseline against new SUT build," "find the saturation knee for history-service," "compare two builds across one machine," "investigate a p99 regression," etc.).
+- `tools/loadgen/CHANGES.md` — v2 changelog with migration notes for v1 invocations.
+
+USAGE.md is part of every phase's exit criterion: a phase is not done until the operator-visible surface it changed is documented.
+
 ### Test strategy
 
 - Phase 1: every new RunQuality rule and every new histogram gets a unit test. HDR migration is a refactor — existing collector tests should pass unchanged after adapter wiring.
