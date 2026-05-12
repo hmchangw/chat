@@ -37,6 +37,7 @@ import (
 // (overriding auth-service's local seed). bob's mark-read on siteA then
 // produces an outbox.siteA.to.siteB.subscription_read event.
 func TestFederation_CrossSiteSubscriptionRead(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	harness.CaptureLogs(t, stack, "room-worker-a", "inbox-worker-b")
 
@@ -153,6 +154,7 @@ func TestFederation_CrossSiteSubscriptionRead(t *testing.T) {
 // thread_subscription_upserted event for bob (cross-site member) so siteB
 // materializes bob's thread membership.
 func TestFederation_CrossSiteThreadSubscriptionUpserted(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	harness.CaptureLogs(t, stack,
 		"room-worker-a", "message-worker-a", "inbox-worker-b")

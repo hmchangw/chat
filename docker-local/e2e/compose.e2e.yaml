@@ -356,6 +356,7 @@ services:
       TLS_SKIP_VERIFY: "false"
       SITE_ID: siteA
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -382,6 +383,7 @@ services:
       VALKEY_KEY_GRACE_PERIOD: 24h
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -402,6 +404,7 @@ services:
       CHAT_BASE_URL: http://localhost:3000
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -425,6 +428,7 @@ services:
       MONGO_DB: chat
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -450,6 +454,7 @@ services:
       BOOTSTRAP_STREAMS: "true"
       ENCRYPTION_ENABLED: "false"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -491,6 +496,7 @@ services:
       # poisoned messages drop after one retry.
       MAX_DELIVER: "2"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -510,6 +516,7 @@ services:
       MONGO_DB: chat
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -536,6 +543,7 @@ services:
       VALKEY_ADDR: valkey-a:6379
       ENCRYPTION_ENABLED: "false"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -555,6 +563,7 @@ services:
       MONGO_DB: chat
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -574,6 +583,7 @@ services:
       MONGO_DB: chat
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -605,6 +615,7 @@ services:
       SEARCH_REQUEST_TIMEOUT: 10s
       SEARCH_METRICS_ADDR: ":9090"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -628,6 +639,7 @@ services:
       USER_ROOM_INDEX: user-room-sitea
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -888,6 +900,7 @@ services:
       TLS_SKIP_VERIFY: "false"
       SITE_ID: siteB
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -914,6 +927,7 @@ services:
       VALKEY_KEY_GRACE_PERIOD: 24h
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -934,6 +948,7 @@ services:
       CHAT_BASE_URL: http://localhost:3000
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -957,6 +972,7 @@ services:
       MONGO_DB: chat
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -982,6 +998,7 @@ services:
       BOOTSTRAP_STREAMS: "true"
       ENCRYPTION_ENABLED: "false"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -1001,6 +1018,7 @@ services:
       MONGO_DB: chat
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -1026,6 +1044,7 @@ services:
       VALKEY_ADDR: valkey-b:6379
       ENCRYPTION_ENABLED: "false"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -1045,6 +1064,7 @@ services:
       MONGO_DB: chat
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -1064,6 +1084,7 @@ services:
       MONGO_DB: chat
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
 
@@ -1093,6 +1114,7 @@ services:
       SEARCH_REQUEST_TIMEOUT: 10s
       SEARCH_METRICS_ADDR: ":9090"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     # No `ports:` block: site-B metrics are not host-exposed (avoids 9090
     # collision with site-A's search-service-a). Reach via docker network
     # from the harness if a future test needs it.
@@ -1119,5 +1141,6 @@ services:
       USER_ROOM_INDEX: user-room-siteb
       BOOTSTRAP_STREAMS: "true"
       OTEL_SDK_DISABLED: "true"
+      OTEL_PROPAGATION_ONLY: "true"
     volumes:
       - ./secrets/backend.creds:/etc/nats/backend.creds:ro
