@@ -236,7 +236,11 @@ func (h *Handler) processRoleUpdate(ctx context.Context, data []byte) error {
 		}
 		outboxSubj := subject.Outbox(h.siteID, user.SiteID, "role_updated")
 		payloadSeed := fmt.Sprintf("%s:%s:%s:%d", req.RoomID, req.Account, req.NewRole, req.Timestamp)
-		dedupID := outboxDedupID(ctx, user.SiteID, payloadSeed)
+		// Include NewRole in the dedupID so promote (owner) and demote (member)
+		// outbox events are distinct in JetStream's stream-level dedup window —
+		// otherwise a promote-then-demote fan-out under the same X-Request-ID
+		// would collapse to a single delivery to the destination site.
+		dedupID := outboxDedupID(ctx, user.SiteID, payloadSeed) + ":" + string(req.NewRole)
 		if err := h.publish(ctx, outboxSubj, outboxData, dedupID); err != nil {
 			return fmt.Errorf("publish outbox: %w", err)
 		}
@@ -855,18 +859,38 @@ func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) stri
 }
 
 // buildDMSubs returns the two DM subs (each names the counterpart, IsSubscribed=false).
-func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
-	return []*model.Subscription{
+// hssMs is the optional HistorySharedSince in epoch-ms; nil means unrestricted history.
+// When non-nil it's applied to BOTH subs so the cross-site replicated sub carries the
+// same HSS as the local one (per-org restricted-history DM forward-compat).
+func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time.Time, hssMs *int64) []*model.Subscription {
+	subs := []*model.Subscription{
 		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, false, acceptedAt),
 		newSub(idgen.GenerateUUIDv7(), other, room, nil, requester.Account, false, acceptedAt),
 	}
+	applyHistorySharedSince(subs, hssMs)
+	return subs
 }
 
 // buildBotDMSubs returns the two botDM subs (human IsSubscribed=true, bot IsSubscribed=false).
-func buildBotDMSubs(requester, bot *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
-	return []*model.Subscription{
+// hssMs follows the same semantics as buildDMSubs.
+func buildBotDMSubs(requester, bot *model.User, room *model.Room, acceptedAt time.Time, hssMs *int64) []*model.Subscription {
+	subs := []*model.Subscription{
 		newSub(idgen.GenerateUUIDv7(), requester, room, nil, bot.Account, true, acceptedAt),
 		newSub(idgen.GenerateUUIDv7(), bot, room, nil, requester.Account, false, acceptedAt),
+	}
+	applyHistorySharedSince(subs, hssMs)
+	return subs
+}
+
+// applyHistorySharedSince stamps the resolved HSS pointer (epoch-ms) onto each sub.
+// A nil pointer is a no-op so unrestricted DMs leave Subscription.HistorySharedSince zero.
+func applyHistorySharedSince(subs []*model.Subscription, hssMs *int64) {
+	if hssMs == nil {
+		return
+	}
+	t := time.UnixMilli(*hssMs).UTC()
+	for _, sub := range subs {
+		sub.HistorySharedSince = &t
 	}
 }
 
@@ -989,7 +1013,11 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 		return fmt.Errorf("get counterpart: %w", err)
 	}
 
-	subs := buildDMSubs(requester, other, room, acceptedAt)
+	// Thread HSS from the parent CreateRoomRequest into the per-user DM subs so
+	// any future per-org restricted-history DM policy survives cross-site replication
+	// via the outbox/inbox path (mirrors processAddMembers).
+	hssMs := historySharedSincePtr(req.History, req.Timestamp, req.RoomID)
+	subs := buildDMSubs(requester, other, room, acceptedAt, hssMs)
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
@@ -1005,7 +1033,8 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 		return fmt.Errorf("get bot user: %w", err)
 	}
 
-	subs := buildBotDMSubs(requester, bot, room, acceptedAt)
+	hssMs := historySharedSincePtr(req.History, req.Timestamp, req.RoomID)
+	subs := buildBotDMSubs(requester, bot, room, acceptedAt, hssMs)
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}

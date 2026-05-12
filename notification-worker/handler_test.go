@@ -49,12 +49,14 @@ func (m *mockPublisher) getRecords() []publishRecord {
 // --- Tests ---
 
 func TestHandleMessage_FanOutSkipsSender(t *testing.T) {
+	// Members must have Alert=true + IsSubscribed=true to receive
+	// notifications per the post-R3 preference-gating fix.
 	lookup := &stubMemberLookup{
 		subs: map[string][]model.Subscription{
 			"room-1": {
-				{ID: "s1", User: model.SubscriptionUser{ID: "alice", Account: "account-alice"}, RoomID: "room-1"},
-				{ID: "s2", User: model.SubscriptionUser{ID: "bob", Account: "account-bob"}, RoomID: "room-1"},
-				{ID: "s3", User: model.SubscriptionUser{ID: "carol", Account: "account-carol"}, RoomID: "room-1"},
+				{ID: "s1", User: model.SubscriptionUser{ID: "alice", Account: "account-alice"}, RoomID: "room-1", Alert: true, IsSubscribed: true},
+				{ID: "s2", User: model.SubscriptionUser{ID: "bob", Account: "account-bob"}, RoomID: "room-1", Alert: true, IsSubscribed: true},
+				{ID: "s3", User: model.SubscriptionUser{ID: "carol", Account: "account-carol"}, RoomID: "room-1", Alert: true, IsSubscribed: true},
 			},
 		},
 	}
@@ -153,7 +155,7 @@ func TestHandleMessage_SoleMember(t *testing.T) {
 	lookup := &stubMemberLookup{
 		subs: map[string][]model.Subscription{
 			"room-solo": {
-				{ID: "s1", User: model.SubscriptionUser{ID: "alice", Account: "account-alice"}, RoomID: "room-solo"},
+				{ID: "s1", User: model.SubscriptionUser{ID: "alice", Account: "account-alice"}, RoomID: "room-solo", Alert: true, IsSubscribed: true},
 			},
 		},
 	}
@@ -179,6 +181,46 @@ func TestHandleMessage_SoleMember(t *testing.T) {
 	records := pub.getRecords()
 	if len(records) != 0 {
 		t.Errorf("expected 0 notifications when sender is sole member, got %d", len(records))
+	}
+}
+
+// TestHandleMessage_RespectsPreferences asserts the post-R3 gating
+// rules: a subscriber with Alert=false OR IsSubscribed=false is
+// skipped, even if they're not the sender. Catches the previous
+// silent broadcast-to-all-members bug.
+func TestHandleMessage_RespectsPreferences(t *testing.T) {
+	lookup := &stubMemberLookup{
+		subs: map[string][]model.Subscription{
+			"room-1": {
+				// Sender; never notified regardless of prefs.
+				{ID: "s1", User: model.SubscriptionUser{ID: "alice", Account: "account-alice"}, RoomID: "room-1", Alert: true, IsSubscribed: true},
+				// Alert=true, IsSubscribed=true -> SHOULD notify.
+				{ID: "s2", User: model.SubscriptionUser{ID: "bob", Account: "account-bob"}, RoomID: "room-1", Alert: true, IsSubscribed: true},
+				// Alert=false (default) -> SHOULD NOT notify.
+				{ID: "s3", User: model.SubscriptionUser{ID: "carol", Account: "account-carol"}, RoomID: "room-1", Alert: false, IsSubscribed: true},
+				// IsSubscribed=false ("left the conversation") -> SHOULD NOT notify.
+				{ID: "s4", User: model.SubscriptionUser{ID: "dave", Account: "account-dave"}, RoomID: "room-1", Alert: true, IsSubscribed: false},
+			},
+		},
+	}
+	pub := &mockPublisher{}
+	h := NewHandler(lookup, pub)
+
+	evt := model.MessageEvent{
+		SiteID:  "site-a",
+		Message: model.Message{ID: "m1", RoomID: "room-1", UserID: "alice", Content: "hi"},
+	}
+	data, _ := json.Marshal(evt)
+	if err := h.HandleMessage(context.Background(), data); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	records := pub.getRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 notification (only bob), got %d", len(records))
+	}
+	if records[0].subject != "chat.user.account-bob.notification" {
+		t.Errorf("expected bob's subject; got %s", records[0].subject)
 	}
 }
 

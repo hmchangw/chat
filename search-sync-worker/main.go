@@ -307,10 +307,12 @@ func runConsumer(
 			lastFlush = time.Now()
 			continue
 		}
-		fetchCount := fetchBatchSize
-		if fetchCount > remaining {
-			fetchCount = remaining
-		}
+		// Defensively clamp to [0, fetchBatchSize] before handing to Fetch —
+		// JetStream's Fetch behavior is undefined for non-positive counts, so
+		// even though the early-continue above already filters remaining<=0,
+		// we restate the invariant at the call site so a future refactor of
+		// the guard above can't accidentally pass a bad value through.
+		fetchCount := min(fetchBatchSize, max(0, remaining))
 
 		batch, err := cons.Fetch(fetchCount, jetstream.FetchMaxWait(time.Second))
 		if err != nil {

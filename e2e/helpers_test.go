@@ -3,15 +3,19 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
+	"github.com/gocql/gocql"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -179,6 +183,34 @@ func awaitMessage(t *testing.T, sub *nats.Subscription, timeout time.Duration) *
 	msg, err := sub.NextMsg(timeout)
 	require.NoError(t, err, "no message on %s within %s", sub.Subject, timeout)
 	return msg
+}
+
+// awaitMessageByID polls Cassandra's messages_by_id table until a row with
+// the given message_id appears. Use this INSTEAD of awaitCanonicalAcked
+// when the test runs under t.Parallel() on a shared canonical durable
+// (per testing-automation reviewer): the seq-based wait races because
+// AckFloor advances on whichever message finishes first, so a parallel
+// sibling's message-worker ack can satisfy the wait before YOUR message
+// is in Cassandra.
+//
+// Polls the dedup view directly: PRIMARY KEY (message_id, created_at)
+// returns exactly one row when the write has landed. Times out after
+// 15s — typical observed latency is sub-second.
+func awaitMessageByID(t *testing.T, ctx context.Context, sess *gocql.Session, msgID string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		var count int
+		if err := sess.Query(
+			`SELECT COUNT(*) FROM chat.messages_by_id WHERE message_id = ?`,
+			msgID,
+		).WithContext(ctx).Scan(&count); err != nil {
+			return false
+		}
+		return count == 1
+	}, 15*time.Second, 100*time.Millisecond,
+		"message_id=%s never appeared in chat.messages_by_id within 15s "+
+			"(canonical worker may have failed to write, or the message never reached the worker)",
+		msgID)
 }
 
 // awaitSubscription waits until the named account has a subscription record

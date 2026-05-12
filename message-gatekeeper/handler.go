@@ -74,8 +74,15 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 				slog.Error("failed to nack message", "error", err)
 			}
 		} else {
-			// Validation error: reply with error and ack.
-			h.sendReply(ctx, account, msg.Data(), natsutil.MarshalError(err.Error()))
+			// Validation error: reply with error and ack. If reply-send itself
+			// fails (transient NATS issue), NAK so JetStream redelivers and
+			// the client gets a second chance to learn the outcome.
+			if replyErr := h.sendReply(ctx, account, msg.Data(), natsutil.MarshalError(err.Error())); replyErr != nil {
+				if err := msg.Nak(); err != nil {
+					slog.Error("failed to nack message", "error", err)
+				}
+				return
+			}
 			if err := msg.Ack(); err != nil {
 				slog.Error("failed to ack message", "error", err)
 			}
@@ -83,7 +90,14 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
-	h.sendReply(ctx, account, msg.Data(), replyData)
+	// Success path: if the reply-send fails, NAK so the client retry path
+	// fires rather than silently swallowing the success notification.
+	if replyErr := h.sendReply(ctx, account, msg.Data(), replyData); replyErr != nil {
+		if err := msg.Nak(); err != nil {
+			slog.Error("failed to nack message", "error", err)
+		}
+		return
+	}
 
 	if err := msg.Ack(); err != nil {
 		slog.Error("failed to ack message", "err", err)
@@ -91,21 +105,27 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 }
 
 // sendReply extracts the requestID from the raw message data and publishes the
-// reply payload to the user's response subject.
-func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte, replyData []byte) {
+// reply payload to the user's response subject. Returns an *infraError if the
+// reply publish itself fails so the caller can NAK and let JetStream redeliver.
+// Returns nil when there is no requestID (nothing to reply to) or when the
+// rawData cannot be unmarshalled (the client never supplied a valid request,
+// so there is no one to redeliver to).
+func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte, replyData []byte) error {
 	var req model.SendMessageRequest
 	if err := json.Unmarshal(rawData, &req); err != nil {
 		slog.Error("unmarshal request for reply", "error", err)
-		return
+		return nil
 	}
 	if req.RequestID == "" {
-		return
+		return nil
 	}
 	respSubj := subject.UserResponse(account, req.RequestID)
 	replyMsg := natsutil.NewMsg(ctx, respSubj, replyData)
 	if err := h.reply(ctx, replyMsg); err != nil {
 		slog.Error("reply to client failed", "error", err, "subject", respSubj)
+		return &infraError{cause: fmt.Errorf("reply to client on subject %s: %w", respSubj, err)}
 	}
+	return nil
 }
 
 // processMessage validates a SendMessageRequest and publishes a MessageEvent to MESSAGES_CANONICAL.

@@ -134,21 +134,119 @@ Test-file helpers in `helpers_test.go`:
 - `registerRoomCleanup` -- per-test cleanup hook that deletes a room's
   rows from all listed sites' mongos at test end.
 
-## Adding a new test
+## Adding a new test -- checklist
 
-1. Pick the right file (or add a new one) per the table above.
-2. Default to single-site (`stack.SiteA`) unless the assertion needs
-   federation.
-3. Create a per-test room with `subject.RoomCreate(...)` and register
-   cleanup with `registerRoomCleanup`.
-4. Authenticate users via `site.Authenticate(t, ctx, "alice"|"bob")`.
-   Don't reuse `Identity` across tests.
-5. If your test queries Cassandra/ES/Mongo directly, prefer the harness
-   methods over building your own client.
-6. For async chains, never sleep -- use `awaitCanonicalAcked` /
-   `require.Eventually`.
-7. Add `t.Parallel()` if the test is single-site + per-test-room + does
-   not mutate shared per-account state (valkey, ES user-room).
+Work top-to-bottom. Each item has a "trap" callout where copy-paste from
+a sibling test commonly omits it.
+
+- [ ] **File has `//go:build e2e` tag on line 1.** Required on *every*
+  file in this package. Without it the file gets compiled into the
+  default `go test ./...` run, which has no compose stack and will
+  panic during `TestMain`. Trap: copy-pasting a new file from
+  `helpers_test.go` is safe (it has the tag); creating one from
+  scratch in your editor often forgets it.
+
+- [ ] **Pick the right file (or add a new one)** per the test categories
+  table above. Adding a federation case? It goes in a
+  `federation_*_test.go` file, not in `message_send_test.go`.
+
+- [ ] **Default to single-site (`stack.SiteA`)** unless the assertion
+  genuinely needs cross-site behaviour. Federation tests are slower
+  and serial (see below).
+
+- [ ] **Authenticate users via `site.Authenticate(t, ctx, "alice"|"bob")`.**
+  Don't reuse an `Identity` across tests -- `Authenticate` returns a
+  fresh per-call NATS connection (different nkey each time) so
+  parallel tests can share the same realm user without colliding.
+
+- [ ] **Create a per-test room with `subject.RoomCreate(...)`**, then
+  immediately register cleanup with `registerRoomCleanup(t, sites,
+  roomID)`. Cleanup hits Mongo + Cassandra + ES + Valkey best-effort;
+  see "What `registerRoomCleanup` cleans" below for what it does and
+  doesn't reach.
+
+- [ ] **Trap: `CreateRoom` reply is "request accepted", NOT "data is
+  durable".** After `subject.RoomCreate` returns, you MUST call
+  `awaitSubscription(t, ctx, db, account, roomID)` for every account
+  that will publish or query. `CreateRoomReply` fires before
+  room-worker has persisted the subscription rows; sending to the
+  room before this point trips message-gatekeeper's "user is not
+  subscribed" check and the test will fail with a confusing
+  authorisation error.
+
+- [ ] **Use the right reply helper for the subject:**
+  - `requestReply(conn, subj, req, timeout, into)` -- classic
+    synchronous NATS request/reply. Use for room-service's
+    create/list/get RPCs, history-service.LoadHistory, search-service,
+    and every `chat.user.{account}.request.…` subject.
+  - `sendAndAwaitReply(t, conn, account, requestID, sendSubj, payload,
+    timeout)` -- use ONLY for the `msg.send` path
+    (`chat.user.{account}.room.{roomID}.{siteID}.msg.send`).
+    `msg.send` is JS-published with an async out-of-band reply on
+    `subject.UserResponse`; classic RR will time out against it.
+
+- [ ] **If your test queries Cassandra/ES/Mongo directly**, prefer the
+  harness methods (`stack.SiteA.MongoDB()`,
+  `stack.SiteA.CassandraSession()`, etc.) over building your own
+  client. They share connection pools and pick up the compose stack's
+  port allocations.
+
+- [ ] **For async chains, never `time.Sleep` -- use polled waits.** Pick
+  the right one:
+  - `awaitDurableReady` -- consumer exists on the stream
+  - `awaitMessageByID(t, ctx, sess, msgID)` -- Cassandra row landed
+    for a SPECIFIC message_id. **Use this in any `t.Parallel()`
+    test.** It hits the `messages_by_id` dedup view (PK is
+    message_id) so each parallel sibling waits for its own row.
+  - `awaitCanonicalAcked(t, ctx, js, stream, durable, publishSeq)`
+    -- consumer ack floor reached `publishSeq`. **DO NOT use this
+    under `t.Parallel()` on the canonical durable.** The seq-based
+    wait races: AckFloor advances on whichever message finishes
+    first, so a parallel sibling's ack can satisfy your wait
+    before YOUR message is in Cassandra. Reserve this for serial
+    tests asserting worker-lifecycle behaviour.
+  - `require.Eventually` -- generic poll for everything else.
+
+- [ ] **Decide on `t.Parallel()`** -- see "When NOT to t.Parallel()"
+  immediately below.
+
+### When NOT to `t.Parallel()`
+
+The Parallelism table above is the source of truth, but the easy traps
+when copy-pasting a sibling test:
+
+- **Federation tests MUST NOT `t.Parallel()`.** Every
+  `federation_*_test.go` test (including `zz_federation_catchup_test.go`)
+  shares inbox-worker-b consumer state and the cross-site
+  OUTBOX→INBOX gateway sourcing. Running them in parallel introduces
+  15s+ timeouts on the shared gateway flow even when each test owns
+  its own room. The test categories table marks these "no" -- when
+  you add a new federation test, copy the *structure* from a sibling
+  but DROP the `t.Parallel()` call if you added it.
+- **Tests that mutate shared per-account state must NOT `t.Parallel()`.**
+  That means anything touching alice/bob's valkey restricted-rooms
+  cache or her ES user-room doc -- search tests are the canonical
+  example.
+- **Tests that stop/start a worker container must NOT `t.Parallel()`.**
+  Catchup is the canonical example; any future worker-lifecycle test
+  follows the same rule.
+
+If your test is single-site, creates its own room, registers cleanup,
+and touches no shared per-account state, `t.Parallel()` is safe.
+
+### What `registerRoomCleanup` cleans
+
+| Backend | What it deletes | Notes |
+|---------|-----------------|-------|
+| Mongo | `subscriptions`, `rooms`, `room_members`, `thread_subscriptions`, `thread_rooms` per site | Matches `roomId` / `rid` / `_id`. |
+| Cassandra | `chat.messages_by_room WHERE room_id = ?`, `chat.thread_messages_by_room WHERE room_id = ?` | The `messages_by_id` dedup view CANNOT be cleaned by room (its PK is `message_id`); rows leak there permanently. Tests that count `messages_by_id` rows globally will drift. |
+| Elasticsearch | Best-effort delete-by-query `{"term":{"roomId":"<rid>"}}` against `messages-*` and `user-room-*` indices | Logs and continues on error. |
+| Valkey | Best-effort `DEL room:<rid>:key` and `DEL room:<rid>:key:prev` | Room-key state for encrypted rooms. |
+
+All Cassandra / ES / Valkey steps are best-effort: they log and
+continue on error so a failing teardown can't mask the actual test
+failure. If you add new per-room state in any backend, extend
+`registerRoomCleanup` in the same PR.
 
 ## When tests fail
 

@@ -37,7 +37,13 @@ type config struct {
 	MongoPassword        string           `env:"MONGO_PASSWORD"            envDefault:""`
 	MaxWorkers           int              `env:"MAX_WORKERS"               envDefault:"100"`
 	DurableName          string           `env:"DURABLE_NAME"              envDefault:"broadcast-worker"`
-	MaxDeliver           int              `env:"MAX_DELIVER"               envDefault:"-1"`
+	// MaxDeliver caps redelivery attempts. Default 5 (was -1 =
+	// unlimited; performance review flagged that the prior default
+	// let a single poison message NAK forever and eventually starve
+	// every in-flight slot). Set to -1 explicitly if your environment
+	// can't tolerate ANY drop and you have monitoring for stuck
+	// messages.
+	MaxDeliver           int              `env:"MAX_DELIVER"               envDefault:"5"`
 	UserCacheSize        int              `env:"USER_CACHE_SIZE"           envDefault:"10000"`
 	UserCacheTTL         time.Duration    `env:"USER_CACHE_TTL"            envDefault:"5m"`
 	ValkeyAddr           string           `env:"VALKEY_ADDR"`
@@ -153,19 +159,50 @@ func main() {
 	sem := make(chan struct{}, cfg.MaxWorkers)
 	var wg sync.WaitGroup
 
+	// pumpDone signals shutdown to release any goroutine blocked on
+	// the semaphore acquire. Without it, if shutdown triggers while
+	// the pump is waiting on a saturated sem, `iter.Stop` returns but
+	// the pump never exits -- `nc.Drain` then blocks forever (per
+	// Go-expert review).
+	pumpDone := make(chan struct{})
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			msgCtx, msg, err := iter.Next()
 			if err != nil {
 				return
 			}
-			sem <- struct{}{}
+			// wg.Add(1) BEFORE the sem send so a shutdown that races
+			// the acquire still has the outer wg accounted for. The
+			// select lets us bail on shutdown rather than block forever.
 			wg.Add(1)
+			select {
+			case sem <- struct{}{}:
+			case <-pumpDone:
+				wg.Done()
+				_ = msg.Nak() // best-effort; JS redelivers after restart
+				return
+			}
 			go func() {
 				defer func() {
 					<-sem
 					wg.Done()
 				}()
+				// Recover handler panics so a poison message can't crash
+				// the pump or leak its sem slot. NAK so JetStream
+				// redelivers up to MAX_DELIVER, then drops.
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("handler panic recovered",
+							"panic", r, "subject", msg.Subject())
+						if err := msg.Nak(); err != nil {
+							slog.Error("nak after panic failed", "error", err)
+						}
+					}
+				}()
+
 				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
 				if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
 					slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
@@ -186,6 +223,9 @@ func main() {
 	hooks := []func(context.Context) error{
 		func(ctx context.Context) error {
 			iter.Stop()
+			// Signal the pump that we're shutting down so any
+			// goroutine blocked on `sem <-` releases its wg slot.
+			close(pumpDone)
 			return nil
 		},
 		func(ctx context.Context) error {

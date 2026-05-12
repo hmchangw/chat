@@ -82,9 +82,6 @@ func setupRoomWithOneMessage(t *testing.T) (roomID, msgID string) {
 	js := site.JetStream(t)
 	canonical := stream.MessagesCanonical(site.SiteID).Name
 	awaitDurableReady(t, ctx, js, canonical, "message-worker")
-	preInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq := preInfo.CachedInfo().State.LastSeq
 
 	msgID = idgen.GenerateMessageID()
 	reqID := idgen.GenerateRequestID()
@@ -101,7 +98,12 @@ func setupRoomWithOneMessage(t *testing.T) (roomID, msgID string) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+1)
+	// Wait by msgID, not by canonical seq -- parallel siblings'
+	// messages can satisfy a seq-based wait before THIS message lands
+	// in Cassandra (per testing-automation review).
+	sess := site.CassandraSession(t)
+	defer sess.Close()
+	awaitMessageByID(t, ctx, sess, msgID)
 	return roomID, msgID
 }
 
@@ -139,12 +141,6 @@ func TestSubject_MsgNext(t *testing.T) {
 
 	// Second message in the same room, so we have two messages to
 	// discriminate via the After cursor.
-	js := site.JetStream(t)
-	canonical := stream.MessagesCanonical(site.SiteID).Name
-	preInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq := preInfo.CachedInfo().State.LastSeq
-
 	msgID2 := idgen.GenerateMessageID()
 	reqID2 := idgen.GenerateRequestID()
 	require.NoError(t, sendAndAwaitReply(
@@ -160,7 +156,10 @@ func TestSubject_MsgNext(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+1)
+	// Wait by msgID (parallel-safe; see setupRoomWithOneMessage).
+	sess2 := site.CassandraSession(t)
+	defer sess2.Close()
+	awaitMessageByID(t, ctx, sess2, msgID2)
 
 	// Find msg1's createdAt via the history endpoint so we can pass it as
 	// the After cursor.

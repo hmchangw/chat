@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gocql/gocql"
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -195,19 +196,23 @@ func TestChaos_CassandraMidWriteRecovers(t *testing.T) {
 	cass.Start(t, ctx)
 	t.Logf("cass-a restarted")
 
-	// Wait for cass-a to be reachable (the harness's
-	// CassandraSession() will retry connect a few times). Reuse the
-	// existing CassandraSession path -- it'll fail and we retry.
+	// Wait for cass-a to be reachable. Probes directly via gocql (NOT
+	// site.CassandraSession, which calls require.NoError and triggers
+	// runtime.Goexit on connect failure -- recover() can't catch Goexit,
+	// so the previous defer-recover() was misleading and broke the
+	// Eventually retry loop).
 	require.Eventually(t, func() bool {
-		// Open fresh session every iteration so a cached client
-		// doesn't mask the down state.
-		sessCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		_ = sessCtx
-		defer func() { recover() }() // testify.require panics inside session
-		s := site.CassandraSession(t)
+		cluster := gocql.NewCluster("localhost:19042")
+		cluster.Keyspace = "chat"
+		cluster.Consistency = gocql.LocalQuorum
+		cluster.ConnectTimeout = 2 * time.Second
+		cluster.Timeout = 2 * time.Second
+		s, err := cluster.CreateSession()
+		if err != nil {
+			return false
+		}
 		defer s.Close()
-		return s.Query("SELECT now() FROM system.local").Exec() == nil
+		return s.Query("SELECT now() FROM system.local").WithContext(ctx).Exec() == nil
 	}, 60*time.Second, 2*time.Second, "cass-a never healthy after restart")
 
 	// Post-blip: a new send must complete and land in cassandra.

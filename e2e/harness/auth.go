@@ -94,6 +94,72 @@ func mustSeed(t *testing.T, kp nkeys.KeyPair) string {
 	return string(seed)
 }
 
+// AuthenticateE is an error-returning variant of Authenticate suitable for
+// load tests and other code paths that invoke authentication from
+// non-test goroutines. testing.T.FailNow (used by require.NoError inside
+// Authenticate) calls runtime.Goexit, not panic -- which (a) is undefined
+// when called off the main test goroutine, and (b) cannot be recover()'d.
+// Callers that legitimately want to count failures rather than fail-fast
+// must use this variant.
+//
+// NOTE: the returned Identity's conn is closed via t.Cleanup, so callers
+// must still keep t alive until the test finishes.
+func (s SiteEndpoints) AuthenticateE(t *testing.T, ctx context.Context, account string) (*Identity, error) {
+	kc := keycloak.NewClient(s.KeycloakURL, "chatapp")
+	ssoToken, err := kc.AccessToken(ctx, "nats-chat", account, "password")
+	if err != nil {
+		return nil, fmt.Errorf("keycloak password grant for %s on %s: %w", account, s.SiteID, err)
+	}
+
+	kp, err := nkeys.CreateUser()
+	if err != nil {
+		return nil, fmt.Errorf("create user nkey: %w", err)
+	}
+	pub, err := kp.PublicKey()
+	if err != nil {
+		return nil, fmt.Errorf("nkey public key: %w", err)
+	}
+
+	authClient := s.HTTPClient(t)
+	var resp struct {
+		NATSJWT string `json:"natsJwt"`
+	}
+	httpResp, err := authClient.R().
+		SetContext(ctx).
+		SetBody(map[string]string{
+			"ssoToken":      ssoToken,
+			"natsPublicKey": pub,
+		}).
+		SetResult(&resp).
+		Post("/auth")
+	if err != nil {
+		return nil, fmt.Errorf("POST /auth on %s: %w", s.SiteID, err)
+	}
+	if httpResp.IsError() {
+		return nil, fmt.Errorf("auth-service rejected: %d %s", httpResp.StatusCode(), httpResp.String())
+	}
+	if resp.NATSJWT == "" {
+		return nil, fmt.Errorf("auth-service returned empty natsJwt")
+	}
+
+	seed, err := kp.Seed()
+	if err != nil {
+		return nil, fmt.Errorf("nkey seed: %w", err)
+	}
+	conn, err := nats.Connect(s.NATSURL, nats.UserJWTAndSeed(resp.NATSJWT, string(seed)))
+	if err != nil {
+		return nil, fmt.Errorf("user-jwt nats connect on %s: %w", s.SiteID, err)
+	}
+	t.Cleanup(conn.Close)
+
+	return &Identity{
+		Account: account,
+		NKey:    kp,
+		NATSJWT: resp.NATSJWT,
+		conn:    conn,
+	}, nil
+}
+
 // MintEphemeralUser creates a fresh Keycloak realm user (and registers
 // cleanup to delete it at test-end). The returned account name can be
 // passed to Authenticate to obtain a NATS conn scoped to a per-test
@@ -124,9 +190,21 @@ func (s SiteEndpoints) MintEphemeralUser(t *testing.T, ctx context.Context) stri
 	adminTok, err := adminKC.AccessToken(ctx, "admin-cli", "admin", "admin")
 	require.NoError(t, err, "obtain Keycloak master-realm admin token")
 
-	username := ephemeralUsername()
-	require.NoError(t, kc.CreateUser(ctx, adminTok, username, "password"),
-		"create ephemeral user %s on %s", username, s.SiteID)
+	// Retry-once on 409 collision (per bug-finder review): with 16 hex
+	// chars the keyspace is 2^64 so collision is astronomical, but a
+	// stale user from a crashed prior run can still be there.
+	var username string
+	for attempt := 0; attempt < 2; attempt++ {
+		username = ephemeralUsername()
+		err := kc.CreateUser(ctx, adminTok, username, "password")
+		if err == nil {
+			break
+		}
+		if strings.Contains(err.Error(), "409") && attempt == 0 {
+			continue // retry with a fresh username
+		}
+		t.Fatalf("create ephemeral user %s on %s: %v", username, s.SiteID, err)
+	}
 
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -176,12 +254,12 @@ func (s SiteEndpoints) MintEphemeralUserAs(t *testing.T, ctx context.Context, us
 // is a single-edit change.
 func (s SiteEndpoints) Realm() string { return "chatapp" }
 
-// ephemeralUsername returns a short unique username. 8 hex chars gives
-// 2^32 keyspace; collisions are statistically negligible for a test
-// suite that mints at most a few hundred users across the lifetime of
-// a long-lived dev stack.
+// ephemeralUsername returns a short unique username. 16 hex chars gives
+// 2^64 keyspace (bumped from 4 bytes / 2^32 per bug-finder review:
+// birthday-paradox 1% collision around ~9k usernames accumulated across
+// long-lived REUSE-stack runs, which is realistic).
 func ephemeralUsername() string {
-	var b [4]byte
+	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return fmt.Sprintf("u-%x", b)
 }

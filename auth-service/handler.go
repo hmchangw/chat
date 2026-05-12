@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,14 @@ import (
 
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 )
+
+// accountNameRE is the strict allowlist for account names that get
+// interpolated into NATS subject permissions in signNATSJWT. Any character
+// outside this set (notably `*`, `>`, `.`, whitespace, control chars) would
+// either widen the subject scope past the user's own namespace
+// (e.g. account="alice*" → "chat.user.alice*.>" matches every user starting
+// with "alice") or otherwise malform the subject. We reject before signing.
+var accountNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // TokenValidator validates an SSO token and returns OIDC claims.
 type TokenValidator interface {
@@ -102,6 +111,12 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		account = claims.Name
 	}
 
+	if !accountNameRE.MatchString(account) {
+		slog.Warn("rejected account with disallowed characters", "account", account)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account name"})
+		return
+	}
+
 	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, account)
 	if err != nil {
 		slog.Error("nats jwt signing failed", "error", err, "account", account)
@@ -139,6 +154,12 @@ func (h *AuthHandler) handleDevAuth(c *gin.Context) {
 
 	if !nkeys.IsValidPublicUserKey(req.NATSPublicKey) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid natsPublicKey format"})
+		return
+	}
+
+	if !accountNameRE.MatchString(req.Account) {
+		slog.Warn("rejected dev account with disallowed characters", "account", req.Account)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account name"})
 		return
 	}
 

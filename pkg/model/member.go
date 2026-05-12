@@ -142,10 +142,11 @@ type CreateRoomRequest struct {
 	ResolvedUsers []string `json:"resolvedUsers,omitempty" bson:"resolvedUsers,omitempty"`
 	ResolvedOrgs  []string `json:"resolvedOrgs,omitempty"  bson:"resolvedOrgs,omitempty"`
 
-	RoomID           string `json:"roomId"            bson:"roomId"`
-	RequesterID      string `json:"requesterId"       bson:"requesterId"`
-	RequesterAccount string `json:"requesterAccount"  bson:"requesterAccount"`
-	Timestamp        int64  `json:"timestamp"         bson:"timestamp"`
+	RoomID           string        `json:"roomId"            bson:"roomId"`
+	RequesterID      string        `json:"requesterId"       bson:"requesterId"`
+	RequesterAccount string        `json:"requesterAccount"  bson:"requesterAccount"`
+	Timestamp        int64         `json:"timestamp"         bson:"timestamp"`
+	History          HistoryConfig `json:"history,omitempty" bson:"history,omitempty"`
 }
 
 // SyncCreateDMRequest is the request payload for chat.server.request.room.{siteID}.create.dm.
