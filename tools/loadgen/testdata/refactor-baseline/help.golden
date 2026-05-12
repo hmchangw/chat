@@ -1,0 +1,1 @@
+usage: loadgen <seed|run|teardown> [flags]

@@ -1,0 +1,59 @@
+Usage of run:
+  -abort-error-sustain duration
+    	sustain window for the error-rate abort threshold (default 10s)
+  -abort-on-error-pct float
+    	abort the run if error rate stays over this fraction (0..1) for --abort-error-sustain; 0 disables
+  -abort-on-p99-ms int
+    	abort the run if the p99 of the abort window's latency stays over this for --abort-p99-sustain; 0 disables
+  -abort-p99-sustain duration
+    	sustain window for the p99 abort threshold (default 30s)
+  -abort-window-max-samples int
+    	S3: cap on the abort/progress latency ring buffer; 0 disables the cap (legacy). Bounds the per-tick percentile sort under sustained high publish rates. WARNING: when peak_rps × max(abort-*-sustain) > cap, retention is compressed below the sustain interval and the abort watcher cannot fire; it emits a slog.Warn 'abort watcher deafened by sample cap' so the silent no-fire is detectable. Size cap >= peak_rps × max_sustain to keep the watcher functional. (default 10000)
+  -auto-warmup
+    	run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them (default true)
+  -auto-warmup-rate int
+    	publish rate (rps) during the auto-warmup phase (default 200)
+  -connections int
+    	number of NATS data connections (per-user fan-out); 1 reuses the observer connection (default 1)
+  -csv string
+    	optional csv output path
+  -duration duration
+    	run duration (default 1m0s)
+  -inject string
+    	injection point: frontdoor|canonical (default "frontdoor")
+  -js-async-max-pending int
+    	S5: max in-flight async JetStream publishes for canonical inject; 0 falls back to sync js.PublishMsg (legacy / bisection) (default 4096)
+  -liveness-failures int
+    	consecutive liveness probe failures required to abort the run (default 3)
+  -liveness-interval duration
+    	mid-run SUT liveness probe interval; 0 disables. Default 10s × 3 failures = 30s detection so the watcher can fire on the default 60s --duration. (default 10s)
+  -liveness-timeout duration
+    	per-probe timeout. Aligned with --request-timeout default so a slow-but-up SUT trips the saturation watcher (exit 2) before the liveness watcher (exit 3). (default 5s)
+  -nats-creds-dir string
+    	directory of *.creds files; data conns rotate through them (C2 prep — auth-service must be in compose stack for SUT-side validation)
+  -preset string
+    	preset name
+  -progress-interval duration
+    	live progress log interval; 0 disables (default 10s)
+  -ramp-duration duration
+    	time to climb from --ramp-from to --ramp-to
+  -ramp-from int
+    	starting rate (rps) for a ramped run; 0 disables ramping
+  -ramp-shape string
+    	ramp curve: linear|exponential (default "linear")
+  -ramp-to int
+    	ending rate (rps) for a ramped run; 0 disables ramping
+  -rate int
+    	target msgs/sec (default 500)
+  -readiness-timeout duration
+    	deadline for the readiness probe to succeed (default 30s)
+  -request-timeout duration
+    	per-request timeout for read scenarios (default 5s)
+  -scenario string
+    	scenario: messaging-pipeline|history-read|search-read|room-rpc (default "messaging-pipeline")
+  -seed int
+    	RNG seed (default 42)
+  -skip-readiness
+    	skip the pre-run readiness probe for read scenarios
+  -warmup duration
+    	warmup window (samples discarded) (default 10s)
