@@ -692,7 +692,8 @@ func computeActualRate(scenario string, inject InjectMode, measured time.Duratio
 	secs := measured.Seconds()
 	if scenarioNeedsReadiness(scenario) {
 		// Read scenarios: count post-warmup requests across all kinds for
-		// this scenario. RequestStats are already DiscardBefore-trimmed.
+		// this scenario. RequestStats returns only "measured"-phase cells;
+		// warmup samples are excluded by phase label, not by DiscardBefore.
 		total := 0
 		for _, rs := range requestStats {
 			if rs.Scenario == scenario {

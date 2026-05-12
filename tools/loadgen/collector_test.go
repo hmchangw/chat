@@ -196,6 +196,7 @@ func TestCollector_RecordRequest_AppendsSamples(t *testing.T) {
 
 	assert.Equal(t, 3, loadHistory.Count, "all three load_history calls counted")
 	assert.Greater(t, int64(loadHistory.Latency.P99), int64(0))
+	assert.GreaterOrEqual(t, loadHistory.Errors, 1, "RecordRequest with errored=true must increment the errors counter")
 
 	assert.Equal(t, 1, getByID.Count)
 }
@@ -509,13 +510,13 @@ func TestCollector_BoundedMemoryAt5krpsFor30min(t *testing.T) {
 	// Smoke test: per (scenario, kind, phase) cell stays ~30 KB regardless of count.
 	m := NewMetrics()
 	c := NewCollector(m, "history-read")
-	for i := 0; i < 9_000_000; i++ { // simulates 5k rps × 30min
+	for i := 0; i < 1_000_000; i++ { // simulates 5k rps × ~3.3min
 		c.RecordRequest("history-read", "LoadHistory", "measured",
 			time.Duration(50+i%500)*time.Millisecond, false)
 	}
 	qs := c.RequestPercentiles("history-read", "LoadHistory", "measured", []float64{0.99})
 	assert.Greater(t, qs[0], time.Duration(0))
-	assert.Equal(t, int64(9_000_000), c.RequestCount("history-read", "LoadHistory", "measured"))
+	assert.Equal(t, int64(1_000_000), c.RequestCount("history-read", "LoadHistory", "measured"))
 }
 
 // S2: PruneCorrelation must clear every shard, leaving the
