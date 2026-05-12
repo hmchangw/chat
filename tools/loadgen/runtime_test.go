@@ -65,8 +65,8 @@ func TestRuntime_FinalizeIsNoop(t *testing.T) {
 	require.NoError(t, rt.Finalize(context.Background()))
 }
 
-// TestRuntime_PrefightIsNoop verifies the Phase 0 stub returns no error.
-func TestRuntime_PrefightIsNoop(t *testing.T) {
+// TestRuntime_PreflightIsNoop verifies the Phase 0 stub returns no error.
+func TestRuntime_PreflightIsNoop(t *testing.T) {
 	cfg := defaultTestConfig(t)
 	rt, err := NewRuntime(context.Background(), &cfg, "test-run-id")
 	require.NoError(t, err)

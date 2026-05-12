@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -137,6 +139,18 @@ func TestParseRunFlags_AllExistingFlags(t *testing.T) {
 	assert.Equal(t, 200, rf.Abort.P99Ms)
 	assert.Equal(t, 45*time.Second, rf.Abort.P99Sustain)
 	assert.Equal(t, 20000, rf.Abort.WindowMaxSamples)
+	assert.True(t, rf.Abort.WindowMaxSamplesSet, "passing --abort-window-max-samples must set WindowMaxSamplesSet=true")
 	assert.Equal(t, 250, rf.AutoWarmup.Rate)
 	assert.Equal(t, 4, rf.Conn.Connections)
+}
+
+func TestPrintRunHelp_MatchesGolden(t *testing.T) {
+	var buf bytes.Buffer
+	PrintRunHelp(&buf)
+	got := buf.Bytes()
+	goldenPath := "testdata/refactor-baseline/run-help.golden"
+	want, err := os.ReadFile(goldenPath)
+	require.NoError(t, err, "missing golden file %s", goldenPath)
+	assert.Equal(t, string(want), string(got),
+		"PrintRunHelp drifted from golden file %s; if intentional, regenerate the golden file", goldenPath)
 }
