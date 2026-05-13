@@ -1,0 +1,11 @@
+services:
+  {{.Name}}:
+    build:
+      context: ../..
+      dockerfile: {{.Name}}/deploy/Dockerfile
+    environment:
+      PORT: "8080"
+      SITE_ID: "site-local"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

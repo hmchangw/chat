@@ -1,0 +1,7 @@
+package main
+
+import "github.com/gin-gonic/gin"
+
+func registerRoutes(r *gin.Engine, h *Handler) {
+	r.GET("/healthz", h.Healthz)
+}
