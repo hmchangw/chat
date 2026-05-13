@@ -46,17 +46,27 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
   }, [summaries, pendingRoom, onCreated, onClose])
 
   // Safety net: if subscription.update never arrives (server bug, NATS
-  // outage), close the dialog after 10s with what we already have. The
-  // user lands in the room without a live channel sub; sending a message
-  // will still work once the sub eventually lands.
+  // outage), don't auto-select the would-be room. Calling onCreated here
+  // would set selectedRoom on ChatPage, but summaries doesn't contain the
+  // room yet so the page's auto-deselect effect would bounce the user
+  // back to the empty state; even if it didn't, the channel subscription
+  // for the new room hasn't been opened (also gated on
+  // subscription.update), so any message the user tried to send would
+  // not echo back live. Surface an error inside the dialog instead,
+  // clear pendingRoom so the wait state unwinds (re-enabling Cancel),
+  // and let the user dismiss. If the room actually was created, it'll
+  // appear in their sidebar shortly when subscription.update finally
+  // lands — they can click it there.
   useEffect(() => {
     if (!pendingRoom) return
     const t = setTimeout(() => {
-      onCreated(pendingRoom)
-      onClose()
+      setError(
+        'Room creation is taking longer than expected. If it succeeds, the room will appear in your sidebar shortly — you can dismiss this dialog.'
+      )
+      setPendingRoom(null)
     }, SUBSCRIPTION_WAIT_TIMEOUT_MS)
     return () => clearTimeout(t)
-  }, [pendingRoom, onCreated, onClose])
+  }, [pendingRoom])
 
   const trimmedName = name.trim()
 
@@ -87,11 +97,14 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
       // so the sidebar + header have something to show until the canonical
       // name arrives via subscription.update.
       const displayName = trimmedName || finalUsers[0] || ''
-      // Stash the payload, then wait for subscription.update — see the two
-      // useEffects above for the close path.
+      // Request is done; flip loading off so Cancel becomes re-enabled
+      // during the subscription.update wait. The pendingRoom state marks
+      // the wait phase — see the two useEffects above for the resolution
+      // paths (summaries-match success vs timeout error).
       setPendingRoom({ id: roomId, type: roomType, siteId: user.siteId, name: displayName })
     } catch (err) {
       setError(formatAsyncJobError(err))
+    } finally {
       setLoading(false)
     }
   }
@@ -132,10 +145,17 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
           {error && <div className="dialog-error">{error}</div>}
 
           <div className="dialog-actions">
+            {/* Cancel is enabled while waiting so users can back out of a
+                slow subscription.update without having to wait for the
+                timeout. It stays disabled only while the request itself
+                is in flight. */}
             <button type="button" className="dialog-cancel" onClick={onClose} disabled={loading}>
               Cancel
             </button>
-            <button type="submit" disabled={loading}>
+            {/* Submit is disabled both while the request is in flight
+                AND while we're waiting for subscription.update; clicking
+                again would fire a duplicate create. */}
+            <button type="submit" disabled={loading || !!pendingRoom}>
               {buttonLabel}
             </button>
           </div>

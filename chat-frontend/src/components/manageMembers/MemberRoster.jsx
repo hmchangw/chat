@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNats } from '../../context/NatsContext'
 import { memberList, memberRemove, memberRoleUpdate, orgMembers } from '../../lib/subjects'
 import { ROLE_OWNER, ROLE_MEMBER } from '../../lib/constants'
@@ -22,19 +22,36 @@ export default function MemberRoster({ room }) {
   const [orgChildren, setOrgChildren] = useState({})
   const [orgFetchState, setOrgFetchState] = useState({})
 
+  // Generation refs guard against stale async writes when the request
+  // identity changes mid-fetch. memberListGenRef bumps every time
+  // fetchMembers is invoked (room change or post-action refetch). Each
+  // org has its own generation key in orgFetchGenRef.current[orgId] so a
+  // user can rapidly expand/collapse the same org without the previous
+  // fetch's resolution stomping on the current state.
+  const memberListGenRef = useRef(0)
+  const orgFetchGenRef = useRef({})
+
   // Depend on the primitive identity fields, not the room object reference —
   // a parent re-render that hands us an equivalent-but-new room object
   // shouldn't fire a redundant member.list.
   const fetchMembers = useCallback(async () => {
+    // Bump the generation before we await so a later invocation (room
+    // switch, post-action refetch) marks this one stale by the time its
+    // promise resolves. Without this guard, a slow first request that
+    // resolves after a second request finishes could overwrite the
+    // newer state.
+    const gen = ++memberListGenRef.current
     setError(null)
     setLoading(true)
     try {
       const resp = await request(memberList(user.account, room.id, room.siteId), { enrich: true })
+      if (gen !== memberListGenRef.current) return
       setMembers(resp.members ?? [])
     } catch (err) {
+      if (gen !== memberListGenRef.current) return
       setError(err.message)
     } finally {
-      setLoading(false)
+      if (gen === memberListGenRef.current) setLoading(false)
     }
   }, [request, user.account, room.id, room.siteId])
 
@@ -119,15 +136,22 @@ export default function MemberRoster({ room }) {
       // Collapsing or already cached — nothing else to do.
       if (wasOpen) return
       if (orgChildren[orgId]) return
+      // Per-org generation guard. If the user expands → collapses →
+      // re-expands rapidly, only the latest fetch's resolution writes to
+      // state; earlier in-flight responses are dropped on the floor.
+      const gen = (orgFetchGenRef.current[orgId] ?? 0) + 1
+      orgFetchGenRef.current[orgId] = gen
       setOrgFetchState((s) => ({ ...s, [orgId]: 'loading' }))
       try {
         const resp = await request(orgMembers(user.account, orgId), {})
+        if (orgFetchGenRef.current[orgId] !== gen) return
         setOrgChildren((s) => ({ ...s, [orgId]: resp?.members ?? [] }))
         setOrgFetchState((s) => {
           const { [orgId]: _drop, ...rest } = s
           return rest
         })
       } catch {
+        if (orgFetchGenRef.current[orgId] !== gen) return
         setOrgFetchState((s) => ({ ...s, [orgId]: 'error' }))
       }
     },

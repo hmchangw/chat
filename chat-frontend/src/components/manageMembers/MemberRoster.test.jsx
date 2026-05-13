@@ -45,6 +45,43 @@ describe('MemberRoster', () => {
     expect(request).toHaveBeenCalledTimes(1)
   })
 
+  it('drops a stale member.list response if the room changed mid-fetch', async () => {
+    // Slow network: switching from room A to room B before A's
+    // member.list resolves used to let A's members overwrite B's. The
+    // generation guard now drops the stale write.
+    let resolveA
+    const aResp = new Promise((r) => { resolveA = r })
+    const request = vi.fn().mockImplementation((subject) => {
+      if (subject.startsWith('chat.user.alice.request.room.r1.')) return aResp
+      return Promise.resolve({
+        members: [
+          { id: 'rm-b', rid: 'r2', member: { id: 'u-newroom', type: 'individual', account: 'newroom', engName: 'New Room User', chineseName: '', isOwner: false } },
+        ],
+      })
+    })
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'site-A' },
+      request,
+      requestWithAsyncResult: vi.fn(),
+    })
+    const { rerender } = render(<MemberRoster room={{ id: 'r1', siteId: 'site-A', name: 'general' }} />)
+    // Switch rooms while r1's fetch is still in flight.
+    rerender(<MemberRoster room={{ id: 'r2', siteId: 'site-A', name: 'frontend' }} />)
+    await screen.findByText('New Room User')
+    // Now the stale r1 response lands with what would have overwritten
+    // the r2 list. The generation guard drops it.
+    await act(async () => {
+      resolveA({
+        members: [
+          { id: 'rm-a', rid: 'r1', member: { id: 'u-oldroom', type: 'individual', account: 'oldroom', engName: 'Old Room User', chineseName: '', isOwner: false } },
+        ],
+      })
+      await Promise.resolve()
+    })
+    expect(screen.queryByText('Old Room User')).not.toBeInTheDocument()
+    expect(screen.getByText('New Room User')).toBeInTheDocument()
+  })
+
   it('calls member.list with enrich on mount', async () => {
     const { request } = setupContext()
     render(<MemberRoster room={room} />)
@@ -406,6 +443,51 @@ describe('MemberRoster', () => {
       await screen.findByText('Engineering')
       fireEvent.click(screen.getByRole('button', { name: /Expand Engineering/i }))
       expect(await screen.findByText(/Failed to load members/i)).toBeInTheDocument()
+    })
+
+    it('a stale toggle (rapid expand → collapse → re-expand) only writes the latest fetch result to state', async () => {
+      // A user rapidly expanding then collapsing the same org would
+      // otherwise let the first fetch's response overwrite the cached
+      // state set by the second fetch. The orgFetchGenRef guard drops
+      // stale resolutions.
+      let resolveFirst
+      const firstFetch = new Promise((r) => { resolveFirst = r })
+      const secondPayload = {
+        members: [{ id: 'u-late', account: 'late', engName: 'Late Arrival', chineseName: '', siteId: 'site-A' }],
+      }
+      const request = vi.fn().mockImplementation((subject) => {
+        if (subject.includes('.orgs.') && subject.endsWith('.members')) {
+          return request.mock.calls.length === 1 ? firstFetch : Promise.resolve(secondPayload)
+        }
+        return Promise.resolve({ members: baseMembers })
+      })
+      useNats.mockReturnValue({
+        user: { account: 'alice', siteId: 'site-A' },
+        request,
+        requestWithAsyncResult: vi.fn(),
+      })
+      render(<MemberRoster room={room} />)
+      await screen.findByText('Engineering')
+
+      // First expand → first fetch in flight (not yet resolved).
+      fireEvent.click(screen.getByRole('button', { name: /Expand Engineering/i }))
+      // Collapse — clears expanded state.
+      fireEvent.click(screen.getByRole('button', { name: /Collapse Engineering/i }))
+      // Re-expand → second fetch fires (and resolves immediately).
+      fireEvent.click(screen.getByRole('button', { name: /Expand Engineering/i }))
+      await screen.findByText('Late Arrival')
+
+      // NOW the first (stale) fetch resolves with a stale payload that
+      // would, without the gen guard, clobber 'Late Arrival'.
+      await act(async () => {
+        resolveFirst({
+          members: [{ id: 'u-stale', account: 'stale', engName: 'Stale Result', chineseName: '', siteId: 'site-A' }],
+        })
+        await Promise.resolve()
+      })
+      // The stale write is dropped — the latest fetch's result wins.
+      expect(screen.queryByText('Stale Result')).not.toBeInTheDocument()
+      expect(screen.getByText('Late Arrival')).toBeInTheDocument()
     })
 
     it('non-owner viewer can still expand orgs even though no Remove button is shown', async () => {

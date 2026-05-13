@@ -200,11 +200,15 @@ describe('CreateRoomDialog', () => {
       expect(onClose).not.toHaveBeenCalled()
     })
 
-    it('closes after the 3-second timeout if subscription.update never arrives (safety fallback)', async () => {
-      // shouldAdvanceTime keeps the real-time portion of the test (the
-      // promise resolution of requestWithAsyncResult) moving forward;
-      // without it the await screen.findByRole would itself hang waiting
-      // for the dialog state to update.
+    it('after the 3-second timeout, surfaces an error in the dialog and does NOT auto-select the room', async () => {
+      // Calling onCreated on timeout used to bounce the user back to the
+      // empty state — ChatPage's auto-deselect effect kicks in because
+      // summaries still doesn't contain the new roomId, and the channel
+      // subscription wasn't opened either (so messages wouldn't echo
+      // back). The dialog now surfaces the slow-server condition inside
+      // itself; the user dismisses with Cancel, and if the room was
+      // actually created they pick it up from the sidebar when
+      // subscription.update finally lands.
       vi.useFakeTimers({ shouldAdvanceTime: true })
       try {
         const { onCreated, onClose } = setup({ summaries: [] })
@@ -212,19 +216,37 @@ describe('CreateRoomDialog', () => {
         fireEvent.click(screen.getByRole('button', { name: /Create/i }))
         await screen.findByRole('button', { name: /Waiting/i })
         expect(onCreated).not.toHaveBeenCalled()
-        // The 3s safety-fallback setTimeout was scheduled when pendingRoom
-        // became set. Advance fake time past it and wait for React to flush
-        // the resulting state updates.
         await act(async () => {
           await vi.advanceTimersByTimeAsync(3001)
         })
-        await waitFor(() =>
-          expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 'r-new' }))
-        )
-        expect(onClose).toHaveBeenCalled()
+        // Error appears, dialog stays open, neither callback fired.
+        expect(await screen.findByText(/taking longer than expected/i)).toBeInTheDocument()
+        expect(onCreated).not.toHaveBeenCalled()
+        expect(onClose).not.toHaveBeenCalled()
+        // Submit button is back to "Create" — pendingRoom has been cleared
+        // so the wait state is over. User can dismiss with Cancel.
+        expect(screen.getByRole('button', { name: /^Create$/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /^Cancel$/ })).not.toBeDisabled()
       } finally {
         vi.useRealTimers()
       }
+    })
+
+    it('Cancel is re-enabled during the "Waiting…" state so the user can back out without waiting for the timeout', async () => {
+      // While the request was in flight (loading=true) Cancel stays
+      // disabled — we can't safely abort a published NATS request. Once
+      // the sync ack lands and we're just waiting for subscription.update
+      // (pendingRoom set, loading=false), Cancel should re-enable.
+      const { onClose } = setup({ summaries: [] })
+      fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'frontend' } })
+      fireEvent.click(screen.getByRole('button', { name: /Create/i }))
+      // Wait for the request to settle and the dialog to enter the
+      // pending state.
+      await screen.findByRole('button', { name: /Waiting/i })
+      const cancel = screen.getByRole('button', { name: /^Cancel$/ })
+      expect(cancel).not.toBeDisabled()
+      fireEvent.click(cancel)
+      expect(onClose).toHaveBeenCalled()
     })
   })
 

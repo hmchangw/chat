@@ -366,16 +366,29 @@ setPendingRoom({ id: roomId, type: roomType, siteId: user.siteId, name: displayN
   while loading; the handler runs the actual empty-check after
   flushing.
 - **Wait for `subscription.update`.** Two `useEffect`s drive the
-  close path:
+  resolution path:
   1. Watches `summaries` from `useRoomSummaries`. When it contains
      `pendingRoom.id`, fires `onCreated(pendingRoom)` + `onClose()`.
-  2. Arms a **3-second safety `setTimeout`** so a dropped
-     `subscription.update` event can't hang the dialog forever; on
-     timeout it closes with what we already know (and the user lands
-     in a room without a live channel sub — the next message will
-     work once the sub eventually lands).
+  2. Arms a **3-second safety `setTimeout`**. On timeout the dialog
+     does **not** auto-select the would-be room (calling `onCreated`
+     in that state would set `selectedRoom` to a room missing from
+     `summaries`, and ChatPage's auto-deselect effect would bounce
+     the user straight back to the empty state; the channel sub
+     isn't open either, so messages wouldn't echo). Instead the
+     timeout surfaces an in-dialog error
+     (`"Room creation is taking longer than expected. If it
+     succeeds, the room will appear in your sidebar shortly — you
+     can dismiss this dialog."`) and clears `pendingRoom`. The user
+     dismisses with Cancel, and the room — if it was actually
+     created — appears in their sidebar when `subscription.update`
+     finally lands.
 
-  Button label flips through `Create → Creating… → Waiting for server confirmation… → (dialog closes)`.
+  `loading` (sync request in flight) and `pendingRoom` (waiting for
+  `subscription.update`) are tracked separately so **Cancel is
+  enabled during the wait**. Submit stays disabled the whole time
+  so a second click can't fire a duplicate create.
+
+  Button label flips through `Create → Creating… → Waiting for server confirmation… → (dialog closes via summaries-match) | error banner (via timeout)`.
 
 `lib/subjects.js` drops the now-orphan `roomsCreate` builder and the
 comma-separated-list `parseList` helper that supported the old
