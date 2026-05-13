@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
+
+	hdr "github.com/HdrHistogram/hdrhistogram-go"
 )
 
 // correlationShardCount is the number of hash-keyed sub-maps used to
@@ -567,6 +570,38 @@ func (c *Collector) RequestSampleRows() []RequestSampleRow {
 		})
 	}
 	return rows
+}
+
+// ExportHistograms returns a snapshot of every (scenario, kind, phase) HDR
+// histogram cell recorded during this Collector's lifetime. The returned map
+// uses the key format "scenario|kind|phase" so it is directly JSON-serializable
+// (no struct keys). Each value is a *hdr.Snapshot produced by CellHistogram.Export().
+//
+// Thread-safe: acquires the outer requestsMu (RLock) to snapshot the key set,
+// then acquires each shard's mu to call Export(). The LOCK-ORDER INVARIANT
+// (shard mu before c.mu) is respected — neither c.mu nor requestsMu is held
+// concurrently with any shard mu.
+func (c *Collector) ExportHistograms() map[string]*hdr.Snapshot {
+	c.requestsMu.RLock()
+	type keyedShard struct {
+		key   requestKey
+		shard *requestShard
+	}
+	pairs := make([]keyedShard, 0, len(c.requests))
+	for k, sh := range c.requests {
+		pairs = append(pairs, keyedShard{k, sh})
+	}
+	c.requestsMu.RUnlock()
+
+	out := make(map[string]*hdr.Snapshot, len(pairs))
+	for _, p := range pairs {
+		p.shard.mu.Lock()
+		snap := p.shard.cell.Export()
+		p.shard.mu.Unlock()
+		key := fmt.Sprintf("%s|%s|%s", p.key.scenario, p.key.kind, p.key.phase)
+		out[key] = snap
+	}
+	return out
 }
 
 // snapshotLatenciesLocked copies and sorts latencies from in.

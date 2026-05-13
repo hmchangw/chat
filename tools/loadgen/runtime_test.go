@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -55,14 +57,39 @@ func TestNewRuntime_WiresAllDependencies(t *testing.T) {
 }
 
 // TestRuntime_FinalizeIsNoop verifies that Finalize does not error when
-// cfg.RunsDir is empty. Full filesystem assertions are deferred to Phase 1b.
+// cfg.RunsDir is empty.
 func TestRuntime_FinalizeIsNoop(t *testing.T) {
 	cfg := defaultTestConfig(t)
 	rt, err := NewRuntime(context.Background(), &cfg, "test-run-id")
 	require.NoError(t, err)
 	defer rt.Close() //nolint:errcheck
 
-	require.NoError(t, rt.Finalize(context.Background()))
+	require.NoError(t, rt.Finalize(context.Background(), &Summary{}))
+}
+
+// TestRuntime_FinalizeWritesBundle verifies that Finalize writes the artifact
+// bundle to cfg.RunsDir when it is non-empty.
+func TestRuntime_FinalizeWritesBundle(t *testing.T) {
+	dir := t.TempDir()
+	cfg := defaultTestConfig(t)
+	cfg.RunsDir = dir
+	rt, err := NewRuntime(context.Background(), &cfg, "bundle-run-id")
+	require.NoError(t, err)
+	defer rt.Close() //nolint:errcheck
+
+	summary := &Summary{RunID: "bundle-run-id", Preset: "test", TargetRate: 100}
+	require.NoError(t, rt.Finalize(context.Background(), summary))
+
+	// All 9 artifact files must exist.
+	for _, f := range []string{
+		"summary.json", "histograms.hlog", "settle.json",
+		"flags.txt", "env.txt", "stdout.log", "stderr.log",
+		"metrics.prom", "timeseries.jsonl",
+	} {
+		path := filepath.Join(dir, "bundle-run-id", f)
+		_, statErr := os.Stat(path)
+		assert.NoError(t, statErr, "missing artifact file: %s", f)
+	}
 }
 
 // TestRuntime_PreflightIsNoop verifies the Phase 0 stub returns no error.

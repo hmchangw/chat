@@ -27,6 +27,10 @@ type config struct {
 	MetricsAddr   string `env:"METRICS_ADDR"    envDefault:":9099"`
 	MaxInFlight   int    `env:"MAX_IN_FLIGHT"   envDefault:"200"`
 	PProfAddr     string `env:"PPROF_ADDR"      envDefault:""`
+	// RunsDir is the root directory for artifact bundles. When non-empty,
+	// Finalize writes runs/<run_id>/ with the full bundle. Empty disables
+	// artifact writing (default — opt-in via RUNS_DIR env var).
+	RunsDir string `env:"RUNS_DIR" envDefault:""`
 }
 
 func main() {
@@ -203,9 +207,9 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 	defer rt.Close() //nolint:errcheck
 
-	exitCode := executeRun(ctx, rt, &rf, &p, injectMode)
+	exitCode, summary := executeRun(ctx, rt, &rf, &p, injectMode)
 
-	if err := rt.Finalize(ctx); err != nil {
+	if err := rt.Finalize(ctx, &summary); err != nil {
 		slog.Error("finalize", "error", err)
 	}
 	return exitCode

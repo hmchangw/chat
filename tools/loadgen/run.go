@@ -40,7 +40,7 @@ import (
 //
 // It returns the process exit code (0=pass, 1=fail, 2=saturated, 3=dead SUT,
 // 4=UNTRUSTED verdict on otherwise-clean run).
-func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injectMode InjectMode) int {
+func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injectMode InjectMode) (int, Summary) {
 	cfg := rt.cfg
 	runID := rt.RunID()
 	metrics := rt.Metrics()
@@ -66,7 +66,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	js, err := jetstream.New(rt.NC().NatsConn(), jsOpts...)
 	if err != nil {
 		slog.Error("jetstream init", "error", err)
-		return 1
+		return 1, Summary{}
 	}
 
 	fixtures := BuildFixtures(p, rf.Seed, cfg.SiteID)
@@ -139,7 +139,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	})
 	if err != nil {
 		slog.Error("subscribe e1", "error", err)
-		return 1
+		return 1, Summary{}
 	}
 	defer func() { _ = e1Sub.Unsubscribe() }()
 
@@ -158,7 +158,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	e2Sub, err := rt.NC().NatsConn().Subscribe(subject.RoomEventWildcard(), e2Handler)
 	if err != nil {
 		slog.Error("subscribe e2", "error", err)
-		return 1
+		return 1, Summary{}
 	}
 	defer func() { _ = e2Sub.Unsubscribe() }()
 
@@ -168,7 +168,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	e2DMSub, err := rt.NC().NatsConn().Subscribe(subject.UserRoomEventWildcard(), e2Handler)
 	if err != nil {
 		slog.Error("subscribe e2 dm", "error", err)
-		return 1
+		return 1, Summary{}
 	}
 	defer func() { _ = e2DMSub.Unsubscribe() }()
 
@@ -214,7 +214,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	credsFiles, credsErr := LoadCredsDir(rf.NATSCredsDir)
 	if credsErr != nil {
 		slog.Error("nats creds dir", "error", credsErr)
-		return 1
+		return 1, Summary{}
 	}
 	if len(credsFiles) > 0 {
 		// F4: only log "rotating" when rotation can actually happen.
@@ -233,7 +233,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 				"--nats-creds-dir + --connections>1 is unsafe today: per-user→creds binding "+
 					"is not yet implemented (deferred until full C2 lands). Use --connections=1 with "+
 					"NATS_CREDS_FILE for shared-creds runs, or wait for the user-binding follow-up.")
-			return 2
+			return 2, Summary{}
 		}
 		slog.Warn("--nats-creds-dir ignored: --connections=1 routes all traffic through the observer (cfg.NatsCredsFile)",
 			"creds_count", len(credsFiles))
@@ -250,7 +250,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	)
 	if perr != nil {
 		slog.Error("conn pool init", "error", perr)
-		return 1
+		return 1, Summary{}
 	}
 	// C3: per-run UUIDv7. Stamped into every publish/request as
 	// X-Loadgen-Run-ID so SUT-side traces/logs correlate. The actual
@@ -280,7 +280,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		}); err != nil {
 			probeCancel()
 			slog.Error("readiness probe failed", "scenario", rf.Scenario, "error", err)
-			return 1
+			return 1, Summary{}
 		}
 		probeCancel()
 		slog.Info("readiness probe succeeded", "scenario", rf.Scenario)
@@ -391,6 +391,8 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	settleCtx, settleCancel := context.WithTimeout(ctx, rf.Settle.Timeout)
 	settleOutcome, settleErr := rt.Settle(settleCtx, rf.Settle, recentIDs, alwaysOKProbe)
 	settleCancel()
+	// Store settle outcome on Runtime so Finalize can include it in the bundle.
+	rt.SetLastSettle(settleOutcome)
 	if settleErr != nil {
 		slog.Warn("settle phase failed", "error", settleErr,
 			"succeeded", settleOutcome.Succeeded, "total", len(settleOutcome.Probes))
@@ -715,9 +717,9 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	// (clean pass). Higher-priority codes (1=clean-fail, 2=saturation,
 	// 3=liveness) already indicate a problem and take precedence.
 	if baseCode == 0 && verdict.Verdict == "UNTRUSTED" {
-		return 4
+		return 4, summary
 	}
-	return baseCode
+	return baseCode, summary
 }
 
 // ramp returns the built *Ramp from the already-validated run flags.

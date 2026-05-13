@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/http/pprof"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
@@ -35,6 +39,9 @@ type Runtime struct {
 	omission   *OmissionTracker
 	metricsSrv *http.Server
 	pprofSrv   *http.Server
+	// lastSettle is set by SetLastSettle (called from executeRun) so that
+	// Finalize can include the settle outcome in the artifact bundle.
+	lastSettle SettleOutcome
 }
 
 // NewRuntime dials NATS, initialises JetStream, builds a single-connection
@@ -167,11 +174,88 @@ func (r *Runtime) Settle(ctx context.Context, sf SettleFlags, sampleIDs []string
 // through the Scenario interface here.
 func (r *Runtime) Preflight(_ context.Context) error { return nil }
 
+// SetLastSettle stores the settle outcome so Finalize can include it in
+// the artifact bundle. Called by executeRun after the settle phase completes.
+func (r *Runtime) SetLastSettle(s SettleOutcome) {
+	r.lastSettle = s
+}
+
 // Finalize performs post-run filesystem work (artifact bundle creation).
-// Phase 0 stub: no-ops when cfg.RunsDir is empty (the field is not yet
-// on the config struct — it is added in Phase 1b). Phase 1b §1.8 tightens
-// this to write the full run bundle.
-func (r *Runtime) Finalize(_ context.Context) error { return nil }
+// When cfg.RunsDir is empty, Finalize is a no-op.
+//
+// Phase 1b §1.8: writes the full artifact bundle to cfg.RunsDir/<run_id>/.
+// A fresh context (independent of the signal-cancelled ctx passed by the
+// caller) is used for file I/O so that artifact writes survive a
+// SIGTERM-terminated run. This addresses the Phase 1b pre-condition from
+// the Task 0.5 code review.
+func (r *Runtime) Finalize(_ context.Context, summary *Summary) error {
+	if r.cfg.RunsDir == "" {
+		return nil // bundle writing disabled
+	}
+	// Use a fresh timeout context so artifact writes survive a signal-cancelled ctx.
+	// (Phase 1b pre-condition from Task 0.5 code review.)
+	writeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = writeCtx // reserved for future I/O that needs ctx
+
+	b := r.buildBundle(summary)
+	return WriteBundle(r.cfg.RunsDir, b)
+}
+
+// buildBundle assembles an ArtifactBundle from the current Runtime state
+// and the supplied summary.
+func (r *Runtime) buildBundle(summary *Summary) *ArtifactBundle {
+	var s Summary
+	if summary != nil {
+		s = *summary
+	}
+	return &ArtifactBundle{
+		RunID:           r.runID,
+		Summary:         s,
+		Histograms:      r.collector.ExportHistograms(),
+		Settle:          r.lastSettle,
+		FlagsRaw:        nil, // TODO Phase 1b.6: populate from run flags
+		EnvRedacted:     RedactEnv(envToMap(os.Environ())),
+		StdoutLog:       nil, // TODO Phase 1b.6: log-tee plumbing deferred
+		StderrLog:       nil, // TODO Phase 1b.6: log-tee plumbing deferred
+		MetricsProm:     r.scrapeMetrics(),
+		TimeseriesJSONL: nil, // TODO Phase 1b stretch: per-second collector ticker
+	}
+}
+
+// scrapeMetrics captures the current Prometheus state by serving a synthetic
+// scrape request against the metrics registry. Returns nil on error (non-fatal).
+func (r *Runtime) scrapeMetrics() []byte {
+	rec := httptest.NewRecorder()
+	r.metrics.Handler().ServeHTTP(rec, newScrapeRequest())
+	if rec.Code != http.StatusOK {
+		slog.Warn("metrics scrape returned non-200", "code", rec.Code)
+		return nil
+	}
+	return rec.Body.Bytes()
+}
+
+// newScrapeRequest returns a minimal GET /metrics request for the synthetic
+// Prometheus scrape in scrapeMetrics.
+func newScrapeRequest() *http.Request {
+	req, _ := http.NewRequestWithContext(
+		context.Background(), http.MethodGet, "/metrics", bytes.NewReader(nil),
+	)
+	req.Header.Set("Accept", "text/plain")
+	return req
+}
+
+// envToMap converts a []string of "KEY=VALUE" entries (as returned by
+// os.Environ) into a map[string]string. Values may contain "=" characters;
+// only the first "=" is used as the key/value separator.
+func envToMap(environ []string) map[string]string {
+	m := make(map[string]string, len(environ))
+	for _, e := range environ {
+		k, v, _ := strings.Cut(e, "=")
+		m[k] = v
+	}
+	return m
+}
 
 // Close shuts down auxiliary HTTP servers, drains the connection pool,
 // and drains the NATS connection. Ordering:
