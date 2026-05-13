@@ -3872,17 +3872,19 @@ git commit -m "feat(chat-frontend): add threadEventsReducer"
 
 Wraps the reducer, fires the `msg.thread` RPC on `openThread`, exposes `openThread / closeThread / sendReply / retryReply / dismissReply`. Race-discard pattern mirrors `RoomEventsContext`.
 
+**`publish` is synchronous.** Verified at `chat-frontend/src/context/NatsContext.jsx:74-78`: `publish` returns `undefined` and throws synchronously if not connected. **Do not `await` it.** Wrap the call in `try/catch` for the sync throw. There is no broker-ack signal in v1; a publish that the broker eventually rejects (gatekeeper validation failure, etc.) cannot be detected client-side — the optimistic reply stays in the panel until the user re-opens the thread, at which point the authoritative `msg.thread` response excludes it. This is acceptable for v1.
+
 `sendReply(content, { quotedParentMessageId })`:
-1. Generate `id = generateMessageID()` and optimistic local message.
+1. Generate `id = generateMessageID()` and an optimistic local message.
 2. Dispatch `REPLY_SENT_LOCAL { message: { ...optimistic, _local: true } }`.
-3. Publish `msgSend(account, roomId, siteId)` with `threadParentMessageId`, `threadParentMessageCreatedAt`, and (optional) `quotedParentMessageId`.
-4. On error, dispatch `REPLY_SEND_FAILED { messageId: id, error }`.
-5. On success (publish acks), no further dispatch — the row stays as `_local` until it's seen via thread reopen.
+3. Call `publish(msgSend(...), payload)` synchronously inside a `try/catch`.
+4. On synchronous throw → dispatch `REPLY_SEND_FAILED { messageId: id, error }`.
+5. On success → no further dispatch from this path; the cross-dispatch `OWN_THREAD_REPLY_SENT` (Ch.8) fires here too.
 
 `retryReply(messageId)`:
 1. Dispatch `REPLY_RETRIED { messageId }`.
-2. Re-publish using the same `id` and payload (read from current state).
-3. On error, dispatch `REPLY_SEND_FAILED` again.
+2. Re-publish synchronously using the same `id` and payload (read from current state).
+3. On synchronous throw → dispatch `REPLY_SEND_FAILED` again.
 
 `dismissReply(messageId)`: dispatch `REPLY_DISMISSED`.
 
@@ -3982,7 +3984,7 @@ describe('ThreadEventsContext', () => {
 
   it('sendReply optimistically appends and publishes msg.send with thread parent fields', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    publish.mockResolvedValue()
+    // publish is sync void — default no-op is fine; nothing to mockResolvedValue.
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
@@ -4001,7 +4003,6 @@ describe('ThreadEventsContext', () => {
 
   it('sendReply with quotedParentMessageId carries the field in the payload', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    publish.mockResolvedValue()
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send-quote').click() })
@@ -4009,20 +4010,21 @@ describe('ThreadEventsContext', () => {
     expect(call[1].quotedParentMessageId).toBe('q-id')
   })
 
-  it('sendReply publish failure tags _status=failed on the optimistic row', async () => {
+  it('sendReply publish failure (sync throw) tags _status=failed on the optimistic row', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    publish.mockRejectedValue(new Error('nope'))
+    publish.mockImplementation(() => { throw new Error('Not connected') })
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
-    // Probe doesn't expose per-row state, but a count:1 + ability to retry/dismiss
-    // is sufficient for plumbing. The reducer test already verifies _status.
+    // Probe doesn't expose per-row _status, but count:1 + ability to retry/dismiss
+    // confirms the optimistic row stayed in place. The reducer test already
+    // verifies _status='failed' precisely.
     expect(screen.getByText('count:1')).toBeInTheDocument()
   })
 
   it('dismissReply removes the row', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    publish.mockRejectedValue(new Error('nope'))
+    publish.mockImplementation(() => { throw new Error('Not connected') })
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
@@ -4093,10 +4095,12 @@ export function ThreadEventsProvider({ children }) {
     dispatch({ type: 'CLOSE_THREAD' })
   }, [])
 
+  // publishReply is synchronous — `publish` is sync void and throws if not
+  // connected. Callers wrap in try/catch.
   const publishReply = useCallback(
     (id, content, opts) => {
       const parent = stateRef.current.activeParent
-      if (!parent || !user) return Promise.reject(new Error('no active thread'))
+      if (!parent || !user) throw new Error('no active thread')
       const payload = {
         id,
         content,
@@ -4105,13 +4109,13 @@ export function ThreadEventsProvider({ children }) {
         threadParentMessageCreatedAt: parent.createdAtMs,
       }
       if (opts?.quotedParentMessageId) payload.quotedParentMessageId = opts.quotedParentMessageId
-      return Promise.resolve(publish(msgSend(user.account, parent.roomId, parent.siteId), payload))
+      publish(msgSend(user.account, parent.roomId, parent.siteId), payload)
     },
     [user, publish]
   )
 
   const sendReply = useCallback(
-    async (content, opts) => {
+    (content, opts) => {
       const parent = stateRef.current.activeParent
       if (!parent || !user || !content || !content.trim()) return
       const id = generateMessageID()
@@ -4133,7 +4137,8 @@ export function ThreadEventsProvider({ children }) {
       }
       dispatch({ type: 'REPLY_SENT_LOCAL', message: optimistic })
       try {
-        await publishReply(id, content.trim(), opts)
+        publishReply(id, content.trim(), opts)
+        // Ch.8 task 8.3 adds: roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', ... })
       } catch (err) {
         dispatch({ type: 'REPLY_SEND_FAILED', messageId: id, error: err?.message ?? String(err) })
       }
@@ -4142,16 +4147,17 @@ export function ThreadEventsProvider({ children }) {
   )
 
   const retryReply = useCallback(
-    async (messageId) => {
+    (messageId) => {
       const row = stateRef.current.messages.find((m) => m.id === messageId)
       if (!row) return
       dispatch({ type: 'REPLY_RETRIED', messageId })
       try {
-        await publishReply(
+        publishReply(
           messageId,
           row.content,
           row.quotedParentMessage ? { quotedParentMessageId: row.quotedParentMessage.id } : undefined
         )
+        // Ch.8 task 8.3 adds: roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', ... })
       } catch (err) {
         dispatch({ type: 'REPLY_SEND_FAILED', messageId, error: err?.message ?? String(err) })
       }
@@ -4272,7 +4278,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import ThreadMessageInput from './ThreadMessageInput'
 
-const sendReply = vi.fn(async () => {})
+const sendReply = vi.fn()  // sync void; throws on failure
 vi.mock('../context/ThreadEventsContext', () => ({
   useThreadEvents: () => ({ sendReply, activeParent: { messageId: 'p1' } }),
 }))
@@ -4315,8 +4321,7 @@ describe('ThreadMessageInput', () => {
     expect(sendReply).toHaveBeenCalledWith('reply', { quotedParentMessageId: 'q1' })
   })
 
-  it('clears the staged quote chip after a successful send', async () => {
-    sendReply.mockResolvedValue()
+  it('clears the staged quote chip after send (sync — no broker ack)', () => {
     const onClearQuote = vi.fn()
     render(
       <ThreadMessageInput
@@ -4327,8 +4332,6 @@ describe('ThreadMessageInput', () => {
     const input = screen.getByPlaceholderText('Reply…')
     fireEvent.change(input, { target: { value: 'reply' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    // Wait for the awaited sendReply promise to settle.
-    await Promise.resolve()
     expect(onClearQuote).toHaveBeenCalled()
   })
 })
@@ -4352,11 +4355,12 @@ export default function ThreadMessageInput({ quotedTarget, onClearQuote }) {
   const { sendReply, activeParent } = useThreadEvents()
   const [text, setText] = useState('')
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!text.trim() || !activeParent) return
     const opts = quotedTarget ? { quotedParentMessageId: quotedTarget.id } : {}
+    const content = text.trim()
     setText('')
-    await sendReply(text.trim(), opts)
+    sendReply(content, opts)  // sync; thread context handles _status='failed' on throw
     onClearQuote?.()
   }
 
