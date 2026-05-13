@@ -1,0 +1,6 @@
+# Force LF line endings for testdata and shell scripts so tests pass on Windows
+# (where git's core.autocrlf=true would otherwise convert LF -> CRLF on checkout,
+# causing TestPrintRunHelp_MatchesGolden and shell-script tests to fail).
+*.golden text eol=lf
+*.sh text eol=lf
+tools/loadgen/testdata/** text eol=lf
