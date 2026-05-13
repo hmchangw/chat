@@ -82,6 +82,12 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	seed := fs.Int64("seed", 42, "RNG seed")
 	override := fs.Bool("i-know-what-i-am-doing", false,
 		"override the MONGO_DB=loadgen* isolation guard; use ONLY for one-off recoveries")
+	runID := fs.String("run-id", "",
+		"run ID for per-run credential storage; generated and printed if empty")
+	withJWTs := fs.Bool("with-jwts", false,
+		"mint placeholder JWTs for fixture users into runs/<run_id>/creds/ (Phase 3.8 will replace with real signed JWTs via auth-service admin RPC)")
+	withFederation := fs.Bool("with-federation", false,
+		"provision placeholder federation NKeys into runs/<run_id>/creds/ (Phase 3.9 will replace with real NKey generation)")
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
@@ -113,6 +119,43 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		"users", len(fixtures.Users),
 		"rooms", len(fixtures.Rooms),
 		"subs", len(fixtures.Subscriptions))
+
+	// Credential provisioning is opt-in and only active when RUNS_DIR is set
+	// (otherwise there's no artifact root to write under).
+	if (*withJWTs || *withFederation) && cfg.RunsDir == "" {
+		slog.Warn("--with-jwts/--with-federation require RUNS_DIR to be set; skipping credential provisioning")
+		return 0
+	}
+
+	if *withJWTs || *withFederation {
+		// Use the caller-supplied run ID or generate + print one.
+		rid := *runID
+		if rid == "" {
+			rid = idgen.GenerateUUIDv7()
+			fmt.Printf("run-id: %s\n", rid)
+		}
+
+		if *withJWTs {
+			userNames := make([]string, len(fixtures.Users))
+			for i := range fixtures.Users {
+				userNames[i] = fixtures.Users[i].Account
+			}
+			if _, err := MintFixtureJWTs(ctx, cfg.RunsDir, rid, userNames); err != nil {
+				slog.Error("mint fixture JWTs", "error", err)
+				return 1
+			}
+		}
+
+		if *withFederation {
+			for _, peer := range []string{"site-a-peer", "site-b-peer"} {
+				if _, err := ProvisionFederationNKey(ctx, cfg.RunsDir, rid, peer); err != nil {
+					slog.Error("provision federation NKey", "peer", peer, "error", err)
+					return 1
+				}
+			}
+		}
+	}
+
 	return 0
 }
 
@@ -149,6 +192,15 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 		slog.Error("teardown", "error", err)
 		return 1
 	}
+
+	// Clean up the per-run creds directory when a run ID is known and RUNS_DIR
+	// is configured. Force mode leaves creds alone (operators can rm -rf manually).
+	if *runID != "" && cfg.RunsDir != "" {
+		if err := CleanupCredsDir(cfg.RunsDir, *runID); err != nil {
+			slog.Warn("cleanup creds dir", "error", err)
+		}
+	}
+
 	slog.Info("teardown complete")
 	return 0
 }

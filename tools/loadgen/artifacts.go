@@ -15,9 +15,8 @@ import (
 // Fields that are nil/empty produce empty (but present) artifact files — all 9
 // files are always created so post-mortems can rely on the directory layout.
 //
-// EnvRedacted is pre-redacted by the caller (see RedactEnv). WriteBundle writes
-// whatever it receives without further inspection. Task 1b.6 will add a more
-// thorough allow-list on top of RedactEnv.
+// EnvRedacted is pre-redacted by the caller (see RedactEnv in creds.go).
+// WriteBundle writes whatever it receives without further inspection.
 //
 // StdoutLog / StderrLog are set to nil in Phase 1b.1; log-tee plumbing is
 // deferred to a future Phase 1b task.
@@ -121,60 +120,4 @@ func writeEnv(path string, env map[string]string) error {
 		fmt.Fprintf(&sb, "%s=%s\n", k, env[k])
 	}
 	return writeFile(path, []byte(sb.String()))
-}
-
-// secretSuffixes are key suffixes (upper-cased) that indicate a secret value.
-// A key whose suffix matches any entry in this list is redacted.
-var secretSuffixes = []string{
-	"_TOKEN",
-	"_KEY",
-	"_PASSWORD",
-	"_SECRET",
-	"_CREDS_FILE",
-	"_CREDS",
-}
-
-// secretExactKeys are key names (upper-cased) that should always be redacted
-// regardless of suffix matching. MONGO_URI and NATS_URL can contain user:password@host segments.
-var secretExactKeys = map[string]bool{
-	"AUTH_TOKEN":      true,
-	"NATS_CREDS_FILE": true,
-	"MONGO_URI":       true,
-	"NATS_URL":        true,
-}
-
-// RedactEnv returns a copy of env with secret values replaced by "***".
-// A value is redacted when its key (case-insensitive):
-//   - matches one of the exact keys in secretExactKeys, or
-//   - ends with one of the secretSuffixes.
-//
-// All other values are passed through unchanged. The caller may pass an
-// already-redacted map (e.g. from a previous RedactEnv call); "***" values
-// are preserved without double-redaction.
-//
-// Task 1b.6 will augment this with a more thorough allow-list. For now,
-// this covers the most obvious secret categories.
-func RedactEnv(env map[string]string) map[string]string {
-	out := make(map[string]string, len(env))
-	for k, v := range env {
-		upper := strings.ToUpper(k)
-		if shouldRedact(upper) {
-			out[k] = "***"
-		} else {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-func shouldRedact(upperKey string) bool {
-	if secretExactKeys[upperKey] {
-		return true
-	}
-	for _, suffix := range secretSuffixes {
-		if strings.HasSuffix(upperKey, suffix) {
-			return true
-		}
-	}
-	return false
 }
