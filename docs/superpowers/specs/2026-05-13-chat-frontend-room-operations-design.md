@@ -468,6 +468,47 @@ A naive `.then(clearInput)` would fire on failures too because
 (`"promote:alice"`, `"remove:bob"`, `"leave:alice"`) marks exactly
 one button as busy at a time. Prevents stacking conflicting actions.
 
+**Inline org expansion.** Clicking an org row's name toggles a
+nested list of the org's members inline beneath the row. The
+chevron prefix (`▸` / `▾`) and `aria-expanded` on the toggle button
+make the state obvious for both pointer and keyboard users. The
+expansion data comes from the existing one-phase RPC
+`chat.user.{a}.request.orgs.{orgId}.members`
+(`subject.orgMembers(account, orgId)` in `lib/subjects.js`) whose
+response shape is `{members: [{id, account, engName, chineseName,
+siteId}]}`. Three component-state maps key the behavior:
+
+  | Map | Keyed by | Purpose |
+  |---|---|---|
+  | `expandedOrgs` | `orgId` | UI open/closed flag |
+  | `orgChildren` | `orgId` | Cached `members[]` payload — collapse + re-expand reuses it instead of refetching |
+  | `orgFetchState` | `orgId` | `'loading'` while in flight, `'error'` on failure; absent on success |
+
+Child rows render `engName` (primary) + `chineseName` (secondary)
+with **no action buttons** — the parent org row already owns the
+Remove control, and the server treats the org as a single
+membership unit. A `Loading members…` row appears while the fetch
+is in flight; a `Failed to load members.` row appears on RPC
+failure. Non-owner viewers can still expand orgs (the Remove
+button is gated separately).
+
+**Generation-counter guards for async writes.** Both the
+roster-wide `fetchMembers` and the per-org `toggleOrg` fetches use
+generation refs (`memberListGenRef`, `orgFetchGenRef.current[orgId]`)
+to drop stale resolutions. The pattern: each invocation bumps the
+gen at entry and captures it locally; on resolve it checks
+`gen !== ref.current` and bails out if a newer invocation has
+overtaken it. This matters because:
+
+  - **Room switch mid-fetch** — moving from one room to another
+    on a slow connection used to let the old room's `member.list?enrich`
+    response overwrite the new room's members. The
+    `memberListGenRef` guard drops the stale write.
+  - **Rapid expand → collapse → re-expand of the same org** —
+    without the per-org gen, the first fetch's response could
+    overwrite the cache set by a later re-expand. The
+    `orgFetchGenRef` guard keeps only the latest write.
+
 #### `AddMembersForm`
 
 Same `MemberPicker` instance as `CreateRoomDialog`, plus a
@@ -506,6 +547,14 @@ global header carries only chat-wide actions (search, theme, logout).
 `ChatPage` bumps a `membersRefreshKey` whenever the
 `ManageMembersDialog` closes, so a member-add/remove inside the
 dialog is reflected in the badge count immediately on dismiss.
+
+`MessageInput`'s placeholder uses the same
+`roomPrefix(room.type) + roomDisplayName(room)` helpers as
+`RoomList` and the MessageArea header, so a channel shows
+`Message # frontend` and a DM shows `Message @ bob` (falling back
+to `Message @ (DM)` if the subscription name hasn't landed yet) —
+never the misleading `Message #bob-dm` or `Message # ` that the
+hardcoded `#${room.name}` placeholder produced.
 
 ### Layer 8 — DM display name fallback
 
@@ -679,7 +728,7 @@ DMs intentionally get no Manage Members affordance.
 │ [ Members ]  [   Add   ]                             │
 │                                                      │
 │  ┌─ Orgs first (single list) ─────────────────────┐  │
-│  │ Engineering   42 members              [Remove] │  │
+│  │ ▸ Engineering   42 members             [Remove] │  │ ← click name to expand
 │  ├────────────────────────────────────────────────┤  │
 │  │ Alice A   王愛麗   [owner]            [Leave]   │  │ ← self row
 │  │ Bob B     陳大文                 [Promote][Remove]│ │
@@ -689,6 +738,24 @@ DMs intentionally get no Manage Members affordance.
 │              [Close]                                 │
 └──────────────────────────────────────────────────────┘
 ```
+
+When the user clicks an org name the row expands inline, fetching
+`chat.user.{a}.request.orgs.{orgId}.members` and rendering the
+returned individuals underneath with no per-row buttons (the parent
+org row owns the lifecycle):
+
+```
+│  ▾ Engineering   42 members            [Remove]      │
+│    │ Dave Davies     戴文偉                          │
+│    │ Erin Evans      葉伊蓮                          │
+│    │ Frank Fischer   費法蘭                          │
+│    │ …                                               │
+```
+
+A subsequent collapse + re-expand reuses the cached payload — no
+second RPC. While the first fetch is in flight, a placeholder
+`Loading members…` row is rendered; on RPC failure it becomes
+`Failed to load members.`.
 
 ### `ManageMembersDialog` — Non-owner viewer (e.g. bob)
 
@@ -820,7 +887,7 @@ chat-frontend/src/lib/
 ├── asyncJob.js                # requestWithAsyncResult + ASYNC_JOB_ERROR_KINDS + formatAsyncJobError
 ├── asyncJob.test.js
 ├── constants.js               # ROLE_*, HISTORY_MODE_*, ERR_DM_ALREADY_EXISTS, isDMExistsReply
-├── subjects.js                # roomCreate, memberAdd/Remove/List/RoleUpdate, userResponse, searchRooms, …
+├── subjects.js                # roomCreate, memberAdd/Remove/List/RoleUpdate, userResponse, searchRooms, orgMembers, …
 ├── subjects.test.js
 ├── roomFormat.js              # roomPrefix + roomDisplayName (new) + roomFromSearchHit + searchRoomPrefix
 ├── roomFormat.test.js         # NEW — covers DM placeholder, subscriptionName fallback, etc.
@@ -845,10 +912,12 @@ chat-frontend/src/components/
 ├── RoomList.jsx               # uses roomDisplayName
 ├── RoomMembersBadge.jsx       # NEW — "N members" pill, fetches member.list, opens dialog on click
 ├── RoomMembersBadge.test.jsx
+├── MessageInput.jsx           # placeholder uses roomPrefix + roomDisplayName
+├── MessageInput.test.jsx      # NEW — channel vs DM placeholder, falls back to (DM)
 └── manageMembers/
     ├── AddMembersForm.jsx     # MemberPicker + history-mode toggle + ChannelRef[] fix
     ├── AddMembersForm.test.jsx
-    ├── MemberRoster.jsx       # single list, orgs first, EngName+ChineseName, owner-gated controls, self-row Leave
+    ├── MemberRoster.jsx       # single list, orgs first, EngName+ChineseName, owner-gated controls, self-row Leave, inline org expansion, gen-counter fetch guards
     └── MemberRoster.test.jsx
 
 chat-frontend/src/pages/
@@ -856,7 +925,7 @@ chat-frontend/src/pages/
 └── ChatPage.test.jsx
 
 chat-frontend/src/styles/
-└── index.css                  # .room-members-badge + .roster-* rules
+└── index.css                  # .room-members-badge + .roster-* rules (incl. .roster-row-org, .roster-org-children, .roster-chevron)
 
 chat-frontend/scripts/
 ├── asyncJob.smoke.mjs         # wire-level smoke against vanilla nats-server
@@ -872,5 +941,5 @@ chat-frontend/scripts/
 - `roomsCreate` subject builder + `parseList` helper from `lib/subjects.js`
 - `RemoveByIdRow` component + state in `MemberRoster.jsx`
 
-**Tests:** 228 pass across 24 files. `vite build` produces a clean
+**Tests:** 242 pass across 25 files. `vite build` produces a clean
 production bundle.
