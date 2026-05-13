@@ -312,8 +312,16 @@ func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
 		assert.Error(t, err)
 	})
 
+	// LWW guard requires monotonic ms-epoch ts; non-positive values would
+	// make `params.ts > stored` indeterminate against a fresh upsert.
 	t.Run("missing timestamp", func(t *testing.T) {
 		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, baseInboxMemberEvent(), 0)
+		_, err := coll.BuildAction(data)
+		assert.Error(t, err)
+	})
+
+	t.Run("negative timestamp", func(t *testing.T) {
+		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, baseInboxMemberEvent(), -1)
 		_, err := coll.BuildAction(data)
 		assert.Error(t, err)
 	})

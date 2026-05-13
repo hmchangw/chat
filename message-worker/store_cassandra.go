@@ -59,49 +59,49 @@ func NewCassandraStore(session *gocql.Session) *CassandraStore {
 	return &CassandraStore{cassSession: session}
 }
 
-// SaveMessage inserts msg into both messages_by_room and messages_by_id.
-// updated_at is set to msg.CreatedAt (equals created_at on first insert — not yet edited).
-// If either insert fails the error is returned immediately; JetStream will redeliver the message.
+// SaveMessage atomically writes the message to both denormalized views via
+// a LOGGED BATCH. Without this, a partial failure between the two INSERTs
+// leaves the views diverged until JetStream redelivery — and redelivery only
+// helps if the worker keeps running long enough to retry.
 func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
-	if err := s.cassSession.Query(
+	batch := s.cassSession.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	mentions := toMentionSet(msg.Mentions)
+	batch.Query(
 		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, tshow, quoted_parent_message)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
-	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("insert messages_by_room %s: %w", msg.ID, err)
-	}
-
-	if err := s.cassSession.Query(
+		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, mentions, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+	)
+	batch.Query(
 		`INSERT INTO messages_by_id (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, tshow, quoted_parent_message)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
-	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, mentions, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+	)
+	if err := s.cassSession.ExecuteBatch(batch); err != nil {
+		return fmt.Errorf("save message %s (batch insert messages_by_room + messages_by_id): %w", msg.ID, err)
 	}
-
 	return nil
 }
 
 func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
-	if err := s.cassSession.Query(
+	batch := s.cassSession.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	mentions := toMentionSet(msg.Mentions)
+	batch.Query(
 		`INSERT INTO messages_by_id
 		 (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
 		  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data, tshow, quoted_parent_message)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, mentions,
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
-	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
-	}
-
-	if err := s.cassSession.Query(
+	)
+	batch.Query(
 		`INSERT INTO thread_messages_by_room
 		 (room_id, thread_room_id, created_at, message_id, thread_parent_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.RoomID, threadRoomID, msg.CreatedAt, msg.ID, msg.ThreadParentMessageID,
-		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
-	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
+		sender, msg.Content, siteID, msg.CreatedAt, mentions, msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
+	)
+	if err := s.cassSession.ExecuteBatch(batch); err != nil {
+		return fmt.Errorf("save thread message %s (batch insert messages_by_id + thread_messages_by_room): %w", msg.ID, err)
 	}
 
 	if err := s.incrementParentTcount(ctx, msg); err != nil {

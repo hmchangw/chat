@@ -50,7 +50,7 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	if err := h.HandleEvent(ctx, msg.Data()); err != nil {
 		slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(ctx))
 		if errors.Is(err, errPermanent) {
-			if termErr := msg.Term(); termErr != nil {
+			if termErr := msg.TermWithReason(err.Error()); termErr != nil {
 				slog.Error("failed to term message", "error", termErr)
 			}
 			return
