@@ -1,20 +1,62 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../context/NatsContext'
+import { useRoomSummaries } from '../context/RoomEventsContext'
 import { roomCreate } from '../lib/subjects'
 import { isDMExistsReply } from '../lib/constants'
 import { formatAsyncJobError } from '../lib/asyncJob'
 import MemberPicker from './MemberPicker'
 
+// How long to wait for the server's subscription.update event before
+// giving up and closing the dialog anyway. With the event the user lands
+// in a room that already has its channel subscription opened (so messages
+// echo back immediately); without it, the message stream is racy for the
+// first second or so, but at least the dialog doesn't hang forever.
+const SUBSCRIPTION_WAIT_TIMEOUT_MS = 3000
+
 // Type inferred server-side from payload shape (name vs. members).
 export default function CreateRoomDialog({ onClose, onCreated }) {
   const { user, requestWithAsyncResult } = useNats()
+  const { summaries } = useRoomSummaries()
   const [name, setName] = useState('')
   const [users, setUsers] = useState([])
   const [orgs, setOrgs] = useState([])
   const [channels, setChannels] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // The just-created room we're waiting for confirmation on. Holds the
+  // {id, type, siteId, name} payload destined for onCreated. While set,
+  // the dialog stays open with the "Waiting for server confirmation…"
+  // label; once `summaries` contains a row matching `id` we fire the
+  // callback. ROOM_ADDED is only dispatched via the subscription.update
+  // event handler, which also calls openChannelSub() for channels — so by
+  // the time we close, the channel subscription is already open and the
+  // user's first message will echo back live.
+  const [pendingRoom, setPendingRoom] = useState(null)
   const pickerRef = useRef(null)
+
+  // Close when the room shows up in summaries (subscription.update arrived
+  // → ROOM_ADDED dispatched → channel sub opened). Idempotent: stays open
+  // until match.
+  useEffect(() => {
+    if (!pendingRoom) return
+    if (summaries.some((r) => r.id === pendingRoom.id)) {
+      onCreated(pendingRoom)
+      onClose()
+    }
+  }, [summaries, pendingRoom, onCreated, onClose])
+
+  // Safety net: if subscription.update never arrives (server bug, NATS
+  // outage), close the dialog after 10s with what we already have. The
+  // user lands in the room without a live channel sub; sending a message
+  // will still work once the sub eventually lands.
+  useEffect(() => {
+    if (!pendingRoom) return
+    const t = setTimeout(() => {
+      onCreated(pendingRoom)
+      onClose()
+    }, SUBSCRIPTION_WAIT_TIMEOUT_MS)
+    return () => clearTimeout(t)
+  }, [pendingRoom, onCreated, onClose])
 
   const trimmedName = name.trim()
 
@@ -45,14 +87,20 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
       // so the sidebar + header have something to show until the canonical
       // name arrives via subscription.update.
       const displayName = trimmedName || finalUsers[0] || ''
-      onCreated({ id: roomId, type: roomType, siteId: user.siteId, name: displayName })
-      onClose()
+      // Stash the payload, then wait for subscription.update — see the two
+      // useEffects above for the close path.
+      setPendingRoom({ id: roomId, type: roomType, siteId: user.siteId, name: displayName })
     } catch (err) {
       setError(formatAsyncJobError(err))
-    } finally {
       setLoading(false)
     }
   }
+
+  const buttonLabel = pendingRoom
+    ? 'Waiting for server confirmation…'
+    : loading
+      ? 'Creating…'
+      : 'Create'
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
@@ -88,7 +136,7 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
               Cancel
             </button>
             <button type="submit" disabled={loading}>
-              {loading ? 'Creating…' : 'Create'}
+              {buttonLabel}
             </button>
           </div>
         </form>

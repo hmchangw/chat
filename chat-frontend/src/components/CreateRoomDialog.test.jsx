@@ -1,12 +1,30 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import CreateRoomDialog from './CreateRoomDialog'
 
 vi.mock('../context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
+// useRoomSummaries is consumed by the dialog so it can wait for the
+// just-created room to appear in summaries (i.e. for the server's
+// subscription.update event to arrive) before closing. Tests default the
+// mock to summaries already containing every roomId the various success
+// fixtures return; tests that exercise the wait path override this.
+vi.mock('../context/RoomEventsContext', () => ({
+  useRoomSummaries: vi.fn(),
+}))
 
 import { useNats } from '../context/NatsContext'
+import { useRoomSummaries } from '../context/RoomEventsContext'
+
+// Pre-populate summaries with the roomIds the success fixtures return so
+// the dialog's "wait for subscription.update" useEffect resolves on the
+// first render after submit and the happy-path tests pass synchronously.
+const DEFAULT_SUMMARIES = [
+  { id: 'r-new', name: 'frontend', type: 'channel', siteId: 'site-A' },
+  { id: 'r-dm', name: '', type: 'dm', siteId: 'site-A' },
+  { id: 'r-existing', name: '', type: 'dm', siteId: 'site-A' },
+]
 
 function setup(overrides = {}) {
   const requestWithAsyncResult = vi.fn().mockResolvedValue({
@@ -20,6 +38,9 @@ function setup(overrides = {}) {
     requestWithAsyncResult,
     ...overrides,
   })
+  useRoomSummaries.mockReturnValue({
+    summaries: overrides.summaries ?? DEFAULT_SUMMARIES,
+  })
   const onClose = vi.fn()
   const onCreated = vi.fn()
   render(<CreateRoomDialog onClose={onClose} onCreated={onCreated} />)
@@ -27,7 +48,10 @@ function setup(overrides = {}) {
 }
 
 describe('CreateRoomDialog', () => {
-  beforeEach(() => useNats.mockReset())
+  beforeEach(() => {
+    useNats.mockReset()
+    useRoomSummaries.mockReset()
+  })
 
   it('does not show a room-type dropdown — type is inferred from inputs', () => {
     setup()
@@ -75,6 +99,7 @@ describe('CreateRoomDialog', () => {
       request: vi.fn(),
       requestWithAsyncResult,
     })
+    useRoomSummaries.mockReturnValue({ summaries: DEFAULT_SUMMARIES })
     const onCreated = vi.fn()
     render(<CreateRoomDialog onClose={vi.fn()} onCreated={onCreated} />)
     fireEvent.change(screen.getByLabelText(/Users/i), { target: { value: 'bob' } })
@@ -121,6 +146,7 @@ describe('CreateRoomDialog', () => {
       request: vi.fn(),
       requestWithAsyncResult,
     })
+    useRoomSummaries.mockReturnValue({ summaries: DEFAULT_SUMMARIES })
     const onCreated = vi.fn()
     const onClose = vi.fn()
     render(<CreateRoomDialog onClose={onClose} onCreated={onCreated} />)
@@ -156,6 +182,52 @@ describe('CreateRoomDialog', () => {
     })
   })
 
+  describe('subscription.update wait', () => {
+    it('shows "Waiting for server confirmation…" and holds the dialog open after sync ack until summaries contains the room', async () => {
+      // Start with the new room absent from summaries — emulates the
+      // window between the synchronous create ack and the asynchronous
+      // subscription.update event landing.
+      const { requestWithAsyncResult, onCreated, onClose } = setup({ summaries: [] })
+      fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'frontend' } })
+      fireEvent.click(screen.getByRole('button', { name: /Create/i }))
+      // Wait for the sync ack to be processed (request fires + we set
+      // pendingRoom).
+      await waitFor(() => expect(requestWithAsyncResult).toHaveBeenCalledTimes(1))
+      // After sync ack the button label flips to "Waiting…" and neither
+      // callback has fired yet — the dialog is parked, watching summaries.
+      expect(await screen.findByRole('button', { name: /Waiting for server confirmation/i })).toBeInTheDocument()
+      expect(onCreated).not.toHaveBeenCalled()
+      expect(onClose).not.toHaveBeenCalled()
+    })
+
+    it('closes after the 3-second timeout if subscription.update never arrives (safety fallback)', async () => {
+      // shouldAdvanceTime keeps the real-time portion of the test (the
+      // promise resolution of requestWithAsyncResult) moving forward;
+      // without it the await screen.findByRole would itself hang waiting
+      // for the dialog state to update.
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        const { onCreated, onClose } = setup({ summaries: [] })
+        fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'frontend' } })
+        fireEvent.click(screen.getByRole('button', { name: /Create/i }))
+        await screen.findByRole('button', { name: /Waiting/i })
+        expect(onCreated).not.toHaveBeenCalled()
+        // The 3s safety-fallback setTimeout was scheduled when pendingRoom
+        // became set. Advance fake time past it and wait for React to flush
+        // the resulting state updates.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(3001)
+        })
+        await waitFor(() =>
+          expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 'r-new' }))
+        )
+        expect(onClose).toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
   it('shows the server error on a failed create and does not close', async () => {
     const requestWithAsyncResult = vi.fn().mockRejectedValue(new Error('exceeds maximum capacity (50)'))
     useNats.mockReturnValue({
@@ -163,6 +235,7 @@ describe('CreateRoomDialog', () => {
       request: vi.fn(),
       requestWithAsyncResult,
     })
+    useRoomSummaries.mockReturnValue({ summaries: DEFAULT_SUMMARIES })
     const onClose = vi.fn()
     render(<CreateRoomDialog onClose={onClose} onCreated={vi.fn()} />)
     fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'huge' } })
