@@ -15,49 +15,100 @@ type SearchMessagesRequest struct {
 }
 
 // SearchMessagesResponse is the NATS reply for `search.messages`.
+// Breaking change from the prior shape ({total, results}): the field
+// containing hits is now "messages" and the type is SearchMessage (an
+// enriched projection) rather than the former MessageSearchHit.
 type SearchMessagesResponse struct {
-	Total   int64              `json:"total"`
-	Results []MessageSearchHit `json:"results"`
+	Messages []SearchMessage `json:"messages"`
+	Total    int64           `json:"total"`
 }
 
-// MessageSearchHit is a single message result in SearchMessagesResponse.
-// Fields mirror the `messages-*` ES index document written by search-sync-worker.
-type MessageSearchHit struct {
-	MessageID             string     `json:"messageId"`
-	RoomID                string     `json:"roomId"`
-	SiteID                string     `json:"siteId"`
-	UserID                string     `json:"userId"`
-	UserAccount           string     `json:"userAccount"`
-	Content               string     `json:"content"`
-	CreatedAt             time.Time  `json:"createdAt"`
-	ThreadParentMessageID string     `json:"threadParentMessageId,omitempty"`
-	ThreadParentCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty"`
-}
-
-// SearchRoomsRequest is the NATS payload for `chat.user.{account}.request.search.rooms`.
+// SearchMessage is the per-hit projection returned by search.messages.
+// It carries both the raw ES fields and Mongo-enriched user/room fields
+// so the client never needs a second round-trip.
 //
-// Scope values: "all" (default), "channel" (roomType=p), "dm" (roomType=d).
-// "app" is reserved and currently rejected as unsupported in MVP.
-type SearchRoomsRequest struct {
-	SearchText string `json:"searchText"`
-	Scope      string `json:"scope,omitempty"`
-	Size       int    `json:"size,omitempty"`
-	Offset     int    `json:"offset,omitempty"`
+// Field list mirrors the legacy HTTP search-messages response shape.
+// Populate all fields present in the legacy HTTP handler's response
+// struct — add or extend this list if the legacy shape has more fields.
+type SearchMessage struct {
+	MessageID             string    `json:"messageId"`
+	RoomID                string    `json:"roomId"`
+	RoomName              string    `json:"roomName,omitempty"`
+	SiteID                string    `json:"siteId"`
+	UserAccount           string    `json:"userAccount"`
+	UserEngName           string    `json:"userEngName,omitempty"`
+	UserChineseName       string    `json:"userChineseName,omitempty"`
+	Content               string    `json:"content"`
+	CreatedAt             time.Time `json:"createdAt"`
+	ThreadParentMessageID string    `json:"threadParentMessageId,omitempty"`
 }
 
-// SearchRoomsResponse is the NATS reply for `search.rooms`.
-type SearchRoomsResponse struct {
-	Total   int64           `json:"total"`
-	Results []RoomSearchHit `json:"results"`
+// SearchSubscriptionsRequest is the NATS payload for
+// `chat.user.{account}.request.search.subscriptions`.
+//
+// Query is a non-empty substring match on room name (case-insensitive prefix).
+// RoomType filters by subscription type: "all" (default, same as empty),
+// "channel", or "dm". The value "app" and any other value are rejected with
+// ErrBadRequest.
+type SearchSubscriptionsRequest struct {
+	Query    string `json:"query"`
+	RoomType string `json:"roomType,omitempty"`
+	Size     int    `json:"size,omitempty"`
+	Offset   int    `json:"offset,omitempty"`
 }
 
-// RoomSearchHit is a single room result in SearchRoomsResponse.
-// Fields mirror the `spotlight` ES index document written by search-sync-worker.
-type RoomSearchHit struct {
-	RoomID      string    `json:"roomId"`
-	RoomName    string    `json:"roomName"`
-	RoomType    string    `json:"roomType"`
-	UserAccount string    `json:"userAccount"`
-	SiteID      string    `json:"siteId"`
-	JoinedAt    time.Time `json:"joinedAt"`
+// SearchSubscriptionsResponse is the NATS reply for `search.subscriptions`.
+// Subscriptions is always non-nil (empty slice marshals as []).
+type SearchSubscriptionsResponse struct {
+	Subscriptions []SearchSubscription `json:"subscriptions"`
+}
+
+// SearchSubscription is the per-user-room projection returned by
+// search.subscriptions. Field list mirrors the legacy HTTP shape for
+// the /subscriptions endpoint — fill in additional fields per the legacy
+// response during implementation.
+type SearchSubscription struct {
+	RoomID   string `json:"roomId"             bson:"roomId"`
+	Name     string `json:"name"               bson:"name"`
+	RoomType string `json:"roomType,omitempty" bson:"roomType,omitempty"`
+}
+
+// SearchAppsRequest is the NATS payload for `chat.user.{account}.request.search.apps`.
+//
+// NameQuery is a non-empty substring match (case-insensitive). AssistantEnabled is a
+// strict equality filter on `app.assistant.enabled` when non-nil; nil means no filter.
+type SearchAppsRequest struct {
+	NameQuery        string `json:"nameQuery"`
+	AssistantEnabled *bool  `json:"assistantEnabled,omitempty"`
+	Size             int    `json:"size,omitempty"`
+	Offset           int    `json:"offset,omitempty"`
+}
+
+// SearchAppsResponse is the NATS reply for `search.apps`. Apps is always
+// non-nil (empty slice marshals as []), and is scoped to apps the caller
+// has subscribed to (enforced by the pipeline's $lookup against the
+// subscriptions collection).
+type SearchAppsResponse struct {
+	Apps []App `json:"apps"`
+}
+
+// SearchUsersRequest is the NATS payload for `chat.user.{account}.request.search.users`.
+//
+// No pagination — the third-party HR endpoint hardcodes offset=0, limit=25.
+type SearchUsersRequest struct {
+	Query string `json:"query"`
+}
+
+// SearchUser is a single user result returned by the `search.users` RPC.
+// Fields mirror the legacy GET /api/v3/users HTTP response shape.
+//
+// TODO(searchUsers-thirdparty): copy the exact field list from the legacy
+// HTTP response struct when wiring the real third-party endpoint.
+// The placeholder fields below cover the known subset; add or remove as
+// needed to match the actual wire shape.
+type SearchUser struct {
+	Account     string `json:"account"`
+	EngName     string `json:"engName,omitempty"`
+	ChineseName string `json:"chineseName,omitempty"`
+	// ... more fields per the legacy shape — add here and in the roundTrip test above
 }

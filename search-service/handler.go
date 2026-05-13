@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
@@ -25,11 +28,13 @@ type handlerConfig struct {
 
 type handler struct {
 	store SearchStore
+	mongo MongoStore
+	users SearchUsersClient
 	cache RestrictedRoomCache
 	cfg   handlerConfig
 }
 
-func newHandler(store SearchStore, cache RestrictedRoomCache, cfg handlerConfig) *handler {
+func newHandler(store SearchStore, mongo MongoStore, users SearchUsersClient, cache RestrictedRoomCache, cfg handlerConfig) *handler {
 	if cfg.DocCounts <= 0 {
 		cfg.DocCounts = 25
 	}
@@ -42,12 +47,14 @@ func newHandler(store SearchStore, cache RestrictedRoomCache, cfg handlerConfig)
 	if cfg.RecentWindow <= 0 {
 		cfg.RecentWindow = 365 * 24 * time.Hour
 	}
-	return &handler{store: store, cache: cache, cfg: cfg}
+	return &handler{store: store, mongo: mongo, users: users, cache: cache, cfg: cfg}
 }
 
 func (h *handler) Register(r *natsrouter.Router) {
 	natsrouter.Register(r, subject.SearchMessagesPattern(), h.searchMessages)
-	natsrouter.Register(r, subject.SearchRoomsPattern(), h.searchRooms)
+	natsrouter.Register(r, subject.SearchSubscriptionsPattern(), h.searchSubscriptions)
+	natsrouter.Register(r, subject.SearchAppsPattern(), h.searchApps)
+	natsrouter.Register(r, subject.SearchUsersPattern(), h.searchUsers)
 }
 
 func (h *handler) withRequestTimeout(parent context.Context) (context.Context, context.CancelFunc) {
@@ -80,11 +87,25 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 		return nil, err
 	}
 
-	body, err := buildMessageQuery(req, account, restricted, h.cfg.RecentWindow, h.cfg.UserRoomIndex)
+	// Classify the caller-supplied RoomIDs against the restricted-rooms
+	// map. When RoomIDs is nil/empty, both returns are nil — the existing
+	// global-search path (all rooms via terms-lookup) is used.
+	_, restrictedWithFloor := classifyRoomIDs(req.RoomIDs, restricted)
+
+	// When RoomIDs is set, substitute the restricted subset so only the
+	// requested restricted rooms get their floor clauses. req.RoomIDs is
+	// left as-is (the full caller-supplied list) so that scopedAccessClauses
+	// can classify each ID itself using the filtered restricted map.
+	effectiveRestricted := restricted
+	if len(req.RoomIDs) > 0 {
+		effectiveRestricted = restrictedWithFloor
+		if effectiveRestricted == nil {
+			effectiveRestricted = map[string]int64{}
+		}
+	}
+
+	body, err := buildMessageQuery(req, account, effectiveRestricted, h.cfg.RecentWindow, h.cfg.UserRoomIndex)
 	if err != nil {
-		// Only reachable via json.Marshal failure on well-typed maps —
-		// effectively unreachable — but sanitize anyway so no raw
-		// internal error ever leaves the service boundary.
 		slog.Error("build message query failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("unable to build search query")
 	}
@@ -97,16 +118,88 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 		return nil, natsrouter.ErrInternal("search backend unavailable")
 	}
 
-	resp, err = parseMessagesResponse(raw)
+	hits, total, err := parseMessagesResponse(raw)
 	if err != nil {
 		slog.Error("parse messages response failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("unexpected search response")
 	}
-	return resp, nil
+
+	if len(hits) == 0 {
+		return &model.SearchMessagesResponse{
+			Messages: []model.SearchMessage{},
+			Total:    total,
+		}, nil
+	}
+
+	// --- Mongo enrichment ---
+	// Collect distinct userIDs and roomIDs from the ES hits.
+	userIDSet := make(map[string]struct{}, len(hits))
+	roomIDSet := make(map[string]struct{}, len(hits))
+	for i := range hits {
+		if hits[i].UserID != "" {
+			userIDSet[hits[i].UserID] = struct{}{}
+		}
+		if hits[i].RoomID != "" {
+			roomIDSet[hits[i].RoomID] = struct{}{}
+		}
+	}
+	userIDs := setToSlice(userIDSet)
+	roomIDs := setToSlice(roomIDSet)
+
+	// User and room batch lookups are independent — fire them in parallel
+	// to halve the enrichment-step latency. errgroup propagates the first
+	// error and cancels the sibling.
+	var (
+		users []model.User
+		rooms []model.Room
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		var err error
+		users, err = h.mongo.FindUsersByIDs(gctx, userIDs)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		rooms, err = h.mongo.FindRoomsByIDs(gctx, roomIDs)
+		return err
+	})
+	if err := g.Wait(); err != nil {
+		slog.Error("message enrichment failed", "account", account, "error", err)
+		return nil, natsrouter.ErrInternal("search enrichment unavailable")
+	}
+
+	// Build lookup maps for O(1) enrichment per hit.
+	userMap := make(map[string]*model.User, len(users))
+	for i := range users {
+		userMap[users[i].ID] = &users[i]
+	}
+	roomMap := make(map[string]*model.Room, len(rooms))
+	for i := range rooms {
+		roomMap[rooms[i].ID] = &rooms[i]
+	}
+
+	// Zip hits with enrichment.
+	messages := make([]model.SearchMessage, 0, len(hits))
+	for i := range hits {
+		messages = append(messages, toSearchMessage(&hits[i], userMap[hits[i].UserID], roomMap[hits[i].RoomID]))
+	}
+
+	return &model.SearchMessagesResponse{Messages: messages, Total: total}, nil
 }
 
-func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsRequest) (resp *model.SearchRoomsResponse, err error) {
-	defer observeRequest(metricKindRooms, &err)()
+// setToSlice converts a set (map[string]struct{}) to a string slice.
+// Used to deduplicate IDs before batch Mongo fetches.
+func setToSlice(m map[string]struct{}) []string {
+	s := make([]string, 0, len(m))
+	for k := range m {
+		s = append(s, k)
+	}
+	return s
+}
+
+func (h *handler) searchSubscriptions(c *natsrouter.Context, req model.SearchSubscriptionsRequest) (resp *model.SearchSubscriptionsResponse, err error) {
+	defer observeRequest(metricKindSubscriptions, &err)()
 
 	account, rerr := c.Params.Require("account")
 	if rerr != nil {
@@ -116,23 +209,25 @@ func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsReques
 	if err := h.normalizePagination(&req.Size, &req.Offset); err != nil {
 		return nil, err
 	}
-	if req.SearchText == "" {
-		return nil, natsrouter.ErrBadRequest("searchText is required")
+
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return nil, natsrouter.ErrBadRequest("query is required")
 	}
+	req.Query = query
 
 	ctx, cancel := h.withRequestTimeout(c)
 	defer cancel()
 
-	body, err := buildRoomQuery(req, account)
+	body, err := buildSubscriptionQuery(req, account)
 	if err != nil {
-		// RouteError (bad scope, scope=app, unknown) passes through;
-		// anything else (marshal failure — unreachable) gets sanitized
-		// to ErrInternal. Mirrors searchMessages's buildMessageQuery branch.
+		// RouteError (invalid roomType) passes through;
+		// anything else (marshal failure — unreachable) gets sanitized.
 		var rerr *natsrouter.RouteError
 		if errors.As(err, &rerr) {
 			return nil, err
 		}
-		slog.Error("build room query failed", "account", account, "error", err)
+		slog.Error("build subscription query failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("unable to build search query")
 	}
 
@@ -140,16 +235,30 @@ func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsReques
 	raw, err := h.store.Search(ctx, []string{h.cfg.SpotlightReadPattern}, body)
 	observeESDone()
 	if err != nil {
-		slog.Error("room search backend failed", "account", account, "error", err)
+		slog.Error("subscription search backend failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("search backend unavailable")
 	}
 
-	resp, err = parseRoomsResponse(raw)
+	roomIDs, err := parseSubscriptionRoomIDs(raw)
 	if err != nil {
-		slog.Error("parse rooms response failed", "account", account, "error", err)
+		slog.Error("parse subscription room IDs failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("unexpected search response")
 	}
-	return resp, nil
+
+	if len(roomIDs) == 0 {
+		return &model.SearchSubscriptionsResponse{Subscriptions: []model.SearchSubscription{}}, nil
+	}
+
+	subs, err := h.mongo.HydrateSubscriptions(ctx, account, roomIDs)
+	if err != nil {
+		slog.Error("subscription hydration failed", "account", account, "error", err)
+		return nil, natsrouter.ErrInternal("subscription hydration unavailable")
+	}
+
+	if subs == nil {
+		subs = []model.SearchSubscription{}
+	}
+	return &model.SearchSubscriptionsResponse{Subscriptions: subs}, nil
 }
 
 // loadRestricted implements the 2-tier Valkey → ES read. Cache errors
@@ -192,10 +301,74 @@ func (h *handler) loadRestricted(ctx context.Context, account string) (map[strin
 	return restricted, nil
 }
 
+func (h *handler) searchApps(c *natsrouter.Context, req model.SearchAppsRequest) (resp *model.SearchAppsResponse, err error) {
+	defer observeRequest(metricKindApps, &err)()
+
+	account, rerr := c.Params.Require("account")
+	if rerr != nil {
+		return nil, rerr
+	}
+
+	if err := h.normalizePagination(&req.Size, &req.Offset); err != nil {
+		return nil, err
+	}
+
+	nameQuery := strings.TrimSpace(req.NameQuery)
+	if nameQuery == "" {
+		return nil, natsrouter.ErrBadRequest("nameQuery is required")
+	}
+
+	ctx, cancel := h.withRequestTimeout(c)
+	defer cancel()
+
+	apps, err := h.mongo.SearchAppsByName(ctx, nameQuery, account, req.AssistantEnabled, req.Offset, req.Size)
+	if err != nil {
+		slog.Error("app search backend failed", "account", account, "error", err)
+		return nil, natsrouter.ErrInternal("search backend unavailable")
+	}
+
+	if apps == nil {
+		apps = []model.App{}
+	}
+	return &model.SearchAppsResponse{Apps: apps}, nil
+}
+
+// searchUsers proxies the query to the third-party HR endpoint via
+// SearchUsersClient and returns a raw []model.SearchUser. The account
+// from the subject is used for logging and metrics only; scoping is
+// enforced entirely by the third-party endpoint.
+func (h *handler) searchUsers(c *natsrouter.Context, req model.SearchUsersRequest) (resp *[]model.SearchUser, err error) {
+	defer observeRequest(metricKindUsers, &err)()
+
+	account, rerr := c.Params.Require("account")
+	if rerr != nil {
+		return nil, rerr
+	}
+
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return nil, natsrouter.ErrBadRequest("query is required")
+	}
+
+	ctx, cancel := h.withRequestTimeout(c)
+	defer cancel()
+
+	users, err := h.users.SearchUsers(ctx, query)
+	if err != nil {
+		slog.Error("user search backend failed", "account", account, "error", err)
+		return nil, natsrouter.ErrInternal("user search backend unavailable")
+	}
+
+	if users == nil {
+		users = []model.SearchUser{}
+	}
+	return &users, nil
+}
+
 // normalizePagination validates and clamps size/offset in place. size=0
-// falls back to DocCounts; size>MaxDocCounts is capped; negative
-// offset is clamped to 0. Negative size or offset in the request is a
-// client bug, not a defaultable value, so it returns ErrBadRequest.
+// falls back to DocCounts; size>MaxDocCounts is capped. Negative size
+// or offset is a client bug, not a defaultable value, so it returns
+// ErrBadRequest.
 func (h *handler) normalizePagination(size, offset *int) error {
 	if *size < 0 || *offset < 0 {
 		return natsrouter.ErrBadRequest("size and offset must be non-negative")

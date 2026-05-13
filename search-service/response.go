@@ -23,10 +23,10 @@ type rawResponse[T any] struct {
 	} `json:"hits"`
 }
 
-// messageSource mirrors MessageSearchIndex in search-sync-worker. The
-// `tshow` flag is used by the restricted-room access clauses at query
-// time and not surfaced in the response.
-type messageSource struct {
+// messageSearchHit is the internal staging type produced by parseMessagesResponse.
+// It is used ONLY between the ES parse step and the Mongo enrichment step; it
+// is never serialised to clients. The public reply type is model.SearchMessage.
+type messageSearchHit struct {
 	MessageID             string     `json:"messageId"`
 	RoomID                string     `json:"roomId"`
 	SiteID                string     `json:"siteId"`
@@ -38,63 +38,62 @@ type messageSource struct {
 	ThreadParentCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty"`
 }
 
-// roomSource is the ES `_source` shape for a spotlight hit.
-type roomSource struct {
-	RoomID      string    `json:"roomId"`
-	RoomName    string    `json:"roomName"`
-	RoomType    string    `json:"roomType"`
-	UserAccount string    `json:"userAccount"`
-	SiteID      string    `json:"siteId"`
-	JoinedAt    time.Time `json:"joinedAt"`
+// subscriptionSearchHit is the ES `_source` shape for a spotlight hit used
+// during the subscription search flow. Only `roomId` is extracted; the other
+// fields are present in the index but unused after the Mongo hydration step.
+type subscriptionSearchHit struct {
+	RoomID string `json:"roomId"`
 }
 
-func parseMessagesResponse(raw json.RawMessage) (*model.SearchMessagesResponse, error) {
-	var rr rawResponse[messageSource]
+func parseMessagesResponse(raw json.RawMessage) ([]messageSearchHit, int64, error) {
+	var rr rawResponse[messageSearchHit]
 	if err := json.Unmarshal(raw, &rr); err != nil {
-		return nil, fmt.Errorf("parse messages response: %w", err)
+		return nil, 0, fmt.Errorf("parse messages response: %w", err)
 	}
 
-	out := &model.SearchMessagesResponse{
-		Total:   rr.Hits.Total.Value,
-		Results: make([]model.MessageSearchHit, 0, len(rr.Hits.Hits)),
-	}
+	out := make([]messageSearchHit, 0, len(rr.Hits.Hits))
 	for i := range rr.Hits.Hits {
-		src := &rr.Hits.Hits[i].Source
-		out.Results = append(out.Results, model.MessageSearchHit{
-			MessageID:             src.MessageID,
-			RoomID:                src.RoomID,
-			SiteID:                src.SiteID,
-			UserID:                src.UserID,
-			UserAccount:           src.UserAccount,
-			Content:               src.Content,
-			CreatedAt:             src.CreatedAt,
-			ThreadParentMessageID: src.ThreadParentID,
-			ThreadParentCreatedAt: src.ThreadParentCreatedAt,
-		})
+		out = append(out, rr.Hits.Hits[i].Source)
 	}
-	return out, nil
+	return out, rr.Hits.Total.Value, nil
 }
 
-func parseRoomsResponse(raw json.RawMessage) (*model.SearchRoomsResponse, error) {
-	var rr rawResponse[roomSource]
+// toSearchMessage zips an internal messageSearchHit with optional Mongo-
+// enriched user and room documents into the public model.SearchMessage
+// projection. Nil user/room pointers are safe — enriched fields are left
+// at their zero value.
+func toSearchMessage(hit *messageSearchHit, user *model.User, room *model.Room) model.SearchMessage {
+	msg := model.SearchMessage{
+		MessageID:             hit.MessageID,
+		RoomID:                hit.RoomID,
+		SiteID:                hit.SiteID,
+		UserAccount:           hit.UserAccount,
+		Content:               hit.Content,
+		CreatedAt:             hit.CreatedAt,
+		ThreadParentMessageID: hit.ThreadParentID,
+	}
+	if user != nil {
+		msg.UserEngName = user.EngName
+		msg.UserChineseName = user.ChineseName
+	}
+	if room != nil {
+		msg.RoomName = room.Name
+	}
+	return msg
+}
+
+// parseSubscriptionRoomIDs extracts the ordered list of room IDs from a
+// spotlight ES response. The caller passes these IDs to HydrateSubscriptions
+// for Mongo enrichment.
+func parseSubscriptionRoomIDs(raw json.RawMessage) ([]string, error) {
+	var rr rawResponse[subscriptionSearchHit]
 	if err := json.Unmarshal(raw, &rr); err != nil {
-		return nil, fmt.Errorf("parse rooms response: %w", err)
+		return nil, fmt.Errorf("parse subscription room IDs: %w", err)
 	}
 
-	out := &model.SearchRoomsResponse{
-		Total:   rr.Hits.Total.Value,
-		Results: make([]model.RoomSearchHit, 0, len(rr.Hits.Hits)),
-	}
+	ids := make([]string, 0, len(rr.Hits.Hits))
 	for i := range rr.Hits.Hits {
-		src := &rr.Hits.Hits[i].Source
-		out.Results = append(out.Results, model.RoomSearchHit{
-			RoomID:      src.RoomID,
-			RoomName:    src.RoomName,
-			RoomType:    src.RoomType,
-			UserAccount: src.UserAccount,
-			SiteID:      src.SiteID,
-			JoinedAt:    src.JoinedAt,
-		})
+		ids = append(ids, rr.Hits.Hits[i].Source.RoomID)
 	}
-	return out, nil
+	return ids, nil
 }
