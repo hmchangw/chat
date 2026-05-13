@@ -2723,6 +2723,28 @@ describe('MessageRow — inline edit mode', () => {
     expect(onEditCancel).toHaveBeenCalled()
   })
 
+  it('renders "(edited)" marker when message.editedAt is set', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, editedAt: '2026-05-13T11:00:00Z' }}
+        context="main"
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByText(/\(edited\)/i)).toBeInTheDocument()
+  })
+
+  it('omits "(edited)" marker when editedAt is unset', () => {
+    render(
+      <MessageRow
+        message={msg}
+        context="main"
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.queryByText(/\(edited\)/i)).not.toBeInTheDocument()
+  })
+
   it('renders "[message deleted]" placeholder when message.deleted is true', () => {
     render(
       <MessageRow
