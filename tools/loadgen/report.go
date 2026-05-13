@@ -84,10 +84,15 @@ type Summary struct {
 	// OmissionDroppedP99 is the p99 coordinated-omission dispatch deficit
 	// for ticks that were dropped due to pool saturation.
 	OmissionDroppedP99 time.Duration
+	// RunQualityVerdict is the end-of-run trust classification computed by
+	// EvaluateRunQuality. Printed at the very top of the summary so the
+	// operator sees the verdict before the latency/throughput numbers.
+	RunQualityVerdict RunQualityVerdict
 }
 
 // PrintSummary writes the terminal summary to w using text/tabwriter.
 func PrintSummary(w io.Writer, s *Summary) error {
+	PrintRunQuality(w, s.RunQualityVerdict)
 	fmt.Fprintln(w, "=== loadgen run complete ===")
 	if s.RunID != "" {
 		fmt.Fprintf(w, "run_id: %s\n", s.RunID)

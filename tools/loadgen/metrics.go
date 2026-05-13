@@ -35,6 +35,11 @@ type Metrics struct {
 	// (or was dropped). Label "dropped"="true"|"false" separates pool-
 	// saturation drops from serviced-but-late ticks.
 	OmissionDeficit *prometheus.HistogramVec
+	// RunQuality is a gauge with label "verdict" (TRUSTED|DEGRADED|UNTRUSTED).
+	// Exactly one label value is set to 1 at run finalization; the others
+	// are set to 0 so the metric is always fully populated for Grafana
+	// state panels.
+	RunQuality *prometheus.GaugeVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -103,6 +108,10 @@ func NewMetrics() *Metrics {
 			},
 			[]string{"dropped"},
 		),
+		RunQuality: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loadgen_run_quality",
+			Help: "RUN QUALITY verdict; gauge of 1 for the active verdict, 0 otherwise.",
+		}, []string{"verdict"}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -111,6 +120,7 @@ func NewMetrics() *Metrics {
 		m.ConsumerPending, m.ConsumerAckPending, m.ConsumerRedelivered,
 		m.RunInfo, m.LivenessProbes,
 		m.OmissionDeficit,
+		m.RunQuality,
 	)
 	return m
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -37,7 +38,8 @@ import (
 //   - summary print and optional CSV export
 //   - exit code determination
 //
-// It returns the process exit code (0=pass, 1=fail, 2=saturated, 3=dead SUT).
+// It returns the process exit code (0=pass, 1=fail, 2=saturated, 3=dead SUT,
+// 4=UNTRUSTED verdict on otherwise-clean run).
 func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injectMode InjectMode) int {
 	cfg := rt.cfg
 	runID := rt.RunID()
@@ -356,6 +358,33 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		}, rf.Seed)
 	}
 
+	// Settle phase: runs AFTER warmup, BEFORE the measured window starts.
+	// Probes N recent message IDs from the auto-warmup pool to ensure they
+	// are visible in the downstream system (read-after-write fence).
+	// When rf.Settle.Probes == 0 or no IDs are available, Settle returns
+	// immediately with AllSucceeded == true (no-op).
+	//
+	// Phase 1a.6: uses an always-OK stub probe so the infrastructure is
+	// in place; the real LoadHistory probe is wired in Phase 3.1 (RAW).
+	// The settle outcome is fed into RunQualityInputs.SettleOutcome so a
+	// failed settle downgrades the verdict to UNTRUSTED.
+	recentIDs := collector.MessageIDs()
+	if len(recentIDs) > rf.Settle.Probes && rf.Settle.Probes > 0 {
+		recentIDs = recentIDs[len(recentIDs)-rf.Settle.Probes:]
+	}
+	// TODO Phase 3.1: replace this stub with a real LoadHistory probe so
+	// settle actually verifies message visibility in Cassandra.
+	alwaysOKProbe := func(_ context.Context, _ string) error { return nil }
+	settleCtx, settleCancel := context.WithTimeout(ctx, rf.Settle.Timeout)
+	settleOutcome, settleErr := rt.Settle(settleCtx, rf.Settle, recentIDs, alwaysOKProbe)
+	settleCancel()
+	if settleErr != nil {
+		slog.Warn("settle phase failed", "error", settleErr,
+			"succeeded", settleOutcome.Succeeded, "total", len(settleOutcome.Probes))
+	} else if rf.Settle.Probes > 0 && len(recentIDs) > 0 {
+		slog.Info("settle phase complete", "probes", settleOutcome.Succeeded)
+	}
+
 	// F9: capture runStart AFTER readiness completes so the RunInfo
 	// gauge's start_unix label agrees with the progress reporter's
 	// elapsed/remaining math.
@@ -487,10 +516,12 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	// PublishMsgAsync. If a future change adds a late publisher (a new
 	// sampler, liveness probe, etc.), it MUST run before this drain or
 	// late acks will race with report emission.
+	var drainTimedOut bool
 	if publisher.asyncJS {
 		select {
 		case <-js.PublishAsyncComplete():
 		case <-time.After(asyncDrainTimeout):
+			drainTimedOut = true
 			slog.Warn("jetstream async publish drain timed out",
 				"pending", js.PublishAsyncPending(),
 				"max_pending", rf.JS.AsyncMaxPending,
@@ -553,6 +584,67 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	actualRate := computeActualRate(rf.Scenario, injectMode, measured,
 		collector.E1Count(), missingReplies, sentMeasured, requestStats)
 
+	// Compute MeasuredP99 from E1 samples (messaging-pipeline) or from
+	// request stats (read scenarios). Use the E1 p99 as the primary source;
+	// fall back to the first read-scenario p99 when E1 is empty.
+	measuredP99 := ComputePercentiles(collector.E1Samples()).P99
+	if measuredP99 == 0 && len(requestStats) > 0 {
+		measuredP99 = requestStats[0].Latency.P99
+	}
+
+	// WarmupErrorRate: approximate as total-publish-errors / total-sent for
+	// the warmup phase. Because loadgen_publish_errors_total has no phase
+	// label (only preset + reason), we can only bound the rate using warmup
+	// sent count as the denominator and all errors as the numerator — this
+	// over-counts (measured errors contribute) but is conservative (fails
+	// fast rather than missing a truly degraded warmup).
+	//
+	// TODO Phase 1b: add a "phase" label to loadgen_publish_errors_total so
+	// warmup errors can be isolated without this approximation.
+	var warmupErrorRate float64
+	if sentWarmup > 0 {
+		warmupErrors := publishErrs // all errors, not just warmup-phase errors
+		warmupErrorRate = warmupErrors / float64(sentWarmup)
+		if warmupErrorRate > 1.0 {
+			warmupErrorRate = 1.0 // clamp: measured errors can inflate past 100%
+		}
+	}
+
+	// LivenessFailures: gather from the liveness probe counter.
+	livenessFailCount := int(gatheredCounterValue(mfs, "loadgen_liveness_probes_total", "result", "fail"))
+
+	rqi := &RunQualityInputs{
+		DrainTimedOut:          drainTimedOut,
+		MeasuredDuration:       measured,
+		AbortP99Sustain:        rf.Abort.P99Sustain,
+		WarmupErrorRate:        warmupErrorRate,
+		SettleOutcome:          settleOutcome,
+		OmissionP99Serviced:    rt.Omission().Quantile(0.99, false),
+		MeasuredP99:            measuredP99,
+		LivenessFailures:       livenessFailCount,
+		LivenessWatcherTripped: livenessFailed.Load(),
+		// TODO Phase 1b: wire AbortWatcherDeafened from abort-watcher
+		// saturation signal when that tracking is added.
+		AbortWatcherDeafened: false,
+		// TODO Phase 1b: wire PeakRPSTimesSustain from
+		// resolveAbortPeakRPS × abortMaxSustain.
+		PeakRPSTimesSustain: 0,
+		// TODO Phase 1b: wire AbortWindowCap from resolvedAbortCap.
+		AbortWindowCap: 0,
+		// TODO Phase 3.1: wire RAWPollIntervalCoarse from RAW scenario config.
+		RAWPollIntervalCoarse: false,
+	}
+	verdict := EvaluateRunQuality(rqi)
+
+	// Set the loadgen_run_quality gauge: exactly one label value is 1.
+	for _, v := range []string{"TRUSTED", "DEGRADED", "UNTRUSTED"} {
+		val := 0.0
+		if v == verdict.Verdict {
+			val = 1.0
+		}
+		metrics.RunQuality.With(prometheus.Labels{"verdict": v}).Set(val)
+	}
+
 	summary := Summary{
 		RunID:               runID,
 		Preset:              p.Name,
@@ -577,6 +669,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		Requests:            requestStats,
 		OmissionServicedP99: rt.Omission().Quantile(0.99, false),
 		OmissionDroppedP99:  rt.Omission().Quantile(0.99, true),
+		RunQualityVerdict:   verdict,
 	}
 	if err := PrintSummary(os.Stdout, &summary); err != nil {
 		slog.Warn("print summary", "error", err)
@@ -600,7 +693,14 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		reason, _ := abortReason.Load().(string)
 		slog.Warn("run aborted by saturation watcher", "reason", reason)
 	}
-	return exitCodeForFull(abortTripped.Load(), livenessFailed.Load(), summary.SentMeasured, totalErrs)
+	baseCode := exitCodeForFull(abortTripped.Load(), livenessFailed.Load(), summary.SentMeasured, totalErrs)
+	// Exit code 4: UNTRUSTED verdict only when the base code would be 0
+	// (clean pass). Higher-priority codes (1=clean-fail, 2=saturation,
+	// 3=liveness) already indicate a problem and take precedence.
+	if baseCode == 0 && verdict.Verdict == "UNTRUSTED" {
+		return 4
+	}
+	return baseCode
 }
 
 // ramp returns the built *Ramp from the already-validated run flags.
@@ -635,6 +735,10 @@ func exitCodeFor(aborted bool, sent, totalErrs int) int {
 //	1 = clean fail (errors above tolerance, no abort)
 //	2 = aborted by the saturation watcher (SUT got slow)
 //	3 = aborted by the liveness watcher (SUT became unreachable)
+//
+// Note: exit code 4 (UNTRUSTED verdict) is applied by executeRun on top
+// of this function when the base code would be 0 — see the verdict check
+// after exitCodeForFull is called.
 func exitCodeForFull(saturationAborted, livenessFailed bool, sent, totalErrs int) int {
 	if livenessFailed {
 		return 3

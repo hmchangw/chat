@@ -137,6 +137,16 @@ func runTeardown(ctx context.Context, cfg *config) int {
 // runRun is the entry point for the `run` subcommand. It validates all flags
 // and config before opening any external connections, then delegates the run
 // body to executeRun (see run.go).
+//
+// Exit-code precedence (highest to lowest):
+//
+//	2 = flag/parse/config error
+//	1 = startup error (NATS connect, JetStream init, etc.)
+//	3 = liveness watcher fired (SUT became unreachable)
+//	2 = saturation watcher fired (SUT got slow)
+//	4 = clean run but UNTRUSTED verdict (data quality issue)
+//	1 = clean fail (error rate above tolerance)
+//	0 = clean pass
 func runRun(ctx context.Context, cfg *config, args []string) int {
 	rf, err := ParseRunFlags(args)
 	if err != nil {
