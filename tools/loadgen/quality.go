@@ -184,9 +184,10 @@ func EvaluateRunQuality(in *RunQualityInputs) RunQualityVerdict {
 // the summary so the verdict is the first thing the operator sees.
 func PrintRunQuality(out io.Writer, v RunQualityVerdict) {
 	sep := strings.Repeat("=", 32)
-	fmt.Fprintf(out, "%s RUN QUALITY: %s %s\n", sep, v.Verdict, sep)
+	header := fmt.Sprintf("%s RUN QUALITY: %s %s", sep, v.Verdict, sep)
+	fmt.Fprintln(out, header)
 	for _, iss := range v.Issues {
 		fmt.Fprintf(out, "  - %s\n", iss)
 	}
-	fmt.Fprintln(out, strings.Repeat("=", len(sep)*2+18))
+	fmt.Fprintln(out, strings.Repeat("=", len(header)))
 }

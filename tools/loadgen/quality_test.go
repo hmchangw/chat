@@ -73,6 +73,26 @@ func TestRunQuality_UntrustedAbortDeafenedSevere(t *testing.T) {
 	assert.Equal(t, "UNTRUSTED", v.Verdict)
 }
 
+func TestRunQuality_DegradedLivenessFailures(t *testing.T) {
+	rq := baseGoodInputs()
+	rq.LivenessFailures = 3
+	v := EvaluateRunQuality(rq)
+	assert.Equal(t, "DEGRADED", v.Verdict)
+	assert.Len(t, v.Issues, 1)
+	assert.Contains(t, v.Issues[0], "liveness probe failed 3 times")
+}
+
+func TestRunQuality_UntrustedWithConcurrentDegraded_IssuesContainBoth(t *testing.T) {
+	rq := baseGoodInputs()
+	rq.DrainTimedOut = true // UNTRUSTED
+	rq.LivenessFailures = 2 // DEGRADED
+	v := EvaluateRunQuality(rq)
+	assert.Equal(t, "UNTRUSTED", v.Verdict)
+	joined := strings.Join(v.Issues, " ")
+	assert.Contains(t, joined, "async drain timed out")
+	assert.Contains(t, joined, "liveness probe failed 2 times")
+}
+
 func baseGoodInputs() *RunQualityInputs {
 	return &RunQualityInputs{
 		MeasuredDuration:    60 * time.Second,

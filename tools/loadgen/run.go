@@ -603,8 +603,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	// warmup errors can be isolated without this approximation.
 	var warmupErrorRate float64
 	if sentWarmup > 0 {
-		warmupErrors := publishErrs // all errors, not just warmup-phase errors
-		warmupErrorRate = warmupErrors / float64(sentWarmup)
+		warmupErrorRate = publishErrs / float64(sentWarmup)
 		if warmupErrorRate > 1.0 {
 			warmupErrorRate = 1.0 // clamp: measured errors can inflate past 100%
 		}

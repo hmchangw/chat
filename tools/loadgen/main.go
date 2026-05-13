@@ -138,15 +138,18 @@ func runTeardown(ctx context.Context, cfg *config) int {
 // and config before opening any external connections, then delegates the run
 // body to executeRun (see run.go).
 //
-// Exit-code precedence (highest to lowest):
+// Exit codes from runRun (flag/parse path):
 //
-//	2 = flag/parse/config error
-//	1 = startup error (NATS connect, JetStream init, etc.)
-//	3 = liveness watcher fired (SUT became unreachable)
-//	2 = saturation watcher fired (SUT got slow)
-//	4 = clean run but UNTRUSTED verdict (data quality issue)
-//	1 = clean fail (error rate above tolerance)
-//	0 = clean pass
+//	0  = --help
+//	2  = flag/parse/config error
+//
+// Exit codes from executeRun (see exitCodeForFull in run.go):
+//
+//	0  = clean pass
+//	1  = clean fail or startup error (e.g., NATS connect, JetStream init)
+//	2  = saturation watcher fired (SUT got slow)
+//	3  = liveness watcher fired (SUT became unreachable)
+//	4  = clean pass but UNTRUSTED verdict (Phase 1a.6)
 func runRun(ctx context.Context, cfg *config, args []string) int {
 	rf, err := ParseRunFlags(args)
 	if err != nil {
