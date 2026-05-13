@@ -14,7 +14,7 @@
 
 Brings the chat-frontend in line with the room-service async-job protocol that's been live on the backend since `2026-04-28-create-room-design.md`. Rebuilds the create-room and manage-members flows end-to-end: correct canonical subjects, correct payload shapes, two-phase reply handling, a single chip-input picker that accepts comma-separated values, a member roster with role-aware controls, a per-room badge that opens the dialog, DM name fallbacks, encryption-resilient broadcast rendering, and a dialog that parks open until the server's `subscription.update` event has landed (so the user's first message in a freshly-created channel actually echoes back instead of being lost to a subscription race).
 
-Ten commits, all in `chat-frontend/`.
+Implemented entirely in `chat-frontend/` — no backend changes.
 
 ## Problem
 
