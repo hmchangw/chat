@@ -1087,4 +1087,1219 @@ git commit -m "style(chat-frontend): rename layout selectors, add chat-room-head
 
 ---
 
-*Chapter 3 follows — Message component refactor (`QuotedBlock`, `MessageActions`, `MessageRow`, `MessageList`, `MessageInputForm`, and the Room-context containers).*
+## Chapter 3 — Message component refactor
+
+Goal: split `MessageArea.jsx` and `MessageInput.jsx` into presentational + container pieces, paving the way for Chapters 4 (Edit/Delete), 5 (quote-reply), and 7 (thread panel) to plug into the same `<MessageList>` and `<MessageInputForm>`. This chapter ships **only** Thread + Reply icons on the hover menu — Edit and Delete come in Chapter 4, and quote-staging wiring comes in Chapter 5. The Reply icon and Thread icon both accept handler props but the callers don't do anything meaningful yet; Chapters 5 and 7 wire them up.
+
+File layout produced by this chapter:
+
+```
+chat-frontend/src/components/messages/
+  QuotedBlock.jsx          (+ QuotedBlock.test.jsx)
+  MessageActions.jsx       (+ MessageActions.test.jsx)
+  MessageRow.jsx           (+ MessageRow.test.jsx)
+  MessageList.jsx          (+ MessageList.test.jsx)
+  MessageInputForm.jsx     (+ MessageInputForm.test.jsx)
+
+chat-frontend/src/components/
+  RoomMessageArea.jsx      (+ RoomMessageArea.test.jsx)
+  RoomMessageInput.jsx     (+ RoomMessageInput.test.jsx)
+```
+
+At the end of the chapter, `MessageArea.jsx` and `MessageInput.jsx` are deleted (their tests too) and `ChatPage.jsx` imports the new containers.
+
+### Task 3.1: Create `QuotedBlock.jsx` (two variants in one component)
+
+`QuotedBlock` renders the sender on row 1 and a one-line ellipsized plain-text excerpt on row 2. Two variants control the right-side affordance:
+- `variant="chip"` — renders a ✕ button calling `onClear`. Used above an input.
+- `variant="bubble"` — no ✕; whole block is clickable (calls `onClick` with the original message id). Used in-bubble above a reply's content.
+
+A `deleted: true` flag on the snapshot renders `*[message deleted]*` on row 2 and disables the click.
+
+**Files:**
+- Create: `chat-frontend/src/components/messages/QuotedBlock.jsx`
+- Create: `chat-frontend/src/components/messages/QuotedBlock.test.jsx`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `chat-frontend/src/components/messages/QuotedBlock.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import QuotedBlock from './QuotedBlock'
+
+const snap = { id: 'm1', senderName: 'alice', content: 'hello world from another time' }
+
+describe('QuotedBlock — chip variant', () => {
+  it('renders sender and content', () => {
+    render(<QuotedBlock variant="chip" snapshot={snap} onClear={() => {}} />)
+    expect(screen.getByText('alice')).toBeInTheDocument()
+    expect(screen.getByText(/hello world/)).toBeInTheDocument()
+  })
+
+  it('clicking ✕ invokes onClear', () => {
+    const onClear = vi.fn()
+    render(<QuotedBlock variant="chip" snapshot={snap} onClear={onClear} />)
+    fireEvent.click(screen.getByRole('button', { name: /clear quoted message/i }))
+    expect(onClear).toHaveBeenCalled()
+  })
+})
+
+describe('QuotedBlock — bubble variant', () => {
+  it('renders sender and content, click invokes onClick with snapshot.id', () => {
+    const onClick = vi.fn()
+    render(<QuotedBlock variant="bubble" snapshot={snap} onClick={onClick} />)
+    fireEvent.click(screen.getByText(/hello world/).closest('.quoted-block'))
+    expect(onClick).toHaveBeenCalledWith('m1')
+  })
+
+  it('renders no ✕ in bubble variant', () => {
+    render(<QuotedBlock variant="bubble" snapshot={snap} onClick={() => {}} />)
+    expect(screen.queryByRole('button', { name: /clear/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('QuotedBlock — deleted snapshot', () => {
+  it('renders "[message deleted]" placeholder and disables click in bubble variant', () => {
+    const onClick = vi.fn()
+    render(
+      <QuotedBlock
+        variant="bubble"
+        snapshot={{ id: 'm2', senderName: 'alice', content: '', deleted: true }}
+        onClick={onClick}
+      />
+    )
+    expect(screen.getByText(/message deleted/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByText(/message deleted/i).closest('.quoted-block'))
+    expect(onClick).not.toHaveBeenCalled()
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/QuotedBlock.test.jsx`
+Expected: FAIL — `Cannot find module './QuotedBlock'`.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/messages/QuotedBlock.jsx`:
+
+```jsx
+function senderLabel(snapshot) {
+  return snapshot.senderName || snapshot.sender?.engName || snapshot.sender?.account || 'Unknown'
+}
+
+function excerpt(snapshot) {
+  if (snapshot.deleted) return '[message deleted]'
+  return snapshot.content || snapshot.msg || ''
+}
+
+export default function QuotedBlock({ variant, snapshot, onClear, onClick }) {
+  if (!snapshot) return null
+  const deleted = !!snapshot.deleted
+  const handleClick = () => {
+    if (deleted || !onClick) return
+    onClick(snapshot.id)
+  }
+
+  if (variant === 'chip') {
+    return (
+      <div className="quoted-block quoted-block-chip">
+        <div className="quoted-block-body">
+          <div className="quoted-block-sender">{senderLabel(snapshot)}</div>
+          <div className="quoted-block-content">{excerpt(snapshot)}</div>
+        </div>
+        <button
+          type="button"
+          className="quoted-block-clear"
+          aria-label="Clear quoted message"
+          onClick={onClear}
+        >
+          ✕
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className={`quoted-block quoted-block-bubble${deleted ? ' quoted-block-deleted' : ''}`}
+      onClick={handleClick}
+      role={deleted ? undefined : 'button'}
+      tabIndex={deleted ? -1 : 0}
+      onKeyDown={(e) => {
+        if (deleted) return
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          handleClick()
+        }
+      }}
+    >
+      <div className="quoted-block-sender">{senderLabel(snapshot)}</div>
+      <div className="quoted-block-content">{excerpt(snapshot)}</div>
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/QuotedBlock.test.jsx`
+Expected: PASS (5 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/QuotedBlock.jsx chat-frontend/src/components/messages/QuotedBlock.test.jsx
+git commit -m "feat(chat-frontend): add QuotedBlock (chip + bubble variants)"
+```
+
+### Task 3.2: Create `MessageActions.jsx` (Thread + Reply only)
+
+`MessageActions` is the hover-revealed row of action buttons sitting top-right of a `MessageRow`. In this chapter it exposes only Thread and Reply. Visibility rules (Edit/Delete added in Chapter 4):
+
+- `Thread` — shown unless `context === 'thread-parent'` (the row is the parent inside the open thread panel).
+- `Reply` — shown unless `context === 'thread-parent'`. The handler is called with the hovered message; routing is the caller's concern.
+
+Visibility-by-CSS uses `:hover, :focus-within` of the parent row — CSS is added in Task 3.8 alongside the other refactor styling. The component itself is always rendered; the caller's CSS hides it when not hovered.
+
+**Files:**
+- Create: `chat-frontend/src/components/messages/MessageActions.jsx`
+- Create: `chat-frontend/src/components/messages/MessageActions.test.jsx`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `chat-frontend/src/components/messages/MessageActions.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import MessageActions from './MessageActions'
+
+const msg = { id: 'm1', userAccount: 'alice' }
+
+describe('MessageActions', () => {
+  it('renders Thread and Reply buttons in the main feed context', () => {
+    render(<MessageActions message={msg} context="main" onThread={() => {}} onReply={() => {}} />)
+    expect(screen.getByRole('button', { name: /reply in thread/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /quote/i })).toBeInTheDocument()
+  })
+
+  it('omits Thread and Reply when context is thread-parent', () => {
+    render(<MessageActions message={msg} context="thread-parent" onThread={() => {}} onReply={() => {}} />)
+    expect(screen.queryByRole('button', { name: /reply in thread/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /quote/i })).not.toBeInTheDocument()
+  })
+
+  it('clicking Thread invokes onThread with the message', () => {
+    const onThread = vi.fn()
+    render(<MessageActions message={msg} context="main" onThread={onThread} onReply={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /reply in thread/i }))
+    expect(onThread).toHaveBeenCalledWith(msg)
+  })
+
+  it('clicking Reply invokes onReply with the message', () => {
+    const onReply = vi.fn()
+    render(<MessageActions message={msg} context="main" onThread={() => {}} onReply={onReply} />)
+    fireEvent.click(screen.getByRole('button', { name: /quote/i }))
+    expect(onReply).toHaveBeenCalledWith(msg)
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageActions.test.jsx`
+Expected: FAIL — `Cannot find module './MessageActions'`.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/messages/MessageActions.jsx`:
+
+```jsx
+export default function MessageActions({ message, context, onThread, onReply }) {
+  const showThread = context !== 'thread-parent'
+  const showReply = context !== 'thread-parent'
+
+  return (
+    <div className="message-actions" role="toolbar">
+      {showThread && (
+        <button
+          type="button"
+          className="message-action message-action-thread"
+          aria-label="Reply in thread"
+          onClick={() => onThread?.(message)}
+        >
+          💬
+        </button>
+      )}
+      {showReply && (
+        <button
+          type="button"
+          className="message-action message-action-reply"
+          aria-label="Quote this message"
+          onClick={() => onReply?.(message)}
+        >
+          ↩
+        </button>
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageActions.test.jsx`
+Expected: PASS (4 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/MessageActions.jsx chat-frontend/src/components/messages/MessageActions.test.jsx
+git commit -m "feat(chat-frontend): add MessageActions hover menu (Thread + Reply)"
+```
+
+### Task 3.3: Create `MessageRow.jsx`
+
+`MessageRow` renders one message: an optional in-bubble `QuotedBlock` above the content, the sender + time + content, and the `MessageActions` menu. Today's `MessageArea` does this inline (lines 89–95 — sender, time, content); we lift it out. The row is focusable (`tabindex="0"`) so keyboard users can reveal the action menu via `:focus-within`.
+
+Reply-count badge ("💬 N replies") and the click-to-jump on `QuotedBlock` come in later chapters — this task just renders the static shape.
+
+**Files:**
+- Create: `chat-frontend/src/components/messages/MessageRow.jsx`
+- Create: `chat-frontend/src/components/messages/MessageRow.test.jsx`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `chat-frontend/src/components/messages/MessageRow.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import MessageRow from './MessageRow'
+
+const msg = {
+  id: 'm1',
+  content: 'hello world',
+  createdAt: '2026-05-13T10:42:00Z',
+  sender: { engName: 'Alice', account: 'alice' },
+}
+
+describe('MessageRow', () => {
+  it('renders sender, time, and content', () => {
+    render(<MessageRow message={msg} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />)
+    expect(screen.getByText('Alice')).toBeInTheDocument()
+    expect(screen.getByText('hello world')).toBeInTheDocument()
+    expect(screen.getByText(/\d\d:\d\d/)).toBeInTheDocument()
+  })
+
+  it('renders the row with tabindex 0 and data-message-id', () => {
+    const { container } = render(
+      <MessageRow message={msg} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />
+    )
+    const row = container.querySelector('.message-row')
+    expect(row).not.toBeNull()
+    expect(row.getAttribute('tabindex')).toBe('0')
+    expect(row.getAttribute('data-message-id')).toBe('m1')
+  })
+
+  it('renders an in-bubble QuotedBlock when message.quotedParentMessage is set', () => {
+    const quoted = {
+      ...msg,
+      quotedParentMessage: { id: 'orig', senderName: 'bob', content: 'the original' },
+    }
+    render(<MessageRow message={quoted} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />)
+    expect(screen.getByText('bob')).toBeInTheDocument()
+    expect(screen.getByText('the original')).toBeInTheDocument()
+  })
+
+  it('clicking the in-bubble quote fires onJumpToMessage with the original id', () => {
+    const onJumpToMessage = vi.fn()
+    const quoted = {
+      ...msg,
+      quotedParentMessage: { id: 'orig', senderName: 'bob', content: 'the original' },
+    }
+    const { container } = render(
+      <MessageRow message={quoted} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={onJumpToMessage} />
+    )
+    fireEvent.click(container.querySelector('.quoted-block-bubble'))
+    expect(onJumpToMessage).toHaveBeenCalledWith('orig')
+  })
+
+  it('forwards Thread/Reply clicks via MessageActions', () => {
+    const onThread = vi.fn()
+    const onReply = vi.fn()
+    render(<MessageRow message={msg} context="main" onThread={onThread} onReply={onReply} onJumpToMessage={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /reply in thread/i }))
+    expect(onThread).toHaveBeenCalledWith(msg)
+    fireEvent.click(screen.getByRole('button', { name: /quote/i }))
+    expect(onReply).toHaveBeenCalledWith(msg)
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageRow.test.jsx`
+Expected: FAIL — `Cannot find module './MessageRow'`.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/messages/MessageRow.jsx`:
+
+```jsx
+import MessageActions from './MessageActions'
+import QuotedBlock from './QuotedBlock'
+
+function formatTime(dateStr) {
+  const d = new Date(dateStr)
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function senderName(msg) {
+  if (msg.sender) {
+    return msg.sender.engName || msg.sender.account || msg.sender.userId || 'Unknown'
+  }
+  return msg.userAccount || msg.userId || 'Unknown'
+}
+
+function messageContent(msg) {
+  return msg.content || msg.msg || ''
+}
+
+export default function MessageRow({
+  message,
+  context,
+  onThread,
+  onReply,
+  onJumpToMessage,
+}) {
+  return (
+    <div
+      className="message-row"
+      data-message-id={message.id}
+      tabIndex={0}
+    >
+      {message.quotedParentMessage && (
+        <QuotedBlock
+          variant="bubble"
+          snapshot={message.quotedParentMessage}
+          onClick={onJumpToMessage}
+        />
+      )}
+      <div className="message-header">
+        <span className="message-sender">{senderName(message)}</span>
+        <span className="message-time">{formatTime(message.createdAt)}</span>
+      </div>
+      <div className="message-content">{messageContent(message)}</div>
+      <MessageActions
+        message={message}
+        context={context}
+        onThread={onThread}
+        onReply={onReply}
+      />
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageRow.test.jsx`
+Expected: PASS (5 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/MessageRow.jsx chat-frontend/src/components/messages/MessageRow.test.jsx
+git commit -m "feat(chat-frontend): add MessageRow with embedded QuotedBlock + MessageActions"
+```
+
+### Task 3.4: Create `MessageList.jsx` (pure)
+
+`MessageList` is the scrolling list. It accepts:
+- `messages` — array
+- `context` — `'main' | 'thread'` (passed through to each row's `MessageActions`)
+- `focusMessageId` — when set, scroll the matching row into view + add `flash-jump` class for 2 s
+- `hasLoadedHistory`, `historyLoading`, `historyError` — drive the loading / error rendering
+- `emptyText` — caller-provided empty-state line (e.g. "No messages yet" for main feed, "No replies yet…" for thread)
+- `onThread`, `onReply`, `onJumpToMessage` — forwarded to each row
+- `bottomRef` (optional) — caller can attach a ref to the bottom sentinel for scroll-to-bottom
+
+It does NOT own `loadHistory` — the container does.
+
+**Files:**
+- Create: `chat-frontend/src/components/messages/MessageList.jsx`
+- Create: `chat-frontend/src/components/messages/MessageList.test.jsx`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `chat-frontend/src/components/messages/MessageList.test.jsx`:
+
+```jsx
+import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import MessageList from './MessageList'
+
+vi.mock('./MessageRow', () => ({
+  default: ({ message }) => <div data-testid={`row-${message.id}`}>{message.content}</div>,
+}))
+
+const msgs = [
+  { id: 'a', content: 'first', createdAt: '2026-05-13T10:00:00Z' },
+  { id: 'b', content: 'second', createdAt: '2026-05-13T10:01:00Z' },
+]
+
+describe('MessageList', () => {
+  it('renders one row per message', () => {
+    render(<MessageList messages={msgs} hasLoadedHistory context="main" />)
+    expect(screen.getByTestId('row-a')).toBeInTheDocument()
+    expect(screen.getByTestId('row-b')).toBeInTheDocument()
+  })
+
+  it('renders loading placeholder when historyLoading is true', () => {
+    render(<MessageList messages={[]} historyLoading context="main" />)
+    expect(screen.getByText(/loading/i)).toBeInTheDocument()
+  })
+
+  it('renders error placeholder when historyError is set', () => {
+    render(<MessageList messages={[]} historyError="oops" context="main" />)
+    expect(screen.getByText(/oops|couldn.t/i)).toBeInTheDocument()
+  })
+
+  it('renders emptyText when history is loaded and messages is empty', () => {
+    render(
+      <MessageList
+        messages={[]}
+        hasLoadedHistory
+        context="main"
+        emptyText="No messages yet"
+      />
+    )
+    expect(screen.getByText('No messages yet')).toBeInTheDocument()
+  })
+
+  it('omits emptyText when messages is non-empty', () => {
+    render(
+      <MessageList messages={msgs} hasLoadedHistory context="main" emptyText="None" />
+    )
+    expect(screen.queryByText('None')).not.toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageList.test.jsx`
+Expected: FAIL — `Cannot find module './MessageList'`.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/messages/MessageList.jsx`:
+
+```jsx
+import { useEffect, useRef } from 'react'
+import MessageRow from './MessageRow'
+
+export default function MessageList({
+  messages,
+  hasLoadedHistory,
+  historyLoading,
+  historyError,
+  emptyText,
+  context,
+  focusMessageId,
+  onThread,
+  onReply,
+  onJumpToMessage,
+  bottomRef,
+  ariaLive,
+}) {
+  const listRef = useRef(null)
+  const localBottomRef = useRef(null)
+  const effectiveBottomRef = bottomRef ?? localBottomRef
+
+  useEffect(() => {
+    if (!focusMessageId || !listRef.current) return
+    const el = listRef.current.querySelector(`[data-message-id="${focusMessageId}"]`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('flash-jump')
+    const timer = setTimeout(() => el.classList.remove('flash-jump'), 2000)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusMessageId])
+
+  const empty = hasLoadedHistory && !historyLoading && !historyError && messages.length === 0
+
+  return (
+    <div
+      className="message-list"
+      ref={listRef}
+      {...(ariaLive ? { 'aria-live': ariaLive } : {})}
+    >
+      {historyLoading && <div className="message-loading">Loading messages…</div>}
+      {historyError && <div className="message-error">{historyError}</div>}
+      {messages.map((msg) => (
+        <MessageRow
+          key={msg.id}
+          message={msg}
+          context={context}
+          onThread={onThread}
+          onReply={onReply}
+          onJumpToMessage={onJumpToMessage}
+        />
+      ))}
+      {empty && emptyText && <div className="message-empty">{emptyText}</div>}
+      <div ref={effectiveBottomRef} />
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageList.test.jsx`
+Expected: PASS (5 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/MessageList.jsx chat-frontend/src/components/messages/MessageList.test.jsx
+git commit -m "feat(chat-frontend): add presentational MessageList"
+```
+
+### Task 3.5: Create `MessageInputForm.jsx` (pure)
+
+`MessageInputForm` is the form element today's `MessageInput` produces, minus the publish side-effect. Props:
+- `value`, `onChange`, `onSubmit` — controlled-form essentials.
+- `placeholder`, `disabled` — UX.
+- `quotedTarget` (optional, `{ id, senderName, content }`) and `onClearQuote` — render a `<QuotedBlock variant="chip">` above the textarea when set.
+
+It owns no local state beyond what the caller passes in.
+
+**Files:**
+- Create: `chat-frontend/src/components/messages/MessageInputForm.jsx`
+- Create: `chat-frontend/src/components/messages/MessageInputForm.test.jsx`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `chat-frontend/src/components/messages/MessageInputForm.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import MessageInputForm from './MessageInputForm'
+
+describe('MessageInputForm', () => {
+  it('renders value and fires onChange on input', () => {
+    const onChange = vi.fn()
+    render(<MessageInputForm value="hi" onChange={onChange} onSubmit={() => {}} placeholder="Say something…" />)
+    const input = screen.getByPlaceholderText('Say something…')
+    expect(input).toHaveValue('hi')
+    fireEvent.change(input, { target: { value: 'hi there' } })
+    expect(onChange).toHaveBeenCalledWith('hi there')
+  })
+
+  it('Enter submits with trimmed value; Shift+Enter does not', () => {
+    const onSubmit = vi.fn()
+    render(<MessageInputForm value="  hello  " onChange={() => {}} onSubmit={onSubmit} placeholder="x" />)
+    const input = screen.getByPlaceholderText('x')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    onSubmit.mockClear()
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('disables the textarea and Send button when disabled prop is set', () => {
+    render(<MessageInputForm value="" onChange={() => {}} onSubmit={() => {}} placeholder="x" disabled />)
+    expect(screen.getByPlaceholderText('x')).toBeDisabled()
+    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled()
+  })
+
+  it('Send button is disabled when value is empty / whitespace', () => {
+    render(<MessageInputForm value="   " onChange={() => {}} onSubmit={() => {}} placeholder="x" />)
+    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled()
+  })
+
+  it('renders a QuotedBlock chip when quotedTarget is set; ✕ calls onClearQuote', () => {
+    const onClearQuote = vi.fn()
+    render(
+      <MessageInputForm
+        value=""
+        onChange={() => {}}
+        onSubmit={() => {}}
+        placeholder="x"
+        quotedTarget={{ id: 'q', senderName: 'bob', content: 'orig' }}
+        onClearQuote={onClearQuote}
+      />
+    )
+    expect(screen.getByText('bob')).toBeInTheDocument()
+    expect(screen.getByText('orig')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /clear quoted message/i }))
+    expect(onClearQuote).toHaveBeenCalled()
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageInputForm.test.jsx`
+Expected: FAIL — `Cannot find module './MessageInputForm'`.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/messages/MessageInputForm.jsx`:
+
+```jsx
+import QuotedBlock from './QuotedBlock'
+
+export default function MessageInputForm({
+  value,
+  onChange,
+  onSubmit,
+  placeholder,
+  disabled,
+  quotedTarget,
+  onClearQuote,
+}) {
+  const handleSubmit = (e) => {
+    e?.preventDefault?.()
+    if (disabled) return
+    if (!value || !value.trim()) return
+    onSubmit()
+  }
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSubmit(e)
+    }
+  }
+
+  const canSubmit = !disabled && value && value.trim().length > 0
+
+  return (
+    <form className="message-input-form" onSubmit={handleSubmit}>
+      {quotedTarget && (
+        <QuotedBlock variant="chip" snapshot={quotedTarget} onClear={onClearQuote} />
+      )}
+      <div className="message-input-row">
+        <input
+          type="text"
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          disabled={disabled}
+        />
+        <button type="submit" disabled={!canSubmit}>
+          Send
+        </button>
+      </div>
+    </form>
+  )
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageInputForm.test.jsx`
+Expected: PASS (5 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/MessageInputForm.jsx chat-frontend/src/components/messages/MessageInputForm.test.jsx
+git commit -m "feat(chat-frontend): add presentational MessageInputForm"
+```
+
+### Task 3.6: Create `RoomMessageArea.jsx` container
+
+`RoomMessageArea` replaces today's `MessageArea` body. It uses `useRoomEvents(room?.id)` to pull state, drives `loadHistory()` on mount/room-change, owns the live-tail auto-scroll, and renders `<MessageList>`. It surfaces the existing "Jump to latest" pill when in HISTORICAL buffer mode.
+
+Note: the room-header strip that today's `MessageArea` rendered (lines 80–85) has moved to `ChatPage` in Task 2.5 — the container does NOT render a header.
+
+**Files:**
+- Create: `chat-frontend/src/components/RoomMessageArea.jsx`
+- Create: `chat-frontend/src/components/RoomMessageArea.test.jsx`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `chat-frontend/src/components/RoomMessageArea.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import RoomMessageArea from './RoomMessageArea'
+import { BUFFER_MODE } from '../lib/roomEventsReducer'
+
+const loadHistory = vi.fn(async () => {})
+const resetToLiveTail = vi.fn()
+const jumpToMessage = vi.fn()
+
+vi.mock('../context/RoomEventsContext', () => ({
+  useRoomEvents: (roomId) => ({
+    messages: roomId === 'r1' ? [{ id: 'a', content: 'hi', createdAt: '2026-05-13T10:00:00Z' }] : [],
+    hasLoadedHistory: roomId === 'r1',
+    historyError: null,
+    loadHistory,
+    bufferMode: BUFFER_MODE.LIVE,
+    pendingCount: 0,
+    focusMessageId: null,
+    resetToLiveTail,
+    jumpToMessage,
+  }),
+}))
+vi.mock('./messages/MessageList', () => ({
+  default: ({ messages, emptyText, onThread, onReply, onJumpToMessage }) => (
+    <div data-testid="list">
+      <span>count:{messages.length}</span>
+      <button type="button" onClick={() => onThread?.({ id: 'a' })}>fire-thread</button>
+      <button type="button" onClick={() => onReply?.({ id: 'a' })}>fire-reply</button>
+      <button type="button" onClick={() => onJumpToMessage?.('a')}>fire-jump</button>
+      <span>empty:{emptyText}</span>
+    </div>
+  ),
+}))
+
+const room = { id: 'r1', name: 'general', type: 'channel', siteId: 's', userCount: 1 }
+
+describe('RoomMessageArea', () => {
+  beforeEach(() => {
+    loadHistory.mockClear()
+    resetToLiveTail.mockClear()
+    jumpToMessage.mockClear()
+  })
+
+  it('calls loadHistory once the room is set', () => {
+    render(<RoomMessageArea room={room} onThread={() => {}} onReply={() => {}} />)
+    expect(loadHistory).toHaveBeenCalled()
+  })
+
+  it('renders a "select a room" placeholder when room is null', () => {
+    render(<RoomMessageArea room={null} onThread={() => {}} onReply={() => {}} />)
+    expect(screen.getByText(/select a room/i)).toBeInTheDocument()
+  })
+
+  it('forwards onThread / onReply to MessageList', () => {
+    const onThread = vi.fn()
+    const onReply = vi.fn()
+    render(<RoomMessageArea room={room} onThread={onThread} onReply={onReply} />)
+    fireEvent.click(screen.getByText('fire-thread'))
+    expect(onThread).toHaveBeenCalledWith({ id: 'a' })
+    fireEvent.click(screen.getByText('fire-reply'))
+    expect(onReply).toHaveBeenCalledWith({ id: 'a' })
+  })
+
+  it('routes onJumpToMessage to jumpToMessage(room.id, msgId)', () => {
+    render(<RoomMessageArea room={room} onThread={() => {}} onReply={() => {}} />)
+    fireEvent.click(screen.getByText('fire-jump'))
+    expect(jumpToMessage).toHaveBeenCalledWith('r1', 'a')
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd chat-frontend && npx vitest run src/components/RoomMessageArea.test.jsx`
+Expected: FAIL — `Cannot find module './RoomMessageArea'`.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/RoomMessageArea.jsx`:
+
+```jsx
+import { useEffect, useRef } from 'react'
+import { useRoomEvents } from '../context/RoomEventsContext'
+import { BUFFER_MODE } from '../lib/roomEventsReducer'
+import MessageList from './messages/MessageList'
+
+export default function RoomMessageArea({ room, onThread, onReply }) {
+  const {
+    messages,
+    hasLoadedHistory,
+    historyError,
+    loadHistory,
+    bufferMode,
+    pendingCount,
+    focusMessageId,
+    resetToLiveTail,
+    jumpToMessage,
+  } = useRoomEvents(room?.id ?? null)
+  const bottomRef = useRef(null)
+
+  useEffect(() => {
+    if (!room) return
+    loadHistory().catch(() => {})
+  }, [room, loadHistory])
+
+  useEffect(() => {
+    if (bufferMode === BUFFER_MODE.HISTORICAL) return
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, bufferMode])
+
+  useEffect(() => {
+    if (bufferMode === BUFFER_MODE.LIVE) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [bufferMode])
+
+  if (!room) {
+    return (
+      <div className="message-area">
+        <div className="message-area-empty">Select a room to start chatting</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="message-area">
+      <MessageList
+        messages={messages}
+        hasLoadedHistory={hasLoadedHistory}
+        historyError={historyError}
+        context="main"
+        focusMessageId={focusMessageId}
+        onThread={onThread}
+        onReply={onReply}
+        onJumpToMessage={(msgId) => jumpToMessage?.(room.id, msgId)?.catch?.(() => {})}
+        bottomRef={bottomRef}
+      />
+      {bufferMode === BUFFER_MODE.HISTORICAL && pendingCount > 0 && (
+        <div className="jump-latest-pill">
+          <button type="button" onClick={() => resetToLiveTail()}>
+            Jump to latest ({pendingCount} new)
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `cd chat-frontend && npx vitest run src/components/RoomMessageArea.test.jsx`
+Expected: PASS (4 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/RoomMessageArea.jsx chat-frontend/src/components/RoomMessageArea.test.jsx
+git commit -m "feat(chat-frontend): add RoomMessageArea container"
+```
+
+### Task 3.7: Create `RoomMessageInput.jsx` container
+
+`RoomMessageInput` replaces today's `MessageInput`. It owns the local text state and (in Chapter 5) the `quotedTarget` state. For Chapter 3 it accepts a `quotedTarget` + `onClearQuote` from props so Chapter 5 can lift the state up to `ChatPage` later without restructuring the component.
+
+**Files:**
+- Create: `chat-frontend/src/components/RoomMessageInput.jsx`
+- Create: `chat-frontend/src/components/RoomMessageInput.test.jsx`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `chat-frontend/src/components/RoomMessageInput.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import RoomMessageInput from './RoomMessageInput'
+
+const publish = vi.fn()
+vi.mock('../context/NatsContext', () => ({
+  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
+}))
+vi.mock('../lib/idgen', () => ({ generateMessageID: () => '12345678901234567890' }))
+vi.mock('uuid', () => ({ v4: () => 'req-uuid' }))
+
+const room = { id: 'r1', name: 'general', type: 'channel' }
+
+describe('RoomMessageInput', () => {
+  beforeEach(() => publish.mockClear())
+
+  it('renders the form disabled when no room is selected', () => {
+    render(<RoomMessageInput room={null} />)
+    expect(screen.getByPlaceholderText(/select a room/i)).toBeDisabled()
+  })
+
+  it('publishes msg.send on submit with the correct payload', () => {
+    render(<RoomMessageInput room={room} />)
+    const input = screen.getByPlaceholderText(/general/i)
+    fireEvent.change(input, { target: { value: 'hello' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.room.r1.s1.msg.send',
+      { id: '12345678901234567890', content: 'hello', requestId: 'req-uuid' }
+    )
+  })
+
+  it('clears the text after publish', () => {
+    render(<RoomMessageInput room={room} />)
+    const input = screen.getByPlaceholderText(/general/i)
+    fireEvent.change(input, { target: { value: 'hello' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(input).toHaveValue('')
+  })
+
+  it('does not publish when text is empty or whitespace', () => {
+    render(<RoomMessageInput room={room} />)
+    const input = screen.getByPlaceholderText(/general/i)
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(publish).not.toHaveBeenCalled()
+  })
+
+  it('forwards quotedTarget and onClearQuote to MessageInputForm', () => {
+    const onClearQuote = vi.fn()
+    render(
+      <RoomMessageInput
+        room={room}
+        quotedTarget={{ id: 'q', senderName: 'bob', content: 'orig' }}
+        onClearQuote={onClearQuote}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /clear quoted message/i }))
+    expect(onClearQuote).toHaveBeenCalled()
+  })
+
+  it('includes quotedParentMessageId in the publish payload when quotedTarget is set', () => {
+    render(
+      <RoomMessageInput
+        room={room}
+        quotedTarget={{ id: 'q123', senderName: 'bob', content: 'orig' }}
+        onClearQuote={() => {}}
+      />
+    )
+    const input = screen.getByPlaceholderText(/general/i)
+    fireEvent.change(input, { target: { value: 'reply' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.room.r1.s1.msg.send',
+      { id: '12345678901234567890', content: 'reply', requestId: 'req-uuid', quotedParentMessageId: 'q123' }
+    )
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd chat-frontend && npx vitest run src/components/RoomMessageInput.test.jsx`
+Expected: FAIL — `Cannot find module './RoomMessageInput'`.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/RoomMessageInput.jsx`:
+
+```jsx
+import { useState } from 'react'
+import { v4 as uuidv4 } from 'uuid'
+import { useNats } from '../context/NatsContext'
+import { msgSend } from '../lib/subjects'
+import { generateMessageID } from '../lib/idgen'
+import MessageInputForm from './messages/MessageInputForm'
+
+export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
+  const { user, publish } = useNats()
+  const [text, setText] = useState('')
+
+  const placeholder = room ? `Message #${room.name}` : 'Select a room...'
+  const disabled = !room || !user
+
+  const handleSubmit = () => {
+    if (disabled || !text.trim()) return
+    const payload = {
+      id: generateMessageID(),
+      content: text.trim(),
+      requestId: uuidv4(),
+    }
+    if (quotedTarget?.id) payload.quotedParentMessageId = quotedTarget.id
+    publish(msgSend(user.account, room.id, user.siteId), payload)
+    setText('')
+    onClearQuote?.()
+  }
+
+  return (
+    <MessageInputForm
+      value={text}
+      onChange={setText}
+      onSubmit={handleSubmit}
+      placeholder={placeholder}
+      disabled={disabled}
+      quotedTarget={quotedTarget}
+      onClearQuote={onClearQuote}
+    />
+  )
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `cd chat-frontend && npx vitest run src/components/RoomMessageInput.test.jsx`
+Expected: PASS (6 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/RoomMessageInput.jsx chat-frontend/src/components/RoomMessageInput.test.jsx
+git commit -m "feat(chat-frontend): add RoomMessageInput container"
+```
+
+### Task 3.8: Wire `ChatPage` to the new containers and delete the old components
+
+Swap `MessageArea` → `RoomMessageArea` and `MessageInput` → `RoomMessageInput` in `ChatPage.jsx`. `ChatPage` passes through `onThread` / `onReply` callbacks (no-ops for now — Chapter 7 and Chapter 5 wire them). Delete the now-unused `MessageArea.jsx` + test and `MessageInput.jsx` (no test today).
+
+Also add CSS for the new hover-reveal pattern.
+
+**Files:**
+- Modify: `chat-frontend/src/pages/ChatPage.jsx`
+- Modify: `chat-frontend/src/styles/index.css`
+- Delete: `chat-frontend/src/components/MessageArea.jsx`
+- Delete: `chat-frontend/src/components/MessageArea.test.jsx`
+- Delete: `chat-frontend/src/components/MessageInput.jsx`
+
+- [ ] **Step 1: Swap the imports in `ChatPage.jsx`**
+
+Replace:
+
+```jsx
+import MessageArea from '../components/MessageArea'
+import MessageInput from '../components/MessageInput'
+```
+
+with:
+
+```jsx
+import RoomMessageArea from '../components/RoomMessageArea'
+import RoomMessageInput from '../components/RoomMessageInput'
+```
+
+And replace the usages:
+
+```jsx
+<RoomMessageArea
+  room={selectedRoom}
+  onThread={() => { /* wired in Chapter 7 */ }}
+  onReply={() => { /* wired in Chapter 5 */ }}
+/>
+<RoomMessageInput room={selectedRoom} />
+```
+
+- [ ] **Step 2: Add CSS for hover-reveal MessageActions and the message row**
+
+Append to `chat-frontend/src/styles/index.css`:
+
+```css
+.message-row {
+  position: relative;
+  padding: 6px 12px;
+}
+.message-row:hover,
+.message-row:focus-within {
+  background: var(--bg-hover, rgba(0,0,0,0.03));
+}
+.message-row .message-actions {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  display: none;
+  gap: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+.message-row:hover .message-actions,
+.message-row:focus-within .message-actions {
+  display: flex;
+}
+.message-action {
+  padding: 2px 6px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 0.95em;
+}
+.message-action:hover {
+  background: var(--bg-hover, rgba(0,0,0,0.06));
+}
+.quoted-block {
+  border-left: 3px solid var(--border-subtle, #ccc);
+  padding: 2px 8px;
+  margin: 2px 0;
+  background: var(--bg-quoted, rgba(0,0,0,0.03));
+}
+.quoted-block-sender {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.quoted-block-content {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.quoted-block-chip {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.quoted-block-chip .quoted-block-body {
+  flex: 1;
+  min-width: 0;
+}
+.quoted-block-bubble {
+  cursor: pointer;
+}
+.quoted-block-bubble:hover {
+  background: var(--bg-hover, rgba(0,0,0,0.05));
+}
+.quoted-block-deleted {
+  cursor: default;
+  font-style: italic;
+  color: var(--text-muted);
+}
+.message-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 12px;
+}
+```
+
+- [ ] **Step 3: Delete the old files**
+
+Run:
+
+```bash
+rm chat-frontend/src/components/MessageArea.jsx
+rm chat-frontend/src/components/MessageArea.test.jsx
+rm chat-frontend/src/components/MessageInput.jsx
+```
+
+- [ ] **Step 4: Run the full chat-frontend suite**
+
+Run: `cd chat-frontend && npm test -- --run`
+Expected: all PASS. If `ChatPage.test.jsx` mocks `MessageArea` / `MessageInput` by name, update those mocks to point at `RoomMessageArea` / `RoomMessageInput`.
+
+- [ ] **Step 5: Manual smoke check**
+
+Run: `cd chat-frontend && npm run dev`
+Verify: sending a message in a channel still works; the message renders with the new hover menu (icons appear on hover); the new room-header strip and global AppHeader look right.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add chat-frontend/src/pages/ChatPage.jsx chat-frontend/src/styles/index.css chat-frontend/src/pages/ChatPage.test.jsx
+git rm chat-frontend/src/components/MessageArea.jsx chat-frontend/src/components/MessageArea.test.jsx chat-frontend/src/components/MessageInput.jsx
+git commit -m "refactor(chat-frontend): wire new message containers, drop old MessageArea/Input"
+```
+
+---
+
+*Chapter 4 follows — Edit + Delete hover actions (inline edit, confirm dialog, RPC wiring).*
