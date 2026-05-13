@@ -2357,6 +2357,43 @@ If the actual shapes differ, use the actual shapes. The example above is **a gue
 
 This is a documentation-only step; do not commit yet. The notes feed into Task 4.6.
 
+### Task 4.1.5: Expose `dispatch` on `RoomEventsContext` (prerequisite)
+
+Task 4.6 dispatches `MESSAGE_EDITED_LOCAL` / `MESSAGE_DELETED_LOCAL` via `useRoomEvents(roomId).dispatch`. Today the context doesn't return `dispatch` — the value object exposes only state-readers and action wrappers. Add it **before** Task 4.6 so the implementation can run in dev without a runtime "Cannot read properties of undefined (reading 'dispatch')".
+
+**Files:**
+- Modify: `chat-frontend/src/context/RoomEventsContext.jsx`
+
+- [ ] **Step 1: Locate the provider's `value={…}` and the `useRoomEvents` return**
+
+Run: `grep -n "value=\|useRoomEvents\|return useMemo\|return {" chat-frontend/src/context/RoomEventsContext.jsx | head`
+
+- [ ] **Step 2: Add `dispatch` to both**
+
+In the provider's `value={…}` JSX, add `dispatch` next to `state` (or wherever the action wrappers live). In `useRoomEvents(roomId)`'s memoised return, add `dispatch` (it's per-context, not per-room, but exposing it from the per-room hook keeps the call site clean for the new edit/delete handlers).
+
+Also export a small `useRoomDispatch` hook (used by `ThreadEventsContext` in Ch.8 Task 8.3):
+
+```js
+export function useRoomDispatch() {
+  const ctx = useContext(RoomEventsContext)
+  if (!ctx) throw new Error('useRoomDispatch must be used inside RoomEventsProvider')
+  return ctx.dispatch
+}
+```
+
+- [ ] **Step 3: Run the chat-frontend suite**
+
+Run: `cd chat-frontend && npm test -- --run`
+Expected: all PASS — the existing tests ignore extra returned fields.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/context/RoomEventsContext.jsx
+git commit -m "feat(chat-frontend): expose dispatch + useRoomDispatch from RoomEventsContext"
+```
+
 ### Task 4.2: Extend `roomEventsReducer` with local edit / delete actions
 
 Add two new actions that optimistically mutate a message in place. These are dispatched only from the local user's RPC-success path — broadcast handling is deferred.
@@ -3225,35 +3262,9 @@ git add chat-frontend/src/components/RoomMessageArea.jsx chat-frontend/src/compo
 git commit -m "feat(chat-frontend): wire msg.edit / msg.delete RPCs in RoomMessageArea"
 ```
 
-### Task 4.7: Expose `dispatch` on `RoomEventsContext`
+### Task 4.7: ~~Expose `dispatch` on `RoomEventsContext`~~ — moved to Task 4.1.5
 
-`RoomMessageArea` needs to dispatch `MESSAGE_EDITED_LOCAL` / `MESSAGE_DELETED_LOCAL`. The cleanest way is to expose `dispatch` from `RoomEventsContext`'s value.
-
-**Files:**
-- Modify: `chat-frontend/src/context/RoomEventsContext.jsx`
-
-- [ ] **Step 1: Locate the context value**
-
-Run: `grep -n "value=\|dispatch" chat-frontend/src/context/RoomEventsContext.jsx | head`
-Find the `useReducer` call and the JSX `value={…}` block.
-
-- [ ] **Step 2: Add `dispatch` to the value**
-
-In the `Context.Provider value={…}` object, include `dispatch` alongside the existing methods. Also export a small `useRoomDispatch()` convenience hook if the test for Task 4.6 needs it (it doesn't — it reads `dispatch` directly via `useRoomEvents(roomId).dispatch`).
-
-If `useRoomEvents` is a per-room hook that pulls state but doesn't return `dispatch`, add it to that hook's return as well — `dispatch` is global, not per-room.
-
-- [ ] **Step 3: Run the chat-frontend suite**
-
-Run: `cd chat-frontend && npm test -- --run`
-Expected: all PASS, including `RoomEventsContext.test.jsx` (the existing test ignores extra returned fields).
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add chat-frontend/src/context/RoomEventsContext.jsx
-git commit -m "feat(chat-frontend): expose dispatch from RoomEventsContext"
-```
+Task 4.1.5 (above) now handles this prerequisite before Task 4.6 needs it. This slot is intentionally empty; skip and continue to Chapter 5.
 
 ---
 
