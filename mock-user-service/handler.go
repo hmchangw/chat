@@ -120,3 +120,22 @@ func buildMockSub(account, siteID string) model.Subscription {
 func buildMockApp(id, name string) model.App {
 	return model.App{ID: id, Name: name}
 }
+
+func (h *Handler) statusGetByName(c *natsrouter.Context, req statusGetByNameReq) (*statusResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	return &statusResp{
+		Name:         req.Name,
+		StatusText:   mockStatusText,
+		StatusIsShow: mockStatusIsShow,
+	}, nil
+}
+
+func (h *Handler) statusSet(c *natsrouter.Context, req statusSetReq) (*okResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	_ = req
+	return &okResp{Success: true}, nil
+}

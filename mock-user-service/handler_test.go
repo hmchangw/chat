@@ -44,3 +44,39 @@ func TestBuildMockApp(t *testing.T) {
 	assert.Equal(t, "app-1", app.ID)
 	assert.Equal(t, "Mock One", app.Name)
 }
+
+func TestHandler_StatusGetByName(t *testing.T) {
+	h := NewHandler("site-local")
+
+	t.Run("happy path echoes Name", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-local"})
+		resp, err := h.statusGetByName(c, statusGetByNameReq{Name: "bob"})
+		require.NoError(t, err)
+		assert.Equal(t, "bob", resp.Name)
+		assert.Equal(t, mockStatusText, resp.StatusText)
+		assert.Equal(t, mockStatusIsShow, resp.StatusIsShow)
+	})
+
+	t.Run("siteID mismatch", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-x"})
+		_, err := h.statusGetByName(c, statusGetByNameReq{Name: "bob"})
+		require.Error(t, err)
+	})
+}
+
+func TestHandler_StatusSet(t *testing.T) {
+	h := NewHandler("site-local")
+
+	t.Run("happy path returns success", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-local"})
+		resp, err := h.statusSet(c, statusSetReq{StatusText: "busy", StatusIsShow: false})
+		require.NoError(t, err)
+		assert.True(t, resp.Success)
+	})
+
+	t.Run("siteID mismatch", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-x"})
+		_, err := h.statusSet(c, statusSetReq{})
+		require.Error(t, err)
+	})
+}
