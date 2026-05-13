@@ -114,12 +114,7 @@ export function roomEventsReducer(state, action) {
       // just shows the placeholder text.
       let msg = evt.message
       if ((!msg || !msg.id) && evt.encryptedMessage) {
-        if (!evt.lastMsgId) {
-          if (typeof console !== 'undefined') {
-            console.debug('[chat] MESSAGE_RECEIVED drop: encrypted with no lastMsgId', { roomId: evt.roomId })
-          }
-          return state
-        }
+        if (!evt.lastMsgId) return state
         msg = {
           id: evt.lastMsgId,
           roomId: evt.roomId,
@@ -128,12 +123,7 @@ export function roomEventsReducer(state, action) {
           encrypted: true,
         }
       }
-      if (!msg || !msg.id) {
-        if (typeof console !== 'undefined') {
-          console.debug('[chat] MESSAGE_RECEIVED drop: no message and no encryptedMessage', { roomId: evt.roomId, evtKeys: Object.keys(evt) })
-        }
-        return state
-      }
+      if (!msg || !msg.id) return state
       const roomId = evt.roomId
       const prev = state.roomState[roomId] ?? emptyRoomState()
       const isActive = state.activeRoomId === roomId
@@ -148,7 +138,7 @@ export function roomEventsReducer(state, action) {
         const nextRoomState = {
           ...prev,
           pendingLiveMessages,
-          lastMsgAt: evt.lastMsgAt ?? prev.lastMsgAt,
+          lastMsgAt: evt.lastMsgAt ?? msg.createdAt ?? prev.lastMsgAt,
           lastMsgId: evt.lastMsgId ?? prev.lastMsgId,
           unreadCount: isActive ? prev.unreadCount : prev.unreadCount + 1,
           hasMention: isActive ? false : prev.hasMention || !!evt.hasMention,
@@ -180,7 +170,7 @@ export function roomEventsReducer(state, action) {
       const nextRoomState = {
         ...prev,
         messages,
-        lastMsgAt: evt.lastMsgAt ?? prev.lastMsgAt,
+        lastMsgAt: evt.lastMsgAt ?? msg.createdAt ?? prev.lastMsgAt,
         lastMsgId: evt.lastMsgId ?? prev.lastMsgId,
         unreadCount: isActive ? prev.unreadCount : prev.unreadCount + 1,
         hasMention: isActive ? false : prev.hasMention || !!evt.hasMention,

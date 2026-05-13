@@ -16,26 +16,27 @@ import { memberList } from '../lib/subjects'
 //                the count). The badge already refetches when room.id changes.
 export default function RoomMembersBadge({ room, onOpen, refreshKey = 0 }) {
   const { user, request } = useNats()
+  const account = user?.account
   const [count, setCount] = useState(null)
   const [errored, setErrored] = useState(false)
 
   const isChannel = room?.type === 'channel'
 
   useEffect(() => {
-    if (!isChannel) return
+    if (!isChannel || !account) return
     let cancelled = false
     setCount(null)
     setErrored(false)
     ;(async () => {
       try {
-        const resp = await request(memberList(user.account, room.id, room.siteId), {})
+        const resp = await request(memberList(account, room.id, room.siteId), {})
         if (!cancelled) setCount((resp?.members ?? []).length)
       } catch {
         if (!cancelled) setErrored(true)
       }
     })()
     return () => { cancelled = true }
-  }, [isChannel, request, user.account, room?.id, room?.siteId, refreshKey])
+  }, [isChannel, request, account, room?.id, room?.siteId, refreshKey])
 
   if (!isChannel) return null
 

@@ -455,9 +455,11 @@ describe('MemberRoster', () => {
       const secondPayload = {
         members: [{ id: 'u-late', account: 'late', engName: 'Late Arrival', chineseName: '', siteId: 'site-A' }],
       }
+      let orgFetchCount = 0
       const request = vi.fn().mockImplementation((subject) => {
         if (subject.includes('.orgs.') && subject.endsWith('.members')) {
-          return request.mock.calls.length === 1 ? firstFetch : Promise.resolve(secondPayload)
+          orgFetchCount += 1
+          return orgFetchCount === 1 ? firstFetch : Promise.resolve(secondPayload)
         }
         return Promise.resolve({ members: baseMembers })
       })

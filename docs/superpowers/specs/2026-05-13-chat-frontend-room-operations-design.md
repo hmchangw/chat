@@ -101,7 +101,7 @@ history RPC. The drop was easy to miss because no log line surfaced.
 `ChatPage` has an effect that auto-deselects `selectedRoom` when it
 isn't in `summaries`. After Create:
 
-```
+```text
 t=0   CreateRoomDialog → sync ack {roomId} → onCreated → handleSelectRoom
 t=0+  ChatPage auto-deselect effect runs: room not in summaries yet → setSelectedRoom(null)
 t=Δ   subscription.update arrives → ROOM_ADDED + openChannelSub → too late
@@ -661,7 +661,7 @@ status 1 on any failure so they're CI-able if/when wired up later.
 
 ## UI placement
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ chat-header                                                             │
 │  [Chat]                [SearchBar]               alice·site-A [☀][Logout]│
@@ -696,7 +696,7 @@ DMs intentionally get no Manage Members affordance.
 
 ### `CreateRoomDialog`
 
-```
+```text
 ┌─ dialog ─────────────────────────────────────────────┐
 │ Create Room                                          │
 │                                                      │
@@ -721,7 +721,7 @@ DMs intentionally get no Manage Members affordance.
 
 ### `ManageMembersDialog` — Owner viewer
 
-```
+```text
 ┌─ dialog ─────────────────────────────────────────────┐
 │ Manage Members — frontend-team                       │
 │                                                      │
@@ -744,7 +744,7 @@ When the user clicks an org name the row expands inline, fetching
 returned individuals underneath with no per-row buttons (the parent
 org row owns the lifecycle):
 
-```
+```text
 │  ▾ Engineering   42 members            [Remove]      │
 │    │ Dave Davies     戴文偉                          │
 │    │ Erin Evans      葉伊蓮                          │
@@ -759,7 +759,7 @@ second RPC. While the first fetch is in flight, a placeholder
 
 ### `ManageMembersDialog` — Non-owner viewer (e.g. bob)
 
-```
+```text
 ┌─ dialog ─────────────────────────────────────────────┐
 │ Manage Members — frontend-team                       │
 │ [ Members ]  [   Add   ]                             │
@@ -882,7 +882,7 @@ verification is a separate effort.
 
 ## File inventory
 
-```
+```text
 chat-frontend/src/lib/
 ├── asyncJob.js                # requestWithAsyncResult + ASYNC_JOB_ERROR_KINDS + formatAsyncJobError
 ├── asyncJob.test.js
@@ -941,5 +941,5 @@ chat-frontend/scripts/
 - `roomsCreate` subject builder + `parseList` helper from `lib/subjects.js`
 - `RemoveByIdRow` component + state in `MemberRoster.jsx`
 
-**Tests:** 242 pass across 25 files. `vite build` produces a clean
+**Tests:** Tests pass in CI/local runs and `vite build` produces a clean
 production bundle.

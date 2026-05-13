@@ -6,6 +6,7 @@ import { formatAsyncJobError } from '../../lib/asyncJob'
 
 export default function MemberRoster({ room }) {
   const { user, request, requestWithAsyncResult } = useNats()
+  const account = user?.account
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -35,6 +36,7 @@ export default function MemberRoster({ room }) {
   // a parent re-render that hands us an equivalent-but-new room object
   // shouldn't fire a redundant member.list.
   const fetchMembers = useCallback(async () => {
+    if (!account) return
     // Bump the generation before we await so a later invocation (room
     // switch, post-action refetch) marks this one stale by the time its
     // promise resolves. Without this guard, a slow first request that
@@ -44,7 +46,7 @@ export default function MemberRoster({ room }) {
     setError(null)
     setLoading(true)
     try {
-      const resp = await request(memberList(user.account, room.id, room.siteId), { enrich: true })
+      const resp = await request(memberList(account, room.id, room.siteId), { enrich: true })
       if (gen !== memberListGenRef.current) return
       setMembers(resp.members ?? [])
     } catch (err) {
@@ -53,7 +55,7 @@ export default function MemberRoster({ room }) {
     } finally {
       if (gen === memberListGenRef.current) setLoading(false)
     }
-  }, [request, user.account, room.id, room.siteId])
+  }, [request, account, room.id, room.siteId])
 
   useEffect(() => {
     fetchMembers()
@@ -63,9 +65,9 @@ export default function MemberRoster({ room }) {
   // matches the current user's account and read isOwner. Memoised so the
   // per-row gating doesn't re-derive on every render.
   const isCurrentUserOwner = useMemo(() => {
-    const self = members.find((m) => m.member?.type === 'individual' && m.member?.account === user.account)
+    const self = members.find((m) => m.member?.type === 'individual' && m.member?.account === account)
     return !!self?.member?.isOwner
-  }, [members, user.account])
+  }, [members, account])
 
   // Single ordered list: orgs first, individuals second. Within each group
   // the server's enriched-list order is preserved (today: arbitrary; if the
@@ -106,20 +108,21 @@ export default function MemberRoster({ room }) {
    * once subscription.update lands.
    */
   const handleLeave = useCallback(async () => {
+    if (!account) return
     if (!window.confirm(`Leave "${room.name}"?`)) return
-    setBusyKey(`leave:${user.account}`)
+    setBusyKey(`leave:${account}`)
     setActionError(null)
     try {
-      await requestWithAsyncResult(memberRemove(user.account, room.id, room.siteId), {
+      await requestWithAsyncResult(memberRemove(account, room.id, room.siteId), {
         roomId: room.id,
-        account: user.account,
+        account,
       })
     } catch (err) {
       setActionError(formatAsyncJobError(err))
     } finally {
       setBusyKey(null)
     }
-  }, [room.id, room.siteId, room.name, user.account, requestWithAsyncResult])
+  }, [room.id, room.siteId, room.name, account, requestWithAsyncResult])
 
   /**
    * Toggle an org row open/closed. On the first open we fetch the org's
@@ -136,6 +139,7 @@ export default function MemberRoster({ room }) {
       // Collapsing or already cached — nothing else to do.
       if (wasOpen) return
       if (orgChildren[orgId]) return
+      if (!account) return
       // Per-org generation guard. If the user expands → collapses →
       // re-expands rapidly, only the latest fetch's resolution writes to
       // state; earlier in-flight responses are dropped on the floor.
@@ -143,7 +147,7 @@ export default function MemberRoster({ room }) {
       orgFetchGenRef.current[orgId] = gen
       setOrgFetchState((s) => ({ ...s, [orgId]: 'loading' }))
       try {
-        const resp = await request(orgMembers(user.account, orgId), {})
+        const resp = await request(orgMembers(account, orgId), {})
         if (orgFetchGenRef.current[orgId] !== gen) return
         setOrgChildren((s) => ({ ...s, [orgId]: resp?.members ?? [] }))
         setOrgFetchState((s) => {
@@ -155,7 +159,7 @@ export default function MemberRoster({ room }) {
         setOrgFetchState((s) => ({ ...s, [orgId]: 'error' }))
       }
     },
-    [expandedOrgs, orgChildren, request, user.account]
+    [expandedOrgs, orgChildren, request, account]
   )
 
   if (loading) return <div className="roster-loading">Loading members…</div>

@@ -28,7 +28,7 @@ function setup(overrides = {}) {
 describe('AddMembersForm', () => {
   beforeEach(() => useNats.mockReset())
 
-  it('submit is always clickable; clicking on an empty form is a no-op', async () => {
+  it('submit is always clickable; clicking on an empty form is a no-op', () => {
     // Previously the button was disabled until a chip existed, which meant
     // typing "alice" in Users without pressing Enter left submit greyed out.
     // The handler now flushes pending text first and early-returns on empty.
@@ -36,7 +36,6 @@ describe('AddMembersForm', () => {
     const submit = screen.getByRole('button', { name: /^Add$/ })
     expect(submit).not.toBeDisabled()
     fireEvent.click(submit)
-    await new Promise((r) => setTimeout(r, 30))
     expect(requestWithAsyncResult).not.toHaveBeenCalled()
   })
 

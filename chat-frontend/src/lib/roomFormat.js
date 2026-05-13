@@ -30,5 +30,5 @@ export function roomFromSearchHit(hit) {
 // roomPrefix above but without the trailing space — search rows place the
 // prefix in its own span/div so spacing is handled by CSS, not the string.
 export function searchRoomPrefix(roomType) {
-  return roomType === 'dm' ? '@' : '#'
+  return roomType === 'dm' || roomType === 'botDM' ? '@' : '#'
 }

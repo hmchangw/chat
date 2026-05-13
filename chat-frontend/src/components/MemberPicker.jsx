@@ -181,7 +181,7 @@ const EntityField = forwardRef(function EntityField(
     minLen: 2,
     fetcher: searchFetcher,
   })
-  const hasDropdown = !!searchFetcher && query.length >= 2 && results.length > 0
+  const hasDropdown = !disabled && !!searchFetcher && query.length >= 2 && results.length > 0
 
   // Commit one entry (used by dropdown picks). Multi-add via comma-list goes
   // through commitParsedText which builds the merged list in one onChange so
@@ -233,10 +233,10 @@ const EntityField = forwardRef(function EntityField(
       } else if (query.trim()) {
         commitParsedText(query)
       }
-    } else if (e.key === 'ArrowDown') {
+    } else if (e.key === 'ArrowDown' && hasDropdown) {
       e.preventDefault()
       setActiveIdx((i) => Math.min(i + 1, results.length - 1))
-    } else if (e.key === 'ArrowUp') {
+    } else if (e.key === 'ArrowUp' && hasDropdown) {
       e.preventDefault()
       setActiveIdx((i) => Math.max(i - 1, 0))
     } else if (e.key === 'Escape') {
@@ -286,7 +286,10 @@ const EntityField = forwardRef(function EntityField(
               role="option"
               aria-selected={idx === activeIdx}
               className={`member-picker-result${idx === activeIdx ? ' active' : ''}`}
-              onClick={() => commitSingle(entryFromResult(r))}
+              onClick={() => {
+                if (disabled) return
+                commitSingle(entryFromResult(r))
+              }}
             >
               {renderResult(r)}
             </div>

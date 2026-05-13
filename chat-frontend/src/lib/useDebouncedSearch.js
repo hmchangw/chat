@@ -17,10 +17,15 @@ export function useDebouncedSearch({ delay = 250, minLen = 2, fetcher }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const debounceRef = useRef(null)
+  // Sequence guard: each scheduled fetch captures the seq counter; an
+  // older fetch resolving after a newer one (or after reset) is dropped
+  // so suggestions don't flicker to a stale list.
+  const seqRef = useRef(0)
 
   useEffect(() => () => clearTimeout(debounceRef.current), [])
 
   const onChange = (q) => {
+    const seq = ++seqRef.current
     setQuery(q)
     clearTimeout(debounceRef.current)
     if (q.length < minLen || !fetcher) {
@@ -33,14 +38,17 @@ export function useDebouncedSearch({ delay = 250, minLen = 2, fetcher }) {
     debounceRef.current = setTimeout(async () => {
       try {
         const resp = await fetcher(q)
+        if (seq !== seqRef.current) return
         setResults(resp ?? [])
       } catch {
+        if (seq !== seqRef.current) return
         setResults([])
       }
     }, delay)
   }
 
   const reset = () => {
+    seqRef.current += 1
     setQuery((prev) => (prev === '' ? prev : ''))
     setResults((prev) => (prev.length === 0 ? prev : []))
     clearTimeout(debounceRef.current)

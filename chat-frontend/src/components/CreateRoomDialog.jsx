@@ -116,7 +116,13 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
       : 'Create'
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
+    <div
+      className="dialog-overlay"
+      onClick={() => {
+        if (loading) return
+        onClose()
+      }}
+    >
       <div className="dialog create-room-dialog" onClick={(e) => e.stopPropagation()}>
         <h2>Create Room</h2>
         <form onSubmit={handleSubmit}>
