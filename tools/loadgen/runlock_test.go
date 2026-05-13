@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -59,6 +60,37 @@ func TestMongoDBName(t *testing.T) {
 				"db name must carry loadgen prefix for guardMongoDB to accept it")
 		})
 	}
+}
+
+// TestSharedLockDBName_NotPerRun verifies SharedLockDBName is a static,
+// non-per-run database name that satisfies the loadgen_ prefix guard.
+func TestSharedLockDBName_NotPerRun(t *testing.T) {
+	// Must be a static string, not derived from a runID.
+	assert.Equal(t, "loadgen_shared", SharedLockDBName)
+	// Must satisfy the loadgen_ prefix guard.
+	assert.True(t, strings.HasPrefix(SharedLockDBName, "loadgen_"))
+	// Must NOT collide with mongoDBName for any plausible runID.
+	for _, id := range []string{"abcd123", "ffffeee", "0000000"} {
+		assert.NotEqual(t, mongoDBName(id), SharedLockDBName)
+	}
+}
+
+// TestConcurrentRunError_NamesExistingRun verifies ConcurrentRunError carries
+// conflict details and satisfies errors.Is(ErrConcurrentRun).
+func TestConcurrentRunError_NamesExistingRun(t *testing.T) {
+	e := &ConcurrentRunError{
+		ExistingRunID:     "run-A",
+		ExistingHost:      "host-1",
+		ExistingScenario:  "history-read",
+		ExistingStartedAt: time.Date(2026, 5, 13, 10, 0, 0, 0, time.UTC),
+		SUTURL:            "nats://example:4222",
+	}
+	s := e.Error()
+	assert.Contains(t, s, "run-A")
+	assert.Contains(t, s, "host-1")
+	assert.Contains(t, s, "history-read")
+	assert.Contains(t, s, "nats://example:4222")
+	assert.True(t, errors.Is(e, ErrConcurrentRun), "must satisfy errors.Is(ErrConcurrentRun)")
 }
 
 // TestConsumerName verifies the loadgen_<short>_<purpose> naming pattern.

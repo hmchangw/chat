@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -15,6 +16,33 @@ import (
 // another active loadgen row exists for the same SUT URL within the TTL
 // window.
 var ErrConcurrentRun = errors.New("another loadgen run is already active for this SUT")
+
+// SharedLockDBName is the shared Mongo database that holds the run-isolation
+// lock collection (loadgen_runs). It must NOT be a per-run DB — concurrent
+// runs in different per-run DBs would never see each other's lock rows.
+// The "loadgen_" prefix satisfies guardMongoDB's isolation check.
+const SharedLockDBName = "loadgen_shared"
+
+// ConcurrentRunError is returned by Acquire when a conflicting active run is
+// found. It carries enough detail for the operator to identify the blocking
+// run. errors.Is(err, ErrConcurrentRun) returns true for this type.
+type ConcurrentRunError struct {
+	ExistingRunID     string
+	ExistingHost      string
+	ExistingScenario  string
+	ExistingStartedAt time.Time
+	SUTURL            string
+}
+
+func (e *ConcurrentRunError) Error() string {
+	return fmt.Sprintf("another loadgen run %s is already active for SUT %q (host=%s scenario=%s started=%s)",
+		e.ExistingRunID, e.SUTURL, e.ExistingHost, e.ExistingScenario, e.ExistingStartedAt.Format(time.RFC3339))
+}
+
+// Is makes errors.Is(err, ErrConcurrentRun) return true for *ConcurrentRunError.
+func (e *ConcurrentRunError) Is(target error) bool {
+	return target == ErrConcurrentRun
+}
 
 // shortRunID returns the first 7 characters of runID for use in resource
 // names (Mongo DB names, JetStream consumer names).  When runID is shorter
@@ -59,12 +87,21 @@ type runLockDoc struct {
 	SUTURL    string    `bson:"sutURL"`
 }
 
-// NewRunLock creates a RunLock backed by db.Collection("loadgen_runs").
-// sutURL identifies the system under test; ttl is the max age of an active
-// row before it is considered orphaned and ignored.
+// NewRunLock creates a lock backed by the "loadgen_runs" collection in `db`.
+// CRITICAL: `db` MUST be a SHARED database (typically loadgen_shared) — NOT
+// a per-run database (loadgen_<short>). Concurrent runs in different per-run
+// DBs would never see each other's lock rows. main.go uses SharedLockDBName.
 func NewRunLock(db *mongo.Database, sutURL string, ttl time.Duration) *RunLock {
+	coll := db.Collection("loadgen_runs")
+	// Ensure the active-row query uses an index. Idempotent.
+	_, err := coll.Indexes().CreateOne(context.Background(), mongo.IndexModel{
+		Keys: bson.D{{Key: "sutURL", Value: 1}, {Key: "startedAt", Value: 1}},
+	})
+	if err != nil {
+		slog.Debug("ensure index", "error", err)
+	}
 	return &RunLock{
-		coll:   db.Collection("loadgen_runs"),
+		coll:   coll,
 		sutURL: sutURL,
 		ttl:    ttl,
 	}
@@ -78,19 +115,27 @@ func NewRunLock(db *mongo.Database, sutURL string, ttl time.Duration) *RunLock {
 func (l *RunLock) Acquire(ctx context.Context, runID, scenario string, allowConcurrent bool) error {
 	if !allowConcurrent {
 		cutoff := time.Now().Add(-l.ttl)
-		err := l.coll.FindOne(ctx, bson.M{
+		res := l.coll.FindOne(ctx, bson.M{
 			"sutURL":    l.sutURL,
 			"startedAt": bson.M{"$gt": cutoff},
-		}).Err()
-		switch {
-		case err == nil:
+		})
+		if err := res.Err(); err == nil {
 			// A document was found — another run is active.
+			var existing runLockDoc
+			if decErr := res.Decode(&existing); decErr == nil {
+				return &ConcurrentRunError{
+					ExistingRunID:     existing.RunID,
+					ExistingHost:      existing.Host,
+					ExistingScenario:  existing.Scenario,
+					ExistingStartedAt: existing.StartedAt,
+					SUTURL:            l.sutURL,
+				}
+			}
 			return ErrConcurrentRun
-		case errors.Is(err, mongo.ErrNoDocuments):
-			// No active run; proceed to insert.
-		default:
+		} else if !errors.Is(err, mongo.ErrNoDocuments) {
 			return fmt.Errorf("query runlock: %w", err)
 		}
+		// No active run; proceed to insert.
 	}
 	return l.insertRow(ctx, runID, scenario)
 }
@@ -111,7 +156,6 @@ func (l *RunLock) Release(ctx context.Context) error {
 }
 
 func (l *RunLock) insertRow(ctx context.Context, runID, scenario string) error {
-	l.runID = runID
 	host, _ := os.Hostname()
 	_, err := l.coll.InsertOne(ctx, runLockDoc{
 		RunID:     runID,
@@ -123,5 +167,6 @@ func (l *RunLock) insertRow(ctx context.Context, runID, scenario string) error {
 	if err != nil {
 		return fmt.Errorf("insert runlock: %w", err)
 	}
+	l.runID = runID
 	return nil
 }

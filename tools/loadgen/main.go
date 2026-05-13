@@ -201,9 +201,9 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	runID := idgen.GenerateUUIDv7()
 
-	// Connect to MongoDB using a per-run DB name ("loadgen_<short>") so
-	// concurrent runs on the same machine each get their own namespace.
-	// The DB is also used to acquire the run-isolation advisory lock.
+	// Connect to MongoDB. The lock lives in a SHARED database (SharedLockDBName)
+	// so concurrent runs on different machines can see each other's lock rows.
+	// Per-run data lives in a separate per-run DB; the two must NOT be confused.
 	mongoClient, mongoErr := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if mongoErr != nil {
 		slog.Error("mongo connect (run lock)", "error", mongoErr)
@@ -211,7 +211,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	}
 	defer mongoutil.Disconnect(context.Background(), mongoClient)
 
-	lockDB := mongoClient.Database(mongoDBName(runID))
+	lockDB := mongoClient.Database(SharedLockDBName)
 	runLock := NewRunLock(lockDB, cfg.NatsURL, rf.RunTTL)
 	lp := &RunLockParams{
 		Lock:            runLock,
@@ -222,10 +222,8 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	rt, err := NewRuntime(ctx, cfg, runID, lp)
 	if err != nil {
 		if errors.Is(err, ErrConcurrentRun) {
-			fmt.Fprintf(os.Stderr,
-				"error: another loadgen run is already active for SUT %q.\n"+
-					"Wait for it to finish, or re-run with --allow-concurrent to bypass this check.\n",
-				cfg.NatsURL)
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, "Wait for it to finish, or re-run with --allow-concurrent to bypass this check.")
 			return 1
 		}
 		slog.Error("runtime init", "error", err)
