@@ -35,7 +35,26 @@ export function RoomEventsProvider({ children }) {
       dispatch(action)
     }
 
+    // Diagnostic instrumentation: every inbound subscription event is
+    // logged at console.debug level so a developer can open browser
+    // devtools (Console → "Verbose" or "Default" depending on browser) and
+    // see exactly what arrives on the wire. Default browser console
+    // filters hide debug-level output in production-ish use, so this is
+    // free in normal operation.
+    const logEvent = (origin, subject, evt) => {
+      if (typeof console === 'undefined') return
+      console.debug('[chat] event', origin, {
+        subject,
+        type: evt?.type,
+        roomId: evt?.roomId,
+        lastMsgId: evt?.lastMsgId,
+        hasMessage: !!evt?.message,
+        hasEncrypted: !!evt?.encryptedMessage,
+      })
+    }
+
     const dmSub = subscribe(userRoomEvent(user.account), (evt) => {
+      logEvent('dm-sub', userRoomEvent(user.account), evt)
       if (evt?.type === 'new_message') {
         safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
       }
@@ -43,7 +62,12 @@ export function RoomEventsProvider({ children }) {
 
     const openChannelSub = (roomId) => {
       if (channelSubs.current.has(roomId)) return
-      const sub = subscribe(roomEvent(roomId), (evt) => {
+      const subj = roomEvent(roomId)
+      if (typeof console !== 'undefined') {
+        console.debug('[chat] openChannelSub', { roomId, subject: subj })
+      }
+      const sub = subscribe(subj, (evt) => {
+        logEvent('channel-sub', subj, evt)
         if (evt?.type === 'new_message') {
           const hasMention = (evt.mentions ?? []).some(
             (p) => p.account === user.account
