@@ -72,7 +72,7 @@ func TestFederation_CrossSiteInvite(t *testing.T) {
 	require.Eventually(t, func() bool {
 		var sub map[string]any
 		return subs.FindOne(ctx, filter).Decode(&sub) == nil
-	}, 15*time.Second, 250*time.Millisecond,
+	}, 30*time.Second, 250*time.Millisecond,
 		"bob's subscription on roomID=%s never appeared on siteB", roomID)
 
 	var sub map[string]any
@@ -129,17 +129,17 @@ func TestFederation_NegativeIsolation_StateStaysSiteLocal(t *testing.T) {
 	// fire if it WERE going to misbehave.
 	awaitSubscription(t, ctx, stack.SiteA.MongoDB(t), bob.Account, roomID)
 
-	// Buffer for any straggler async work.
-	time.Sleep(1 * time.Second)
-
-	// Mongo-b must NOT have a subscription for this room (it's siteA-local).
+	// Mongo-b must NEVER receive a subscription for this room (it's siteA-local).
+	// require.Never is deterministic: it polls for the full duration and fails
+	// fast if a sub ever appears, instead of relying on a single post-Sleep
+	// check that an event arriving at 1.5s would silently slip past.
 	subsB := stack.SiteB.MongoDB(t).Collection("subscriptions")
-	count, err := subsB.CountDocuments(ctx, bson.M{
-		"u.account": bob.Account,
-		"roomId":    roomID,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), count,
-		"mongo-b must have no subscription for siteA-local room %s -- found %d",
-		roomID, count)
+	require.Never(t, func() bool {
+		count, err := subsB.CountDocuments(ctx, bson.M{
+			"u.account": bob.Account,
+			"roomId":    roomID,
+		})
+		return err == nil && count > 0
+	}, 5*time.Second, 250*time.Millisecond,
+		"mongo-b must have no subscription for siteA-local room %s", roomID)
 }

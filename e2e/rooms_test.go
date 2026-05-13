@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
@@ -23,8 +22,11 @@ import (
 // Tests run sequentially against a shared stack; an earlier DM test may
 // have already created the alice-bob DM. We handle both first-call and
 // already-exists paths.
+//
+// NOT t.Parallel: shares the alice-bob DM roomID with any other parallel
+// test that touches the realm-fixed users; idempotency assertion would
+// flake on the existing-room reply path.
 func TestRoom_DM_CreateIsIdempotent(t *testing.T) {
-	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
 
@@ -243,6 +245,3 @@ func TestRoom_MarkMessageRead(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond,
 		"alice's subscription must have lastSeenAt set after MessageRead RPC")
 }
-
-// suppress unused imports if helper-only.
-var _ = mongo.Database{}

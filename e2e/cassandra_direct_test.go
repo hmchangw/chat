@@ -27,29 +27,11 @@ func TestCassandra_MessagesByRoomSingleRow(t *testing.T) {
 	ctx := t.Context()
 	site := stack.SiteA
 
-	alice := site.Authenticate(t, ctx, "alice")
-	bob := site.Authenticate(t, ctx, "bob")
-
-	createReq := model.CreateRoomRequest{
-		Name:  "e2e-" + t.Name(),
-		Users: []string{bob.Account},
-	}
-	var createReply model.CreateRoomReply
-	require.NoError(t, requestReply(
-		alice.Conn(),
-		subject.RoomCreate(alice.Account, site.SiteID),
-		createReq, 5*time.Second, &createReply,
-	))
-	roomID := createReply.RoomID
-	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
-	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
+	alice, _, roomID := setupChannelRoom(t, ctx, site, "alice", "bob")
 
 	js := site.JetStream(t)
 	canonical := stream.MessagesCanonical(site.SiteID).Name
 	awaitDurableReady(t, ctx, js, canonical, "message-worker")
-	pre, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq := pre.CachedInfo().State.LastSeq
 
 	msgID := idgen.GenerateMessageID()
 	reqID := idgen.GenerateRequestID()
@@ -66,7 +48,7 @@ func TestCassandra_MessagesByRoomSingleRow(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+1)
+	awaitMessageOnSite(t, ctx, site, msgID)
 
 	sess := site.CassandraSession(t)
 	defer sess.Close()
@@ -108,9 +90,6 @@ func TestCassandra_MessagesByIdMatchesByRoom(t *testing.T) {
 	js := site.JetStream(t)
 	canonical := stream.MessagesCanonical(site.SiteID).Name
 	awaitDurableReady(t, ctx, js, canonical, "message-worker")
-	pre, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	preSeq := pre.CachedInfo().State.LastSeq
 
 	msgID := idgen.GenerateMessageID()
 	reqID := idgen.GenerateRequestID()
@@ -128,7 +107,7 @@ func TestCassandra_MessagesByIdMatchesByRoom(t *testing.T) {
 		},
 		10*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+1)
+	awaitMessageOnSite(t, ctx, site, msgID)
 
 	sess := site.CassandraSession(t)
 	defer sess.Close()
@@ -201,9 +180,6 @@ func TestCassandra_MessagesByIdDedup(t *testing.T) {
 
 	sendOnce := func(msgID, body string) {
 		t.Helper()
-		pre, err := js.Stream(ctx, canonical)
-		require.NoError(t, err)
-		preSeq := pre.CachedInfo().State.LastSeq
 		reqID := idgen.GenerateRequestID()
 		require.NoError(t, sendAndAwaitReply(
 			t,
@@ -214,17 +190,13 @@ func TestCassandra_MessagesByIdDedup(t *testing.T) {
 			model.SendMessageRequest{ID: msgID, Content: body, RequestID: reqID},
 			10*time.Second,
 		))
-		// Best-effort canonical wait; if the second send was rejected
-		// upstream the seq won't have advanced.
-		post, err := js.Stream(ctx, canonical)
-		require.NoError(t, err)
-		if post.CachedInfo().State.LastSeq > preSeq {
-			awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+1)
-		}
 	}
 
 	msgID := idgen.GenerateMessageID()
 	sendOnce(msgID, "first attempt")
+	// Wait for the FIRST landing before sending the dup so we don't race
+	// the dedup PK with two pre-write attempts.
+	awaitMessageOnSite(t, ctx, site, msgID)
 	sendOnce(msgID, "second attempt with same msgID")
 
 	sess := site.CassandraSession(t)

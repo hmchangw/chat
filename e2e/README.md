@@ -10,7 +10,10 @@ asserts behaviour at the user-API boundary.
 ```bash
 make e2e            # testcontainers-owned lifecycle (CI parity)
 make e2e-up         # bring up compose stack in the background
-E2E_REUSE_STACK=1 go test -tags e2e ./e2e/...   # iterate against the up stack
+make e2e-only       # run go test against an already-up stack (sets E2E_REUSE_STACK=1)
+E2E_REUSE_STACK=1 go test -tags e2e ./e2e/...   # same, manual invocation
+make e2e-down       # stop the stack
+make e2e-logs       # tail container logs
 ```
 
 Suite size: **45 PASS / 1 SKIP / 0 FAIL** in ~15s on a warm REUSE stack.
@@ -78,9 +81,9 @@ share inbox-worker-b state and the cross-site gateway flow.
 
 | Group | Parallel? | Reason |
 |-------|-----------|--------|
-| Single-site message / room / thread / negative / errors / subject / auth-HTTP / cassandra / stress / encryption | yes | Each test creates its own room and registers cleanup. Authenticate returns a fresh per-call NATS connection (different nkey each time) so multiple parallel tests can share the same realm user without colliding. |
-| Search (`TestSearch_MessageVisibleAfterIndex`) | no | Mutates alice's per-account valkey + ES user-room doc. |
-| Catchup (`TestFederation_CatchUpAfterOutage`) | no | Stop/starts inbox-worker-b. Skipped entirely under REUSE. |
+| Single-site message / room / thread / negative / errors / subject / auth-HTTP / cassandra / stress / encryption / search | yes | Each test creates its own room and registers cleanup. Authenticate returns a fresh per-call NATS connection (different nkey each time) so multiple parallel tests can share the same realm user without colliding. Search additionally mints a fresh Keycloak user via `MintEphemeralUser` to isolate the per-account valkey cache + ES user-room doc. |
+| `TestRoom_DM_CreateIsIdempotent` | no | Shares the alice-bob DM roomID; idempotency assertion would flake against other parallel tests touching the realm-fixed users. |
+| `TestFederation_CatchUpAfterOutage` (catchup) | no | Stop/starts inbox-worker-b. Skipped entirely under REUSE. |
 | Other 5 federation tests | no | Share inbox-worker-b consumer state; attempted parallel cut wall time but introduced 15s+ timeouts on shared OUTBOX→INBOX gateway sourcing. |
 
 Per-test Keycloak user synthesis would unlock federation parallelism;

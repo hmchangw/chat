@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // JSON-marshal request, await reply, decode ErrorResponse to *errorReply.
@@ -110,6 +113,19 @@ func userResponseSubject(account, requestID string) string {
 	return fmt.Sprintf("chat.user.%s.response.%s", account, requestID)
 }
 
+// Polling budgets. Pick by the operation being awaited:
+//   - shortPoll: single in-process step (subscription persisted, durable created).
+//   - medPoll: cross-service hop (gatekeeper -> canonical -> message-worker).
+//   - longPoll: cross-site federation (gateway sourcing + remote inbox-worker).
+//
+// Intervals are tuned for the race detector + CI scheduler jitter.
+const (
+	shortPoll    = 15 * time.Second
+	medPoll      = 20 * time.Second
+	longPoll     = 30 * time.Second
+	pollInterval = 200 * time.Millisecond
+)
+
 // Polls until the named durable consumer exists; doesn't prove the worker
 // has parked on a fetch.
 func awaitDurableReady(t *testing.T, ctx context.Context, js jetstream.JetStream, streamName, durable string) {
@@ -121,8 +137,8 @@ func awaitDurableReady(t *testing.T, ctx context.Context, js jetstream.JetStream
 		}
 		_, err = s.Consumer(ctx, durable)
 		return err == nil
-	}, 20*time.Second, 200*time.Millisecond,
-		"durable %q on stream %q not ready in 20s", durable, streamName)
+	}, medPoll, pollInterval,
+		"durable %q on stream %q not ready", durable, streamName)
 }
 
 // awaitCanonicalAcked waits until the named durable's AckFloor.Stream
@@ -179,8 +195,8 @@ func awaitMessageByID(t *testing.T, ctx context.Context, sess *gocql.Session, ms
 			return false
 		}
 		return count == 1
-	}, 15*time.Second, 100*time.Millisecond,
-		"message_id=%s never appeared in chat.messages_by_id within 15s "+
+	}, shortPoll, 100*time.Millisecond,
+		"message_id=%s never appeared in chat.messages_by_id "+
 			"(canonical worker may have failed to write, or the message never reached the worker)",
 		msgID)
 }
@@ -197,7 +213,7 @@ func awaitSubscription(t *testing.T, ctx context.Context, db *mongo.Database, ac
 			"roomId":    roomID,
 		})
 		return err == nil && count > 0
-	}, 15*time.Second, 100*time.Millisecond,
+	}, shortPoll, 100*time.Millisecond,
 		"subscription for account=%s roomId=%s never persisted", account, roomID)
 }
 
@@ -349,4 +365,45 @@ func asSiteDB(t *testing.T, site harness.SiteEndpoints) SiteDB {
 		ESURL:      site.ESURL,
 		ValkeyAddr: site.ValkeyAddr,
 	}
+}
+
+// skipUnderReuse short-circuits a test under E2E_REUSE_STACK=1. Used by
+// chaos tests (disrupt shared deps), auth-load (saturates Keycloak), and
+// federation catchup (worker-restart consumer-reattach is racy on shared
+// stack; `make e2e` testcontainers ownership makes it reliable).
+func skipUnderReuse(t *testing.T, why string) {
+	t.Helper()
+	if reuse, _ := strconv.ParseBool(os.Getenv("E2E_REUSE_STACK")); reuse {
+		t.Skipf("E2E_REUSE_STACK=1: %s", why)
+	}
+}
+
+// setupChannelRoom authenticates the two named realm users on `site`, opens
+// a channel room with the first inviting the second, registers full backend
+// cleanup, and awaits both subscriptions persisted on mongo. Collapses the
+// 7-line setup that prefixes ~15 tests across the suite.
+//
+// IMPORTANT: roomID is request-accepted, not data-durable, until the
+// awaitSubscription calls return -- relying on the bare reply is the
+// classic gatekeeper-rejects-send trap.
+func setupChannelRoom(t *testing.T, ctx context.Context, site harness.SiteEndpoints, requester, invitee string) (alice, bob *harness.Identity, roomID string) {
+	t.Helper()
+	alice = site.Authenticate(t, ctx, requester)
+	bob = site.Authenticate(t, ctx, invitee)
+
+	createReq := model.CreateRoomRequest{
+		Name:  "e2e-" + t.Name(),
+		Users: []string{bob.Account},
+	}
+	var createReply model.CreateRoomReply
+	require.NoError(t, requestReply(
+		alice.Conn(),
+		subject.RoomCreate(alice.Account, site.SiteID),
+		createReq, 5*time.Second, &createReply,
+	))
+	roomID = createReply.RoomID
+	registerRoomCleanup(t, []SiteDB{asSiteDB(t, site)}, roomID)
+	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
+	awaitSubscription(t, ctx, site.MongoDB(t), bob.Account, roomID)
+	return alice, bob, roomID
 }

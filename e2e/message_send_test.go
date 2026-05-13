@@ -144,9 +144,9 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	// message. Without this filter the test is flaky -- under tight timing
 	// the system message can arrive before alice's send.
 	var roomEvent model.RoomEvent
-	bcastDeadline := time.Now().Add(10 * time.Second)
+	bcastDeadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(bcastDeadline) {
-		m, mErr := bobSub.NextMsg(2 * time.Second)
+		m, mErr := bobSub.NextMsg(5 * time.Second)
 		if mErr != nil {
 			break
 		}
@@ -174,9 +174,9 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	// we don't assert on notif.Message.Mentions here; that check happens on
 	// the history record below.
 	var notif model.NotificationEvent
-	notifDeadline := time.Now().Add(10 * time.Second)
+	notifDeadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(notifDeadline) {
-		notifMsg, mErr := notifSub.NextMsg(2 * time.Second)
+		notifMsg, mErr := notifSub.NextMsg(5 * time.Second)
 		if mErr != nil {
 			break
 		}

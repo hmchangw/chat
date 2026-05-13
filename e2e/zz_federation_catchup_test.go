@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -22,14 +21,9 @@ import (
 // the backlog drains into mongo-b. File is zz_* so it runs last among
 // federation tests; the actual fix lives in inbox-worker/bootstrap.go.
 func TestFederation_CatchUpAfterOutage(t *testing.T) {
-	// Skip under E2E_REUSE_STACK: worker-restart consumer-reattach is
-	// racy on a shared stack. `make e2e` (fresh stack) runs reliably.
-	if reuse, _ := strconv.ParseBool(os.Getenv("E2E_REUSE_STACK")); reuse {
-		t.Skip("catchup is flaky under E2E_REUSE_STACK -- runs reliably under " +
-			"`make e2e` (testcontainers ownership); the Sources-preservation " +
-			"production fix in inbox-worker resolved most cases but consumer " +
-			"reconnect timing remains racy in a shared-stack environment")
-	}
+	// Worker-restart consumer-reattach is racy on a shared stack; under
+	// `make e2e` (testcontainers ownership) it runs reliably.
+	skipUnderReuse(t, "catchup: worker-restart consumer-reattach is racy on a shared stack")
 
 	ctx := t.Context()
 	stack := stack
@@ -85,7 +79,7 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 		// Each create-room invite emits one member_added event for bob
 		// (the cross-site invitee). Wait for the count delta to match.
 		return s.CachedInfo().State.Msgs >= preCount+uint64(inviteRounds)
-	}, 30*time.Second, 250*time.Millisecond,
+	}, longPoll, 250*time.Millisecond,
 		"INBOX_siteB never accumulated %d new events (gateway sourcing slow or broken); pre=%d",
 		inviteRounds, preCount)
 	postInfo, err := jsB.Stream(ctx, "INBOX_siteB")
@@ -117,7 +111,7 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 			return false
 		}
 		return info.NumPending == 0
-	}, 30*time.Second, 250*time.Millisecond,
+	}, longPoll, 250*time.Millisecond,
 		"inbox-worker did not drain INBOX_siteB within 30s")
 
 	// 6. All bob+roomID subscriptions must now exist on mongo-b.

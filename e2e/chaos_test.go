@@ -8,8 +8,6 @@ package e2e
 
 import (
 	"context"
-	"os"
-	"strconv"
 	"testing"
 	"time"
 
@@ -217,14 +215,4 @@ func TestChaos_CassandraMidWriteRecovers(t *testing.T) {
 		`SELECT COUNT(*) FROM chat.messages_by_id WHERE message_id = ?`, msgIDPost,
 	).WithContext(ctx).Scan(&c))
 	require.Equal(t, 1, c, "post-recovery msgID=%s must be in Cassandra", msgIDPost)
-}
-
-// skipUnderReuse short-circuits a test under E2E_REUSE_STACK=1. Chaos
-// tests share dep containers with parallel-running tests; running them
-// in REUSE mode breaks the entire suite for the duration of the chaos.
-func skipUnderReuse(t *testing.T, why string) {
-	t.Helper()
-	if reuse, _ := strconv.ParseBool(os.Getenv("E2E_REUSE_STACK")); reuse {
-		t.Skipf("E2E_REUSE_STACK=1: %s", why)
-	}
 }
