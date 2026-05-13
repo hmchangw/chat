@@ -3640,6 +3640,22 @@ describe('threadEventsReducer — CLOSE_THREAD', () => {
   })
 })
 
+describe('threadEventsReducer — HISTORY_LOADING', () => {
+  it('sets historyLoading=true when dispatched for the active parent', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const cleared = { ...open, historyLoading: false }
+    const out = threadEventsReducer(cleared, { type: 'HISTORY_LOADING', parentId: 'p1' })
+    expect(out.historyLoading).toBe(true)
+  })
+
+  it('is ignored for a non-active parent', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const cleared = { ...open, historyLoading: false }
+    const out = threadEventsReducer(cleared, { type: 'HISTORY_LOADING', parentId: 'other' })
+    expect(out).toBe(cleared)
+  })
+})
+
 describe('threadEventsReducer — HISTORY_LOADED', () => {
   const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
 
