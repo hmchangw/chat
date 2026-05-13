@@ -22,12 +22,20 @@ groups:
       # captures actual request/reply round-trip latency.
       # Alert fires when the p99 serviced-omission deficit exceeds 25% of the
       # measured-latency p99, indicating generator queuing is biasing results.
+      # Both sides are aggregated with sum() by (le) before histogram_quantile so
+      # they each produce a scalar-shaped vector (no residual labels) and the
+      # binary / operator can match them. The omission tracker is global (one
+      # instance per run) so per-scenario splitting is not applicable on the LHS.
       - alert: LoadgenOmissionBudgetExceeded
         expr: |
           (
-            histogram_quantile(0.99, rate(loadgen_omission_deficit_seconds_bucket{dropped="false"}[5m]))
+            histogram_quantile(0.99,
+              sum(rate(loadgen_omission_deficit_seconds_bucket{dropped="false"}[5m])) by (le)
+            )
             /
-            histogram_quantile(0.99, rate(loadgen_request_latency_seconds_bucket[5m]))
+            histogram_quantile(0.99,
+              sum(rate(loadgen_request_latency_seconds_bucket{phase="measured"}[5m])) by (le)
+            )
           ) > 0.25
         for: 1m
         labels:
@@ -38,25 +46,23 @@ groups:
           description: "Coordinated omission > 25% of measured latency means generator queuing is biasing the headline numbers — see USAGE.md#omission-budget"
 
       # Rule 3: Async-publish ack backlog growing.
-      # loadgen_published_total counts messages queued into the JetStream async
-      # ring (not acked). Async-ack failures land in
-      # loadgen_publish_errors_total{reason="async_ack"}. The "acked" proxy is
-      # published_total minus async_ack errors. A sustained gap >100/s over 5m
-      # signals JetStream is falling behind.
+      # loadgen_publish_errors_total{reason="async_ack"} counts JetStream async
+      # publish failures (NATS PubAckFuture returned an error). A healthy run
+      # produces near-zero async-ack failures. The previous expression subtracted
+      # async_ack errors from published_total which fired on healthy high-throughput
+      # runs (published-0=large > 100). The correct signal is the async_ack error
+      # rate itself: >1/s sustained 5m means JetStream is dropping or failing to
+      # ack publishes.
       - alert: LoadgenAsyncAckBacklog
         expr: |
-          (
-            sum(rate(loadgen_published_total{phase="measured"}[1m]))
-            -
-            sum(rate(loadgen_publish_errors_total{phase="measured",reason="async_ack"}[1m]))
-          ) > 100
+          sum(rate(loadgen_publish_errors_total{phase="measured",reason="async_ack"}[5m])) > 1
         for: 5m
         labels:
           severity: warning
           component: loadgen
         annotations:
-          summary: "Loadgen async-publish ack backlog growing"
-          description: "Queued/acked gap >100/s sustained 5m — JetStream is falling behind. See USAGE.md#async-ack-backlog"
+          summary: "Loadgen async-publish ack failures sustained"
+          description: "Async-publish ack-failure rate >1/s sustained 5m — JetStream is dropping or failing to ack publishes. See USAGE.md#async-ack-backlog"
 
       # Rule 4: Phase 3.1 dependency — RAW history scenario doesn't exist yet.
       # The metric loadgen_raw_history_lag_seconds is not produced until Phase 3.1.

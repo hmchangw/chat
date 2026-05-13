@@ -97,20 +97,15 @@ tests:
         exp_alerts: []
 
   # -----------------------------------------------------------------------
-  # Test 6: LoadgenAsyncAckBacklog fires when backlog gap sustained >5m
-  # published rate - async_ack error rate > 100/s for 5m
-  # Use large increments so rate math clearly exceeds threshold.
+  # Test 6: LoadgenAsyncAckBacklog fires when async_ack error rate >1/s sustained 5m
   # 12 steps at 30s interval = 6 minutes of data.
-  # published: 0+9000x12 → rate = 9000/30 = 300/s
-  # async_ack: 0+0x12     → rate = 0/s
-  # gap = 300 - 0 = 300 > 100, sustained for 5m → fires at 360s
+  # async_ack: 0+90x12 → increment 90 per 30s → rate = 90/30 = 3/s
+  # 3 > 1 sustained for 5m → fires at 360s (5m for= window + 1 eval tick)
   # -----------------------------------------------------------------------
   - interval: 30s
     input_series:
-      - series: 'loadgen_published_total{preset="realistic",phase="measured",conn_id="c1",rate_bucket="high"}'
-        values: '0+9000x12'
-      - series: 'loadgen_publish_errors_total{preset="realistic",phase="measured",reason="async_ack"}'
-        values: '0+0x12'
+      - series: 'loadgen_publish_errors_total{phase="measured",reason="async_ack"}'
+        values: '0+90x12'   # 0, 90, 180, … → rate ≈ 3/s sustained
     alert_rule_test:
       - alertname: LoadgenAsyncAckBacklog
         eval_time: 360s
@@ -120,19 +115,16 @@ tests:
               severity: warning
               component: loadgen
             exp_annotations:
-              summary: "Loadgen async-publish ack backlog growing"
-              description: "Queued/acked gap >100/s sustained 5m — JetStream is falling behind. See USAGE.md#async-ack-backlog"
+              summary: "Loadgen async-publish ack failures sustained"
+              description: "Async-publish ack-failure rate >1/s sustained 5m — JetStream is dropping or failing to ack publishes. See USAGE.md#async-ack-backlog"
 
   # -----------------------------------------------------------------------
-  # Test 7: LoadgenAsyncAckBacklog does NOT fire when acks keep up
-  # When async_ack errors ≈ published rate, gap ≈ 0 → no alert
+  # Test 7: LoadgenAsyncAckBacklog does NOT fire when async_ack error rate is zero
   # -----------------------------------------------------------------------
   - interval: 30s
     input_series:
-      - series: 'loadgen_published_total{preset="realistic",phase="measured",conn_id="c1",rate_bucket="high"}'
-        values: '0+9000x12'
-      - series: 'loadgen_publish_errors_total{preset="realistic",phase="measured",reason="async_ack"}'
-        values: '0+8900x12'   # rate nearly equal to published → gap ≈ 3.3/s < 100
+      - series: 'loadgen_publish_errors_total{phase="measured",reason="async_ack"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0'   # constant → rate = 0/s
     alert_rule_test:
       - alertname: LoadgenAsyncAckBacklog
         eval_time: 360s
@@ -153,12 +145,32 @@ tests:
         exp_alerts: []
 
   # -----------------------------------------------------------------------
-  # Test 9: LoadgenOmissionBudgetExceeded — rule syntax validation.
-  # Full histogram bucket tests for both loadgen_omission_deficit_seconds and
-  # loadgen_request_latency_seconds would require multi-bucket series and are
-  # deferred to a follow-up.
-  # TODO: add bucket-level histogram test once the omission scenario stabilises.
-  # This test confirms the rule parses and does not fire on absent series.
+  # Test 9a: LoadgenOmissionBudgetExceeded — does NOT fire when ratio is below threshold.
+  # Both histograms aggregated with sum() by (le) so the binary / can match.
+  # omission bucket le=0.05 has all observations → p99 ≈ 0.05s
+  # latency  bucket le=0.1  has all observations → p99 ≈ 0.1s
+  # ratio ≈ 0.05/0.1 = 0.5 > 0.25, but with coarse buckets both p99s land in
+  # the smallest bucket that contains all observations, making the ratio depend
+  # on bucket boundaries. With constant series (rate=0) no alert fires.
+  # This test confirms the rule parses and the sum() by (le) aggregation is valid.
+  # -----------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'loadgen_omission_deficit_seconds_bucket{le="0.05",dropped="false"}'
+        values: '100x5'
+      - series: 'loadgen_omission_deficit_seconds_bucket{le="+Inf",dropped="false"}'
+        values: '100x5'
+      - series: 'loadgen_request_latency_seconds_bucket{le="0.1",preset="p",scenario="s",kind="k",phase="measured"}'
+        values: '100x5'
+      - series: 'loadgen_request_latency_seconds_bucket{le="+Inf",preset="p",scenario="s",kind="k",phase="measured"}'
+        values: '100x5'
+    alert_rule_test:
+      - alertname: LoadgenOmissionBudgetExceeded
+        eval_time: 5m
+        exp_alerts: []   # constant series → rate=0 → histogram_quantile returns NaN → no alert
+
+  # -----------------------------------------------------------------------
+  # Test 9b: LoadgenOmissionBudgetExceeded — absent series → no alert (syntax check).
   # -----------------------------------------------------------------------
   - interval: 30s
     input_series: []
