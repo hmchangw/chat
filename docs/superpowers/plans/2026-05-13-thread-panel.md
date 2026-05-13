@@ -5501,4 +5501,371 @@ git commit -m "feat(chat-frontend): close thread on room switch"
 
 ---
 
-*Chapter 9 follows — Accessibility, InRoomSearch ↔ ThreadRightBar mutual exclusion, Esc-to-close, focus management, full integration smoke.*
+## Chapter 9 — Accessibility, mutual exclusion, final polish
+
+Goal: close out the spec's accessibility section, enforce mutual exclusion between `InRoomSearch` and `ThreadRightBar`, reset thread state on logout, and run a final integration smoke check end-to-end.
+
+### Task 9.1: Mutual exclusion — InRoomSearch ↔ ThreadRightBar
+
+Spec: opening the thread closes in-room search; opening in-room search closes the thread. Pressing Ctrl-F while a thread is open closes the thread first (so search opens in a fresh state).
+
+**Files:**
+- Modify: `chat-frontend/src/pages/ChatPage.jsx`
+- Modify: `chat-frontend/src/pages/ChatPage.test.jsx`
+
+- [ ] **Step 1: Failing tests**
+
+Append to `chat-frontend/src/pages/ChatPage.test.jsx`:
+
+```jsx
+describe('ChatPage — mutual exclusion', () => {
+  it('opening InRoomSearch (Ctrl-F) closes any open thread', async () => {
+    const closeThread = vi.fn()
+    vi.doMock('../context/ThreadEventsContext', () => ({
+      useThreadEvents: () => ({ openThread: vi.fn(), closeThread, activeParent: { messageId: 'p1' } }),
+    }))
+    const { default: Re } = await import('./ChatPage')
+    render(<Re selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    expect(closeThread).toHaveBeenCalled()
+  })
+
+  it('opening a thread closes InRoomSearch', async () => {
+    // Simulate state by toggling InRoomSearch on first then firing onThread.
+    // We rely on the existing fire-thread mock in this file.
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    expect(screen.getByText('in-room-search')).toBeInTheDocument()
+    // openThread is dispatched by the existing handler; check that the
+    // search panel goes away. (Test verifies the effect, not the cause.)
+    fireEvent.click(screen.getByText('fire-thread'))
+    expect(screen.queryByText('in-room-search')).not.toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Wire mutual exclusion in `ChatPage.jsx`**
+
+In `chat-frontend/src/pages/ChatPage.jsx`, update the Ctrl-F handler to also close the thread:
+
+```jsx
+const handler = (e) => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault()
+    if (activeParent) closeThread()
+    setInRoomSearchOpen(true)
+  } else if (e.key === 'Escape') {
+    setInRoomSearchOpen(false)
+  }
+}
+```
+
+And in `handleThread`, close in-room search:
+
+```jsx
+const handleThread = (msg) => {
+  if (!selectedRoom || !msg) return
+  setInRoomSearchOpen(false)
+  openThread({
+    roomId: selectedRoom.id,
+    siteId: selectedRoom.siteId,
+    messageId: msg.id,
+    createdAtMs: new Date(msg.createdAt).getTime(),
+  })
+}
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd chat-frontend && npx vitest run src/pages/ChatPage.test.jsx -t "mutual exclusion"`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/pages/ChatPage.jsx chat-frontend/src/pages/ChatPage.test.jsx
+git commit -m "feat(chat-frontend): mutual exclusion InRoomSearch ↔ ThreadRightBar"
+```
+
+### Task 9.2: Esc closes the thread panel
+
+When focus is anywhere inside `ThreadRightBar` (and no inner dialog / edit-mode is intercepting), Esc calls `closeThread()`.
+
+**Files:**
+- Modify: `chat-frontend/src/components/ThreadRightBar.jsx`
+- Modify: `chat-frontend/src/components/ThreadRightBar.test.jsx`
+
+- [ ] **Step 1: Failing test**
+
+Append to `chat-frontend/src/components/ThreadRightBar.test.jsx`:
+
+```jsx
+describe('ThreadRightBar — Esc to close', () => {
+  it('Esc on the panel closes the thread', () => {
+    const { container } = render(<ThreadRightBar />)
+    fireEvent.keyDown(container.querySelector('.thread-rightbar'), { key: 'Escape' })
+    expect(closeThread).toHaveBeenCalled()
+  })
+
+  it('Esc does NOT close when target is an inner input (let inputs handle their own Esc)', () => {
+    const { container } = render(<ThreadRightBar />)
+    const input = document.createElement('input')
+    container.querySelector('.thread-rightbar').appendChild(input)
+    closeThread.mockClear()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(closeThread).not.toHaveBeenCalled()
+  })
+})
+```
+
+- [ ] **Step 2: Update `ThreadRightBar.jsx`**
+
+Attach `onKeyDown` on the outer `<aside>`:
+
+```jsx
+const handleKeyDown = (e) => {
+  if (e.key !== 'Escape') return
+  // Let inputs / textareas keep their own Esc semantics (edit cancel, etc).
+  const tag = (e.target.tagName || '').toLowerCase()
+  if (tag === 'input' || tag === 'textarea') return
+  closeThread()
+}
+
+return (
+  <aside className="thread-rightbar" onKeyDown={handleKeyDown}>
+    {/* … */}
+  </aside>
+)
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/ThreadRightBar.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/components/ThreadRightBar.jsx chat-frontend/src/components/ThreadRightBar.test.jsx
+git commit -m "feat(chat-frontend): Esc closes the thread panel"
+```
+
+### Task 9.3: Focus management on open / close
+
+When the thread panel mounts, move focus to the ✕ button so Esc / Tab are usable immediately. When it unmounts via the local close button, return focus to whatever fired the open.
+
+**Files:**
+- Modify: `chat-frontend/src/components/ThreadRightBar.jsx`
+- Modify: `chat-frontend/src/components/MainApp.jsx` (or `ChatPage.jsx`) — track the trigger element
+
+- [ ] **Step 1: Focus the ✕ on mount**
+
+In `ThreadRightBar.jsx`:
+
+```jsx
+import { useEffect, useRef, useState } from 'react'
+
+// inside the component:
+const closeButtonRef = useRef(null)
+useEffect(() => {
+  closeButtonRef.current?.focus()
+}, [])
+
+<button
+  type="button"
+  ref={closeButtonRef}
+  className="thread-header-close"
+  aria-label="Close thread"
+  onClick={closeThread}
+>
+  ✕
+</button>
+```
+
+- [ ] **Step 2: Restore focus on close**
+
+The simplest pattern: `ChatPage` remembers `document.activeElement` before calling `openThread` and restores it after `closeThread`. In `ChatPage.jsx`:
+
+```jsx
+const triggerRef = useRef(null)
+
+const handleThread = (msg) => {
+  if (!selectedRoom || !msg) return
+  triggerRef.current = document.activeElement
+  setInRoomSearchOpen(false)
+  openThread({…})
+}
+
+useEffect(() => {
+  if (!activeParent && triggerRef.current) {
+    triggerRef.current.focus?.()
+    triggerRef.current = null
+  }
+}, [activeParent])
+```
+
+- [ ] **Step 3: Smoke check**
+
+Run: `cd chat-frontend && npm run dev`
+Sign in, tab to a message row, press Enter to focus, click 💬 in the action menu (mouse or keyboard). The thread panel opens; the ✕ button has focus. Close it; focus returns to the row.
+
+(Unit-testing focus reliably across providers is fiddly; rely on the manual smoke + the existing button-render unit tests.)
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/components/ThreadRightBar.jsx chat-frontend/src/pages/ChatPage.jsx
+git commit -m "feat(chat-frontend): focus management on thread open/close"
+```
+
+### Task 9.4: Logout closes the thread
+
+`ThreadEventsContext` already dispatches `RESET` when `user` becomes null (Task 6.2). Add a sanity test.
+
+**Files:**
+- Modify: `chat-frontend/src/context/ThreadEventsContext.test.jsx`
+
+- [ ] **Step 1: Add the test**
+
+Append:
+
+```jsx
+describe('ThreadEventsContext — logout', () => {
+  it('clears state when user becomes null', async () => {
+    let user = { account: 'alice', siteId: 's1' }
+    vi.resetModules()
+    vi.doMock('./NatsContext', () => ({
+      useNats: () => ({ user, request, publish }),
+    }))
+    const { ThreadEventsProvider: Fresh, useThreadEvents: useFresh } = await import('./ThreadEventsContext')
+    function P() {
+      const t = useFresh()
+      return <span>active:{t.activeParent?.messageId ?? 'none'}</span>
+    }
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    const { rerender } = render(<Fresh><P /></Fresh>)
+    // Can't trigger openThread from here without exposing; this test just
+    // verifies the user→null effect path. Mock now flips user to null.
+    user = null
+    rerender(<Fresh><P /></Fresh>)
+    expect(screen.getByText('active:none')).toBeInTheDocument()
+  })
+})
+```
+
+(The test is somewhat indirect because mocking `useNats` reactively is awkward. If the manipulation is too fragile, replace with a more focused reducer-level test for `RESET`.)
+
+- [ ] **Step 2: Run tests**
+
+Run: `cd chat-frontend && npx vitest run src/context/ThreadEventsContext.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 3: Commit (if changes were made)**
+
+If the test passes without code changes (because Task 6.2 already wired the effect), skip the commit. Otherwise commit any minor adjustment.
+
+### Task 9.5: Final integration smoke check + lint
+
+Run the full suite, the linter, and a manual click-through. This is the gate before declaring v1 done.
+
+- [ ] **Step 1: Full chat-frontend test suite**
+
+Run: `cd chat-frontend && npm test -- --run`
+Expected: all PASS. Investigate any flakes; do not commit with red tests.
+
+- [ ] **Step 2: Coverage check**
+
+Run: `cd chat-frontend && npx vitest run --coverage`
+Expected: ≥ 80 % overall; ≥ 90 % on `lib/threadEventsReducer.js`, `lib/messageBuffer.js`, `context/ThreadEventsContext.jsx`. If anything is below, add the missing tests (especially error paths on reducers / contexts).
+
+- [ ] **Step 3: Lint and format**
+
+Run: `make lint && make fmt`
+Expected: clean.
+
+- [ ] **Step 4: Manual end-to-end smoke**
+
+Run: `cd chat-frontend && npm run dev`. Sign in as two users in two browser windows. Verify:
+
+| Scenario | Expected |
+|---|---|
+| User A posts a top-level message in a channel | Both windows see it in the main feed. |
+| User A clicks 💬 on their own message | Right panel opens; "No replies yet…" visible; ✕ has focus. |
+| User A posts a reply in the thread input | Reply appears at the bottom of the panel; main feed unchanged; parent now shows "💬 1 reply". |
+| User B opens the same parent thread | Sees User A's reply on load. |
+| User B posts a reply | Appears in their own thread panel optimistically. User A does NOT see it live (deferred), but on reopening the thread will. |
+| User A clicks the "💬 1 reply" badge | Thread panel opens (same as the hover icon). |
+| User A clicks the Reply (↩) hover icon on User B's reply in the thread | Quote chip appears above the thread input; Enter sends with `quotedParentMessageId`; the new reply renders with the QuotedBlock inside its bubble. |
+| User A clicks the Reply (↩) hover icon on a top-level message in the main feed | Quote chip appears above the **main** input; sending publishes with `quotedParentMessageId`. |
+| User A clicks the Edit (✎) icon on their own message | Inline edit input appears; Enter publishes msg.edit; row updates with "(edited)". |
+| User A clicks the Delete (🗑) icon | Confirm dialog appears; Confirm publishes msg.delete; row shows "[message deleted]". |
+| User A switches rooms while the thread is open | Thread panel closes. Staged quote in main input clears. |
+| User A logs out and back in | Thread state is empty. |
+| User A presses Ctrl-F while a thread is open | Thread closes, InRoomSearch opens. |
+| User A presses Esc inside the thread panel (focus on ✕ or the list) | Thread closes. |
+
+If anything fails, file the bug and fix it before declaring complete. Each fix gets its own commit.
+
+- [ ] **Step 5: Final commit summary (squash optional)**
+
+If desired, before opening the PR, leave commits as-is or `git rebase -i` the chapter-by-chapter commits into chapter-sized squashes. Do NOT force-push without confirming branch hygiene.
+
+---
+
+## Self-review & verification items
+
+The implementer should verify these in the Red phase (each was flagged as an assumption during spec writing):
+
+1. **`msg.edit` and `msg.delete` payload shapes** (`history-service/internal/service/messages.go:322, 401`) — make sure the field names in `RoomMessageArea`'s edit/delete handlers match the handler-side structs.
+2. **`message.quotedParentMessage` `deleted` flag** — if the snapshot doesn't expose a `deleted` field, `QuotedBlock` falls back to rendering content as-is (no special placeholder).
+3. **`broadcast-worker` DM vs channel routing** (`publishDMEvents` vs `publishChannelEvent`) — confirm the client-side thread filter behaves identically for DM and channel rooms; the filter is on `message.threadParentMessageId`, not on room type, so it should be uniform.
+
+## Spec ↔ plan coverage check
+
+The plan covers every spec section as follows:
+
+| Spec section | Implementing tasks |
+|---|---|
+| Layout (AppHeader / Sidebar / MainApp / slim ChatPage) | Ch.2 tasks 2.1–2.7 |
+| `threadEventsReducer.js` | Ch.6 task 6.1 |
+| `ThreadEventsContext.jsx` | Ch.6 task 6.2 + Ch.8 task 8.3 (cross-dispatch) |
+| Main reducer filter on thread replies | Ch.8 task 8.1 |
+| Tcount bump on own reply | Ch.8 task 8.2 + 8.3 |
+| Shared utilities (messageBuffer) | Ch.1 task 1.1 + 1.2 |
+| Subject builders (msgThread, msgEdit, msgDelete) | Ch.1 task 1.3 |
+| QuotedBlock (chip + bubble + deleted) | Ch.3 task 3.1 + Ch.5 |
+| MessageActions (Thread + Reply + Edit + Delete) | Ch.3 task 3.2 + Ch.4 task 4.3 |
+| MessageRow (incl. inline edit, deleted, failed UI, reply badge) | Ch.3 task 3.3 + Ch.4 task 4.4 + Ch.7 task 7.4 + Ch.8 task 8.4 |
+| MessageList (incl. parent context override, retry/dismiss forwarding) | Ch.3 task 3.4 + Ch.7 task 7.3 |
+| MessageInputForm | Ch.3 task 3.5 |
+| RoomMessageArea / RoomMessageInput | Ch.3 tasks 3.6 + 3.7 + Ch.4 task 4.6 |
+| ThreadMessageArea / ThreadMessageInput | Ch.7 tasks 7.1 + 7.2 |
+| ThreadRightBar | Ch.7 task 7.5 |
+| Mount in MainApp + Thread icon wiring | Ch.7 task 7.6 |
+| Loading / error / empty states | Ch.3 task 3.4 (placeholders) + Ch.7 task 7.2 (thread-specific text) |
+| Failed-reply UX | Ch.7 task 7.4 |
+| Quote-reply staging (main feed) | Ch.5 task 5.1 |
+| Quote-reply staging (thread) | Ch.7 task 7.1 + 7.5 |
+| Quote-reply boundary (gatekeeper rule) | Routing rule in `MessageActions` (Ch.4 hides Reply on parent-in-its-own-thread) |
+| Click-to-jump-to-original | Ch.3 task 3.3 + Ch.5 task 5.3 |
+| Deleted-quoted-message placeholder | Ch.3 task 3.1 |
+| Edit RPC + inline replace | Ch.4 tasks 4.4 + 4.6 |
+| Delete RPC + confirm dialog | Ch.4 tasks 4.5 + 4.6 |
+| InRoomSearch ↔ ThreadRightBar mutual exclusion | Ch.9 task 9.1 |
+| Esc-to-close-thread | Ch.9 task 9.2 |
+| Focus management | Ch.9 task 9.3 |
+| Logout reset | Ch.6 task 6.2 + Ch.9 task 9.4 |
+| Room switch closes thread | Ch.8 task 8.5 |
+| CSS — new selectors | Ch.2 task 2.7 + Ch.3 task 3.8 + Ch.7 task 7.7 + Ch.8 task 8.4 |
+| Reply-count badge | Ch.8 task 8.4 |
+
+Anything explicitly **non-goal** in the spec (tshow checkbox, live thread broadcasts from other users, last-reply-at timestamp on the badge, thread mark-as-read, thread notifications, threads-tab) is **not** in the plan by design.
+
+---
+
+**Plan complete.** Next step is execution. Pick a mode:
+
+- **Subagent-Driven (recommended)** — `superpowers:subagent-driven-development`. One subagent per task; review between tasks. Cleanest context isolation.
+- **Inline Execution** — `superpowers:executing-plans`. Batch execution in this session with checkpoints.
+
+Tell me which.
