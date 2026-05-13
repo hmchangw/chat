@@ -1,0 +1,9 @@
+{
+  "name": "bimodal-degraded",
+  "rps": 1000,
+  "p90Ms": 50,
+  "p10Ms": 300,
+  "sustainS": 30,
+  "wantTrip": true,
+  "v1ElapsedS": 31
+}
