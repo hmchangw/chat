@@ -5035,4 +5035,470 @@ git commit -m "style(chat-frontend): thread panel layout + failed-row indicator"
 
 ---
 
-*Chapter 8 follows — Cross-context wiring (own-reply tcount bump), client-side thread-reply filter on main feed, and the reply-count badge with click-to-open-thread.*
+## Chapter 8 — Cross-context wiring + main-feed filter + tcount badge
+
+Goal: stop thread replies from flickering into the main feed, bump the parent's `tcount` when the local user sends a thread reply, and render a clickable "💬 N replies" badge on parent messages.
+
+### Task 8.1: Filter thread replies out of the main feed live broadcast
+
+`broadcast-worker` publishes every `MessageEvent` to `chat.room.{roomId}.event`, including thread replies (verified in the spec — see `pkg/model/event.go` and `broadcast-worker/handler.go`). Drop them in `MESSAGE_RECEIVED`.
+
+**Files:**
+- Modify: `chat-frontend/src/lib/roomEventsReducer.js`
+- Modify: `chat-frontend/src/lib/roomEventsReducer.test.js`
+
+- [ ] **Step 1: Append failing test**
+
+Append to `chat-frontend/src/lib/roomEventsReducer.test.js`:
+
+```js
+describe('MESSAGE_RECEIVED — thread-reply filter', () => {
+  it('drops events whose message.threadParentMessageId is non-empty', () => {
+    const seed = {
+      ...initialState,
+      summaries: [{ id: 'r1', name: 'general', type: 'channel', siteId: 's', userCount: 1, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false }],
+      activeRoomId: 'r1',
+      roomState: {
+        r1: {
+          messages: [{ id: 'm-existing' }],
+          hasLoadedHistory: true, historyError: null,
+          unreadCount: 0, hasMention: false, mentionAll: false,
+          lastMsgAt: null, lastMsgId: null,
+          bufferMode: 'live', pendingLiveMessages: [], focusMessageId: null,
+        },
+      },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_RECEIVED',
+      event: {
+        roomId: 'r1',
+        message: { id: 'reply-1', content: 'thread', threadParentMessageId: 'parent-1' },
+      },
+    })
+    expect(out).toBe(seed)
+  })
+
+  it('still appends events whose threadParentMessageId is empty', () => {
+    const seed = {
+      ...initialState,
+      summaries: [{ id: 'r1', name: 'general', type: 'channel', siteId: 's', userCount: 1, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false }],
+      activeRoomId: 'r1',
+      roomState: {
+        r1: {
+          messages: [],
+          hasLoadedHistory: true, historyError: null,
+          unreadCount: 0, hasMention: false, mentionAll: false,
+          lastMsgAt: null, lastMsgId: null,
+          bufferMode: 'live', pendingLiveMessages: [], focusMessageId: null,
+        },
+      },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_RECEIVED',
+      event: { roomId: 'r1', message: { id: 'm-1', content: 'top-level' } },
+    })
+    expect(out.roomState.r1.messages.map((m) => m.id)).toEqual(['m-1'])
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/lib/roomEventsReducer.test.js -t "thread-reply filter"`
+Expected: FAIL — the second test passes but the first fails because today's reducer would append the thread reply.
+
+- [ ] **Step 3: Add the filter**
+
+In `chat-frontend/src/lib/roomEventsReducer.js`, in `case 'MESSAGE_RECEIVED'`, right after the existing empty-event guard:
+
+```js
+case 'MESSAGE_RECEIVED': {
+  const evt = action.event
+  if (!evt.message || !evt.message.id) {
+    return state
+  }
+  // Thread replies are written to thread tables only, but broadcast-worker
+  // publishes them on the main subject too. Filter them here so they don't
+  // flicker into the main feed.
+  if (evt.message.threadParentMessageId) {
+    return state
+  }
+  // …existing logic continues
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/lib/roomEventsReducer.test.js`
+Expected: PASS, including all pre-existing tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/lib/roomEventsReducer.js chat-frontend/src/lib/roomEventsReducer.test.js
+git commit -m "feat(chat-frontend): filter thread replies out of main feed live broadcast"
+```
+
+### Task 8.2: Add `OWN_THREAD_REPLY_SENT` action
+
+Bumps `tcount` on the parent message (and its summary's `lastMsgAt`, but we deliberately do **not** touch the per-room `lastMsgAt` here since the badge doesn't render a timestamp).
+
+**Files:**
+- Modify: `chat-frontend/src/lib/roomEventsReducer.js`
+- Modify: `chat-frontend/src/lib/roomEventsReducer.test.js`
+
+- [ ] **Step 1: Append failing tests**
+
+```js
+describe('OWN_THREAD_REPLY_SENT', () => {
+  it('increments tcount on the parent message in roomState[roomId].messages', () => {
+    const seed = {
+      ...initialState,
+      roomState: {
+        r1: {
+          messages: [{ id: 'p1', content: 'parent', tcount: 0 }],
+          hasLoadedHistory: true, historyError: null,
+          unreadCount: 0, hasMention: false, mentionAll: false,
+          lastMsgAt: null, lastMsgId: null,
+          bufferMode: 'live', pendingLiveMessages: [], focusMessageId: null,
+        },
+      },
+    }
+    const out = roomEventsReducer(seed, { type: 'OWN_THREAD_REPLY_SENT', roomId: 'r1', parentId: 'p1' })
+    expect(out.roomState.r1.messages[0].tcount).toBe(1)
+  })
+
+  it('initialises tcount to 1 if previously undefined', () => {
+    const seed = {
+      ...initialState,
+      roomState: { r1: { messages: [{ id: 'p1' }] } },
+    }
+    const out = roomEventsReducer(seed, { type: 'OWN_THREAD_REPLY_SENT', roomId: 'r1', parentId: 'p1' })
+    expect(out.roomState.r1.messages[0].tcount).toBe(1)
+  })
+
+  it('is a no-op when the parent isn\'t in the room buffer', () => {
+    const seed = { ...initialState, roomState: { r1: { messages: [] } } }
+    const out = roomEventsReducer(seed, { type: 'OWN_THREAD_REPLY_SENT', roomId: 'r1', parentId: 'p1' })
+    expect(out).toBe(seed)
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/lib/roomEventsReducer.test.js -t "OWN_THREAD_REPLY_SENT"`
+Expected: FAIL.
+
+- [ ] **Step 3: Add the action handler**
+
+Before the `default:` clause:
+
+```js
+case 'OWN_THREAD_REPLY_SENT': {
+  const prev = state.roomState[action.roomId]
+  if (!prev) return state
+  const idx = prev.messages.findIndex((m) => m.id === action.parentId)
+  if (idx < 0) return state
+  const tcount = (prev.messages[idx].tcount ?? 0) + 1
+  const updatedMsg = { ...prev.messages[idx], tcount }
+  const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+  return {
+    ...state,
+    roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+  }
+}
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/lib/roomEventsReducer.test.js -t "OWN_THREAD_REPLY_SENT"`
+Expected: PASS (3 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/lib/roomEventsReducer.js chat-frontend/src/lib/roomEventsReducer.test.js
+git commit -m "feat(chat-frontend): roomEventsReducer handles OWN_THREAD_REPLY_SENT"
+```
+
+### Task 8.3: Cross-dispatch from `ThreadEventsContext` to `RoomEventsContext`
+
+After a successful `sendReply` publish (no error), `ThreadEventsContext` dispatches `OWN_THREAD_REPLY_SENT` into `RoomEventsContext.dispatch`. This requires `RoomEventsContext.dispatch` to be accessible from the thread context — since both providers live under `App.jsx`, the cleanest path is to read it via a hook in the thread provider's body.
+
+**Files:**
+- Modify: `chat-frontend/src/context/ThreadEventsContext.jsx`
+- Modify: `chat-frontend/src/context/ThreadEventsContext.test.jsx`
+- Modify: `chat-frontend/src/context/RoomEventsContext.jsx` (export a `useRoomDispatch` hook if not already)
+
+- [ ] **Step 1: Ensure a dispatch hook exists**
+
+In `chat-frontend/src/context/RoomEventsContext.jsx`, alongside `useRoomEvents`/`useRoomSummaries`, export:
+
+```js
+export function useRoomDispatch() {
+  const ctx = useContext(RoomEventsContext)
+  if (!ctx) throw new Error('useRoomDispatch must be used inside RoomEventsProvider')
+  return ctx.dispatch
+}
+```
+
+(`dispatch` should already be on the context value from Task 4.7.)
+
+- [ ] **Step 2: Add the failing test**
+
+In `chat-frontend/src/context/ThreadEventsContext.test.jsx`, add at the top of the existing file with the other mocks:
+
+```jsx
+const roomDispatch = vi.fn()
+vi.mock('./RoomEventsContext', () => ({
+  useRoomDispatch: () => roomDispatch,
+}))
+```
+
+Append:
+
+```jsx
+describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
+  beforeEach(() => roomDispatch.mockClear())
+
+  it('on successful sendReply, dispatches OWN_THREAD_REPLY_SENT to RoomEventsContext', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    publish.mockResolvedValue()
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('send').click() })
+    expect(roomDispatch).toHaveBeenCalledWith({
+      type: 'OWN_THREAD_REPLY_SENT',
+      roomId: 'r1',
+      parentId: 'p1',
+    })
+  })
+
+  it('does NOT dispatch when publish fails', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    publish.mockRejectedValue(new Error('nope'))
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('send').click() })
+    expect(roomDispatch).not.toHaveBeenCalled()
+  })
+})
+```
+
+- [ ] **Step 3: Update `ThreadEventsContext.jsx`**
+
+Import the hook:
+
+```jsx
+import { useRoomDispatch } from './RoomEventsContext'
+```
+
+Inside `ThreadEventsProvider`:
+
+```jsx
+const roomDispatch = useRoomDispatch()
+```
+
+Inside `sendReply`, after the `await publishReply` succeeds:
+
+```jsx
+try {
+  await publishReply(id, content.trim(), opts)
+  if (parent) {
+    roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', roomId: parent.roomId, parentId: parent.messageId })
+  }
+} catch (err) {
+  dispatch({ type: 'REPLY_SEND_FAILED', messageId: id, error: err?.message ?? String(err) })
+}
+```
+
+Same for `retryReply`:
+
+```jsx
+try {
+  await publishReply(messageId, row.content, …)
+  if (parent) {
+    roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', roomId: parent.roomId, parentId: parent.messageId })
+  }
+} catch (err) { … }
+```
+
+(Read the active parent at the top of each function from `stateRef.current.activeParent`.)
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/context/ThreadEventsContext.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/context/ThreadEventsContext.jsx chat-frontend/src/context/ThreadEventsContext.test.jsx chat-frontend/src/context/RoomEventsContext.jsx
+git commit -m "feat(chat-frontend): ThreadEventsContext dispatches OWN_THREAD_REPLY_SENT on send success"
+```
+
+### Task 8.4: Reply-count badge on `MessageRow`
+
+When `message.tcount > 0`, render a small clickable pill below the content: `💬 {tcount} {tcount === 1 ? 'reply' : 'replies'}`. Click calls `onThread(message)` (same wiring as the hover icon — fires `openThread` upstream).
+
+**Files:**
+- Modify: `chat-frontend/src/components/messages/MessageRow.jsx`
+- Modify: `chat-frontend/src/components/messages/MessageRow.test.jsx`
+
+- [ ] **Step 1: Append failing tests**
+
+```jsx
+describe('MessageRow — reply-count badge', () => {
+  it('renders the badge when tcount > 0; clicking calls onThread', () => {
+    const onThread = vi.fn()
+    render(
+      <MessageRow
+        message={{ ...msg, tcount: 3 }}
+        context="main"
+        onThread={onThread}
+        onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    const btn = screen.getByRole('button', { name: /3 replies/i })
+    fireEvent.click(btn)
+    expect(onThread).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }))
+  })
+
+  it('singular form for tcount === 1', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, tcount: 1 }}
+        context="main"
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByRole('button', { name: /^1 reply$/i })).toBeInTheDocument()
+  })
+
+  it('no badge when tcount is 0 or missing', () => {
+    render(
+      <MessageRow message={msg} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />
+    )
+    expect(screen.queryByRole('button', { name: /replies?/i })).not.toBeInTheDocument()
+  })
+
+  it('no badge inside the thread panel even when tcount > 0', () => {
+    render(
+      <MessageRow message={{ ...msg, tcount: 5 }} context="thread-parent" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />
+    )
+    expect(screen.queryByRole('button', { name: /replies/i })).not.toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Add the markup**
+
+In `chat-frontend/src/components/messages/MessageRow.jsx`, below the `<div className="message-content">…</div>` and above `<MessageActions />`:
+
+```jsx
+{message.tcount > 0 && context !== 'thread' && context !== 'thread-parent' && (
+  <button
+    type="button"
+    className="message-reply-badge"
+    onClick={() => onThread?.(message)}
+  >
+    💬 {message.tcount} {message.tcount === 1 ? 'reply' : 'replies'}
+  </button>
+)}
+```
+
+- [ ] **Step 3: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageRow.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 4: CSS**
+
+Append to `chat-frontend/src/styles/index.css`:
+
+```css
+.message-reply-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  background: var(--bg-elevated, rgba(0,0,0,0.04));
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-radius: 12px;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+.message-reply-badge:hover { background: var(--bg-hover, rgba(0,0,0,0.07)); }
+```
+
+- [ ] **Step 5: Manual smoke check**
+
+Run: `cd chat-frontend && npm run dev`
+Post a reply in a thread. Watch the parent in the main feed; the "💬 1 reply" badge appears. Click it; thread panel opens.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/MessageRow.jsx chat-frontend/src/components/messages/MessageRow.test.jsx chat-frontend/src/styles/index.css
+git commit -m "feat(chat-frontend): reply-count badge on parent messages"
+```
+
+### Task 8.5: Close thread on selected-room change
+
+`ChatPage` (or `MainApp`) needs to close the thread when the user navigates to a different room. Without this the thread can outlive its room.
+
+**Files:**
+- Modify: `chat-frontend/src/pages/ChatPage.jsx`
+- Modify: `chat-frontend/src/pages/ChatPage.test.jsx`
+
+- [ ] **Step 1: Failing test**
+
+Append to `chat-frontend/src/pages/ChatPage.test.jsx`:
+
+```jsx
+describe('ChatPage — close thread on room switch', () => {
+  it('changing selectedRoom calls closeThread', () => {
+    const closeThread = vi.fn()
+    vi.doMock('../context/ThreadEventsContext', () => ({
+      useThreadEvents: () => ({ openThread: vi.fn(), closeThread, activeParent: { messageId: 'p1' } }),
+    }))
+    // Re-import after mock.
+    return import('./ChatPage').then(({ default: Re }) => {
+      const { rerender } = render(<Re selectedRoom={channel} onSelectRoom={() => {}} />)
+      rerender(<Re selectedRoom={dm} onSelectRoom={() => {}} />)
+      expect(closeThread).toHaveBeenCalled()
+    })
+  })
+})
+```
+
+- [ ] **Step 2: Add the effect**
+
+In `chat-frontend/src/pages/ChatPage.jsx`, near the other `useEffect`s:
+
+```jsx
+const { openThread, closeThread, activeParent } = useThreadEvents()
+
+useEffect(() => {
+  if (activeParent && activeParent.roomId !== selectedRoom?.id) {
+    closeThread()
+  }
+}, [selectedRoom?.id, activeParent, closeThread])
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd chat-frontend && npx vitest run src/pages/ChatPage.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/pages/ChatPage.jsx chat-frontend/src/pages/ChatPage.test.jsx
+git commit -m "feat(chat-frontend): close thread on room switch"
+```
+
+---
+
+*Chapter 9 follows — Accessibility, InRoomSearch ↔ ThreadRightBar mutual exclusion, Esc-to-close, focus management, full integration smoke.*
