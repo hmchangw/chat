@@ -25,6 +25,7 @@ paths.
    - [3.1 room-service](#31-room-service)
    - [3.2 history-service](#32-history-service)
    - [3.3 search-service](#33-search-service)
+   - [3.4 user-service (mock)](#34-user-service-mock)
 4. [Message Send](#4-message-send)
 5. [Error envelope reference](#5-error-envelope-reference)
 
@@ -1865,15 +1866,16 @@ When validation fails, the gatekeeper publishes the error envelope to `chat.user
 Every error response — over NATS reply subjects and HTTP — uses the same envelope:
 
 ```json
-{ "error": "<human-readable reason>" }
+{ "error": "<human-readable reason>", "code": "<optional machine-readable code>" }
 ```
 
 | Field   | Type   | Notes |
 |---------|--------|-------|
 | `error` | string | Human-readable, sanitized at the service boundary. Do not parse or pattern-match against the text. |
+| `code`  | string | Optional. Machine-readable category emitted by services using `natsrouter`'s typed `RouteError` (e.g. `bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, `unavailable`). Absent for plain `natsutil.ReplyError` responses. |
 
-**NATS errors** are sent on the standard reply subject (`_INBOX.>` for §3 methods, `chat.user.{account}.response.{requestID}` for §4) via `natsutil.ReplyError`. The reply body is the JSON object above.
+**NATS errors** are sent on the standard reply subject (`_INBOX.>` for §3 methods, `chat.user.{account}.response.{requestID}` for §4) via `natsutil.ReplyError` (no `code`) or `natsrouter`'s typed error replies (with `code`).
 
 **HTTP errors** (auth-service §2.2) use the same shape with an HTTP status code in the response line.
 
-Clients should rely on the presence/absence of the `error` field — and on context (HTTP status, or whether a reply parses as a success-shape) — rather than on the error text.
+Clients should rely on the presence/absence of the `error` field — and on context (HTTP status, or whether a reply parses as a success-shape) — rather than on the error text. When `code` is present, prefer matching against the documented constant rather than the human-readable message.
