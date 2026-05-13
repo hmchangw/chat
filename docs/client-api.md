@@ -1977,7 +1977,7 @@ Server-pushed events are delivered to clients on NATS subjects the client is alr
 
 ### 5.1 Room Encryption Keys
 
-Each room has a P-256 keypair generated server-side. The public key is used by `broadcast-worker` to encrypt outgoing messages; clients hold the private key to decrypt.
+Each room has a P-256 keypair generated server-side at create time. Channel rooms use the key for end-to-end message encryption: `broadcast-worker` populates `encryptedMessage` on channel events (§4.1) and clients use the private key to decrypt. DM and botDM rooms still receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
 
 #### Subject
 
@@ -2009,7 +2009,7 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 
 #### When clients receive `RoomKeyEvent`s
 
-- **Room creation:** sent to every initial member.
+- **Room creation (all room types):** sent to every initial member.
 - **Add member (channels only):** sent to each newly-added account; existing members do not receive a duplicate event.
 - **Remove member (channels only):** the server rotates the room key. Surviving members receive a new `RoomKeyEvent` with an incremented `version`. The removed account stops receiving events for the room.
 
