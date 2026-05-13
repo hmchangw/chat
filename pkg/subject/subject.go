@@ -488,3 +488,75 @@ func UserRoomSubscriptionGet(account, siteID, roomID string) string {
 func UserAppsList(account, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.user.%s.apps.list", account, siteID)
 }
+
+// ParseUserSubject parses any 8-token subject of the form
+//
+//	chat.user.{account}.request.user.{siteID}.{area}.{action}
+//
+// where area is one of "status", "subscription", "profile", "apps".
+// Does NOT match the room-scoped form — use ParseRoomSubject for those.
+func ParseUserSubject(subj string) (account, siteID, area, action string, ok bool) {
+	parts := strings.Split(subj, ".")
+	if len(parts) != 8 {
+		return "", "", "", "", false
+	}
+	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" || parts[4] != "user" {
+		return "", "", "", "", false
+	}
+	switch parts[6] {
+	case "status", "subscription", "profile", "apps":
+	default:
+		return "", "", "", "", false
+	}
+	return parts[2], parts[5], parts[6], parts[7], true
+}
+
+func ParseStatusSubject(subj string) (account, action string, ok bool) {
+	a, _, area, act, k := ParseUserSubject(subj)
+	if !k || area != "status" {
+		return "", "", false
+	}
+	return a, act, true
+}
+
+func ParseSubscriptionSubject(subj string) (account, action string, ok bool) {
+	a, _, area, act, k := ParseUserSubject(subj)
+	if !k || area != "subscription" {
+		return "", "", false
+	}
+	return a, act, true
+}
+
+func ParseProfileSubject(subj string) (account, action string, ok bool) {
+	a, _, area, act, k := ParseUserSubject(subj)
+	if !k || area != "profile" {
+		return "", "", false
+	}
+	return a, act, true
+}
+
+func ParseAppsSubject(subj string) (account, action string, ok bool) {
+	a, _, area, act, k := ParseUserSubject(subj)
+	if !k || area != "apps" {
+		return "", "", false
+	}
+	return a, act, true
+}
+
+// ParseRoomSubject parses the room-scoped form
+//
+//	chat.user.{account}.request.user.{siteID}.room.{roomID}.{action…}
+//
+// action is the joined tail after roomID (e.g. "subscription.get").
+// Returns ok=false if the subject does not start with
+// chat.user.*.request.user.*.room.*. or has fewer than 9 tokens.
+func ParseRoomSubject(subj string) (account, roomID, action string, ok bool) {
+	parts := strings.Split(subj, ".")
+	if len(parts) < 9 {
+		return "", "", "", false
+	}
+	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" || parts[4] != "user" || parts[6] != "room" {
+		return "", "", "", false
+	}
+	return parts[2], parts[7], strings.Join(parts[8:], "."), true
+}
