@@ -547,17 +547,18 @@ func ParseAppsSubject(subj string) (account, action string, ok bool) {
 //
 //	chat.user.{account}.request.user.{siteID}.room.{roomID}.{area}.{action}
 //
+// `action` is the joined `{area}.{action}` tail (e.g. "subscription.get").
 // Returns ok=false if the subject is not exactly 10 tokens or does not
-// start with chat.user.*.request.user.*.room.*.
-func ParseRoomSubject(subj string) (account, roomID, area, action string, ok bool) {
+// start with `chat.user.*.request.user.*.room.*.`.
+func ParseRoomSubject(subj string) (account, roomID, action string, ok bool) {
 	parts := strings.Split(subj, ".")
 	if len(parts) != 10 {
-		return "", "", "", "", false
+		return "", "", "", false
 	}
 	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" || parts[4] != "user" || parts[6] != "room" {
-		return "", "", "", "", false
+		return "", "", "", false
 	}
-	return parts[2], parts[7], parts[8], parts[9], true
+	return parts[2], parts[7], parts[8] + "." + parts[9], true
 }
 
 func UserStatusWildCard(siteID string) string {

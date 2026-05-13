@@ -137,10 +137,10 @@ func ParseAppsSubject(subj string) (account, action string, ok bool)
 
 // Parses the 10-token room-scoped form
 //   chat.user.{account}.request.user.{siteID}.room.{roomID}.{area}.{action}
-// where `area`/`action` are each a single token (e.g. "subscription" / "get").
+// `action` is the joined `{area}.{action}` tail (e.g. "subscription.get").
 // Returns ok=false if the subject is not exactly 10 tokens or does not
 // start with `chat.user.*.request.user.*.room.*.`.
-func ParseRoomSubject(subj string) (account, roomID, area, action string, ok bool)
+func ParseRoomSubject(subj string) (account, roomID, action string, ok bool)
 ```
 
 ### Wildcard builders
@@ -165,7 +165,7 @@ func UserAppsWildCard(siteID string) string           // chat.user.*.request.use
 - One table-driven test per builder asserting the exact literal output.
 - One round-trip test per parser: feed the corresponding builder's output and
   assert the extracted fields (account/siteID/area/action for the area
-  parsers; account/roomID/area/action for `ParseRoomSubject` against
+  parsers; account/roomID/action for `ParseRoomSubject` against
   `UserRoomSubscriptionGet`'s output).
 - A malformed-subject table per parser covering: wrong prefix
   (`chat.room.…`), wrong area, wrong token count, empty string.

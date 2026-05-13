@@ -482,12 +482,11 @@ func TestParseAppsSubject(t *testing.T) {
 func TestParseRoomSubject(t *testing.T) {
 	t.Run("subscription.get roundtrips", func(t *testing.T) {
 		subj := subject.UserRoomSubscriptionGet("alice", "s1", "r1")
-		account, roomID, area, action, ok := subject.ParseRoomSubject(subj)
+		account, roomID, action, ok := subject.ParseRoomSubject(subj)
 		assert.True(t, ok)
 		assert.Equal(t, "alice", account)
 		assert.Equal(t, "r1", roomID)
-		assert.Equal(t, "subscription", area)
-		assert.Equal(t, "get", action)
+		assert.Equal(t, "subscription.get", action)
 	})
 
 	t.Run("rejects malformed", func(t *testing.T) {
@@ -502,7 +501,7 @@ func TestParseRoomSubject(t *testing.T) {
 			"chat.user.alice.request.user.s1.notroom.r1.subscription.get",
 		}
 		for _, s := range bad {
-			_, _, _, _, ok := subject.ParseRoomSubject(s)
+			_, _, _, ok := subject.ParseRoomSubject(s)
 			assert.False(t, ok, "expected ok=false for %q", s)
 		}
 	})
