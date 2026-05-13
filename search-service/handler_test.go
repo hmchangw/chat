@@ -91,6 +91,28 @@ func ctxWithAccount(account string) *natsrouter.Context {
 	return natsrouter.NewContext(map[string]string{"account": account})
 }
 
+// Verifies operators can override MessageIndexPatterns — e.g. drop the
+// `*:messages-*` remote-cluster pattern for single-cluster deployments.
+func TestHandler_SearchMessages_RespectsMessageIndexPatternsOverride(t *testing.T) {
+	store := &fakeStore{}
+	cache := newFakeCache()
+	cache.store["alice"] = map[string]int64{}
+
+	h := newHandler(store, cache, handlerConfig{
+		DocCounts:               25,
+		MaxDocCounts:            100,
+		RestrictedRoomsCacheTTL: 5 * time.Minute,
+		RecentWindow:            365 * 24 * time.Hour,
+		MessageIndexPatterns:    []string{"messages-*"},
+	})
+
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	require.NoError(t, err)
+	require.Len(t, store.searchCalls, 1)
+	assert.Equal(t, []string{"messages-*"}, store.searchCalls[0].indices,
+		"handler must use the configured MessageIndexPatterns, not the package default")
+}
+
 func TestHandler_SearchMessages_CacheHitUnrestricted(t *testing.T) {
 	store := &fakeStore{}
 	cache := newFakeCache()
@@ -122,6 +144,30 @@ func TestHandler_SearchMessages_CacheMissPopulatesFromES(t *testing.T) {
 	assert.Equal(t, 1, store.userRoomCalls)
 	assert.Equal(t, 1, cache.setCalls)
 	assert.Equal(t, map[string]int64{"rx": 1_700_000_000_000}, cache.store["alice"])
+}
+
+// No user-room doc must still populate the cache with an empty map so the
+// next request doesn't ES-prefetch again (otherwise an account with no
+// restricted rooms costs an ES round-trip per request indefinitely).
+func TestHandler_SearchMessages_NoDocCachesEmptyMap(t *testing.T) {
+	store := &fakeStore{userRoomFound: false}
+	cache := newFakeCache()
+
+	h := newTestHandler(store, cache)
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, store.userRoomCalls)
+	assert.Equal(t, 1, cache.setCalls)
+	got, hit, err := cache.GetRestricted(context.Background(), "alice")
+	require.NoError(t, err)
+	require.True(t, hit, "empty-restricted entry must be cached")
+	assert.Empty(t, got, "no-doc users must cache an empty map (not nil)")
+
+	// Second call: cache hit, no ES call.
+	_, err = h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, store.userRoomCalls, "second search must hit the empty-map cache")
 }
 
 func TestHandler_SearchMessages_CacheErrorFallsThroughToES(t *testing.T) {

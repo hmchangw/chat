@@ -49,7 +49,13 @@ type SearchConfig struct {
 	RecentWindow            time.Duration `env:"RECENT_WINDOW"              envDefault:"8760h"`
 	RequestTimeout          time.Duration `env:"REQUEST_TIMEOUT"            envDefault:"10s"`
 	UserRoomIndex           string        `env:"USER_ROOM_INDEX"            envDefault:""`
-	MetricsAddr             string        `env:"METRICS_ADDR"               envDefault:":9090"`
+	// MessageIndexPatterns is the comma-separated list of message indices
+	// passed to ES `_search`. Default targets local + every CCS remote;
+	// override to a single value (`messages-*`) for single-cluster deploys
+	// or to a specific remote prefix (`siteb:messages-*,messages-*`) for
+	// curated topologies.
+	MessageIndexPatterns []string `env:"MESSAGE_INDEX_PATTERNS" envSeparator:"," envDefault:"messages-*,*:messages-*"`
+	MetricsAddr          string   `env:"METRICS_ADDR"           envDefault:":9090"`
 }
 
 // Config is the root service config. Note that ES and Search share the
@@ -116,6 +122,7 @@ func main() {
 		RecentWindow:            cfg.Search.RecentWindow,
 		RequestTimeout:          cfg.Search.RequestTimeout,
 		UserRoomIndex:           cfg.Search.UserRoomIndex,
+		MessageIndexPatterns:    cfg.Search.MessageIndexPatterns,
 	})
 
 	router := natsrouter.New(nc, "search-service")

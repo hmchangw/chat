@@ -20,6 +20,7 @@ type handlerConfig struct {
 	RecentWindow            time.Duration
 	RequestTimeout          time.Duration
 	UserRoomIndex           string
+	MessageIndexPatterns    []string
 }
 
 type handler struct {
@@ -28,7 +29,7 @@ type handler struct {
 	cfg   handlerConfig
 }
 
-func newHandler(store SearchStore, cache RestrictedRoomCache, cfg handlerConfig) *handler {
+func newHandler(store SearchStore, cache RestrictedRoomCache, cfg handlerConfig) *handler { //nolint:gocritic // value-receiver intentional; cfg is set once at startup
 	if cfg.DocCounts <= 0 {
 		cfg.DocCounts = 25
 	}
@@ -40,6 +41,9 @@ func newHandler(store SearchStore, cache RestrictedRoomCache, cfg handlerConfig)
 	}
 	if cfg.RecentWindow <= 0 {
 		cfg.RecentWindow = 365 * 24 * time.Hour
+	}
+	if len(cfg.MessageIndexPatterns) == 0 {
+		cfg.MessageIndexPatterns = MessageIndexPattern
 	}
 	return &handler{store: store, cache: cache, cfg: cfg}
 }
@@ -89,7 +93,7 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 	}
 
 	observeESDone := observeES()
-	raw, err := h.store.Search(ctx, MessageIndexPattern, body)
+	raw, err := h.store.Search(ctx, h.cfg.MessageIndexPatterns, body)
 	observeESDone()
 	if err != nil {
 		slog.Error("message search backend failed", "account", account, "error", err)
