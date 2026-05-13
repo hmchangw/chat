@@ -137,7 +137,7 @@ func ParseAppsSubject(subj string) (account, action string, ok bool)
 
 // Parses the 10-token room-scoped form
 //   chat.user.{account}.request.user.{siteID}.room.{roomID}.{area}.{action}
-// `action` is the joined `{area}.{action}` tail (e.g. "subscription.get").
+// Returns the trailing `{action}` token (e.g. "get" for subscription.get).
 // Returns ok=false if the subject is not exactly 10 tokens or does not
 // start with `chat.user.*.request.user.*.room.*.`.
 func ParseRoomSubject(subj string) (account, roomID, action string, ok bool)

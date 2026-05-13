@@ -486,7 +486,7 @@ func TestParseRoomSubject(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, "alice", account)
 		assert.Equal(t, "r1", roomID)
-		assert.Equal(t, "subscription.get", action)
+		assert.Equal(t, "get", action)
 	})
 
 	t.Run("rejects malformed", func(t *testing.T) {
