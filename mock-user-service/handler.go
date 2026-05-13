@@ -236,3 +236,19 @@ func (h *Handler) appsList(c *natsrouter.Context) (*appListResp, error) {
 	}
 	return &appListResp{Apps: apps, Total: len(apps)}, nil
 }
+
+// Register subscribes every mock user RPC route on the supplied router.
+func (h *Handler) Register(r *natsrouter.Router) {
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.status.getByName", h.statusGetByName)
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.status.set", h.statusSet)
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.profile.getByName", h.profileGetByName)
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getCurrent", h.subscriptionGetCurrent)
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getRooms", h.subscriptionGetRooms)
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getChannels", h.subscriptionGetChannels)
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getDM", h.subscriptionGetDM)
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getApps", h.subscriptionGetApps)
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.subscribeApp", h.subscriptionSubscribeApp)
+	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.unsubscribeApp", h.subscriptionUnsubscribeApp)
+	natsrouter.RegisterNoBody(r, "chat.user.{account}.request.user.{siteID}.room.{roomID}.subscription.get", h.roomSubscriptionGet)
+	natsrouter.RegisterNoBody(r, "chat.user.{account}.request.user.{siteID}.apps.list", h.appsList)
+}
