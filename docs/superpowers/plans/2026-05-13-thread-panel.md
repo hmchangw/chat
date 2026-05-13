@@ -4191,4 +4191,848 @@ git commit -m "feat(chat-frontend): mount ThreadEventsProvider in App"
 
 ---
 
-*Chapter 7 follows — Thread panel UI (`ThreadRightBar`, `ThreadMessageArea`, `ThreadMessageInput`, loading/error/empty/failed-reply states, auto-scroll, mount under `MainApp`).*
+## Chapter 7 — Thread panel UI
+
+Goal: render the thread panel and wire the Thread hover icon to open it. By the end of this chapter, the user can click 💬 on any message → the right rail appears → the parent is shown plus existing replies (oldest-first) → typing in the thread input publishes a reply. Loading / error / empty states are rendered. Failed optimistic rows render with ⟳ + ✕ buttons. The panel auto-scrolls on open and on own-replies.
+
+Layout under `MainApp`: when `useThreadEvents().activeParent !== null`, mount `<ThreadRightBar>` as a third column in `.app-row`. Otherwise it's not in the DOM at all.
+
+### Task 7.1: Create `ThreadMessageInput.jsx`
+
+Mirror of `RoomMessageInput`, but uses `useThreadEvents().sendReply` instead of `publish(msg.send)`. Receives `quotedTarget` + `onClearQuote` from the parent (`ThreadRightBar`) since the Reply icon for thread replies stages there.
+
+**Files:**
+- Create: `chat-frontend/src/components/ThreadMessageInput.jsx`
+- Create: `chat-frontend/src/components/ThreadMessageInput.test.jsx`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `chat-frontend/src/components/ThreadMessageInput.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import ThreadMessageInput from './ThreadMessageInput'
+
+const sendReply = vi.fn(async () => {})
+vi.mock('../context/ThreadEventsContext', () => ({
+  useThreadEvents: () => ({ sendReply, activeParent: { messageId: 'p1' } }),
+}))
+
+describe('ThreadMessageInput', () => {
+  beforeEach(() => sendReply.mockClear())
+
+  it('renders with placeholder "Reply…"', () => {
+    render(<ThreadMessageInput />)
+    expect(screen.getByPlaceholderText('Reply…')).toBeInTheDocument()
+  })
+
+  it('Enter calls sendReply with content and clears the textbox', () => {
+    render(<ThreadMessageInput />)
+    const input = screen.getByPlaceholderText('Reply…')
+    fireEvent.change(input, { target: { value: 'in-thread' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(sendReply).toHaveBeenCalledWith('in-thread', {})
+    expect(input).toHaveValue('')
+  })
+
+  it('does not send empty / whitespace', () => {
+    render(<ThreadMessageInput />)
+    fireEvent.keyDown(screen.getByPlaceholderText('Reply…'), { key: 'Enter' })
+    expect(sendReply).not.toHaveBeenCalled()
+  })
+
+  it('passes quotedTarget id through sendReply opts and renders the chip', () => {
+    const onClearQuote = vi.fn()
+    render(
+      <ThreadMessageInput
+        quotedTarget={{ id: 'q1', senderName: 'bob', content: 'orig' }}
+        onClearQuote={onClearQuote}
+      />
+    )
+    expect(screen.getByText('bob')).toBeInTheDocument()
+    const input = screen.getByPlaceholderText('Reply…')
+    fireEvent.change(input, { target: { value: 'reply' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(sendReply).toHaveBeenCalledWith('reply', { quotedParentMessageId: 'q1' })
+  })
+
+  it('clears the staged quote chip after a successful send', async () => {
+    sendReply.mockResolvedValue()
+    const onClearQuote = vi.fn()
+    render(
+      <ThreadMessageInput
+        quotedTarget={{ id: 'q1', senderName: 'bob', content: 'orig' }}
+        onClearQuote={onClearQuote}
+      />
+    )
+    const input = screen.getByPlaceholderText('Reply…')
+    fireEvent.change(input, { target: { value: 'reply' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // Wait for the awaited sendReply promise to settle.
+    await Promise.resolve()
+    expect(onClearQuote).toHaveBeenCalled()
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/components/ThreadMessageInput.test.jsx`
+Expected: FAIL — module missing.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/ThreadMessageInput.jsx`:
+
+```jsx
+import { useState } from 'react'
+import { useThreadEvents } from '../context/ThreadEventsContext'
+import MessageInputForm from './messages/MessageInputForm'
+
+export default function ThreadMessageInput({ quotedTarget, onClearQuote }) {
+  const { sendReply, activeParent } = useThreadEvents()
+  const [text, setText] = useState('')
+
+  const handleSubmit = async () => {
+    if (!text.trim() || !activeParent) return
+    const opts = quotedTarget ? { quotedParentMessageId: quotedTarget.id } : {}
+    setText('')
+    await sendReply(text.trim(), opts)
+    onClearQuote?.()
+  }
+
+  return (
+    <MessageInputForm
+      value={text}
+      onChange={setText}
+      onSubmit={handleSubmit}
+      placeholder="Reply…"
+      disabled={!activeParent}
+      quotedTarget={quotedTarget}
+      onClearQuote={onClearQuote}
+    />
+  )
+}
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/ThreadMessageInput.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/ThreadMessageInput.jsx chat-frontend/src/components/ThreadMessageInput.test.jsx
+git commit -m "feat(chat-frontend): add ThreadMessageInput container"
+```
+
+### Task 7.2: Create `ThreadMessageArea.jsx`
+
+Container that reads thread state (`activeParent`, `messages`, `hasLoadedHistory`, `historyLoading`, `historyError`) and renders the parent message first followed by the reply list. Passes `onReply` upward to `ThreadRightBar` (parent), and routes failed-reply actions to `retryReply` / `dismissReply` from context.
+
+The parent itself is rendered by reading the live message from `useRoomEvents(activeParent.roomId).messages.find(...)` and falling back to a thin synthetic if the parent isn't buffered.
+
+**Files:**
+- Create: `chat-frontend/src/components/ThreadMessageArea.jsx`
+- Create: `chat-frontend/src/components/ThreadMessageArea.test.jsx`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `chat-frontend/src/components/ThreadMessageArea.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import ThreadMessageArea from './ThreadMessageArea'
+
+const activeParent = { roomId: 'r1', siteId: 's1', messageId: 'p1', createdAtMs: 1000 }
+const retryReply = vi.fn()
+const dismissReply = vi.fn()
+
+vi.mock('../context/ThreadEventsContext', () => ({
+  useThreadEvents: () => ({
+    activeParent,
+    messages: [
+      { id: 'reply-1', content: 'first reply', createdAt: '2026-05-13T10:01:00Z', sender: { account: 'bob' } },
+      { id: 'reply-2', content: 'optimistic', _local: true, _status: 'failed', sender: { account: 'alice' } },
+    ],
+    hasLoadedHistory: true,
+    historyLoading: false,
+    historyError: null,
+    retryReply, dismissReply,
+  }),
+}))
+vi.mock('../context/RoomEventsContext', () => ({
+  useRoomEvents: () => ({
+    messages: [
+      { id: 'p1', content: 'parent body', createdAt: '2026-05-13T10:00:00Z', sender: { account: 'alice' } },
+    ],
+  }),
+}))
+vi.mock('../context/NatsContext', () => ({
+  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish: vi.fn() }),
+}))
+vi.mock('./messages/MessageList', () => ({
+  default: ({ messages, emptyText, context, onReply, onRetry, onDismiss, historyLoading, historyError }) => (
+    <div data-testid="list">
+      <span>context:{context}</span>
+      <span>count:{messages.length}</span>
+      <span>loading:{String(!!historyLoading)}</span>
+      <span>error:{historyError ?? 'none'}</span>
+      <span>empty:{emptyText ?? 'none'}</span>
+      {messages.map((m) => (
+        <div key={m.id} data-row={m.id}>{m.content || '[deleted]'}{m._status === 'failed' ? ' (failed)' : ''}</div>
+      ))}
+      <button type="button" onClick={() => onReply?.({ id: 'reply-1', sender: { account: 'bob' }, content: 'first reply' })}>fire-reply</button>
+      <button type="button" onClick={() => onRetry?.('reply-2')}>fire-retry</button>
+      <button type="button" onClick={() => onDismiss?.('reply-2')}>fire-dismiss</button>
+    </div>
+  ),
+}))
+
+describe('ThreadMessageArea', () => {
+  it('renders the parent as the first row, then the replies', () => {
+    render(<ThreadMessageArea onReply={() => {}} />)
+    const ids = Array.from(document.querySelectorAll('[data-row]')).map((el) => el.getAttribute('data-row'))
+    expect(ids).toEqual(['p1', 'reply-1', 'reply-2'])
+  })
+
+  it('passes context="thread" to MessageList', () => {
+    render(<ThreadMessageArea onReply={() => {}} />)
+    expect(screen.getByText('context:thread')).toBeInTheDocument()
+  })
+
+  it('forwards onReply with the reply payload', () => {
+    const onReply = vi.fn()
+    render(<ThreadMessageArea onReply={onReply} />)
+    fireEvent.click(screen.getByText('fire-reply'))
+    expect(onReply).toHaveBeenCalled()
+  })
+
+  it('forwards retry / dismiss to ThreadEventsContext', () => {
+    render(<ThreadMessageArea onReply={() => {}} />)
+    fireEvent.click(screen.getByText('fire-retry'))
+    expect(retryReply).toHaveBeenCalledWith('reply-2')
+    fireEvent.click(screen.getByText('fire-dismiss'))
+    expect(dismissReply).toHaveBeenCalledWith('reply-2')
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/components/ThreadMessageArea.test.jsx`
+Expected: FAIL — module missing.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/ThreadMessageArea.jsx`:
+
+```jsx
+import { useEffect, useRef } from 'react'
+import { useThreadEvents } from '../context/ThreadEventsContext'
+import { useRoomEvents } from '../context/RoomEventsContext'
+import { useNats } from '../context/NatsContext'
+import MessageList from './messages/MessageList'
+
+export default function ThreadMessageArea({ onReply }) {
+  const { activeParent, messages, hasLoadedHistory, historyLoading, historyError, retryReply, dismissReply } = useThreadEvents()
+  const { messages: roomMessages } = useRoomEvents(activeParent?.roomId ?? null)
+  const { user } = useNats()
+  const bottomRef = useRef(null)
+
+  // Resolve parent live from main feed buffer; fall back to a thin stub if scrolled out.
+  const parent = activeParent
+    ? roomMessages.find((m) => m.id === activeParent.messageId) ?? {
+        id: activeParent.messageId,
+        createdAt: new Date(activeParent.createdAtMs).toISOString(),
+        content: '',
+      }
+    : null
+
+  const combined = parent ? [parent, ...messages] : messages
+
+  // Auto-scroll on history load and on every own optimistic append.
+  useEffect(() => {
+    if (!hasLoadedHistory) return
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [hasLoadedHistory])
+
+  useEffect(() => {
+    // Pin-to-bottom on append-while-pinned. Cheap: always scroll on append;
+    // any "user scrolled up" finesse is out of scope for v1.
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages.length])
+
+  if (!activeParent) return null
+
+  const empty = hasLoadedHistory && !historyLoading && !historyError && messages.length === 0
+
+  return (
+    <div className="thread-message-area">
+      <MessageList
+        messages={combined}
+        hasLoadedHistory={hasLoadedHistory}
+        historyLoading={historyLoading}
+        historyError={historyError}
+        context="thread"
+        currentUserAccount={user?.account}
+        emptyText={empty ? 'No replies yet — be the first to reply' : undefined}
+        onReply={onReply}
+        onRetry={retryReply}
+        onDismiss={dismissReply}
+        bottomRef={bottomRef}
+        ariaLive="polite"
+      />
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/ThreadMessageArea.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/ThreadMessageArea.jsx chat-frontend/src/components/ThreadMessageArea.test.jsx
+git commit -m "feat(chat-frontend): add ThreadMessageArea container"
+```
+
+### Task 7.3: Extend `MessageList` to forward retry/dismiss + parent context
+
+`MessageList` needs to receive `onRetry`, `onDismiss`, and pass them into `MessageRow`. Also: when rendering a row whose `id === parent.messageId` and the list is `context="thread"`, override the row's `context` to `"thread-parent"` so `MessageActions` hides Thread + Reply.
+
+**Files:**
+- Modify: `chat-frontend/src/components/messages/MessageList.jsx`
+
+- [ ] **Step 1: Update `MessageList` props and per-row rendering**
+
+In `chat-frontend/src/components/messages/MessageList.jsx`, extend destructure with `onRetry`, `onDismiss`, `parentMessageId`. Per-row render becomes:
+
+```jsx
+{messages.map((msg) => {
+  const isParent = context === 'thread' && parentMessageId === msg.id
+  const rowContext = isParent ? 'thread-parent' : context
+  return (
+    <MessageRow
+      key={msg.id}
+      message={msg}
+      context={rowContext}
+      isOwn={!!currentUserAccount && msg.sender?.account === currentUserAccount}
+      editing={editingMessageId === msg.id}
+      onThread={onThread}
+      onReply={onReply}
+      onEdit={onEdit}
+      onEditSubmit={onEditSubmit}
+      onEditCancel={onEditCancel}
+      onDelete={onDelete}
+      onJumpToMessage={onJumpToMessage}
+      onRetry={onRetry}
+      onDismiss={onDismiss}
+    />
+  )
+})}
+```
+
+Update `ThreadMessageArea` to pass `parentMessageId={activeParent.messageId}` to `<MessageList>`.
+
+- [ ] **Step 2: Add the failing tests in MessageList**
+
+Append to `chat-frontend/src/components/messages/MessageList.test.jsx`:
+
+```jsx
+it('marks the parent row context as thread-parent inside a thread list', () => {
+  vi.mock('./MessageRow', () => ({
+    default: ({ message, context: c }) => <div data-testid={`row-${message.id}`}>ctx:{c}</div>,
+  }))
+  const list = [{ id: 'p1' }, { id: 'r1' }]
+  render(
+    <MessageList
+      messages={list}
+      hasLoadedHistory
+      context="thread"
+      parentMessageId="p1"
+    />
+  )
+  expect(screen.getByTestId('row-p1').textContent).toBe('ctx:thread-parent')
+  expect(screen.getByTestId('row-r1').textContent).toBe('ctx:thread')
+})
+```
+
+(If the existing top-of-file mock for `MessageRow` differs, harmonise — the test should re-mock per-it via `vi.doMock` to avoid leaking.)
+
+- [ ] **Step 3: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageList.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/MessageList.jsx chat-frontend/src/components/messages/MessageList.test.jsx chat-frontend/src/components/ThreadMessageArea.jsx
+git commit -m "feat(chat-frontend): MessageList honors parentMessageId for thread-parent rows"
+```
+
+### Task 7.4: Extend `MessageRow` to render failed-row UI (⟳ + ✕)
+
+When `message._status === 'failed'`, render a small toolbar on the row with ⟳ (retry) and ✕ (dismiss) buttons that call `onRetry(message.id)` / `onDismiss(message.id)`.
+
+**Files:**
+- Modify: `chat-frontend/src/components/messages/MessageRow.jsx`
+- Modify: `chat-frontend/src/components/messages/MessageRow.test.jsx`
+
+- [ ] **Step 1: Append failing tests**
+
+Append to `chat-frontend/src/components/messages/MessageRow.test.jsx`:
+
+```jsx
+describe('MessageRow — failed-row UI', () => {
+  it('renders Retry and Dismiss when _status is failed', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, _status: 'failed', _local: true }}
+        context="thread"
+        onRetry={() => {}}
+        onDismiss={() => {}}
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /dismiss/i })).toBeInTheDocument()
+  })
+
+  it('clicking Retry calls onRetry with message id; Dismiss calls onDismiss', () => {
+    const onRetry = vi.fn(); const onDismiss = vi.fn()
+    render(
+      <MessageRow
+        message={{ ...msg, _status: 'failed', _local: true }}
+        context="thread"
+        onRetry={onRetry}
+        onDismiss={onDismiss}
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(onRetry).toHaveBeenCalledWith('m1')
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(onDismiss).toHaveBeenCalledWith('m1')
+  })
+
+  it('does not render Retry/Dismiss when _status is not failed', () => {
+    render(
+      <MessageRow message={msg} context="thread" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />
+    )
+    expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Add the markup**
+
+In `chat-frontend/src/components/messages/MessageRow.jsx`, after the `<MessageActions … />` and before the closing tag, add:
+
+```jsx
+{message._status === 'failed' && (
+  <div className="message-row-failed">
+    <span className="message-row-failed-label">Failed to send.</span>
+    <button type="button" aria-label="Retry sending message" onClick={() => onRetry?.(message.id)}>⟳</button>
+    <button type="button" aria-label="Dismiss failed message" onClick={() => onDismiss?.(message.id)}>✕</button>
+  </div>
+)}
+```
+
+Also accept `onRetry`, `onDismiss` in the props destructure.
+
+- [ ] **Step 3: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageRow.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/MessageRow.jsx chat-frontend/src/components/messages/MessageRow.test.jsx
+git commit -m "feat(chat-frontend): failed-row Retry / Dismiss buttons on MessageRow"
+```
+
+### Task 7.5: Create `ThreadRightBar.jsx`
+
+Header strip with title "Thread" + ✕ close button. Owns the per-thread `quotedTarget` state (lifted up from the inputs so the Reply icon on a thread reply can stage it). Body = `ThreadMessageArea` + `ThreadMessageInput`. Width fixed via CSS class.
+
+**Files:**
+- Create: `chat-frontend/src/components/ThreadRightBar.jsx`
+- Create: `chat-frontend/src/components/ThreadRightBar.test.jsx`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `chat-frontend/src/components/ThreadRightBar.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import ThreadRightBar from './ThreadRightBar'
+
+const closeThread = vi.fn()
+vi.mock('../context/ThreadEventsContext', () => ({
+  useThreadEvents: () => ({ activeParent: { messageId: 'p1' }, closeThread }),
+}))
+vi.mock('./ThreadMessageArea', () => ({
+  default: ({ onReply }) => (
+    <div>
+      area
+      <button type="button" onClick={() => onReply?.({ id: 'r-orig', sender: { account: 'bob' }, content: 'orig' })}>
+        fire-reply
+      </button>
+    </div>
+  ),
+}))
+vi.mock('./ThreadMessageInput', () => ({
+  default: ({ quotedTarget, onClearQuote }) => (
+    <div>
+      input
+      {quotedTarget && (
+        <>
+          <span data-testid="t-staged">{quotedTarget.id}</span>
+          <button type="button" onClick={onClearQuote}>t-clear</button>
+        </>
+      )}
+    </div>
+  ),
+}))
+
+describe('ThreadRightBar', () => {
+  beforeEach(() => closeThread.mockClear())
+
+  it('renders header, area, and input', () => {
+    render(<ThreadRightBar />)
+    expect(screen.getByText('Thread')).toBeInTheDocument()
+    expect(screen.getByText('area')).toBeInTheDocument()
+    expect(screen.getByText('input')).toBeInTheDocument()
+  })
+
+  it('✕ close button calls closeThread', () => {
+    render(<ThreadRightBar />)
+    fireEvent.click(screen.getByRole('button', { name: /close thread/i }))
+    expect(closeThread).toHaveBeenCalled()
+  })
+
+  it('Reply inside the thread stages a quote in the thread input', () => {
+    render(<ThreadRightBar />)
+    fireEvent.click(screen.getByText('fire-reply'))
+    expect(screen.getByTestId('t-staged').textContent).toBe('r-orig')
+  })
+
+  it('clearing the chip removes the staged quote', () => {
+    render(<ThreadRightBar />)
+    fireEvent.click(screen.getByText('fire-reply'))
+    fireEvent.click(screen.getByText('t-clear'))
+    expect(screen.queryByTestId('t-staged')).not.toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/components/ThreadRightBar.test.jsx`
+Expected: FAIL.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/ThreadRightBar.jsx`:
+
+```jsx
+import { useState } from 'react'
+import { useThreadEvents } from '../context/ThreadEventsContext'
+import ThreadMessageArea from './ThreadMessageArea'
+import ThreadMessageInput from './ThreadMessageInput'
+
+export default function ThreadRightBar() {
+  const { activeParent, closeThread } = useThreadEvents()
+  const [quotedTarget, setQuotedTarget] = useState(null)
+
+  if (!activeParent) return null
+
+  const handleReply = (msg) => {
+    setQuotedTarget({
+      id: msg.id,
+      senderName: msg.sender?.engName || msg.sender?.account || msg.userAccount || 'Unknown',
+      content: msg.content || msg.msg || '',
+    })
+  }
+
+  return (
+    <aside className="thread-rightbar">
+      <header className="thread-header">
+        <span className="thread-header-title">Thread</span>
+        <button
+          type="button"
+          className="thread-header-close"
+          aria-label="Close thread"
+          onClick={closeThread}
+        >
+          ✕
+        </button>
+      </header>
+      <ThreadMessageArea onReply={handleReply} />
+      <ThreadMessageInput
+        quotedTarget={quotedTarget}
+        onClearQuote={() => setQuotedTarget(null)}
+      />
+    </aside>
+  )
+}
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/ThreadRightBar.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/ThreadRightBar.jsx chat-frontend/src/components/ThreadRightBar.test.jsx
+git commit -m "feat(chat-frontend): add ThreadRightBar"
+```
+
+### Task 7.6: Mount `ThreadRightBar` in `MainApp` and wire the Thread icon
+
+When `useThreadEvents().activeParent !== null`, render `ThreadRightBar` as the third column in `.app-row`. Also: hook the Thread icon (existing `onThread` prop) so clicking it calls `openThread(parent)` with all required fields.
+
+**Files:**
+- Modify: `chat-frontend/src/components/MainApp.jsx`
+- Modify: `chat-frontend/src/components/MainApp.test.jsx`
+- Modify: `chat-frontend/src/pages/ChatPage.jsx`
+
+- [ ] **Step 1: Failing test on MainApp**
+
+Append to `chat-frontend/src/components/MainApp.test.jsx`:
+
+```jsx
+describe('MainApp — ThreadRightBar mount', () => {
+  it('mounts ThreadRightBar only when an active thread exists', async () => {
+    vi.resetModules()
+    let activeParent = null
+    vi.doMock('../context/ThreadEventsContext', () => ({
+      useThreadEvents: () => ({ activeParent }),
+    }))
+    vi.doMock('./ThreadRightBar', () => ({ default: () => <aside>RIGHT-BAR</aside> }))
+    const { default: Re } = await import('./MainApp')
+    const { rerender } = render(<Re />)
+    expect(screen.queryByText('RIGHT-BAR')).not.toBeInTheDocument()
+    activeParent = { messageId: 'p1' }
+    rerender(<Re />)
+    expect(screen.getByText('RIGHT-BAR')).toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Update `MainApp.jsx`**
+
+In `chat-frontend/src/components/MainApp.jsx`, add:
+
+```jsx
+import { useThreadEvents } from '../context/ThreadEventsContext'
+import ThreadRightBar from './ThreadRightBar'
+```
+
+Inside the component:
+
+```jsx
+  const { activeParent } = useThreadEvents()
+```
+
+Render `ThreadRightBar` after `ChatPage` (or `SearchResultsPane`):
+
+```jsx
+      <div className="app-row">
+        <Sidebar selectedRoomId={selectedRoom?.id ?? null} onSelectRoom={handleSelectRoom} />
+        {searchQuery ? (
+          <SearchResultsPane … />
+        ) : (
+          <ChatPage selectedRoom={selectedRoom} onSelectRoom={handleSelectRoom} />
+        )}
+        {activeParent && <ThreadRightBar />}
+      </div>
+```
+
+- [ ] **Step 3: Wire the Thread icon in ChatPage**
+
+`ChatPage` currently passes `onThread={() => {}}` to `<RoomMessageArea>`. Change it:
+
+```jsx
+import { useThreadEvents } from '../context/ThreadEventsContext'
+
+// inside the component:
+const { openThread } = useThreadEvents()
+
+const handleThread = (msg) => {
+  if (!selectedRoom || !msg) return
+  openThread({
+    roomId: selectedRoom.id,
+    siteId: selectedRoom.siteId,
+    messageId: msg.id,
+    createdAtMs: new Date(msg.createdAt).getTime(),
+  })
+}
+```
+
+And pass `onThread={handleThread}` to `<RoomMessageArea>`.
+
+- [ ] **Step 4: Update `ChatPage.test.jsx`**
+
+Add at the top of the file (with the other mocks):
+
+```jsx
+const openThread = vi.fn()
+vi.mock('../context/ThreadEventsContext', () => ({
+  useThreadEvents: () => ({ openThread, activeParent: null }),
+}))
+```
+
+Add a test inside `describe('ChatPage — quote-reply staging')` or in a new describe block:
+
+```jsx
+describe('ChatPage — opening a thread', () => {
+  beforeEach(() => openThread.mockClear())
+
+  it('clicking Thread on a message calls openThread with full parent identity', () => {
+    // Stub RoomMessageArea to fire onThread on demand.
+    vi.doMock('../components/RoomMessageArea', () => ({
+      default: ({ onThread }) => (
+        <button
+          type="button"
+          onClick={() =>
+            onThread?.({
+              id: 'm-thread',
+              createdAt: '2026-05-13T10:00:00.000Z',
+            })
+          }
+        >
+          fire-thread
+        </button>
+      ),
+    }))
+    // Re-import after mock.
+    vi.resetModules()
+    // ...the imports above re-execute via test file ordering; rely on the
+    // existing mocks for RoomMessageArea unless this it() runs in isolation.
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.click(screen.getByText('fire-thread'))
+    expect(openThread).toHaveBeenCalledWith({
+      roomId: 'r1',
+      siteId: channel.siteId,
+      messageId: 'm-thread',
+      createdAtMs: Date.parse('2026-05-13T10:00:00.000Z'),
+    })
+  })
+})
+```
+
+(If the inline `vi.doMock` confuses the rest of the file's mocks, lift the `fire-thread` button into the existing `RoomMessageArea` mock at the top of the file alongside `fire-reply`.)
+
+- [ ] **Step 5: Run the suites**
+
+Run: `cd chat-frontend && npx vitest run src/components/MainApp.test.jsx src/pages/ChatPage.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 6: Manual smoke check**
+
+Run: `cd chat-frontend && npm run dev`
+Sign in. Click 💬 on a message. Verify:
+- Thread side panel appears on the right.
+- Parent message is at the top.
+- "No replies yet — be the first to reply" shows for new threads.
+- Loading state is visible briefly on open.
+- Clicking ✕ closes the panel.
+- Replying inside the thread works (the new reply appears optimistically).
+- The thread reply does NOT appear in the main feed (we haven't added the filter yet — Chapter 8 — so it currently WILL appear; note this in the smoke check but don't fail the chapter).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add chat-frontend/src/components/MainApp.jsx chat-frontend/src/components/MainApp.test.jsx chat-frontend/src/pages/ChatPage.jsx chat-frontend/src/pages/ChatPage.test.jsx
+git commit -m "feat(chat-frontend): mount ThreadRightBar in MainApp; wire Thread hover icon"
+```
+
+### Task 7.7: CSS for thread panel layout
+
+Width 380 px, vertical flex (header / area / input), border-left, scrollable area in the middle.
+
+**Files:**
+- Modify: `chat-frontend/src/styles/index.css`
+
+- [ ] **Step 1: Append CSS**
+
+Append to `chat-frontend/src/styles/index.css`:
+
+```css
+.thread-rightbar {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border-subtle, #e5e7eb);
+  background: var(--bg-surface);
+  min-height: 0;
+}
+.thread-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+.thread-header-title {
+  font-weight: 600;
+}
+.thread-header-close {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 1.1em;
+  padding: 2px 6px;
+}
+.thread-message-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.thread-rightbar .message-input-form {
+  border-top: 1px solid var(--border-subtle);
+}
+.message-row-failed {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+  color: var(--text-error, #b00020);
+  font-size: 0.85em;
+}
+.message-row-failed button {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+```
+
+- [ ] **Step 2: Smoke check**
+
+Run: `cd chat-frontend && npm run dev`
+Open a thread; verify the panel renders the full vertical layout with a scrollable middle.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add chat-frontend/src/styles/index.css
+git commit -m "style(chat-frontend): thread panel layout + failed-row indicator"
+```
+
+---
+
+*Chapter 8 follows — Cross-context wiring (own-reply tcount bump), client-side thread-reply filter on main feed, and the reply-count badge with click-to-open-thread.*
