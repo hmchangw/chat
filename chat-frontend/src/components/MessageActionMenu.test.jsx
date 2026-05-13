@@ -38,6 +38,15 @@ describe('MessageActionMenu render-gating', () => {
     const { container } = render(<MessageActionMenu message={msg} room={room} />)
     expect(container).toBeEmptyDOMElement()
   })
+
+  it('renders nothing when room is missing or has no id', () => {
+    const msg = { id: 'm1', sender: { account: 'alice' } }
+    const nullRoom = render(<MessageActionMenu message={msg} room={null} />)
+    expect(nullRoom.container).toBeEmptyDOMElement()
+    nullRoom.unmount()
+    const idless = render(<MessageActionMenu message={msg} room={{ userCount: 3 }} />)
+    expect(idless.container).toBeEmptyDOMElement()
+  })
 })
 
 describe('MessageActionMenu open/close', () => {

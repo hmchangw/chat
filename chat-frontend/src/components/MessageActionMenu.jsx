@@ -65,7 +65,7 @@ export default function MessageActionMenu({ message, room }) {
       })
   }
 
-  if (!isOwnMessage) return null
+  if (!isOwnMessage || !room?.id) return null
 
   const X = readers?.length ?? 0
   const Y = Math.max(0, (room?.userCount ?? 1) - 1)

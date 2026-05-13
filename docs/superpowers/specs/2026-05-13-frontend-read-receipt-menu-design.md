@@ -16,11 +16,15 @@ When a room member opens a room and hovers a message **they sent**, surface a
 vertical-3-dots ("kebab") menu. Clicking it opens a popover that contains a
 `Read by X of Y` row, where:
 
-- **X** = number of room members on the local site whose `lastSeenAt` is at or
-  after the message's `createdAt`, **excluding the sender**. This is exactly
-  `readers.length` from the RPC response.
+- **X** = number of room members whose `lastSeenAt` is at or after the
+  message's `createdAt`, **excluding the sender**. This is exactly
+  `readers.length` from the RPC response. The count spans all sites: although
+  `room-service` queries the local Mongo's `subscriptions` collection,
+  `inbox-worker` mirrors remote `subscriptionRead` events into that collection
+  (see `inbox-worker/handler.go:32`), so the result reflects readers across
+  every site that hosts a room member.
 - **Y** = total members in the room, **excluding the sender** —
-  `max(0, room.userCount - 1)`.
+  `max(0, room.userCount - 1)`. `room.userCount` is also a global count.
 
 Hovering (or keyboard-focusing) the `Read by X of Y` row opens a sub-tooltip
 listing each reader as `EngName ChineseName` (the Chinese name is appended only
@@ -32,9 +36,9 @@ popover. This spec covers only the read-receipt item.
 
 ## 3. Non-goals
 
-- No backend or `pkg/` changes — the RPC ships as-is.
-- No cross-site federation work; the RPC is local-site only and so is the count.
-  See §8 Known Limitations.
+- No backend or `pkg/` changes — the RPC ships as-is. Cross-site read state is
+  already replicated by `inbox-worker`, so no federation work is needed in this
+  spec.
 - No edit / delete / reply actions in this spec — only the menu shell that will
   host them later.
 - No mobile/touch UX redesign. Hover semantics target desktop browsers; keyboard
@@ -255,17 +259,11 @@ Cases:
 - **No live updates.** Read receipts are point-in-time at popover open. If a
   user reads the message after the menu opened, the displayed count will not
   refresh until the user re-opens.
-
-*Federation note:* the RPC reads from `subscriptions` on the local Mongo, but
-that collection is kept in sync across sites by `inbox-worker` (it handles
-`subscriptionRead` events from remote sites and writes the federated
-`lastSeenAt` locally — see `inbox-worker/handler.go:32`). The result is that
-`X` reflects readers across all sites and matches what `Y = room.userCount -
-1` represents, so no federation-driven under-count exists. (The
-`docs/client-api.md` "local-site only" phrasing predates that wiring and is
-inaccurate as a user-visible behaviour; it is not corrected here because
-`CLAUDE.md` only requires that doc to be updated by changes to a client-facing
-handler, which this PR does not touch.)
+- **`docs/client-api.md` wording is stale.** That doc still calls the RPC
+  "local-site only," but the implementation is global (see §2 X for the
+  reason). The doc is not corrected here because `CLAUDE.md` only requires it
+  to be updated by changes to a client-facing handler, which this PR does not
+  touch.
 
 ## 9. Affected files summary
 
