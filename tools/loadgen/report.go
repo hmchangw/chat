@@ -69,15 +69,29 @@ type Summary struct {
 	Duration, Warmup     time.Duration
 	Sent                 int // total across warmup + measured
 	SentMeasured         int // post-warmup only; the denominator for E1/E2 comparisons
-	PublishErrors        int
-	GatekeeperErrors     int
-	MissingReplies       int
-	MissingBroadcasts    int
-	E1                   Percentiles
-	E2                   Percentiles
-	E1Count, E2Count     int
-	Consumers            []ConsumerStat
-	Requests             []RequestStat
+	// SentQueued is the count of messages for which the Publish call returned
+	// without error (i.e. the message was handed to JetStream's async ring
+	// buffer or sent synchronously). Equals Sent for sync publish paths.
+	SentQueued int64
+	// SentAcked is the count of messages that received a durable JetStream
+	// PubAck. For async publish paths, SentQueued - SentAcked equals the
+	// number of async_ack errors (lost in transit if DrainTimedOut is true).
+	// For sync publish paths, SentAcked == SentQueued.
+	SentAcked int64
+	// DrainTimedOut is true when the post-run async JetStream drain window
+	// expired before all in-flight PubAcks were received. When true, some
+	// messages in (SentQueued - SentAcked) may have been durably stored but
+	// their acks arrived after the drain deadline.
+	DrainTimedOut     bool
+	PublishErrors     int
+	GatekeeperErrors  int
+	MissingReplies    int
+	MissingBroadcasts int
+	E1                Percentiles
+	E2                Percentiles
+	E1Count, E2Count  int
+	Consumers         []ConsumerStat
+	Requests          []RequestStat
 	// OmissionServicedP99 is the p99 coordinated-omission dispatch deficit
 	// for ticks that were accepted by the goroutine pool (serviced).
 	OmissionServicedP99 time.Duration
@@ -105,6 +119,14 @@ func PrintSummary(w io.Writer, s *Summary) error {
 	fmt.Fprintln(w, "publish results")
 	fmt.Fprintf(w, "  sent (total):     %d\n", s.Sent)
 	fmt.Fprintf(w, "  sent (measured):  %d   ← compared to E1/E2 counts below\n", s.SentMeasured)
+	if s.SentQueued > 0 || s.SentAcked > 0 {
+		fmt.Fprintf(w, "  sent (queued):    %d\n", s.SentQueued)
+		drainNote := "false"
+		if s.DrainTimedOut {
+			drainNote = "true"
+		}
+		fmt.Fprintf(w, "  sent (acked):     %d  (drain timed out: %s)\n", s.SentAcked, drainNote)
+	}
 	fmt.Fprintf(w, "  publish errors:    %d\n", s.PublishErrors)
 	fmt.Fprintf(w, "  gatekeeper errors: %d\n", s.GatekeeperErrors)
 	fmt.Fprintf(w, "  missing replies:   %d\n", s.MissingReplies)

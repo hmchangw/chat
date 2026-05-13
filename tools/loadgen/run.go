@@ -562,9 +562,15 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	}
 	publishErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "", "")
 	gkErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "reason", "gatekeeper")
+	asyncAckErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "reason", "async_ack")
 	sentWarmup := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "warmup"))
 	sentMeasured := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "measured"))
 	sent := sentWarmup + sentMeasured
+	// sentQueued is the total number of messages queued for publish (async or
+	// sync). For the async path, sentQueued > sentAcked when async_ack errors
+	// occurred (acks never received before drain timeout or during the run).
+	sentQueued := int64(sent)
+	sentAcked := sentQueued - int64(asyncAckErrs)
 	// Bug 2: per-scenario measured-window math.
 	//   - messaging-pipeline: warmup is carved out of the run window, so
 	//     measured = duration - warmup.
@@ -656,6 +662,9 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		Inject:              rf.Inject,
 		Sent:                sent,
 		SentMeasured:        sentMeasured,
+		SentQueued:          sentQueued,
+		SentAcked:           sentAcked,
+		DrainTimedOut:       drainTimedOut,
 		PublishErrors:       int(publishErrs - gkErrs),
 		GatekeeperErrors:    int(gkErrs),
 		MissingReplies:      missingReplies,

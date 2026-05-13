@@ -202,6 +202,73 @@ func TestWriteCSV_RequestSamples(t *testing.T) {
 	assert.Equal(t, "run-X,2,r2,search.search_messages,3700000", lines[2])
 }
 
+func TestPrintSummary_QueuedAckedDrainTimeout(t *testing.T) {
+	cases := []struct {
+		name          string
+		sentQueued    int64
+		sentAcked     int64
+		drainTimedOut bool
+		wantQueued    string
+		wantAcked     string
+		wantDrain     string
+	}{
+		{
+			name:          "async drain timed out",
+			sentQueued:    12345,
+			sentAcked:     12300,
+			drainTimedOut: true,
+			wantQueued:    "12345",
+			wantAcked:     "12300",
+			wantDrain:     "drain timed out: true",
+		},
+		{
+			name:          "async no timeout",
+			sentQueued:    5000,
+			sentAcked:     5000,
+			drainTimedOut: false,
+			wantQueued:    "5000",
+			wantAcked:     "5000",
+			wantDrain:     "drain timed out: false",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			s := Summary{
+				Preset: "medium", Seed: 1, Site: "site-local",
+				TargetRate: 500, ActualRate: 499.0,
+				Duration: 60 * time.Second, Warmup: 10 * time.Second,
+				Inject:        "frontdoor",
+				Sent:          int(tc.sentQueued),
+				SentQueued:    tc.sentQueued,
+				SentAcked:     tc.sentAcked,
+				DrainTimedOut: tc.drainTimedOut,
+			}
+			require.NoError(t, PrintSummary(&buf, &s))
+			out := buf.String()
+			assert.Contains(t, out, tc.wantQueued, "expected queued count in output")
+			assert.Contains(t, out, tc.wantAcked, "expected acked count in output")
+			assert.Contains(t, out, tc.wantDrain, "expected drain-timeout indicator in output")
+		})
+	}
+}
+
+func TestPrintSummary_NoQueuedAckedWhenZero(t *testing.T) {
+	// When SentQueued and SentAcked are both zero (non-async paths), the
+	// queued/acked lines should be omitted entirely.
+	var buf bytes.Buffer
+	s := Summary{
+		Preset: "small", Seed: 1, Site: "site-local",
+		TargetRate: 100, ActualRate: 99.0,
+		Duration: 30 * time.Second, Warmup: 10 * time.Second,
+		Inject: "frontdoor",
+	}
+	require.NoError(t, PrintSummary(&buf, &s))
+	out := buf.String()
+	assert.NotContains(t, out, "sent (queued):", "queued line should be absent when SentQueued==0")
+	assert.NotContains(t, out, "sent (acked):", "acked line should be absent when SentAcked==0")
+}
+
 func TestDetermineExitCode(t *testing.T) {
 	cases := []struct {
 		name         string
