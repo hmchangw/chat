@@ -33,6 +33,10 @@ type HistoryReadConfig struct {
 	// publishes via the messaging-pipeline scenario.
 	MessageIDs []string
 	Timeout    time.Duration
+	// Omission, when non-nil, records coordinated-omission deficits for
+	// each tick: the gap between intended dispatch time and actual start
+	// (serviced) or drop time (dropped/saturated).
+	Omission *OmissionTracker
 }
 
 // HistoryReadGenerator drives history-service request/reply RPCs at a steady
@@ -67,6 +71,7 @@ func (g *HistoryReadGenerator) Run(ctx context.Context) error {
 		Preset:      g.cfg.Preset.Name,
 		Scenario:    "history",
 		Ramp:        g.cfg.Ramp,
+		Omission:    g.cfg.Omission,
 	}, g.tick)
 	return nil
 }
@@ -159,6 +164,10 @@ type SearchReadConfig struct {
 	MaxInFlight    int
 	Ramp           *Ramp
 	Timeout        time.Duration
+	// Omission, when non-nil, records coordinated-omission deficits for
+	// each tick: the gap between intended dispatch time and actual start
+	// (serviced) or drop time (dropped/saturated).
+	Omission *OmissionTracker
 }
 
 // SearchReadGenerator drives search-service request/reply RPCs at a steady
@@ -192,6 +201,7 @@ func (g *SearchReadGenerator) Run(ctx context.Context) error {
 		Preset:      g.cfg.Preset.Name,
 		Scenario:    "search",
 		Ramp:        g.cfg.Ramp,
+		Omission:    g.cfg.Omission,
 	}, g.tick)
 	return nil
 }

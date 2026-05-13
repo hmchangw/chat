@@ -78,6 +78,12 @@ type Summary struct {
 	E1Count, E2Count     int
 	Consumers            []ConsumerStat
 	Requests             []RequestStat
+	// OmissionServicedP99 is the p99 coordinated-omission dispatch deficit
+	// for ticks that were accepted by the goroutine pool (serviced).
+	OmissionServicedP99 time.Duration
+	// OmissionDroppedP99 is the p99 coordinated-omission dispatch deficit
+	// for ticks that were dropped due to pool saturation.
+	OmissionDroppedP99 time.Duration
 }
 
 // PrintSummary writes the terminal summary to w using text/tabwriter.
@@ -97,7 +103,9 @@ func PrintSummary(w io.Writer, s *Summary) error {
 	fmt.Fprintf(w, "  publish errors:    %d\n", s.PublishErrors)
 	fmt.Fprintf(w, "  gatekeeper errors: %d\n", s.GatekeeperErrors)
 	fmt.Fprintf(w, "  missing replies:   %d\n", s.MissingReplies)
-	fmt.Fprintf(w, "  missing broadcasts:%d\n\n", s.MissingBroadcasts)
+	fmt.Fprintf(w, "  missing broadcasts:%d\n", s.MissingBroadcasts)
+	fmt.Fprintf(w, "  omission p99 (serviced): %v\n", s.OmissionServicedP99)
+	fmt.Fprintf(w, "  omission p99 (dropped):  %v\n\n", s.OmissionDroppedP99)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "latency (measured window only)")

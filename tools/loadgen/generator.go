@@ -57,6 +57,11 @@ type GeneratorConfig struct {
 	// ticker is rebuilt every rateRebuildInterval (1s, or Duration/10
 	// for short test ramps). When nil, the loop ticks at fixed Rate.
 	Ramp *Ramp
+
+	// Omission, when non-nil, records coordinated-omission deficits for
+	// each tick: the gap between intended dispatch time and actual start
+	// (serviced) or drop time (dropped/saturated).
+	Omission *OmissionTracker
 }
 
 // Generator is the open-loop publisher.
@@ -171,10 +176,15 @@ func (g *Generator) Run(ctx context.Context) error {
 			}
 			return nil
 		case <-tick.C:
+			intendedAt := time.Now()
 			select {
 			case sem <- struct{}{}:
 				wg.Add(1)
 				go func() {
+					actualStart := time.Now()
+					if g.cfg.Omission != nil {
+						g.cfg.Omission.RecordServiced(intendedAt, actualStart)
+					}
 					defer func() {
 						<-sem
 						wg.Done()
@@ -182,6 +192,9 @@ func (g *Generator) Run(ctx context.Context) error {
 					g.publishOne(ctx)
 				}()
 			default:
+				if g.cfg.Omission != nil {
+					g.cfg.Omission.RecordDropped(intendedAt, time.Now())
+				}
 				g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "saturated").Inc()
 			}
 		case <-rebuild:

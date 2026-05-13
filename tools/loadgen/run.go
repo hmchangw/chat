@@ -316,6 +316,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp(rf),
 			Timeout:    rf.RequestTimeout,
 			MessageIDs: msgIDs,
+			Omission:   rt.Omission(),
 		}, rf.Seed)
 	case "search-read":
 		gen = NewSearchReadGenerator(&SearchReadConfig{
@@ -323,7 +324,8 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 			Rate: rf.Rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
 			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp(rf),
-			Timeout: rf.RequestTimeout,
+			Timeout:  rf.RequestTimeout,
+			Omission: rt.Omission(),
 		}, rf.Seed)
 	case "room-rpc":
 		gen = NewRoomRPCGenerator(&RoomRPCConfig{
@@ -331,7 +333,8 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 			Rate: rf.Rate, Requester: requester, Metrics: metrics,
 			Collector:      collector,
 			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp(rf),
-			Timeout: rf.RequestTimeout,
+			Timeout:  rf.RequestTimeout,
+			Omission: rt.Omission(),
 		}, rf.Seed)
 	default:
 		gen = NewGenerator(&GeneratorConfig{
@@ -349,6 +352,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 			ConnIDFor: func(userID string) string {
 				return strconv.Itoa(pool.IndexFor(userID))
 			},
+			Omission: rt.Omission(),
 		}, rf.Seed)
 	}
 
@@ -550,27 +554,29 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		collector.E1Count(), missingReplies, sentMeasured, requestStats)
 
 	summary := Summary{
-		RunID:             runID,
-		Preset:            p.Name,
-		Seed:              rf.Seed,
-		Site:              cfg.SiteID,
-		TargetRate:        rf.Rate,
-		ActualRate:        actualRate,
-		Duration:          rf.Duration,
-		Warmup:            rf.Warmup,
-		Inject:            rf.Inject,
-		Sent:              sent,
-		SentMeasured:      sentMeasured,
-		PublishErrors:     int(publishErrs - gkErrs),
-		GatekeeperErrors:  int(gkErrs),
-		MissingReplies:    missingReplies,
-		MissingBroadcasts: missingBroadcasts,
-		E1:                ComputePercentiles(collector.E1Samples()),
-		E2:                ComputePercentiles(collector.E2Samples()),
-		E1Count:           collector.E1Count(),
-		E2Count:           collector.E2Count(),
-		Consumers:         consumerSnapshots(samplers),
-		Requests:          requestStats,
+		RunID:               runID,
+		Preset:              p.Name,
+		Seed:                rf.Seed,
+		Site:                cfg.SiteID,
+		TargetRate:          rf.Rate,
+		ActualRate:          actualRate,
+		Duration:            rf.Duration,
+		Warmup:              rf.Warmup,
+		Inject:              rf.Inject,
+		Sent:                sent,
+		SentMeasured:        sentMeasured,
+		PublishErrors:       int(publishErrs - gkErrs),
+		GatekeeperErrors:    int(gkErrs),
+		MissingReplies:      missingReplies,
+		MissingBroadcasts:   missingBroadcasts,
+		E1:                  ComputePercentiles(collector.E1Samples()),
+		E2:                  ComputePercentiles(collector.E2Samples()),
+		E1Count:             collector.E1Count(),
+		E2Count:             collector.E2Count(),
+		Consumers:           consumerSnapshots(samplers),
+		Requests:            requestStats,
+		OmissionServicedP99: rt.Omission().Quantile(0.99, false),
+		OmissionDroppedP99:  rt.Omission().Quantile(0.99, true),
 	}
 	if err := PrintSummary(os.Stdout, &summary); err != nil {
 		slog.Warn("print summary", "error", err)

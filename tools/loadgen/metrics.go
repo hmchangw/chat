@@ -30,6 +30,11 @@ type Metrics struct {
 	// Labels: result="ok"|"fail". Separate from Requests so the
 	// watcher's own traffic doesn't pollute scenario measurements.
 	LivenessProbes *prometheus.CounterVec
+	// OmissionDeficit tracks the coordinated-omission dispatch deficit —
+	// the gap between when a tick was intended and when it actually ran
+	// (or was dropped). Label "dropped"="true"|"false" separates pool-
+	// saturation drops from serviced-but-late ticks.
+	OmissionDeficit *prometheus.HistogramVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -90,6 +95,14 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Name: "loadgen_liveness_probes_total", Help: "Mid-run liveness probe results."},
 			[]string{"preset", "result"},
 		),
+		OmissionDeficit: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "loadgen_omission_deficit_seconds",
+				Help:    "Dispatch deficit between intended tick time and actual tick start (or drop time).",
+				Buckets: prometheus.ExponentialBuckets(1e-5, 2, 18), // 10µs ... ~2.6s
+			},
+			[]string{"dropped"},
+		),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -97,6 +110,7 @@ func NewMetrics() *Metrics {
 		m.E1Latency, m.E2Latency,
 		m.ConsumerPending, m.ConsumerAckPending, m.ConsumerRedelivered,
 		m.RunInfo, m.LivenessProbes,
+		m.OmissionDeficit,
 	)
 	return m
 }

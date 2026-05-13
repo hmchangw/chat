@@ -21,6 +21,10 @@ type RoomRPCConfig struct {
 	MaxInFlight    int
 	Ramp           *Ramp
 	Timeout        time.Duration
+	// Omission, when non-nil, records coordinated-omission deficits for
+	// each tick: the gap between intended dispatch time and actual start
+	// (serviced) or drop time (dropped/saturated).
+	Omission *OmissionTracker
 }
 
 // RoomRPCGenerator drives room-service request/reply RPCs at a steady
@@ -54,6 +58,7 @@ func (g *RoomRPCGenerator) Run(ctx context.Context) error {
 		Preset:      g.cfg.Preset.Name,
 		Scenario:    "room",
 		Ramp:        g.cfg.Ramp,
+		Omission:    g.cfg.Omission,
 	}, g.tick)
 	return nil
 }

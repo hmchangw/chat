@@ -20,6 +20,10 @@ type tickLoopConfig struct {
 	// recomputed once per second from Ramp.RateAt(elapsed). When nil,
 	// the loop ticks at a fixed Rate for the whole run.
 	Ramp *Ramp
+	// Omission, when non-nil, records coordinated-omission deficits for
+	// each tick: the gap between intended dispatch time and actual start
+	// (serviced) or drop time (dropped/saturated).
+	Omission *OmissionTracker
 }
 
 // rateRebuildInterval is how often tickLoop polls the Ramp curve to
@@ -110,10 +114,15 @@ func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context
 			}
 			return
 		case <-t.C:
+			intendedAt := time.Now()
 			select {
 			case sem <- struct{}{}:
 				wg.Add(1)
 				go func() {
+					actualStart := time.Now()
+					if cfg.Omission != nil {
+						cfg.Omission.RecordServiced(intendedAt, actualStart)
+					}
 					defer func() {
 						<-sem
 						wg.Done()
@@ -127,6 +136,9 @@ func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context
 				// + the in-flight ticks. Phase label is "saturated" to
 				// keep the warmup/measured split clean for the success
 				// path.
+				if cfg.Omission != nil {
+					cfg.Omission.RecordDropped(intendedAt, time.Now())
+				}
 				cfg.Metrics.Requests.WithLabelValues(
 					cfg.Preset, cfg.Scenario, "*", "saturated",
 				).Inc()

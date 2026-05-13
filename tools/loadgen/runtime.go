@@ -32,6 +32,7 @@ type Runtime struct {
 	pool       *ConnPool
 	metrics    *Metrics
 	collector  *Collector
+	omission   *OmissionTracker
 	metricsSrv *http.Server
 	pprofSrv   *http.Server
 }
@@ -73,6 +74,7 @@ func NewRuntime(ctx context.Context, cfg *config, runID string) (*Runtime, error
 		pool:      pool,
 		metrics:   metrics,
 		collector: collector,
+		omission:  NewOmissionTracker(metrics),
 	}
 
 	rt.metricsSrv = rt.startMetricsServer()
@@ -147,6 +149,9 @@ func (r *Runtime) Collector() *Collector { return r.collector }
 
 // Metrics returns the Prometheus metrics bundle.
 func (r *Runtime) Metrics() *Metrics { return r.metrics }
+
+// Omission returns the coordinated-omission tracker shared across the run.
+func (r *Runtime) Omission() *OmissionTracker { return r.omission }
 
 // RunID returns the per-run correlation identifier.
 func (r *Runtime) RunID() string { return r.runID }
