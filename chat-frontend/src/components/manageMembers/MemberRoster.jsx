@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNats } from '../../context/NatsContext'
-import { memberList, memberRemove, memberRoleUpdate } from '../../lib/subjects'
+import { memberList, memberRemove, memberRoleUpdate, orgMembers } from '../../lib/subjects'
 import { ROLE_OWNER, ROLE_MEMBER } from '../../lib/constants'
 import { formatAsyncJobError } from '../../lib/asyncJob'
 
@@ -11,6 +11,16 @@ export default function MemberRoster({ room }) {
   const [error, setError] = useState(null)
   const [busyKey, setBusyKey] = useState(null)
   const [actionError, setActionError] = useState(null)
+  // Org-expansion state. Each map is keyed by orgId.
+  //   expandedOrgs   — UI state: which orgs are currently open
+  //   orgChildren    — cached responses from orgs.{id}.members; survives a
+  //                    collapse/re-expand cycle so we don't refetch.
+  //   orgFetchState  — 'loading' | 'error' while a fetch is in flight or
+  //                    after it failed (so the user can see a banner). On
+  //                    success the key is removed.
+  const [expandedOrgs, setExpandedOrgs] = useState({})
+  const [orgChildren, setOrgChildren] = useState({})
+  const [orgFetchState, setOrgFetchState] = useState({})
 
   // Depend on the primitive identity fields, not the room object reference —
   // a parent re-render that hands us an equivalent-but-new room object
@@ -94,6 +104,36 @@ export default function MemberRoster({ room }) {
     }
   }, [room.id, room.siteId, room.name, user.account, requestWithAsyncResult])
 
+  /**
+   * Toggle an org row open/closed. On the first open we fetch the org's
+   * members via the chat.user.{a}.request.orgs.{orgId}.members RPC and
+   * cache the result in orgChildren — collapsing then re-expanding doesn't
+   * refetch. Loading + error states live in orgFetchState so the row can
+   * render a "Loading…" / "Failed to load members" hint without conflating
+   * with the top-level dialog error.
+   */
+  const toggleOrg = useCallback(
+    async (orgId) => {
+      const wasOpen = !!expandedOrgs[orgId]
+      setExpandedOrgs((s) => ({ ...s, [orgId]: !wasOpen }))
+      // Collapsing or already cached — nothing else to do.
+      if (wasOpen) return
+      if (orgChildren[orgId]) return
+      setOrgFetchState((s) => ({ ...s, [orgId]: 'loading' }))
+      try {
+        const resp = await request(orgMembers(user.account, orgId), {})
+        setOrgChildren((s) => ({ ...s, [orgId]: resp?.members ?? [] }))
+        setOrgFetchState((s) => {
+          const { [orgId]: _drop, ...rest } = s
+          return rest
+        })
+      } catch {
+        setOrgFetchState((s) => ({ ...s, [orgId]: 'error' }))
+      }
+    },
+    [expandedOrgs, orgChildren, request, user.account]
+  )
+
   if (loading) return <div className="roster-loading">Loading members…</div>
   if (error) return <div className="dialog-error">{error}</div>
 
@@ -107,7 +147,17 @@ export default function MemberRoster({ room }) {
         <ul className="roster-list">
           {ordered.map((m) =>
             m.member?.type === 'org'
-              ? renderOrgRow(m, { busyKey, isCurrentUserOwner, room, user, runAction })
+              ? renderOrgRow(m, {
+                  busyKey,
+                  isCurrentUserOwner,
+                  room,
+                  user,
+                  runAction,
+                  expanded: !!expandedOrgs[m.member.id],
+                  children: orgChildren[m.member.id],
+                  fetchState: orgFetchState[m.member.id],
+                  toggleOrg,
+                })
               : renderIndividualRow(m, {
                   busyKey,
                   isCurrentUserOwner,
@@ -123,37 +173,73 @@ export default function MemberRoster({ room }) {
   )
 }
 
-function renderOrgRow(m, { busyKey, isCurrentUserOwner, room, user, runAction }) {
+function renderOrgRow(m, { busyKey, isCurrentUserOwner, room, user, runAction, expanded, children, fetchState, toggleOrg }) {
   const entry = m.member
   const orgId = entry.id
   const display = entry.sectName || orgId
   const removeKey = `removeOrg:${orgId}`
   return (
-    <li key={m.id} className="roster-row">
-      <div className="roster-row-info">
-        <span className="roster-name">{display}</span>
-        {typeof entry.memberCount === 'number' && (
-          <span className="roster-secondary">{entry.memberCount} members</span>
-        )}
+    <li key={m.id} className="roster-row roster-row-org">
+      <div className="roster-row-org-header">
+        <button
+          type="button"
+          className="roster-row-info roster-org-toggle"
+          aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${display}`}
+          onClick={() => toggleOrg(orgId)}
+        >
+          <span className="roster-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+          <span className="roster-name">{display}</span>
+          {typeof entry.memberCount === 'number' && (
+            <span className="roster-secondary">{entry.memberCount} members</span>
+          )}
+        </button>
+        <div className="roster-row-actions">
+          {isCurrentUserOwner && (
+            <button
+              type="button"
+              aria-label={`Remove ${orgId}`}
+              disabled={busyKey === removeKey}
+              onClick={() =>
+                runAction(
+                  removeKey,
+                  memberRemove(user.account, room.id, room.siteId),
+                  { roomId: room.id, orgId }
+                )
+              }
+            >
+              Remove
+            </button>
+          )}
+        </div>
       </div>
-      <div className="roster-row-actions">
-        {isCurrentUserOwner && (
-          <button
-            type="button"
-            aria-label={`Remove ${orgId}`}
-            disabled={busyKey === removeKey}
-            onClick={() =>
-              runAction(
-                removeKey,
-                memberRemove(user.account, room.id, room.siteId),
-                { roomId: room.id, orgId }
-              )
-            }
-          >
-            Remove
-          </button>
-        )}
-      </div>
+      {expanded && (
+        <ul className="roster-org-children">
+          {fetchState === 'loading' && (
+            <li className="roster-org-child roster-org-status">Loading members…</li>
+          )}
+          {fetchState === 'error' && (
+            <li className="roster-org-child roster-org-status">Failed to load members.</li>
+          )}
+          {!fetchState && (children?.length ?? 0) === 0 && (
+            <li className="roster-org-child roster-org-status">No members.</li>
+          )}
+          {children?.map((c) => {
+            // Org-children rows show engName + chineseName only — the parent
+            // org row already owns the Remove control (server treats the org
+            // as a single membership unit; removing it removes all members
+            // server-side).
+            const primary = c.engName || c.account
+            const secondary = c.chineseName || ''
+            return (
+              <li key={c.id || c.account} className="roster-org-child">
+                <span className="roster-name">{primary}</span>
+                {secondary && <span className="roster-secondary">{secondary}</span>}
+              </li>
+            )
+          })}
+        </ul>
+      )}
     </li>
   )
 }

@@ -12,6 +12,7 @@ import {
   readReceipt,
   roomCreate,
   userResponse,
+  orgMembers,
 } from './subjects'
 
 describe('subjects', () => {
@@ -73,5 +74,9 @@ describe('subjects', () => {
 
   it('userResponse builds the per-request async-result subject', () => {
     expect(userResponse('alice', 'req-123')).toBe('chat.user.alice.response.req-123')
+  })
+
+  it('orgMembers builds the list-org-members request subject', () => {
+    expect(orgMembers('alice', 'sect-eng')).toBe('chat.user.alice.request.orgs.sect-eng.members')
   })
 })

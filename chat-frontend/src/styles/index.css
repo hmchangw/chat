@@ -698,6 +698,73 @@ body {
   padding: 0.75rem;
 }
 
+/* Expandable org rows. The li switches to column layout so the children
+   <ul> can sit underneath the existing info+actions header. The toggle
+   button is styled as a label, not a button, so the org row looks like a
+   regular member row with a chevron prefix. */
+.roster-row-org {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.roster-row-org-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.roster-org-toggle {
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.roster-org-toggle:hover .roster-name {
+  text-decoration: underline;
+}
+
+.roster-chevron {
+  display: inline-block;
+  width: 1em;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* Nested member list under an expanded org. Indented with a subtle left
+   border so the visual nesting is clear; each child has no action area
+   because the parent org row's Remove already owns the lifecycle. */
+.roster-org-children {
+  list-style: none;
+  margin: 0.5rem 0 0 1.5rem;
+  padding: 0 0 0 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border-left: 2px solid var(--border-subtle);
+}
+
+.roster-org-child {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.roster-org-status {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 /* Header search bar — Teams-style centered overlay. Absolute positioning
  * keeps it anchored to the header center regardless of how wide the title
  * or right-side controls grow. */

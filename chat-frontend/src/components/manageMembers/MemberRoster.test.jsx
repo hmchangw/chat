@@ -314,4 +314,120 @@ describe('MemberRoster', () => {
     fireEvent.click(screen.getByRole('button', { name: /Remove bob/i }))
     expect(await screen.findByText(/only owners/i)).toBeInTheDocument()
   })
+
+  describe('org expansion', () => {
+    function setupWithOrgFetch(orgMembersResponse) {
+      // Reuse the base roster mock, then layer the orgs.{id}.members
+      // response for the second request call (the first call is
+      // member.list?enrich at mount; the second is orgMembers).
+      const request = vi.fn()
+      request.mockImplementation((subject) => {
+        if (subject.includes('.orgs.') && subject.endsWith('.members')) {
+          return orgMembersResponse instanceof Error
+            ? Promise.reject(orgMembersResponse)
+            : Promise.resolve(orgMembersResponse)
+        }
+        return Promise.resolve({ members: baseMembers })
+      })
+      useNats.mockReturnValue({
+        user: { account: 'alice', siteId: 'site-A' },
+        request,
+        requestWithAsyncResult: vi.fn().mockResolvedValue({ sync: { status: 'accepted' }, async: { status: 'ok' } }),
+      })
+      return { request }
+    }
+
+    const orgMembersPayload = {
+      members: [
+        { id: 'u-dave',  account: 'dave',  engName: 'Dave Davies',  chineseName: '戴文偉', siteId: 'site-A' },
+        { id: 'u-erin',  account: 'erin',  engName: 'Erin Evans',   chineseName: '葉伊蓮', siteId: 'site-A' },
+        { id: 'u-frank', account: 'frank', engName: 'Frank Fischer', chineseName: '費法蘭', siteId: 'site-A' },
+      ],
+    }
+
+    it('clicking the org name fires chat.user.{a}.request.orgs.{id}.members and renders the expanded children', async () => {
+      const { request } = setupWithOrgFetch(orgMembersPayload)
+      render(<MemberRoster room={room} />)
+      await screen.findByText('Engineering')
+      fireEvent.click(screen.getByRole('button', { name: /Expand Engineering/i }))
+      await waitFor(() =>
+        expect(request).toHaveBeenCalledWith('chat.user.alice.request.orgs.org-eng.members', {})
+      )
+      // Each child shows engName + chineseName.
+      expect(await screen.findByText('Dave Davies')).toBeInTheDocument()
+      expect(screen.getByText('戴文偉')).toBeInTheDocument()
+      expect(screen.getByText('Erin Evans')).toBeInTheDocument()
+      expect(screen.getByText('Frank Fischer')).toBeInTheDocument()
+    })
+
+    it('child rows have no Promote / Demote / Remove buttons (org row owns the lifecycle)', async () => {
+      setupWithOrgFetch(orgMembersPayload)
+      render(<MemberRoster room={room} />)
+      await screen.findByText('Engineering')
+      fireEvent.click(screen.getByRole('button', { name: /Expand Engineering/i }))
+      await screen.findByText('Dave Davies')
+      // No buttons targeting an org child.
+      expect(screen.queryByRole('button', { name: /Remove dave/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /Promote dave/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /Demote dave/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /Remove erin/i })).toBeNull()
+    })
+
+    it('clicking the org name a second time collapses without refetching (cached response is reused)', async () => {
+      const { request } = setupWithOrgFetch(orgMembersPayload)
+      render(<MemberRoster room={room} />)
+      await screen.findByText('Engineering')
+      const toggle = screen.getByRole('button', { name: /Expand Engineering/i })
+
+      // First expand → fetches.
+      fireEvent.click(toggle)
+      await screen.findByText('Dave Davies')
+      const fetchCallsAfterOpen = request.mock.calls.filter(
+        (call) => call[0] === 'chat.user.alice.request.orgs.org-eng.members'
+      ).length
+      expect(fetchCallsAfterOpen).toBe(1)
+
+      // Collapse → no children visible, no new fetch.
+      fireEvent.click(screen.getByRole('button', { name: /Collapse Engineering/i }))
+      expect(screen.queryByText('Dave Davies')).not.toBeInTheDocument()
+
+      // Re-expand → still cached, no second fetch.
+      fireEvent.click(screen.getByRole('button', { name: /Expand Engineering/i }))
+      await screen.findByText('Dave Davies')
+      const fetchCallsAfterReopen = request.mock.calls.filter(
+        (call) => call[0] === 'chat.user.alice.request.orgs.org-eng.members'
+      ).length
+      expect(fetchCallsAfterReopen).toBe(1)
+    })
+
+    it('shows a "Failed to load members" fallback when the org-members RPC errors', async () => {
+      setupWithOrgFetch(new Error('not subscribed'))
+      render(<MemberRoster room={room} />)
+      await screen.findByText('Engineering')
+      fireEvent.click(screen.getByRole('button', { name: /Expand Engineering/i }))
+      expect(await screen.findByText(/Failed to load members/i)).toBeInTheDocument()
+    })
+
+    it('non-owner viewer can still expand orgs even though no Remove button is shown', async () => {
+      const request = vi.fn()
+      request.mockImplementation((subject) => {
+        if (subject.includes('.orgs.') && subject.endsWith('.members')) {
+          return Promise.resolve(orgMembersPayload)
+        }
+        return Promise.resolve({ members: baseMembers })
+      })
+      useNats.mockReturnValue({
+        user: { account: 'bob', siteId: 'site-A' }, // bob is a regular member
+        request,
+        requestWithAsyncResult: vi.fn(),
+      })
+      render(<MemberRoster room={room} />)
+      await screen.findByText('Engineering')
+      // No org-level Remove button for bob.
+      expect(screen.queryByRole('button', { name: /Remove org-eng/i })).toBeNull()
+      // But Expand still works.
+      fireEvent.click(screen.getByRole('button', { name: /Expand Engineering/i }))
+      expect(await screen.findByText('Dave Davies')).toBeInTheDocument()
+    })
+  })
 })

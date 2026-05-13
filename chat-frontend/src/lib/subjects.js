@@ -78,3 +78,11 @@ export function searchRooms(account) {
 export function searchMessages(account) {
   return `chat.user.${account}.request.search.messages`
 }
+
+// orgMembers requests the enriched member list of a single org (sect).
+// Used by MemberRoster to expand an org row into its individual members.
+// Response shape: { members: [{ id, account, engName, chineseName, siteId }] }.
+// Mirrors pkg/subject/subject.go::OrgMembers.
+export function orgMembers(account, orgId) {
+  return `chat.user.${account}.request.orgs.${orgId}.members`
+}
