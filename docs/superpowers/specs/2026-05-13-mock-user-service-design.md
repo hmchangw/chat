@@ -99,7 +99,7 @@ chat.user.{account}.request.user.{siteID}.room.{roomID}.subscription.get
 
 ## `pkg/subject` additions
 
-Twelve specific builders, five parsers, five wildcards. All added to
+Twelve specific builders, six parsers, five wildcards. All added to
 `pkg/subject/subject.go` alongside the existing builders.
 
 ### Specific builders
@@ -125,8 +125,8 @@ func UserAppsList(account, siteID string) string
 // Parses any 8-token subject of the form
 //   chat.user.{account}.request.user.{siteID}.{area}.{action}
 // where area is one of "status", "subscription", "profile", "apps".
-// Does NOT match the room-scoped form (chat.user.{a}.request.user.{s}.room.{r}.subscription.get) —
-// callers that need roomID use natsrouter param extraction or a dedicated parser added later.
+// Does NOT match the room-scoped form (chat.user.{a}.request.user.{s}.room.{r}.…) —
+// use ParseRoomSubject for those.
 func ParseUserSubject(subj string) (account, siteID, area, action string, ok bool)
 
 // Narrow parsers — validate `area` and return account+action only.
@@ -135,6 +135,14 @@ func ParseStatusSubject(subj string) (account, action string, ok bool)
 func ParseSubscriptionSubject(subj string) (account, action string, ok bool)
 func ParseProfileSubject(subj string) (account, action string, ok bool)
 func ParseAppsSubject(subj string) (account, action string, ok bool)
+
+// Parses the room-scoped form
+//   chat.user.{account}.request.user.{siteID}.room.{roomID}.{action…}
+// `action` is the joined tail after roomID (e.g. "subscription.get" for the
+// only currently-defined route; future room-scoped routes can have any
+// dot-separated action). Returns ok=false if the subject does not start with
+// `chat.user.*.request.user.*.room.*.` or has fewer than 9 tokens.
+func ParseRoomSubject(subj string) (account, roomID, action string, ok bool)
 ```
 
 ### Wildcard builders
@@ -158,9 +166,13 @@ func UserAppsWildCard(siteID string) string           // chat.user.*.request.use
 
 - One table-driven test per builder asserting the exact literal output.
 - One round-trip test per parser: feed the corresponding builder's output and
-  assert account/siteID/area/action are extracted correctly.
+  assert the extracted fields (account/siteID/area/action for the area
+  parsers; account/roomID/action for `ParseRoomSubject` against
+  `UserRoomSubscriptionGet`'s output).
 - A malformed-subject table per parser covering: wrong prefix
   (`chat.room.…`), wrong area, wrong token count, empty string.
+  `ParseRoomSubject`'s table additionally rejects subjects missing the
+  literal `room` token at position 6.
 - A wildcards table asserting each wildcard's literal output.
 
 ## Service layout
@@ -328,8 +340,6 @@ service-specific test selection beyond `make test SERVICE=mock-user-service`.
   `status.set`; same rationale applies to subscribe/unsubscribeApp.
 - A `subscription.count` route — considered, then removed to keep the surface
   at 12 routes.
-- A `ParseRoomSubject` parser for the room-scoped subject. The single
-  room-scoped route uses `natsrouter` param extraction, which is sufficient.
 - New `pkg/model` types. Request/response types stay private to the service.
 - Integration tests with testcontainers.
 
@@ -348,5 +358,3 @@ service-specific test selection beyond `make test SERVICE=mock-user-service`.
 - A real user-service implementation: mongo-backed status/profile, real
   subscription queries (likely sourced from the existing subscription store),
   real `subscribeApp`/`unsubscribeApp` writes.
-- A `ParseRoomSubject` parser if a future consumer wants to handle the
-  room-scoped subject outside `natsrouter`.
