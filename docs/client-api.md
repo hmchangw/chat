@@ -828,7 +828,7 @@ A **synchronous, sender-only** RPC. Returns the list of users on the local site 
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference). Common errors:
+See [Error envelope](#6-error-envelope-reference). Common errors:
 
 - `"only room members can list members"` — the requester has no subscription in the room.
 - `"message not found"` — no message matches `messageId`.
@@ -1981,7 +1981,7 @@ Each room has a P-256 keypair generated server-side. The public key is used by `
 
 #### Subject
 
-```
+```text
 chat.user.{account}.event.room.key
 ```
 
