@@ -2302,4 +2302,950 @@ git commit -m "refactor(chat-frontend): wire new message containers, drop old Me
 
 ---
 
-*Chapter 4 follows — Edit + Delete hover actions (inline edit, confirm dialog, RPC wiring).*
+## Chapter 4 — Edit + Delete actions
+
+Goal: surface inline Edit and Delete from the hover menu on own messages. Both RPCs already exist server-side (`history-service/internal/service/messages.go:322, 401`); this chapter wires the frontend to call them and applies optimistic UI updates. **Live propagation of edit/delete events from other users is out of scope** for this PR (no broadcast type defined in `pkg/model/event.go` for those today — see Task 4.1 for the verification step).
+
+Scope:
+- `Edit` → inline-edit mode swaps the row's content for a textarea. Enter publishes via `msg.edit`; Esc cancels.
+- `Delete` → opens a confirm dialog. Confirm publishes via `msg.delete` and renders a "[message deleted]" placeholder.
+- Both apply optimistically; the next `HISTORY_LOADED` is authoritative.
+
+### Task 4.1: Red-phase backend verification
+
+Confirm the exact request payload shape for `msg.edit` and `msg.delete` before writing client code, so the RPCs don't fail silently.
+
+**Files:**
+- Read only (no edits).
+
+- [ ] **Step 1: Read the edit handler**
+
+Run: `sed -n '300,360p' history-service/internal/service/messages.go`
+Capture in your notes:
+- The expected JSON request body (struct field names + types).
+- The success response shape.
+- Whether the handler is in `history-service` itself (so the subject is `chat.user.{account}.request.room.{roomId}.{siteId}.msg.edit` — matching the `msgEdit` builder from Task 1.3).
+
+- [ ] **Step 2: Read the delete handler**
+
+Run: `sed -n '380,440p' history-service/internal/service/messages.go`
+Capture the same details for delete.
+
+- [ ] **Step 3: Document the shapes**
+
+Add a short note to the top of `chat-frontend/src/components/RoomMessageArea.jsx` (or a new `// payloads:` comment block near the new edit/delete handlers in Task 4.6) listing the verified field names. Example:
+
+```js
+// msg.edit request: { messageId: string, createdAt: string, content: string, requestId: string }
+// msg.edit response: { ok: true } | { error: string }
+// msg.delete request: { messageId: string, createdAt: string, requestId: string }
+// msg.delete response: { ok: true } | { error: string }
+```
+
+If the actual shapes differ, use the actual shapes. The example above is **a guess** — confirm in Steps 1–2 before pasting.
+
+- [ ] **Step 4: No commit**
+
+This is a documentation-only step; do not commit yet. The notes feed into Task 4.6.
+
+### Task 4.2: Extend `roomEventsReducer` with local edit / delete actions
+
+Add two new actions that optimistically mutate a message in place. These are dispatched only from the local user's RPC-success path — broadcast handling is deferred.
+
+**Files:**
+- Modify: `chat-frontend/src/lib/roomEventsReducer.js`
+- Modify: `chat-frontend/src/lib/roomEventsReducer.test.js`
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `chat-frontend/src/lib/roomEventsReducer.test.js`:
+
+```js
+import { roomEventsReducer, initialState } from './roomEventsReducer'
+
+describe('MESSAGE_EDITED_LOCAL', () => {
+  it('replaces content + editedAt on the matching message in roomState[roomId].messages', () => {
+    const seed = {
+      ...initialState,
+      roomState: {
+        r1: {
+          messages: [{ id: 'm1', content: 'old' }, { id: 'm2', content: 'other' }],
+          hasLoadedHistory: true,
+          historyError: null,
+          unreadCount: 0,
+          hasMention: false,
+          mentionAll: false,
+          lastMsgAt: null,
+          lastMsgId: null,
+          bufferMode: 'live',
+          pendingLiveMessages: [],
+          focusMessageId: null,
+        },
+      },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_EDITED_LOCAL',
+      roomId: 'r1',
+      messageId: 'm1',
+      content: 'new',
+      editedAt: '2026-05-13T11:00:00Z',
+    })
+    expect(out.roomState.r1.messages[0]).toEqual({
+      id: 'm1', content: 'new', editedAt: '2026-05-13T11:00:00Z',
+    })
+    expect(out.roomState.r1.messages[1]).toEqual({ id: 'm2', content: 'other' })
+  })
+
+  it('is a no-op when the message id is not buffered', () => {
+    const seed = {
+      ...initialState,
+      roomState: { r1: { messages: [{ id: 'm1', content: 'old' }] } },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_EDITED_LOCAL', roomId: 'r1', messageId: 'unknown', content: 'x', editedAt: 't',
+    })
+    expect(out).toBe(seed)
+  })
+})
+
+describe('MESSAGE_DELETED_LOCAL', () => {
+  it('flags the matching message as deleted', () => {
+    const seed = {
+      ...initialState,
+      roomState: { r1: { messages: [{ id: 'm1', content: 'bye' }] } },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_DELETED_LOCAL', roomId: 'r1', messageId: 'm1',
+    })
+    expect(out.roomState.r1.messages[0]).toEqual({
+      id: 'm1', content: 'bye', deleted: true,
+    })
+  })
+
+  it('is a no-op when the message id is not buffered', () => {
+    const seed = { ...initialState, roomState: { r1: { messages: [] } } }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_DELETED_LOCAL', roomId: 'r1', messageId: 'm1',
+    })
+    expect(out).toBe(seed)
+  })
+})
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/lib/roomEventsReducer.test.js`
+Expected: FAIL — neither action is handled; the new test cases fall through to `default` and return the seed unchanged where the tests expect a change.
+
+- [ ] **Step 3: Add the action handlers**
+
+In `chat-frontend/src/lib/roomEventsReducer.js`, before the `default:` clause:
+
+```js
+case 'MESSAGE_EDITED_LOCAL': {
+  const prev = state.roomState[action.roomId]
+  if (!prev) return state
+  const idx = prev.messages.findIndex((m) => m.id === action.messageId)
+  if (idx < 0) return state
+  const updatedMsg = { ...prev.messages[idx], content: action.content, editedAt: action.editedAt }
+  const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+  return {
+    ...state,
+    roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+  }
+}
+case 'MESSAGE_DELETED_LOCAL': {
+  const prev = state.roomState[action.roomId]
+  if (!prev) return state
+  const idx = prev.messages.findIndex((m) => m.id === action.messageId)
+  if (idx < 0) return state
+  const updatedMsg = { ...prev.messages[idx], deleted: true }
+  const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+  return {
+    ...state,
+    roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+  }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cd chat-frontend && npx vitest run src/lib/roomEventsReducer.test.js`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/lib/roomEventsReducer.js chat-frontend/src/lib/roomEventsReducer.test.js
+git commit -m "feat(chat-frontend): roomEventsReducer handles MESSAGE_EDITED_LOCAL / DELETED_LOCAL"
+```
+
+### Task 4.3: Add Edit + Delete buttons to `MessageActions`
+
+Edit and Delete are only shown on the current user's own messages. `MessageActions` receives `isOwn` (boolean) — keeps the visibility rule colocated with the rest of the action menu logic.
+
+**Files:**
+- Modify: `chat-frontend/src/components/messages/MessageActions.jsx`
+- Modify: `chat-frontend/src/components/messages/MessageActions.test.jsx`
+
+- [ ] **Step 1: Append failing tests**
+
+Append to `chat-frontend/src/components/messages/MessageActions.test.jsx`:
+
+```jsx
+describe('MessageActions — Edit / Delete visibility', () => {
+  it('renders Edit and Delete on own messages', () => {
+    render(
+      <MessageActions
+        message={msg}
+        context="main"
+        isOwn
+        onThread={() => {}} onReply={() => {}}
+        onEdit={() => {}} onDelete={() => {}}
+      />
+    )
+    expect(screen.getByRole('button', { name: /edit message/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /delete message/i })).toBeInTheDocument()
+  })
+
+  it('omits Edit and Delete on other users\' messages', () => {
+    render(
+      <MessageActions
+        message={msg}
+        context="main"
+        isOwn={false}
+        onThread={() => {}} onReply={() => {}}
+        onEdit={() => {}} onDelete={() => {}}
+      />
+    )
+    expect(screen.queryByRole('button', { name: /edit message/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /delete message/i })).not.toBeInTheDocument()
+  })
+
+  it('clicking Edit / Delete invokes the handlers with the message', () => {
+    const onEdit = vi.fn()
+    const onDelete = vi.fn()
+    render(
+      <MessageActions
+        message={msg}
+        context="main"
+        isOwn
+        onThread={() => {}} onReply={() => {}}
+        onEdit={onEdit} onDelete={onDelete}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /edit message/i }))
+    expect(onEdit).toHaveBeenCalledWith(msg)
+    fireEvent.click(screen.getByRole('button', { name: /delete message/i }))
+    expect(onDelete).toHaveBeenCalledWith(msg)
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageActions.test.jsx`
+Expected: FAIL — Edit/Delete buttons don't exist.
+
+- [ ] **Step 3: Extend the component**
+
+Replace `chat-frontend/src/components/messages/MessageActions.jsx` with:
+
+```jsx
+export default function MessageActions({
+  message, context, isOwn,
+  onThread, onReply, onEdit, onDelete,
+}) {
+  const showThread = context !== 'thread-parent'
+  const showReply = context !== 'thread-parent'
+  const showEdit = !!isOwn
+  const showDelete = !!isOwn
+
+  return (
+    <div className="message-actions" role="toolbar">
+      {showThread && (
+        <button
+          type="button"
+          className="message-action message-action-thread"
+          aria-label="Reply in thread"
+          onClick={() => onThread?.(message)}
+        >
+          💬
+        </button>
+      )}
+      {showReply && (
+        <button
+          type="button"
+          className="message-action message-action-reply"
+          aria-label="Quote this message"
+          onClick={() => onReply?.(message)}
+        >
+          ↩
+        </button>
+      )}
+      {showEdit && (
+        <button
+          type="button"
+          className="message-action message-action-edit"
+          aria-label="Edit message"
+          onClick={() => onEdit?.(message)}
+        >
+          ✎
+        </button>
+      )}
+      {showDelete && (
+        <button
+          type="button"
+          className="message-action message-action-delete"
+          aria-label="Delete message"
+          onClick={() => onDelete?.(message)}
+        >
+          🗑
+        </button>
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageActions.test.jsx`
+Expected: PASS (all original + new).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/MessageActions.jsx chat-frontend/src/components/messages/MessageActions.test.jsx
+git commit -m "feat(chat-frontend): add Edit / Delete to MessageActions (own only)"
+```
+
+### Task 4.4: Inline edit mode on `MessageRow`
+
+When the parent calls `onEdit(message)`, the row enters edit mode locally: content swaps for a controlled `<input>` pre-populated with the original text. Enter calls a new `onEditSubmit(message, newContent)` prop (publish happens in `RoomMessageArea`); Esc calls `onEditCancel`.
+
+Render rules while editing:
+- Hide the hover menu on that row (CSS class `message-row-editing` disables `.message-actions` visibility).
+- Disable click-to-jump on the in-bubble `QuotedBlock` (still rendered, just non-interactive — caller handles via context).
+- Show small "Saving…" indicator after submit until `editingPending=false` (caller-controlled prop).
+
+Deleted messages render a `*[message deleted]*` placeholder instead of content + actions.
+
+**Files:**
+- Modify: `chat-frontend/src/components/messages/MessageRow.jsx`
+- Modify: `chat-frontend/src/components/messages/MessageRow.test.jsx`
+
+- [ ] **Step 1: Append failing tests**
+
+Append to `chat-frontend/src/components/messages/MessageRow.test.jsx`:
+
+```jsx
+describe('MessageRow — inline edit mode', () => {
+  it('renders an input prefilled with current content when editing=true', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, content: 'original' }}
+        context="main"
+        editing
+        onEditSubmit={() => {}}
+        onEditCancel={() => {}}
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByDisplayValue('original')).toBeInTheDocument()
+  })
+
+  it('Enter calls onEditSubmit with (message, trimmed-content); Esc calls onEditCancel', () => {
+    const onEditSubmit = vi.fn()
+    const onEditCancel = vi.fn()
+    render(
+      <MessageRow
+        message={{ ...msg, content: 'orig' }}
+        context="main"
+        editing
+        onEditSubmit={onEditSubmit}
+        onEditCancel={onEditCancel}
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    const input = screen.getByDisplayValue('orig')
+    fireEvent.change(input, { target: { value: '  edited  ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEditSubmit).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), 'edited')
+
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(onEditCancel).toHaveBeenCalled()
+  })
+
+  it('renders "[message deleted]" placeholder when message.deleted is true', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, deleted: true }}
+        context="main"
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByText(/message deleted/i)).toBeInTheDocument()
+    expect(screen.queryByText('hello world')).not.toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageRow.test.jsx`
+Expected: FAIL — neither edit input nor deleted placeholder exists.
+
+- [ ] **Step 3: Extend the component**
+
+Replace `chat-frontend/src/components/messages/MessageRow.jsx` with:
+
+```jsx
+import { useEffect, useState } from 'react'
+import MessageActions from './MessageActions'
+import QuotedBlock from './QuotedBlock'
+
+function formatTime(dateStr) {
+  const d = new Date(dateStr)
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function senderName(msg) {
+  if (msg.sender) {
+    return msg.sender.engName || msg.sender.account || msg.sender.userId || 'Unknown'
+  }
+  return msg.userAccount || msg.userId || 'Unknown'
+}
+
+function messageContent(msg) {
+  return msg.content || msg.msg || ''
+}
+
+export default function MessageRow({
+  message,
+  context,
+  isOwn,
+  editing,
+  onEditSubmit,
+  onEditCancel,
+  onThread,
+  onReply,
+  onEdit,
+  onDelete,
+  onJumpToMessage,
+}) {
+  const [draft, setDraft] = useState(messageContent(message))
+
+  useEffect(() => {
+    setDraft(messageContent(message))
+  }, [message, editing])
+
+  if (message.deleted) {
+    return (
+      <div className="message-row message-row-deleted" data-message-id={message.id} tabIndex={0}>
+        <div className="message-content message-content-deleted">[message deleted]</div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className={`message-row${editing ? ' message-row-editing' : ''}`}
+      data-message-id={message.id}
+      tabIndex={0}
+    >
+      {message.quotedParentMessage && (
+        <QuotedBlock
+          variant="bubble"
+          snapshot={message.quotedParentMessage}
+          onClick={onJumpToMessage}
+        />
+      )}
+      <div className="message-header">
+        <span className="message-sender">{senderName(message)}</span>
+        <span className="message-time">{formatTime(message.createdAt)}</span>
+        {message.editedAt && <span className="message-edited"> (edited)</span>}
+      </div>
+      {editing ? (
+        <input
+          type="text"
+          className="message-edit-input"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              if (draft.trim()) onEditSubmit?.(message, draft.trim())
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              onEditCancel?.()
+            }
+          }}
+          autoFocus
+        />
+      ) : (
+        <div className="message-content">{messageContent(message)}</div>
+      )}
+      {!editing && (
+        <MessageActions
+          message={message}
+          context={context}
+          isOwn={isOwn}
+          onThread={onThread}
+          onReply={onReply}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/MessageRow.test.jsx`
+Expected: PASS (all original + new).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/MessageRow.jsx chat-frontend/src/components/messages/MessageRow.test.jsx
+git commit -m "feat(chat-frontend): inline edit + deleted placeholder on MessageRow"
+```
+
+### Task 4.5: Create `DeleteConfirmDialog`
+
+Small modal: "Delete this message? This cannot be undone." with `Delete` / `Cancel`. Esc dismisses. Reuses existing dialog patterns from `CreateRoomDialog` (or `ManageMembersDialog`) for consistent CSS.
+
+**Files:**
+- Create: `chat-frontend/src/components/messages/DeleteConfirmDialog.jsx`
+- Create: `chat-frontend/src/components/messages/DeleteConfirmDialog.test.jsx`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `chat-frontend/src/components/messages/DeleteConfirmDialog.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import DeleteConfirmDialog from './DeleteConfirmDialog'
+
+describe('DeleteConfirmDialog', () => {
+  it('renders the confirm prompt', () => {
+    render(<DeleteConfirmDialog onConfirm={() => {}} onCancel={() => {}} />)
+    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument()
+  })
+
+  it('Cancel button calls onCancel', () => {
+    const onCancel = vi.fn()
+    render(<DeleteConfirmDialog onConfirm={() => {}} onCancel={onCancel} />)
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
+    expect(onCancel).toHaveBeenCalled()
+  })
+
+  it('Delete button calls onConfirm', () => {
+    const onConfirm = vi.fn()
+    render(<DeleteConfirmDialog onConfirm={onConfirm} onCancel={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(onConfirm).toHaveBeenCalled()
+  })
+
+  it('Esc dismisses (calls onCancel)', () => {
+    const onCancel = vi.fn()
+    render(<DeleteConfirmDialog onConfirm={() => {}} onCancel={onCancel} />)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalled()
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/DeleteConfirmDialog.test.jsx`
+Expected: FAIL.
+
+- [ ] **Step 3: Write the component**
+
+Create `chat-frontend/src/components/messages/DeleteConfirmDialog.jsx`:
+
+```jsx
+import { useEffect } from 'react'
+
+export default function DeleteConfirmDialog({ onConfirm, onCancel, pending }) {
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onCancel?.()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onCancel])
+
+  return (
+    <div className="dialog-backdrop">
+      <div className="dialog dialog-delete-confirm" role="dialog" aria-modal="true">
+        <p>Delete this message? This cannot be undone.</p>
+        <div className="dialog-actions">
+          <button type="button" onClick={onCancel} disabled={pending}>Cancel</button>
+          <button type="button" onClick={onConfirm} disabled={pending}>
+            {pending ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/messages/DeleteConfirmDialog.test.jsx`
+Expected: PASS (4 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/components/messages/DeleteConfirmDialog.jsx chat-frontend/src/components/messages/DeleteConfirmDialog.test.jsx
+git commit -m "feat(chat-frontend): add DeleteConfirmDialog"
+```
+
+### Task 4.6: Wire edit + delete RPCs in `RoomMessageArea`
+
+`RoomMessageArea` now owns local state for which row is being edited and which row is awaiting delete-confirm. It publishes the RPCs and dispatches the optimistic reducer actions on success.
+
+**Files:**
+- Modify: `chat-frontend/src/components/RoomMessageArea.jsx`
+- Modify: `chat-frontend/src/components/RoomMessageArea.test.jsx`
+
+- [ ] **Step 1: Append failing tests**
+
+Append to `chat-frontend/src/components/RoomMessageArea.test.jsx`. **First add a publish + dispatch mock at the top of the file** (replace the existing `useRoomEvents` mock with one that exposes `dispatch`):
+
+Replace the existing `vi.mock('../context/RoomEventsContext', …)` block with:
+
+```jsx
+const dispatch = vi.fn()
+vi.mock('../context/RoomEventsContext', () => ({
+  useRoomEvents: (roomId) => ({
+    messages: roomId === 'r1' ? [
+      { id: 'a', content: 'hi', createdAt: '2026-05-13T10:00:00Z', sender: { account: 'alice' } },
+    ] : [],
+    hasLoadedHistory: roomId === 'r1',
+    historyError: null,
+    loadHistory,
+    bufferMode: BUFFER_MODE.LIVE,
+    pendingCount: 0,
+    focusMessageId: null,
+    resetToLiveTail,
+    jumpToMessage,
+    dispatch,
+  }),
+}))
+```
+
+(Add `dispatch` to the `RoomEventsContext` provider return value in Task 4.7 — note this as a follow-up there.)
+
+Also add a `publish` mock:
+
+```jsx
+const publish = vi.fn()
+vi.mock('../context/NatsContext', () => ({
+  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
+}))
+vi.mock('uuid', () => ({ v4: () => 'req-id' }))
+```
+
+Update the mocked `MessageList` to expose edit/delete callbacks:
+
+```jsx
+vi.mock('./messages/MessageList', () => ({
+  default: ({ messages, onEdit, onDelete, onEditSubmit, onEditCancel, editingMessageId }) => (
+    <div data-testid="list">
+      <span>count:{messages.length}</span>
+      <span>editing:{editingMessageId ?? 'none'}</span>
+      <button type="button" onClick={() => onEdit?.({ id: 'a' })}>fire-edit</button>
+      <button type="button" onClick={() => onDelete?.({ id: 'a', createdAt: '2026-05-13T10:00:00Z' })}>fire-delete</button>
+      <button type="button" onClick={() => onEditSubmit?.({ id: 'a', createdAt: '2026-05-13T10:00:00Z' }, 'new text')}>fire-edit-submit</button>
+      <button type="button" onClick={() => onEditCancel?.()}>fire-edit-cancel</button>
+    </div>
+  ),
+}))
+```
+
+Now append the test cases:
+
+```jsx
+describe('RoomMessageArea — Edit', () => {
+  beforeEach(() => { publish.mockClear(); dispatch.mockClear() })
+
+  it('entering edit mode passes editingMessageId to MessageList', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-edit'))
+    expect(screen.getByText('editing:a')).toBeInTheDocument()
+  })
+
+  it('cancelling edit mode resets editingMessageId', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-edit'))
+    fireEvent.click(screen.getByText('fire-edit-cancel'))
+    expect(screen.getByText('editing:none')).toBeInTheDocument()
+  })
+
+  it('submitting edit publishes msg.edit and dispatches MESSAGE_EDITED_LOCAL', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-edit'))
+    fireEvent.click(screen.getByText('fire-edit-submit'))
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.request.room.r1.s1.msg.edit',
+      { messageId: 'a', createdAt: '2026-05-13T10:00:00Z', content: 'new text', requestId: 'req-id' }
+    )
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'MESSAGE_EDITED_LOCAL', roomId: 'r1', messageId: 'a', content: 'new text',
+    }))
+    expect(screen.getByText('editing:none')).toBeInTheDocument()
+  })
+})
+
+describe('RoomMessageArea — Delete', () => {
+  beforeEach(() => { publish.mockClear(); dispatch.mockClear() })
+
+  it('clicking delete opens the confirm dialog', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-delete'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('cancelling the dialog leaves no RPC and no dispatch', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-delete'))
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
+    expect(publish).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
+  it('confirming publishes msg.delete and dispatches MESSAGE_DELETED_LOCAL', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-delete'))
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.request.room.r1.s1.msg.delete',
+      { messageId: 'a', createdAt: '2026-05-13T10:00:00Z', requestId: 'req-id' }
+    )
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'MESSAGE_DELETED_LOCAL', roomId: 'r1', messageId: 'a',
+    })
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/components/RoomMessageArea.test.jsx`
+Expected: FAIL — `dispatch` not exposed, edit/delete handlers don't exist.
+
+- [ ] **Step 3: Update `RoomMessageArea.jsx`**
+
+Replace `chat-frontend/src/components/RoomMessageArea.jsx`:
+
+```jsx
+import { useEffect, useRef, useState } from 'react'
+import { v4 as uuidv4 } from 'uuid'
+import { useNats } from '../context/NatsContext'
+import { useRoomEvents } from '../context/RoomEventsContext'
+import { BUFFER_MODE } from '../lib/roomEventsReducer'
+import { msgEdit, msgDelete } from '../lib/subjects'
+import MessageList from './messages/MessageList'
+import DeleteConfirmDialog from './messages/DeleteConfirmDialog'
+
+export default function RoomMessageArea({ room, onThread, onReply }) {
+  const { user, publish } = useNats()
+  const {
+    messages,
+    hasLoadedHistory,
+    historyError,
+    loadHistory,
+    bufferMode,
+    pendingCount,
+    focusMessageId,
+    resetToLiveTail,
+    jumpToMessage,
+    dispatch,
+  } = useRoomEvents(room?.id ?? null)
+  const bottomRef = useRef(null)
+  const [editingMessageId, setEditingMessageId] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
+
+  useEffect(() => { setEditingMessageId(null); setPendingDelete(null) }, [room?.id])
+
+  useEffect(() => {
+    if (!room) return
+    loadHistory().catch(() => {})
+  }, [room, loadHistory])
+
+  useEffect(() => {
+    if (bufferMode === BUFFER_MODE.HISTORICAL) return
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, bufferMode])
+
+  useEffect(() => {
+    if (bufferMode === BUFFER_MODE.LIVE) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [bufferMode])
+
+  const handleEdit = (msg) => setEditingMessageId(msg.id)
+  const handleEditCancel = () => setEditingMessageId(null)
+  const handleEditSubmit = (msg, newContent) => {
+    publish(msgEdit(user.account, room.id, user.siteId), {
+      messageId: msg.id,
+      createdAt: msg.createdAt,
+      content: newContent,
+      requestId: uuidv4(),
+    })
+    dispatch({
+      type: 'MESSAGE_EDITED_LOCAL',
+      roomId: room.id,
+      messageId: msg.id,
+      content: newContent,
+      editedAt: new Date().toISOString(),
+    })
+    setEditingMessageId(null)
+  }
+
+  const handleDelete = (msg) => setPendingDelete(msg)
+  const handleDeleteCancel = () => setPendingDelete(null)
+  const handleDeleteConfirm = () => {
+    if (!pendingDelete) return
+    publish(msgDelete(user.account, room.id, user.siteId), {
+      messageId: pendingDelete.id,
+      createdAt: pendingDelete.createdAt,
+      requestId: uuidv4(),
+    })
+    dispatch({
+      type: 'MESSAGE_DELETED_LOCAL',
+      roomId: room.id,
+      messageId: pendingDelete.id,
+    })
+    setPendingDelete(null)
+  }
+
+  if (!room) {
+    return (
+      <div className="message-area">
+        <div className="message-area-empty">Select a room to start chatting</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="message-area">
+      <MessageList
+        messages={messages}
+        hasLoadedHistory={hasLoadedHistory}
+        historyError={historyError}
+        context="main"
+        focusMessageId={focusMessageId}
+        currentUserAccount={user?.account}
+        editingMessageId={editingMessageId}
+        onThread={onThread}
+        onReply={onReply}
+        onEdit={handleEdit}
+        onEditSubmit={handleEditSubmit}
+        onEditCancel={handleEditCancel}
+        onDelete={handleDelete}
+        onJumpToMessage={(msgId) => jumpToMessage?.(room.id, msgId)?.catch?.(() => {})}
+        bottomRef={bottomRef}
+      />
+      {bufferMode === BUFFER_MODE.HISTORICAL && pendingCount > 0 && (
+        <div className="jump-latest-pill">
+          <button type="button" onClick={() => resetToLiveTail()}>
+            Jump to latest ({pendingCount} new)
+          </button>
+        </div>
+      )}
+      {pendingDelete && (
+        <DeleteConfirmDialog onConfirm={handleDeleteConfirm} onCancel={handleDeleteCancel} />
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Extend `MessageList` to forward the new props**
+
+In `chat-frontend/src/components/messages/MessageList.jsx`, update the props destructure and the row render to forward `editingMessageId`, `currentUserAccount`, `onEdit`, `onEditSubmit`, `onEditCancel`, `onDelete`. Compute `isOwn` per row:
+
+```jsx
+{messages.map((msg) => (
+  <MessageRow
+    key={msg.id}
+    message={msg}
+    context={context}
+    isOwn={!!currentUserAccount && msg.sender?.account === currentUserAccount}
+    editing={editingMessageId === msg.id}
+    onThread={onThread}
+    onReply={onReply}
+    onEdit={onEdit}
+    onEditSubmit={onEditSubmit}
+    onEditCancel={onEditCancel}
+    onDelete={onDelete}
+    onJumpToMessage={onJumpToMessage}
+  />
+))}
+```
+
+…and add `currentUserAccount`, `editingMessageId`, `onEdit`, `onEditSubmit`, `onEditCancel`, `onDelete` to `MessageList`'s props.
+
+Add `MessageList` test updates as appropriate (the existing `MessageList.test.jsx` mocked rows so it shouldn't break).
+
+- [ ] **Step 5: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/RoomMessageArea.test.jsx`
+Expected: PASS.
+
+Run: `cd chat-frontend && npm test -- --run`
+Expected: full suite green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add chat-frontend/src/components/RoomMessageArea.jsx chat-frontend/src/components/RoomMessageArea.test.jsx chat-frontend/src/components/messages/MessageList.jsx
+git commit -m "feat(chat-frontend): wire msg.edit / msg.delete RPCs in RoomMessageArea"
+```
+
+### Task 4.7: Expose `dispatch` on `RoomEventsContext`
+
+`RoomMessageArea` needs to dispatch `MESSAGE_EDITED_LOCAL` / `MESSAGE_DELETED_LOCAL`. The cleanest way is to expose `dispatch` from `RoomEventsContext`'s value.
+
+**Files:**
+- Modify: `chat-frontend/src/context/RoomEventsContext.jsx`
+
+- [ ] **Step 1: Locate the context value**
+
+Run: `grep -n "value=\|dispatch" chat-frontend/src/context/RoomEventsContext.jsx | head`
+Find the `useReducer` call and the JSX `value={…}` block.
+
+- [ ] **Step 2: Add `dispatch` to the value**
+
+In the `Context.Provider value={…}` object, include `dispatch` alongside the existing methods. Also export a small `useRoomDispatch()` convenience hook if the test for Task 4.6 needs it (it doesn't — it reads `dispatch` directly via `useRoomEvents(roomId).dispatch`).
+
+If `useRoomEvents` is a per-room hook that pulls state but doesn't return `dispatch`, add it to that hook's return as well — `dispatch` is global, not per-room.
+
+- [ ] **Step 3: Run the chat-frontend suite**
+
+Run: `cd chat-frontend && npm test -- --run`
+Expected: all PASS, including `RoomEventsContext.test.jsx` (the existing test ignores extra returned fields).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/context/RoomEventsContext.jsx
+git commit -m "feat(chat-frontend): expose dispatch from RoomEventsContext"
+```
+
+---
+
+*Chapter 5 follows — quote-reply staging (Reply icon wires up to stage `quotedTarget`), click-to-jump verification, and clearing on room switch.*
