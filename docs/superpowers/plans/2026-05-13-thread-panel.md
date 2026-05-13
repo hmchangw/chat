@@ -2990,7 +2990,7 @@ git commit -m "feat(chat-frontend): add DeleteConfirmDialog"
 
 - [ ] **Step 1: Append failing tests**
 
-Append to `chat-frontend/src/components/RoomMessageArea.test.jsx`. **First add a publish + dispatch mock at the top of the file** (replace the existing `useRoomEvents` mock with one that exposes `dispatch`):
+Append to `chat-frontend/src/components/RoomMessageArea.test.jsx`. **First REPLACE the existing `useRoomEvents` mock at the top of the file** (DO NOT append a second `vi.mock` for the same module — vitest hoists both calls and the second silently wins, leaving the earlier Ch.3 tests stale). Also REPLACE the existing `./messages/MessageList` mock — the Ch.3 mock didn't expose Edit/Delete handlers. After this step, **re-run all earlier tests in this file** (`npx vitest run src/components/RoomMessageArea.test.jsx`) to confirm they still pass against the expanded mocks.
 
 Replace the existing `vi.mock('../context/RoomEventsContext', …)` block with:
 
