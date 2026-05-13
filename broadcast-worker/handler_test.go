@@ -673,6 +673,44 @@ func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {
 	})
 }
 
+// Ciphertext encrypted under key version N MUST NOT decrypt under a key
+// at version M. Catches a regression where a key rotation would silently
+// produce ciphertexts decryptable by the previous key (forward-secrecy break).
+func TestHandler_EncryptedMessage_VersionMismatchRejected(t *testing.T) {
+	msgTime := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+
+	currentKey := testRoomKey(t)
+	currentKey.Version = 7
+	keyStore := NewMockRoomKeyProvider(ctrl)
+	keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(currentKey, nil)
+
+	store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testChannelRoom, nil)
+	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime)))
+	require.Len(t, pub.records, 1)
+
+	var evt model.RoomEvent
+	require.NoError(t, json.Unmarshal(pub.records[0].data, &evt))
+	var env roomcrypto.EncryptedMessage
+	require.NoError(t, json.Unmarshal(evt.EncryptedMessage, &env))
+	require.Equal(t, 7, env.Version,
+		"broadcast-worker must propagate the keystore version into the envelope")
+
+	// A different keypair is what a "wrong version" really means at the
+	// wire: rotation generates a new keypair and bumps the version.
+	otherKey := testRoomKey(t)
+	otherKey.Version = 8
+	_, err := decryptForTest(&env, otherKey.KeyPair.PrivateKey)
+	require.Error(t, err,
+		"decrypt with a different-version key must fail (forward secrecy)")
+}
+
 func TestBuildClientMessage(t *testing.T) {
 	msg := &model.Message{
 		ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice",

@@ -445,6 +445,38 @@ func TestHandler_Flush_ResultDocIDMismatchTriggersNak(t *testing.T) {
 	})
 }
 
+// ES bulk normally echoes one result per action; a count mismatch is a
+// protocol anomaly. NAK is correct because every action type is idempotent
+// on redelivery.
+func TestHandler_Flush_ResultCountMismatchTriggersNak(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		results []searchengine.BulkResult
+	}{
+		{"too few", []searchengine.BulkResult{{Status: 201}, {Status: 201}}},
+		{"too many", []searchengine.BulkResult{{Status: 201}, {Status: 201}, {Status: 201}, {Status: 201}}},
+		{"empty", []searchengine.BulkResult{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			store.EXPECT().
+				Bulk(gomock.Any(), gomock.Len(3)).
+				Return(tc.results, nil)
+
+			coll := fanOutCollection{actionsPerMessage: 3}
+			h := NewHandler(store, coll, 500)
+			msg := &stubMsg{data: []byte(`{}`)}
+			h.Add(msg)
+			h.Flush(context.Background())
+
+			assert.False(t, msg.acked, "count-mismatch must not ack")
+			assert.True(t, msg.nacked, "count-mismatch must NAK for redelivery")
+			assert.Equal(t, 0, h.MessageCount(), "buffer must be drained on mismatch")
+		})
+	}
+}
+
 // TestHandler_FanOut exercises the per-message action-range bookkeeping with
 // a fan-out collection (one message → N actions). The handler must:
 //   - track message count and action count independently

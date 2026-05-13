@@ -1197,11 +1197,12 @@ func TestHandleMemberAdded_BulkCreate_NonDuplicateError_ReturnsError(t *testing.
 // Ack/Nak/Term was called so we can assert on the disposition chosen by
 // HandleJetStreamMsg. Mirrors message-worker/handler_test.go's fakeJSMsg.
 type fakeJSMsg struct {
-	data   []byte
-	hdr    nats.Header
-	acked  bool
-	naked  bool
-	termed bool
+	data       []byte
+	hdr        nats.Header
+	acked      bool
+	naked      bool
+	termed     bool
+	termReason string
 }
 
 func (m *fakeJSMsg) Data() []byte { return m.data }
@@ -1217,7 +1218,7 @@ func (m *fakeJSMsg) Nak() error                       { m.naked = true; return n
 func (m *fakeJSMsg) NakWithDelay(time.Duration) error { m.naked = true; return nil }
 func (m *fakeJSMsg) InProgress() error                { return nil }
 func (m *fakeJSMsg) Term() error                      { m.termed = true; return nil }
-func (m *fakeJSMsg) TermWithReason(string) error      { m.termed = true; return nil }
+func (m *fakeJSMsg) TermWithReason(r string) error    { m.termed = true; m.termReason = r; return nil }
 
 func TestHandleJetStreamMsg_AckNakTerm(t *testing.T) {
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
@@ -1294,6 +1295,10 @@ func TestHandleJetStreamMsg_AckNakTerm(t *testing.T) {
 			assert.Equal(t, tc.wantAck, m.acked, "Ack")
 			assert.Equal(t, tc.wantNak, m.naked, "Nak")
 			assert.Equal(t, tc.wantTerm, m.termed, "Term")
+			if tc.wantTerm {
+				assert.NotEmpty(t, m.termReason,
+					"TermWithReason must carry a non-empty reason for observability")
+			}
 		})
 	}
 }
