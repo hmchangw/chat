@@ -3248,4 +3248,298 @@ git commit -m "feat(chat-frontend): expose dispatch from RoomEventsContext"
 
 ---
 
-*Chapter 5 follows — quote-reply staging (Reply icon wires up to stage `quotedTarget`), click-to-jump verification, and clearing on room switch.*
+## Chapter 5 — Quote-reply staging + click-to-jump (main feed)
+
+Goal: clicking the Reply (↩) icon in the main feed stages the hovered message as a `quotedTarget` in `RoomMessageInput`. The chip appears above the textarea; the next Send publishes with `quotedParentMessageId`; the chip clears on success. Click-to-jump on the in-bubble `QuotedBlock` is already wired (Task 3.3 / 3.6); this chapter adds an end-to-end test for it. The staged quote clears on room switch.
+
+The thread input's quote staging is wired in Chapter 7.
+
+Architecture decision: `quotedTarget` lives in **`ChatPage`** state. The Reply icon is rendered inside `RoomMessageArea`, the chip in `RoomMessageInput` — siblings under `ChatPage`. Lifting state up to `ChatPage` is the simplest way to share without prop-drilling through extra layers.
+
+### Task 5.1: Lift `quotedTarget` into `ChatPage`
+
+`ChatPage` owns a `quotedTarget` state, passes a setter callback into `RoomMessageArea` as `onReply`, and passes the value + clear callback into `RoomMessageInput`.
+
+**Files:**
+- Modify: `chat-frontend/src/pages/ChatPage.jsx`
+- Modify: `chat-frontend/src/pages/ChatPage.test.jsx`
+
+- [ ] **Step 1: Add the failing integration test**
+
+Append to `chat-frontend/src/pages/ChatPage.test.jsx`. First update the mocks to expose the new wiring:
+
+```jsx
+vi.mock('../components/RoomMessageArea', () => ({
+  default: ({ onReply }) => (
+    <div>
+      area
+      <button type="button" onClick={() => onReply?.({ id: 'm-orig', sender: { account: 'alice' }, content: 'hello there' })}>
+        fire-reply
+      </button>
+    </div>
+  ),
+}))
+vi.mock('../components/RoomMessageInput', () => ({
+  default: ({ room, quotedTarget, onClearQuote }) => (
+    <div>
+      input:{room?.id ?? 'none'}
+      {quotedTarget && (
+        <>
+          <span data-testid="staged">staged:{quotedTarget.id}</span>
+          <button type="button" onClick={onClearQuote}>clear-staged</button>
+        </>
+      )}
+    </div>
+  ),
+}))
+```
+
+Append tests:
+
+```jsx
+describe('ChatPage — quote-reply staging', () => {
+  it('clicking Reply on a message stages the quotedTarget in the input', () => {
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    expect(screen.queryByTestId('staged')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('fire-reply'))
+    expect(screen.getByText('staged:m-orig')).toBeInTheDocument()
+  })
+
+  it('clicking the chip\'s clear button clears quotedTarget', () => {
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.click(screen.getByText('fire-reply'))
+    fireEvent.click(screen.getByText('clear-staged'))
+    expect(screen.queryByTestId('staged')).not.toBeInTheDocument()
+  })
+
+  it('switching rooms clears quotedTarget', () => {
+    const { rerender } = render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.click(screen.getByText('fire-reply'))
+    expect(screen.getByText('staged:m-orig')).toBeInTheDocument()
+    rerender(<ChatPage selectedRoom={dm} onSelectRoom={() => {}} />)
+    expect(screen.queryByTestId('staged')).not.toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/pages/ChatPage.test.jsx`
+Expected: FAIL — staged element never appears (no state plumbing).
+
+- [ ] **Step 3: Wire the state in `ChatPage.jsx`**
+
+In `chat-frontend/src/pages/ChatPage.jsx`, add to imports if missing:
+
+```jsx
+import { useEffect, useState } from 'react'
+```
+
+Inside the component body, after the existing `useState` calls:
+
+```jsx
+const [quotedTarget, setQuotedTarget] = useState(null)
+```
+
+Add an effect to clear on room change (next to the existing room-change effect):
+
+```jsx
+useEffect(() => {
+  setQuotedTarget(null)
+}, [selectedRoom?.id])
+```
+
+Add a `handleReply` callback:
+
+```jsx
+const handleReply = (msg) => {
+  // Build a chip-friendly snapshot. content is plain text — markdown rendering
+  // is explicitly out of scope per the spec.
+  setQuotedTarget({
+    id: msg.id,
+    senderName: msg.sender?.engName || msg.sender?.account || msg.userAccount || 'Unknown',
+    content: msg.content || msg.msg || '',
+  })
+}
+```
+
+Replace the existing `<RoomMessageArea>` and `<RoomMessageInput>` usages with:
+
+```jsx
+<RoomMessageArea
+  room={selectedRoom}
+  onThread={() => { /* wired in Chapter 7 */ }}
+  onReply={handleReply}
+/>
+<RoomMessageInput
+  room={selectedRoom}
+  quotedTarget={quotedTarget}
+  onClearQuote={() => setQuotedTarget(null)}
+/>
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cd chat-frontend && npx vitest run src/pages/ChatPage.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `cd chat-frontend && npm test -- --run`
+Expected: all PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add chat-frontend/src/pages/ChatPage.jsx chat-frontend/src/pages/ChatPage.test.jsx
+git commit -m "feat(chat-frontend): wire quote-reply staging in main feed via ChatPage"
+```
+
+### Task 5.2: End-to-end test — Reply → publish carries `quotedParentMessageId`
+
+This integration test exercises the *real* `RoomMessageInput` (not mocked) plus the staging chip — verifying the `quotedTarget` flows all the way through to the publish call.
+
+**Files:**
+- Modify: `chat-frontend/src/pages/ChatPage.test.jsx`
+
+- [ ] **Step 1: Add a focused integration test**
+
+Append to `chat-frontend/src/pages/ChatPage.test.jsx`:
+
+```jsx
+import { vi as viE2E } from 'vitest'
+
+describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
+  it('publish call carries quotedParentMessageId after Reply staging', async () => {
+    viE2E.resetModules()
+    const publish = viE2E.fn()
+
+    viE2E.doMock('../context/NatsContext', () => ({
+      useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
+    }))
+    viE2E.doMock('../lib/idgen', () => ({ generateMessageID: () => '12345678901234567890' }))
+    viE2E.doMock('uuid', () => ({ v4: () => 'req-1' }))
+    viE2E.doMock('../components/RoomMessageArea', () => ({
+      default: ({ onReply }) => (
+        <button
+          type="button"
+          onClick={() => onReply?.({ id: 'orig', sender: { account: 'alice' }, content: 'hello' })}
+        >
+          stage
+        </button>
+      ),
+    }))
+    viE2E.doMock('../components/InRoomSearch', () => ({ default: () => null }))
+    viE2E.doMock('../components/ManageMembersDialog', () => ({ default: () => null }))
+    viE2E.doMock('../components/LeaveRoomButton', () => ({ default: () => null }))
+    viE2E.doMock('../context/RoomEventsContext', () => ({
+      useRoomSummaries: () => ({ jumpToMessage: viE2E.fn() }),
+    }))
+
+    const { default: FreshChatPage } = await import('./ChatPage')
+    render(<FreshChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+
+    fireEvent.click(screen.getByText('stage'))
+    const input = screen.getByPlaceholderText(/general/i)
+    fireEvent.change(input, { target: { value: 'a reply' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.room.r1.s1.msg.send',
+      {
+        id: '12345678901234567890',
+        content: 'a reply',
+        requestId: 'req-1',
+        quotedParentMessageId: 'orig',
+      }
+    )
+  })
+})
+```
+
+- [ ] **Step 2: Run the test**
+
+Run: `cd chat-frontend && npx vitest run src/pages/ChatPage.test.jsx -t "quote-reply E2E"`
+Expected: PASS (asserts the wired chain end-to-end).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add chat-frontend/src/pages/ChatPage.test.jsx
+git commit -m "test(chat-frontend): E2E quote-reply staging → publish payload"
+```
+
+### Task 5.3: Click-to-jump verification (in-bubble `QuotedBlock`)
+
+Click-to-jump already routes through `MessageList → MessageRow → QuotedBlock.onClick` → `RoomMessageArea.onJumpToMessage` → `jumpToMessage(roomId, messageId)` (added in Task 3.6). Add a focused integration test that exercises it through real components to lock the contract.
+
+**Files:**
+- Create: `chat-frontend/src/components/RoomMessageArea.quoted.test.jsx`
+
+- [ ] **Step 1: Write the test**
+
+Create `chat-frontend/src/components/RoomMessageArea.quoted.test.jsx`:
+
+```jsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import RoomMessageArea from './RoomMessageArea'
+import { BUFFER_MODE } from '../lib/roomEventsReducer'
+
+const jumpToMessage = vi.fn(async () => {})
+vi.mock('../context/NatsContext', () => ({
+  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish: vi.fn() }),
+}))
+vi.mock('../context/RoomEventsContext', () => ({
+  useRoomEvents: () => ({
+    messages: [
+      {
+        id: 'reply-1',
+        content: 'reply text',
+        createdAt: '2026-05-13T10:30:00Z',
+        sender: { account: 'alice' },
+        quotedParentMessage: { id: 'orig-1', senderName: 'bob', content: 'the original' },
+      },
+    ],
+    hasLoadedHistory: true,
+    historyError: null,
+    loadHistory: vi.fn(async () => {}),
+    bufferMode: BUFFER_MODE.LIVE,
+    pendingCount: 0,
+    focusMessageId: null,
+    resetToLiveTail: vi.fn(),
+    jumpToMessage,
+    dispatch: vi.fn(),
+  }),
+}))
+
+const room = { id: 'r1', name: 'general', type: 'channel', siteId: 's1', userCount: 1 }
+
+describe('RoomMessageArea — click-to-jump', () => {
+  beforeEach(() => jumpToMessage.mockClear())
+
+  it('clicking the in-bubble QuotedBlock fires jumpToMessage(room.id, snapshot.id)', () => {
+    const { container } = render(<RoomMessageArea room={room} onThread={() => {}} onReply={() => {}} />)
+    const bubble = container.querySelector('.quoted-block-bubble')
+    expect(bubble).not.toBeNull()
+    fireEvent.click(bubble)
+    expect(jumpToMessage).toHaveBeenCalledWith('r1', 'orig-1')
+  })
+})
+```
+
+- [ ] **Step 2: Run the test**
+
+Run: `cd chat-frontend && npx vitest run src/components/RoomMessageArea.quoted.test.jsx`
+Expected: PASS.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add chat-frontend/src/components/RoomMessageArea.quoted.test.jsx
+git commit -m "test(chat-frontend): E2E click-to-jump from in-bubble QuotedBlock"
+```
+
+---
+
+*Chapter 6 follows — thread state plumbing (`threadEventsReducer.js`, `ThreadEventsContext.jsx`). No thread UI yet.*
