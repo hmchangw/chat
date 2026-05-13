@@ -99,18 +99,24 @@ func (g *RoomRPCGenerator) tick(ctx context.Context) {
 	).Inc()
 
 	start := time.Now()
-	_, err = g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
+	replyData, err := g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
 	latency := time.Since(start)
 	g.cfg.Metrics.RequestLatency.WithLabelValues(
 		g.cfg.Preset.Name, "room", roomKindLabel(kind),
 	).Observe(latency.Seconds())
+	errored := err != nil
 	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
 			g.cfg.Preset.Name, "room", roomKindLabel(kind), "request",
 		).Inc()
+	} else if isAppError(replyData) {
+		errored = true
+		g.cfg.Metrics.RequestErrors.WithLabelValues(
+			g.cfg.Preset.Name, "room", roomKindLabel(kind), "app_error",
+		).Inc()
 	}
 	if g.cfg.Collector != nil {
-		g.cfg.Collector.RecordRequest("room", roomKindLabel(kind), phase, latency, err != nil)
+		g.cfg.Collector.RecordRequest("room", roomKindLabel(kind), phase, latency, errored)
 	}
 }
 

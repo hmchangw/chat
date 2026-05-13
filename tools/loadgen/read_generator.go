@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	randv2 "math/rand/v2"
 	"time"
 
@@ -112,18 +113,24 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 		g.cfg.Preset.Name, "history", historyKindLabel(kind), phase,
 	).Inc()
 	start := time.Now()
-	_, err = g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
+	replyData, err := g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
 	latency := time.Since(start)
 	g.cfg.Metrics.RequestLatency.WithLabelValues(
 		g.cfg.Preset.Name, "history", historyKindLabel(kind),
 	).Observe(latency.Seconds())
+	errored := err != nil
 	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
 			g.cfg.Preset.Name, "history", historyKindLabel(kind), "request",
 		).Inc()
+	} else if isAppError(replyData) {
+		errored = true
+		g.cfg.Metrics.RequestErrors.WithLabelValues(
+			g.cfg.Preset.Name, "history", historyKindLabel(kind), "app_error",
+		).Inc()
 	}
 	if g.cfg.Collector != nil {
-		g.cfg.Collector.RecordRequest("history", historyKindLabel(kind), phase, latency, err != nil)
+		g.cfg.Collector.RecordRequest("history", historyKindLabel(kind), phase, latency, errored)
 	}
 }
 
@@ -240,18 +247,24 @@ func (g *SearchReadGenerator) tick(ctx context.Context) {
 		g.cfg.Preset.Name, "search", searchKindLabel(kind), phase,
 	).Inc()
 	start := time.Now()
-	_, err = g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
+	replyData, err := g.cfg.Requester.Request(ctx, subj, body, g.cfg.Timeout)
 	latency := time.Since(start)
 	g.cfg.Metrics.RequestLatency.WithLabelValues(
 		g.cfg.Preset.Name, "search", searchKindLabel(kind),
 	).Observe(latency.Seconds())
+	errored := err != nil
 	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
 			g.cfg.Preset.Name, "search", searchKindLabel(kind), "request",
 		).Inc()
+	} else if isAppError(replyData) {
+		errored = true
+		g.cfg.Metrics.RequestErrors.WithLabelValues(
+			g.cfg.Preset.Name, "search", searchKindLabel(kind), "app_error",
+		).Inc()
 	}
 	if g.cfg.Collector != nil {
-		g.cfg.Collector.RecordRequest("search", searchKindLabel(kind), phase, latency, err != nil)
+		g.cfg.Collector.RecordRequest("search", searchKindLabel(kind), phase, latency, errored)
 	}
 }
 
@@ -264,4 +277,22 @@ func searchKindLabel(kind searchRequestKind) string {
 	default:
 		return "unknown"
 	}
+}
+
+// isAppError returns true when data is a valid model.ErrorResponse JSON with a
+// non-empty Error field. Used by all read-scenario tick functions to detect
+// application-level error replies that arrive with a successful NATS transport
+// (no timeout/disconnect), so they are counted as errored=true in RecordRequest.
+//
+// A non-JSON payload (e.g. binary, empty) causes json.Unmarshal to fail, which
+// is treated as non-error (the transport-level result stands).
+func isAppError(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var resp model.ErrorResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return false
+	}
+	return resp.Error != ""
 }

@@ -101,3 +101,55 @@ func TestRoomRPCGenerator_ZeroRate_ReturnsErrInvalidRate(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidRate)
 }
+
+func TestRoomRPCGenerator_AppErrorCountsAsErrored(t *testing.T) {
+	p, ok := BuiltinPreset("room-rpc")
+	require.True(t, ok)
+	f := BuildFixtures(&p, 42, "site-local")
+	m := NewMetrics()
+	col := NewCollector(m, p.Name)
+
+	// Return a model.ErrorResponse JSON from the requester.
+	appErrReply := []byte(`{"error":"forbidden"}`)
+	rr := &recordingRequester{}
+	req := &replyOverrideRequester{inner: rr, reply: appErrReply}
+
+	// Use 100% RoomsList so all calls hit the same kind.
+	p.RoomMix = map[roomRequestKind]int{RoomsListKind: 100}
+
+	gen := NewRoomRPCGenerator(&RoomRPCConfig{
+		Preset: &p, Fixtures: f, SiteID: "site-local",
+		Rate: 200, Requester: req, Metrics: m,
+		Collector: col, Timeout: 1 * time.Second,
+	}, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_ = gen.Run(ctx)
+
+	require.Greater(t, rr.count(), 0, "expected at least one request")
+
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+	var appErrCount float64
+	for _, mf := range mfs {
+		if mf.GetName() != "loadgen_request_errors_total" {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			for _, l := range metric.GetLabel() {
+				if l.GetName() == "reason" && l.GetValue() == "app_error" {
+					appErrCount += metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	assert.Greater(t, appErrCount, float64(0), "app-error reply should increment loadgen_request_errors_total{reason=app_error}")
+
+	stats := col.RequestStats()
+	var totalErrors int
+	for _, s := range stats {
+		totalErrors += s.Errors
+	}
+	assert.Greater(t, totalErrors, 0, "Collector.RequestStats should report errors for app-error replies")
+}
