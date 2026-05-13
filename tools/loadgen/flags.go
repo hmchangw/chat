@@ -117,6 +117,7 @@ type runFlags struct {
 	Progress       progressFlags
 	Conn           connFlags
 	JS             jetStreamFlags
+	Settle         SettleFlags
 }
 
 type abortFlags struct {
@@ -235,4 +236,7 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 	fs.IntVar(&rf.JS.AsyncMaxPending, "js-async-max-pending", 4096, "S5: max in-flight async JetStream publishes for canonical inject; 0 falls back to sync js.PublishMsg (legacy / bisection)")
 	fs.IntVar(&rf.Abort.WindowMaxSamples, "abort-window-max-samples", 10000, "S3: cap on the abort/progress latency ring buffer; 0 disables the cap (legacy). Bounds the per-tick percentile sort under sustained high publish rates. WARNING: when peak_rps × max(abort-*-sustain) > cap, retention is compressed below the sustain interval and the abort watcher cannot fire; it emits a slog.Warn 'abort watcher deafened by sample cap' so the silent no-fire is detectable. Size cap >= peak_rps × max_sustain to keep the watcher functional.")
 	fs.StringVar(&rf.CSV, "csv", "", "optional csv output path")
+	fs.DurationVar(&rf.Settle.Timeout, "settle-timeout", 30*time.Second, "settle phase: max time to wait for probes to succeed before declaring failure")
+	fs.DurationVar(&rf.Settle.Interval, "settle-interval", 500*time.Millisecond, "settle phase: poll interval between probe rounds")
+	fs.IntVar(&rf.Settle.Probes, "settle-probes", 20, "settle phase: number of recent message IDs to probe (0 disables)")
 }

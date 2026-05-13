@@ -53,6 +53,12 @@ Usage of run:
     	scenario: messaging-pipeline|history-read|search-read|room-rpc (default "messaging-pipeline")
   -seed int
     	RNG seed (default 42)
+  -settle-interval duration
+    	settle phase: poll interval between probe rounds (default 500ms)
+  -settle-probes int
+    	settle phase: number of recent message IDs to probe (0 disables) (default 20)
+  -settle-timeout duration
+    	settle phase: max time to wait for probes to succeed before declaring failure (default 30s)
   -skip-readiness
     	skip the pre-run readiness probe for read scenarios
   -warmup duration

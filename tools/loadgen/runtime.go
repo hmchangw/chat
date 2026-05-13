@@ -156,6 +156,13 @@ func (r *Runtime) Omission() *OmissionTracker { return r.omission }
 // RunID returns the per-run correlation identifier.
 func (r *Runtime) RunID() string { return r.runID }
 
+// Settle delegates to the free Settle function, providing a method-based entry
+// point for callers that hold a *Runtime. The settle phase probes sampleIDs
+// via probe until all are visible or the deadline in sf expires.
+func (r *Runtime) Settle(ctx context.Context, sf SettleFlags, sampleIDs []string, probe ProbeFn) (SettleOutcome, error) {
+	return Settle(ctx, sf, sampleIDs, probe)
+}
+
 // Preflight is a stub in Phase 0. Phase 2 will drive SUT readiness checks
 // through the Scenario interface here.
 func (r *Runtime) Preflight(_ context.Context) error { return nil }
