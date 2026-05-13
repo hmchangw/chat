@@ -2948,7 +2948,7 @@ func TestProcessCreateRoom_DM_PublishesLocalInbox(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockStore := NewMockSubscriptionStore(ctrl)
 	publish, getCaptured := captureInboxPublishes()
-	h := &Handler{store: mockStore, publish: publish, siteID: "site-A"}
+	h := &Handler{store: mockStore, publish: publish, siteID: "site-A", keyStore: testKeyStore, keySender: testKeySender}
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
 	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice", ChineseName: "艾", SiteID: "site-A"}
@@ -2997,7 +2997,7 @@ func TestProcessCreateRoom_Channel_PublishesLocalInbox(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockStore := NewMockSubscriptionStore(ctrl)
 	publish, getCaptured := captureInboxPublishes()
-	h := &Handler{store: mockStore, publish: publish, siteID: "site-A"}
+	h := &Handler{store: mockStore, publish: publish, siteID: "site-A", keyStore: testKeyStore, keySender: testKeySender}
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
 	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice", ChineseName: "艾", SiteID: "site-A"}
