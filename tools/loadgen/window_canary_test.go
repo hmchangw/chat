@@ -1,17 +1,18 @@
 package main
 
-// window_canary_test.go — abort-watcher canary suite for the LatencyWindow
-// HDR migration (Phase 1a §3).
+// window_canary_test.go — canary suite for the abort watcher.
 //
-// The canary captures v1 (slice-based) trip-times as golden JSON files, then
-// after the HDR swap asserts that trip-times drift ≤10% from those goldens.
+// Two tests:
+// - TestAbortWatcher_CanaryBaseline_TripTimes runs the canary scenarios against
+//   the current LatencyWindow implementation and asserts trip direction.
+//   With LOADGEN_CANARY_REGEN=1 it writes goldens to testdata/canary/.
+// - TestAbortWatcher_CanaryHDR_TripDriftWithinBudget compares trip times against
+//   the committed goldens (captured from the HDR-backed implementation at the
+//   time of the Task 1a.3 swap) and asserts ≤10% drift.
 //
-// Usage:
-//   # Capture v1 goldens (run once against the slice implementation):
-//   LOADGEN_CANARY_REGEN=1 go test -run TestAbortWatcher_CanaryBaseline_TripTimes -v
-//
-//   # Assert HDR drift ≤10% (run after the swap, without the env var):
-//   go test -run TestAbortWatcher_CanaryHDR_TripDriftWithinBudget -v
+// The committed goldens are the HDR implementation's trip times, not v1's. The
+// v1 slice implementation was replaced in Task 1a.3 (commit 220fb72); the
+// goldens were captured immediately before the in-place internal swap.
 
 import (
 	"encoding/json"
@@ -32,7 +33,7 @@ type canaryGolden struct {
 	BreachMs   int           `json:"breachMs"`
 	SustainS   int           `json:"sustainS"`
 	WantTrip   bool          `json:"wantTrip"`
-	V1ElapsedS float64       `json:"v1ElapsedS"` // synthetic seconds until trip; -1 = never tripped
+	V1ElapsedS float64       `json:"v1ElapsedS"` // synthetic seconds until trip; -1e-9 (= -1ns sentinel from time.Duration(-1)) means never tripped
 	V1Elapsed  time.Duration `json:"-"`          // computed from V1ElapsedS at load time
 }
 
@@ -114,6 +115,10 @@ func canaryGoldenPath(name string) string {
 // goldens. When the env var is absent, it reads the goldens and just asserts
 // that the trip-time direction (trip / no-trip) matches the expected behavior.
 func TestAbortWatcher_CanaryBaseline_TripTimes(t *testing.T) {
+	// Validates trip direction (trip vs. no-trip) for each canary scenario
+	// against the current LatencyWindow. Regen mode (LOADGEN_CANARY_REGEN=1)
+	// also writes the resulting elapsed times to testdata/canary/ as goldens
+	// consumed by TestAbortWatcher_CanaryHDR_TripDriftWithinBudget.
 	regen := os.Getenv("LOADGEN_CANARY_REGEN") == "1"
 
 	cases := []struct {
@@ -152,6 +157,7 @@ func TestAbortWatcher_CanaryBaseline_TripTimes(t *testing.T) {
 				}
 				data, err := json.MarshalIndent(golden, "", "  ")
 				require.NoError(t, err, "marshal golden")
+				data = append(data, '\n') // POSIX text-file convention
 				require.NoError(t,
 					os.MkdirAll(filepath.Dir(canaryGoldenPath(c.name)), 0o755),
 					"create testdata/canary dir",
@@ -192,6 +198,16 @@ func loadCanaryGoldens(t *testing.T) []canaryGolden {
 // from the v1 goldens. For wantTrip=false scenarios, asserts the HDR version
 // also does not trip.
 func TestAbortWatcher_CanaryHDR_TripDriftWithinBudget(t *testing.T) {
+	// NOTE: All three canary scenarios feed uniform latency (every sample = breachMs).
+	// Under uniform input, HDR's per-bucket quantization is identity at p99 — the
+	// p99 bucket value equals the single recorded value, so trip times match v1's
+	// slice-based percentile exactly (0% drift by construction).
+	//
+	// This means the canary verifies the uniform abort case (the dominant real-world
+	// pattern) but does NOT stress HDR quantization at the p99 boundary. A mixed-
+	// distribution canary (e.g., 90% at 50ms + 10% at 300ms) is needed to confirm
+	// quantization error stays within the 10% drift budget under realistic
+	// workloads. Tracked as Phase 1a.8 follow-up.
 	goldens := loadCanaryGoldens(t)
 
 	for _, g := range goldens {

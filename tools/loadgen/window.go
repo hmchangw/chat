@@ -230,7 +230,7 @@ func (w *LatencyWindow) quantileInWindowLocked(now time.Time, over time.Duration
 // histogram when the ring is empty or no entries fall in the window.
 // Caller must hold w.mu.
 func (w *LatencyWindow) buildWindowHistLocked(now time.Time, over time.Duration) *WindowHistogram {
-	tmp := NewWindowHistogram()
+	tmp := NewWindowHistogram() // NOTE: ~30KB alloc inside lock; acceptable at 1Hz watcher tick. If query rate increases, switch to a reusable scratch histogram + in-place Reset.
 	cutoff := now.Add(-over)
 	w.iterLocked(func(e ringEntry) {
 		if e.at.Before(cutoff) || e.at.After(now) {
