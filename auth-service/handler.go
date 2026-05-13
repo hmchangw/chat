@@ -17,12 +17,8 @@ import (
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 )
 
-// accountNameRE is the strict allowlist for account names that get
-// interpolated into NATS subject permissions in signNATSJWT. Any character
-// outside this set (notably `*`, `>`, `.`, whitespace, control chars) would
-// either widen the subject scope past the user's own namespace
-// (e.g. account="alice*" → "chat.user.alice*.>" matches every user starting
-// with "alice") or otherwise malform the subject. We reject before signing.
+// Account names are interpolated into NATS subjects in signNATSJWT;
+// characters outside this allowlist would widen scope (`*`, `>`) or malform it.
 var accountNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // TokenValidator validates an SSO token and returns OIDC claims.

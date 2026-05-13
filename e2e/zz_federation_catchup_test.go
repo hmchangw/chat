@@ -18,38 +18,12 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// TestFederation_CatchUpAfterOutage: stop inbox-worker-b, publish cross-site
-// invite events from siteA, restart inbox-worker-b, assert it drains the
-// queued OUTBOX events and the resulting subscriptions land in mongo-b.
-//
-// Per amendment R1 12.B: rescoped from the original "50 messages" (messages
-// don't federate) to subscription/role events (20 events across the three
-// types that DO federate). Per R1 12.C: uses container Stop/Start (closer
-// to a real outage than pause/unpause -- pause keeps server-side ack timers
-// running). Per R2.C item 7: cycles through the three OUTBOX event types
-// (member_added, member_removed, role_update) so a bug in one handler
-// can't pass under cover of the others.
-//
-// FILE PREFIX: keeps `zz_*` so it runs LAST among federation tests
-// alphabetically -- belt-and-suspenders against any future test that
-// adds more inbox-worker-b churn. The actual flakiness was fixed by
-// the post-R3 production change to inbox-worker/bootstrap.go: it now
-// reads the existing stream config and PRESERVES Sources +
-// SubjectTransforms across restarts, instead of overwriting them with
-// the schema-only update. The test's own BootstrapFederation re-apply
-// is no longer load-bearing but stays as a defensive layer in case
-// some future restart path drops Sources via a different code route.
+// Stops inbox-worker-b, publishes 20 cross-site invites, restarts, asserts
+// the backlog drains into mongo-b. File is zz_* so it runs last among
+// federation tests; the actual fix lives in inbox-worker/bootstrap.go.
 func TestFederation_CatchUpAfterOutage(t *testing.T) {
-	// SKIP under E2E_REUSE_STACK: even with the post-R3 inbox-worker
-	// bootstrap fix (preserves federation Sources across worker
-	// restarts), the catchup flow remains ~40% flaky against a shared
-	// long-lived stack. The remaining flake source is the worker-restart
-	// CONSUMER cycle (NumAckPending bouncing while broadcast-worker
-	// shifts to NewPolicy on its fresh durable, etc.). Under
-	// testcontainers ownership (`make e2e`) each invocation gets a
-	// fresh stack and the test runs reliably. Keeping the skip-in-REUSE
-	// + the workerLifecycle abstraction means CI (testcontainers) covers
-	// the scenario while local dev iteration stays deterministic.
+	// Skip under E2E_REUSE_STACK: worker-restart consumer-reattach is
+	// racy on a shared stack. `make e2e` (fresh stack) runs reliably.
 	if reuse, _ := strconv.ParseBool(os.Getenv("E2E_REUSE_STACK")); reuse {
 		t.Skip("catchup is flaky under E2E_REUSE_STACK -- runs reliably under " +
 			"`make e2e` (testcontainers ownership); the Sources-preservation " +
@@ -66,14 +40,8 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 	bobOnB := stack.SiteB.Authenticate(t, ctx, "bob")
 	stack.SiteA.SeedRemoteUser(t, ctx, bobOnB.Account, stack.SiteB.SiteID)
 
-	// 1. Stop inbox-worker-b. Cross-site events keep flowing into INBOX_siteB
-	// (gateway sourcing is independent of inbox-worker), but nothing
-	// processes them -- they pile up on the stream.
-	//
-	// Container lifecycle: prefer the testcontainers compose handle (full
-	// e2e lifecycle) but fall back to shelling out `docker compose stop/start`
-	// when running with E2E_REUSE_STACK=1 (no compose handle owned). The
-	// behavior is identical from inbox-worker-b's perspective.
+	// Stop inbox-worker-b: events accumulate on INBOX_siteB (gateway
+	// sourcing keeps running) but nothing processes them.
 	stopper := newWorkerLifecycle(t, ctx, "inbox-worker-b")
 	stopper.Stop(t, ctx)
 	t.Cleanup(func() {
@@ -82,19 +50,13 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 		stopper.Start(t, startCtx)
 	})
 
-	// Snapshot INBOX_siteB count BEFORE creating any rooms -- otherwise
-	// gateway sourcing races us and `preCount` already includes some of
-	// the 20 new events, so the wait threshold below becomes unreachable.
+	// Snapshot pre-count before creating rooms; gateway sourcing races us.
 	jsB := stack.SiteB.JetStream(t)
 	prePopulate, err := jsB.Stream(ctx, "INBOX_siteB")
 	require.NoError(t, err)
 	preCount := prePopulate.CachedInfo().State.Msgs
 
-	// 2. alice creates rooms + invites bob in each, generating
-	// outbox.siteA.to.siteB.member_added events. We use member_added as the
-	// primary event type because the create-and-invite path emits it
-	// reliably; member_removed and role_update happen in subtests below
-	// against the SAME accumulated batch.
+	// Create-and-invite emits one member_added per round (cross-site to bob).
 	const inviteRounds = 20
 	roomIDs := make([]string, 0, inviteRounds)
 	for i := 0; i < inviteRounds; i++ {
@@ -113,11 +75,8 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 	}
 	t.Logf("created %d cross-site rooms; events queued on INBOX_siteB while worker is down", inviteRounds)
 
-	// 3. Wait until ALL 20 member_added events have been gateway-sourced
-	// into INBOX_siteB. The previous "> 0" check was racy: with the
-	// restart window briefly nuking INBOX_siteB.Sources (see step 4a),
-	// any event still in transit from OUTBOX_siteA via the gateway gets
-	// dropped, leaving some of the 20 subscriptions unmaterialized.
+	// Wait for all 20 events on INBOX_siteB before restart (in-flight ones
+	// would be lost when bootstrap briefly clears Sources).
 	require.Eventually(t, func() bool {
 		s, err := jsB.Stream(ctx, "INBOX_siteB")
 		if err != nil {
@@ -137,14 +96,8 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 	// 4. Restart inbox-worker-b.
 	stopper.Start(t, ctx)
 
-	// 4a. inbox-worker-b at startup with BOOTSTRAP_STREAMS=true calls
-	// CreateOrUpdateStream(INBOX_siteB) with the schema-only config from
-	// pkg/stream.Inbox — which OVERWRITES the federation Sources +
-	// SubjectTransforms that BootstrapFederation layered on at suite start.
-	// Without re-applying, gateway sourcing stops and EVERY subsequent
-	// federation test fails. This is the actual root cause of the
-	// "catchup destabilizes the next test" symptom that the earlier `zz_`
-	// rename was working around.
+	// inbox-worker-b's BOOTSTRAP_STREAMS=true overwrites federation Sources
+	// on restart; re-apply them or all later federation tests break.
 	require.NoError(t, harness.BootstrapFederation(ctx, stack),
 		"re-apply federation Sources after inbox-worker-b restart "+
 			"(its BOOTSTRAP_STREAMS=true Update overwrites them)")
@@ -179,13 +132,8 @@ func TestFederation_CatchUpAfterOutage(t *testing.T) {
 			"missing subscription for room %s after catch-up", rid)
 	}
 
-	// 7. Canary cross-site round-trip: prove inbox-worker-b is processing
-	// FRESH events end-to-end, not just draining its pre-restart backlog.
-	// Without this, the next federation test inherits a worker that may
-	// still be re-attaching to NATS and times out on its own invite. The
-	// canary uses a small enough timeout that, if it ever fails, the
-	// signal is that the restart path itself isn't recovering -- a real
-	// regression worth surfacing.
+	// Canary: prove inbox-worker-b processes fresh events end-to-end,
+	// not just its backlog (otherwise the next test inherits a flaky worker).
 	canaryReq := model.CreateRoomRequest{
 		Name:  "e2e-" + t.Name() + "-canary",
 		Users: []string{bobOnB.Account},

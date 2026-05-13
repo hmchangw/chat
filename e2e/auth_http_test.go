@@ -1,19 +1,7 @@
 //go:build e2e
 
-// HTTP coverage for auth-service. The existing suite drives auth indirectly
-// via the NATS handshake (Authenticate calls /auth and then opens a NATS
-// connection). These tests exercise the HTTP surface DIRECTLY so that:
-//
-//   - Malformed-request rejection codes can drift independently of the
-//     happy-path NATS handshake.
-//   - The /healthz contract is locked in (a regression here breaks the
-//     compose healthcheck dep order, not just one user flow).
-//   - Missing-field validation lives in code that the rest of the suite
-//     never exercises (the NATS path always supplies both fields).
-//
-// Per CLAUDE.md client-API rule: auth-service is the only HTTP service
-// in the realm-bound user surface, so direct coverage here actually
-// matters.
+// Direct HTTP coverage for auth-service (the NATS handshake path doesn't
+// exercise malformed-body rejection or /healthz).
 
 package e2e
 
@@ -136,12 +124,8 @@ func TestAuthHTTP_AuthHappyPath(t *testing.T) {
 	parts := strings.Split(id.NATSJWT, ".")
 	require.Len(t, parts, 3, "natsJwt must be a 3-segment JWT; got %q", id.NATSJWT)
 
-	// Decode the payload (base64-url, no padding) and verify the
-	// auth-service-controlled NATS permissions encode the realm
-	// account. NATS user JWTs embed permissions under `nats.pub.allow`
-	// / `nats.sub.allow`; auth-service writes account-scoped subjects
-	// like `chat.user.{account}.>` -- a strong proxy for "this JWT is
-	// for this user." `name` is NOT a standard claim in NATS user JWTs.
+	// NATS user JWTs encode account-scope under nats.pub.allow rather
+	// than a standard `name` claim.
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	require.NoError(t, err, "JWT payload must be base64-url")
 	var claims struct {

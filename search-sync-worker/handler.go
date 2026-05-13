@@ -123,13 +123,8 @@ func (h *Handler) Flush(ctx context.Context) {
 		return
 	}
 
-	// Defensive ordering check: ES bulk normally returns one result per input
-	// action in input order, but we don't want to silently ack the wrong
-	// source message if that invariant ever breaks. If any result item's
-	// echoed `_id` doesn't match the submitted action's DocID, NAK the entire
-	// batch so JetStream redelivers — safer than acking based on a misaligned
-	// status. Empty `results[i].DocID` is tolerated for backward compatibility
-	// with mock/stub stores in tests and engines that omit `_id` in responses.
+	// Guard against ES reordering: results[i] must echo actions[i].DocID
+	// (empty DocID tolerated for engines/mocks that omit `_id`).
 	for i, action := range actions {
 		if results[i].DocID != "" && results[i].DocID != action.DocID {
 			slog.Error("bulk result docID mismatch",

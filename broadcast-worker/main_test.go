@@ -8,11 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestConfig_DefaultsAndOverrides exercises the env-tag round-trip for
-// fields added in the post-R3 production change set (DURABLE_NAME and
-// MAX_DELIVER), plus the existing ENCRYPTION_ENABLED gate so that an
-// accidental envDefault drift on any of these surfaces here rather than
-// at deploy time. Mirrors the inbox-worker bootstrap_test pattern.
+// Round-trips DURABLE_NAME / MAX_DELIVER / ENCRYPTION_ENABLED envs so an
+// envDefault drift surfaces here, not at deploy time.
 func TestConfig_DefaultsAndOverrides(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -119,15 +119,7 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = notifSub.Unsubscribe() })
 
-	// 3. Snapshot the canonical stream's pre-send sequence so we can
-	// awaitCanonicalAcked after publish (R1 10.D).
-	preSendInfo, err := js.Stream(ctx, canonicalStream)
-	require.NoError(t, err)
-	preSendSeq := preSendInfo.CachedInfo().State.LastSeq
-
-	// 4. alice sends a message tagging bob. SendMessageRequest.RequestID
-	// is required by message-gatekeeper; idgen.GenerateRequestID returns
-	// a UUIDv7 in hyphenated form.
+	// alice sends a message tagging bob.
 	msgRequestID := idgen.GenerateRequestID()
 	body := "hello @bob, ping?"
 	sendReq := model.SendMessageRequest{
@@ -336,11 +328,7 @@ func TestMessage_SendAndBroadcast_DM(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = bobSub.Unsubscribe() })
 
-	// 3. alice sends a DM.
-	preSendInfo, err := js.Stream(ctx, canonicalStream)
-	require.NoError(t, err)
-	preSendSeq := preSendInfo.CachedInfo().State.LastSeq
-
+	// alice sends a DM.
 	msgRequestID := idgen.GenerateRequestID()
 	body := "DM hello from " + t.Name()
 	sendReq := model.SendMessageRequest{

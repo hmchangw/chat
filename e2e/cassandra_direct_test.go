@@ -1,17 +1,7 @@
 //go:build e2e
 
-// Cassandra-direct assertions. The other tests assert via subject.MsgHistory
-// (a NATS round-trip that uses Cassandra under the hood). These tests query
-// Cassandra DIRECTLY so a regression in the storage path can't pass under
-// cover of a buggy-but-self-consistent history-service.
-//
-// Coverage targets the column-family invariants:
-//   - messages_by_room PK is (room_id, created_at, message_id) -- a single
-//     message lands in EXACTLY ONE row.
-//   - messages_by_id PK is (message_id, created_at) -- the dedup table.
-//   - The two views agree on the same row's content (denormalization is
-//     handled by message-worker on write; a divergence here means the
-//     write path is splitting books).
+// Direct Cassandra assertions that bypass history-service, so a storage-path
+// regression can't hide behind a self-consistent service layer.
 
 package e2e
 
@@ -30,11 +20,8 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// TestCassandra_MessagesByRoomSingleRow: send one message, query
-// chat.messages_by_room directly with (room_id), assert exactly one row
-// has our message_id. Catches: a regression where message-worker writes
-// the same message under multiple (created_at, message_id) clustering
-// keys (e.g. retry without dedup).
+// Catches a retry-without-dedup regression that writes the same message
+// under multiple clustering keys.
 func TestCassandra_MessagesByRoomSingleRow(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -94,12 +81,8 @@ func TestCassandra_MessagesByRoomSingleRow(t *testing.T) {
 		roomID, msgID)
 }
 
-// TestCassandra_MessagesByIdMatchesByRoom: same message must appear in BOTH
-// messages_by_room AND messages_by_id with identical content. The two
-// tables are denormalized views; message-worker writes both. A divergence
-// would mean the dedup view (messages_by_id) and the room view
-// (messages_by_room) disagree, which would silently break get-by-id +
-// duplicate detection.
+// Both denormalized views (messages_by_room, messages_by_id) must agree;
+// a divergence silently breaks get-by-id + duplicate detection.
 func TestCassandra_MessagesByIdMatchesByRoom(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -150,9 +133,7 @@ func TestCassandra_MessagesByIdMatchesByRoom(t *testing.T) {
 	sess := site.CassandraSession(t)
 	defer sess.Close()
 
-	// Use Iter() not Scan() -- Scan() silently picks the first row, which
-	// would mask a hypothetical duplicate-write regression. Iter() with
-	// an explicit row count catches it.
+	// Iter() (not Scan) so a duplicate-write regression surfaces as count>1.
 	byRoomMsg, byRoomRID, byRoomCount := scanOneRow(t, ctx, sess,
 		`SELECT message_id, room_id FROM chat.messages_by_room WHERE room_id = ? AND message_id = ? ALLOW FILTERING`,
 		roomID, msgID,
@@ -176,9 +157,7 @@ func TestCassandra_MessagesByIdMatchesByRoom(t *testing.T) {
 	assert.Equal(t, roomID, byRoomRID)
 }
 
-// scanOneRow runs a SELECT message_id, room_id query and returns the row's
-// fields plus the total row count. Caller asserts count==1 to catch
-// hypothetical duplicates that Scan() would mask.
+// scanOneRow returns (message_id, room_id, row_count); caller asserts count==1.
 func scanOneRow(t *testing.T, ctx context.Context, sess *gocql.Session, cql string, args ...any) (msg, room string, count int) {
 	t.Helper()
 	iter := sess.Query(cql, args...).WithContext(ctx).Iter()
@@ -193,10 +172,7 @@ func scanOneRow(t *testing.T, ctx context.Context, sess *gocql.Session, cql stri
 	return
 }
 
-// TestCassandra_MessagesByIdDedup: send the SAME messageID twice. The
-// PRIMARY KEY (message_id, created_at) on messages_by_id should produce
-// exactly one row. Companion to TestNegative_DuplicateMessageID, which
-// asserts via the history-service round-trip; this one queries directly.
+// Send the same messageID twice; PK (message_id, created_at) must dedupe to one row.
 func TestCassandra_MessagesByIdDedup(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

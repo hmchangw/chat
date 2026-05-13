@@ -171,14 +171,8 @@ func TestBootstrapStreams(t *testing.T) {
 			}
 			for i, wantName := range tc.wantCreated {
 				assert.Equal(t, wantName, fake.created[i].Name)
-				// App owns the schema (Name + Subjects). Federation
-				// (Sources + SubjectTransforms) belongs to ops/IaC, but
-				// when an existing stream already has Sources we
-				// PRESERVE them so a worker restart doesn't clear
-				// federation config (post-R3 follow-up). When the live
-				// stream has extra Subjects beyond the schema baseline,
-				// we UNION them so the schema-only update never narrows
-				// the live config back.
+				// Schema is authored here; Sources and any extra live Subjects
+				// must be preserved verbatim (union for Subjects).
 				assert.Equal(t, wantSubjects, fake.created[i].Subjects,
 					"INBOX bootstrap must set Subjects to the union of "+
 						"pkg/stream.Inbox + any existing extras")
