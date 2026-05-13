@@ -442,51 +442,137 @@ func RoomCanonicalOperation(s string) (string, bool) {
 // --- mock-user-service / future user-service builders ---
 
 func UserStatusGetByName(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.status.getByName", account, siteID)
 }
 
 func UserStatusSet(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.status.set", account, siteID)
 }
 
 func UserProfileGetByName(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.profile.getByName", account, siteID)
 }
 
 func UserSubscriptionGetCurrent(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getCurrent", account, siteID)
 }
 
 func UserSubscriptionGetRooms(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getRooms", account, siteID)
 }
 
 func UserSubscriptionGetChannels(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getChannels", account, siteID)
 }
 
 func UserSubscriptionGetDM(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getDM", account, siteID)
 }
 
 func UserSubscriptionGetApps(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getApps", account, siteID)
 }
 
 func UserSubscriptionSubscribeApp(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.subscribeApp", account, siteID)
 }
 
 func UserSubscriptionUnsubscribeApp(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.unsubscribeApp", account, siteID)
 }
 
 func UserRoomSubscriptionGet(account, siteID, roomID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.room.%s.subscription.get", account, siteID, roomID)
 }
 
 func UserAppsList(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.apps.list", account, siteID)
+}
+
+// --- natsrouter pattern builders (siteID baked in, account left as {account} placeholder) ---
+
+func UserStatusGetByNamePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.status.getByName", siteID)
+}
+
+func UserStatusSetPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.status.set", siteID)
+}
+
+func UserProfileGetByNamePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.profile.getByName", siteID)
+}
+
+func UserSubscriptionGetCurrentPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getCurrent", siteID)
+}
+
+func UserSubscriptionGetRoomsPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getRooms", siteID)
+}
+
+func UserSubscriptionGetChannelsPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getChannels", siteID)
+}
+
+func UserSubscriptionGetDMPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getDM", siteID)
+}
+
+func UserSubscriptionGetAppsPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getApps", siteID)
+}
+
+func UserSubscriptionSubscribeAppPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.subscribeApp", siteID)
+}
+
+func UserSubscriptionUnsubscribeAppPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.unsubscribeApp", siteID)
+}
+
+func UserRoomSubscriptionGetPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.room.{roomID}.subscription.get", siteID)
+}
+
+func UserAppsListPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.apps.list", siteID)
 }
 
 // ParseUserSubject parses any 8-token subject of the form
@@ -501,6 +587,9 @@ func ParseUserSubject(subj string) (account, siteID, area, action string, ok boo
 		return "", "", "", "", false
 	}
 	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" || parts[4] != "user" {
+		return "", "", "", "", false
+	}
+	if !isValidAccountToken(parts[2]) {
 		return "", "", "", "", false
 	}
 	switch parts[6] {
@@ -556,6 +645,9 @@ func ParseRoomSubject(subj string) (account, roomID, action string, ok bool) {
 		return "", "", "", false
 	}
 	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" || parts[4] != "user" || parts[6] != "room" {
+		return "", "", "", false
+	}
+	if !isValidAccountToken(parts[2]) {
 		return "", "", "", false
 	}
 	return parts[2], parts[7], parts[9], true

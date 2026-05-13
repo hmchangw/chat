@@ -525,3 +525,78 @@ func TestUserServiceWildcards(t *testing.T) {
 		})
 	}
 }
+
+func TestUserServiceBuildersRejectWildcardAccounts(t *testing.T) {
+	builders := []struct {
+		name string
+		fn   func()
+	}{
+		{"UserStatusGetByName", func() { subject.UserStatusGetByName("*", "s1") }},
+		{"UserStatusSet", func() { subject.UserStatusSet("*", "s1") }},
+		{"UserProfileGetByName", func() { subject.UserProfileGetByName("*", "s1") }},
+		{"UserSubscriptionGetCurrent", func() { subject.UserSubscriptionGetCurrent("*", "s1") }},
+		{"UserSubscriptionGetRooms", func() { subject.UserSubscriptionGetRooms("*", "s1") }},
+		{"UserSubscriptionGetChannels", func() { subject.UserSubscriptionGetChannels("*", "s1") }},
+		{"UserSubscriptionGetDM", func() { subject.UserSubscriptionGetDM(">", "s1") }},
+		{"UserSubscriptionGetApps", func() { subject.UserSubscriptionGetApps(">", "s1") }},
+		{"UserSubscriptionSubscribeApp", func() { subject.UserSubscriptionSubscribeApp(">", "s1") }},
+		{"UserSubscriptionUnsubscribeApp", func() { subject.UserSubscriptionUnsubscribeApp(">", "s1") }},
+		{"UserRoomSubscriptionGet", func() { subject.UserRoomSubscriptionGet("*", "s1", "r1") }},
+		{"UserAppsList", func() { subject.UserAppsList(">", "s1") }},
+	}
+	for _, b := range builders {
+		t.Run(b.name, func(t *testing.T) {
+			assert.Panics(t, b.fn)
+		})
+	}
+}
+
+func TestParseUserSubject_RejectsWildcardAccount(t *testing.T) {
+	bad := []string{
+		"chat.user.*.request.user.s1.status.getByName",
+		"chat.user.>.request.user.s1.status.getByName",
+		"chat.user..request.user.s1.status.getByName",
+	}
+	for _, s := range bad {
+		_, _, _, _, ok := subject.ParseUserSubject(s)
+		assert.False(t, ok, "expected ok=false for %q", s)
+	}
+}
+
+func TestParseRoomSubject_RejectsWildcardAccount(t *testing.T) {
+	bad := []string{
+		"chat.user.*.request.user.s1.room.r1.subscription.get",
+		"chat.user.>.request.user.s1.room.r1.subscription.get",
+		"chat.user..request.user.s1.room.r1.subscription.get",
+	}
+	for _, s := range bad {
+		_, _, _, ok := subject.ParseRoomSubject(s)
+		assert.False(t, ok, "expected ok=false for %q", s)
+	}
+}
+
+func TestUserServicePatternBuilders(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"status.getByName", subject.UserStatusGetByNamePattern("s1"), "chat.user.{account}.request.user.s1.status.getByName"},
+		{"status.set", subject.UserStatusSetPattern("s1"), "chat.user.{account}.request.user.s1.status.set"},
+		{"profile.getByName", subject.UserProfileGetByNamePattern("s1"), "chat.user.{account}.request.user.s1.profile.getByName"},
+		{"subscription.getCurrent", subject.UserSubscriptionGetCurrentPattern("s1"), "chat.user.{account}.request.user.s1.subscription.getCurrent"},
+		{"subscription.getRooms", subject.UserSubscriptionGetRoomsPattern("s1"), "chat.user.{account}.request.user.s1.subscription.getRooms"},
+		{"subscription.getChannels", subject.UserSubscriptionGetChannelsPattern("s1"), "chat.user.{account}.request.user.s1.subscription.getChannels"},
+		{"subscription.getDM", subject.UserSubscriptionGetDMPattern("s1"), "chat.user.{account}.request.user.s1.subscription.getDM"},
+		{"subscription.getApps", subject.UserSubscriptionGetAppsPattern("s1"), "chat.user.{account}.request.user.s1.subscription.getApps"},
+		{"subscription.subscribeApp", subject.UserSubscriptionSubscribeAppPattern("s1"), "chat.user.{account}.request.user.s1.subscription.subscribeApp"},
+		{"subscription.unsubscribeApp", subject.UserSubscriptionUnsubscribeAppPattern("s1"), "chat.user.{account}.request.user.s1.subscription.unsubscribeApp"},
+		{"room.subscription.get", subject.UserRoomSubscriptionGetPattern("s1"), "chat.user.{account}.request.user.s1.room.{roomID}.subscription.get"},
+		{"apps.list", subject.UserAppsListPattern("s1"), "chat.user.{account}.request.user.s1.apps.list"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.got)
+		})
+	}
+}
