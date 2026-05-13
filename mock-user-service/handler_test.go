@@ -80,3 +80,22 @@ func TestHandler_StatusSet(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestHandler_ProfileGetByName(t *testing.T) {
+	h := NewHandler("site-local")
+
+	t.Run("happy path echoes Name", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-local"})
+		resp, err := h.profileGetByName(c, profileGetByNameReq{Name: "bob"})
+		require.NoError(t, err)
+		assert.Equal(t, "bob", resp.Name)
+		assert.Equal(t, mockDisplayName, resp.DisplayName)
+		assert.Equal(t, mockEmail, resp.Email)
+	})
+
+	t.Run("siteID mismatch", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-x"})
+		_, err := h.profileGetByName(c, profileGetByNameReq{Name: "bob"})
+		require.Error(t, err)
+	})
+}

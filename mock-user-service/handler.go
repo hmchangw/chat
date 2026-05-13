@@ -139,3 +139,14 @@ func (h *Handler) statusSet(c *natsrouter.Context, req statusSetReq) (*okResp, e
 	_ = req
 	return &okResp{Success: true}, nil
 }
+
+func (h *Handler) profileGetByName(c *natsrouter.Context, req profileGetByNameReq) (*profileResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	return &profileResp{
+		Name:        req.Name,
+		DisplayName: mockDisplayName,
+		Email:       mockEmail,
+	}, nil
+}
