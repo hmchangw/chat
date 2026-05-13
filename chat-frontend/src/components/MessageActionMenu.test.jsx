@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import MessageActionMenu from './MessageActionMenu'
+import { readReceipt } from '../lib/subjects'
 
 vi.mock('../context/NatsContext', () => ({
   useNats: vi.fn(),
@@ -84,5 +85,132 @@ describe('MessageActionMenu open/close', () => {
     fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
     fireEvent.mouseDown(screen.getByRole('menu'))
     expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+})
+
+describe('MessageActionMenu read-receipt RPC', () => {
+  const msg = { id: 'm1', sender: { account: 'alice' } }
+
+  function deferred() {
+    let resolve, reject
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+
+  it('shows Loading… immediately after opening the menu', () => {
+    const d = deferred()
+    const request = vi.fn().mockReturnValue(d.promise)
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'siteA' },
+      request,
+    })
+    render(<MessageActionMenu message={msg} room={room} />)
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    expect(screen.getByText(/Loading…/i)).toBeInTheDocument()
+  })
+
+  it('calls the RPC with the correct subject and payload', () => {
+    const d = deferred()
+    const request = vi.fn().mockReturnValue(d.promise)
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'siteA' },
+      request,
+    })
+    render(<MessageActionMenu message={msg} room={room} />)
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    expect(request).toHaveBeenCalledWith(
+      readReceipt('alice', 'r1', 'siteA'),
+      { messageId: 'm1' }
+    )
+  })
+
+  it('renders "Read by X of Y" once the RPC resolves', async () => {
+    const d = deferred()
+    const request = vi.fn().mockReturnValue(d.promise)
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'siteA' },
+      request,
+    })
+    render(<MessageActionMenu message={msg} room={room} />)
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    await act(async () => {
+      d.resolve({ readers: [
+        { userId: 'u1', account: 'bob', engName: 'Bob', chineseName: '' },
+        { userId: 'u2', account: 'carol', engName: 'Carol', chineseName: '' },
+      ] })
+    })
+    expect(await screen.findByText('Read by 2 of 3')).toBeInTheDocument()
+  })
+
+  it('clamps Y at 0 for a single-member room', async () => {
+    const d = deferred()
+    const request = vi.fn().mockReturnValue(d.promise)
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'siteA' },
+      request,
+    })
+    render(
+      <MessageActionMenu
+        message={msg}
+        room={{ id: 'r1', siteId: 'siteA', userCount: 1 }}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    await act(async () => { d.resolve({ readers: [] }) })
+    expect(await screen.findByText('Read by 0 of 0')).toBeInTheDocument()
+  })
+
+  it('renders the RPC error message inline', async () => {
+    const d = deferred()
+    const request = vi.fn().mockReturnValue(d.promise)
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'siteA' },
+      request,
+    })
+    render(<MessageActionMenu message={msg} room={room} />)
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    await act(async () => { d.reject(new Error('only the message sender can view read receipts')) })
+    expect(
+      await screen.findByText(/only the message sender can view read receipts/i)
+    ).toBeInTheDocument()
+  })
+
+  it('refetches the RPC every time the menu is reopened', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ readers: [] })
+      .mockResolvedValueOnce({ readers: [{ userId: 'u1', account: 'bob', engName: 'Bob', chineseName: '' }] })
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'siteA' },
+      request,
+    })
+    render(<MessageActionMenu message={msg} room={room} />)
+    const kebab = screen.getByRole('button', { name: /Message actions/i })
+
+    fireEvent.click(kebab)
+    await waitFor(() => expect(screen.getByText('Read by 0 of 3')).toBeInTheDocument())
+    fireEvent.click(kebab) // close
+    fireEvent.click(kebab) // reopen
+    await waitFor(() => expect(screen.getByText('Read by 1 of 3')).toBeInTheDocument())
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('falls back to user.siteId when room.siteId is missing', () => {
+    const d = deferred()
+    const request = vi.fn().mockReturnValue(d.promise)
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'siteA' },
+      request,
+    })
+    render(
+      <MessageActionMenu
+        message={msg}
+        room={{ id: 'r1', userCount: 3 }}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    expect(request).toHaveBeenCalledWith(
+      readReceipt('alice', 'r1', 'siteA'),
+      { messageId: 'm1' }
+    )
   })
 })
