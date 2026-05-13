@@ -510,3 +510,22 @@ func TestParseRoomSubject(t *testing.T) {
 		}
 	})
 }
+
+func TestUserServiceWildcards(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"status", subject.UserStatusWildCard("s1"), "chat.user.*.request.user.s1.status.>"},
+		{"subscription", subject.UserSubscriptionWildCard("s1"), "chat.user.*.request.user.s1.subscription.>"},
+		{"profile", subject.UserProfileWildCard("s1"), "chat.user.*.request.user.s1.profile.>"},
+		{"room", subject.UserRoomWildCard("s1"), "chat.user.*.request.user.s1.room.>"},
+		{"apps", subject.UserAppsWildCard("s1"), "chat.user.*.request.user.s1.apps.>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.got)
+		})
+	}
+}

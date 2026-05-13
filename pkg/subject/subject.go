@@ -560,3 +560,23 @@ func ParseRoomSubject(subj string) (account, roomID, action string, ok bool) {
 	}
 	return parts[2], parts[7], strings.Join(parts[8:], "."), true
 }
+
+func UserStatusWildCard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.user.%s.status.>", siteID)
+}
+
+func UserSubscriptionWildCard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.user.%s.subscription.>", siteID)
+}
+
+func UserProfileWildCard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.user.%s.profile.>", siteID)
+}
+
+func UserRoomWildCard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.user.%s.room.>", siteID)
+}
+
+func UserAppsWildCard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.user.%s.apps.>", siteID)
+}
