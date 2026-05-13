@@ -50,11 +50,10 @@ panel and the main feed scroll independently.
   inside an open thread). Uses the existing
   `quotedParentMessageId` field already supported by
   `message-gatekeeper`.
-- Receive new replies in real time via the same room-event subscription
-  the main feed uses; route them only into the open thread.
-- Hide thread replies from the main feed.
-- Bump the parent message's `tcount` and `lastReplyAt` client-side when
-  a reply arrives (no backend parent-update event exists today).
+- Bump the parent message's `tcount` and `lastReplyAt` client-side
+  whenever a `tshow: true` reply arrives in the main feed (the only
+  thread reply the main subscription will ever see — backend drops the
+  rest at the boundary).
 - Refactor the layout so `Sidebar`, `ChatPage`, and `ThreadRightBar` are
   independent columns under a new `MainApp`.
 - Keep `MessageArea` / `MessageInput` reusable across the main feed and
@@ -69,6 +68,12 @@ panel and the main feed scroll independently.
   but not wired to UI yet).
 - Mark-as-read for threads (no read-receipt RPC for threads yet).
 - Notifications / unread-count badges on the thread icon.
+- Real-time delivery of other users' thread replies into an open
+  thread panel — deferred to a separate "thread events" ticket. v1
+  loads the thread via the `msg.thread` RPC on open and **optimistically
+  appends the local user's own replies** after a successful publish.
+  Other users' replies become visible the next time the thread is
+  reopened.
 - Encrypted-channel thread handling beyond the existing
   "skip-when-empty" path used by the main feed.
 
@@ -129,7 +134,7 @@ actions:
   CLOSE_THREAD      {}
   HISTORY_LOADED    { parentId, resp }       // ignored if parentId !== activeParent.messageId
   HISTORY_FAILED    { parentId, error }
-  REPLY_RECEIVED    { message }              // ignored if message.threadParentMessageId !== activeParent.messageId
+  REPLY_SENT_LOCAL  { message }              // optimistic append after our own publish
   SEND_FAILED       { error }
   RESET             {}                       // on logout / provider unmount
 ```
@@ -145,11 +150,14 @@ they aren't already, or duplicate — implementer's call).
   roomId, siteId), { threadMessageId, limit: 50 })` with the same
   `cancelledRef` + `generationRef` race-discard pattern used in
   `RoomEventsContext`.
-- Subscribes to `roomEvent(roomId)` for the active parent's room while
-  a thread is open. Dispatches `REPLY_RECEIVED` only when
-  `message.threadParentMessageId === activeParent.messageId`.
-- On unmount / `RESET` / `CLOSE_THREAD`: stop the subscription and
-  iterator handles.
+- **No live subscription** in v1 — backend currently broadcasts thread
+  replies only to subscribers of `tshow: true`-eligible main-feed
+  events. Real-time delivery of other users' thread replies into an
+  open panel is deferred (see Non-Goals).
+- On successful `sendReply` publish: dispatch `REPLY_SENT_LOCAL` to
+  optimistically append our own reply to the thread state, so the
+  user sees what they just sent without reopening the thread.
+- On unmount / `RESET` / `CLOSE_THREAD`: cancel in-flight requests.
 - Exposes:
 
   ```js
@@ -190,26 +198,36 @@ they aren't already, or duplicate — implementer's call).
 
 ### Cross-context: parent reply-count bumping
 
-The existing main `roomEventsReducer.js` is extended:
+Backend rules (assumed contract, **no frontend filtering required**):
 
-- In `MESSAGE_RECEIVED`, if `evt.message.threadParentMessageId` is
-  populated, dispatch `THREAD_REPLY_OBSERVED { roomId, parentId,
-  replyTimestampMs }` which:
-  - finds the parent message in `roomState[roomId].messages` (and in
-    `focusBuffer` if present), increments `tcount` by 1, and sets
-    `lastReplyAt` to `replyTimestampMs` if greater than the current
-    value.
-  - if the parent is not in the buffer, the action is a no-op (the
-    authoritative value will come from history reload).
-- After bumping, the message is appended to the main feed **only if
-  `evt.message.tshow === true`** — that's the backend signal that the
-  reply should be visible in both contexts. When `tshow` is falsy the
-  reply is dropped from the main feed (the thread context renders it).
-- In `HISTORY_LOADED`, the same rule applies: filter out messages
-  whose `threadParentMessageId` is set unless `tshow === true`.
+- `loadHistory`, `msg.show`, and the live broadcast for the main feed
+  return only top-level messages plus thread replies whose `tshow ===
+  true`. Non-`tshow` thread replies are not exposed via any main-feed
+  API.
+- `msg.thread` and per-message lookups by ID are the only paths that
+  return arbitrary thread replies.
 
-This implements the client-side "increment tcount" path you asked for —
-no server event exists today.
+Given this contract, the main `roomEventsReducer.js` extension is
+narrow:
+
+- In `MESSAGE_RECEIVED`, append every message that arrives — no
+  filtering, the backend has already done it. After the append, if
+  `evt.message.threadParentMessageId` is set (which means this is a
+  `tshow: true` thread reply), dispatch
+  `THREAD_REPLY_OBSERVED { roomId, parentId, replyTimestampMs }`,
+  which finds the parent in `roomState[roomId].messages` (and
+  `focusBuffer` if present) and:
+  - increments its `tcount` by 1,
+  - updates `lastReplyAt` if `replyTimestampMs` is greater.
+  If the parent isn't in the buffer, the action is a no-op (the
+  authoritative value comes from the next history reload).
+- `HISTORY_LOADED` does **not** filter anything — the backend already
+  returns only the messages eligible for the main feed.
+
+Limitation: thread replies sent with `tshow: false` never reach the
+main feed, so the parent's `tcount` cannot be updated in real time for
+those. The badge will lag until the next history reload of the room.
+This is acceptable for v1 (live thread events are a follow-up ticket).
 
 ### NATS subject builders — additions to `src/lib/subjects.js`
 
@@ -229,7 +247,7 @@ Reserved for later (not added now): `msgThreadParent`.
 | Open thread (response) | `{ messages: Message[], nextCursor?, hasNext }` — oldest-first |
 | Send reply (publish) | existing `msg.send` payload + `threadParentMessageId` (20-char base62) and `threadParentMessageCreatedAt` (UTC ms). Optional `tshow: true` when the "Also send to channel" checkbox is set. Optional `quotedParentMessageId` when the user staged a quote-reply. |
 | Main-feed send with quote (publish) | existing `msg.send` payload + `quotedParentMessageId` when a quote-reply was staged in the main input |
-| Reply broadcast (subscribe) | arrives on `chat.room.{roomId}.event` with `message.threadParentMessageId` set; `message.tshow` is `true` only when the sender opted into "Also send to channel" |
+| Reply broadcast (subscribe) | Backend currently broadcasts on `chat.room.{roomId}.event` only top-level messages and thread replies with `tshow: true`. Non-`tshow` thread replies are not broadcast to the main subscription. Real-time delivery of arbitrary thread replies is a separate ticket. |
 
 `threadParentMessageCreatedAt` derives from the parent's `createdAt` via
 `new Date(parent.createdAt).getTime()`. Gatekeeper rejects either field
@@ -310,7 +328,7 @@ Field availability: the message Cassandra row carries `tcount`; whether
 `lastReplyAt` is serialised to the client is verified during the Red
 phase. If missing, the implementation falls back to client-side
 maintenance only — the reducer keeps a per-message `lastReplyAt` derived
-from observed `REPLY_RECEIVED` timestamps.
+from observed `tshow: true` reply timestamps.
 
 ### Edge cases & teardown
 
@@ -319,21 +337,23 @@ from observed `REPLY_RECEIVED` timestamps.
 - **Selected room removed (kicked / left):** existing `ChatPage`
   cleanup also dispatches `CLOSE_THREAD`.
 - **User logout:** `ThreadEventsContext` watches `user` from
-  `useNats()`; when it goes null, dispatch `RESET` and tear down
-  subscriptions.
+  `useNats()`; when it goes null, dispatch `RESET` and cancel any
+  in-flight RPC.
 - **Stale request races:** same `generationRef` pattern as
   `RoomEventsContext` — drop responses from prior generations.
 - **Duplicate replies:** thread reducer dedupes by `message.id` via the
-  same `mergeById` semantics as the main feed.
-- **Empty / encrypted broadcasts:** if `evt.message` is empty, skip
-  (matches `roomEventsReducer.js` lines around the existing encrypted
-  filter).
+  same `mergeById` semantics as the main feed (`REPLY_SENT_LOCAL`
+  goes through the same merge so a duplicate cannot appear if a
+  future events-ticket ever delivers the same reply back over a
+  subscription).
+- **Empty / encrypted broadcasts:** main reducer keeps the existing
+  "skip when `evt.message` is empty" path; no thread-specific change.
 - **InRoomSearch ↔ ThreadRightBar:** mutual exclusion enforced in
   `ChatPage` — opening one calls the closer of the other. Pressing
   Ctrl-F while a thread is open closes the thread first.
-- **Reply arrives for a closed thread:** main reducer still bumps the
-  parent's `tcount` / `lastReplyAt`; the message is dropped (it will be
-  re-fetched when the user opens the thread).
+- **Reply arrives in the main feed for a closed thread:** because it
+  is `tshow: true` (the only kind the main feed ever sees), it is
+  appended to the main feed AND triggers the parent `tcount` bump.
 - **Parent message edited / deleted while thread is open:** the thread
   panel renders the parent by looking it up by ID in the main
   `RoomEventsContext` buffer (live), and falls back to the
@@ -348,10 +368,9 @@ from observed `REPLY_RECEIVED` timestamps.
   in-room search panel when the value transitions from `null` →
   non-null. The opposite direction (opening in-room search) calls
   `closeThread()` from `useThreadEvents()`.
-- **Edit / delete of thread replies:** out of scope for v1. The thread
-  reducer ignores `chat.room.*.event` payloads that aren't message
-  creates; edits arrive on separate subjects today and will be wired
-  up in a follow-up.
+- **Edit / delete of thread replies:** out of scope for v1. Edits and
+  deletes for thread replies are part of the deferred "thread events"
+  ticket.
 
 ## Testing strategy
 
@@ -361,9 +380,9 @@ reducers.
 
 | New file | Tests |
 |---|---|
-| `lib/threadEventsReducer.js` | all actions; race-discard via generation/parentId mismatch; dedupe; skip-when-empty; reset on logout |
-| `context/ThreadEventsContext.jsx` | RPC fires once per open; rebinds on parent change; dispatches `REPLY_RECEIVED` only for matching parent; teardown on close / unmount / logout |
-| `lib/roomEventsReducer.js` | extended — thread replies with `tshow: false` are filtered from the main feed; thread replies with `tshow: true` stay in the main feed; `THREAD_REPLY_OBSERVED` bumps tcount / lastReplyAt regardless and is a no-op when parent isn't buffered |
+| `lib/threadEventsReducer.js` | all actions; race-discard via generation/parentId mismatch; dedupe; optimistic append on `REPLY_SENT_LOCAL`; reset on logout |
+| `context/ThreadEventsContext.jsx` | RPC fires once per open; cancels on close / unmount / logout; `sendReply` dispatches `REPLY_SENT_LOCAL` on publish success |
+| `lib/roomEventsReducer.js` | extended — `MESSAGE_RECEIVED` appends every message unconditionally (no filter, backend already filters); when `message.threadParentMessageId` is set, additionally dispatch `THREAD_REPLY_OBSERVED` which bumps `tcount` + `lastReplyAt` on the parent in `messages` / `focusBuffer`, no-op when parent isn't buffered |
 | `components/messages/MessageList.jsx` | pure render; reply-count badge renders only when `tcount > 0`; badge click fires `onOpenThread` |
 | `components/messages/MessageActions.jsx` | hover-reveal, Thread opens panel, Reply stages quote into the right input per routing rule, `aria-label`s |
 | `components/messages/MessageInputForm.jsx` | controlled form, submit + Enter handling, disabled state, optional quote-chip rendering, optional "Also send to channel" checkbox rendering when passed |
@@ -384,8 +403,9 @@ tests — no backend changes.
 - Reply pagination beyond the initial 50.
 - Mark-as-read for threads + unread badges.
 - Thread notifications (per-mention / per-subscription).
-- Quote-reply UI (`quotedParentMessageId`) as a separate hover action.
-- Surfacing thread replies in the main feed via `TShow`.
+- Real-time delivery of arbitrary thread replies into an open thread
+  panel — own ticket, owns the broadcast subject / consumer.
+- Edits and deletes of thread replies — paired with the events ticket.
 
 ## Open questions
 
