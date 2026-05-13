@@ -438,3 +438,53 @@ func RoomCanonicalOperation(s string) (string, bool) {
 	}
 	return op, true
 }
+
+// --- mock-user-service / future user-service builders ---
+
+func UserStatusGetByName(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.status.getByName", account, siteID)
+}
+
+func UserStatusSet(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.status.set", account, siteID)
+}
+
+func UserProfileGetByName(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.profile.getByName", account, siteID)
+}
+
+func UserSubscriptionGetCurrent(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getCurrent", account, siteID)
+}
+
+func UserSubscriptionGetRooms(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getRooms", account, siteID)
+}
+
+func UserSubscriptionGetChannels(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getChannels", account, siteID)
+}
+
+func UserSubscriptionGetDM(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getDM", account, siteID)
+}
+
+func UserSubscriptionGetApps(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getApps", account, siteID)
+}
+
+func UserSubscriptionSubscribeApp(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.subscribeApp", account, siteID)
+}
+
+func UserSubscriptionUnsubscribeApp(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.unsubscribeApp", account, siteID)
+}
+
+func UserRoomSubscriptionGet(account, siteID, roomID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.room.%s.subscription.get", account, siteID, roomID)
+}
+
+func UserAppsList(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.user.%s.apps.list", account, siteID)
+}

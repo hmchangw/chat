@@ -3,6 +3,8 @@ package subject_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -372,5 +374,31 @@ func TestRoomCreateDMSync(t *testing.T) {
 	want := "chat.server.request.room.site-a.create.dm"
 	if got != want {
 		t.Errorf("RoomCreateDMSync: got %q, want %q", got, want)
+	}
+}
+
+func TestUserServiceBuilders(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"status.getByName", subject.UserStatusGetByName("alice", "s1"), "chat.user.alice.request.user.s1.status.getByName"},
+		{"status.set", subject.UserStatusSet("alice", "s1"), "chat.user.alice.request.user.s1.status.set"},
+		{"profile.getByName", subject.UserProfileGetByName("alice", "s1"), "chat.user.alice.request.user.s1.profile.getByName"},
+		{"subscription.getCurrent", subject.UserSubscriptionGetCurrent("alice", "s1"), "chat.user.alice.request.user.s1.subscription.getCurrent"},
+		{"subscription.getRooms", subject.UserSubscriptionGetRooms("alice", "s1"), "chat.user.alice.request.user.s1.subscription.getRooms"},
+		{"subscription.getChannels", subject.UserSubscriptionGetChannels("alice", "s1"), "chat.user.alice.request.user.s1.subscription.getChannels"},
+		{"subscription.getDM", subject.UserSubscriptionGetDM("alice", "s1"), "chat.user.alice.request.user.s1.subscription.getDM"},
+		{"subscription.getApps", subject.UserSubscriptionGetApps("alice", "s1"), "chat.user.alice.request.user.s1.subscription.getApps"},
+		{"subscription.subscribeApp", subject.UserSubscriptionSubscribeApp("alice", "s1"), "chat.user.alice.request.user.s1.subscription.subscribeApp"},
+		{"subscription.unsubscribeApp", subject.UserSubscriptionUnsubscribeApp("alice", "s1"), "chat.user.alice.request.user.s1.subscription.unsubscribeApp"},
+		{"room.subscription.get", subject.UserRoomSubscriptionGet("alice", "s1", "r1"), "chat.user.alice.request.user.s1.room.r1.subscription.get"},
+		{"apps.list", subject.UserAppsList("alice", "s1"), "chat.user.alice.request.user.s1.apps.list"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.got)
+		})
 	}
 }
