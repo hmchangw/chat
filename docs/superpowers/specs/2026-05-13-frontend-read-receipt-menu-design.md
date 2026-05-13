@@ -55,9 +55,9 @@ popover. This spec covers only the read-receipt item.
 5. Dismissal: click outside the menu container, press Escape, or click the
    kebab again. Closing resets `readers/error/loading` so the next open is a
    fresh fetch.
-6. Optimistic message (no server-confirmed `id` yet): the kebab still renders,
-   but its read-receipt row shows `Awaiting send…` in a disabled state and the
-   RPC is not fired.
+6. Pending/unsent messages: not applicable. `MessageInput` does not insert
+   optimistic rows — it publishes and waits for the broadcast event. Every
+   message in the buffer therefore has a server-confirmed `id` already.
 
 ## 5. Architecture
 
@@ -175,11 +175,11 @@ render `Read by 0 of -1`.
 
 ### 6.4 Optimistic / pending messages
 
-The current optimistic-send flow uses a client-generated id; the read-receipt
-RPC requires a server-stored message. The implementation plan will pin down the
-exact pending flag by reading `MessageInput.jsx` and the
-`roomEventsReducer`. While the message is pending, the read-receipt row reads
-`Awaiting send…` and is not interactive; no RPC is fired.
+Not applicable. `MessageInput.jsx` publishes via NATS and waits for the
+`new_message` broadcast event to land in `roomEventsReducer`; no row is
+inserted client-side before the server has confirmed the message. Every
+message in `messages` carries a server-assigned `id`, so the RPC can always
+be fired without a pending-state guard.
 
 ### 6.5 Dismissal
 
@@ -232,9 +232,7 @@ Cases:
     - both names present → `engName chineseName`
     - only engName → `engName`
     - only chineseName + account → `account chineseName` (fallback path)
-12. Optimistic message (pending flag): row rendered as `Awaiting send…`,
-    disabled, RPC never called.
-13. Subject-builder integration: assert `request` is called with the subject
+12. Subject-builder integration: assert `request` is called with the subject
     string from `readReceipt(user.account, room.id, room.siteId)` and the
     payload `{ messageId: msg.id }`.
 
