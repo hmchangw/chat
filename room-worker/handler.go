@@ -858,10 +858,8 @@ func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) stri
 	return ""
 }
 
-// buildDMSubs returns the two DM subs (each names the counterpart, IsSubscribed=false).
-// hssMs is the optional HistorySharedSince in epoch-ms; nil means unrestricted history.
-// When non-nil it's applied to BOTH subs so the cross-site replicated sub carries the
-// same HSS as the local one (per-org restricted-history DM forward-compat).
+// buildDMSubs returns the two DM subs. hssMs is HistorySharedSince in ms
+// (nil = unrestricted); when non-nil it's applied to both subs.
 func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time.Time, hssMs *int64) []*model.Subscription {
 	subs := []*model.Subscription{
 		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, false, acceptedAt),

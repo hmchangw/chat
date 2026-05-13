@@ -271,10 +271,7 @@ func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error
 	return int(count), nil
 }
 
-// CountOwnersOutsideOrg joins subscriptions (owner-role only) for roomID
-// against users on subscription.u.account = users.account, then filters out
-// rows whose users.sectId == orgID. The resulting count is the number of
-// owners who would remain in the room after orgID is removed.
+// CountOwnersOutsideOrg returns owners of roomID whose users.sectId != orgID.
 func (s *MongoStore) CountOwnersOutsideOrg(ctx context.Context, roomID, orgID string) (int, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"roomId": roomID, "roles": model.RoleOwner}}},

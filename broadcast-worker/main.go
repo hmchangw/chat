@@ -37,12 +37,7 @@ type config struct {
 	MongoPassword string `env:"MONGO_PASSWORD"            envDefault:""`
 	MaxWorkers    int    `env:"MAX_WORKERS"               envDefault:"100"`
 	DurableName   string `env:"DURABLE_NAME"              envDefault:"broadcast-worker"`
-	// MaxDeliver caps redelivery attempts. Default 5 (was -1 =
-	// unlimited; performance review flagged that the prior default
-	// let a single poison message NAK forever and eventually starve
-	// every in-flight slot). Set to -1 explicitly if your environment
-	// can't tolerate ANY drop and you have monitoring for stuck
-	// messages.
+	// -1 disables the cap; only safe in environments with stuck-message monitoring.
 	MaxDeliver           int              `env:"MAX_DELIVER"               envDefault:"5"`
 	UserCacheSize        int              `env:"USER_CACHE_SIZE"           envDefault:"10000"`
 	UserCacheTTL         time.Duration    `env:"USER_CACHE_TTL"            envDefault:"5m"`
@@ -126,23 +121,9 @@ func main() {
 	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, jetstream.ConsumerConfig{
 		Durable:   cfg.DurableName,
 		AckPolicy: jetstream.AckExplicitPolicy,
-		// DeliverPolicy only applies at FIRST consumer creation. Existing
-		// durable consumers resume from their last ack regardless. On a
-		// truly-fresh consumer (e.g. a new broadcast-worker variant or a
-		// disaster-recovery rebuild) this avoids re-broadcasting all of
-		// CANONICAL's history; per JetStream semantics: skip everything
-		// before the consumer existed.
+		// Fresh consumer skips backlog; existing ones resume from ack floor (JetStream ignores this on update).
 		DeliverPolicy: jetstream.DeliverNewPolicy,
-		// MaxDeliver caps redelivery attempts. Default 5 (post-R3 perf
-		// review: -1 = unlimited was a throughput cliff -- a single
-		// poison message could NAK forever and eventually starve every
-		// in-flight slot). broadcast-worker is best-effort delivery
-		// (the source of truth is MESSAGES_CANONICAL); a permanently-
-		// poisoned message (e.g. a deleted room) drops after 5 attempts.
-		// Operators set MAX_DELIVER=-1 explicitly only in environments
-		// that can't tolerate ANY drop AND have monitoring for stuck
-		// messages.
-		MaxDeliver: cfg.MaxDeliver,
+		MaxDeliver:    cfg.MaxDeliver,
 	})
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
@@ -161,11 +142,7 @@ func main() {
 	sem := make(chan struct{}, cfg.MaxWorkers)
 	var wg sync.WaitGroup
 
-	// pumpDone signals shutdown to release any goroutine blocked on
-	// the semaphore acquire. Without it, if shutdown triggers while
-	// the pump is waiting on a saturated sem, `iter.Stop` returns but
-	// the pump never exits -- `nc.Drain` then blocks forever (per
-	// Go-expert review).
+	// Unblocks pump goroutine if shutdown races a saturated sem send.
 	pumpDone := make(chan struct{})
 
 	wg.Add(1)
@@ -176,15 +153,12 @@ func main() {
 			if err != nil {
 				return
 			}
-			// wg.Add(1) BEFORE the sem send so a shutdown that races
-			// the acquire still has the outer wg accounted for. The
-			// select lets us bail on shutdown rather than block forever.
 			wg.Add(1)
 			select {
 			case sem <- struct{}{}:
 			case <-pumpDone:
 				wg.Done()
-				_ = msg.Nak() // best-effort; JS redelivers after restart
+				_ = msg.Nak()
 				return
 			}
 			go func() {
@@ -192,9 +166,6 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				// Recover handler panics so a poison message can't crash
-				// the pump or leak its sem slot. NAK so JetStream
-				// redelivers up to MAX_DELIVER, then drops.
 				defer func() {
 					if r := recover(); r != nil {
 						slog.Error("handler panic recovered",
@@ -225,8 +196,6 @@ func main() {
 	hooks := []func(context.Context) error{
 		func(ctx context.Context) error {
 			iter.Stop()
-			// Signal the pump that we're shutting down so any
-			// goroutine blocked on `sem <-` releases its wg slot.
 			close(pumpDone)
 			return nil
 		},

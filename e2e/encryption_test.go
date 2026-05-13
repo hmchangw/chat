@@ -24,39 +24,10 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// TestEncryption_OnSmoke exercises broadcast-worker's ENCRYPTION_ENABLED=true
-// code path end-to-end. The compose stack runs TWO siteA broadcast workers:
-//
-//   - broadcast-worker-a (DURABLE_NAME=broadcast-worker, ENCRYPTION_ENABLED=false)
-//     handles every message in the existing 33 e2e tests.
-//   - broadcast-worker-a-enc (DURABLE_NAME=broadcast-worker-enc,
-//     ENCRYPTION_ENABLED=true) is the variant under test here. It fetches
-//     a room key from valkey, encrypts the ClientMessage body via
-//     pkg/roomcrypto (P-256 ECDH + HKDF-SHA256 + AES-256-GCM), and publishes
-//     a RoomEvent with `Message=nil + EncryptedMessage` populated.
-//
-// Both workers publish to the SAME subject, so the recipient receives TWO
-// broadcasts per message: one plaintext, one encrypted. The test:
-//
-//  1. Generates a fresh P-256 key pair.
-//  2. Seeds it in valkey via roomkeystore (the production interface).
-//  3. Sends a message in a fresh room.
-//  4. Captures broadcasts on the room subject.
-//  5. Asserts at least one carries `EncryptedMessage` (not `Message`),
-//     decrypts it with our private key, and verifies the plaintext body
-//     matches what was sent.
-//
-// This proves the END-TO-END crypto path: gatekeeper accepts plaintext,
-// canonical worker persists, broadcast-worker-a-enc fetches the room key
-// from valkey + encrypts + publishes wire-shaped EncryptedMessage. The
-// previous "skipped because no encrypted worker exists" rationale is
-// resolved by the new DURABLE_NAME env var (post-R3 production change).
+// Drives the encrypted broadcast path end-to-end against
+// broadcast-worker-a-enc: seed a P-256 key in valkey, send a message, find
+// the encrypted RoomEvent on the room subject, decrypt with the seeded key.
 func TestEncryption_OnSmoke(t *testing.T) {
-	// Single-site, per-test room + per-test seeded valkey key under a
-	// unique roomID. broadcast-worker-a-enc is a shared consumer
-	// (durable "broadcast-worker-enc"); each parallel test pulls only
-	// its own room's events because the broadcast subject is keyed by
-	// roomID. Safe for parallel.
 	t.Parallel()
 	ctx := t.Context()
 	site := stack.SiteA
@@ -81,10 +52,7 @@ func TestEncryption_OnSmoke(t *testing.T) {
 	awaitSubscription(t, ctx, site.MongoDB(t), alice.Account, roomID)
 	awaitSubscription(t, ctx, site.MongoDB(t), bob.Account, roomID)
 
-	// 1+2. Generate a P-256 key pair and seed it in valkey via the
-	// production RoomKeyStore interface. Key is stored as a hash at
-	// `room:{roomID}:key` with version=0; broadcast-worker-a-enc reads
-	// it via roomkeystore.Get(roomID) on each message.
+	// Seed a P-256 key in valkey; broadcast-worker-a-enc reads via roomkeystore.Get.
 	priv, err := ecdh.P256().GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	pair := roomkeystore.RoomKeyPair{
@@ -122,10 +90,7 @@ func TestEncryption_OnSmoke(t *testing.T) {
 		10*time.Second,
 	))
 
-	// 5. Drain broadcasts looking for the encrypted RoomEvent for our
-	// msgID. We may see plaintext + encrypted variants for the same
-	// message, plus system events; only the encrypted one with our msgID
-	// satisfies the test contract.
+	// Drain broadcasts; pick the encrypted variant for our msgID.
 	deadline := time.Now().Add(10 * time.Second)
 	var plaintext string
 	var sawEncrypted bool
@@ -141,11 +106,7 @@ func TestEncryption_OnSmoke(t *testing.T) {
 		if len(evt.EncryptedMessage) == 0 {
 			continue
 		}
-		// Encrypted variant: Message must be nil per handler.go:127.
-		// require (not assert) -- subsequent Unmarshal into
-		// roomcrypto.EncryptedMessage is meaningful only when Message==nil;
-		// continuing past a non-nil Message produces a confusing downstream
-		// failure.
+		// Message must be nil on the encrypted variant (handler.go:127).
 		require.Nil(t, evt.Message,
 			"RoomEvent with EncryptedMessage must have Message==nil")
 		var env roomcrypto.EncryptedMessage
@@ -176,16 +137,8 @@ func TestEncryption_OnSmoke(t *testing.T) {
 	t.Logf("decrypted plaintext: %s", plaintext)
 }
 
-// TestEncryption_TamperedCiphertextRejected proves the AEAD authentication
-// path is wired correctly end-to-end. Setup mirrors TestEncryption_OnSmoke
-// exactly — mint a room key, seed it, send a message, wait for the encrypted
-// broadcast. The new step: flip a byte in the captured ciphertext and assert
-// gcm.Open rejects it. If a future refactor swapped HKDF info strings,
-// changed the ECDH curve, or otherwise broke the cipher-binding to the
-// authenticator, this test would FAIL in one of two ways: (a) decryption
-// would fail even WITHOUT tampering (caught by the sister test); (b)
-// tampering would silently succeed (caught here). Either way the regression
-// surfaces immediately.
+// Flips a byte in the captured ciphertext and asserts gcm.Open rejects it.
+// Catches a regression that breaks the AEAD binding between key and tag.
 func TestEncryption_TamperedCiphertextRejected(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -289,12 +242,7 @@ func TestEncryption_TamperedCiphertextRejected(t *testing.T) {
 	require.NoError(t, err, "baseline decrypt of untampered envelope must succeed")
 	require.Contains(t, cleartext, body)
 
-	// --- Tamper with the ciphertext ---
-	// Flip a single byte in the AEAD ciphertext. AES-GCM's tag binds every
-	// ciphertext byte to the authenticator, so a one-bit flip MUST cause
-	// gcm.Open to return an authentication error. We deep-copy the bytes
-	// first so the baseline decrypt above isn't retroactively invalidated
-	// (NextMsg gives us shared []byte slices).
+	// Deep-copy before tampering: NextMsg returns shared []byte slices.
 	require.NotEmpty(t, env.Ciphertext, "ciphertext must be non-empty to tamper")
 	tampered := roomcrypto.EncryptedMessage{
 		Version:            env.Version,
@@ -310,9 +258,7 @@ func TestEncryption_TamperedCiphertextRejected(t *testing.T) {
 			"the AEAD authentication is broken (HKDF parameters, AES key size, "+
 			"or curve has drifted from the encoder)")
 
-	// Belt-and-braces: also flip a nonce byte. Different decryption path
-	// (key derivation is unaffected, but the GCM counter shifts) — should
-	// likewise fail authentication.
+	// Same expectation for a flipped nonce byte.
 	tamperedNonce := roomcrypto.EncryptedMessage{
 		Version:            env.Version,
 		EphemeralPublicKey: append([]byte(nil), env.EphemeralPublicKey...),
@@ -325,11 +271,8 @@ func TestEncryption_TamperedCiphertextRejected(t *testing.T) {
 		"tampered nonce MUST also fail GCM authentication")
 }
 
-// decryptForTest mirrors the production decrypt path in pkg/roomcrypto +
-// broadcast-worker/testhelpers_test.go. We can't import _test.go files
-// across packages, so the algorithm is duplicated here. If
-// pkg/roomcrypto.Encode's algorithm parameters ever change (HKDF info
-// string, AES key size, etc.), this function must mirror them in lockstep.
+// Mirrors pkg/roomcrypto + broadcast-worker/testhelpers_test.go (can't
+// import _test.go across packages). Keep in lockstep with Encode().
 func decryptForTest(env *roomcrypto.EncryptedMessage, roomPrivateKey []byte) (string, error) {
 	privKey, err := ecdh.P256().NewPrivateKey(roomPrivateKey)
 	if err != nil {

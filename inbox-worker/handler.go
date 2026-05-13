@@ -44,14 +44,8 @@ func NewHandler(store InboxStore) *Handler {
 	return &Handler{store: store}
 }
 
-// HandleJetStreamMsg dispatches a JetStream message to HandleEvent and then
-// signals the appropriate acknowledgement back to the broker:
-//   - success → Ack (delivery complete)
-//   - errors.Is(err, errPermanent) → Term (do NOT redeliver; the payload is
-//     structurally invalid and will never succeed on retry — e.g. bad JSON,
-//     missing required header. Letting these NACK forever would clog the
-//     consumer's ack-pending state)
-//   - any other error → Nak (transient; redeliver per the consumer's policy)
+// HandleJetStreamMsg dispatches the message and ACK/NAK/TERM-s based on the
+// returned error: nil→Ack, errPermanent→Term (drop, no retry), else→Nak.
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	if err := h.HandleEvent(ctx, msg.Data()); err != nil {
 		slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(ctx))
@@ -75,10 +69,6 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 	var evt model.OutboxEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
-		// Malformed JSON is a permanent payload defect; retrying it
-		// won't help and would keep an ack-pending slot forever. Wrap
-		// in errPermanent so HandleJetStreamMsg uses msg.Term() instead
-		// of msg.Nak().
 		return fmt.Errorf("unmarshal outbox event: %w: %w", err, errPermanent)
 	}
 

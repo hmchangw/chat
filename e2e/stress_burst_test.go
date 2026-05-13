@@ -1,16 +1,7 @@
 //go:build e2e
 
-// Stress / burst tests. The rest of the suite sends ONE message at a time
-// and verifies the happy path. A 100-message burst shakes out gatekeeper
-// backpressure + canonical stream ordering + message-worker concurrency
-// in a way single-message tests can't.
-//
-// Failure modes this targets:
-//   - Gatekeeper drops messages under load (would manifest as <100 acks).
-//   - Canonical stream re-orders messages by createdAt (would manifest as
-//     monotonic-violations on the consumer side).
-//   - Cassandra writes drop entries under concurrent message-worker fan-out.
-//   - X-Request-ID propagation breaks under concurrency.
+// Burst tests catch gatekeeper drops, canonical re-ordering, Cassandra
+// write loss, and request-ID propagation breaks under concurrency.
 
 package e2e
 
@@ -31,11 +22,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// TestStress_BurstHundredMessages: fire 100 distinct messages from alice
-// into a fresh channel as fast as the harness can publish, then verify
-// 100 distinct rows land in Cassandra and 100 distinct broadcasts reach
-// bob. Catches: gatekeeper drop-on-overflow, broadcast-worker fan-out
-// loss, message-worker Cassandra batch failure.
+// Fire 100 distinct messages, then assert 100 Cassandra rows + 100 broadcasts.
 func TestStress_BurstHundredMessages(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -74,11 +61,8 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 		msgIDs[i] = idgen.GenerateMessageID()
 	}
 
-	// Fire N publishes concurrently. Bounded fan-out (8 in flight) so the
-	// gatekeeper isn't strictly testing in-burst-of-100 backpressure
-	// (which is more of a NATS flow-control test); 8 is enough concurrency
-	// to expose any cross-message state bugs without depending on
-	// pull-iterator batch sizing.
+	// Bounded fan-out (8 in flight): exposes cross-message state bugs
+	// without depending on pull-iterator batch sizing.
 	const concurrency = 8
 	var (
 		wg         sync.WaitGroup
@@ -115,16 +99,11 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 	t.Logf("100 sends in %s; failures=%d", time.Since(startSend), sendFails.Load())
 	require.Zero(t, sendFails.Load(), "all 100 gatekeeper-acks must succeed")
 
-	// Wait for message-worker to write every burst message to Cassandra.
-	// Wait by msgID for parallel safety (the seq-based wait would race
-	// with sibling tests on the shared message-worker durable). Sample
-	// the last msgID we sent -- once it's in Cassandra, message-worker
-	// has processed everything emitted before it (in-order ack on a
-	// single-partition consumer).
+	// Wait by msgID (seq-based wait would race sibling tests on the shared
+	// durable); the last msgID's arrival implies all prior in-order acks.
 	awaitMessageOnSite(t, ctx, site, msgIDs[N-1])
 
-	// Drain bob's broadcasts. We may see system events + user messages
-	// interleaved; collect user-message IDs into a set.
+	// Drain bob's broadcasts; system events interleave with user messages.
 	seen := make(map[string]bool, N)
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) && len(seen) < N {
@@ -155,12 +134,8 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 	sort.Strings(missing)
 	assert.Empty(t, missing, "broadcasts must reach bob for every msgID; missing=%v", missing)
 
-	// Cassandra: each msgID must have EXACTLY ONE row in messages_by_id
-	// (the dedup table; PK = message_id). Counting messages_by_room with
-	// `>= N` would have been ambiguous because room_created +
-	// members_added system events pad that count by ~2 -- a regression
-	// dropping up to 2 user messages would still pass. Per-msgID lookup
-	// in messages_by_id (the dedup view) is the tight assertion.
+	// messages_by_id (PK = message_id) is the dedup table; per-msgID
+	// lookup is tight, unlike messages_by_room which system events pad.
 	sess := site.CassandraSession(t)
 	defer sess.Close()
 	for _, id := range msgIDs {

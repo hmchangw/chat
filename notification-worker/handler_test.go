@@ -184,10 +184,7 @@ func TestHandleMessage_SoleMember(t *testing.T) {
 	}
 }
 
-// TestHandleMessage_RespectsPreferences asserts the post-R3 gating
-// rules: a subscriber with Alert=false OR IsSubscribed=false is
-// skipped, even if they're not the sender. Catches the previous
-// silent broadcast-to-all-members bug.
+// Subscribers with Alert=false or IsSubscribed=false must be skipped.
 func TestHandleMessage_RespectsPreferences(t *testing.T) {
 	lookup := &stubMemberLookup{
 		subs: map[string][]model.Subscription{

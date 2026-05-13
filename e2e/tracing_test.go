@@ -1,12 +1,7 @@
 //go:build e2e
 
-// Tracing-propagation tests. Pair with request_id_test.go which covers
-// X-Request-ID. The traceparent header is the W3C trace-context format
-// (`00-{trace_id}-{span_id}-{flags}`) used by OpenTelemetry. Even with
-// OTEL_SDK_DISABLED=true (the e2e default), workers must NOT strip
-// inbound traceparent headers from the publish path -- the propagation
-// is what tools downstream (Tempo, Jaeger, etc.) hang correlation off
-// of, regardless of whether THIS process emitted spans.
+// W3C traceparent propagation through workers. Even with OTEL_SDK_DISABLED=true,
+// the header must survive the publish path so downstream tools can correlate.
 
 package e2e
 
@@ -24,11 +19,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// TestTracing_TraceparentPropagatesThroughBroadcastChain mirrors the
-// shape of TestRequestID_PropagatesThroughBroadcastChain but for the
-// W3C `traceparent` header. Catches regressions where the workers re-
-// publish broadcasts without copying the inbound header (silent loss
-// of distributed-trace correlation).
+// Catches workers re-publishing broadcasts without copying the inbound traceparent.
 func TestTracing_TraceparentPropagatesThroughBroadcastChain(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -56,10 +47,7 @@ func TestTracing_TraceparentPropagatesThroughBroadcastChain(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = bobSub.Unsubscribe() })
 
-	// Hand-crafted W3C traceparent: version 00, random 16-byte trace id,
-	// random 8-byte span id, sampled flag. The trace_id slot is the one
-	// downstream tools join on -- if the workers strip the header, the
-	// e2e correlation collapses regardless of span/flag values.
+	// Hand-crafted W3C traceparent: version-traceid-spanid-sampled.
 	const traceparent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
 
 	requestID := idgen.GenerateRequestID()
@@ -103,25 +91,15 @@ func TestTracing_TraceparentPropagatesThroughBroadcastChain(t *testing.T) {
 			continue
 		}
 		got := broadcastMsg.Header.Get("traceparent")
-		// Per OTel JetStream semconv each delivery is a fresh consumer
-		// span LINKED to the producer span -- the trace_id does NOT flow
-		// verbatim through the pull-consumer chain (alice → gatekeeper →
-		// canonical → broadcast-worker). The end-to-end correlation is
-		// the trace-link (which lives in the span data, not on the wire).
-		// What this test CAN assert on the wire:
-		//   1. broadcast carries a non-empty traceparent (otelnats is
-		//      injecting at all -- the regression class this test exists
-		//      to catch: a future natsutil.NewMsg refactor returning a
-		//      nil header and silently dropping traceparent).
-		//   2. The format is valid W3C trace-context (version-trace_id-
-		//      span_id-flags, 55 chars total).
+		// OTel JetStream semconv: trace_id doesn't flow verbatim through
+		// pull-consumer chains. On-wire we can still assert: a non-empty
+		// header (otelnats is injecting) and valid W3C format.
 		require.NotEmpty(t, got,
 			"broadcast must carry traceparent; got header %v", broadcastMsg.Header)
 		assert.Len(t, got, 55,
 			"traceparent must be 55-char W3C trace-context; got %q", got)
 		assert.Equal(t, "00", got[:2], "version segment must be 00")
-		// trace_id segment must be 32 hex chars, span_id 16 hex chars,
-		// and neither may be all zeros (that's the "invalid" sentinel).
+		// All-zeros trace_id/span_id is the W3C "invalid" sentinel.
 		traceID := got[3:35]
 		spanID := got[36:52]
 		assert.NotEqual(t, "00000000000000000000000000000000", traceID,
@@ -129,8 +107,7 @@ func TestTracing_TraceparentPropagatesThroughBroadcastChain(t *testing.T) {
 		assert.NotEqual(t, "0000000000000000", spanID,
 			"span_id must not be all-zeros (invalid)")
 		t.Logf("inbound traceparent: %s", traceparent)
-		t.Logf("broadcast traceparent: %s (different trace_id is expected per "+
-			"OTel jetstream semconv -- consumer-spans link rather than child)", got)
+		t.Logf("broadcast traceparent: %s (different trace_id expected: consumer-spans link)", got)
 		matched = true
 		break
 	}

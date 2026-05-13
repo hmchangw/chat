@@ -1,17 +1,8 @@
 //go:build e2e
 
-// Chaos tests: kill a backing dependency mid-flight and assert the
-// service-layer recovers to a consistent state once the dep returns.
-// These tests intentionally don't try to assert ZERO data loss --
-// killing mongo mid-write is allowed to drop the in-flight messages.
-// What they DO assert: (a) the system doesn't enter a stuck state
-// after the dep comes back, and (b) subsequent traffic flows
-// normally.
-//
-// All chaos tests are SKIPPED under E2E_REUSE_STACK because they
-// disrupt shared backing services that other parallel tests depend
-// on. They run under `make e2e` (testcontainers) where each
-// invocation owns the stack.
+// Chaos tests kill a backing dep mid-flight and verify the service
+// layer unstucks once it returns. Skipped under E2E_REUSE_STACK
+// because they disrupt shared deps.
 
 package e2e
 
@@ -31,10 +22,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// TestChaos_MongoMidWriteRecovers: send a message, stop mongo-a briefly
-// while the canonical worker is still draining, restart mongo-a, then
-// send a SECOND message and assert it lands in Cassandra normally. This
-// is "the system unwedges after a dep blip" not "no data loss."
+// Stops mongo-a mid-flight; asserts a post-restart send lands in Cassandra.
 func TestChaos_MongoMidWriteRecovers(t *testing.T) {
 	skipUnderReuse(t, "Chaos test stops mongo-a; would disrupt parallel tests")
 
@@ -78,18 +66,12 @@ func TestChaos_MongoMidWriteRecovers(t *testing.T) {
 	))
 	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", preSeq+1)
 
-	// Stop mongo-a. Anyone holding a connection will get io.EOF on
-	// their next op. JetStream isn't affected -- only direct mongo
-	// users (room-service, message-worker on cassandra-driver, etc.
-	// actually only services with mongo deps).
+	// Stop mongo-a: direct mongo users get io.EOF; JetStream unaffected.
 	mongo := newWorkerLifecycle(t, ctx, "mongo-a")
 	mongo.Stop(t, ctx)
 	t.Logf("mongo-a stopped at %s", time.Now().Format(time.RFC3339Nano))
 
-	// While mongo-a is down, fire a publish. Gatekeeper accepts (it
-	// doesn't talk to mongo), message-worker writes to cassandra
-	// (which is up). Workers that DO touch mongo (room-service?
-	// notification-worker?) will retry on next message.
+	// Mid-outage publish: gatekeeper has no mongo dep so this lands.
 	msgIDDuring := idgen.GenerateMessageID()
 	reqIDDuring := idgen.GenerateRequestID()
 	_ = sendAndAwaitReply(
@@ -100,10 +82,7 @@ func TestChaos_MongoMidWriteRecovers(t *testing.T) {
 		},
 		5*time.Second,
 	)
-	// We do NOT assert success here; gatekeeper may or may not reply
-	// in the mongo-down window (most likely succeeds since gatekeeper
-	// only validates on cassandra/jetstream). The point of this send
-	// is to ensure SOMETHING was in-flight when mongo went down.
+	// No success assertion: the point is just to have an in-flight send.
 
 	// Restart mongo-a.
 	mongo.Start(t, ctx)
@@ -196,11 +175,8 @@ func TestChaos_CassandraMidWriteRecovers(t *testing.T) {
 	cass.Start(t, ctx)
 	t.Logf("cass-a restarted")
 
-	// Wait for cass-a to be reachable. Probes directly via gocql (NOT
-	// site.CassandraSession, which calls require.NoError and triggers
-	// runtime.Goexit on connect failure -- recover() can't catch Goexit,
-	// so the previous defer-recover() was misleading and broke the
-	// Eventually retry loop).
+	// Probe directly via gocql; site.CassandraSession's require.NoError
+	// triggers Goexit which recover() can't catch (breaks Eventually).
 	require.Eventually(t, func() bool {
 		cluster := gocql.NewCluster("localhost:19042")
 		cluster.Keyspace = "chat"

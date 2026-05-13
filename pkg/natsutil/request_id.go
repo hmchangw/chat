@@ -49,13 +49,8 @@ func HeaderForContext(ctx context.Context) nats.Header {
 	return nats.Header{RequestIDHeader: []string{id}}
 }
 
-// NewMsg builds a *nats.Msg with subj, data, and X-Request-ID drawn from
-// ctx. The Header is always allocated (never nil) for symmetry with
-// otelnats's publish paths -- both otelnats.Conn.PublishMsg and
-// oteljetstream.JS.PublishMsg defensively allocate `msg.Header` before
-// invoking the W3C propagator, so propagation is correct regardless;
-// this just keeps `msg.Header == nil` from being a hidden invariant on
-// the producer side. Cost is ~48 bytes per call (empty map header).
+// NewMsg builds a *nats.Msg with subj, data, and X-Request-ID drawn from ctx.
+// Header is always allocated so callers can safely add fields without a nil check.
 func NewMsg(ctx context.Context, subj string, data []byte) *nats.Msg {
 	hdr := nats.Header{}
 	if id := RequestIDFromContext(ctx); id != "" {

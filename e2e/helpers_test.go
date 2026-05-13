@@ -26,27 +26,14 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-// requestReply is a thin wrapper over nats.Conn.Request that JSON-marshals
-// the request, JSON-unmarshals the reply (if into != nil), and surfaces
-// model.ErrorResponse as a Go error.
-//
-// Used for classic synchronous request/reply handlers: room-service's room
-// create/list/get, room/member RPCs, history-service.LoadHistory, search-
-// service. NOT for message-gatekeeper's send path, which uses async out-of-
-// band reply via subject.UserResponse -- use sendAndAwaitReply for that.
-//
-// On error reply: returns an *errorReply wrapping the model.ErrorResponse;
-// callers that need to inspect RoomID (e.g. DM idempotency per R1 11.B)
-// can `errors.As(err, &er)` and read er.Resp.RoomID.
+// JSON-marshal request, await reply, decode ErrorResponse to *errorReply.
+// Use sendAndAwaitReply for msg.send (async UserResponse path).
 func requestReply(conn *nats.Conn, subj string, req any, timeout time.Duration, into any) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
-	// Every request carries an X-Request-ID header. room-service in
-	// particular rejects requests that lack one (errMissingRequestID).
-	// idgen.GenerateRequestID returns a UUIDv7 in hyphenated form, which
-	// matches the natsutil/idgen contract.
+	// room-service rejects requests missing X-Request-ID.
 	outbound := &nats.Msg{
 		Subject: subj,
 		Data:    body,
@@ -57,8 +44,7 @@ func requestReply(conn *nats.Conn, subj string, req any, timeout time.Duration, 
 		return fmt.Errorf("request %s: %w", subj, err)
 	}
 
-	// Try to decode as ErrorResponse first; the server returns it on the
-	// same reply path with no special marker, so we sniff the JSON shape.
+	// ErrorResponse rides the same reply path; sniff the JSON shape.
 	var errResp model.ErrorResponse
 	if jerr := json.Unmarshal(msg.Data, &errResp); jerr == nil && errResp.Error != "" {
 		return &errorReply{Resp: errResp, Subject: subj}
@@ -93,14 +79,8 @@ func asErrorReply(err error) *errorReply {
 	return nil
 }
 
-// sendAndAwaitReply publishes a JetStream-captured message-send request and
-// waits for message-gatekeeper's async reply on subject.UserResponse(account,
-// requestID). Use ONLY for the msg.send subject (which is JS-published +
-// async-replied per amendment R1 10.B). For classic NATS request/reply use
-// requestReply.
-//
-// On error reply (model.ErrorResponse with non-empty Error), returns an
-// *errorReply.
+// Publishes msg.send and awaits gatekeeper's async reply on UserResponse.
+// On error reply, returns *errorReply.
 func sendAndAwaitReply(t *testing.T, conn *nats.Conn, account, requestID, sendSubj string, payload any, timeout time.Duration) error {
 	t.Helper()
 
@@ -125,21 +105,13 @@ func sendAndAwaitReply(t *testing.T, conn *nats.Conn, account, requestID, sendSu
 	return nil
 }
 
-// userResponseSubject is here rather than calling subject.UserResponse so
-// that helpers_test.go has a single import surface; the format is pinned
-// by pkg/subject (`chat.user.{account}.response.{requestID}`) and we'd
-// fail-loud on drift via the federation_test.go-style shape pinning.
-// The pkg/subject builder is the canonical source; keep this in sync.
+// Mirrors subject.UserResponse; keep in sync with pkg/subject.
 func userResponseSubject(account, requestID string) string {
 	return fmt.Sprintf("chat.user.%s.response.%s", account, requestID)
 }
 
-// awaitDurableReady polls until a named durable consumer exists on a stream.
-// Confirms the worker's startup completed CreateOrUpdateConsumer; does NOT
-// confirm the worker has parked on a fetch.
-//
-// Per amendment R1 10.C: replaces the chapter-spec awaitConsumerReady
-// (which relied on NumWaiting > 0 -- racy and didn't filter by durable).
+// Polls until the named durable consumer exists; doesn't prove the worker
+// has parked on a fetch.
 func awaitDurableReady(t *testing.T, ctx context.Context, js jetstream.JetStream, streamName, durable string) {
 	t.Helper()
 	require.Eventually(t, func() bool {
@@ -186,36 +158,16 @@ func awaitMessage(t *testing.T, sub *nats.Subscription, timeout time.Duration) *
 	return msg
 }
 
-// awaitMessageOnSite is the ergonomic wrapper most callers should use.
-// It opens (and registers cleanup for) a Cassandra session on the given
-// site, then delegates to awaitMessageByID. Replaces the 3-line boilerplate
-//
-//	sess := site.CassandraSession(t)
-//	defer sess.Close()
-//	awaitMessageByID(t, ctx, sess, msgID)
-//
-// with a single call. The deferred Close is unnecessary because
-// CassandraSession registers t.Cleanup(sess.Close); the wrapper keeps
-// that promise so callers don't have to remember.
+// awaitMessageOnSite opens a Cassandra session on the site and polls for
+// msgID. Most callers want this; awaitMessageByID is for the rare case where
+// the test already holds a session.
 func awaitMessageOnSite(t *testing.T, ctx context.Context, site harness.SiteEndpoints, msgID string) {
 	t.Helper()
-	sess := site.CassandraSession(t)
-	awaitMessageByID(t, ctx, sess, msgID)
+	awaitMessageByID(t, ctx, site.CassandraSession(t), msgID)
 }
 
-// awaitMessageByID polls Cassandra's messages_by_id table until a row with
-// the given message_id appears. Use this INSTEAD of awaitCanonicalAcked
-// when the test runs under t.Parallel() on a shared canonical durable
-// (per testing-automation reviewer): the seq-based wait races because
-// AckFloor advances on whichever message finishes first, so a parallel
-// sibling's message-worker ack can satisfy the wait before YOUR message
-// is in Cassandra.
-//
-// Polls the dedup view directly: PRIMARY KEY (message_id, created_at)
-// returns exactly one row when the write has landed. Times out after
-// 15s — typical observed latency is sub-second.
-//
-// Most callers should use awaitMessageOnSite (handles session lifecycle).
+// awaitMessageByID polls chat.messages_by_id by PK until the row appears.
+// Parallel-safe (no seq-based AckFloor race).
 func awaitMessageByID(t *testing.T, ctx context.Context, sess *gocql.Session, msgID string) {
 	t.Helper()
 	require.Eventually(t, func() bool {
@@ -233,12 +185,9 @@ func awaitMessageByID(t *testing.T, ctx context.Context, sess *gocql.Session, ms
 		msgID)
 }
 
-// awaitSubscription waits until the named account has a subscription record
-// for the given roomID in the site's mongo. CreateRoomReply returns BEFORE
-// room-worker persists the subscriptions (it's a "request accepted"
-// acknowledgement, not a "data is durable" confirmation). Sending to the
-// room before this point trips the gatekeeper's "user is not subscribed"
-// check.
+// awaitSubscription polls mongo until (account, roomID) has a subscription.
+// CreateRoomReply ack-s before room-worker writes; gatekeeper rejects sends
+// before the subscription lands.
 func awaitSubscription(t *testing.T, ctx context.Context, db *mongo.Database, account, roomID string) {
 	t.Helper()
 	subs := db.Collection("subscriptions")
@@ -252,41 +201,18 @@ func awaitSubscription(t *testing.T, ctx context.Context, db *mongo.Database, ac
 		"subscription for account=%s roomId=%s never persisted", account, roomID)
 }
 
-// registerRoomCleanup deletes a room's rows from all listed sites on test
-// teardown. Without this, state accumulates across runs: subscriptions,
-// rooms, room_members, thread_subscriptions collections grow monotonically,
-// Cassandra messages_by_room partitions stay forever, ES messages-* / user-
-// room-* docs persist, and Valkey room-key entries leak. Tests that count
-// or list start to drift.
-//
-// Cleanup is per-site and best-effort across four backends:
-//
-//   - Mongo (always): subscriptions, rooms, room_members, thread_subscriptions,
-//     thread_rooms. Matches roomId / rid / _id field names.
-//   - Cassandra (only when SiteDB.Cassandra is set): chat.messages_by_room and
-//     chat.thread_messages_by_room, partitioned by room_id, so they delete in
-//     O(1). The chat.messages_by_id dedup view CANNOT be cleaned by room (its
-//     PK is message_id, not room_id); rows leak there permanently — tests that
-//     count messages_by_id rows globally must account for that drift.
-//   - Elasticsearch (only when SiteDB.ESURL is set): delete-by-query
-//     {"term":{"roomId":"<rid>"}} against messages-* and user-room-* indices.
-//   - Valkey (only when SiteDB.ValkeyAddr is set): DEL room:<rid>:key and
-//     DEL room:<rid>:key:prev for the encryption room-key store.
-//
-// Every Cassandra/ES/Valkey step logs and continues on error so a failing
-// teardown can't mask the actual test failure. Mongo DeleteMany errors are
-// also swallowed (idempotent — safe to call even if no rows exist).
-//
-// Per test-quality reviewer's must-fix #3 + testing-automation reviewer's
-// expansion.
+// registerRoomCleanup deletes a room's rows from each listed site's backends
+// at test teardown: Mongo (always), and Cassandra/ES/Valkey when their fields
+// are set on SiteDB. messages_by_id cannot be room-keyed (its PK is
+// message_id), so rows leak there. All steps are best-effort: errors log and
+// continue so teardown can't mask a real test failure.
 func registerRoomCleanup(t *testing.T, sites []SiteDB, roomID string) {
 	t.Helper()
 	if roomID == "" {
 		return
 	}
 	t.Cleanup(func() {
-		// Use a fresh context: the test's context may already be canceled
-		// by t.Cleanup ordering.
+		// Fresh context: t.Cleanup ordering may have canceled the test ctx.
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		for _, sd := range sites {
@@ -299,8 +225,7 @@ func registerRoomCleanup(t *testing.T, sites []SiteDB, roomID string) {
 }
 
 // cleanupMongo deletes the per-room rows from the high-churn collections.
-// Errors are intentionally swallowed: cleanup must not mask test failures,
-// and DeleteMany on a missing match returns DeletedCount=0 (not an error).
+// Errors are swallowed (cleanup must not mask test failures).
 func cleanupMongo(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
 	t.Helper()
 	if sd.DB == nil {
@@ -314,9 +239,7 @@ func cleanupMongo(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
 		"thread_rooms",
 	} {
 		coll := sd.DB.Collection(collName)
-		// Match a few common field names that carry the roomID.
-		// CountDocuments-style filter is cheaper than a $or here;
-		// the worst case is two passes per collection.
+		// Three single-key filters (worst case 3 passes) beats a $or scan.
 		_, _ = coll.DeleteMany(ctx, bson.M{"roomId": roomID})
 		_, _ = coll.DeleteMany(ctx, bson.M{"rid": roomID})
 		_, _ = coll.DeleteMany(ctx, bson.M{"_id": roomID})
@@ -324,8 +247,7 @@ func cleanupMongo(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
 }
 
 // cleanupCassandra drops message history for the room from the two by-room
-// tables. The messages_by_id dedup view has PK=message_id and CANNOT be
-// cleaned per-room without a full scan — accepted leak, documented above.
+// tables. messages_by_id leaks (PK=message_id, not room_id).
 func cleanupCassandra(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
 	t.Helper()
 	if sd.Cassandra == nil {
@@ -344,16 +266,9 @@ func cleanupCassandra(t *testing.T, ctx context.Context, sd SiteDB, roomID strin
 	}
 }
 
-// cleanupElasticsearch removes per-room ES docs from both the message index
-// and the user-room index via best-effort delete-by-query. We hit the index
-// wildcards messages-* and user-room-* so the cleanup is robust to per-site
-// index naming.
-//
-// NO refresh=true (per perf review): each forced refresh costs 50-150ms on
-// containerized ES; with 23 parallel tests × 2 sites × 2 indices that adds
-// 5-15s wall-clock per run. The deleted docs become invisible at the next
-// auto-refresh (200ms via the e2e search-init template); no test reads ES
-// post-cleanup within that window.
+// cleanupElasticsearch delete-by-querys the room from messages-* and
+// user-room-* indices. Skip refresh=true: the 200ms auto-refresh is
+// sufficient and the forced flush costs 5-15s/run across the suite.
 func cleanupElasticsearch(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
 	t.Helper()
 	if sd.ESURL == "" {
@@ -385,8 +300,7 @@ func cleanupElasticsearch(t *testing.T, ctx context.Context, sd SiteDB, roomID s
 			continue
 		}
 		_ = resp.Body.Close()
-		// 404 is fine (index not yet created on this site). 409 is fine
-		// (conflicts=proceed is best-effort). Anything else: log + continue.
+		// 404 (no index yet) and 409 (conflicts=proceed) are fine.
 		if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
 			t.Logf("cleanup es status site=%s index=%s roomID=%s: %d (ignoring)",
 				sd.SiteID, indexPattern, roomID, resp.StatusCode)
@@ -394,10 +308,7 @@ func cleanupElasticsearch(t *testing.T, ctx context.Context, sd SiteDB, roomID s
 	}
 }
 
-// cleanupValkey drops the room encryption key entries written by
-// SeedRoomKey / broadcast-worker. The key format mirrors
-// roomkeystore.ValkeyStore (`room:<rid>:key` and `room:<rid>:key:prev`);
-// DEL is idempotent so missing keys are a no-op.
+// cleanupValkey drops room:<rid>:key{,:prev} entries (roomkeystore).
 func cleanupValkey(t *testing.T, ctx context.Context, sd SiteDB, roomID string) {
 	t.Helper()
 	if sd.ValkeyAddr == "" {
@@ -416,14 +327,9 @@ func cleanupValkey(t *testing.T, ctx context.Context, sd SiteDB, roomID string) 
 	}
 }
 
-// SiteDB pairs a site label with the per-backend handles registerRoomCleanup
-// uses for teardown. Tests commonly want to clean both sites (cross-site
-// invite leaves rows on mongo-b) so this lets them pass a slice.
-//
-// Only DB is required for backward compatibility with existing call sites.
-// Cassandra / ESURL / ValkeyAddr are optional: when zero, the corresponding
-// cleanup step is skipped silently. New tests should fill them in to keep
-// the four backends bounded across long REUSE sessions.
+// SiteDB carries the per-backend handles registerRoomCleanup needs. Only DB
+// is required; missing optional fields silently skip that backend's cleanup.
+// Use asSiteDB to populate everything.
 type SiteDB struct {
 	SiteID     string
 	DB         *mongo.Database
@@ -432,15 +338,8 @@ type SiteDB struct {
 	ValkeyAddr string
 }
 
-// asSiteDB returns a fully-populated SiteDB for the given site. Use this
-// at every `registerRoomCleanup` call site instead of constructing a
-// partial `{SiteID, DB}` literal -- the partial form silently skips the
-// Cassandra/ES/Valkey cleanup paths (DX reviewer noted that 16 of 18
-// callsites were leaving the new cleanups as dead code).
-//
-// The harness handles register the corresponding cleanup hooks
-// (MongoDB, CassandraSession), so the test doesn't need to think about
-// session lifetime.
+// asSiteDB returns a fully-populated SiteDB so registerRoomCleanup catches
+// every backend. Partial `{SiteID, DB}` literals silently skip Cassandra/ES/Valkey.
 func asSiteDB(t *testing.T, site harness.SiteEndpoints) SiteDB {
 	t.Helper()
 	return SiteDB{
