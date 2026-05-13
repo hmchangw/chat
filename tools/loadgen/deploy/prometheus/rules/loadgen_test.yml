@@ -1,0 +1,168 @@
+# promtool synthetic rule tests for loadgen.yml
+# Run with: promtool test rules loadgen_test.yml
+# Or via: make validate-rules (from tools/loadgen/deploy/)
+
+rule_files:
+  - loadgen.yml
+
+evaluation_interval: 30s
+
+tests:
+  # -----------------------------------------------------------------------
+  # Test 1: LoadgenUntrustedRunActive fires when verdict=UNTRUSTED is 1
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_run_quality{verdict="UNTRUSTED"}'
+        values: '1 1 1 1'   # t=0s, 30s, 60s, 90s — exceeds 1m for= threshold
+      - series: 'loadgen_run_quality{verdict="TRUSTED"}'
+        values: '0 0 0 0'
+    alert_rule_test:
+      - alertname: LoadgenUntrustedRunActive
+        eval_time: 90s
+        exp_alerts:
+          - exp_labels:
+              alertname: LoadgenUntrustedRunActive
+              severity: warning
+              component: loadgen
+              verdict: UNTRUSTED
+            exp_annotations:
+              summary: "Loadgen run is UNTRUSTED — numbers cannot be defended"
+              description: "verdict=UNTRUSTED — see USAGE.md#untrusted-run for triage"
+
+  # -----------------------------------------------------------------------
+  # Test 2: LoadgenUntrustedRunActive does NOT fire for TRUSTED verdict
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_run_quality{verdict="TRUSTED"}'
+        values: '1 1 1 1'
+      - series: 'loadgen_run_quality{verdict="UNTRUSTED"}'
+        values: '0 0 0 0'
+    alert_rule_test:
+      - alertname: LoadgenUntrustedRunActive
+        eval_time: 90s
+        exp_alerts: []
+
+  # -----------------------------------------------------------------------
+  # Test 3: LoadgenUntrustedRunActive does NOT fire before 1m for= window
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_run_quality{verdict="UNTRUSTED"}'
+        values: '1 1'   # only t=0s and t=30s — 30s total, under the 1m for= threshold
+    alert_rule_test:
+      - alertname: LoadgenUntrustedRunActive
+        eval_time: 30s
+        exp_alerts: []   # pending, not yet firing at 30s
+
+  # -----------------------------------------------------------------------
+  # Test 4: LoadgenSelfSaturation fires when rate(saturated errors) > 1/s
+  # Rate over 1m window: need enough increments so rate > 1.
+  # Series uses 0+90x4 → values 0, 90, 180, 270, 360 at t=0,30s,60s,90s,120s
+  # rate over [1m] at 90s = (180-0)/60 = 3.0/s → fires (>1)
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_request_errors_total{preset="realistic",scenario="history-read",kind="*",phase="measured",reason="saturated"}'
+        values: '0+90x4'   # 0, 90, 180, 270 — rate ≈ 3/s over [1m]
+    alert_rule_test:
+      - alertname: LoadgenSelfSaturation
+        eval_time: 90s
+        exp_alerts:
+          - exp_labels:
+              alertname: LoadgenSelfSaturation
+              severity: warning
+              component: loadgen
+              preset: realistic
+              scenario: history-read
+              kind: "*"
+              phase: measured
+              reason: saturated
+            exp_annotations:
+              summary: "Loadgen generator self-saturated (request loop falling behind tick rate)"
+              description: "Tick loop dropped >1 send/s sustained 1m — generator can't keep up. See USAGE.md#self-saturation"
+
+  # -----------------------------------------------------------------------
+  # Test 5: LoadgenSelfSaturation does NOT fire below threshold
+  # rate = 30/60 = 0.5/s → does not exceed >1
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_request_errors_total{preset="realistic",scenario="history-read",kind="*",phase="measured",reason="saturated"}'
+        values: '0+30x4'   # 0, 30, 60, 90 — rate = 0.5/s over [1m]
+    alert_rule_test:
+      - alertname: LoadgenSelfSaturation
+        eval_time: 90s
+        exp_alerts: []
+
+  # -----------------------------------------------------------------------
+  # Test 6: LoadgenAsyncAckBacklog fires when backlog gap sustained >5m
+  # published rate - async_ack error rate > 100/s for 5m
+  # Use large increments so rate math clearly exceeds threshold.
+  # 12 steps at 30s interval = 6 minutes of data.
+  # published: 0+9000x12 → rate = 9000/30 = 300/s
+  # async_ack: 0+0x12     → rate = 0/s
+  # gap = 300 - 0 = 300 > 100, sustained for 5m → fires at 360s
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_published_total{preset="realistic",phase="measured",conn_id="c1",rate_bucket="high"}'
+        values: '0+9000x12'
+      - series: 'loadgen_publish_errors_total{preset="realistic",phase="measured",reason="async_ack"}'
+        values: '0+0x12'
+    alert_rule_test:
+      - alertname: LoadgenAsyncAckBacklog
+        eval_time: 360s
+        exp_alerts:
+          - exp_labels:
+              alertname: LoadgenAsyncAckBacklog
+              severity: warning
+              component: loadgen
+            exp_annotations:
+              summary: "Loadgen async-publish ack backlog growing"
+              description: "Queued/acked gap >100/s sustained 5m — JetStream is falling behind. See USAGE.md#async-ack-backlog"
+
+  # -----------------------------------------------------------------------
+  # Test 7: LoadgenAsyncAckBacklog does NOT fire when acks keep up
+  # When async_ack errors ≈ published rate, gap ≈ 0 → no alert
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_published_total{preset="realistic",phase="measured",conn_id="c1",rate_bucket="high"}'
+        values: '0+9000x12'
+      - series: 'loadgen_publish_errors_total{preset="realistic",phase="measured",reason="async_ack"}'
+        values: '0+8900x12'   # rate nearly equal to published → gap ≈ 3.3/s < 100
+    alert_rule_test:
+      - alertname: LoadgenAsyncAckBacklog
+        eval_time: 360s
+        exp_alerts: []
+
+  # -----------------------------------------------------------------------
+  # Test 8: LoadgenRAWHistoryP99High — rule syntax validation only.
+  # The metric loadgen_raw_history_lag_seconds does not exist in Phase 1.
+  # This test confirms the rule parses without error (absent series → no alert).
+  # TODO(phase-3.1): replace with a real histogram bucket test when the
+  # RAW history scenario is implemented.
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series: []
+    alert_rule_test:
+      - alertname: LoadgenRAWHistoryP99High
+        eval_time: 120s
+        exp_alerts: []
+
+  # -----------------------------------------------------------------------
+  # Test 9: LoadgenOmissionBudgetExceeded — rule syntax validation.
+  # Full histogram bucket tests for both loadgen_omission_deficit_seconds and
+  # loadgen_request_latency_seconds would require multi-bucket series and are
+  # deferred to a follow-up.
+  # TODO: add bucket-level histogram test once the omission scenario stabilises.
+  # This test confirms the rule parses and does not fire on absent series.
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series: []
+    alert_rule_test:
+      - alertname: LoadgenOmissionBudgetExceeded
+        eval_time: 90s
+        exp_alerts: []

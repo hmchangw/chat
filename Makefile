@@ -1,4 +1,4 @@
-.PHONY: lint fmt test test-integration generate build deps-up deps-down up down
+.PHONY: lint fmt test test-integration generate build deps-up deps-down up down validate-rules
 
 DEPS_COMPOSE     := docker-local/compose.deps.yaml
 SERVICES_COMPOSE := docker-local/compose.services.yaml
@@ -82,6 +82,10 @@ ifdef SERVICE
 else
 	docker compose -f $(SERVICES_COMPOSE) up --build
 endif
+
+# Validate Prometheus alert rules via promtool (requires Docker).
+validate-rules:
+	$(MAKE) -C tools/loadgen/deploy validate-rules
 
 # Stop microservices. SERVICE=<name> stops one; otherwise stops every service.
 down:

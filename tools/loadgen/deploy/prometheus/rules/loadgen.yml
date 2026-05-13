@@ -1,0 +1,90 @@
+groups:
+  - name: loadgen
+    interval: 30s
+    rules:
+      # Rule 1: UNTRUSTED run verdict — numbers cannot be defended.
+      # Metric: loadgen_run_quality{verdict} — gauge set to 1 for the active
+      # verdict (TRUSTED|DEGRADED|UNTRUSTED), 0 for inactive verdicts.
+      - alert: LoadgenUntrustedRunActive
+        expr: loadgen_run_quality{verdict="UNTRUSTED"} == 1
+        for: 1m
+        labels:
+          severity: warning
+          component: loadgen
+        annotations:
+          summary: "Loadgen run is UNTRUSTED — numbers cannot be defended"
+          description: "verdict={{ $labels.verdict }} — see USAGE.md#untrusted-run for triage"
+
+      # Rule 2: Coordinated-omission budget exceeded.
+      # Metric: loadgen_omission_deficit_seconds{dropped="false"} — histogram of
+      # dispatch deficit for serviced (non-dropped) ticks. Compared against
+      # loadgen_request_latency_seconds (labels: preset, scenario, kind) which
+      # captures actual request/reply round-trip latency.
+      # Alert fires when the p99 serviced-omission deficit exceeds 25% of the
+      # measured-latency p99, indicating generator queuing is biasing results.
+      - alert: LoadgenOmissionBudgetExceeded
+        expr: |
+          (
+            histogram_quantile(0.99, rate(loadgen_omission_deficit_seconds_bucket{dropped="false"}[5m]))
+            /
+            histogram_quantile(0.99, rate(loadgen_request_latency_seconds_bucket[5m]))
+          ) > 0.25
+        for: 1m
+        labels:
+          severity: warning
+          component: loadgen
+        annotations:
+          summary: "Loadgen serviced-omission p99 exceeds 25% of measured p99"
+          description: "Coordinated omission > 25% of measured latency means generator queuing is biasing the headline numbers — see USAGE.md#omission-budget"
+
+      # Rule 3: Async-publish ack backlog growing.
+      # loadgen_published_total counts messages queued into the JetStream async
+      # ring (not acked). Async-ack failures land in
+      # loadgen_publish_errors_total{reason="async_ack"}. The "acked" proxy is
+      # published_total minus async_ack errors. A sustained gap >100/s over 5m
+      # signals JetStream is falling behind.
+      - alert: LoadgenAsyncAckBacklog
+        expr: |
+          (
+            sum(rate(loadgen_published_total{phase="measured"}[1m]))
+            -
+            sum(rate(loadgen_publish_errors_total{phase="measured",reason="async_ack"}[1m]))
+          ) > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: loadgen
+        annotations:
+          summary: "Loadgen async-publish ack backlog growing"
+          description: "Queued/acked gap >100/s sustained 5m — JetStream is falling behind. See USAGE.md#async-ack-backlog"
+
+      # Rule 4: Phase 3.1 dependency — RAW history scenario doesn't exist yet.
+      # The metric loadgen_raw_history_lag_seconds is not produced until Phase 3.1.
+      # This rule is safe to ship today: it simply won't fire because the metric
+      # series will be absent. Listed here so the alert is ready when Phase 3.1
+      # lands without requiring another deploy change.
+      - alert: LoadgenRAWHistoryP99High
+        expr: histogram_quantile(0.99, rate(loadgen_raw_history_lag_seconds_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: info
+          component: loadgen
+          phase_dependency: "phase-3.1"
+        annotations:
+          summary: "Loadgen RAW history p99 lag > 5s"
+          description: "Read-after-write consistency is degraded — see USAGE.md#raw-lag"
+
+      # Rule 5: Generator self-saturation.
+      # Pool saturation is tracked via loadgen_request_errors_total{reason="saturated"}
+      # (not a dedicated loadgen_send_saturated_total — see tickloop.go). A sustained
+      # rate >1 drop/s over 1m means the goroutine pool is full and the tick loop is
+      # shedding work: the generator cannot keep up with the configured tick rate.
+      - alert: LoadgenSelfSaturation
+        expr: rate(loadgen_request_errors_total{reason="saturated"}[1m]) > 1
+        for: 1m
+        labels:
+          severity: warning
+          component: loadgen
+        annotations:
+          summary: "Loadgen generator self-saturated (request loop falling behind tick rate)"
+          description: "Tick loop dropped >1 send/s sustained 1m — generator can't keep up. See USAGE.md#self-saturation"

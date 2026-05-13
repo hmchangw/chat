@@ -1,6 +1,6 @@
 COMPOSE ?= docker compose -f docker-compose.loadtest.yml
 
-.PHONY: up seed run run-dashboards run-natsrouter down logs
+.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules
 
 up:
 	$(COMPOSE) up -d --build
@@ -44,3 +44,12 @@ down:
 
 logs:
 	$(COMPOSE) logs -f loadgen
+
+# validate-rules runs promtool test rules against the synthetic test suite.
+# Requires Docker. Mounts the rules directory read-only into the official
+# prom/prometheus image and runs the tests in a throwaway container.
+validate-rules:
+	docker run --rm \
+		-v $(CURDIR)/prometheus/rules:/rules:ro \
+		prom/prometheus:latest \
+		promtool test rules /rules/loadgen_test.yml
