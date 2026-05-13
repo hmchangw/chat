@@ -119,6 +119,12 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 
 	// E1 subscription: gatekeeper replies.
 	e1Sub, err := rt.NC().NatsConn().Subscribe(subject.UserResponseWildcard(), func(msg *nats.Msg) {
+		// Filter: when the reply carries a run-ID header from a different run
+		// (concurrent loadgen on the same machine), silently ignore it so we
+		// don't accidentally credit another run's replies to ours.
+		if hdr := msg.Header.Get(HeaderRunID); hdr != "" && hdr != runID {
+			return
+		}
 		reqID := lastToken(msg.Subject)
 		var payload struct {
 			Error string `json:"error"`
@@ -145,6 +151,12 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 
 	// E2 subscription: broadcast events.
 	e2Handler := func(msg *nats.Msg) {
+		// Filter: ignore broadcasts that originated from a different loadgen
+		// run so concurrent runs on the same machine don't credit each
+		// other's events.
+		if hdr := msg.Header.Get(HeaderRunID); hdr != "" && hdr != runID {
+			return
+		}
 		var evt model.RoomEvent
 		if err := json.Unmarshal(msg.Data, &evt); err != nil {
 			return
@@ -179,17 +191,20 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	defer cancelSamplers()
 	samplers := []*ConsumerSampler{
 		// MESSAGES_CANONICAL consumers (driven by messaging-pipeline).
-		NewConsumerSampler(js, canonical.Name, "message-worker", metrics, 1*time.Second),
-		NewConsumerSampler(js, canonical.Name, "broadcast-worker", metrics, 1*time.Second),
-		NewConsumerSampler(js, canonical.Name, "notification-worker", metrics, 1*time.Second),
-		NewConsumerSampler(js, canonical.Name, "search-sync-worker-messages", metrics, 1*time.Second),
+		// Names are prefixed with the run ID so concurrent runs on the same
+		// machine each observe their own durable consumer lag without
+		// interfering with each other or with the production consumers.
+		NewConsumerSampler(js, canonical.Name, consumerName(runID, "message-worker"), metrics, 1*time.Second),
+		NewConsumerSampler(js, canonical.Name, consumerName(runID, "broadcast-worker"), metrics, 1*time.Second),
+		NewConsumerSampler(js, canonical.Name, consumerName(runID, "notification-worker"), metrics, 1*time.Second),
+		NewConsumerSampler(js, canonical.Name, consumerName(runID, "search-sync-worker-messages"), metrics, 1*time.Second),
 		// ROOMS consumer (driven by room-rpc).
-		NewConsumerSampler(js, rooms.Name, "room-worker", metrics, 1*time.Second),
+		NewConsumerSampler(js, rooms.Name, consumerName(runID, "room-worker"), metrics, 1*time.Second),
 		// INBOX consumers — populated either by federation or by local-publish
 		// from message-worker / room-worker. Empty gauges read 0 cleanly when
 		// the relevant scenario isn't running.
-		NewConsumerSampler(js, inbox.Name, "search-sync-worker-spotlight", metrics, 1*time.Second),
-		NewConsumerSampler(js, inbox.Name, "search-sync-worker-user-room", metrics, 1*time.Second),
+		NewConsumerSampler(js, inbox.Name, consumerName(runID, "search-sync-worker-spotlight"), metrics, 1*time.Second),
+		NewConsumerSampler(js, inbox.Name, consumerName(runID, "search-sync-worker-user-room"), metrics, 1*time.Second),
 	}
 	var samplerWG sync.WaitGroup
 	for _, s := range samplers {

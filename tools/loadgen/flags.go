@@ -99,25 +99,27 @@ func buildRamp(from, to int, dur time.Duration, shape string) (*Ramp, error) {
 // runFlags holds all parsed CLI flags for the "run" subcommand. It is
 // populated by ParseRunFlags and consumed by runRun.
 type runFlags struct {
-	Scenario       string
-	Preset         string
-	Seed           int64
-	Rate           int
-	Duration       time.Duration
-	Warmup         time.Duration
-	Inject         string
-	RequestTimeout time.Duration
-	CSV            string
-	NATSCredsDir   string
-	Abort          abortFlags
-	Ramp           rampFlags
-	AutoWarmup     autoWarmupFlags
-	Liveness       livenessFlags
-	Readiness      readinessFlags
-	Progress       progressFlags
-	Conn           connFlags
-	JS             jetStreamFlags
-	Settle         SettleFlags
+	Scenario        string
+	Preset          string
+	Seed            int64
+	Rate            int
+	Duration        time.Duration
+	Warmup          time.Duration
+	Inject          string
+	RequestTimeout  time.Duration
+	CSV             string
+	NATSCredsDir    string
+	AllowConcurrent bool
+	RunTTL          time.Duration
+	Abort           abortFlags
+	Ramp            rampFlags
+	AutoWarmup      autoWarmupFlags
+	Liveness        livenessFlags
+	Readiness       readinessFlags
+	Progress        progressFlags
+	Conn            connFlags
+	JS              jetStreamFlags
+	Settle          SettleFlags
 }
 
 type abortFlags struct {
@@ -239,4 +241,6 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 	fs.DurationVar(&rf.Settle.Timeout, "settle-timeout", 30*time.Second, "settle phase: max time to wait for probes to succeed before declaring failure")
 	fs.DurationVar(&rf.Settle.Interval, "settle-interval", 500*time.Millisecond, "settle phase: poll interval between probe rounds")
 	fs.IntVar(&rf.Settle.Probes, "settle-probes", 20, "settle phase: number of recent message IDs to probe (0 disables)")
+	fs.BoolVar(&rf.AllowConcurrent, "allow-concurrent", false, "allow multiple concurrent loadgen runs against the same SUT (default refuses to start when another active run is detected)")
+	fs.DurationVar(&rf.RunTTL, "run-ttl", 2*time.Hour, "max age for an active runlock entry before it is considered orphaned and ignored")
 }

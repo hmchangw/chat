@@ -44,7 +44,7 @@ func defaultTestConfig(t *testing.T) config {
 
 func TestNewRuntime_WiresAllDependencies(t *testing.T) {
 	cfg := defaultTestConfig(t)
-	rt, err := NewRuntime(context.Background(), &cfg, "test-run-id")
+	rt, err := NewRuntime(context.Background(), &cfg, "test-run-id", nil)
 	require.NoError(t, err)
 	defer rt.Close() //nolint:errcheck
 
@@ -60,7 +60,7 @@ func TestNewRuntime_WiresAllDependencies(t *testing.T) {
 // cfg.RunsDir is empty.
 func TestRuntime_FinalizeIsNoop(t *testing.T) {
 	cfg := defaultTestConfig(t)
-	rt, err := NewRuntime(context.Background(), &cfg, "test-run-id")
+	rt, err := NewRuntime(context.Background(), &cfg, "test-run-id", nil)
 	require.NoError(t, err)
 	defer rt.Close() //nolint:errcheck
 
@@ -73,7 +73,7 @@ func TestRuntime_FinalizeWritesBundle(t *testing.T) {
 	dir := t.TempDir()
 	cfg := defaultTestConfig(t)
 	cfg.RunsDir = dir
-	rt, err := NewRuntime(context.Background(), &cfg, "bundle-run-id")
+	rt, err := NewRuntime(context.Background(), &cfg, "bundle-run-id", nil)
 	require.NoError(t, err)
 	defer rt.Close() //nolint:errcheck
 
@@ -108,7 +108,7 @@ func TestRuntime_FinalizeWritesBundle(t *testing.T) {
 // TestRuntime_PreflightIsNoop verifies the Phase 0 stub returns no error.
 func TestRuntime_PreflightIsNoop(t *testing.T) {
 	cfg := defaultTestConfig(t)
-	rt, err := NewRuntime(context.Background(), &cfg, "test-run-id")
+	rt, err := NewRuntime(context.Background(), &cfg, "test-run-id", nil)
 	require.NoError(t, err)
 	defer rt.Close() //nolint:errcheck
 
@@ -120,6 +120,6 @@ func TestRuntime_PreflightIsNoop(t *testing.T) {
 func TestNewRuntime_BadNATSURL(t *testing.T) {
 	cfg := defaultTestConfig(t)
 	cfg.NatsURL = "nats://127.0.0.1:1" // port 1 is always refused
-	_, err := NewRuntime(context.Background(), &cfg, "bad-url-run")
+	_, err := NewRuntime(context.Background(), &cfg, "bad-url-run", nil)
 	require.Error(t, err)
 }

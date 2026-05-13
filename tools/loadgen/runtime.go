@@ -39,26 +39,61 @@ type Runtime struct {
 	omission   *OmissionTracker
 	metricsSrv *http.Server
 	pprofSrv   *http.Server
+	// runLock is non-nil when the run acquired a distributed advisory lock.
+	// Released in Close via a fresh context.
+	runLock *RunLock
 	// lastSettle is set by SetLastSettle (called from executeRun) so that
 	// Finalize can include the settle outcome in the artifact bundle.
 	lastSettle SettleOutcome
+}
+
+// RunLockParams bundles the options needed to acquire the run-isolation lock.
+// Pass nil to NewRuntime to skip locking (used by unit tests that don't have
+// a real MongoDB available).
+type RunLockParams struct {
+	Lock            *RunLock
+	Scenario        string
+	AllowConcurrent bool
 }
 
 // NewRuntime dials NATS, initialises JetStream, builds a single-connection
 // pool (observer only), starts the metrics HTTP server, and optionally
 // starts the pprof HTTP server. On any construction error the partially
 // built Runtime is cleaned up before the error is returned.
-func NewRuntime(ctx context.Context, cfg *config, runID string) (*Runtime, error) {
-	_ = ctx // reserved for future use (e.g., dialling with a deadline)
+//
+// When lp is non-nil, NewRuntime attempts to acquire the run-isolation lock
+// before opening any connections. If ErrConcurrentRun is returned from
+// Acquire, NewRuntime propagates it immediately so the caller can exit with
+// a clear diagnostic. Pass nil for lp in unit tests that have no MongoDB.
+func NewRuntime(ctx context.Context, cfg *config, runID string, lp *RunLockParams) (*Runtime, error) {
+	// Acquire the run-isolation lock before opening any external connections
+	// so a refused start never leaves dangling NATS connections.
+	var acquiredLock *RunLock
+	if lp != nil {
+		if err := lp.Lock.Acquire(ctx, runID, lp.Scenario, lp.AllowConcurrent); err != nil {
+			return nil, fmt.Errorf("acquire run lock: %w", err)
+		}
+		acquiredLock = lp.Lock
+	}
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
+		if acquiredLock != nil {
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer releaseCancel()
+			_ = acquiredLock.Release(releaseCtx)
+		}
 		return nil, fmt.Errorf("connect NATS: %w", err)
 	}
 
 	js, err := jetstream.New(nc.NatsConn())
 	if err != nil {
 		_ = nc.Drain()
+		if acquiredLock != nil {
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer releaseCancel()
+			_ = acquiredLock.Release(releaseCtx)
+		}
 		return nil, fmt.Errorf("init JetStream: %w", err)
 	}
 
@@ -82,6 +117,7 @@ func NewRuntime(ctx context.Context, cfg *config, runID string) (*Runtime, error
 		metrics:   metrics,
 		collector: collector,
 		omission:  NewOmissionTracker(metrics),
+		runLock:   acquiredLock,
 	}
 
 	rt.metricsSrv = rt.startMetricsServer()
@@ -264,6 +300,7 @@ func envToMap(environ []string) map[string]string {
 //   - Pool drain — data connections are idle after gen.Run returns.
 //   - NC drain — flushes any remaining outbound messages and closes the
 //     observer connection (which the pool also points to).
+//   - RunLock release — advisory lock removed so the next run may start.
 //
 // All shutdown errors are logged but not returned; the caller already has
 // the run's exit code.
@@ -287,6 +324,16 @@ func (r *Runtime) Close() error {
 	}
 	if r.nc != nil {
 		_ = r.nc.Drain()
+	}
+	// Release the run-isolation lock last so it is held for the full
+	// duration of the run (including pool drain). A fresh context is used
+	// so that a signal-cancelled run context doesn't prevent cleanup.
+	if r.runLock != nil {
+		lockCtx, lockCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer lockCancel()
+		if err := r.runLock.Release(lockCtx); err != nil {
+			slog.Warn("release run lock", "error", err)
+		}
 	}
 	return nil
 }

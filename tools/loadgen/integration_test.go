@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -534,3 +535,109 @@ func TestDispatch_RunTeardown_Smoke(t *testing.T) {
 
 // TestDispatch_UnknownSubcommand is covered by main_test.go (no -tags
 // gate needed). The integration build inherits that coverage.
+
+// ---------------------------------------------------------------------------
+// RunLock integration tests — exercise the full Mongo wire-protocol path.
+// ---------------------------------------------------------------------------
+
+// TestRunLock_RefusesConcurrentRun verifies that a second Acquire on the
+// same SUT URL returns ErrConcurrentRun when the first lock is still active.
+func TestRunLock_RefusesConcurrentRun(t *testing.T) {
+	mongoURI, stopMongo := setupMongo(t)
+	defer stopMongo()
+
+	ctx := context.Background()
+	client, err := mongoutil.Connect(ctx, mongoURI, "", "")
+	require.NoError(t, err)
+	defer mongoutil.Disconnect(ctx, client)
+
+	db := client.Database("loadgen_runlock_test")
+	defer func() { _ = db.Drop(ctx) }()
+
+	const sutURL = "nats://sut-host:4222"
+
+	lock1 := NewRunLock(db, sutURL, 2*time.Hour)
+	require.NoError(t, lock1.Acquire(ctx, "run-A", "history-read", false))
+
+	lock2 := NewRunLock(db, sutURL, 2*time.Hour)
+	err = lock2.Acquire(ctx, "run-B", "history-read", false)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrConcurrentRun),
+		"second Acquire on same SUT must return ErrConcurrentRun; got: %v", err)
+}
+
+// TestRunLock_AllowConcurrentSkipsCheck verifies that allowConcurrent=true
+// lets a second run start even when an active lock row exists.
+func TestRunLock_AllowConcurrentSkipsCheck(t *testing.T) {
+	mongoURI, stopMongo := setupMongo(t)
+	defer stopMongo()
+
+	ctx := context.Background()
+	client, err := mongoutil.Connect(ctx, mongoURI, "", "")
+	require.NoError(t, err)
+	defer mongoutil.Disconnect(ctx, client)
+
+	db := client.Database("loadgen_runlock_concurrent_test")
+	defer func() { _ = db.Drop(ctx) }()
+
+	const sutURL = "nats://sut-host:4222"
+
+	lock1 := NewRunLock(db, sutURL, 2*time.Hour)
+	require.NoError(t, lock1.Acquire(ctx, "run-A", "history-read", false))
+
+	lock2 := NewRunLock(db, sutURL, 2*time.Hour)
+	require.NoError(t, lock2.Acquire(ctx, "run-B", "history-read", true),
+		"allowConcurrent=true must skip the conflict check")
+}
+
+// TestRunLock_ExpiredLockBypassed verifies that a row with startedAt older
+// than the TTL is not treated as a conflict (it fails the $gt cutoff filter).
+func TestRunLock_ExpiredLockBypassed(t *testing.T) {
+	mongoURI, stopMongo := setupMongo(t)
+	defer stopMongo()
+
+	ctx := context.Background()
+	client, err := mongoutil.Connect(ctx, mongoURI, "", "")
+	require.NoError(t, err)
+	defer mongoutil.Disconnect(ctx, client)
+
+	db := client.Database("loadgen_runlock_expired_test")
+	defer func() { _ = db.Drop(ctx) }()
+
+	const sutURL = "nats://sut-host:4222"
+
+	// Use a 1-nanosecond TTL so any existing row is immediately "expired".
+	lock1 := NewRunLock(db, sutURL, 1*time.Nanosecond)
+	require.NoError(t, lock1.Acquire(ctx, "run-expired", "history-read", false))
+
+	// lock2 uses the same 1ns TTL — the row inserted by lock1 is now older
+	// than the cutoff, so the $gt filter doesn't match it.
+	lock2 := NewRunLock(db, sutURL, 1*time.Nanosecond)
+	require.NoError(t, lock2.Acquire(ctx, "run-new", "history-read", false),
+		"expired lock row must be bypassed (not treated as active)")
+}
+
+// TestRunLock_ReleaseClearsRow verifies that Release removes the lock document
+// so a subsequent Acquire on the same SUT URL can succeed.
+func TestRunLock_ReleaseClearsRow(t *testing.T) {
+	mongoURI, stopMongo := setupMongo(t)
+	defer stopMongo()
+
+	ctx := context.Background()
+	client, err := mongoutil.Connect(ctx, mongoURI, "", "")
+	require.NoError(t, err)
+	defer mongoutil.Disconnect(ctx, client)
+
+	db := client.Database("loadgen_runlock_release_test")
+	defer func() { _ = db.Drop(ctx) }()
+
+	const sutURL = "nats://sut-host:4222"
+
+	lock1 := NewRunLock(db, sutURL, 2*time.Hour)
+	require.NoError(t, lock1.Acquire(ctx, "run-A", "messaging-pipeline", false))
+	require.NoError(t, lock1.Release(ctx))
+
+	lock2 := NewRunLock(db, sutURL, 2*time.Hour)
+	require.NoError(t, lock2.Acquire(ctx, "run-B", "messaging-pipeline", false),
+		"after Release, a new Acquire on the same SUT must succeed")
+}

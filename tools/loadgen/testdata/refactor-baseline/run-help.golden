@@ -9,6 +9,8 @@ Usage of run:
     	sustain window for the p99 abort threshold (default 30s)
   -abort-window-max-samples int
     	S3: cap on the abort/progress latency ring buffer; 0 disables the cap (legacy). Bounds the per-tick percentile sort under sustained high publish rates. WARNING: when peak_rps × max(abort-*-sustain) > cap, retention is compressed below the sustain interval and the abort watcher cannot fire; it emits a slog.Warn 'abort watcher deafened by sample cap' so the silent no-fire is detectable. Size cap >= peak_rps × max_sustain to keep the watcher functional. (default 10000)
+  -allow-concurrent
+    	allow multiple concurrent loadgen runs against the same SUT (default refuses to start when another active run is detected)
   -auto-warmup
     	run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them (default true)
   -auto-warmup-rate int
@@ -49,6 +51,8 @@ Usage of run:
     	deadline for the readiness probe to succeed (default 30s)
   -request-timeout duration
     	per-request timeout for read scenarios (default 5s)
+  -run-ttl duration
+    	max age for an active runlock entry before it is considered orphaned and ignored (default 2h0m0s)
   -scenario string
     	scenario: messaging-pipeline|history-read|search-read|room-rpc (default "messaging-pipeline")
   -seed int
