@@ -1,0 +1,11 @@
+package main
+
+import "context"
+
+//go:generate mockgen -source=store.go -destination=mock_store_test.go -package=main
+
+// Store defines the persistence surface this service depends on.
+// Each method takes the domain types it needs — no leaky raw bson.
+type Store interface {
+	Ping(ctx context.Context) error
+}

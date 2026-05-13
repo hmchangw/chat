@@ -1,0 +1,64 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+	"github.com/gin-gonic/gin"
+
+	"github.com/hmchangw/chat/pkg/shutdown"
+)
+
+type config struct {
+	Port    string `env:"PORT"     envDefault:"8080"`
+	SiteID  string `env:"SITE_ID"  envDefault:"site-local"`
+}
+
+func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	if err := run(); err != nil {
+		slog.Error("fatal error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	cfg, err := env.ParseAs[config]()
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+
+	handler := NewHandler()
+
+	r := gin.New()
+	r.Use(gin.Recovery())
+	registerRoutes(r, handler)
+
+	server := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	go func() {
+		slog.Info("{{.Name}} listening", "addr", server.Addr, "siteId", cfg.SiteID)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	shutdown.Wait(context.Background(), 25*time.Second, func(ctx context.Context) error {
+		return server.Shutdown(ctx)
+	})
+	return nil
+}

@@ -1,0 +1,25 @@
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestHandler_Healthz(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	registerRoutes(r, NewHandler())
+
+	req, err := http.NewRequest(http.MethodGet, "/healthz", nil)
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"status":"ok"`)
+}
