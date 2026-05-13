@@ -14,12 +14,17 @@ import (
 	"github.com/hmchangw/chat/pkg/searchengine"
 )
 
-func TestMessageCollection_TemplateName(t *testing.T) {
+func TestMessageCollection_TemplateName_StripsVersion(t *testing.T) {
 	coll := newMessageCollection("messages-site1-v1")
-	assert.Equal(t, "messages-site1-v1_template", coll.TemplateName())
+	assert.Equal(t, "messages-site1_template", coll.TemplateName())
 }
 
-func TestMessageCollection_TemplateBody(t *testing.T) {
+func TestMessageCollection_TemplateName_BareBaseFallback(t *testing.T) {
+	coll := newMessageCollection("messages-site1")
+	assert.Equal(t, "messages-site1_template", coll.TemplateName())
+}
+
+func TestMessageCollection_TemplateBody_PatternStripsVersion(t *testing.T) {
 	coll := newMessageCollection("messages-site1-v1")
 	body := coll.TemplateBody()
 	require.NotNil(t, body)
@@ -29,7 +34,8 @@ func TestMessageCollection_TemplateBody(t *testing.T) {
 
 	patterns, ok := parsed["index_patterns"].([]any)
 	require.True(t, ok)
-	assert.Equal(t, "messages-site1-v1-*", patterns[0])
+	require.Len(t, patterns, 1)
+	assert.Equal(t, "messages-site1-*", patterns[0])
 
 	tmpl := parsed["template"].(map[string]any)
 	mappings := tmpl["mappings"].(map[string]any)

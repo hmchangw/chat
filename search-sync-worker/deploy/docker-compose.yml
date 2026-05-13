@@ -12,6 +12,8 @@ services:
       - SEARCH_URL=http://elasticsearch:9200
       - SEARCH_BACKEND=elasticsearch
       - MSG_INDEX_PREFIX=messages-site-local-v1
+      - SPOTLIGHT_INDEX=spotlight-site-local-v1
+      - USER_ROOM_INDEX=user-room-mv-site-local
       - BOOTSTRAP_STREAMS=true
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro

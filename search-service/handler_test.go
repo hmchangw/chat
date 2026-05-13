@@ -14,7 +14,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
-const testSpotlightIndex = "spotlight"
+const testSpotlightIndex = "spotlight-*"
 
 type fakeStore struct {
 	searchCalls   []searchCall
@@ -86,7 +86,7 @@ func newTestHandler(store SearchStore, cache RestrictedRoomCache) *handler {
 		MaxDocCounts:            100,
 		RestrictedRoomsCacheTTL: 5 * time.Minute,
 		RecentWindow:            365 * 24 * time.Hour,
-		SpotlightIndex:          testSpotlightIndex,
+		SpotlightReadPattern:    testSpotlightIndex,
 	})
 }
 

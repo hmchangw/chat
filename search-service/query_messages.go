@@ -29,7 +29,6 @@ var MessageIndexPattern = []string{"messages-*", "*:messages-*"}
 // terms-lookup so a caller can't reach rooms they don't belong to by
 // passing arbitrary roomIds.
 func buildMessageQuery(req model.SearchMessagesRequest, account string, restricted map[string]int64, recentWindow time.Duration, userRoomIndex string) (json.RawMessage, error) {
-	userRoomIndex = resolveUserRoomIndex(userRoomIndex)
 	clauses := roomAccessClauses(req.RoomIDs, account, restricted, userRoomIndex)
 
 	body := map[string]any{
@@ -134,9 +133,11 @@ func scopedAccessClauses(roomIDs []string, account string, restricted map[string
 }
 
 // termsLookupClause resolves the user's allowed rooms via ES terms-lookup
-// instead of shipping the rooms[] array on every query. Passing an empty
-// userRoomIndex would produce an invalid index name, so callers must
-// resolve it (e.g. via resolveUserRoomIndex) before calling.
+// instead of shipping the rooms[] array on every query. The caller must
+// pass a concrete, non-empty index name (enforced upstream by the
+// SEARCH_USER_ROOM_INDEX env var being marked ,required in main.go). ES
+// terms_lookup rejects wildcard patterns, which is why this index is
+// intentionally unversioned across the codebase.
 func termsLookupClause(account, userRoomIndex string) map[string]any {
 	return map[string]any{
 		"terms": map[string]any{

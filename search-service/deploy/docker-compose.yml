@@ -20,8 +20,8 @@ services:
       - SEARCH_REQUEST_TIMEOUT=10s
       - SEARCH_METRICS_ADDR=:9090
       # Local dev pins to site-suffixed indices; prod uses aliases owned by ops/IaC.
-      - SEARCH_USER_ROOM_INDEX=user-room-site-local
-      - SEARCH_SPOTLIGHT_INDEX=spotlight-site-local-v1-chat
+      - SEARCH_USER_ROOM_INDEX=user-room-mv-site-local
+      - SEARCH_SPOTLIGHT_INDEX=spotlight-site-local-v1
     ports:
       # Expose /metrics so Prometheus / curl can scrape from the host
       # during local dev. The listener is bound on 0.0.0.0:9090 inside

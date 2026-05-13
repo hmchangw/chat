@@ -11,11 +11,15 @@ import (
 	"github.com/hmchangw/chat/pkg/searchengine"
 )
 
+func TestUserRoomCollection_TemplateName_DerivesFromEnv(t *testing.T) {
+	c := newUserRoomCollection("user-room-mv-site-a")
+	assert.Equal(t, "user-room-mv-site-a_template", c.TemplateName())
+}
+
 func TestUserRoomCollection_Metadata(t *testing.T) {
 	coll := newUserRoomCollection("user-room-site-a")
 
 	assert.Equal(t, "user-room-sync", coll.ConsumerName())
-	assert.Equal(t, "user_room_template", coll.TemplateName())
 	assert.NotNil(t, coll.TemplateBody())
 
 	cfg := coll.StreamConfig("site-a")
@@ -35,6 +39,19 @@ func TestUserRoomCollection_Metadata(t *testing.T) {
 	}, filters)
 }
 
+func TestUserRoomCollection_TemplateBody_PatternIsExactName(t *testing.T) {
+	c := newUserRoomCollection("user-room-mv-site-a")
+	body := c.TemplateBody()
+	require.NotNil(t, body)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	patterns, ok := decoded["index_patterns"].([]any)
+	require.True(t, ok)
+	require.Len(t, patterns, 1)
+	assert.Equal(t, "user-room-mv-site-a", patterns[0])
+}
+
 func TestUserRoomCollection_TemplateBody(t *testing.T) {
 	coll := newUserRoomCollection("user-room-site-a")
 	body := coll.TemplateBody()
@@ -45,6 +62,7 @@ func TestUserRoomCollection_TemplateBody(t *testing.T) {
 
 	patterns, ok := parsed["index_patterns"].([]any)
 	require.True(t, ok)
+	require.Len(t, patterns, 1)
 	assert.Equal(t, "user-room-site-a", patterns[0])
 
 	tmpl := parsed["template"].(map[string]any)

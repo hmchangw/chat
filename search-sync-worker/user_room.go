@@ -37,7 +37,7 @@ func (c *userRoomCollection) ConsumerName() string {
 }
 
 func (c *userRoomCollection) TemplateName() string {
-	return "user_room_template"
+	return fmt.Sprintf("%s_template", c.indexName)
 }
 
 func (c *userRoomCollection) TemplateBody() json.RawMessage {

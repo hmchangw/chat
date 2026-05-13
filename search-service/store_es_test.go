@@ -94,12 +94,3 @@ func TestESStore_GetUserRoomDoc_MalformedBody(t *testing.T) {
 	_, _, err := s.GetUserRoomDoc(context.Background(), "alice")
 	assert.Error(t, err)
 }
-
-func TestESStore_UsesDefaultIndexWhenEmpty(t *testing.T) {
-	eng := &stubEngine{docFound: false}
-	s := newESStore(eng, "")
-
-	_, _, err := s.GetUserRoomDoc(context.Background(), "alice")
-	require.NoError(t, err)
-	assert.Equal(t, UserRoomIndex, eng.docIndex)
-}
