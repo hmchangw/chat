@@ -178,7 +178,7 @@
           "refId": "A"
         },
         {
-          "expr": "sum(rate(loadgen_publish_errors_total[1m]))",
+          "expr": "sum(rate(loadgen_publish_errors_total{reason=\"async_ack\"}[1m]))",
           "legendFormat": "publish errors/s",
           "refId": "B"
         }

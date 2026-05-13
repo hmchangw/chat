@@ -329,6 +329,9 @@ services:
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     profiles: [dashboards]
+    # cAdvisor requires privileged mode to read host-level metrics from /sys,
+    # /var/run, and the Docker daemon. This is the only privileged container in
+    # the loadgen compose stack and is used for system monitoring only.
     privileged: true
     volumes:
       - /:/rootfs:ro
