@@ -214,3 +214,82 @@ describe('MessageActionMenu read-receipt RPC', () => {
     )
   })
 })
+
+describe('MessageActionMenu reader sub-tooltip', () => {
+  const msg = { id: 'm1', sender: { account: 'alice' } }
+
+  async function openMenuWith(readers) {
+    const request = vi.fn().mockResolvedValue({ readers })
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'siteA' },
+      request,
+    })
+    render(<MessageActionMenu message={msg} room={room} />)
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    await screen.findByText(/Read by /)
+  }
+
+  it('does not render the tooltip when X = 0', async () => {
+    await openMenuWith([])
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    fireEvent.mouseEnter(screen.getByText('Read by 0 of 3'))
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+  })
+
+  it('opens the tooltip on hover when X > 0 and closes on mouse-leave', async () => {
+    await openMenuWith([
+      { userId: 'u1', account: 'bob', engName: 'Bob', chineseName: '鮑勃' },
+    ])
+    const row = screen.getByRole('menuitem', { name: /Read by 1 of 3/i })
+    fireEvent.mouseEnter(row)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    fireEvent.mouseLeave(row)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+  })
+
+  it('opens the tooltip on keyboard focus and closes on blur', async () => {
+    await openMenuWith([
+      { userId: 'u1', account: 'bob', engName: 'Bob', chineseName: '' },
+    ])
+    const row = screen.getByRole('menuitem', { name: /Read by 1 of 3/i })
+    fireEvent.focus(row)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    fireEvent.blur(row)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+  })
+
+  it('formats reader names as "engName chineseName" when both are present', async () => {
+    await openMenuWith([
+      { userId: 'u1', account: 'bob', engName: 'Bob', chineseName: '鮑勃' },
+    ])
+    fireEvent.mouseEnter(screen.getByRole('menuitem', { name: /Read by 1 of 3/i }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Bob 鮑勃')
+  })
+
+  it('formats reader names as "engName" when chineseName is empty', async () => {
+    await openMenuWith([
+      { userId: 'u1', account: 'bob', engName: 'Bob', chineseName: '' },
+    ])
+    fireEvent.mouseEnter(screen.getByRole('menuitem', { name: /Read by 1 of 3/i }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Bob')
+    expect(screen.getByRole('tooltip')).not.toHaveTextContent('Bob ')
+  })
+
+  it('falls back to account when engName is empty', async () => {
+    await openMenuWith([
+      { userId: 'u1', account: 'bob', engName: '', chineseName: '鮑勃' },
+    ])
+    fireEvent.mouseEnter(screen.getByRole('menuitem', { name: /Read by 1 of 3/i }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('bob 鮑勃')
+  })
+
+  it('lists all readers in the tooltip', async () => {
+    await openMenuWith([
+      { userId: 'u1', account: 'bob', engName: 'Bob', chineseName: '' },
+      { userId: 'u2', account: 'carol', engName: 'Carol', chineseName: '凱蘿' },
+    ])
+    fireEvent.mouseEnter(screen.getByRole('menuitem', { name: /Read by 2 of 3/i }))
+    const items = screen.getAllByRole('listitem')
+    expect(items.map((li) => li.textContent)).toEqual(['Bob', 'Carol 凱蘿'])
+  })
+})
