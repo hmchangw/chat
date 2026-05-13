@@ -784,8 +784,11 @@ func TestHandler_SearchMessages_NoHitsSkipsMongo(t *testing.T) {
 	assert.Len(t, mongo.findRoomsByIDsCalls, 0)
 }
 
-func TestHandler_SearchMessages_WithRoomIDsCallsClassify(t *testing.T) {
+func TestHandler_SearchMessages_WithRoomIDsBuildsScopedQuery(t *testing.T) {
 	// Supply RoomIDs; verify the ES query uses scoped access clauses.
+	// scopedAccessClauses (in query_messages.go) is the single classifier:
+	// it iterates req.RoomIDs and splits each ID against the restricted
+	// map. No handler-level pre-classification.
 	store := &fakeStore{}
 	cache := newFakeCache()
 	cache.store["alice"] = map[string]int64{"rx": 1_700_000_000_000}

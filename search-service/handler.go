@@ -87,24 +87,13 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 		return nil, err
 	}
 
-	// Classify the caller-supplied RoomIDs against the restricted-rooms
-	// map. When RoomIDs is nil/empty, both returns are nil — the existing
-	// global-search path (all rooms via terms-lookup) is used.
-	_, restrictedWithFloor := classifyRoomIDs(req.RoomIDs, restricted)
-
-	// When RoomIDs is set, substitute the restricted subset so only the
-	// requested restricted rooms get their floor clauses. req.RoomIDs is
-	// left as-is (the full caller-supplied list) so that scopedAccessClauses
-	// can classify each ID itself using the filtered restricted map.
-	effectiveRestricted := restricted
-	if len(req.RoomIDs) > 0 {
-		effectiveRestricted = restrictedWithFloor
-		if effectiveRestricted == nil {
-			effectiveRestricted = map[string]int64{}
-		}
-	}
-
-	body, err := buildMessageQuery(req, account, effectiveRestricted, h.cfg.RecentWindow, h.cfg.UserRoomIndex)
+	// `restricted` is the caller's full restrictedRooms map sourced from the
+	// ES user-room-mv index (cached in Valkey by loadRestricted). It is the
+	// single source of truth for restricted vs unrestricted classification.
+	// When req.RoomIDs is set, buildMessageQuery -> scopedAccessClauses
+	// iterates req.RoomIDs and classifies each ID against this map directly,
+	// so no handler-level pre-classification is needed.
+	body, err := buildMessageQuery(req, account, restricted, h.cfg.RecentWindow, h.cfg.UserRoomIndex)
 	if err != nil {
 		slog.Error("build message query failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("unable to build search query")
