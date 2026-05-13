@@ -71,6 +71,8 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	js := site.JetStream(t)
 	canonicalStream := stream.MessagesCanonical(site.SiteID).Name
 	awaitDurableReady(t, ctx, js, canonicalStream, "message-worker")
+	awaitDurableReady(t, ctx, js, canonicalStream, "notification-worker")
+	awaitDurableReady(t, ctx, js, canonicalStream, "broadcast-worker")
 
 	alice := site.Authenticate(t, ctx, "alice")
 	bob := site.Authenticate(t, ctx, "bob")
@@ -287,6 +289,8 @@ func TestMessage_SendAndBroadcast_DM(t *testing.T) {
 	js := site.JetStream(t)
 	canonicalStream := stream.MessagesCanonical(site.SiteID).Name
 	awaitDurableReady(t, ctx, js, canonicalStream, "message-worker")
+	awaitDurableReady(t, ctx, js, canonicalStream, "notification-worker")
+	awaitDurableReady(t, ctx, js, canonicalStream, "broadcast-worker")
 
 	alice := site.Authenticate(t, ctx, "alice")
 	bob := site.Authenticate(t, ctx, "bob")
