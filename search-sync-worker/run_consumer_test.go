@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -69,9 +68,10 @@ func (c *fakeConsumer) Info(context.Context) (*oteljetstream.ConsumerInfo, error
 }
 func (c *fakeConsumer) CachedInfo() *oteljetstream.ConsumerInfo { panic("not used") }
 
-func makeMessageStubMsg(t *testing.T, msgID string) oteljetstream.Msg {
-	t.Helper()
-	evt := model.MessageEvent{
+// runConsumerEvent builds the canonical MessageEvent reused by every test in
+// this file. Keep the shape consistent with handler_test.go's makeStubMsg.
+func runConsumerEvent(msgID string) *model.MessageEvent {
+	return &model.MessageEvent{
 		Event: model.EventCreated,
 		Message: model.Message{
 			ID: msgID, RoomID: "r1", UserID: "u1", UserAccount: "alice",
@@ -79,9 +79,11 @@ func makeMessageStubMsg(t *testing.T, msgID string) oteljetstream.Msg {
 		},
 		SiteID: "site-a", Timestamp: 100,
 	}
-	data, err := json.Marshal(&evt)
-	require.NoError(t, err)
-	return oteljetstream.Msg{Msg: &stubMsg{data: data}, Ctx: context.Background()}
+}
+
+func makeMessageStubMsg(t *testing.T, msgID string) oteljetstream.Msg {
+	t.Helper()
+	return oteljetstream.Msg{Msg: makeStubMsg(t, runConsumerEvent(msgID)), Ctx: context.Background()}
 }
 
 func TestRunConsumer_StopChDrainsAndExits(t *testing.T) {
@@ -90,7 +92,7 @@ func TestRunConsumer_StopChDrainsAndExits(t *testing.T) {
 	store.EXPECT().Bulk(gomock.Any(), gomock.Len(1)).Return([]searchengine.BulkResult{{Status: 201}}, nil)
 
 	h := NewHandler(store, newMessageCollection("msgs-v1"), 500)
-	h.Add(&stubMsg{data: mustEvt(t, "m1")})
+	h.Add(makeStubMsg(t, runConsumerEvent("m1")))
 	require.Equal(t, 1, h.MessageCount())
 
 	cons := &fakeConsumer{fetchFn: func(int) oteljetstream.MessageBatch { return &fakeBatch{} }}
@@ -176,10 +178,12 @@ func TestRunConsumer_TimeBasedFlush(t *testing.T) {
 
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
-	go runConsumer(context.Background(), cons, h, 10, 500, 50*time.Millisecond, stopCh, doneCh)
+	// 200ms flush interval + 5s Eventually budget tolerates race-detector
+	// overhead and CI scheduler jitter under load.
+	go runConsumer(context.Background(), cons, h, 10, 500, 200*time.Millisecond, stopCh, doneCh)
 
 	require.Eventually(t, func() bool { return flushes.Load() >= 1 },
-		2*time.Second, 20*time.Millisecond,
+		5*time.Second, 50*time.Millisecond,
 		"time-based flush must fire after bulkFlushInterval with a non-empty buffer")
 
 	close(stopCh)
@@ -194,18 +198,3 @@ func (b *errBatch) Messages() <-chan oteljetstream.Msg {
 	return ch
 }
 func (b *errBatch) Error() error { return errors.New("fetch error") }
-
-func mustEvt(t *testing.T, msgID string) []byte {
-	t.Helper()
-	evt := model.MessageEvent{
-		Event: model.EventCreated,
-		Message: model.Message{
-			ID: msgID, RoomID: "r1", UserID: "u1", UserAccount: "alice",
-			Content: "hi", CreatedAt: time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC),
-		},
-		SiteID: "site-a", Timestamp: 100,
-	}
-	data, err := json.Marshal(&evt)
-	require.NoError(t, err)
-	return data
-}
