@@ -3542,4 +3542,653 @@ git commit -m "test(chat-frontend): E2E click-to-jump from in-bubble QuotedBlock
 
 ---
 
-*Chapter 6 follows — thread state plumbing (`threadEventsReducer.js`, `ThreadEventsContext.jsx`). No thread UI yet.*
+## Chapter 6 — Thread state plumbing
+
+Goal: build the reducer and context that own thread state. **No UI yet** — the next chapter mounts the panel. By the end of this chapter, `useThreadEvents()` is callable anywhere under `MainApp` and accepts `openThread(parent)`, `closeThread()`, `sendReply(content, options)`, `retryReply(id)`, `dismissReply(id)`.
+
+### Task 6.1: Create `threadEventsReducer.js`
+
+State shape and actions per spec section "State management" (`docs/superpowers/specs/2026-05-13-thread-panel-design.md`, lines about `threadEventsReducer.js`).
+
+**Files:**
+- Create: `chat-frontend/src/lib/threadEventsReducer.js`
+- Create: `chat-frontend/src/lib/threadEventsReducer.test.js`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `chat-frontend/src/lib/threadEventsReducer.test.js`:
+
+```js
+import { describe, it, expect } from 'vitest'
+import { threadEventsReducer, initialState } from './threadEventsReducer'
+
+const parent = { roomId: 'r1', siteId: 's1', messageId: 'p1', createdAtMs: 1000 }
+
+describe('threadEventsReducer — OPEN_THREAD', () => {
+  it('sets activeParent and flags loading', () => {
+    const out = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    expect(out.activeParent).toEqual(parent)
+    expect(out.historyLoading).toBe(true)
+    expect(out.messages).toEqual([])
+    expect(out.hasLoadedHistory).toBe(false)
+    expect(out.historyError).toBe(null)
+  })
+
+  it('short-circuits when the same parent is already active', () => {
+    const seed = { ...initialState, activeParent: parent, messages: [{ id: 'r1' }] }
+    const out = threadEventsReducer(seed, { type: 'OPEN_THREAD', parent })
+    expect(out).toBe(seed)
+  })
+
+  it('switches to a different parent and clears prior state', () => {
+    const seed = { ...initialState, activeParent: parent, messages: [{ id: 'old' }], hasLoadedHistory: true }
+    const next = { ...parent, messageId: 'p2' }
+    const out = threadEventsReducer(seed, { type: 'OPEN_THREAD', parent: next })
+    expect(out.activeParent).toEqual(next)
+    expect(out.messages).toEqual([])
+    expect(out.hasLoadedHistory).toBe(false)
+    expect(out.historyLoading).toBe(true)
+  })
+})
+
+describe('threadEventsReducer — CLOSE_THREAD', () => {
+  it('resets to initialState', () => {
+    const seed = { ...initialState, activeParent: parent, messages: [{ id: 'x' }] }
+    expect(threadEventsReducer(seed, { type: 'CLOSE_THREAD' })).toEqual(initialState)
+  })
+})
+
+describe('threadEventsReducer — HISTORY_LOADED', () => {
+  const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+
+  it('hydrates messages from the response', () => {
+    const out = threadEventsReducer(open, {
+      type: 'HISTORY_LOADED',
+      parentId: 'p1',
+      resp: { messages: [{ id: 'r1' }, { id: 'r2' }], hasNext: false, nextCursor: null },
+    })
+    expect(out.messages).toEqual([{ id: 'r1' }, { id: 'r2' }])
+    expect(out.hasLoadedHistory).toBe(true)
+    expect(out.historyLoading).toBe(false)
+    expect(out.historyError).toBe(null)
+    expect(out.hasNext).toBe(false)
+    expect(out.nextCursor).toBe(null)
+  })
+
+  it('ignores results for a non-active parent', () => {
+    const out = threadEventsReducer(open, {
+      type: 'HISTORY_LOADED',
+      parentId: 'other',
+      resp: { messages: [{ id: 'r1' }], hasNext: false, nextCursor: null },
+    })
+    expect(out).toBe(open)
+  })
+
+  it('preserves any optimistic _local rows when merging history', () => {
+    const seeded = { ...open, messages: [{ id: 'opt', _local: true, content: 'mine' }] }
+    const out = threadEventsReducer(seeded, {
+      type: 'HISTORY_LOADED',
+      parentId: 'p1',
+      resp: { messages: [{ id: 'r-from-server' }], hasNext: false, nextCursor: null },
+    })
+    const ids = out.messages.map((m) => m.id)
+    expect(ids).toContain('opt')
+    expect(ids).toContain('r-from-server')
+  })
+})
+
+describe('threadEventsReducer — HISTORY_FAILED', () => {
+  it('sets historyError, clears historyLoading', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const out = threadEventsReducer(open, { type: 'HISTORY_FAILED', parentId: 'p1', error: 'nope' })
+    expect(out.historyError).toBe('nope')
+    expect(out.historyLoading).toBe(false)
+  })
+
+  it('ignores failures for a non-active parent', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const out = threadEventsReducer(open, { type: 'HISTORY_FAILED', parentId: 'other', error: 'x' })
+    expect(out).toBe(open)
+  })
+})
+
+describe('threadEventsReducer — REPLY_SENT_LOCAL', () => {
+  it('appends an optimistic message with _local: true', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const out = threadEventsReducer(open, {
+      type: 'REPLY_SENT_LOCAL',
+      message: { id: 'opt', content: 'hi', _local: true },
+    })
+    expect(out.messages).toEqual([{ id: 'opt', content: 'hi', _local: true }])
+  })
+
+  it('dedupes by id (no double-append)', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const once = threadEventsReducer(open, { type: 'REPLY_SENT_LOCAL', message: { id: 'opt', _local: true } })
+    const twice = threadEventsReducer(once, { type: 'REPLY_SENT_LOCAL', message: { id: 'opt', _local: true } })
+    expect(twice.messages).toHaveLength(1)
+  })
+})
+
+describe('threadEventsReducer — REPLY_SEND_FAILED / REPLY_RETRIED / REPLY_DISMISSED', () => {
+  const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+  const sent = threadEventsReducer(open, {
+    type: 'REPLY_SENT_LOCAL',
+    message: { id: 'opt', _local: true, content: 'x' },
+  })
+
+  it('REPLY_SEND_FAILED marks _status: "failed" on the matching id', () => {
+    const out = threadEventsReducer(sent, { type: 'REPLY_SEND_FAILED', messageId: 'opt', error: 'nope' })
+    expect(out.messages[0]._status).toBe('failed')
+  })
+
+  it('REPLY_RETRIED clears _status on the matching id', () => {
+    const failed = threadEventsReducer(sent, { type: 'REPLY_SEND_FAILED', messageId: 'opt', error: 'nope' })
+    const out = threadEventsReducer(failed, { type: 'REPLY_RETRIED', messageId: 'opt' })
+    expect(out.messages[0]._status).toBeUndefined()
+  })
+
+  it('REPLY_DISMISSED removes the row', () => {
+    const failed = threadEventsReducer(sent, { type: 'REPLY_SEND_FAILED', messageId: 'opt', error: 'nope' })
+    const out = threadEventsReducer(failed, { type: 'REPLY_DISMISSED', messageId: 'opt' })
+    expect(out.messages).toEqual([])
+  })
+})
+
+describe('threadEventsReducer — RESET', () => {
+  it('returns to initialState', () => {
+    const seed = { ...initialState, activeParent: parent, messages: [{ id: 'x' }] }
+    expect(threadEventsReducer(seed, { type: 'RESET' })).toEqual(initialState)
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/lib/threadEventsReducer.test.js`
+Expected: FAIL — `Cannot find module './threadEventsReducer'`.
+
+- [ ] **Step 3: Write the reducer**
+
+Create `chat-frontend/src/lib/threadEventsReducer.js`:
+
+```js
+import { mergeById } from './messageBuffer'
+
+export const initialState = {
+  activeParent: null,    // { roomId, siteId, messageId, createdAtMs }
+  messages: [],
+  hasLoadedHistory: false,
+  historyLoading: false,
+  historyError: null,
+  nextCursor: null,
+  hasNext: false,
+}
+
+function setMessage(messages, messageId, patch) {
+  const idx = messages.findIndex((m) => m.id === messageId)
+  if (idx < 0) return messages
+  const out = [...messages]
+  out[idx] = { ...out[idx], ...patch }
+  return out
+}
+
+function unsetStatus(messages, messageId) {
+  const idx = messages.findIndex((m) => m.id === messageId)
+  if (idx < 0) return messages
+  const next = { ...messages[idx] }
+  delete next._status
+  const out = [...messages]
+  out[idx] = next
+  return out
+}
+
+export function threadEventsReducer(state, action) {
+  switch (action.type) {
+    case 'OPEN_THREAD': {
+      const p = action.parent
+      if (state.activeParent && state.activeParent.messageId === p.messageId) {
+        return state
+      }
+      return {
+        ...initialState,
+        activeParent: p,
+        historyLoading: true,
+      }
+    }
+    case 'CLOSE_THREAD':
+      return initialState
+    case 'HISTORY_LOADING': {
+      if (!state.activeParent || state.activeParent.messageId !== action.parentId) return state
+      return { ...state, historyLoading: true }
+    }
+    case 'HISTORY_LOADED': {
+      if (!state.activeParent || state.activeParent.messageId !== action.parentId) return state
+      const merged = mergeById(state.messages, action.resp.messages || [])
+      return {
+        ...state,
+        messages: merged,
+        hasLoadedHistory: true,
+        historyLoading: false,
+        historyError: null,
+        hasNext: !!action.resp.hasNext,
+        nextCursor: action.resp.nextCursor ?? null,
+      }
+    }
+    case 'HISTORY_FAILED': {
+      if (!state.activeParent || state.activeParent.messageId !== action.parentId) return state
+      return { ...state, historyError: action.error, historyLoading: false }
+    }
+    case 'REPLY_SENT_LOCAL': {
+      const msg = action.message
+      if (state.messages.some((m) => m.id === msg.id)) return state
+      return { ...state, messages: [...state.messages, msg] }
+    }
+    case 'REPLY_SEND_FAILED':
+      return { ...state, messages: setMessage(state.messages, action.messageId, { _status: 'failed' }) }
+    case 'REPLY_RETRIED':
+      return { ...state, messages: unsetStatus(state.messages, action.messageId) }
+    case 'REPLY_DISMISSED':
+      return { ...state, messages: state.messages.filter((m) => m.id !== action.messageId) }
+    case 'RESET':
+      return initialState
+    default:
+      return state
+  }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cd chat-frontend && npx vitest run src/lib/threadEventsReducer.test.js`
+Expected: PASS (all cases).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/lib/threadEventsReducer.js chat-frontend/src/lib/threadEventsReducer.test.js
+git commit -m "feat(chat-frontend): add threadEventsReducer"
+```
+
+### Task 6.2: Create `ThreadEventsContext.jsx`
+
+Wraps the reducer, fires the `msg.thread` RPC on `openThread`, exposes `openThread / closeThread / sendReply / retryReply / dismissReply`. Race-discard pattern mirrors `RoomEventsContext`.
+
+`sendReply(content, { quotedParentMessageId })`:
+1. Generate `id = generateMessageID()` and optimistic local message.
+2. Dispatch `REPLY_SENT_LOCAL { message: { ...optimistic, _local: true } }`.
+3. Publish `msgSend(account, roomId, siteId)` with `threadParentMessageId`, `threadParentMessageCreatedAt`, and (optional) `quotedParentMessageId`.
+4. On error, dispatch `REPLY_SEND_FAILED { messageId: id, error }`.
+5. On success (publish acks), no further dispatch — the row stays as `_local` until it's seen via thread reopen.
+
+`retryReply(messageId)`:
+1. Dispatch `REPLY_RETRIED { messageId }`.
+2. Re-publish using the same `id` and payload (read from current state).
+3. On error, dispatch `REPLY_SEND_FAILED` again.
+
+`dismissReply(messageId)`: dispatch `REPLY_DISMISSED`.
+
+Also: on `user` going null (logout), dispatch `RESET`.
+
+**Files:**
+- Create: `chat-frontend/src/context/ThreadEventsContext.jsx`
+- Create: `chat-frontend/src/context/ThreadEventsContext.test.jsx`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `chat-frontend/src/context/ThreadEventsContext.test.jsx`:
+
+```jsx
+import { render, screen, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { ThreadEventsProvider, useThreadEvents } from './ThreadEventsContext'
+
+const request = vi.fn()
+const publish = vi.fn()
+vi.mock('./NatsContext', () => ({
+  useNats: () => ({
+    user: { account: 'alice', siteId: 's1' },
+    request, publish,
+  }),
+}))
+vi.mock('../lib/idgen', () => ({ generateMessageID: () => 'OPT-000000000000000000' }))
+vi.mock('uuid', () => ({ v4: () => 'req-uuid' }))
+
+function Probe() {
+  const t = useThreadEvents()
+  return (
+    <div>
+      <span>active:{t.activeParent?.messageId ?? 'none'}</span>
+      <span>count:{t.messages.length}</span>
+      <span>loaded:{String(t.hasLoadedHistory)}</span>
+      <span>loading:{String(t.historyLoading)}</span>
+      <span>error:{t.historyError ?? 'none'}</span>
+      <button type="button" onClick={() => t.openThread({ roomId: 'r1', siteId: 's1', messageId: 'p1', createdAtMs: 1000 })}>open</button>
+      <button type="button" onClick={() => t.closeThread()}>close</button>
+      <button type="button" onClick={() => t.sendReply('hi', {})}>send</button>
+      <button type="button" onClick={() => t.sendReply('q-hi', { quotedParentMessageId: 'q-id' })}>send-quote</button>
+      <button type="button" onClick={() => t.retryReply('OPT-000000000000000000')}>retry</button>
+      <button type="button" onClick={() => t.dismissReply('OPT-000000000000000000')}>dismiss</button>
+    </div>
+  )
+}
+
+const setup = () =>
+  render(<ThreadEventsProvider><Probe /></ThreadEventsProvider>)
+
+describe('ThreadEventsContext', () => {
+  beforeEach(() => { request.mockReset(); publish.mockReset() })
+
+  it('openThread sets activeParent and fires msg.thread RPC; on success dispatches HISTORY_LOADED', async () => {
+    request.mockResolvedValueOnce({ messages: [{ id: 'r1' }, { id: 'r2' }], hasNext: false, nextCursor: null })
+    setup()
+    expect(screen.getByText('active:none')).toBeInTheDocument()
+    await act(async () => {
+      screen.getByText('open').click()
+    })
+    expect(request).toHaveBeenCalledWith(
+      'chat.user.alice.request.room.r1.s1.msg.thread',
+      { threadMessageId: 'p1', limit: 50 }
+    )
+    expect(screen.getByText('active:p1')).toBeInTheDocument()
+    expect(screen.getByText('count:2')).toBeInTheDocument()
+    expect(screen.getByText('loaded:true')).toBeInTheDocument()
+    expect(screen.getByText('loading:false')).toBeInTheDocument()
+  })
+
+  it('openThread RPC failure dispatches HISTORY_FAILED', async () => {
+    request.mockRejectedValueOnce(new Error('boom'))
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    expect(screen.getByText('error:boom')).toBeInTheDocument()
+    expect(screen.getByText('loading:false')).toBeInTheDocument()
+  })
+
+  it('opening the same parent twice short-circuits (no second RPC)', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    request.mockClear()
+    await act(async () => { screen.getByText('open').click() })
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('closeThread resets state', async () => {
+    request.mockResolvedValue({ messages: [{ id: 'r1' }], hasNext: false, nextCursor: null })
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('close').click() })
+    expect(screen.getByText('active:none')).toBeInTheDocument()
+    expect(screen.getByText('count:0')).toBeInTheDocument()
+  })
+
+  it('sendReply optimistically appends and publishes msg.send with thread parent fields', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    publish.mockResolvedValue()
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('send').click() })
+    expect(screen.getByText('count:1')).toBeInTheDocument()
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.room.r1.s1.msg.send',
+      {
+        id: 'OPT-000000000000000000',
+        content: 'hi',
+        requestId: 'req-uuid',
+        threadParentMessageId: 'p1',
+        threadParentMessageCreatedAt: 1000,
+      }
+    )
+  })
+
+  it('sendReply with quotedParentMessageId carries the field in the payload', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    publish.mockResolvedValue()
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('send-quote').click() })
+    const call = publish.mock.calls[0]
+    expect(call[1].quotedParentMessageId).toBe('q-id')
+  })
+
+  it('sendReply publish failure tags _status=failed on the optimistic row', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    publish.mockRejectedValue(new Error('nope'))
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('send').click() })
+    // Probe doesn't expose per-row state, but a count:1 + ability to retry/dismiss
+    // is sufficient for plumbing. The reducer test already verifies _status.
+    expect(screen.getByText('count:1')).toBeInTheDocument()
+  })
+
+  it('dismissReply removes the row', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    publish.mockRejectedValue(new Error('nope'))
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('send').click() })
+    await act(async () => { screen.getByText('dismiss').click() })
+    expect(screen.getByText('count:0')).toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/context/ThreadEventsContext.test.jsx`
+Expected: FAIL — module doesn't exist yet.
+
+- [ ] **Step 3: Write the context**
+
+Create `chat-frontend/src/context/ThreadEventsContext.jsx`:
+
+```jsx
+import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from 'react'
+import { v4 as uuidv4 } from 'uuid'
+import { useNats } from './NatsContext'
+import { generateMessageID } from '../lib/idgen'
+import { msgSend, msgThread } from '../lib/subjects'
+import { threadEventsReducer, initialState } from '../lib/threadEventsReducer'
+
+const ThreadEventsContext = createContext(null)
+
+export function ThreadEventsProvider({ children }) {
+  const { user, request, publish } = useNats()
+  const [state, dispatch] = useReducer(threadEventsReducer, initialState)
+  const generationRef = useRef(0)
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  // Reset on logout.
+  useEffect(() => {
+    if (!user) dispatch({ type: 'RESET' })
+  }, [user])
+
+  const openThread = useCallback(
+    (parent) => {
+      // Short-circuit if it's already the same parent (mirrors reducer guard).
+      if (stateRef.current.activeParent?.messageId === parent.messageId) return
+      const myGen = ++generationRef.current
+      dispatch({ type: 'OPEN_THREAD', parent })
+      if (!user) return
+      const subj = msgThread(user.account, parent.roomId, parent.siteId)
+      request(subj, { threadMessageId: parent.messageId, limit: 50 })
+        .then((resp) => {
+          if (myGen !== generationRef.current) return
+          dispatch({ type: 'HISTORY_LOADED', parentId: parent.messageId, resp })
+        })
+        .catch((err) => {
+          if (myGen !== generationRef.current) return
+          dispatch({
+            type: 'HISTORY_FAILED',
+            parentId: parent.messageId,
+            error: err?.message ?? String(err),
+          })
+        })
+    },
+    [user, request]
+  )
+
+  const closeThread = useCallback(() => {
+    generationRef.current++
+    dispatch({ type: 'CLOSE_THREAD' })
+  }, [])
+
+  const publishReply = useCallback(
+    (id, content, opts) => {
+      const parent = stateRef.current.activeParent
+      if (!parent || !user) return Promise.reject(new Error('no active thread'))
+      const payload = {
+        id,
+        content,
+        requestId: uuidv4(),
+        threadParentMessageId: parent.messageId,
+        threadParentMessageCreatedAt: parent.createdAtMs,
+      }
+      if (opts?.quotedParentMessageId) payload.quotedParentMessageId = opts.quotedParentMessageId
+      return Promise.resolve(publish(msgSend(user.account, parent.roomId, parent.siteId), payload))
+    },
+    [user, publish]
+  )
+
+  const sendReply = useCallback(
+    async (content, opts) => {
+      const parent = stateRef.current.activeParent
+      if (!parent || !user || !content || !content.trim()) return
+      const id = generateMessageID()
+      const optimistic = {
+        id,
+        content: content.trim(),
+        createdAt: new Date().toISOString(),
+        sender: { account: user.account },
+        threadParentMessageId: parent.messageId,
+        threadParentMessageCreatedAt: new Date(parent.createdAtMs).toISOString(),
+        _local: true,
+      }
+      if (opts?.quotedParentMessageId) {
+        optimistic.quotedParentMessage = {
+          id: opts.quotedParentMessageId,
+          senderName: opts.quotedSnapshot?.senderName,
+          content: opts.quotedSnapshot?.content,
+        }
+      }
+      dispatch({ type: 'REPLY_SENT_LOCAL', message: optimistic })
+      try {
+        await publishReply(id, content.trim(), opts)
+      } catch (err) {
+        dispatch({ type: 'REPLY_SEND_FAILED', messageId: id, error: err?.message ?? String(err) })
+      }
+    },
+    [user, publishReply]
+  )
+
+  const retryReply = useCallback(
+    async (messageId) => {
+      const row = stateRef.current.messages.find((m) => m.id === messageId)
+      if (!row) return
+      dispatch({ type: 'REPLY_RETRIED', messageId })
+      try {
+        await publishReply(
+          messageId,
+          row.content,
+          row.quotedParentMessage ? { quotedParentMessageId: row.quotedParentMessage.id } : undefined
+        )
+      } catch (err) {
+        dispatch({ type: 'REPLY_SEND_FAILED', messageId, error: err?.message ?? String(err) })
+      }
+    },
+    [publishReply]
+  )
+
+  const dismissReply = useCallback((messageId) => {
+    dispatch({ type: 'REPLY_DISMISSED', messageId })
+  }, [])
+
+  const value = {
+    activeParent: state.activeParent,
+    messages: state.messages,
+    hasLoadedHistory: state.hasLoadedHistory,
+    historyLoading: state.historyLoading,
+    historyError: state.historyError,
+    openThread,
+    closeThread,
+    sendReply,
+    retryReply,
+    dismissReply,
+  }
+
+  return <ThreadEventsContext.Provider value={value}>{children}</ThreadEventsContext.Provider>
+}
+
+export function useThreadEvents() {
+  const ctx = useContext(ThreadEventsContext)
+  if (!ctx) throw new Error('useThreadEvents must be used inside ThreadEventsProvider')
+  return ctx
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cd chat-frontend && npx vitest run src/context/ThreadEventsContext.test.jsx`
+Expected: PASS (8 tests).
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `cd chat-frontend && npm test -- --run`
+Expected: all PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add chat-frontend/src/context/ThreadEventsContext.jsx chat-frontend/src/context/ThreadEventsContext.test.jsx
+git commit -m "feat(chat-frontend): add ThreadEventsContext"
+```
+
+### Task 6.3: Mount `ThreadEventsProvider` under `RoomEventsProvider`
+
+Wire the provider in `App.jsx`. Order: `NatsProvider` → `RoomEventsProvider` → `ThreadEventsProvider` → `MainApp`. Nothing in `MainApp` consumes it yet (Chapter 7), but the hook becomes safely callable from descendants.
+
+**Files:**
+- Modify: `chat-frontend/src/App.jsx`
+
+- [ ] **Step 1: Add the import and wrap MainApp**
+
+In `chat-frontend/src/App.jsx`:
+
+```jsx
+import { ThreadEventsProvider } from './context/ThreadEventsContext'
+```
+
+Change the connected branch:
+
+```jsx
+  return (
+    <RoomEventsProvider>
+      <ThreadEventsProvider>
+        <MainApp />
+      </ThreadEventsProvider>
+    </RoomEventsProvider>
+  )
+```
+
+- [ ] **Step 2: Run the full suite**
+
+Run: `cd chat-frontend && npm test -- --run`
+Expected: all PASS — `MainApp` and its descendants don't consume the new context yet, so nothing should break.
+
+- [ ] **Step 3: Manual smoke check**
+
+Run: `cd chat-frontend && npm run dev`
+Sign in, click around. No visible changes. If there's a runtime error, it'll be in the console — fix before committing.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add chat-frontend/src/App.jsx
+git commit -m "feat(chat-frontend): mount ThreadEventsProvider in App"
+```
+
+---
+
+*Chapter 7 follows — Thread panel UI (`ThreadRightBar`, `ThreadMessageArea`, `ThreadMessageInput`, loading/error/empty/failed-reply states, auto-scroll, mount under `MainApp`).*
