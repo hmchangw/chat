@@ -575,7 +575,9 @@ func (c *Collector) RequestSampleRows() []RequestSampleRow {
 // ExportHistograms returns a snapshot of every (scenario, kind, phase) HDR
 // histogram cell recorded during this Collector's lifetime. The returned map
 // uses the key format "scenario|kind|phase" so it is directly JSON-serializable
-// (no struct keys). Each value is a *hdr.Snapshot produced by CellHistogram.Export().
+// (no struct keys). Scenario, kind, and phase names MUST NOT contain the '|'
+// separator — this is enforced by convention (loadgen presets use kebab-case names
+// like "history-read"). Each value is a *hdr.Snapshot produced by CellHistogram.Export().
 //
 // Thread-safe: acquires the outer requestsMu (RLock) to snapshot the key set,
 // then acquires each shard's mu to call Export(). The LOCK-ORDER INVARIANT

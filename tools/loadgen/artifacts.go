@@ -49,7 +49,12 @@ func WriteBundle(rootDir string, b *ArtifactBundle) error {
 	if err := writeJSON(filepath.Join(dir, "summary.json"), b.Summary); err != nil {
 		return err
 	}
-	// histograms.hlog: nil map serializes to JSON "null"; that's acceptable.
+	// histograms.hlog: HDR snapshots serialized as indented JSON.
+	// NOTE: hdr.Snapshot.Counts is a dense ~11k-bucket array; expect ~80KB per histogram cell,
+	// almost entirely zeros (one entry per HDR bucket). Non-zero bucket indices correspond to
+	// recorded latency buckets per the HDR formula in github.com/HdrHistogram/hdrhistogram-go.
+	// Interpretation requires the library. A more debuggable format (compressed or HDR native log)
+	// is a follow-up — see CHANGES.md notes. Nil map serializes to JSON "null"; that's acceptable.
 	if err := writeJSON(filepath.Join(dir, "histograms.hlog"), b.Histograms); err != nil {
 		return err
 	}
@@ -130,10 +135,12 @@ var secretSuffixes = []string{
 }
 
 // secretExactKeys are key names (upper-cased) that should always be redacted
-// regardless of suffix matching.
+// regardless of suffix matching. MONGO_URI and NATS_URL can contain user:password@host segments.
 var secretExactKeys = map[string]bool{
 	"AUTH_TOKEN":      true,
 	"NATS_CREDS_FILE": true,
+	"MONGO_URI":       true,
+	"NATS_URL":        true,
 }
 
 // RedactEnv returns a copy of env with secret values replaced by "***".

@@ -42,14 +42,11 @@ func (c *CellHistogram) Merge(other *CellHistogram) error {
 // Reset clears the histogram (used when a run starts a new measured-window phase).
 func (c *CellHistogram) Reset() { c.h.Reset() }
 
-// Export returns a snapshot of the histogram for inclusion in the artifact
-// bundle's histograms file (Phase 1b §1.8). The caller is responsible for
+// Export returns a *hdr.Snapshot serializable to JSON (consumed by
+// artifacts.go's WriteBundle into histograms.hlog). The caller is responsible for
 // serializing the *hdr.Snapshot (e.g., via encoding/json).
 // Returns a *hdr.Snapshot (library type); callers must import
 // github.com/HdrHistogram/hdrhistogram-go directly to use the returned value.
-//
-// TODO(Phase 1b §1.8): wire this into the artifact bundle writer once the
-// HDR log format is determined.
 func (c *CellHistogram) Export() *hdr.Snapshot {
 	return c.h.Export()
 }

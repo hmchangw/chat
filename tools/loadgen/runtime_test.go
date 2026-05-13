@@ -77,6 +77,13 @@ func TestRuntime_FinalizeWritesBundle(t *testing.T) {
 	require.NoError(t, err)
 	defer rt.Close() //nolint:errcheck
 
+	rt.SetLastSettle(SettleOutcome{
+		AllSucceeded: true,
+		Succeeded:    3,
+		Failed:       0,
+		Probes:       []string{"m1", "m2", "m3"},
+	})
+
 	summary := &Summary{RunID: "bundle-run-id", Preset: "test", TargetRate: 100}
 	require.NoError(t, rt.Finalize(context.Background(), summary))
 
@@ -90,6 +97,12 @@ func TestRuntime_FinalizeWritesBundle(t *testing.T) {
 		_, statErr := os.Stat(path)
 		assert.NoError(t, statErr, "missing artifact file: %s", f)
 	}
+
+	// Verify settle.json contains the expected data.
+	settleBytes, err := os.ReadFile(filepath.Join(dir, "bundle-run-id", "settle.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(settleBytes), `"AllSucceeded": true`)
+	assert.Contains(t, string(settleBytes), `"Succeeded": 3`)
 }
 
 // TestRuntime_PreflightIsNoop verifies the Phase 0 stub returns no error.

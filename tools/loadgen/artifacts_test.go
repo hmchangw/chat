@@ -157,7 +157,8 @@ func TestCollector_ExportHistograms_WithData(t *testing.T) {
 
 func TestRedactEnv(t *testing.T) {
 	env := map[string]string{
-		"NATS_URL":        "nats://localhost:4222",
+		"NATS_URL":        "nats://user:password@localhost:4222",
+		"MONGO_URI":       "mongodb://user:password@localhost:27017/db",
 		"AUTH_TOKEN":      "secret-token-value",
 		"NATS_CREDS_FILE": "/path/to/creds",
 		"MONGO_PASSWORD":  "hunter2",
@@ -170,11 +171,12 @@ func TestRedactEnv(t *testing.T) {
 	redacted := RedactEnv(env)
 
 	// Safe vars pass through.
-	assert.Equal(t, "nats://localhost:4222", redacted["NATS_URL"])
 	assert.Equal(t, "site-local", redacted["SITE_ID"])
 	assert.Equal(t, "safe-value", redacted["SAFE_VAR"])
 
-	// Secret vars are redacted.
+	// Secret vars are redacted (URIs can contain user:password@host).
+	assert.Equal(t, "***", redacted["NATS_URL"])
+	assert.Equal(t, "***", redacted["MONGO_URI"])
 	assert.Equal(t, "***", redacted["AUTH_TOKEN"])
 	assert.Equal(t, "***", redacted["NATS_CREDS_FILE"])
 	assert.Equal(t, "***", redacted["MONGO_PASSWORD"])
