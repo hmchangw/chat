@@ -216,3 +216,23 @@ func (h *Handler) subscriptionUnsubscribeApp(c *natsrouter.Context, req appSubsc
 	_ = req
 	return &okResp{Success: true}, nil
 }
+
+func (h *Handler) roomSubscriptionGet(c *natsrouter.Context) (*roomSubscriptionResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	sub := buildMockSub(c.Param("account"), h.siteID)
+	sub.RoomID = c.Param("roomID")
+	return &roomSubscriptionResp{Subscription: sub}, nil
+}
+
+func (h *Handler) appsList(c *natsrouter.Context) (*appListResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	apps := []model.App{
+		buildMockApp("app-1", "Mock App One"),
+		buildMockApp("app-2", "Mock App Two"),
+	}
+	return &appListResp{Apps: apps, Total: len(apps)}, nil
+}

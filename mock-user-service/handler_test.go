@@ -188,3 +188,42 @@ func TestHandler_SubscriptionAppOps(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestHandler_RoomSubscriptionGet(t *testing.T) {
+	h := NewHandler("site-local")
+
+	t.Run("echoes roomID from param", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-local", "roomID": "r-42"})
+		resp, err := h.roomSubscriptionGet(c)
+		require.NoError(t, err)
+		assert.Equal(t, "r-42", resp.Subscription.RoomID)
+		assert.Equal(t, "alice", resp.Subscription.User.Account)
+		assert.Equal(t, "site-local", resp.Subscription.SiteID)
+	})
+
+	t.Run("siteID mismatch", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-x", "roomID": "r-42"})
+		_, err := h.roomSubscriptionGet(c)
+		require.Error(t, err)
+	})
+}
+
+func TestHandler_AppsList(t *testing.T) {
+	h := NewHandler("site-local")
+
+	t.Run("returns two mock apps", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-local"})
+		resp, err := h.appsList(c)
+		require.NoError(t, err)
+		assert.Equal(t, 2, resp.Total)
+		require.Len(t, resp.Apps, 2)
+		assert.NotEmpty(t, resp.Apps[0].ID)
+		assert.NotEmpty(t, resp.Apps[0].Name)
+	})
+
+	t.Run("siteID mismatch", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-x"})
+		_, err := h.appsList(c)
+		require.Error(t, err)
+	})
+}
