@@ -553,8 +553,8 @@ dialog is reflected in the badge count immediately on dismiss.
 `RoomList` and the MessageArea header, so a channel shows
 `Message # frontend` and a DM shows `Message @ bob` (falling back
 to `Message @ (DM)` if the subscription name hasn't landed yet) —
-never the misleading `Message #bob-dm` or `Message # ` that the
-hardcoded `#${room.name}` placeholder produced.
+never the misleading `Message #bob-dm` that the hardcoded
+`#${room.name}` placeholder produced.
 
 ### Layer 8 — DM display name fallback
 
@@ -600,10 +600,7 @@ regardless of encryption mode:
 
 ```js
 if ((!msg || !msg.id) && evt.encryptedMessage) {
-  if (!evt.lastMsgId) {
-    console.debug('[chat] MESSAGE_RECEIVED drop: encrypted with no lastMsgId', ...)
-    return state
-  }
+  if (!evt.lastMsgId) return state
   msg = {
     id: evt.lastMsgId,
     roomId: evt.roomId,
@@ -616,20 +613,6 @@ if ((!msg || !msg.id) && evt.encryptedMessage) {
 
 The plaintext path is unchanged and still wins if both fields are
 present (forward-compatible with mixed rollouts).
-
-**Diagnostic logging.** `RoomEventsContext` now logs at
-`console.debug` level at every step of the receive path:
-
-- `dmSub` callback (`chat.user.{account}.event.room`)
-- channel-sub callback (`chat.room.{roomId}.event`)
-- `openChannelSub` itself, when it registers a new subscription
-- Reducer drops, with the reason
-
-Each log includes subject, `evt.type`, `roomId`, `lastMsgId`,
-`hasMessage`, `hasEncrypted` — enough to trace where an inbound event
-stops without opening the WebSocket frame inspector.
-`console.debug` is hidden by default in browser dev-tools (visible
-at "Verbose"), so the instrumentation is free in normal operation.
 
 ### Layer 10 — Smoke harnesses
 
@@ -898,7 +881,7 @@ chat-frontend/src/lib/
 
 chat-frontend/src/context/
 ├── NatsContext.jsx            # requestWithAsyncResult on the context + JSDoc + useMemo on value
-└── RoomEventsContext.jsx      # merges evt.subscription.name + diagnostic console.debug logs
+└── RoomEventsContext.jsx      # merges evt.subscription.name onto rooms before ROOM_ADDED
 
 chat-frontend/src/components/
 ├── CreateRoomDialog.jsx       # rewired to roomCreate + treatAsSuccess: isDMExistsReply + subscription.update wait
