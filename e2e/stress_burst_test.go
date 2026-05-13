@@ -99,9 +99,16 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 	t.Logf("100 sends in %s; failures=%d", time.Since(startSend), sendFails.Load())
 	require.Zero(t, sendFails.Load(), "all 100 gatekeeper-acks must succeed")
 
-	// Wait by msgID (seq-based wait would race sibling tests on the shared
-	// durable); the last msgID's arrival implies all prior in-order acks.
-	awaitMessageOnSite(t, ctx, site, msgIDs[N-1])
+	// Wait by msgID for EVERY message, not just the last. Under 8-way
+	// concurrent sends the message-worker durable processes messages out
+	// of send-order, so a sender-index "last" doesn't imply all prior
+	// are landed. Doing a per-msgID wait is more expensive but the
+	// assertion loop below is otherwise racy.
+	sess := site.CassandraSession(t)
+	defer sess.Close()
+	for _, id := range msgIDs {
+		awaitMessageByID(t, ctx, sess, id)
+	}
 
 	// Drain bob's broadcasts; system events interleave with user messages.
 	seen := make(map[string]bool, N)
@@ -136,8 +143,9 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 
 	// messages_by_id (PK = message_id) is the dedup table; per-msgID
 	// lookup is tight, unlike messages_by_room which system events pad.
-	sess := site.CassandraSession(t)
-	defer sess.Close()
+	// Session was opened above; the per-msgID wait already proved
+	// COUNT(*)=1 for each, but re-assert to surface a regression that
+	// drops or duplicates between wait and assert.
 	for _, id := range msgIDs {
 		var c int
 		require.NoError(t, sess.Query(
