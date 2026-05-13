@@ -193,3 +193,26 @@ func (h *Handler) subscriptionGetApps(c *natsrouter.Context, req getAppSubsReq) 
 	subs := h.mockSubList(c.Param("account"))
 	return &subscriptionListResp{Subscriptions: subs, Total: len(subs)}, nil
 }
+
+func (h *Handler) subscriptionGetDM(c *natsrouter.Context, req getDMSubReq) (*dmSubscriptionResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	return &dmSubscriptionResp{Subscription: buildMockSub(req.TargetAccount, h.siteID)}, nil
+}
+
+func (h *Handler) subscriptionSubscribeApp(c *natsrouter.Context, req appSubscriptionReq) (*okResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	_ = req
+	return &okResp{Success: true}, nil
+}
+
+func (h *Handler) subscriptionUnsubscribeApp(c *natsrouter.Context, req appSubscriptionReq) (*okResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	_ = req
+	return &okResp{Success: true}, nil
+}

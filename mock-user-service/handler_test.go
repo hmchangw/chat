@@ -141,3 +141,50 @@ func TestHandler_SubscriptionListHandlers_SiteMismatch(t *testing.T) {
 	_, err = h.subscriptionGetApps(c, getAppSubsReq{})
 	require.Error(t, err)
 }
+
+func TestHandler_SubscriptionGetDM(t *testing.T) {
+	h := NewHandler("site-local")
+
+	t.Run("returns single sub for target", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-local"})
+		resp, err := h.subscriptionGetDM(c, getDMSubReq{TargetAccount: "bob"})
+		require.NoError(t, err)
+		assert.Equal(t, "bob", resp.Subscription.User.Account)
+		assert.Equal(t, "site-local", resp.Subscription.SiteID)
+	})
+
+	t.Run("siteID mismatch", func(t *testing.T) {
+		c := newCtx(map[string]string{"account": "alice", "siteID": "site-x"})
+		_, err := h.subscriptionGetDM(c, getDMSubReq{TargetAccount: "bob"})
+		require.Error(t, err)
+	})
+}
+
+func TestHandler_SubscriptionAppOps(t *testing.T) {
+	h := NewHandler("site-local")
+	c := newCtx(map[string]string{"account": "alice", "siteID": "site-local"})
+
+	t.Run("subscribeApp returns success", func(t *testing.T) {
+		resp, err := h.subscriptionSubscribeApp(c, appSubscriptionReq{AppID: "app-1"})
+		require.NoError(t, err)
+		assert.True(t, resp.Success)
+	})
+
+	t.Run("unsubscribeApp returns success", func(t *testing.T) {
+		resp, err := h.subscriptionUnsubscribeApp(c, appSubscriptionReq{AppID: "app-1"})
+		require.NoError(t, err)
+		assert.True(t, resp.Success)
+	})
+
+	t.Run("subscribeApp siteID mismatch", func(t *testing.T) {
+		badC := newCtx(map[string]string{"account": "alice", "siteID": "site-x"})
+		_, err := h.subscriptionSubscribeApp(badC, appSubscriptionReq{})
+		require.Error(t, err)
+	})
+
+	t.Run("unsubscribeApp siteID mismatch", func(t *testing.T) {
+		badC := newCtx(map[string]string{"account": "alice", "siteID": "site-x"})
+		_, err := h.subscriptionUnsubscribeApp(badC, appSubscriptionReq{})
+		require.Error(t, err)
+	})
+}
