@@ -1025,6 +1025,15 @@ For every selector that names the *page-level* layout (the outermost layout grid
 .chat-main            → .chat-page         /* the middle column */
 ```
 
+**Important — also update descendant rules.** `index.css` contains rules that scope to `.chat-main` as an ancestor, e.g. lines 536 + 543:
+
+```css
+.chat-main .message-area  { /* … */ }
+.chat-main .message-list  { /* … */ }
+```
+
+These MUST be renamed to `.chat-page .message-area` and `.chat-page .message-list` respectively. Run `grep -n "chat-main\|chat-layout\|chat-header\|chat-body\|chat-sidebar" chat-frontend/src/styles/index.css` after the rename and verify ZERO remaining matches that aren't the new `.chat-main-content` (which stays — it's the inner content wrapper, see CSS line 879).
+
 Add a new `.chat-room-header` rule after `.chat-page`:
 
 ```css
