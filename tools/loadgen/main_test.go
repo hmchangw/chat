@@ -299,9 +299,10 @@ func TestGatheredCounterLabelPair(t *testing.T) {
 	got := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "measured", "reason", "gatekeeper")
 	assert.Equal(t, float64(3), got, "should count only phase=measured,reason=gatekeeper rows")
 
-	// Warmup gatekeeper must be excluded.
-	gotMeasuredOnly := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "measured", "reason", "gatekeeper")
-	assert.Equal(t, float64(3), gotMeasuredOnly, "warmup bucket must be excluded")
+	// Verify warmup IS in the counter. Get all gatekeeper entries regardless of phase.
+	// This should be 4 (2 measured small + 1 warmup small + 1 measured large = 4 total for reason=gatekeeper).
+	gotAllPhases := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "reason", "gatekeeper")
+	assert.Greater(t, gotAllPhases, got, "phase filter must exclude warmup-phase samples (unfiltered total > measured-only)")
 
 	// phase=warmup filter gives exactly the warmup row.
 	gotWarmup := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "warmup", "reason", "gatekeeper")

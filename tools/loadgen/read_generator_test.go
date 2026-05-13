@@ -361,6 +361,57 @@ func TestHistoryReadGenerator_AppErrorCountsAsErrored(t *testing.T) {
 	assert.Greater(t, totalErrors, 0, "Collector.RequestStats should report errors for app-error replies")
 }
 
+func TestSearchReadGenerator_AppErrorCountsAsErrored(t *testing.T) {
+	p, ok := BuiltinPreset("search-read")
+	require.True(t, ok)
+	f := BuildFixtures(&p, 42, "site-local")
+	m := NewMetrics()
+	col := NewCollector(m, p.Name)
+
+	// Return a model.ErrorResponse JSON from the requester.
+	appErrReply := []byte(`{"error":"not found"}`)
+	rr := &recordingRequester{}
+	req := &replyOverrideRequester{inner: rr, reply: appErrReply}
+
+	gen := NewSearchReadGenerator(&SearchReadConfig{
+		Preset: &p, Fixtures: f, SiteID: "site-local",
+		Rate: 200, Requester: req, Metrics: m,
+		Collector: col, Timeout: 1 * time.Second,
+	}, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_ = gen.Run(ctx)
+
+	require.Greater(t, rr.count(), 0, "expected at least one request")
+
+	// loadgen_request_errors_total{reason="app_error"} must have been incremented.
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+	var appErrCount float64
+	for _, mf := range mfs {
+		if mf.GetName() != "loadgen_request_errors_total" {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			for _, l := range metric.GetLabel() {
+				if l.GetName() == "reason" && l.GetValue() == "app_error" {
+					appErrCount += metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	assert.Greater(t, appErrCount, float64(0), "app-error reply should increment loadgen_request_errors_total{reason=app_error}")
+
+	// The collector must record the request as errored.
+	stats := col.RequestStats()
+	var totalErrors int
+	for _, s := range stats {
+		totalErrors += s.Errors
+	}
+	assert.Greater(t, totalErrors, 0, "Collector.RequestStats should report errors for app-error replies")
+}
+
 func TestHistoryReadGenerator_NonErrorJSONNotFlagged(t *testing.T) {
 	p, ok := BuiltinPreset("history-read")
 	require.True(t, ok)
