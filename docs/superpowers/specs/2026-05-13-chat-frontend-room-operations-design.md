@@ -924,5 +924,5 @@ chat-frontend/scripts/
 - `roomsCreate` subject builder + `parseList` helper from `lib/subjects.js`
 - `RemoveByIdRow` component + state in `MemberRoster.jsx`
 
-**Tests:** Tests pass in CI/local runs and `vite build` produces a clean
+All tests pass in CI/local runs and `vite build` produces a clean
 production bundle.
