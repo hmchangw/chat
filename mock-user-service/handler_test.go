@@ -99,3 +99,45 @@ func TestHandler_ProfileGetByName(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestHandler_SubscriptionListHandlers(t *testing.T) {
+	h := NewHandler("site-local")
+	c := newCtx(map[string]string{"account": "alice", "siteID": "site-local"})
+
+	type listFn func() (*subscriptionListResp, error)
+	cases := []struct {
+		name string
+		fn   listFn
+	}{
+		{"getCurrent", func() (*subscriptionListResp, error) { return h.subscriptionGetCurrent(c, getSubsReq{}) }},
+		{"getRooms", func() (*subscriptionListResp, error) { return h.subscriptionGetRooms(c, getSubsReq{}) }},
+		{"getChannels", func() (*subscriptionListResp, error) { return h.subscriptionGetChannels(c, getSubsReq{}) }},
+		{"getApps", func() (*subscriptionListResp, error) { return h.subscriptionGetApps(c, getAppSubsReq{}) }},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := tt.fn()
+			require.NoError(t, err)
+			assert.Equal(t, 2, resp.Total)
+			require.Len(t, resp.Subscriptions, 2)
+			for _, sub := range resp.Subscriptions {
+				assert.Equal(t, "alice", sub.User.Account)
+				assert.Equal(t, "site-local", sub.SiteID)
+			}
+		})
+	}
+}
+
+func TestHandler_SubscriptionListHandlers_SiteMismatch(t *testing.T) {
+	h := NewHandler("site-local")
+	c := newCtx(map[string]string{"account": "alice", "siteID": "site-x"})
+
+	_, err := h.subscriptionGetCurrent(c, getSubsReq{})
+	require.Error(t, err)
+	_, err = h.subscriptionGetRooms(c, getSubsReq{})
+	require.Error(t, err)
+	_, err = h.subscriptionGetChannels(c, getSubsReq{})
+	require.Error(t, err)
+	_, err = h.subscriptionGetApps(c, getAppSubsReq{})
+	require.Error(t, err)
+}

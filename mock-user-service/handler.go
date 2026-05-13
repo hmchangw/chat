@@ -150,3 +150,46 @@ func (h *Handler) profileGetByName(c *natsrouter.Context, req profileGetByNameRe
 		Email:       mockEmail,
 	}, nil
 }
+
+func (h *Handler) mockSubList(account string) []model.Subscription {
+	return []model.Subscription{
+		buildMockSub(account, h.siteID),
+		buildMockSub(account, h.siteID),
+	}
+}
+
+func (h *Handler) subscriptionGetCurrent(c *natsrouter.Context, req getSubsReq) (*subscriptionListResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	_ = req
+	subs := h.mockSubList(c.Param("account"))
+	return &subscriptionListResp{Subscriptions: subs, Total: len(subs)}, nil
+}
+
+func (h *Handler) subscriptionGetRooms(c *natsrouter.Context, req getSubsReq) (*subscriptionListResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	_ = req
+	subs := h.mockSubList(c.Param("account"))
+	return &subscriptionListResp{Subscriptions: subs, Total: len(subs)}, nil
+}
+
+func (h *Handler) subscriptionGetChannels(c *natsrouter.Context, req getSubsReq) (*subscriptionListResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	_ = req
+	subs := h.mockSubList(c.Param("account"))
+	return &subscriptionListResp{Subscriptions: subs, Total: len(subs)}, nil
+}
+
+func (h *Handler) subscriptionGetApps(c *natsrouter.Context, req getAppSubsReq) (*subscriptionListResp, error) {
+	if err := h.checkSite(c); err != nil {
+		return nil, err
+	}
+	_ = req
+	subs := h.mockSubList(c.Param("account"))
+	return &subscriptionListResp{Subscriptions: subs, Total: len(subs)}, nil
+}
