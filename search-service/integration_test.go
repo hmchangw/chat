@@ -29,6 +29,8 @@ import (
 	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
+const testUserRoomIndex = "user-room"
+
 // --- Fixture -----------------------------------------------------------------
 
 // ccsFixture is the full stack for cross-cluster integration tests: two ES
@@ -113,10 +115,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	t.Cleanup(func() { clientNC.Close() })
 	t.Logf("CCS fixture: NATS at %s", natsURL)
 
-	// Thread the same index name through both the store and handlerConfig
-	// so the test exercises the full SEARCH_USER_ROOM_INDEX wiring path
-	// (store.GetUserRoomDoc → ES index; query builder → terms-lookup index).
-	userRoomIndex := UserRoomIndex
+	userRoomIndex := testUserRoomIndex
 	store := newESStore(localEngine, userRoomIndex)
 	cache := newValkeyCache(valkeyClient)
 	handler := newHandler(store, cache, handlerConfig{
@@ -125,7 +124,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 		RestrictedRoomsCacheTTL: 5 * time.Minute,
 		RecentWindow:            365 * 24 * time.Hour,
 		UserRoomIndex:           userRoomIndex,
-		SpotlightIndex:          "spotlight-test",
+		SpotlightReadPattern:    "spotlight-test-*",
 	})
 
 	router := natsrouter.New(serverNC, "search-service-test")
@@ -273,7 +272,7 @@ func messageTestTemplate() json.RawMessage {
 }
 
 func userRoomTestTemplate() json.RawMessage {
-	return buildTestTemplate(UserRoomIndex, map[string]any{
+	return buildTestTemplate(testUserRoomIndex, map[string]any{
 		"userAccount": map[string]any{"type": "keyword"},
 		"rooms": map[string]any{
 			"type": "text",
@@ -406,7 +405,7 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Unrestricted(t *testing.T
 	monthIdx := "messages-" + createdAt.Format("2006-01")
 
 	// user-room doc: unrestricted memberships in both rooms.
-	seedDoc(t, f.localURL, UserRoomIndex, account, map[string]any{
+	seedDoc(t, f.localURL, testUserRoomIndex, account, map[string]any{
 		"userAccount":     account,
 		"rooms":           []string{localRoomID, remoteRoomID},
 		"restrictedRooms": map[string]int64{},
@@ -515,7 +514,7 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Restricted(t *testing.T) 
 
 	// user-room doc: local room unrestricted, remote room restricted with hss.
 	t.Logf("seed: upserting user-room doc for %s (restricted %s since %s)", account, remoteRoomID, hss.Format(time.RFC3339))
-	seedDoc(t, f.localURL, UserRoomIndex, account, map[string]any{
+	seedDoc(t, f.localURL, testUserRoomIndex, account, map[string]any{
 		"userAccount": account,
 		"rooms":       []string{localRoomID},
 		"restrictedRooms": map[string]int64{

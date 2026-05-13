@@ -15,6 +15,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
+	"github.com/hmchangw/chat/pkg/searchindex"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
@@ -49,8 +50,8 @@ type config struct {
 	SearchPassword      string `env:"SEARCH_PASSWORD"        envDefault:""`
 	SearchTLSSkipVerify bool   `env:"SEARCH_TLS_SKIP_VERIFY" envDefault:"false"`
 	MsgIndexPrefix      string `env:"MSG_INDEX_PREFIX,required"`
-	SpotlightIndex      string `env:"SPOTLIGHT_INDEX" envDefault:""`
-	UserRoomIndex       string `env:"USER_ROOM_INDEX" envDefault:""`
+	SpotlightIndex      string `env:"SPOTLIGHT_INDEX,required"`
+	UserRoomIndex       string `env:"USER_ROOM_INDEX,required"`
 
 	// FetchBatchSize is the maximum number of JetStream messages to pull
 	// per Fetch() round-trip. Smaller values give lower latency per message
@@ -88,13 +89,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if cfg.SpotlightIndex == "" {
-		cfg.SpotlightIndex = fmt.Sprintf("spotlight-%s-v1-chat", cfg.SiteID)
-	}
-	if cfg.UserRoomIndex == "" {
-		cfg.UserRoomIndex = fmt.Sprintf("user-room-%s", cfg.SiteID)
-	}
-
 	// Fail fast on non-positive batch/interval settings. Zero or negative
 	// values degenerate runConsumer into busy loops (`Fetch(0)`, constant
 	// flush checks) or stall it forever (`remaining <= 0` on every
@@ -111,6 +105,14 @@ func main() {
 	}
 	if cfg.BulkFlushInterval <= 0 {
 		slog.Error("invalid config", "name", "BULK_FLUSH_INTERVAL", "value", cfg.BulkFlushInterval, "reason", "must be > 0")
+		os.Exit(1)
+	}
+	if _, _, ok := searchindex.StripVersion(cfg.MsgIndexPrefix); !ok {
+		slog.Error("invalid config", "name", "MSG_INDEX_PREFIX", "value", cfg.MsgIndexPrefix, "reason", "must end with -v<N>, e.g. messages-site-a-v1")
+		os.Exit(1)
+	}
+	if _, _, ok := searchindex.StripVersion(cfg.SpotlightIndex); !ok {
+		slog.Error("invalid config", "name", "SPOTLIGHT_INDEX", "value", cfg.SpotlightIndex, "reason", "must end with -v<N>, e.g. spotlight-site-a-v1")
 		os.Exit(1)
 	}
 

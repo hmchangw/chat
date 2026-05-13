@@ -9,6 +9,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/searchengine"
+	"github.com/hmchangw/chat/pkg/searchindex"
 	"github.com/hmchangw/chat/pkg/stream"
 )
 
@@ -39,7 +40,7 @@ func (c *messageCollection) FilterSubjects(_ string) []string {
 }
 
 func (c *messageCollection) TemplateName() string {
-	return fmt.Sprintf("%s_template", c.indexPrefix)
+	return fmt.Sprintf("%s_template", searchindex.StripVersionBase(c.indexPrefix))
 }
 
 func (c *messageCollection) TemplateBody() json.RawMessage {
@@ -146,7 +147,7 @@ func messageTemplateProperties() map[string]any {
 
 func messageTemplateBody(prefix string) json.RawMessage {
 	tmpl := map[string]any{
-		"index_patterns": []string{fmt.Sprintf("%s-*", prefix)},
+		"index_patterns": []string{fmt.Sprintf("%s-*", searchindex.StripVersionBase(prefix))},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"index": map[string]any{

@@ -150,7 +150,7 @@ func TestSpotlightSync_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	siteID := "site-spot"
-	indexName := "spotlight-site-spot-v1-chat"
+	indexName := "spotlight-singular-v1"
 
 	// --- ES template + index ---
 	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
@@ -243,7 +243,7 @@ func TestSpotlightSync_BulkInvite(t *testing.T) {
 	ctx := context.Background()
 
 	siteID := "site-spot-bulk"
-	indexName := "spotlight-site-spot-bulk-v1-chat"
+	indexName := "spotlight-bulk-v1"
 
 	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
 	require.NoError(t, err)

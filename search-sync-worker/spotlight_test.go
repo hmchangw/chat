@@ -49,7 +49,6 @@ func TestSpotlightCollection_Metadata(t *testing.T) {
 	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
 
 	assert.Equal(t, "spotlight-sync", coll.ConsumerName())
-	assert.Equal(t, "spotlight_template", coll.TemplateName())
 
 	cfg := coll.StreamConfig("site-a")
 	assert.Equal(t, "INBOX_site-a", cfg.Name)
@@ -68,19 +67,24 @@ func TestSpotlightCollection_Metadata(t *testing.T) {
 	}, filters)
 }
 
-func TestSpotlightCollection_TemplateBody(t *testing.T) {
-	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
-	body := coll.TemplateBody()
+func TestSpotlightCollection_TemplateName_StripsVersion(t *testing.T) {
+	c := newSpotlightCollection("spotlight-site-a-v1")
+	assert.Equal(t, "spotlight-site-a_template", c.TemplateName())
+}
+
+func TestSpotlightCollection_TemplateBody_PatternStripsVersion(t *testing.T) {
+	c := newSpotlightCollection("spotlight-site-a-v1")
+	body := c.TemplateBody()
 	require.NotNil(t, body)
 
-	var parsed map[string]any
-	require.NoError(t, json.Unmarshal(body, &parsed))
-
-	patterns, ok := parsed["index_patterns"].([]any)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	patterns, ok := decoded["index_patterns"].([]any)
 	require.True(t, ok)
-	assert.Equal(t, "spotlight-site-a-v1-chat", patterns[0])
+	require.Len(t, patterns, 1)
+	assert.Equal(t, "spotlight-site-a-*", patterns[0])
 
-	tmpl := parsed["template"].(map[string]any)
+	tmpl := decoded["template"].(map[string]any)
 	mappings := tmpl["mappings"].(map[string]any)
 	props := mappings["properties"].(map[string]any)
 	assert.Contains(t, props, "userAccount")

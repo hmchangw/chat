@@ -7,6 +7,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/searchengine"
+	"github.com/hmchangw/chat/pkg/searchindex"
 )
 
 // spotlightCollection implements Collection for spotlight room-typeahead
@@ -28,7 +29,7 @@ func (c *spotlightCollection) ConsumerName() string {
 }
 
 func (c *spotlightCollection) TemplateName() string {
-	return "spotlight_template"
+	return fmt.Sprintf("%s_template", searchindex.StripVersionBase(c.indexName))
 }
 
 func (c *spotlightCollection) TemplateBody() json.RawMessage {
@@ -123,13 +124,12 @@ func newSpotlightSearchIndex(account string, evt *model.InboxMemberEvent) Spotli
 	}
 }
 
-// spotlightTemplateBody builds the ES index template for the spotlight
-// collection. The `index_patterns` field is set to the exact configured
-// index name so a custom SPOTLIGHT_INDEX value still receives the correct
-// mapping (no broad wildcard that might catch unrelated indices).
+// spotlightTemplateBody builds the ES index template. The wildcard
+// index_patterns lets a single template cover the current versioned
+// index and any future reindex targets.
 func spotlightTemplateBody(indexName string) json.RawMessage {
 	tmpl := map[string]any{
-		"index_patterns": []string{indexName},
+		"index_patterns": []string{fmt.Sprintf("%s-*", searchindex.StripVersionBase(indexName))},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"index": map[string]any{

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
+	"github.com/hmchangw/chat/pkg/searchindex"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
@@ -76,6 +78,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	spotlightBase, _, ok := searchindex.StripVersion(cfg.Search.SpotlightIndex)
+	if !ok {
+		slog.Error("invalid config", "name", "SEARCH_SPOTLIGHT_INDEX", "value", cfg.Search.SpotlightIndex, "reason", "must end with -v<N>, e.g. spotlight-site-a-v1")
+		os.Exit(1)
+	}
+	spotlightReadPattern := fmt.Sprintf("%s-*", spotlightBase)
+
 	ctx := context.Background()
 
 	tracerShutdown, err := otelutil.InitTracer(ctx, "search-service")
@@ -117,7 +126,7 @@ func main() {
 		RecentWindow:            cfg.Search.RecentWindow,
 		RequestTimeout:          cfg.Search.RequestTimeout,
 		UserRoomIndex:           cfg.Search.UserRoomIndex,
-		SpotlightIndex:          cfg.Search.SpotlightIndex,
+		SpotlightReadPattern:    spotlightReadPattern,
 	})
 
 	router := natsrouter.New(nc, "search-service")
