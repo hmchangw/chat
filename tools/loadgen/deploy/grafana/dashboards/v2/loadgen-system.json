@@ -1,0 +1,165 @@
+{
+  "uid": "loadgen-system",
+  "title": "Loadgen System",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["loadgen", "v2", "system"],
+  "refresh": "15s",
+  "time": {"from": "now-30m", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Dashboards Profile Required",
+      "gridPos": {"h": 2, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "mode": "markdown",
+        "content": "System metrics from **cAdvisor**, **prometheus-nats-exporter**, and **cassandra-exporter**. Requires `--profile dashboards` when starting the compose stack (`make run-dashboards`). If exporters are not running, panels below will show 'No data'."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Container CPU usage — loadgen stack",
+      "description": "CPU usage seconds rate per container in the loadgen stack. Sourced from cAdvisor container_cpu_usage_seconds_total. Only visible when --profile dashboards is active.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 2},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"lineWidth": 2},
+          "displayName": "${__field.labels.name}"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{name=~\"loadgen.*|message-gatekeeper.*|message-worker.*|broadcast-worker.*|notification-worker.*\"}[1m])) by (name)",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Container memory usage — loadgen stack",
+      "description": "Resident memory bytes per container in the loadgen stack. Sourced from cAdvisor container_memory_usage_bytes. Only visible when --profile dashboards is active.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 2},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {"lineWidth": 2},
+          "displayName": "${__field.labels.name}"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "container_memory_usage_bytes{name=~\"loadgen.*|message-gatekeeper.*|message-worker.*|broadcast-worker.*|notification-worker.*\"}",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "NATS JetStream — consumer pending messages",
+      "description": "Number of pending (unacknowledged) messages per JetStream consumer. A growing value indicates a consumer is falling behind. Sourced from prometheus-nats-exporter (jsz). Only visible when --profile dashboards is active.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "nats_jetstream_consumer_num_pending",
+          "legendFormat": "{{consumer}} / {{stream}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "NATS JetStream — stream message count",
+      "description": "Total messages stored in each JetStream stream. Monotonically increasing for retention=limits streams. Sourced from prometheus-nats-exporter (jsz). Only visible when --profile dashboards is active.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "nats_jetstream_stream_messages",
+          "legendFormat": "{{stream}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Cassandra — commit log pending tasks + GC time",
+      "description": "Cassandra commit log pending tasks (write back-pressure indicator) and GC pause time (ms). Sourced from cassandra-exporter. Only visible when --profile dashboards is active.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 18},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "GC pause ms"},
+            "properties": [{"id": "unit", "value": "ms"}]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "cassandra_commitlog_pending_tasks",
+          "legendFormat": "commit log pending tasks",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(cassandra_jvm_gc_duration_seconds_total[1m]) * 1000",
+          "legendFormat": "GC pause ms/s",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}

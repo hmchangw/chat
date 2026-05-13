@@ -1,0 +1,111 @@
+{
+  "uid": "loadgen-raw",
+  "title": "Loadgen RAW Lag",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["loadgen", "v2", "raw"],
+  "refresh": "10s",
+  "time": {"from": "now-30m", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Phase 3.1 Dependency Notice",
+      "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "mode": "markdown",
+        "content": "## Phase 3.1 RAW Scenario Required\n\nThis dashboard depends on metrics produced by the **Phase 3.1 RAW scenario** (`loadgen_raw_lag_seconds_bucket`, `loadgen_raw_visibility_window_seconds`). These metrics do not exist yet. All panels below will show **'No data'** until Phase 3.1 ships.\n\nSee plan §3.1 for the RAW scenario implementation details."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "RAW lag p50/p95/p99 — by path",
+      "description": "Lag from publish to RAW visibility, broken down by delivery path. Requires Phase 3.1 RAW scenario. Shows 'no data' until §3.1 ships.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 3},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_raw_lag_seconds_bucket[5m])) by (le, path))",
+          "legendFormat": "{{path}} p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(loadgen_raw_lag_seconds_bucket[5m])) by (le, path))",
+          "legendFormat": "{{path}} p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_raw_lag_seconds_bucket[5m])) by (le, path))",
+          "legendFormat": "{{path}} p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "RAW visibility window p99",
+      "description": "p99 of the visibility window (the duration a RAW message is visible in the NATS stream before expiry or compaction). Requires Phase 3.1. Shows 'no data' until §3.1 ships.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 3},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_raw_visibility_window_seconds_bucket[5m])) by (le, path))",
+          "legendFormat": "{{path}} p99",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "RAW lag heatmap — hot paths (rate)",
+      "description": "Rate of RAW lag observations per bucket, useful for spotting bi-modal distributions. Requires Phase 3.1. Shows 'no data' until §3.1 ships.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 11},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {"lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(loadgen_raw_lag_seconds_bucket[1m])) by (le)",
+          "legendFormat": "le={{le}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

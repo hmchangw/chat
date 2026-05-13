@@ -298,6 +298,45 @@ services:
     entrypoint: ["sleep", "infinity"]
     networks: [loadtest]
 
+  # Phase 1b §1.12 dashboards-profile exporters — only started when
+  # --profile dashboards is passed (e.g. `make run-dashboards`).
+  # The default compose footprint is unaffected.
+
+  prometheus-nats-exporter:
+    image: natsio/prometheus-nats-exporter:0.16.0
+    profiles: [dashboards]
+    command:
+      - "-varz"
+      - "-jsz=all"
+      - "-channelz"
+      - "-port=7777"
+      - "http://nats:8222"
+    networks: [loadtest]
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  cassandra-exporter:
+    image: criteord/cassandra_exporter:2.3.6
+    profiles: [dashboards]
+    environment:
+      - CASSANDRA_EXPORTER_CONFIG_host=cassandra:7199
+    networks: [loadtest]
+    depends_on:
+      cassandra:
+        condition: service_healthy
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    profiles: [dashboards]
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks: [loadtest]
+
   prometheus:
     image: prom/prometheus:v2.55.0
     profiles: [dashboards]

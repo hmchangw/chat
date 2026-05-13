@@ -10,4 +10,23 @@ scrape_configs:
     static_configs:
       - targets: ["loadgen:9099"]
   # NATS monitoring on :8222 serves JSON (/varz, /jsz) — not Prometheus.
-  # Add prometheus-nats-exporter as a sidecar if NATS metrics are needed.
+  # prometheus-nats-exporter translates those JSON endpoints to Prometheus
+  # format. Effective only when --profile dashboards is active (Phase 1b §1.12).
+
+  # Phase 1b §1.12 dashboards profile — scrape jobs for the three exporters.
+  # Prometheus will log scrape errors when these targets are absent (i.e. when
+  # the dashboards profile is not up). That is expected and harmless.
+  - job_name: 'nats-exporter'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['prometheus-nats-exporter:7777']
+
+  - job_name: 'cassandra-exporter'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['cassandra-exporter:8080']
+
+  - job_name: 'cadvisor'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['cadvisor:8080']

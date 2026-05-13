@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: 'loadgen-v2'
+    orgId: 1
+    folder: 'Loadgen v2'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards/v2

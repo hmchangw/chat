@@ -1,0 +1,214 @@
+{
+  "uid": "loadgen-overview",
+  "title": "Loadgen Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["loadgen", "v2"],
+  "refresh": "10s",
+  "time": {"from": "now-30m", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "RUN QUALITY",
+      "description": "Active verdict for the current run. TRUSTED = all quality checks passing, DEGRADED = some checks failing, UNTRUSTED = run results not reliable. Sourced from loadgen_run_quality gauge (Phase 1a §1.10).",
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0},
+              {"color": "green", "value": 0}
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {"text": "TRUSTED", "color": "green", "index": 0}
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "loadgen_run_quality{verdict=\"TRUSTED\"} == 1",
+          "legendFormat": "TRUSTED",
+          "refId": "A"
+        },
+        {
+          "expr": "loadgen_run_quality{verdict=\"DEGRADED\"} == 1",
+          "legendFormat": "DEGRADED",
+          "refId": "B"
+        },
+        {
+          "expr": "loadgen_run_quality{verdict=\"UNTRUSTED\"} == 1",
+          "legendFormat": "UNTRUSTED",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Per-scenario request rate (measured phase)",
+      "description": "Requests per second broken down by scenario, measured phase only (excludes warmup).",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(loadgen_requests_total{phase=\"measured\"}[1m])) by (scenario)",
+          "legendFormat": "{{scenario}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Request latency p99 (measured phase)",
+      "description": "p99 request latency per scenario from loadgen_request_latency_seconds_bucket. NOTE: This is a placeholder — per Task 1a.2, latencies primarily live in Collector HDR cells. A full Prometheus-side histogram will be added in a Phase 1b stretch task. Until then, this shows what's available from the existing histogram.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_request_latency_seconds_bucket{phase=\"measured\"}[5m])) by (le, scenario))",
+          "legendFormat": "{{scenario}} p99",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Omission deficit p99 — split by dropped",
+      "description": "p99 omission deficit seconds, split by whether the message was dropped (dropped=true) vs merely late (dropped=false). Sourced from loadgen_omission_deficit_seconds_bucket (Phase 1a §1.9).",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "dropped=true p99"},
+            "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "dropped=false p99"},
+            "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_omission_deficit_seconds_bucket{dropped=\"true\"}[5m])) by (le))",
+          "legendFormat": "dropped=true p99",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_omission_deficit_seconds_bucket{dropped=\"false\"}[5m])) by (le))",
+          "legendFormat": "dropped=false p99",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Published vs async-ack errors (measured phase)",
+      "description": "Published messages per second (measured phase) alongside async-ack error rate. A divergence indicates messages are being published but async acknowledgement is failing. Sourced from loadgen_published_total and loadgen_publish_errors_total.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(loadgen_published_total{phase=\"measured\"}[1m]))",
+          "legendFormat": "published/s (measured)",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(loadgen_publish_errors_total[1m]))",
+          "legendFormat": "publish errors/s",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Phase split — published rate by phase",
+      "description": "Published message rate split by phase (warmup vs measured). Allows operators to verify warmup is excluded from quality accounting.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(loadgen_published_total[1m])) by (phase)",
+          "legendFormat": "{{phase}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

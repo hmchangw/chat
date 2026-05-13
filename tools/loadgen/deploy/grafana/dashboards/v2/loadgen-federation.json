@@ -1,0 +1,183 @@
+{
+  "uid": "loadgen-federation",
+  "title": "Loadgen Federation",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["loadgen", "v2", "federation"],
+  "refresh": "10s",
+  "time": {"from": "now-30m", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Phase 3.9 Dependency Notice",
+      "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "mode": "markdown",
+        "content": "## Phase 3.9 Federation Scenario Required\n\nThis dashboard depends on metrics produced by the **Phase 3.9 federation scenario**. The following metrics do not exist yet:\n- `loadgen_federation_stage_latency_seconds_bucket` (4 stages: publish→outbox, outbox→inbox, inbox→canonical, canonical→visible)\n- `loadgen_federation_e2e_latency_seconds_bucket` (end-to-end cross-site latency)\n- `loadgen_federation_flap_drain_seconds` (time for a flap event to drain)\n\nAll panels below will show **'No data'** until Phase 3.9 ships."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Stage 1: Publish → Outbox p99",
+      "description": "Latency from message publish to outbox stream enqueue. Requires Phase 3.9. Shows 'no data' until §3.9 ships.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 3},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"publish_to_outbox\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"publish_to_outbox\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Stage 2: Outbox → Inbox p99",
+      "description": "Latency from outbox stream to remote inbox stream (cross-site transfer). Requires Phase 3.9. Shows 'no data' until §3.9 ships.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 3},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"outbox_to_inbox\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"outbox_to_inbox\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Stage 3: Inbox → Canonical p99",
+      "description": "Latency from inbox stream to canonical message stream (inbox-worker processing). Requires Phase 3.9. Shows 'no data' until §3.9 ships.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 11},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"inbox_to_canonical\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"inbox_to_canonical\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Stage 4: Canonical → Visible p99",
+      "description": "Latency from canonical stream to message being visible to subscribers. Requires Phase 3.9. Shows 'no data' until §3.9 ships.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 11},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"canonical_to_visible\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"canonical_to_visible\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "E2E federation latency (stacked stages) + flap drain",
+      "description": "End-to-end cross-site latency (sum of all 4 stages) and flap drain time. Requires Phase 3.9. Shows 'no data' until §3.9 ships.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 19},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2, "stacking": {"mode": "normal"}}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_e2e_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "e2e p99",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_e2e_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "e2e p50",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_flap_drain_seconds_bucket[5m])) by (le))",
+          "legendFormat": "flap drain p99",
+          "refId": "C"
+        }
+      ]
+    }
+  ]
+}

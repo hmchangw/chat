@@ -1,6 +1,6 @@
 COMPOSE ?= docker compose -f docker-compose.loadtest.yml
 
-.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules
+.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules validate-dashboards
 
 up:
 	$(COMPOSE) up -d --build
@@ -44,6 +44,19 @@ down:
 
 logs:
 	$(COMPOSE) logs -f loadgen
+
+# validate-dashboards checks that all v2 dashboard JSON files are syntactically
+# valid. A deeper schema check (Grafana toolkit) is deferred — JSON validity is
+# the bar for Phase 1b §1.12. For a smoke test that verifies Grafana actually
+# loads the dashboards, run:
+#   make run-dashboards && curl http://localhost:3000/api/dashboards/uid/loadgen-overview
+validate-dashboards:
+	@echo "Validating v2 dashboard JSON..."
+	@for f in $(CURDIR)/grafana/dashboards/v2/*.json; do \
+		echo "  $$f"; \
+		python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$$f" || { echo "FAIL: $$f is not valid JSON"; exit 1; }; \
+	done
+	@echo "All v2 dashboard JSON files are valid."
 
 # validate-rules runs promtool test rules against the synthetic test suite.
 # Requires Docker. Mounts the rules directory read-only into the official
