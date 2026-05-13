@@ -558,9 +558,6 @@ export default function MessageActionMenu({ message, room }) {
 
   if (!isOwnMessage) return null
 
-  // Federation caveat: room.userCount counts all members across sites, but the
-  // read-receipt RPC is local-site only per docs/client-api.md. In federated
-  // rooms X may under-count relative to Y.
   const X = readers?.length ?? 0
   const Y = Math.max(0, (room?.userCount ?? 1) - 1)
 
@@ -784,9 +781,6 @@ export default function MessageActionMenu({ message, room }) {
 
   if (!isOwnMessage) return null
 
-  // Federation caveat: room.userCount counts all members across sites, but the
-  // read-receipt RPC is local-site only per docs/client-api.md. In federated
-  // rooms X may under-count relative to Y.
   const X = readers?.length ?? 0
   const Y = Math.max(0, (room?.userCount ?? 1) - 1)
   const hasReaders = readers != null && X > 0

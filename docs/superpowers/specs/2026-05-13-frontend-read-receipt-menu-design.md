@@ -248,17 +248,24 @@ Cases:
 - No NATS integration test. The RPC itself is covered in `room-service`'s
   integration tests.
 
-## 8. Known limitations (documented, not coded around)
+## 8. Known limitations
 
-- **Local-site only.** The RPC counts only readers on the sender's site; Y
-  uses `room.userCount` which includes remote members. In a federated room
-  the displayed `X` may be lower than reality. A short comment is added next
-  to the X/Y math noting this.
 - **MAX_ROOM_SIZE cap.** Per `docs/client-api.md`, results are silently capped
-  at `MAX_ROOM_SIZE`. Same caveat as above; no client-side mitigation.
+  at `MAX_ROOM_SIZE`. No client-side mitigation.
 - **No live updates.** Read receipts are point-in-time at popover open. If a
   user reads the message after the menu opened, the displayed count will not
   refresh until the user re-opens.
+
+*Federation note:* the RPC reads from `subscriptions` on the local Mongo, but
+that collection is kept in sync across sites by `inbox-worker` (it handles
+`subscriptionRead` events from remote sites and writes the federated
+`lastSeenAt` locally — see `inbox-worker/handler.go:32`). The result is that
+`X` reflects readers across all sites and matches what `Y = room.userCount -
+1` represents, so no federation-driven under-count exists. (The
+`docs/client-api.md` "local-site only" phrasing predates that wiring and is
+inaccurate as a user-visible behaviour; it is not corrected here because
+`CLAUDE.md` only requires that doc to be updated by changes to a client-facing
+handler, which this PR does not touch.)
 
 ## 9. Affected files summary
 
