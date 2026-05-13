@@ -199,9 +199,11 @@ $(E2E_SECRETS):
 
 .PHONY: e2e e2e-only e2e-up e2e-down e2e-down-clean e2e-logs
 
-# Full run: TestMain owns stack lifecycle.
+# Full run: TestMain owns stack lifecycle. Default Go test timeout (10m)
+# is too tight here because compose-up + image rebuild + ES healthcheck
+# eats most of it on slower hosts; 20m gives the test phase a real budget.
 e2e: $(E2E_ENV) $(E2E_SECRETS)
-	go test -tags e2e -race -count=1 ./e2e/...
+	go test -tags e2e -race -count=1 -timeout 20m ./e2e/...
 
 # Iteration loop: assumes a stack already running via `make e2e-up`.
 e2e-only: $(E2E_ENV)
