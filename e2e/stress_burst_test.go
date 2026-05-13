@@ -105,9 +105,9 @@ func TestStress_BurstHundredMessages(t *testing.T) {
 
 	// Drain bob's broadcasts; system events interleave with user messages.
 	seen := make(map[string]bool, N)
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) && len(seen) < N {
-		raw, mErr := bobSub.NextMsg(2 * time.Second)
+		raw, mErr := bobSub.NextMsg(5 * time.Second)
 		if mErr != nil {
 			break
 		}

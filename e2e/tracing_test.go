@@ -76,10 +76,10 @@ func TestTracing_TraceparentPropagatesThroughBroadcastChain(t *testing.T) {
 	_, err = respSub.NextMsg(10 * time.Second)
 	require.NoError(t, err, "gatekeeper must reply to msg.send")
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	var matched bool
 	for time.Now().Before(deadline) {
-		broadcastMsg, mErr := bobSub.NextMsg(2 * time.Second)
+		broadcastMsg, mErr := bobSub.NextMsg(5 * time.Second)
 		if mErr != nil {
 			break
 		}

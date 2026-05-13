@@ -91,11 +91,11 @@ func TestEncryption_OnSmoke(t *testing.T) {
 	))
 
 	// Drain broadcasts; pick the encrypted variant for our msgID.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	var plaintext string
 	var sawEncrypted bool
 	for time.Now().Before(deadline) {
-		raw, mErr := bobSub.NextMsg(2 * time.Second)
+		raw, mErr := bobSub.NextMsg(5 * time.Second)
 		if mErr != nil {
 			break
 		}
@@ -193,11 +193,11 @@ func TestEncryption_TamperedCiphertextRejected(t *testing.T) {
 	))
 
 	// Capture the encrypted broadcast for our msgID.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	var env roomcrypto.EncryptedMessage
 	var found bool
 	for time.Now().Before(deadline) {
-		raw, mErr := bobSub.NextMsg(2 * time.Second)
+		raw, mErr := bobSub.NextMsg(5 * time.Second)
 		if mErr != nil {
 			break
 		}

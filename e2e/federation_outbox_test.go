@@ -15,6 +15,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -103,7 +104,10 @@ func TestFederation_CrossSiteSubscriptionRead(t *testing.T) {
 		"OUTBOX_siteA LastSeq must increment after mark-read (was %d)", preMarkSeq)
 
 	// Inspect the delta: peek at the messages between preMarkSeq+1 and
-	// LastSeq, find one whose subject is outbox.siteA.to.siteB.subscription_read.
+	// LastSeq, find one whose subject is outbox.siteA.to.siteB.subscription_read
+	// AND whose payload roomID matches OURS. Parallel sibling tests can
+	// inject subscription_read events into the same OUTBOX in the same
+	// scan window, so the subject alone is not a tight enough filter.
 	info, err := outbox.Info(ctx)
 	require.NoError(t, err)
 	var found bool
@@ -112,13 +116,25 @@ func TestFederation_CrossSiteSubscriptionRead(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if raw.Subject == "outbox.siteA.to.siteB.subscription_read" {
+		if raw.Subject != "outbox.siteA.to.siteB.subscription_read" {
+			continue
+		}
+		var env model.OutboxEvent
+		if jerr := json.Unmarshal(raw.Data, &env); jerr != nil {
+			continue
+		}
+		var payload model.SubscriptionReadEvent
+		if jerr := json.Unmarshal(env.Payload, &payload); jerr != nil {
+			continue
+		}
+		if payload.RoomID == roomID && payload.Account == bobAccount {
 			found = true
 			break
 		}
 	}
 	assert.True(t, found,
-		"OUTBOX_siteA must contain a subscription_read event after bob's mark-read")
+		"OUTBOX_siteA must contain a subscription_read event for room=%s account=%s",
+		roomID, bobAccount)
 
 	// 4. Materialization on mongo-b: bob already has a subscription on
 	// mongo-b (setupCrossSiteRoom waits for it). After inbox-worker-b

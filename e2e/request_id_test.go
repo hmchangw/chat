@@ -89,10 +89,10 @@ func TestRequestID_PropagatesThroughBroadcastChain(t *testing.T) {
 	// (room_created, members_added) BEFORE alice's user message; each carries
 	// its own X-Request-ID. Loop to find the broadcast that corresponds to
 	// alice's specific message.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	var matched bool
 	for time.Now().Before(deadline) {
-		broadcastMsg, mErr := bobSub.NextMsg(2 * time.Second)
+		broadcastMsg, mErr := bobSub.NextMsg(5 * time.Second)
 		if mErr != nil {
 			break
 		}

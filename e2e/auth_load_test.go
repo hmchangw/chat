@@ -74,14 +74,22 @@ func TestAuthLoad_ConcurrentAuthHandshakes(t *testing.T) {
 
 	median := percentile(latencies, 50)
 	p99 := percentile(latencies, 99)
-	t.Logf("auth-load N=%d concurrency=%d total=%s median=%s p99=%s",
-		N, concurrency, totalElapsed, median, p99)
+	t.Logf("auth-load N=%d concurrency=%d total=%s median=%s p99=%s race=%v",
+		N, concurrency, totalElapsed, median, p99, raceDetector)
 
-	// Calibrated to Keycloak bcrypt cost; thresholds catch a 5x regression.
-	require.Less(t, median, 800*time.Millisecond,
-		"median handshake latency must stay under 800ms under load")
-	require.Less(t, p99, 3*time.Second,
-		"p99 handshake latency must stay under 3s under load")
+	// Thresholds calibrated to Keycloak bcrypt cost (catch a 5x regression).
+	// Race-detector adds 5-10x wall-clock to the goroutine fan-out, so we
+	// multiply the budget when running under -race (the Makefile default).
+	medianBudget := 800 * time.Millisecond
+	p99Budget := 3 * time.Second
+	if raceDetector {
+		medianBudget *= 5
+		p99Budget *= 5
+	}
+	require.Less(t, median, medianBudget,
+		"median handshake latency must stay under %s under load", medianBudget)
+	require.Less(t, p99, p99Budget,
+		"p99 handshake latency must stay under %s under load", p99Budget)
 }
 
 // percentile returns the p-th percentile of latencies (p in [0, 100]),

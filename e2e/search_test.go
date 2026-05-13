@@ -104,7 +104,7 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 	// subject.SearchMessages(account) per R1 11.A. Each parallel test
 	// uses a UNIQUE sender + body string, so the search-by-substring is
 	// safe to dispatch on the body keyword without cross-test collisions.
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	var resp model.SearchMessagesResponse
 	for time.Now().Before(deadline) {
 		resp = model.SearchMessagesResponse{}
