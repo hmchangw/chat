@@ -497,7 +497,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("only owners can remove members")
 		}
 		// Reject removing the only org whose members keep ownership.
-		remainingOwners, err := h.store.CountOwnersOutsideOrg(ctx, roomID, req.OrgID)
+		remainingOwners, err := h.store.CountOwners(ctx, CountOwnersFilter{RoomID: roomID, ExcludeOrgID: req.OrgID})
 		if err != nil {
 			return nil, fmt.Errorf("count owners outside org: %w", err)
 		}
@@ -586,7 +586,7 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	}
 	// Last-owner guard only needed on self-demotion; rule #5 ensures requester is an owner.
 	if req.NewRole == model.RoleMember && req.Account == requester {
-		count, err := h.store.CountOwners(ctx, roomID)
+		count, err := h.store.CountOwners(ctx, CountOwnersFilter{RoomID: roomID})
 		if err != nil {
 			return nil, fmt.Errorf("count owners: %w", err)
 		}

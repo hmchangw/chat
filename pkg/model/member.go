@@ -152,9 +152,10 @@ type CreateRoomRequest struct {
 // SyncCreateDMRequest is the request payload for chat.server.request.room.{siteID}.create.dm.
 // Caller (user-service) is responsible for all data-integrity validation before issuing.
 type SyncCreateDMRequest struct {
-	RoomType         RoomType `json:"roomType"         bson:"roomType"`
-	RequesterAccount string   `json:"requesterAccount" bson:"requesterAccount"`
-	OtherAccount     string   `json:"otherAccount"     bson:"otherAccount"`
+	RoomType         RoomType      `json:"roomType"         bson:"roomType"`
+	RequesterAccount string        `json:"requesterAccount" bson:"requesterAccount"`
+	OtherAccount     string        `json:"otherAccount"     bson:"otherAccount"`
+	History          HistoryConfig `json:"history"          bson:"history"`
 }
 
 // SyncCreateDMReply is the success reply; errors flow via natsutil.ReplyError instead.

@@ -33,6 +33,14 @@ type RoomCounts struct {
 	OwnerCount  int
 }
 
+// CountOwnersFilter is the query for CountOwners. Today only ExcludeOrgID
+// varies between call sites; the struct exists so future variants don't
+// grow the store with parallel method names.
+type CountOwnersFilter struct {
+	RoomID       string
+	ExcludeOrgID string // empty = no exclusion; non-empty = drop owners in this org
+}
+
 type RoomStore interface {
 	CreateRoom(ctx context.Context, room *model.Room) error
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
@@ -42,15 +50,11 @@ type RoomStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error)
 	CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error)
-	CountOwners(ctx context.Context, roomID string) (int, error)
-	// CountOwnersOutsideOrg returns the count of subscriptions in roomID
-	// holding the owner role whose account is NOT a member of orgID.
-	// Drives the ownerless-after-org-removal guard in handleRemoveMember:
-	// if removing orgID would leave 0 owners, the request must be rejected.
-	// The invariant "owners must hold an individual membership source" makes
-	// the ownerless case theoretically unreachable, but this method backs the
-	// defensive check explicitly so the invariant cannot silently regress.
-	CountOwnersOutsideOrg(ctx context.Context, roomID, orgID string) (int, error)
+	// CountOwners returns the count of subscriptions holding the owner role
+	// for filter.RoomID. When filter.ExcludeOrgID is non-empty, owners whose
+	// account resolves to that org are excluded — used by the ownerless-after-
+	// org-removal guard in handleRemoveMember.
+	CountOwners(ctx context.Context, filter CountOwnersFilter) (int, error)
 	// CountNewMembers returns the count of unique, non-bot, not-already-subscribed users
 	// that an add-members request would add to roomID for a given (orgIDs, directAccounts) tuple.
 	// excludeAccount is empty string to disable, or an account that must be

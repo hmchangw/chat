@@ -1370,15 +1370,12 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		acceptedAt = existing.CreatedAt
 	}
 
-	// validateSyncCreateDMShape already gated this to {dm, botDM}.
-	// SyncCreateDMRequest has no History field today — sync DMs are always
-	// unrestricted, so pass nil HSS. The async path threads HSS from
-	// CreateRoomRequest.History for per-org policy forward-compat.
+	hssMs := historySharedSincePtr(req.History, acceptedAt.UnixMilli(), room.ID)
 	var subs []*model.Subscription
 	if req.RoomType == model.RoomTypeBotDM {
-		subs = buildBotDMSubs(requester, other, room, acceptedAt, nil)
+		subs = buildBotDMSubs(requester, other, room, acceptedAt, hssMs)
 	} else {
-		subs = buildDMSubs(requester, other, room, acceptedAt, nil)
+		subs = buildDMSubs(requester, other, room, acceptedAt, hssMs)
 	}
 
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
@@ -1399,7 +1396,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	h.publishSubscriptionUpdates(ctx, []*model.Subscription{requesterSub, otherSub}, requestID)
 
 	// Outbox failure means the remote site won't learn about the room; fail the request.
-	if err := h.publishSyncDMOutbox(ctx, room, requester, other, acceptedAt); err != nil {
+	if err := h.publishSyncDMOutbox(ctx, room, requester, other, acceptedAt, hssMs); err != nil {
 		return nil, fmt.Errorf("publish room_created outbox: %w", err)
 	}
 
@@ -1442,19 +1439,20 @@ func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.
 	}
 }
 
-func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, acceptedAt time.Time) error {
+func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, acceptedAt time.Time, hssMs *int64) error {
 	if other.SiteID == "" || other.SiteID == h.siteID {
 		return nil
 	}
 
 	payload := model.RoomCreatedOutbox{
-		RoomID:           room.ID,
-		RoomType:         room.Type,
-		RoomName:         "",
-		HomeSiteID:       room.SiteID,
-		Accounts:         []string{other.Account},
-		RequesterAccount: requester.Account,
-		Timestamp:        acceptedAt.UnixMilli(),
+		RoomID:             room.ID,
+		RoomType:           room.Type,
+		RoomName:           "",
+		HomeSiteID:         room.SiteID,
+		Accounts:           []string{other.Account},
+		RequesterAccount:   requester.Account,
+		Timestamp:          acceptedAt.UnixMilli(),
+		HistorySharedSince: hssMs,
 	}
 	pData, err := json.Marshal(payload)
 	if err != nil {
