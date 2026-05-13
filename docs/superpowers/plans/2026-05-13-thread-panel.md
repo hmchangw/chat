@@ -4565,6 +4565,373 @@ git add chat-frontend/src/components/ThreadMessageArea.jsx chat-frontend/src/com
 git commit -m "feat(chat-frontend): add ThreadMessageArea container"
 ```
 
+### Task 7.2.5: Add `REPLY_EDITED_LOCAL` / `REPLY_DELETED_LOCAL` to `threadEventsReducer`
+
+The spec requires Edit + Delete to work on thread replies too (not just main-feed messages). Mirror the room reducer's `MESSAGE_EDITED_LOCAL` / `MESSAGE_DELETED_LOCAL` actions on the thread reducer so optimistic mutations apply to the thread's own message list.
+
+**Files:**
+- Modify: `chat-frontend/src/lib/threadEventsReducer.js`
+- Modify: `chat-frontend/src/lib/threadEventsReducer.test.js`
+
+- [ ] **Step 1: Append failing tests**
+
+Append to `chat-frontend/src/lib/threadEventsReducer.test.js`:
+
+```js
+describe('threadEventsReducer — REPLY_EDITED_LOCAL', () => {
+  it('updates content + editedAt on the matching message', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const seeded = { ...open, messages: [{ id: 'r1', content: 'old' }, { id: 'r2', content: 'other' }] }
+    const out = threadEventsReducer(seeded, {
+      type: 'REPLY_EDITED_LOCAL', messageId: 'r1', content: 'new', editedAt: '2026-05-13T12:00:00Z',
+    })
+    expect(out.messages[0]).toEqual({ id: 'r1', content: 'new', editedAt: '2026-05-13T12:00:00Z' })
+    expect(out.messages[1]).toEqual({ id: 'r2', content: 'other' })
+  })
+
+  it('is a no-op when the messageId is not buffered', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const out = threadEventsReducer(open, {
+      type: 'REPLY_EDITED_LOCAL', messageId: 'unknown', content: 'x', editedAt: 't',
+    })
+    expect(out).toBe(open)
+  })
+})
+
+describe('threadEventsReducer — REPLY_DELETED_LOCAL', () => {
+  it('flags the matching reply as deleted', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const seeded = { ...open, messages: [{ id: 'r1', content: 'bye' }] }
+    const out = threadEventsReducer(seeded, { type: 'REPLY_DELETED_LOCAL', messageId: 'r1' })
+    expect(out.messages[0]).toEqual({ id: 'r1', content: 'bye', deleted: true })
+  })
+
+  it('is a no-op when messageId is not buffered', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const out = threadEventsReducer(open, { type: 'REPLY_DELETED_LOCAL', messageId: 'r1' })
+    expect(out).toBe(open)
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/lib/threadEventsReducer.test.js`
+Expected: FAIL.
+
+- [ ] **Step 3: Add the action handlers**
+
+In `chat-frontend/src/lib/threadEventsReducer.js`, before the `default:` clause:
+
+```js
+case 'REPLY_EDITED_LOCAL': {
+  const idx = state.messages.findIndex((m) => m.id === action.messageId)
+  if (idx < 0) return state
+  const updated = { ...state.messages[idx], content: action.content, editedAt: action.editedAt }
+  const messages = [...state.messages.slice(0, idx), updated, ...state.messages.slice(idx + 1)]
+  return { ...state, messages }
+}
+case 'REPLY_DELETED_LOCAL': {
+  const idx = state.messages.findIndex((m) => m.id === action.messageId)
+  if (idx < 0) return state
+  const updated = { ...state.messages[idx], deleted: true }
+  const messages = [...state.messages.slice(0, idx), updated, ...state.messages.slice(idx + 1)]
+  return { ...state, messages }
+}
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/lib/threadEventsReducer.test.js`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add chat-frontend/src/lib/threadEventsReducer.js chat-frontend/src/lib/threadEventsReducer.test.js
+git commit -m "feat(chat-frontend): threadEventsReducer handles REPLY_EDITED_LOCAL / REPLY_DELETED_LOCAL"
+```
+
+### Task 7.2.6: Wire Edit / Delete RPCs in `ThreadMessageArea`
+
+Mirror `RoomMessageArea`'s edit/delete pattern (Task 4.6) inside the thread panel. ThreadMessageArea now owns local `editingMessageId` and `pendingDelete` state and publishes `msgEdit` / `msgDelete` against the active parent's `roomId` + `siteId`. On success, it dispatches the thread-reducer actions added in Task 7.2.5.
+
+Note: Edit/Delete on the **parent** message (when rendered as the first item in the thread panel) still goes through the main `RoomMessageArea` path — because the parent lives in `RoomEventsContext.messages`, and `ThreadMessageArea` looks it up live from there. So a parent edit dispatched from the thread panel must hit `roomEventsReducer`, not `threadEventsReducer`. Use `useRoomDispatch()` (added in Task 4.1.5) for parent edits.
+
+**Files:**
+- Modify: `chat-frontend/src/components/ThreadMessageArea.jsx`
+- Modify: `chat-frontend/src/components/ThreadMessageArea.test.jsx`
+- Modify: `chat-frontend/src/context/ThreadEventsContext.jsx` (expose `dispatch` so `ThreadMessageArea` can dispatch reducer actions)
+
+- [ ] **Step 1: Expose `dispatch` from `ThreadEventsContext`**
+
+In `chat-frontend/src/context/ThreadEventsContext.jsx`, add `dispatch` to the value:
+
+```jsx
+const value = {
+  // …existing fields…
+  dispatch,
+}
+```
+
+(Run `npm test -- --run src/context/ThreadEventsContext.test.jsx` after — existing tests ignore extra fields.)
+
+- [ ] **Step 2: Update the failing tests**
+
+Replace the `useThreadEvents` mock at the top of `chat-frontend/src/components/ThreadMessageArea.test.jsx` to include `dispatch`:
+
+```jsx
+const threadDispatch = vi.fn()
+const retryReply = vi.fn()
+const dismissReply = vi.fn()
+vi.mock('../context/ThreadEventsContext', () => ({
+  useThreadEvents: () => ({
+    activeParent,
+    messages: [/* unchanged seed */],
+    hasLoadedHistory: true,
+    historyLoading: false,
+    historyError: null,
+    retryReply, dismissReply,
+    dispatch: threadDispatch,
+  }),
+}))
+```
+
+Add a `useRoomDispatch` mock too (since edits to the parent dispatch via it):
+
+```jsx
+const roomDispatch = vi.fn()
+vi.mock('../context/RoomEventsContext', () => ({
+  useRoomEvents: () => ({
+    messages: [{ id: 'p1', content: 'parent body', createdAt: '2026-05-13T10:00:00Z', sender: { account: 'alice' } }],
+  }),
+  useRoomDispatch: () => roomDispatch,
+}))
+```
+
+Expand the mocked `MessageList` to fire edit/delete handlers:
+
+```jsx
+vi.mock('./messages/MessageList', () => ({
+  default: ({ messages, emptyText, context, onReply, onRetry, onDismiss,
+              onEdit, onEditSubmit, onEditCancel, onDelete, historyLoading, historyError }) => (
+    <div data-testid="list">
+      <span>context:{context}</span>
+      <span>count:{messages.length}</span>
+      <button type="button" onClick={() => onReply?.({ id: 'reply-1', sender: { account: 'bob' }, content: 'first reply' })}>fire-reply</button>
+      <button type="button" onClick={() => onRetry?.('reply-2')}>fire-retry</button>
+      <button type="button" onClick={() => onDismiss?.('reply-2')}>fire-dismiss</button>
+      <button type="button" onClick={() => onEdit?.({ id: 'reply-1' })}>fire-edit-reply</button>
+      <button type="button" onClick={() => onEditSubmit?.({ id: 'reply-1', createdAt: '2026-05-13T10:01:00Z' }, 'edited')}>fire-edit-reply-submit</button>
+      <button type="button" onClick={() => onEditCancel?.()}>fire-edit-cancel</button>
+      <button type="button" onClick={() => onDelete?.({ id: 'reply-1', createdAt: '2026-05-13T10:01:00Z' })}>fire-delete-reply</button>
+      <button type="button" onClick={() => onEdit?.({ id: 'p1' })}>fire-edit-parent</button>
+      <button type="button" onClick={() => onEditSubmit?.({ id: 'p1', createdAt: '2026-05-13T10:00:00Z' }, 'edited-parent')}>fire-edit-parent-submit</button>
+      <button type="button" onClick={() => onDelete?.({ id: 'p1', createdAt: '2026-05-13T10:00:00Z' })}>fire-delete-parent</button>
+    </div>
+  ),
+}))
+```
+
+Add a `publish` mock:
+
+```jsx
+const publish = vi.fn()
+vi.mock('../context/NatsContext', () => ({
+  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
+}))
+vi.mock('uuid', () => ({ v4: () => 'req-id' }))
+```
+
+Append the test cases:
+
+```jsx
+describe('ThreadMessageArea — Edit / Delete on thread reply', () => {
+  beforeEach(() => { publish.mockClear(); threadDispatch.mockClear() })
+
+  it('submitting edit on a reply publishes msg.edit and dispatches REPLY_EDITED_LOCAL', () => {
+    render(<ThreadMessageArea onReply={() => {}} />)
+    fireEvent.click(screen.getByText('fire-edit-reply'))
+    fireEvent.click(screen.getByText('fire-edit-reply-submit'))
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.request.room.r1.s1.msg.edit',
+      { messageId: 'reply-1', createdAt: '2026-05-13T10:01:00Z', content: 'edited', requestId: 'req-id' }
+    )
+    expect(threadDispatch).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'REPLY_EDITED_LOCAL', messageId: 'reply-1', content: 'edited',
+    }))
+  })
+
+  it('confirming delete on a reply publishes msg.delete and dispatches REPLY_DELETED_LOCAL', () => {
+    render(<ThreadMessageArea onReply={() => {}} />)
+    fireEvent.click(screen.getByText('fire-delete-reply'))
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.request.room.r1.s1.msg.delete',
+      { messageId: 'reply-1', createdAt: '2026-05-13T10:01:00Z', requestId: 'req-id' }
+    )
+    expect(threadDispatch).toHaveBeenCalledWith({ type: 'REPLY_DELETED_LOCAL', messageId: 'reply-1' })
+  })
+
+  it('edit on the PARENT dispatches MESSAGE_EDITED_LOCAL to the ROOM reducer, not the thread reducer', () => {
+    render(<ThreadMessageArea onReply={() => {}} />)
+    fireEvent.click(screen.getByText('fire-edit-parent'))
+    fireEvent.click(screen.getByText('fire-edit-parent-submit'))
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.request.room.r1.s1.msg.edit',
+      { messageId: 'p1', createdAt: '2026-05-13T10:00:00Z', content: 'edited-parent', requestId: 'req-id' }
+    )
+    expect(roomDispatch).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'MESSAGE_EDITED_LOCAL', roomId: 'r1', messageId: 'p1', content: 'edited-parent',
+    }))
+    expect(threadDispatch).not.toHaveBeenCalled()
+  })
+
+  it('delete on the PARENT dispatches MESSAGE_DELETED_LOCAL to the ROOM reducer', () => {
+    render(<ThreadMessageArea onReply={() => {}} />)
+    fireEvent.click(screen.getByText('fire-delete-parent'))
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(roomDispatch).toHaveBeenCalledWith({
+      type: 'MESSAGE_DELETED_LOCAL', roomId: 'r1', messageId: 'p1',
+    })
+  })
+})
+```
+
+- [ ] **Step 3: Run to verify they fail**
+
+Run: `cd chat-frontend && npx vitest run src/components/ThreadMessageArea.test.jsx`
+Expected: FAIL — handlers not wired yet.
+
+- [ ] **Step 4: Update `ThreadMessageArea.jsx`**
+
+Replace `chat-frontend/src/components/ThreadMessageArea.jsx`:
+
+```jsx
+import { useEffect, useRef, useState } from 'react'
+import { v4 as uuidv4 } from 'uuid'
+import { useNats } from '../context/NatsContext'
+import { useThreadEvents } from '../context/ThreadEventsContext'
+import { useRoomEvents, useRoomDispatch } from '../context/RoomEventsContext'
+import { msgEdit, msgDelete } from '../lib/subjects'
+import MessageList from './messages/MessageList'
+import DeleteConfirmDialog from './messages/DeleteConfirmDialog'
+
+export default function ThreadMessageArea({ onReply }) {
+  const { activeParent, messages, hasLoadedHistory, historyLoading, historyError,
+          retryReply, dismissReply, dispatch: threadDispatch } = useThreadEvents()
+  const { messages: roomMessages } = useRoomEvents(activeParent?.roomId ?? null)
+  const roomDispatch = useRoomDispatch()
+  const { user, publish } = useNats()
+  const bottomRef = useRef(null)
+  const [editingMessageId, setEditingMessageId] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
+
+  const parent = activeParent
+    ? roomMessages.find((m) => m.id === activeParent.messageId) ?? {
+        id: activeParent.messageId,
+        createdAt: new Date(activeParent.createdAtMs).toISOString(),
+        content: '',
+      }
+    : null
+
+  const combined = parent ? [parent, ...messages] : messages
+
+  useEffect(() => {
+    if (!hasLoadedHistory) return
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [hasLoadedHistory])
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages.length])
+
+  const isParent = (msgId) => activeParent && msgId === activeParent.messageId
+
+  const handleEdit = (msg) => setEditingMessageId(msg.id)
+  const handleEditCancel = () => setEditingMessageId(null)
+  const handleEditSubmit = (msg, newContent) => {
+    publish(msgEdit(user.account, activeParent.roomId, activeParent.siteId), {
+      messageId: msg.id, createdAt: msg.createdAt, content: newContent, requestId: uuidv4(),
+    })
+    if (isParent(msg.id)) {
+      roomDispatch({
+        type: 'MESSAGE_EDITED_LOCAL', roomId: activeParent.roomId,
+        messageId: msg.id, content: newContent, editedAt: new Date().toISOString(),
+      })
+    } else {
+      threadDispatch({
+        type: 'REPLY_EDITED_LOCAL', messageId: msg.id,
+        content: newContent, editedAt: new Date().toISOString(),
+      })
+    }
+    setEditingMessageId(null)
+  }
+
+  const handleDelete = (msg) => setPendingDelete(msg)
+  const handleDeleteCancel = () => setPendingDelete(null)
+  const handleDeleteConfirm = () => {
+    if (!pendingDelete) return
+    publish(msgDelete(user.account, activeParent.roomId, activeParent.siteId), {
+      messageId: pendingDelete.id, createdAt: pendingDelete.createdAt, requestId: uuidv4(),
+    })
+    if (isParent(pendingDelete.id)) {
+      roomDispatch({ type: 'MESSAGE_DELETED_LOCAL', roomId: activeParent.roomId, messageId: pendingDelete.id })
+    } else {
+      threadDispatch({ type: 'REPLY_DELETED_LOCAL', messageId: pendingDelete.id })
+    }
+    setPendingDelete(null)
+  }
+
+  if (!activeParent) return null
+
+  const empty = hasLoadedHistory && !historyLoading && !historyError && messages.length === 0
+
+  return (
+    <div className="thread-message-area">
+      <MessageList
+        messages={combined}
+        hasLoadedHistory={hasLoadedHistory}
+        historyLoading={historyLoading}
+        historyError={historyError}
+        context="thread"
+        parentMessageId={activeParent.messageId}
+        currentUserAccount={user?.account}
+        editingMessageId={editingMessageId}
+        emptyText={empty ? 'No replies yet — be the first to reply' : undefined}
+        onReply={onReply}
+        onEdit={handleEdit}
+        onEditSubmit={handleEditSubmit}
+        onEditCancel={handleEditCancel}
+        onDelete={handleDelete}
+        onRetry={retryReply}
+        onDismiss={dismissReply}
+        bottomRef={bottomRef}
+        ariaLive="polite"
+      />
+      {pendingDelete && (
+        <DeleteConfirmDialog onConfirm={handleDeleteConfirm} onCancel={handleDeleteCancel} />
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 5: Run the tests**
+
+Run: `cd chat-frontend && npx vitest run src/components/ThreadMessageArea.test.jsx`
+Expected: PASS (4 new + the original 4).
+
+Run: `cd chat-frontend && npm test -- --run`
+Expected: full suite green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add chat-frontend/src/components/ThreadMessageArea.jsx chat-frontend/src/components/ThreadMessageArea.test.jsx chat-frontend/src/context/ThreadEventsContext.jsx
+git commit -m "feat(chat-frontend): wire Edit / Delete RPCs inside the thread panel"
+```
+
 ### Task 7.3: Extend `MessageList` to forward retry/dismiss + parent context
 
 `MessageList` needs to receive `onRetry`, `onDismiss`, and pass them into `MessageRow`. Also: when rendering a row whose `id === parent.messageId` and the list is `context="thread"`, override the row's `context` to `"thread-parent"` so `MessageActions` hides Thread + Reply.
