@@ -9,11 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 type config struct {
@@ -66,7 +69,7 @@ func dispatch(ctx context.Context, cfg *config) int {
 	case "run":
 		return runRun(ctx, cfg, os.Args[2:])
 	case "teardown":
-		return runTeardown(ctx, cfg)
+		return runTeardown(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		return 2
@@ -113,12 +116,24 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-func runTeardown(ctx context.Context, cfg *config) int {
-	// Teardown is destructive — refuse unless the configured DB carries
-	// the loadgen prefix. Override flag is intentionally not exposed
-	// for the teardown subcommand; an operator who genuinely needs to
-	// drop a non-loadgen DB can rename it temporarily or use mongosh
-	// directly.
+func runTeardown(ctx context.Context, cfg *config, args []string) int {
+	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
+	forceFlag := fs.Bool("force", false,
+		"enumerate and drop all orphaned loadgen_* Mongo DBs and JetStream consumers")
+	olderThan := fs.Duration("older-than", 0,
+		"with --force, only drop runs whose lock row startedAt is older than this duration (0 = any orphan)")
+	runID := fs.String("run-id", "",
+		"with --force, target only this specific run ID")
+	_ = fs.Parse(args)
+
+	if *forceFlag {
+		return runTeardownForce_cmd(ctx, cfg, *olderThan, *runID)
+	}
+
+	// Non-force path: teardown is destructive — refuse unless the configured
+	// DB carries the loadgen prefix. Override flag is intentionally not
+	// exposed here; an operator who genuinely needs to drop a non-loadgen DB
+	// can rename it temporarily or use mongosh directly.
 	if err := guardMongoDB(cfg.MongoDB, false); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
@@ -135,6 +150,44 @@ func runTeardown(ctx context.Context, cfg *config) int {
 		return 1
 	}
 	slog.Info("teardown complete")
+	return 0
+}
+
+// runTeardownForce_cmd is the --force path of the teardown subcommand.
+// It connects to Mongo and NATS, then delegates to runTeardownForce.
+func runTeardownForce_cmd(ctx context.Context, cfg *config, olderThan time.Duration, specificRunID string) int {
+	mc, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
+	if err != nil {
+		slog.Error("mongo connect", "error", err)
+		return 1
+	}
+	defer mongoutil.Disconnect(ctx, mc)
+
+	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
+	if err != nil {
+		slog.Error("nats connect", "error", err)
+		return 1
+	}
+	defer func() { _ = nc.Drain() }()
+
+	js, err := jetstream.New(nc.NatsConn())
+	if err != nil {
+		slog.Error("jetstream init", "error", err)
+		return 1
+	}
+
+	rep, err := runTeardownForce(ctx, mc, js, teardownForceConfig{
+		OlderThan:     olderThan,
+		SpecificRunID: specificRunID,
+	})
+	if err != nil {
+		slog.Error("teardown --force", "error", err)
+		return 1
+	}
+
+	skipped := len(rep.SkippedDBs) + len(rep.SkippedConsumers)
+	fmt.Printf("teardown --force: dropped %d Mongo DBs, %d JetStream consumers (skipped %d active)\n",
+		len(rep.DroppedMongoDBs), len(rep.DroppedConsumers), skipped)
 	return 0
 }
 

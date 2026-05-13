@@ -641,3 +641,130 @@ func TestRunLock_ReleaseClearsRow(t *testing.T) {
 	require.NoError(t, lock2.Acquire(ctx, "run-B", "messaging-pipeline", false),
 		"after Release, a new Acquire on the same SUT must succeed")
 }
+
+// ---------------------------------------------------------------------------
+// Teardown --force integration tests.
+// ---------------------------------------------------------------------------
+
+// TestTeardownForce_DropsOrphanedDBsAndConsumers is the end-to-end
+// integration test for runTeardownForce. It sets up three "runs":
+//
+//   - run-A (active lock row):      DB loadgen_AAAAAAA + consumer loadgen_AAAAAAA_e1
+//   - run-B (no lock row, orphan):  DB loadgen_BBBBBBB + consumer loadgen_BBBBBBB_e1
+//   - run-C (expired lock row):     DB loadgen_CCCCCCC + consumer loadgen_CCCCCCC_e1
+//     row inserted with startedAt = 3 hours ago
+//
+// It then runs runTeardownForce with OlderThan=2h and verifies:
+//   - run-A is retained (active, within 2h)
+//   - run-B is dropped  (no lock row → orphan)
+//   - run-C is dropped  (expired, started 3h ago > 2h threshold)
+func TestTeardownForce_DropsOrphanedDBsAndConsumers(t *testing.T) {
+	ctx := context.Background()
+	natsURI, stopNATS := setupNATS(t)
+	defer stopNATS()
+	mongoURI, stopMongo := setupMongo(t)
+	defer stopMongo()
+
+	// Connect to Mongo.
+	mc, err := mongoutil.Connect(ctx, mongoURI, "", "")
+	require.NoError(t, err)
+	defer mongoutil.Disconnect(ctx, mc)
+
+	// Connect to NATS + JetStream.
+	nc, err := nats.Connect(natsURI)
+	require.NoError(t, err)
+	defer nc.Drain()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+
+	// Create a single stream for the consumer tests. All loadgen consumers
+	// will be created on this stream.
+	streamName := "LOADGEN_TEST_FORCE"
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     streamName,
+		Subjects: []string{"loadgen.test.force.>"},
+		Storage:  jetstream.MemoryStorage,
+	})
+	require.NoError(t, err)
+
+	// Shared lock DB for the runlock rows.
+	lockColl := mc.Database(SharedLockDBName).Collection("loadgen_runs")
+
+	// Short IDs — exactly 7 chars to match shortRunID convention.
+	const (
+		shortA = "AAAAAAA"
+		shortB = "BBBBBBB"
+		shortC = "CCCCCCC"
+	)
+
+	// --- run-A: active lock row, started NOW (within any OlderThan window) ---
+	_, err = lockColl.InsertOne(ctx, runLockDoc{
+		RunID:     shortA + "extra",
+		StartedAt: time.Now().UTC(),
+		Host:      "test-host",
+		Scenario:  "messaging-pipeline",
+		SUTURL:    "nats://sut:4222",
+	})
+	require.NoError(t, err)
+	// Create DB and consumer for run-A.
+	require.NoError(t, mc.Database("loadgen_"+shortA).CreateCollection(ctx, "placeholder"))
+	_, err = js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:   "loadgen_" + shortA + "_e1",
+		AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	require.NoError(t, err)
+
+	// --- run-B: no lock row (orphan) ---
+	// Just create DB and consumer; no lock row inserted.
+	require.NoError(t, mc.Database("loadgen_"+shortB).CreateCollection(ctx, "placeholder"))
+	_, err = js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:   "loadgen_" + shortB + "_e1",
+		AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	require.NoError(t, err)
+
+	// --- run-C: expired lock row (started 3 hours ago) ---
+	_, err = lockColl.InsertOne(ctx, runLockDoc{
+		RunID:     shortC + "extra",
+		StartedAt: time.Now().UTC().Add(-3 * time.Hour),
+		Host:      "test-host",
+		Scenario:  "messaging-pipeline",
+		SUTURL:    "nats://sut:4222",
+	})
+	require.NoError(t, err)
+	// Create DB and consumer for run-C.
+	require.NoError(t, mc.Database("loadgen_"+shortC).CreateCollection(ctx, "placeholder"))
+	_, err = js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:   "loadgen_" + shortC + "_e1",
+		AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	require.NoError(t, err)
+
+	// Run teardown --force with OlderThan=2h.
+	rep, err := runTeardownForce(ctx, mc, js, teardownForceConfig{
+		OlderThan: 2 * time.Hour,
+	})
+	require.NoError(t, err)
+
+	// run-B and run-C must be dropped; run-A must be skipped.
+	require.Contains(t, rep.DroppedMongoDBs, "loadgen_"+shortB, "orphan run-B DB must be dropped")
+	require.Contains(t, rep.DroppedMongoDBs, "loadgen_"+shortC, "expired run-C DB must be dropped")
+	require.NotContains(t, rep.DroppedMongoDBs, "loadgen_"+shortA, "active run-A DB must NOT be dropped")
+
+	require.Contains(t, rep.DroppedConsumers, "loadgen_"+shortB+"_e1", "orphan run-B consumer must be dropped")
+	require.Contains(t, rep.DroppedConsumers, "loadgen_"+shortC+"_e1", "expired run-C consumer must be dropped")
+	require.NotContains(t, rep.DroppedConsumers, "loadgen_"+shortA+"_e1", "active run-A consumer must NOT be dropped")
+
+	// Verify the skipped set contains run-A.
+	require.Contains(t, rep.SkippedDBs, "loadgen_"+shortA, "active run-A DB must appear in skipped list")
+	require.Contains(t, rep.SkippedConsumers, "loadgen_"+shortA+"_e1", "active run-A consumer must appear in skipped list")
+
+	// Idempotency: running again on an already-clean state must not error.
+	rep2, err := runTeardownForce(ctx, mc, js, teardownForceConfig{
+		OlderThan: 2 * time.Hour,
+	})
+	require.NoError(t, err, "re-running on clean state must be a no-op (idempotent)")
+	// Dropped lists should be empty — nothing left to clean.
+	require.Empty(t, rep2.DroppedMongoDBs, "second run: no DBs to drop")
+	require.Empty(t, rep2.DroppedConsumers, "second run: no consumers to drop")
+}

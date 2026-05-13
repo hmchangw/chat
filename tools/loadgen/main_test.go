@@ -400,7 +400,7 @@ func TestRunTeardown_MongoDBGuardRefuses(t *testing.T) {
 		MongoURI: "mongodb://stub",
 		MongoDB:  "chat",
 	}
-	code := runTeardown(t.Context(), cfg)
+	code := runTeardown(t.Context(), cfg, nil)
 	assert.Equal(t, 2, code, "guard must refuse teardown of non-loadgen DB")
 }
 
