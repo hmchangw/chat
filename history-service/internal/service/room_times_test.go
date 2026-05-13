@@ -28,22 +28,22 @@ func TestResolveRoomTimes(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		hints       *models.RoomHints
+		meta        *models.RoomMeta
 		mongoCalls  int
 		wantLast    time.Time
 		wantCreated time.Time
 	}{
-		{name: "no hints → mongo fallback", hints: nil, mongoCalls: 1, wantLast: last, wantCreated: created},
-		{name: "both hints valid → no mongo", hints: &models.RoomHints{LastMsgAt: tsPtr(last), CreatedAt: tsPtr(created)}, mongoCalls: 0, wantLast: last, wantCreated: created},
-		{name: "lastMsgAt missing → mongo fallback for both", hints: &models.RoomHints{CreatedAt: tsPtr(created)}, mongoCalls: 1, wantLast: last, wantCreated: created},
-		{name: "createdAt missing → mongo fallback for both", hints: &models.RoomHints{LastMsgAt: tsPtr(last)}, mongoCalls: 1, wantLast: last, wantCreated: created},
-		{name: "lastMsgAt too far in future → ignored", hints: &models.RoomHints{LastMsgAt: tsPtr(future), CreatedAt: tsPtr(created)}, mongoCalls: 1, wantLast: last, wantCreated: created},
-		{name: "createdAt in future → ignored", hints: &models.RoomHints{LastMsgAt: tsPtr(last), CreatedAt: tsPtr(future)}, mongoCalls: 1, wantLast: last, wantCreated: created},
-		{name: "implausibly old values (pre-2020) → ignored", hints: &models.RoomHints{LastMsgAt: msPtr(0), CreatedAt: msPtr(0)}, mongoCalls: 1, wantLast: last, wantCreated: created},
-		// Hint pair is internally inconsistent (createdAt > lastMsgAt). Both hints are
+		{name: "no meta → mongo fallback", meta: nil, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "both meta valid → no mongo", meta: &models.RoomMeta{LastMsgAt: tsPtr(last), CreatedAt: tsPtr(created)}, mongoCalls: 0, wantLast: last, wantCreated: created},
+		{name: "lastMsgAt missing → mongo fallback for both", meta: &models.RoomMeta{CreatedAt: tsPtr(created)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "createdAt missing → mongo fallback for both", meta: &models.RoomMeta{LastMsgAt: tsPtr(last)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "lastMsgAt too far in future → ignored", meta: &models.RoomMeta{LastMsgAt: tsPtr(future), CreatedAt: tsPtr(created)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "createdAt in future → ignored", meta: &models.RoomMeta{LastMsgAt: tsPtr(last), CreatedAt: tsPtr(future)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "implausibly old values (pre-2020) → ignored", meta: &models.RoomMeta{LastMsgAt: msPtr(0), CreatedAt: msPtr(0)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		// Hint pair is internally inconsistent (createdAt > lastMsgAt). Both meta are
 		// individually sane, so they pass sanitization; the consistency-refetch path
 		// kicks in and replaces both with Mongo's coherent values.
-		{name: "createdAt > lastMsgAt → mongo refetch", hints: &models.RoomHints{LastMsgAt: tsPtr(created), CreatedAt: tsPtr(last)}, mongoCalls: 1, wantLast: last, wantCreated: created},
+		{name: "createdAt > lastMsgAt → mongo refetch", meta: &models.RoomMeta{LastMsgAt: tsPtr(created), CreatedAt: tsPtr(last)}, mongoCalls: 1, wantLast: last, wantCreated: created},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,7 +56,7 @@ func TestResolveRoomTimes(t *testing.T) {
 				Times(tc.mongoCalls)
 
 			s := &HistoryService{rooms: mockResolver}
-			gotLast, gotCreated, err := s.resolveRoomTimes(context.Background(), "room-1", tc.hints, now)
+			gotLast, gotCreated, err := s.resolveRoomTimes(context.Background(), "room-1", tc.meta, now)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantLast.UTC(), gotLast.UTC())
 			assert.Equal(t, tc.wantCreated.UTC(), gotCreated.UTC())

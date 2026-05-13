@@ -21,10 +21,10 @@ import (
 func (s *HistoryService) resolveRoomTimesOrError(
 	ctx context.Context,
 	roomID string,
-	hints *models.RoomHints,
+	meta *models.RoomMeta,
 	now time.Time,
 ) (lastMsgAt, createdAt time.Time, err error) {
-	lastMsgAt, createdAt, err = s.resolveRoomTimes(ctx, roomID, hints, now)
+	lastMsgAt, createdAt, err = s.resolveRoomTimes(ctx, roomID, meta, now)
 	if err == nil {
 		return lastMsgAt, createdAt, nil
 	}
@@ -73,24 +73,24 @@ func (s *HistoryService) walkBounds(lastMsgAt, createdAt, now time.Time) (ceilin
 }
 
 // resolveRoomTimes returns lastMsgAt and createdAt for roomID. Client-supplied
-// hints are trusted after sanity checks; missing or invalid hints fall back to
+// meta are trusted after sanity checks; missing or invalid meta fall back to
 // Mongo via the RoomTimeResolver. now is injected for deterministic testing.
 func (s *HistoryService) resolveRoomTimes(
 	ctx context.Context,
 	roomID string,
-	hints *models.RoomHints,
+	meta *models.RoomMeta,
 	now time.Time,
 ) (lastMsgAt, createdAt time.Time, err error) {
 	var last, created *time.Time
-	var hintLast, hintCreated bool
-	if hints != nil {
-		if v := sanitizeLastMsgAt(hints.LastMsgAt, now); v != nil {
+	var metaLast, metaCreated bool
+	if meta != nil {
+		if v := sanitizeLastMsgAt(meta.LastMsgAt, now); v != nil {
 			last = v
-			hintLast = true
+			metaLast = true
 		}
-		if v := sanitizeCreatedAt(hints.CreatedAt, now); v != nil {
+		if v := sanitizeCreatedAt(meta.CreatedAt, now); v != nil {
 			created = v
-			hintCreated = true
+			metaCreated = true
 		}
 	}
 
@@ -111,11 +111,11 @@ func (s *HistoryService) resolveRoomTimes(
 	// older than a Mongo-fetched CreatedAt). When the merged pair is internally
 	// inconsistent — created > last — refetch from Mongo IF at least one value
 	// came from a hint, so we get a coherent snapshot. When both already came
-	// from Mongo (no hints in play) the snapshot is by definition coherent
+	// from Mongo (no meta in play) the snapshot is by definition coherent
 	// already; an inverted result there means the room is genuinely empty
 	// (lastMsgAt unset), so we just normalise last = created.
 	if created.After(*last) {
-		if hintLast || hintCreated {
+		if metaLast || metaCreated {
 			l, c, gerr := s.rooms.GetRoomTimes(ctx, roomID)
 			if gerr != nil {
 				return time.Time{}, time.Time{}, fmt.Errorf("resolve room times for %s (consistency refetch): %w", roomID, gerr)

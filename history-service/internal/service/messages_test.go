@@ -50,7 +50,7 @@ func generateTestKeyPair(t *testing.T) *roomkeystore.VersionedKeyPair {
 }
 
 // defaultRoomLastMsgAt and defaultRoomCreatedAt are the sensible defaults
-// newService uses for GetRoomTimes so existing tests that don't supply hints
+// newService uses for GetRoomTimes so existing tests that don't supply meta
 // don't get their fixtures clipped by the bucket-walk floor/ceiling.
 var defaultRoomLastMsgAt = joinTime.Add(24 * time.Hour)
 var defaultRoomCreatedAt = joinTime.Add(-30 * 24 * time.Hour)

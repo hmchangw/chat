@@ -88,37 +88,37 @@ func TestDeleteMessageResponse_JSON(t *testing.T) {
 	assert.Equal(t, resp, decoded)
 }
 
-func TestRoomHints_JSONRoundTrip(t *testing.T) {
+func TestRoomMeta_JSONRoundTrip(t *testing.T) {
 	last := int64(1234567890123)
 	created := int64(1234567000000)
 	cases := []struct {
 		name string
-		in   RoomHints
+		in   RoomMeta
 	}{
-		{name: "both fields", in: RoomHints{LastMsgAt: &last, CreatedAt: &created}},
-		{name: "only LastMsgAt", in: RoomHints{LastMsgAt: &last}},
-		{name: "only CreatedAt", in: RoomHints{CreatedAt: &created}},
-		{name: "empty", in: RoomHints{}},
+		{name: "both fields", in: RoomMeta{LastMsgAt: &last, CreatedAt: &created}},
+		{name: "only LastMsgAt", in: RoomMeta{LastMsgAt: &last}},
+		{name: "only CreatedAt", in: RoomMeta{CreatedAt: &created}},
+		{name: "empty", in: RoomMeta{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			data, err := json.Marshal(tc.in)
 			require.NoError(t, err)
-			var got RoomHints
+			var got RoomMeta
 			require.NoError(t, json.Unmarshal(data, &got))
 			assert.Equal(t, tc.in, got)
 		})
 	}
 }
 
-func TestLoadHistoryRequest_WithHints_Roundtrip(t *testing.T) {
+func TestLoadHistoryRequest_WithMeta_Roundtrip(t *testing.T) {
 	last := int64(1234567890123)
 	cases := []struct {
 		name string
 		in   LoadHistoryRequest
 	}{
-		{name: "hints nil", in: LoadHistoryRequest{Limit: 50}},
-		{name: "hints populated", in: LoadHistoryRequest{Limit: 50, Hints: &RoomHints{LastMsgAt: &last}}},
+		{name: "meta nil", in: LoadHistoryRequest{Limit: 50}},
+		{name: "meta populated", in: LoadHistoryRequest{Limit: 50, Meta: &RoomMeta{LastMsgAt: &last}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -131,15 +131,15 @@ func TestLoadHistoryRequest_WithHints_Roundtrip(t *testing.T) {
 	}
 }
 
-func TestLoadNextMessagesRequest_WithHints_Roundtrip(t *testing.T) {
+func TestLoadNextMessagesRequest_WithMeta_Roundtrip(t *testing.T) {
 	last := int64(1234567890123)
 	created := int64(1234567000000)
 	cases := []struct {
 		name string
 		in   LoadNextMessagesRequest
 	}{
-		{name: "hints nil", in: LoadNextMessagesRequest{Limit: 25, Cursor: "cur1"}},
-		{name: "hints populated", in: LoadNextMessagesRequest{Limit: 25, Cursor: "cur1", Hints: &RoomHints{LastMsgAt: &last, CreatedAt: &created}}},
+		{name: "meta nil", in: LoadNextMessagesRequest{Limit: 25, Cursor: "cur1"}},
+		{name: "meta populated", in: LoadNextMessagesRequest{Limit: 25, Cursor: "cur1", Meta: &RoomMeta{LastMsgAt: &last, CreatedAt: &created}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,14 +152,14 @@ func TestLoadNextMessagesRequest_WithHints_Roundtrip(t *testing.T) {
 	}
 }
 
-func TestLoadSurroundingMessagesRequest_WithHints_Roundtrip(t *testing.T) {
+func TestLoadSurroundingMessagesRequest_WithMeta_Roundtrip(t *testing.T) {
 	created := int64(1234567000000)
 	cases := []struct {
 		name string
 		in   LoadSurroundingMessagesRequest
 	}{
-		{name: "hints nil", in: LoadSurroundingMessagesRequest{MessageID: "m-abc", Limit: 20}},
-		{name: "hints populated", in: LoadSurroundingMessagesRequest{MessageID: "m-abc", Limit: 20, Hints: &RoomHints{CreatedAt: &created}}},
+		{name: "meta nil", in: LoadSurroundingMessagesRequest{MessageID: "m-abc", Limit: 20}},
+		{name: "meta populated", in: LoadSurroundingMessagesRequest{MessageID: "m-abc", Limit: 20, Meta: &RoomMeta{CreatedAt: &created}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,15 +172,15 @@ func TestLoadSurroundingMessagesRequest_WithHints_Roundtrip(t *testing.T) {
 	}
 }
 
-func TestGetThreadMessagesRequest_WithHints_Roundtrip(t *testing.T) {
+func TestGetThreadMessagesRequest_WithMeta_Roundtrip(t *testing.T) {
 	last := int64(1234567890123)
 	created := int64(1234567000000)
 	cases := []struct {
 		name string
 		in   GetThreadMessagesRequest
 	}{
-		{name: "hints nil", in: GetThreadMessagesRequest{ThreadMessageID: "t-abc", Limit: 10}},
-		{name: "hints populated", in: GetThreadMessagesRequest{ThreadMessageID: "t-abc", Limit: 10, Hints: &RoomHints{LastMsgAt: &last, CreatedAt: &created}}},
+		{name: "meta nil", in: GetThreadMessagesRequest{ThreadMessageID: "t-abc", Limit: 10}},
+		{name: "meta populated", in: GetThreadMessagesRequest{ThreadMessageID: "t-abc", Limit: 10, Meta: &RoomMeta{LastMsgAt: &last, CreatedAt: &created}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
