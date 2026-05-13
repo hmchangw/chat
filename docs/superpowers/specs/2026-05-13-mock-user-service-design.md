@@ -125,8 +125,7 @@ func UserAppsList(account, siteID string) string
 // Parses any 8-token subject of the form
 //   chat.user.{account}.request.user.{siteID}.{area}.{action}
 // where area is one of "status", "subscription", "profile", "apps".
-// Does NOT match the room-scoped form (chat.user.{a}.request.user.{s}.room.{r}.…) —
-// use ParseRoomSubject for those.
+// Does NOT match the 10-token room-scoped form — use ParseRoomSubject.
 func ParseUserSubject(subj string) (account, siteID, area, action string, ok bool)
 
 // Narrow parsers — validate `area` and return account+action only.
@@ -136,13 +135,12 @@ func ParseSubscriptionSubject(subj string) (account, action string, ok bool)
 func ParseProfileSubject(subj string) (account, action string, ok bool)
 func ParseAppsSubject(subj string) (account, action string, ok bool)
 
-// Parses the room-scoped form
-//   chat.user.{account}.request.user.{siteID}.room.{roomID}.{action…}
-// `action` is the joined tail after roomID (e.g. "subscription.get" for the
-// only currently-defined route; future room-scoped routes can have any
-// dot-separated action). Returns ok=false if the subject does not start with
-// `chat.user.*.request.user.*.room.*.` or has fewer than 9 tokens.
-func ParseRoomSubject(subj string) (account, roomID, action string, ok bool)
+// Parses the 10-token room-scoped form
+//   chat.user.{account}.request.user.{siteID}.room.{roomID}.{area}.{action}
+// where `area`/`action` are each a single token (e.g. "subscription" / "get").
+// Returns ok=false if the subject is not exactly 10 tokens or does not
+// start with `chat.user.*.request.user.*.room.*.`.
+func ParseRoomSubject(subj string) (account, roomID, area, action string, ok bool)
 ```
 
 ### Wildcard builders
@@ -167,12 +165,13 @@ func UserAppsWildCard(siteID string) string           // chat.user.*.request.use
 - One table-driven test per builder asserting the exact literal output.
 - One round-trip test per parser: feed the corresponding builder's output and
   assert the extracted fields (account/siteID/area/action for the area
-  parsers; account/roomID/action for `ParseRoomSubject` against
+  parsers; account/roomID/area/action for `ParseRoomSubject` against
   `UserRoomSubscriptionGet`'s output).
 - A malformed-subject table per parser covering: wrong prefix
   (`chat.room.…`), wrong area, wrong token count, empty string.
   `ParseRoomSubject`'s table additionally rejects subjects missing the
-  literal `room` token at position 6.
+  literal `room` token at position 6 and subjects that aren't exactly
+  10 tokens.
 - A wildcards table asserting each wildcard's literal output.
 
 ## Service layout

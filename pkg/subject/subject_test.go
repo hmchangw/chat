@@ -482,17 +482,12 @@ func TestParseAppsSubject(t *testing.T) {
 func TestParseRoomSubject(t *testing.T) {
 	t.Run("subscription.get roundtrips", func(t *testing.T) {
 		subj := subject.UserRoomSubscriptionGet("alice", "s1", "r1")
-		account, roomID, action, ok := subject.ParseRoomSubject(subj)
+		account, roomID, area, action, ok := subject.ParseRoomSubject(subj)
 		assert.True(t, ok)
 		assert.Equal(t, "alice", account)
 		assert.Equal(t, "r1", roomID)
-		assert.Equal(t, "subscription.get", action)
-	})
-
-	t.Run("joins multi-token action", func(t *testing.T) {
-		_, _, action, ok := subject.ParseRoomSubject("chat.user.alice.request.user.s1.room.r1.a.b.c")
-		assert.True(t, ok)
-		assert.Equal(t, "a.b.c", action)
+		assert.Equal(t, "subscription", area)
+		assert.Equal(t, "get", action)
 	})
 
 	t.Run("rejects malformed", func(t *testing.T) {
@@ -500,12 +495,14 @@ func TestParseRoomSubject(t *testing.T) {
 			"",
 			"chat.user.alice.request.user.s1.status.getByName",
 			"chat.user.alice.request.user.s1.room.r1",
+			"chat.user.alice.request.user.s1.room.r1.subscription",
+			"chat.user.alice.request.user.s1.room.r1.subscription.get.extra",
 			"chat.user.alice.notrequest.user.s1.room.r1.subscription.get",
 			"chat.user.alice.request.notuser.s1.room.r1.subscription.get",
 			"chat.user.alice.request.user.s1.notroom.r1.subscription.get",
 		}
 		for _, s := range bad {
-			_, _, _, ok := subject.ParseRoomSubject(s)
+			_, _, _, _, ok := subject.ParseRoomSubject(s)
 			assert.False(t, ok, "expected ok=false for %q", s)
 		}
 	})
