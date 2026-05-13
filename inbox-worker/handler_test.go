@@ -1260,12 +1260,13 @@ func TestHandleJetStreamMsg_AckNakTerm(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name     string
-		data     []byte
-		ctx      context.Context
-		wantAck  bool
-		wantNak  bool
-		wantTerm bool
+		name          string
+		data          []byte
+		ctx           context.Context
+		wantAck       bool
+		wantNak       bool
+		wantTerm      bool
+		wantReasonHas string
 	}{
 		{
 			name:    "success acks",
@@ -1274,10 +1275,11 @@ func TestHandleJetStreamMsg_AckNakTerm(t *testing.T) {
 			wantAck: true,
 		},
 		{
-			name:     "errPermanent message is Term'd not Nak'd",
-			data:     permanentEvent,
-			ctx:      context.Background(), // no X-Request-ID -> errPermanent
-			wantTerm: true,
+			name:          "errPermanent message is Term'd not Nak'd",
+			data:          permanentEvent,
+			ctx:           context.Background(), // no X-Request-ID -> errPermanent
+			wantTerm:      true,
+			wantReasonHas: "missing X-Request-ID",
 		},
 		{
 			name:    "transient error naks",
@@ -1296,8 +1298,8 @@ func TestHandleJetStreamMsg_AckNakTerm(t *testing.T) {
 			assert.Equal(t, tc.wantNak, m.naked, "Nak")
 			assert.Equal(t, tc.wantTerm, m.termed, "Term")
 			if tc.wantTerm {
-				assert.NotEmpty(t, m.termReason,
-					"TermWithReason must carry a non-empty reason for observability")
+				assert.Contains(t, m.termReason, tc.wantReasonHas,
+					"TermWithReason must carry the underlying error context")
 			}
 		})
 	}
