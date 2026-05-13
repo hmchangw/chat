@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { createRef } from 'react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import MemberPicker from './MemberPicker'
 
 vi.mock('../context/NatsContext', () => ({
@@ -72,6 +73,77 @@ describe('MemberPicker', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onUsersChange).toHaveBeenCalledWith(['bob'])
     expect(input.value).toBe('')
+  })
+
+  it('Enter on Users input with comma-separated text commits each segment as its own chip', () => {
+    const { onUsersChange } = setup()
+    const input = screen.getByLabelText(/Users/i)
+    fireEvent.change(input, { target: { value: 'alice, bob , charlie' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onUsersChange).toHaveBeenCalledWith(['alice', 'bob', 'charlie'])
+    expect(input.value).toBe('')
+  })
+
+  it('comma-separated parsing drops empty segments and trims whitespace', () => {
+    const { onOrgsChange } = setup()
+    const input = screen.getByLabelText(/Orgs/i)
+    fireEvent.change(input, { target: { value: ' eng,, ops ,   ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onOrgsChange).toHaveBeenCalledWith(['eng', 'ops'])
+  })
+
+  it('comma-separated parsing for Channels turns each id into a local-site ChannelRef', () => {
+    const { onChannelsChange } = setup()
+    const input = screen.getByLabelText(/Channels/i)
+    fireEvent.change(input, { target: { value: 'r1, r2, r3' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onChannelsChange).toHaveBeenCalledWith([
+      { roomId: 'r1', siteId: 'site-A' },
+      { roomId: 'r2', siteId: 'site-A' },
+      { roomId: 'r3', siteId: 'site-A' },
+    ])
+  })
+
+  it('partial dedup on multi-add: existing chips are skipped, new ones land', () => {
+    const onUsersChange = vi.fn()
+    useNats.mockReturnValue({ user: { account: 'alice', siteId: 'site-A' }, request: vi.fn() })
+    render(
+      <MemberPicker
+        users={['bob']}
+        orgs={[]}
+        channels={[]}
+        onUsersChange={onUsersChange}
+        onOrgsChange={vi.fn()}
+        onChannelsChange={vi.fn()}
+      />
+    )
+    fireEvent.change(screen.getByLabelText(/Users/i), { target: { value: 'alice, bob, charlie' } })
+    fireEvent.keyDown(screen.getByLabelText(/Users/i), { key: 'Enter' })
+    expect(onUsersChange).toHaveBeenCalledWith(['bob', 'alice', 'charlie'])
+  })
+
+  it('flushAndGetEntries also splits comma-separated pending text', () => {
+    const onUsersChange = vi.fn()
+    useNats.mockReturnValue({ user: { account: 'alice', siteId: 'site-A' }, request: vi.fn() })
+    const ref = createRef()
+    render(
+      <MemberPicker
+        ref={ref}
+        users={[]}
+        orgs={[]}
+        channels={[]}
+        onUsersChange={onUsersChange}
+        onOrgsChange={vi.fn()}
+        onChannelsChange={vi.fn()}
+      />
+    )
+    fireEvent.change(screen.getByLabelText(/Users/i), { target: { value: 'alice, bob, charlie' } })
+    let merged
+    act(() => {
+      merged = ref.current.flushAndGetEntries()
+    })
+    expect(merged.users).toEqual(['alice', 'bob', 'charlie'])
+    expect(onUsersChange).toHaveBeenCalledWith(['alice', 'bob', 'charlie'])
   })
 
   it('does not call search.users — endpoint does not exist server-side', () => {
@@ -178,6 +250,99 @@ describe('MemberPicker', () => {
     vi.advanceTimersByTime(250)
     await waitFor(() => expect(request).toHaveBeenCalled())
     expect(screen.getByLabelText(/Channels/i)).not.toBeDisabled()
+  })
+
+  it('forwarded ref exposes flushAndGetEntries that captures typed-but-uncommitted text', () => {
+    const onUsersChange = vi.fn()
+    const onOrgsChange = vi.fn()
+    const onChannelsChange = vi.fn()
+    useNats.mockReturnValue({ user: { account: 'alice', siteId: 'site-A' }, request: vi.fn() })
+    const ref = createRef()
+    render(
+      <MemberPicker
+        ref={ref}
+        users={['existing']}
+        orgs={[]}
+        channels={[]}
+        onUsersChange={onUsersChange}
+        onOrgsChange={onOrgsChange}
+        onChannelsChange={onChannelsChange}
+      />
+    )
+    // User types into each field without ever pressing Enter:
+    fireEvent.change(screen.getByLabelText(/Users/i), { target: { value: 'bob' } })
+    fireEvent.change(screen.getByLabelText(/Orgs/i), { target: { value: 'eng-org' } })
+    fireEvent.change(screen.getByLabelText(/Channels/i), { target: { value: 'r-typed' } })
+
+    // Parent calls flush at submit time. Wrap in act so the reset() state
+    // updates inside the imperative call flush before the next render-state
+    // assertion. Without act, the input value still shows the typed text.
+    let merged
+    act(() => {
+      merged = ref.current.flushAndGetEntries()
+    })
+
+    expect(merged).toEqual({
+      users: ['existing', 'bob'],
+      orgs: ['eng-org'],
+      channels: [{ roomId: 'r-typed', siteId: 'site-A' }],
+    })
+    // Each field's pending text is also propagated as a chip via onChange.
+    expect(onUsersChange).toHaveBeenCalledWith(['existing', 'bob'])
+    expect(onOrgsChange).toHaveBeenCalledWith(['eng-org'])
+    expect(onChannelsChange).toHaveBeenCalledWith([{ roomId: 'r-typed', siteId: 'site-A' }])
+    // Inputs are cleared after flush.
+    expect(screen.getByLabelText(/Users/i).value).toBe('')
+    expect(screen.getByLabelText(/Orgs/i).value).toBe('')
+    expect(screen.getByLabelText(/Channels/i).value).toBe('')
+  })
+
+  it('flushAndGetEntries returns current entries unchanged when no pending text', () => {
+    useNats.mockReturnValue({ user: { account: 'alice', siteId: 'site-A' }, request: vi.fn() })
+    const ref = createRef()
+    render(
+      <MemberPicker
+        ref={ref}
+        users={['bob']}
+        orgs={['eng']}
+        channels={[{ roomId: 'r-x', siteId: 'site-A' }]}
+        onUsersChange={vi.fn()}
+        onOrgsChange={vi.fn()}
+        onChannelsChange={vi.fn()}
+      />
+    )
+    const merged = ref.current.flushAndGetEntries()
+    expect(merged).toEqual({
+      users: ['bob'],
+      orgs: ['eng'],
+      channels: [{ roomId: 'r-x', siteId: 'site-A' }],
+    })
+  })
+
+  it('flushAndGetEntries skips pending text that duplicates an existing chip', () => {
+    const onUsersChange = vi.fn()
+    useNats.mockReturnValue({ user: { account: 'alice', siteId: 'site-A' }, request: vi.fn() })
+    const ref = createRef()
+    render(
+      <MemberPicker
+        ref={ref}
+        users={['bob']}
+        orgs={[]}
+        channels={[]}
+        onUsersChange={onUsersChange}
+        onOrgsChange={vi.fn()}
+        onChannelsChange={vi.fn()}
+      />
+    )
+    fireEvent.change(screen.getByLabelText(/Users/i), { target: { value: 'bob' } })
+    let merged
+    act(() => {
+      merged = ref.current.flushAndGetEntries()
+    })
+    expect(merged.users).toEqual(['bob'])
+    expect(onUsersChange).not.toHaveBeenCalled()
+    // Input still clears even on dedup so the next submit isn't sticky.
+    expect(screen.getByLabelText(/Users/i).value).toBe('')
   })
 
   it('disables all inputs when disabled prop is set', () => {

@@ -24,6 +24,12 @@ function toSummary(room) {
   return {
     id: room.id,
     name: room.name,
+    // Per-user friendly name (DM display fallback). RoomEventsContext sets
+    // this from the inbound subscription.update event; rooms loaded via the
+    // initial rooms.list don't carry it today (server returns Room, not
+    // Subscription), so it'll be undefined on first paint — roomDisplayName
+    // falls back to a placeholder until subscription.update lands.
+    subscriptionName: room.subscriptionName,
     type: room.type,
     siteId: room.siteId,
     userCount: room.userCount,

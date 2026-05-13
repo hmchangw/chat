@@ -28,9 +28,16 @@ function setup(overrides = {}) {
 describe('AddMembersForm', () => {
   beforeEach(() => useNats.mockReset())
 
-  it('disables submit when no entities are selected', () => {
-    setup()
-    expect(screen.getByRole('button', { name: /^Add$/ })).toBeDisabled()
+  it('submit is always clickable; clicking on an empty form is a no-op', async () => {
+    // Previously the button was disabled until a chip existed, which meant
+    // typing "alice" in Users without pressing Enter left submit greyed out.
+    // The handler now flushes pending text first and early-returns on empty.
+    const { requestWithAsyncResult } = setup()
+    const submit = screen.getByRole('button', { name: /^Add$/ })
+    expect(submit).not.toBeDisabled()
+    fireEvent.click(submit)
+    await new Promise((r) => setTimeout(r, 30))
+    expect(requestWithAsyncResult).not.toHaveBeenCalled()
   })
 
   it('sends ChannelRef-shaped channels (not strings) with mode=all by default', async () => {
@@ -63,6 +70,24 @@ describe('AddMembersForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Add$/ }))
     await waitFor(() => expect(requestWithAsyncResult).toHaveBeenCalledTimes(1))
     expect(requestWithAsyncResult.mock.calls[0][1].history).toEqual({ mode: 'none' })
+  })
+
+  it('auto-flushes typed-but-not-Entered text in all three fields on submit', async () => {
+    const { requestWithAsyncResult } = setup()
+    // User types comma-separated values in each field but does NOT press Enter.
+    fireEvent.change(screen.getByLabelText(/Users/i), { target: { value: 'alice, bob' } })
+    fireEvent.change(screen.getByLabelText(/Orgs/i), { target: { value: 'eng-org, ops-org' } })
+    fireEvent.change(screen.getByLabelText(/Channels/i), { target: { value: 'r-x, r-y' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+    await waitFor(() => expect(requestWithAsyncResult).toHaveBeenCalledTimes(1))
+    expect(requestWithAsyncResult.mock.calls[0][1]).toMatchObject({
+      users: ['alice', 'bob'],
+      orgs: ['eng-org', 'ops-org'],
+      channels: [
+        { roomId: 'r-x', siteId: 'site-A' },
+        { roomId: 'r-y', siteId: 'site-A' },
+      ],
+    })
   })
 
   it('shows error banner when the async result is an error', async () => {

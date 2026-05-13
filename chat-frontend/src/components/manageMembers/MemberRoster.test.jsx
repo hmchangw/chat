@@ -13,7 +13,8 @@ const room = { id: 'r1', siteId: 'site-A', name: 'general' }
 const baseMembers = [
   { id: 'rm1', rid: 'r1', member: { id: 'u-alice', type: 'individual', account: 'alice', engName: 'Alice A', isOwner: true } },
   { id: 'rm2', rid: 'r1', member: { id: 'u-bob', type: 'individual', account: 'bob', engName: 'Bob B', isOwner: false } },
-  { id: 'rm3', rid: 'r1', member: { id: 'org-eng', type: 'org', sectName: 'Engineering', memberCount: 42 } },
+  { id: 'rm3', rid: 'r1', member: { id: 'u-carol', type: 'individual', account: 'carol', engName: 'Carol C', isOwner: true } },
+  { id: 'rm4', rid: 'r1', member: { id: 'org-eng', type: 'org', sectName: 'Engineering', memberCount: 42 } },
 ]
 
 function setupContext(overrides = {}) {
@@ -104,15 +105,18 @@ describe('MemberRoster', () => {
     )
   })
 
-  it('Demote on an owner sends member.role-update newRole=member', async () => {
+  it('Demote on another owner sends member.role-update newRole=member', async () => {
+    // Run as alice (owner); demote carol (also owner). Owner-on-self is a
+    // Leave button in the new design, not a Demote, so the Demote-action
+    // test must target a peer owner.
     const { requestWithAsyncResult } = setupContext()
     render(<MemberRoster room={room} />)
-    await screen.findByText('Alice A')
-    fireEvent.click(screen.getByRole('button', { name: /Demote alice/i }))
+    await screen.findByText('Carol C')
+    fireEvent.click(screen.getByRole('button', { name: /Demote carol/i }))
     await waitFor(() =>
       expect(requestWithAsyncResult).toHaveBeenCalledWith(
         'chat.user.alice.request.room.r1.site-A.member.role-update',
-        { roomId: 'r1', account: 'alice', newRole: 'member' }
+        { roomId: 'r1', account: 'carol', newRole: 'member' }
       )
     )
   })
@@ -164,6 +168,11 @@ describe('MemberRoster', () => {
       user: { account: 'alice', siteId: 'site-A' },
       request: vi.fn().mockResolvedValue({
         members: [
+          // Alice (current user) must be in the roster as owner for the
+          // owner-gated Promote/Remove buttons to render. Without her,
+          // isCurrentUserOwner falls through to false and the buttons
+          // this test is exercising don't exist.
+          { id: 'rm0', rid: 'r1', member: { id: 'u-alice', type: 'individual', account: 'alice', engName: 'Alice', isOwner: true } },
           { id: 'rm1', rid: 'r1', member: { id: 'u-bob', type: 'individual', account: 'bob', engName: 'Bob', isOwner: false } },
           { id: 'rm2', rid: 'r1', member: { id: 'u-dyn', type: 'individual', account: 'dynamicbob', engName: 'DBob', isOwner: false } },
         ],
@@ -259,6 +268,86 @@ describe('MemberRoster', () => {
     // Success path right after: no error banner, action proceeds normally.
     fireEvent.click(screen.getByRole('button', { name: /Promote bob/i }))
     await waitFor(() => expect(requestWithAsyncResult).toHaveBeenCalledTimes(2))
+  })
+
+  it('shows a Leave button on the current user\'s own row (not Remove / Promote / Demote)', async () => {
+    setupContext() // current user = alice (owner)
+    render(<MemberRoster room={room} />)
+    await screen.findByText('Alice A')
+    const aliceRow = screen.getByText('Alice A').closest('li')
+    // The self row never offers Remove or role-change controls — leaving is
+    // the only self-applicable action. Demote/Remove on self would be a UX
+    // trap: a user could lock themselves out of admin or kick themselves
+    // and lose the dialog mid-action.
+    expect(aliceRow).toHaveTextContent(/Leave/i)
+    expect(aliceRow.querySelector('button[aria-label^="Remove alice"]')).toBeNull()
+    expect(aliceRow.querySelector('button[aria-label^="Promote alice"]')).toBeNull()
+    expect(aliceRow.querySelector('button[aria-label^="Demote alice"]')).toBeNull()
+  })
+
+  it('clicking Leave on own row sends member.remove with the user\'s own account after confirm', async () => {
+    const { requestWithAsyncResult } = setupContext()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    try {
+      render(<MemberRoster room={room} />)
+      await screen.findByText('Alice A')
+      fireEvent.click(screen.getByRole('button', { name: /^Leave$/i }))
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/Leave .*general/i))
+      await waitFor(() =>
+        expect(requestWithAsyncResult).toHaveBeenCalledWith(
+          'chat.user.alice.request.room.r1.site-A.member.remove',
+          { roomId: 'r1', account: 'alice' }
+        )
+      )
+    } finally {
+      confirmSpy.mockRestore()
+    }
+  })
+
+  it('cancelling the Leave confirm dialog does not send any request', async () => {
+    const { requestWithAsyncResult } = setupContext()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      render(<MemberRoster room={room} />)
+      await screen.findByText('Alice A')
+      fireEvent.click(screen.getByRole('button', { name: /^Leave$/i }))
+      expect(confirmSpy).toHaveBeenCalled()
+      // Give a microtask to confirm no request fires.
+      await new Promise((r) => setTimeout(r, 30))
+      expect(requestWithAsyncResult).not.toHaveBeenCalled()
+    } finally {
+      confirmSpy.mockRestore()
+    }
+  })
+
+  it('hides Promote / Demote / Remove on every row when the current user is not an owner', async () => {
+    // Bob is a regular member; he must see only Leave (on his own row) and
+    // no admin controls anywhere else.
+    useNats.mockReturnValue({
+      user: { account: 'bob', siteId: 'site-A' },
+      request: vi.fn().mockResolvedValue({ members: baseMembers }),
+      requestWithAsyncResult: vi.fn(),
+    })
+    render(<MemberRoster room={room} />)
+    await screen.findByText('Alice A')
+    // No Promote/Demote/Remove anywhere (across individuals and orgs).
+    expect(screen.queryByRole('button', { name: /Promote/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Demote/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Remove/i })).toBeNull()
+    // Bob still sees a Leave button on his own row.
+    expect(screen.getByRole('button', { name: /^Leave$/i })).toBeInTheDocument()
+  })
+
+  it('hides the Remove-by-ID inputs when the current user is not an owner', async () => {
+    useNats.mockReturnValue({
+      user: { account: 'bob', siteId: 'site-A' },
+      request: vi.fn().mockResolvedValue({ members: baseMembers }),
+      requestWithAsyncResult: vi.fn(),
+    })
+    render(<MemberRoster room={room} />)
+    await screen.findByText('Alice A')
+    expect(screen.queryByLabelText(/Remove individual by account/i)).toBeNull()
+    expect(screen.queryByLabelText(/Remove org by id/i)).toBeNull()
   })
 
   it('surfaces a server error from an action as a banner', async () => {

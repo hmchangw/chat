@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useNats } from '../context/NatsContext'
 import { roomCreate } from '../lib/subjects'
 import { isDMExistsReply } from '../lib/constants'
@@ -14,20 +14,26 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
   const [channels, setChannels] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const pickerRef = useRef(null)
 
   const trimmedName = name.trim()
-  const canSubmit =
-    !!trimmedName || users.length + orgs.length + channels.length > 0
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!canSubmit || !user) return
+    if (!user) return
+    // Auto-commit any typed-but-not-Entered text in the picker so users
+    // don't have to remember to press Enter before clicking Create. Use the
+    // returned values for this submit because the state updates queued by
+    // flushAndGetEntries don't land until the next render.
+    const { users: finalUsers, orgs: finalOrgs, channels: finalChannels } =
+      pickerRef.current?.flushAndGetEntries() ?? { users, orgs, channels }
+    if (!trimmedName && finalUsers.length + finalOrgs.length + finalChannels.length === 0) return
     setLoading(true)
     setError(null)
     try {
       const { sync } = await requestWithAsyncResult(
         roomCreate(user.account, user.siteId),
-        { name: trimmedName, users, orgs, channels },
+        { name: trimmedName, users: finalUsers, orgs: finalOrgs, channels: finalChannels },
         { treatAsSuccess: isDMExistsReply }
       )
       const roomId = sync.roomId
@@ -38,7 +44,7 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
       // For DM/BotDM the name is empty; fall back to the counterpart account
       // so the sidebar + header have something to show until the canonical
       // name arrives via subscription.update.
-      const displayName = trimmedName || users[0] || ''
+      const displayName = trimmedName || finalUsers[0] || ''
       onCreated({ id: roomId, type: roomType, siteId: user.siteId, name: displayName })
       onClose()
     } catch (err) {
@@ -65,6 +71,7 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
           />
 
           <MemberPicker
+            ref={pickerRef}
             users={users}
             orgs={orgs}
             channels={channels}
@@ -80,7 +87,7 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
             <button type="button" className="dialog-cancel" onClick={onClose} disabled={loading}>
               Cancel
             </button>
-            <button type="submit" disabled={loading || !canSubmit}>
+            <button type="submit" disabled={loading}>
               {loading ? 'Creating…' : 'Create'}
             </button>
           </div>

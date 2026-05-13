@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNats } from '../../context/NatsContext'
 import { memberList, memberRemove, memberRoleUpdate } from '../../lib/subjects'
 import { ROLE_OWNER, ROLE_MEMBER } from '../../lib/constants'
@@ -34,6 +34,14 @@ export default function MemberRoster({ room }) {
     fetchMembers()
   }, [fetchMembers])
 
+  // Owner-status is derived from the just-fetched roster: find the row that
+  // matches the current user's account and read isOwner. Memoised so the
+  // per-row gating doesn't re-derive on every render.
+  const isCurrentUserOwner = useMemo(() => {
+    const self = members.find((m) => m.member?.type === 'individual' && m.member?.account === user.account)
+    return !!self?.member?.isOwner
+  }, [members, user.account])
+
   /**
    * Run a member.{remove|role-update} action through requestWithAsyncResult,
    * surface failures as a banner, and refetch the roster on success.
@@ -61,6 +69,30 @@ export default function MemberRoster({ room }) {
     [requestWithAsyncResult, fetchMembers]
   )
 
+  /**
+   * Leave the room (member.remove on self). Distinct from the generic
+   * runAction path because (a) we don't refetch — we're no longer a member
+   * and the call would fail or return an empty roster, and (b) the dialog
+   * will dismiss on its own via ChatPage's selectedRoom/summaries effect
+   * once subscription.update lands.
+   */
+  const handleLeave = useCallback(async () => {
+    if (!window.confirm(`Leave "${room.name}"?`)) return
+    setBusyKey(`leave:${user.account}`)
+    setActionError(null)
+    try {
+      await requestWithAsyncResult(memberRemove(user.account, room.id, room.siteId), {
+        roomId: room.id,
+        account: user.account,
+      })
+      // Intentionally no fetchMembers() — we're not in the room anymore.
+    } catch (err) {
+      setActionError(formatAsyncJobError(err))
+    } finally {
+      setBusyKey(null)
+    }
+  }, [room.id, room.siteId, room.name, user.account, requestWithAsyncResult])
+
   if (loading) return <div className="roster-loading">Loading members…</div>
   if (error) return <div className="dialog-error">{error}</div>
 
@@ -79,81 +111,101 @@ export default function MemberRoster({ room }) {
             const entry = m.member
             const display = entry.engName || entry.chineseName || entry.account
             const isOwner = !!entry.isOwner
+            const isSelf = entry.account === user.account
             const promoteKey = `promote:${entry.account}`
             const demoteKey = `demote:${entry.account}`
             const removeKey = `remove:${entry.account}`
+            const leaveKey = `leave:${entry.account}`
             return (
               <li key={m.id} className="roster-row">
                 <span className="roster-name">{display}</span>
                 <span className="roster-account">{entry.account}</span>
                 {isOwner && <span className="roster-badge">owner</span>}
                 <span className="roster-actions">
-                  {isOwner ? (
+                  {isSelf ? (
+                    // Self row: only Leave. Remove/Promote/Demote on self
+                    // would let the user kick themselves or lock themselves
+                    // out of admin mid-flow — Leave is the one self-applicable
+                    // action and it confirms first.
                     <button
                       type="button"
-                      aria-label={`Demote ${entry.account}`}
-                      disabled={busyKey === demoteKey}
-                      onClick={() =>
-                        runAction(
-                          demoteKey,
-                          memberRoleUpdate(user.account, room.id, room.siteId),
-                          { roomId: room.id, account: entry.account, newRole: ROLE_MEMBER }
-                        )
-                      }
+                      disabled={busyKey === leaveKey}
+                      onClick={handleLeave}
                     >
-                      Demote
+                      Leave
                     </button>
-                  ) : (
-                    <button
-                      type="button"
-                      aria-label={`Promote ${entry.account}`}
-                      disabled={busyKey === promoteKey}
-                      onClick={() =>
-                        runAction(
-                          promoteKey,
-                          memberRoleUpdate(user.account, room.id, room.siteId),
-                          { roomId: room.id, account: entry.account, newRole: ROLE_OWNER }
-                        )
-                      }
-                    >
-                      Promote
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    aria-label={`Remove ${entry.account}`}
-                    disabled={busyKey === removeKey}
-                    onClick={() =>
-                      runAction(
-                        removeKey,
-                        memberRemove(user.account, room.id, room.siteId),
-                        { roomId: room.id, account: entry.account }
-                      )
-                    }
-                  >
-                    Remove
-                  </button>
+                  ) : isCurrentUserOwner ? (
+                    <>
+                      {isOwner ? (
+                        <button
+                          type="button"
+                          aria-label={`Demote ${entry.account}`}
+                          disabled={busyKey === demoteKey}
+                          onClick={() =>
+                            runAction(
+                              demoteKey,
+                              memberRoleUpdate(user.account, room.id, room.siteId),
+                              { roomId: room.id, account: entry.account, newRole: ROLE_MEMBER }
+                            )
+                          }
+                        >
+                          Demote
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          aria-label={`Promote ${entry.account}`}
+                          disabled={busyKey === promoteKey}
+                          onClick={() =>
+                            runAction(
+                              promoteKey,
+                              memberRoleUpdate(user.account, room.id, room.siteId),
+                              { roomId: room.id, account: entry.account, newRole: ROLE_OWNER }
+                            )
+                          }
+                        >
+                          Promote
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${entry.account}`}
+                        disabled={busyKey === removeKey}
+                        onClick={() =>
+                          runAction(
+                            removeKey,
+                            memberRemove(user.account, room.id, room.siteId),
+                            { roomId: room.id, account: entry.account }
+                          )
+                        }
+                      >
+                        Remove
+                      </button>
+                    </>
+                  ) : null /* non-owner viewing someone else's row: no controls */}
                 </span>
               </li>
             )
           })}
         </ul>
-        <RemoveByIdRow
-          id="roster-remove-account"
-          label="Remove individual by account"
-          buttonLabel="Remove individual"
-          value={removeAccountInput}
-          onChange={setRemoveAccountInput}
-          busy={busyKey === 'removeById:account'}
-          onSubmit={async (value) => {
-            const ok = await runAction(
-              'removeById:account',
-              memberRemove(user.account, room.id, room.siteId),
-              { roomId: room.id, account: value }
-            )
-            if (ok) setRemoveAccountInput('')
-          }}
-        />
+        {isCurrentUserOwner && (
+          <RemoveByIdRow
+            id="roster-remove-account"
+            label="Remove individual by account"
+            buttonLabel="Remove individual"
+            value={removeAccountInput}
+            onChange={setRemoveAccountInput}
+            busy={busyKey === 'removeById:account'}
+            onSubmit={async (value) => {
+              const ok = await runAction(
+                'removeById:account',
+                memberRemove(user.account, room.id, room.siteId),
+                { roomId: room.id, account: value }
+              )
+              if (ok) setRemoveAccountInput('')
+            }}
+          />
+        )}
       </section>
 
       <section>
@@ -173,41 +225,45 @@ export default function MemberRoster({ room }) {
                   <span className="roster-count">{entry.memberCount} members</span>
                 )}
                 <span className="roster-actions">
-                  <button
-                    type="button"
-                    aria-label={`Remove ${orgId}`}
-                    disabled={busyKey === removeKey}
-                    onClick={() =>
-                      runAction(
-                        removeKey,
-                        memberRemove(user.account, room.id, room.siteId),
-                        { roomId: room.id, orgId }
-                      )
-                    }
-                  >
-                    Remove
-                  </button>
+                  {isCurrentUserOwner && (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${orgId}`}
+                      disabled={busyKey === removeKey}
+                      onClick={() =>
+                        runAction(
+                          removeKey,
+                          memberRemove(user.account, room.id, room.siteId),
+                          { roomId: room.id, orgId }
+                        )
+                      }
+                    >
+                      Remove
+                    </button>
+                  )}
                 </span>
               </li>
             )
           })}
         </ul>
-        <RemoveByIdRow
-          id="roster-remove-org"
-          label="Remove org by id"
-          buttonLabel="Remove org"
-          value={removeOrgInput}
-          onChange={setRemoveOrgInput}
-          busy={busyKey === 'removeById:org'}
-          onSubmit={async (value) => {
-            const ok = await runAction(
-              'removeById:org',
-              memberRemove(user.account, room.id, room.siteId),
-              { roomId: room.id, orgId: value }
-            )
-            if (ok) setRemoveOrgInput('')
-          }}
-        />
+        {isCurrentUserOwner && (
+          <RemoveByIdRow
+            id="roster-remove-org"
+            label="Remove org by id"
+            buttonLabel="Remove org"
+            value={removeOrgInput}
+            onChange={setRemoveOrgInput}
+            busy={busyKey === 'removeById:org'}
+            onSubmit={async (value) => {
+              const ok = await runAction(
+                'removeById:org',
+                memberRemove(user.account, room.id, room.siteId),
+                { roomId: room.id, orgId: value }
+              )
+              if (ok) setRemoveOrgInput('')
+            }}
+          />
+        )}
       </section>
     </div>
   )
@@ -216,7 +272,7 @@ export default function MemberRoster({ room }) {
 // Escape hatch for accounts/orgs that aren't in the enriched roster — e.g.
 // stale enrichment, paginated/very-large rooms, or records the user knows
 // exist but can't see locally. Server enforces auth + membership; we just
-// surface the typed identifier.
+// surface the typed identifier. Owner-only on the call site.
 function RemoveByIdRow({ id, label, buttonLabel, value, onChange, busy, onSubmit }) {
   const trimmed = value.trim()
   return (

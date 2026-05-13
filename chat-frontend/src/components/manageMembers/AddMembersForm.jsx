@@ -17,6 +17,7 @@ export default function AddMembersForm({ room }) {
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(false)
   const successTimer = useRef(null)
+  const pickerRef = useRef(null)
 
   useEffect(() => {
     return () => {
@@ -24,20 +25,24 @@ export default function AddMembersForm({ room }) {
     }
   }, [])
 
-  const canSubmit = users.length + orgs.length + channels.length > 0
-
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!canSubmit || !user) return
+    if (!user) return
+    // Flush any typed-but-uncommitted text in the picker (comma-split into
+    // entries) so users can paste "alice, bob" and click Add without first
+    // pressing Enter.
+    const { users: finalUsers, orgs: finalOrgs, channels: finalChannels } =
+      pickerRef.current?.flushAndGetEntries() ?? { users, orgs, channels }
+    if (finalUsers.length + finalOrgs.length + finalChannels.length === 0) return
     setLoading(true)
     setError(null)
     setSuccess(false)
     try {
       await requestWithAsyncResult(memberAdd(user.account, room.id, room.siteId), {
         roomId: room.id,
-        users,
-        orgs,
-        channels,
+        users: finalUsers,
+        orgs: finalOrgs,
+        channels: finalChannels,
         history: { mode: shareHistory ? HISTORY_MODE_ALL : HISTORY_MODE_NONE },
       })
       setUsers([])
@@ -53,9 +58,11 @@ export default function AddMembersForm({ room }) {
     }
   }
 
+
   return (
     <form onSubmit={handleSubmit}>
       <MemberPicker
+        ref={pickerRef}
         users={users}
         orgs={orgs}
         channels={channels}
@@ -79,7 +86,7 @@ export default function AddMembersForm({ room }) {
       {success && <div className="dialog-success">Added</div>}
 
       <div className="dialog-actions">
-        <button type="submit" disabled={loading || !canSubmit}>
+        <button type="submit" disabled={loading}>
           {loading ? 'Adding…' : 'Add'}
         </button>
       </div>

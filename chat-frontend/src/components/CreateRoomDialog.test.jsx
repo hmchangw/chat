@@ -34,12 +34,17 @@ describe('CreateRoomDialog', () => {
     expect(screen.queryByLabelText(/^Type$/i)).not.toBeInTheDocument()
   })
 
-  it('disables submit until either a name or at least one entity is selected', () => {
-    setup()
+  it('submit is always clickable; clicking on a fully-empty form is a no-op', async () => {
+    // Submit-button gating used to be `name || chip-count > 0`, but that meant
+    // a user who typed "alice" in Users (without pressing Enter) saw a
+    // disabled Create and wondered why. Drop the visual gate; the submit
+    // handler does the actual empty-check after flushing pending text.
+    const { requestWithAsyncResult } = setup()
     const submit = screen.getByRole('button', { name: /Create/i })
-    expect(submit).toBeDisabled()
-    fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'frontend' } })
     expect(submit).not.toBeDisabled()
+    fireEvent.click(submit)
+    await new Promise((r) => setTimeout(r, 30))
+    expect(requestWithAsyncResult).not.toHaveBeenCalled()
   })
 
   it('submits a channel-shaped payload to room.{siteId}.create when a name is given', async () => {
@@ -128,6 +133,26 @@ describe('CreateRoomDialog', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled())
     expect(requestWithAsyncResult.mock.calls[0][2]).toMatchObject({
       treatAsSuccess: expect.any(Function),
+    })
+  })
+
+  it('auto-flushes typed-but-not-Entered text into the request payload', async () => {
+    const { requestWithAsyncResult } = setup()
+    fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'team' } })
+    // User types but does NOT press Enter on any picker field.
+    fireEvent.change(screen.getByLabelText(/Users/i), { target: { value: 'alice, bob' } })
+    fireEvent.change(screen.getByLabelText(/Orgs/i), { target: { value: 'eng-org' } })
+    fireEvent.change(screen.getByLabelText(/Channels/i), { target: { value: 'r-x, r-y' } })
+    fireEvent.click(screen.getByRole('button', { name: /Create/i }))
+    await waitFor(() => expect(requestWithAsyncResult).toHaveBeenCalledTimes(1))
+    expect(requestWithAsyncResult.mock.calls[0][1]).toEqual({
+      name: 'team',
+      users: ['alice', 'bob'],
+      orgs: ['eng-org'],
+      channels: [
+        { roomId: 'r-x', siteId: 'site-A' },
+        { roomId: 'r-y', siteId: 'site-A' },
+      ],
     })
   })
 
