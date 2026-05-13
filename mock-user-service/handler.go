@@ -5,6 +5,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // --- mock data constants ---
@@ -239,16 +240,16 @@ func (h *Handler) appsList(c *natsrouter.Context) (*appListResp, error) {
 
 // Register subscribes every mock user RPC route on the supplied router.
 func (h *Handler) Register(r *natsrouter.Router) {
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.status.getByName", h.statusGetByName)
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.status.set", h.statusSet)
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.profile.getByName", h.profileGetByName)
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getCurrent", h.subscriptionGetCurrent)
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getRooms", h.subscriptionGetRooms)
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getChannels", h.subscriptionGetChannels)
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getDM", h.subscriptionGetDM)
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.getApps", h.subscriptionGetApps)
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.subscribeApp", h.subscriptionSubscribeApp)
-	natsrouter.Register(r, "chat.user.{account}.request.user.{siteID}.subscription.unsubscribeApp", h.subscriptionUnsubscribeApp)
-	natsrouter.RegisterNoBody(r, "chat.user.{account}.request.user.{siteID}.room.{roomID}.subscription.get", h.roomSubscriptionGet)
-	natsrouter.RegisterNoBody(r, "chat.user.{account}.request.user.{siteID}.apps.list", h.appsList)
+	natsrouter.Register(r, subject.UserStatusGetByNamePattern(h.siteID), h.statusGetByName)
+	natsrouter.Register(r, subject.UserStatusSetPattern(h.siteID), h.statusSet)
+	natsrouter.Register(r, subject.UserProfileGetByNamePattern(h.siteID), h.profileGetByName)
+	natsrouter.Register(r, subject.UserSubscriptionGetCurrentPattern(h.siteID), h.subscriptionGetCurrent)
+	natsrouter.Register(r, subject.UserSubscriptionGetRoomsPattern(h.siteID), h.subscriptionGetRooms)
+	natsrouter.Register(r, subject.UserSubscriptionGetChannelsPattern(h.siteID), h.subscriptionGetChannels)
+	natsrouter.Register(r, subject.UserSubscriptionGetDMPattern(h.siteID), h.subscriptionGetDM)
+	natsrouter.Register(r, subject.UserSubscriptionGetAppsPattern(h.siteID), h.subscriptionGetApps)
+	natsrouter.Register(r, subject.UserSubscriptionSubscribeAppPattern(h.siteID), h.subscriptionSubscribeApp)
+	natsrouter.Register(r, subject.UserSubscriptionUnsubscribeAppPattern(h.siteID), h.subscriptionUnsubscribeApp)
+	natsrouter.RegisterNoBody(r, subject.UserRoomSubscriptionGetPattern(h.siteID), h.roomSubscriptionGet)
+	natsrouter.RegisterNoBody(r, subject.UserAppsListPattern(h.siteID), h.appsList)
 }
