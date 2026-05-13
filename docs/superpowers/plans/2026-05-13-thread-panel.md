@@ -4607,12 +4607,24 @@ Update `ThreadMessageArea` to pass `parentMessageId={activeParent.messageId}` to
 
 Append to `chat-frontend/src/components/messages/MessageList.test.jsx`:
 
+`vi.mock` is hoisted to module scope — it cannot be called inside `it()` (silently no-ops there). The existing top-of-file mock for `./MessageRow` (added in Task 3.4) must be **extended** so it exposes the `context` prop. Modify the top-of-file mock to:
+
+```jsx
+// At the top of MessageList.test.jsx (replace the Task 3.4 mock):
+vi.mock('./MessageRow', () => ({
+  default: ({ message, context }) => (
+    <div data-testid={`row-${message.id}`} data-context={context}>
+      {message.content}
+    </div>
+  ),
+}))
+```
+
+Then append inside the existing `describe('MessageList', …)` block:
+
 ```jsx
 it('marks the parent row context as thread-parent inside a thread list', () => {
-  vi.mock('./MessageRow', () => ({
-    default: ({ message, context: c }) => <div data-testid={`row-${message.id}`}>ctx:{c}</div>,
-  }))
-  const list = [{ id: 'p1' }, { id: 'r1' }]
+  const list = [{ id: 'p1', content: 'parent' }, { id: 'r1', content: 'reply' }]
   render(
     <MessageList
       messages={list}
@@ -4621,12 +4633,12 @@ it('marks the parent row context as thread-parent inside a thread list', () => {
       parentMessageId="p1"
     />
   )
-  expect(screen.getByTestId('row-p1').textContent).toBe('ctx:thread-parent')
-  expect(screen.getByTestId('row-r1').textContent).toBe('ctx:thread')
+  expect(screen.getByTestId('row-p1').getAttribute('data-context')).toBe('thread-parent')
+  expect(screen.getByTestId('row-r1').getAttribute('data-context')).toBe('thread')
 })
 ```
 
-(If the existing top-of-file mock for `MessageRow` differs, harmonise — the test should re-mock per-it via `vi.doMock` to avoid leaking.)
+Re-run the **whole** `MessageList.test.jsx` file after this change to confirm prior tests pass against the extended mock.
 
 - [ ] **Step 3: Run the tests**
 
