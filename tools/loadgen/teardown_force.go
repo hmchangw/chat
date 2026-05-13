@@ -54,7 +54,7 @@ func runTeardownForce(ctx context.Context, mc *mongo.Client, js jetstream.JetStr
 			continue // never drop the shared lock DB
 		}
 		short := strings.TrimPrefix(name, "loadgen_")
-		if cfg.SpecificRunID != "" && !strings.HasPrefix(cfg.SpecificRunID, short) {
+		if cfg.SpecificRunID != "" && shortRunID(cfg.SpecificRunID) != short {
 			continue
 		}
 		if activeShortIDs[short] {
@@ -95,7 +95,7 @@ func runTeardownForce(ctx context.Context, mc *mongo.Client, js jetstream.JetStr
 			if short == "" {
 				continue
 			}
-			if cfg.SpecificRunID != "" && !strings.HasPrefix(cfg.SpecificRunID, short) {
+			if cfg.SpecificRunID != "" && shortRunID(cfg.SpecificRunID) != short {
 				continue
 			}
 			if activeShortIDs[short] {
@@ -119,25 +119,14 @@ func runTeardownForce(ctx context.Context, mc *mongo.Client, js jetstream.JetStr
 	return rep, nil
 }
 
-// loadActiveRunShortIDs queries the loadgen_runs lock collection in
-// loadgen_shared and returns the set of shortRunIDs that belong to
-// currently active runs.
+// loadActiveRunShortIDs returns the set of short run IDs currently active
+// in the loadgen_runs lock collection.
 //
-// A row is considered active when its startedAt is more recent than
-// now-olderThan. When olderThan is zero, the cutoff is time.Now(), so
-// ALL rows are treated as recent (i.e., the set only contains rows with
-// startedAt in the future relative to now, which is always empty unless
-// clocks are skewed — effectively every row is a candidate for orphan
-// removal when olderThan==0 is combined with the outer logic).
-//
-// Wait — to keep the semantics correct: olderThan==0 means "consider
-// only rows younger than now" which is effectively ALL rows. So active
-// means startedAt > now-olderThan == now-0 == now, which matches nothing.
-// That means olderThan==0 treats all runs as orphans. That is the intended
-// "drop everything" semantics per the spec.
-//
-// When olderThan>0, rows with startedAt within the last olderThan duration
-// are considered active (not eligible for cleanup).
+// When olderThan is zero the cutoff equals time.Now(), so $gt matches only
+// rows with startedAt in the future — effectively nothing is active, and
+// the caller treats all resources as orphans ("drop everything" mode).
+// When olderThan > 0, rows started within the last olderThan duration are
+// considered active and protected from deletion.
 func loadActiveRunShortIDs(ctx context.Context, mc *mongo.Client, olderThan time.Duration) (map[string]bool, error) {
 	coll := mc.Database(SharedLockDBName).Collection("loadgen_runs")
 	cutoff := time.Now().Add(-olderThan)

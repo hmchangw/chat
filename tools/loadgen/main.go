@@ -127,7 +127,7 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 	_ = fs.Parse(args)
 
 	if *forceFlag {
-		return runTeardownForce_cmd(ctx, cfg, *olderThan, *runID)
+		return dispatchTeardownForce(ctx, cfg, *olderThan, *runID)
 	}
 
 	// Non-force path: teardown is destructive — refuse unless the configured
@@ -153,9 +153,9 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-// runTeardownForce_cmd is the --force path of the teardown subcommand.
+// dispatchTeardownForce is the --force path of the teardown subcommand.
 // It connects to Mongo and NATS, then delegates to runTeardownForce.
-func runTeardownForce_cmd(ctx context.Context, cfg *config, olderThan time.Duration, specificRunID string) int {
+func dispatchTeardownForce(ctx context.Context, cfg *config, olderThan time.Duration, specificRunID string) int {
 	mc, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		slog.Error("mongo connect", "error", err)

@@ -750,6 +750,8 @@ func TestTeardownForce_DropsOrphanedDBsAndConsumers(t *testing.T) {
 	require.Contains(t, rep.DroppedMongoDBs, "loadgen_"+shortB, "orphan run-B DB must be dropped")
 	require.Contains(t, rep.DroppedMongoDBs, "loadgen_"+shortC, "expired run-C DB must be dropped")
 	require.NotContains(t, rep.DroppedMongoDBs, "loadgen_"+shortA, "active run-A DB must NOT be dropped")
+	require.NotContains(t, rep.DroppedMongoDBs, SharedLockDBName,
+		"loadgen_shared must never be dropped by force teardown")
 
 	require.Contains(t, rep.DroppedConsumers, "loadgen_"+shortB+"_e1", "orphan run-B consumer must be dropped")
 	require.Contains(t, rep.DroppedConsumers, "loadgen_"+shortC+"_e1", "expired run-C consumer must be dropped")
