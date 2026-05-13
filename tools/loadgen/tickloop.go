@@ -24,6 +24,11 @@ type tickLoopConfig struct {
 	// each tick: the gap between intended dispatch time and actual start
 	// (serviced) or drop time (dropped/saturated).
 	Omission *OmissionTracker
+	// WarmupDeadline, when non-zero, is used to label saturated-drop
+	// errors with the correct phase ("warmup" or "measured"). Zero value
+	// is safe: time.Now().Before(zero) is always false, so every drop is
+	// labelled "measured" — correct for callers that don't have a warmup.
+	WarmupDeadline time.Time
 }
 
 // rateRebuildInterval is how often tickLoop polls the Ramp curve to
@@ -43,7 +48,7 @@ const rateRebuildInterval = 1 * time.Second
 //
 // On ctx cancellation, drains in-flight ticks for up to drainGracePeriod
 // before returning.
-func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context)) {
+func tickLoop(ctx context.Context, cfg *tickLoopConfig, tick func(context.Context)) {
 	rate := cfg.Rate
 	if cfg.Ramp != nil {
 		rate = cfg.Ramp.RateAt(0)
@@ -139,11 +144,15 @@ func tickLoop(ctx context.Context, cfg tickLoopConfig, tick func(context.Context
 				if cfg.Omission != nil {
 					cfg.Omission.RecordDropped(intendedAt, time.Now())
 				}
+				saturatedPhase := "measured"
+				if intendedAt.Before(cfg.WarmupDeadline) {
+					saturatedPhase = "warmup"
+				}
 				cfg.Metrics.Requests.WithLabelValues(
 					cfg.Preset, cfg.Scenario, "*", "saturated",
 				).Inc()
 				cfg.Metrics.RequestErrors.WithLabelValues(
-					cfg.Preset, cfg.Scenario, "*", "saturated",
+					cfg.Preset, cfg.Scenario, "*", saturatedPhase, "saturated",
 				).Inc()
 			}
 		case <-rebuild:

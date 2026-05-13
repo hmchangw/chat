@@ -56,17 +56,21 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Name: "loadgen_published_total", Help: "Messages published by preset, phase, conn_id, and rate_bucket."},
 			[]string{"preset", "phase", "conn_id", "rate_bucket"},
 		),
+		// PHASE-LABEL NOTE: dashboards that sum loadgen_publish_errors_total must
+		// now sum across phase= to preserve pre-v2 semantics. See CHANGES.md (Phase 1a).
 		PublishErrors: prometheus.NewCounterVec(
-			prometheus.CounterOpts{Name: "loadgen_publish_errors_total", Help: "Publish-side errors."},
-			[]string{"preset", "reason"},
+			prometheus.CounterOpts{Name: "loadgen_publish_errors_total", Help: "Publish-side errors by preset, phase, and reason."},
+			[]string{"preset", "phase", "reason"},
 		),
 		Requests: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Name: "loadgen_requests_total", Help: "Request/reply requests issued by scenario+kind."},
 			[]string{"preset", "scenario", "kind", "phase"},
 		),
+		// PHASE-LABEL NOTE: dashboards that sum loadgen_request_errors_total must
+		// now sum across phase= to preserve pre-v2 semantics. See CHANGES.md (Phase 1a).
 		RequestErrors: prometheus.NewCounterVec(
-			prometheus.CounterOpts{Name: "loadgen_request_errors_total", Help: "Request/reply errors by scenario+kind+reason."},
-			[]string{"preset", "scenario", "kind", "reason"},
+			prometheus.CounterOpts{Name: "loadgen_request_errors_total", Help: "Request/reply errors by scenario+kind+phase+reason."},
+			[]string{"preset", "scenario", "kind", "phase", "reason"},
 		),
 		RequestLatency: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{Name: "loadgen_request_latency_seconds", Help: "Request/reply latency by scenario+kind.", Buckets: buckets},

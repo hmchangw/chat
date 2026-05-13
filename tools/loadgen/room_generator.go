@@ -51,14 +51,15 @@ func (g *RoomRPCGenerator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 && g.cfg.Ramp == nil {
 		return ErrInvalidRate
 	}
-	tickLoop(ctx, tickLoopConfig{
-		Rate:        g.cfg.Rate,
-		MaxInFlight: g.cfg.MaxInFlight,
-		Metrics:     g.cfg.Metrics,
-		Preset:      g.cfg.Preset.Name,
-		Scenario:    "room",
-		Ramp:        g.cfg.Ramp,
-		Omission:    g.cfg.Omission,
+	tickLoop(ctx, &tickLoopConfig{
+		Rate:           g.cfg.Rate,
+		MaxInFlight:    g.cfg.MaxInFlight,
+		Metrics:        g.cfg.Metrics,
+		Preset:         g.cfg.Preset.Name,
+		Scenario:       "room",
+		Ramp:           g.cfg.Ramp,
+		Omission:       g.cfg.Omission,
+		WarmupDeadline: g.cfg.WarmupDeadline,
 	}, g.tick)
 	return nil
 }
@@ -82,18 +83,19 @@ func (g *RoomRPCGenerator) tick(ctx context.Context) {
 		args.MemberAccount = g.cfg.Fixtures.Users[randv2.IntN(len(g.cfg.Fixtures.Users))].Account
 	}
 
-	subj, body, err := buildRoomRequest(kind, &args)
-	if err != nil {
-		g.cfg.Metrics.RequestErrors.WithLabelValues(
-			g.cfg.Preset.Name, "room", roomKindLabel(kind), "marshal",
-		).Inc()
-		return
-	}
-
 	phase := "measured"
 	if time.Now().Before(g.cfg.WarmupDeadline) {
 		phase = "warmup"
 	}
+
+	subj, body, err := buildRoomRequest(kind, &args)
+	if err != nil {
+		g.cfg.Metrics.RequestErrors.WithLabelValues(
+			g.cfg.Preset.Name, "room", roomKindLabel(kind), phase, "marshal",
+		).Inc()
+		return
+	}
+
 	g.cfg.Metrics.Requests.WithLabelValues(
 		g.cfg.Preset.Name, "room", roomKindLabel(kind), phase,
 	).Inc()
@@ -107,12 +109,12 @@ func (g *RoomRPCGenerator) tick(ctx context.Context) {
 	errored := err != nil
 	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
-			g.cfg.Preset.Name, "room", roomKindLabel(kind), "request",
+			g.cfg.Preset.Name, "room", roomKindLabel(kind), phase, "request",
 		).Inc()
 	} else if isAppError(replyData) {
 		errored = true
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
-			g.cfg.Preset.Name, "room", roomKindLabel(kind), "app_error",
+			g.cfg.Preset.Name, "room", roomKindLabel(kind), phase, "app_error",
 		).Inc()
 	}
 	if g.cfg.Collector != nil {

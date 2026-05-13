@@ -39,10 +39,11 @@ func TestCounterValue(t *testing.T) {
 
 func TestCounterValueLabeled(t *testing.T) {
 	m := NewMetrics()
-	m.PublishErrors.WithLabelValues("small", "publish").Inc()
-	m.PublishErrors.WithLabelValues("small", "publish").Inc()
-	m.PublishErrors.WithLabelValues("small", "gatekeeper").Inc()
-	m.PublishErrors.WithLabelValues("large", "publish").Inc()
+	// PublishErrors now has 3 labels: {preset, phase, reason}.
+	m.PublishErrors.WithLabelValues("small", "measured", "publish").Inc()
+	m.PublishErrors.WithLabelValues("small", "measured", "publish").Inc()
+	m.PublishErrors.WithLabelValues("small", "measured", "gatekeeper").Inc()
+	m.PublishErrors.WithLabelValues("large", "measured", "publish").Inc()
 	// By reason=publish: two "small" + one "large" = 3
 	assert.Equal(t, float64(3), counterValueLabeled(m, "loadgen_publish_errors_total", "reason", "publish"))
 	// By reason=gatekeeper: one
@@ -279,6 +280,35 @@ func TestGatheredCounterValue_NoMatch(t *testing.T) {
 	// Known metric, unmatched label → 0.
 	assert.Equal(t, float64(0),
 		gatheredCounterValue(mfs, "loadgen_published_total", "preset", "nope"))
+}
+
+func TestGatheredCounterLabelPair(t *testing.T) {
+	m := NewMetrics()
+	// PublishErrors: {preset, phase, reason}.
+	m.PublishErrors.WithLabelValues("small", "measured", "gatekeeper").Inc()
+	m.PublishErrors.WithLabelValues("small", "measured", "gatekeeper").Inc()
+	m.PublishErrors.WithLabelValues("small", "warmup", "gatekeeper").Inc()   // warmup; must not count
+	m.PublishErrors.WithLabelValues("small", "measured", "async_ack").Inc()  // different reason
+	m.PublishErrors.WithLabelValues("large", "measured", "gatekeeper").Inc() // different preset
+
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+
+	// Filter: phase="measured" AND reason="gatekeeper" across all presets.
+	// Expects small(2) + large(1) = 3; warmup row must be excluded.
+	got := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "measured", "reason", "gatekeeper")
+	assert.Equal(t, float64(3), got, "should count only phase=measured,reason=gatekeeper rows")
+
+	// Warmup gatekeeper must be excluded.
+	gotMeasuredOnly := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "measured", "reason", "gatekeeper")
+	assert.Equal(t, float64(3), gotMeasuredOnly, "warmup bucket must be excluded")
+
+	// phase=warmup filter gives exactly the warmup row.
+	gotWarmup := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "warmup", "reason", "gatekeeper")
+	assert.Equal(t, float64(1), gotWarmup)
+
+	// Unmatched pair → 0.
+	assert.Equal(t, float64(0), gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "measured", "reason", "nope"))
 }
 
 func TestDispatch_UnknownSubcommand(t *testing.T) {

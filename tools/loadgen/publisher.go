@@ -109,7 +109,10 @@ func (p *natsCorePublisher) Publish(ctx context.Context, subject string, data []
 // fires on errors (rare) — happy-path publishes never reach here.
 func newAsyncErrHandler(m *Metrics, presetName string, collector *Collector) func(jetstream.JetStream, *nats.Msg, error) {
 	return func(_ jetstream.JetStream, msg *nats.Msg, _ error) {
-		m.PublishErrors.WithLabelValues(presetName, "async_ack").Inc()
+		// Async ack errors fire during or after the measured window; label
+		// as "measured" since the corresponding publishes are from the run's
+		// active window (warmup publishes use sync path via newWarmupPublisher).
+		m.PublishErrors.WithLabelValues(presetName, "measured", "async_ack").Inc()
 		if collector == nil || msg == nil || len(msg.Data) == 0 {
 			return
 		}

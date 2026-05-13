@@ -65,14 +65,15 @@ func (g *HistoryReadGenerator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 && g.cfg.Ramp == nil {
 		return ErrInvalidRate
 	}
-	tickLoop(ctx, tickLoopConfig{
-		Rate:        g.cfg.Rate,
-		MaxInFlight: g.cfg.MaxInFlight,
-		Metrics:     g.cfg.Metrics,
-		Preset:      g.cfg.Preset.Name,
-		Scenario:    "history",
-		Ramp:        g.cfg.Ramp,
-		Omission:    g.cfg.Omission,
+	tickLoop(ctx, &tickLoopConfig{
+		Rate:           g.cfg.Rate,
+		MaxInFlight:    g.cfg.MaxInFlight,
+		Metrics:        g.cfg.Metrics,
+		Preset:         g.cfg.Preset.Name,
+		Scenario:       "history",
+		Ramp:           g.cfg.Ramp,
+		Omission:       g.cfg.Omission,
+		WarmupDeadline: g.cfg.WarmupDeadline,
 	}, g.tick)
 	return nil
 }
@@ -89,10 +90,14 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 		User: model.User{Account: sub.User.Account, ID: sub.User.ID, SiteID: g.cfg.SiteID},
 		Room: model.Room{ID: sub.RoomID, SiteID: g.cfg.SiteID},
 	}
+	phase := "measured"
+	if time.Now().Before(g.cfg.WarmupDeadline) {
+		phase = "warmup"
+	}
 	if needsMessageID(kind) {
 		if len(g.cfg.MessageIDs) == 0 {
 			g.cfg.Metrics.RequestErrors.WithLabelValues(
-				g.cfg.Preset.Name, "history", historyKindLabel(kind), "no_message_ids",
+				g.cfg.Preset.Name, "history", historyKindLabel(kind), phase, "no_message_ids",
 			).Inc()
 			return
 		}
@@ -101,13 +106,9 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 	subj, body, err := buildHistoryRequest(kind, &args)
 	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
-			g.cfg.Preset.Name, "history", historyKindLabel(kind), "marshal",
+			g.cfg.Preset.Name, "history", historyKindLabel(kind), phase, "marshal",
 		).Inc()
 		return
-	}
-	phase := "measured"
-	if time.Now().Before(g.cfg.WarmupDeadline) {
-		phase = "warmup"
 	}
 	g.cfg.Metrics.Requests.WithLabelValues(
 		g.cfg.Preset.Name, "history", historyKindLabel(kind), phase,
@@ -121,12 +122,12 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 	errored := err != nil
 	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
-			g.cfg.Preset.Name, "history", historyKindLabel(kind), "request",
+			g.cfg.Preset.Name, "history", historyKindLabel(kind), phase, "request",
 		).Inc()
 	} else if isAppError(replyData) {
 		errored = true
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
-			g.cfg.Preset.Name, "history", historyKindLabel(kind), "app_error",
+			g.cfg.Preset.Name, "history", historyKindLabel(kind), phase, "app_error",
 		).Inc()
 	}
 	if g.cfg.Collector != nil {
@@ -201,14 +202,15 @@ func (g *SearchReadGenerator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 && g.cfg.Ramp == nil {
 		return ErrInvalidRate
 	}
-	tickLoop(ctx, tickLoopConfig{
-		Rate:        g.cfg.Rate,
-		MaxInFlight: g.cfg.MaxInFlight,
-		Metrics:     g.cfg.Metrics,
-		Preset:      g.cfg.Preset.Name,
-		Scenario:    "search",
-		Ramp:        g.cfg.Ramp,
-		Omission:    g.cfg.Omission,
+	tickLoop(ctx, &tickLoopConfig{
+		Rate:           g.cfg.Rate,
+		MaxInFlight:    g.cfg.MaxInFlight,
+		Metrics:        g.cfg.Metrics,
+		Preset:         g.cfg.Preset.Name,
+		Scenario:       "search",
+		Ramp:           g.cfg.Ramp,
+		Omission:       g.cfg.Omission,
+		WarmupDeadline: g.cfg.WarmupDeadline,
 	}, g.tick)
 	return nil
 }
@@ -232,16 +234,16 @@ func (g *SearchReadGenerator) tick(ctx context.Context) {
 		Scope: g.cfg.Preset.SearchScope,
 		Size:  size,
 	}
-	subj, body, err := buildSearchRequest(kind, &args)
-	if err != nil {
-		g.cfg.Metrics.RequestErrors.WithLabelValues(
-			g.cfg.Preset.Name, "search", searchKindLabel(kind), "marshal",
-		).Inc()
-		return
-	}
 	phase := "measured"
 	if time.Now().Before(g.cfg.WarmupDeadline) {
 		phase = "warmup"
+	}
+	subj, body, err := buildSearchRequest(kind, &args)
+	if err != nil {
+		g.cfg.Metrics.RequestErrors.WithLabelValues(
+			g.cfg.Preset.Name, "search", searchKindLabel(kind), phase, "marshal",
+		).Inc()
+		return
 	}
 	g.cfg.Metrics.Requests.WithLabelValues(
 		g.cfg.Preset.Name, "search", searchKindLabel(kind), phase,
@@ -255,12 +257,12 @@ func (g *SearchReadGenerator) tick(ctx context.Context) {
 	errored := err != nil
 	if err != nil {
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
-			g.cfg.Preset.Name, "search", searchKindLabel(kind), "request",
+			g.cfg.Preset.Name, "search", searchKindLabel(kind), phase, "request",
 		).Inc()
 	} else if isAppError(replyData) {
 		errored = true
 		g.cfg.Metrics.RequestErrors.WithLabelValues(
-			g.cfg.Preset.Name, "search", searchKindLabel(kind), "app_error",
+			g.cfg.Preset.Name, "search", searchKindLabel(kind), phase, "app_error",
 		).Inc()
 	}
 	if g.cfg.Collector != nil {

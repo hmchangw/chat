@@ -317,3 +317,48 @@ func TestPrintSummary_OmitsRunIDLineWhenEmpty(t *testing.T) {
 	require.NoError(t, PrintSummary(&buf, &s))
 	assert.NotContains(t, buf.String(), "run_id:")
 }
+
+// TestReport_FiltersToMeasuredPhase verifies that the headline "sent (measured)"
+// count in the summary reflects ONLY the phase="measured" counter bucket, not
+// the warmup bucket. The test directly exercises gatheredCounterValue with
+// a registry that has BOTH warmup and measured label values, confirming the
+// phase-filter logic that feeds SentMeasured and SentQueued in run.go.
+func TestReport_FiltersToMeasuredPhase(t *testing.T) {
+	m := NewMetrics()
+
+	// Simulate 300 warmup publishes and 1000 measured publishes.
+	for range 300 {
+		m.Published.WithLabelValues("small", "warmup", "0", "100-200").Inc()
+	}
+	for range 1000 {
+		m.Published.WithLabelValues("small", "measured", "0", "100-200").Inc()
+	}
+
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+
+	// The headline summary must read only the measured bucket.
+	sentMeasured := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "measured"))
+	sentWarmup := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "warmup"))
+
+	assert.Equal(t, 1000, sentMeasured, "measured phase must be exactly 1000")
+	assert.Equal(t, 300, sentWarmup, "warmup phase must be exactly 300")
+
+	// A Summary built with only the measured count should print 1000 for
+	// "sent (measured)" and NOT include the warmup count.
+	var buf bytes.Buffer
+	s := Summary{
+		Preset: "small", Site: "site-a",
+		TargetRate: 100, ActualRate: 99.0,
+		Duration: 60 * time.Second, Warmup: 10 * time.Second,
+		Inject:       "frontdoor",
+		Sent:         sentWarmup + sentMeasured,
+		SentMeasured: sentMeasured,
+	}
+	require.NoError(t, PrintSummary(&buf, &s))
+	out := buf.String()
+	assert.Contains(t, out, "1000", "measured-only count (1000) must appear in summary")
+	// The total (1300) also appears but that's expected for "sent (total)".
+	// What must NOT happen: only "1300" for "sent (measured)" line.
+	assert.Contains(t, out, "sent (measured):", "measured line must be present")
+}

@@ -108,19 +108,32 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	latencyWindow := NewLatencyWindow(windowRetain).WithMaxSamples(resolvedAbortCap)
 	collector.AttachWindow(latencyWindow)
 
+	// warmupDeadline is declared here (before E1 subscription) so the E1
+	// closure below can capture the variable by reference and read the correct
+	// deadline once it is set further below (at the generator construction
+	// site). Zero value is safe: time.Now().Before(zero) is always false, so
+	// before the assignment every reply is labelled "measured" — which is
+	// correct because the E1 subscription only fires when the generator is
+	// running, and the generator isn't started until after the assignment.
+	var warmupDeadline time.Time
+
 	// E1 subscription: gatekeeper replies.
 	e1Sub, err := rt.NC().NatsConn().Subscribe(subject.UserResponseWildcard(), func(msg *nats.Msg) {
 		reqID := lastToken(msg.Subject)
 		var payload struct {
 			Error string `json:"error"`
 		}
+		e1Phase := "measured"
+		if time.Now().Before(warmupDeadline) {
+			e1Phase = "warmup"
+		}
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
 			// Malformed reply; count and drop per spec.
-			metrics.PublishErrors.WithLabelValues(p.Name, "bad_reply").Inc()
+			metrics.PublishErrors.WithLabelValues(p.Name, e1Phase, "bad_reply").Inc()
 			return
 		}
 		if payload.Error != "" {
-			metrics.PublishErrors.WithLabelValues(p.Name, "gatekeeper").Inc()
+			metrics.PublishErrors.WithLabelValues(p.Name, e1Phase, "gatekeeper").Inc()
 		}
 		collector.RecordReply(reqID, time.Now())
 	})
@@ -273,7 +286,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		slog.Info("readiness probe succeeded", "scenario", rf.Scenario)
 	}
 
-	warmupDeadline := time.Now().Add(rf.Warmup)
+	warmupDeadline = time.Now().Add(rf.Warmup)
 
 	type runner interface {
 		Run(ctx context.Context) error
@@ -560,9 +573,11 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		slog.Warn("metrics gather", "error", gerr)
 		mfs = nil
 	}
-	publishErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "", "")
-	gkErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "reason", "gatekeeper")
-	asyncAckErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "reason", "async_ack")
+	// Headline summary filters to phase="measured" so warmup errors don't
+	// inflate the reported publish-error count shown to the operator.
+	publishErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "phase", "measured")
+	gkErrs := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "measured", "reason", "gatekeeper")
+	asyncAckErrs := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "measured", "reason", "async_ack")
 	sentWarmup := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "warmup"))
 	sentMeasured := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "measured"))
 	sent := sentWarmup + sentMeasured
@@ -598,20 +613,14 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		measuredP99 = requestStats[0].Latency.P99
 	}
 
-	// WarmupErrorRate: approximate as total-publish-errors / total-sent for
-	// the warmup phase. Because loadgen_publish_errors_total has no phase
-	// label (only preset + reason), we can only bound the rate using warmup
-	// sent count as the denominator and all errors as the numerator — this
-	// over-counts (measured errors contribute) but is conservative (fails
-	// fast rather than missing a truly degraded warmup).
-	//
-	// TODO Phase 1b: add a "phase" label to loadgen_publish_errors_total so
-	// warmup errors can be isolated without this approximation.
+	// WarmupErrorRate: publish errors during the warmup phase / warmup sends.
+	// Now that loadgen_publish_errors_total has a "phase" label, this is exact.
+	warmupPublishErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "phase", "warmup")
 	var warmupErrorRate float64
 	if sentWarmup > 0 {
-		warmupErrorRate = publishErrs / float64(sentWarmup)
+		warmupErrorRate = warmupPublishErrs / float64(sentWarmup)
 		if warmupErrorRate > 1.0 {
-			warmupErrorRate = 1.0 // clamp: measured errors can inflate past 100%
+			warmupErrorRate = 1.0
 		}
 	}
 
@@ -928,6 +937,33 @@ func gatheredCounterValue(mfs []*dto.MetricFamily, name string, labelName, label
 				if l.GetName() == labelName && l.GetValue() == labelValue {
 					total += metric.GetCounter().GetValue()
 				}
+			}
+		}
+	}
+	return total
+}
+
+// gatheredCounterLabelPair sums counter values where BOTH label pairs match.
+// Used when a counter has multiple labels and the headline summary needs to
+// filter on two dimensions simultaneously (e.g. phase="measured" AND reason="gatekeeper").
+func gatheredCounterLabelPair(mfs []*dto.MetricFamily, name, label1Name, label1Value, label2Name, label2Value string) float64 {
+	var total float64
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			match1, match2 := false, false
+			for _, l := range metric.GetLabel() {
+				if l.GetName() == label1Name && l.GetValue() == label1Value {
+					match1 = true
+				}
+				if l.GetName() == label2Name && l.GetValue() == label2Value {
+					match2 = true
+				}
+			}
+			if match1 && match2 {
+				total += metric.GetCounter().GetValue()
 			}
 		}
 	}

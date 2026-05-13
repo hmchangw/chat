@@ -17,7 +17,7 @@ func TestTickLoop_InvokesTickAtRate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	tickLoop(ctx, tickLoopConfig{
+	tickLoop(ctx, &tickLoopConfig{
 		Rate:        500,
 		MaxInFlight: 0,
 		Metrics:     NewMetrics(),
@@ -39,7 +39,7 @@ func TestTickLoop_BoundedPoolSaturation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 
-	tickLoop(ctx, tickLoopConfig{
+	tickLoop(ctx, &tickLoopConfig{
 		Rate:        2000,
 		MaxInFlight: 1,
 		Metrics:     m,
@@ -82,7 +82,7 @@ func TestTickLoop_RampOverridesFixedRate(t *testing.T) {
 
 	// Ramp 100 -> 1000 rps over 200ms. With a fixed rate of 50, the ramped
 	// rate should dominate immediately (RateAt(0) = 100, well above 50).
-	tickLoop(ctx, tickLoopConfig{
+	tickLoop(ctx, &tickLoopConfig{
 		Rate:        50,
 		MaxInFlight: 0,
 		Metrics:     NewMetrics(),
@@ -114,7 +114,7 @@ func TestTickLoop_SaturationIncrementsBothCounters(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 
-	tickLoop(ctx, tickLoopConfig{
+	tickLoop(ctx, &tickLoopConfig{
 		Rate:        2000,
 		MaxInFlight: 1,
 		Metrics:     m,

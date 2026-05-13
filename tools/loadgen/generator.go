@@ -195,7 +195,11 @@ func (g *Generator) Run(ctx context.Context) error {
 				if g.cfg.Omission != nil {
 					g.cfg.Omission.RecordDropped(intendedAt, time.Now())
 				}
-				g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "saturated").Inc()
+				saturatedPhase := "measured"
+				if intendedAt.Before(g.cfg.WarmupDeadline) {
+					saturatedPhase = "warmup"
+				}
+				g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, saturatedPhase, "saturated").Inc()
 			}
 		case <-rebuild:
 			maybeRebuild()
@@ -267,18 +271,18 @@ func (g *Generator) publishOne(ctx context.Context) {
 	// even if the broker rejects the publish (the caller's tests do not
 	// fail-publish, so the practical effect is just bookkeeping).
 	g.threads.add(msgID)
+	phase := "measured"
+	if publishTime.Before(g.cfg.WarmupDeadline) {
+		phase = "warmup"
+	}
 	if err != nil {
-		g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "marshal").Inc()
+		g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, phase, "marshal").Inc()
 		return
 	}
 	if perr := g.cfg.Publisher.Publish(ctx, subj, data); perr != nil {
 		g.cfg.Collector.RecordPublishFailed(reqID, msgID)
-		g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "publish").Inc()
+		g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, phase, "publish").Inc()
 		return
-	}
-	phase := "measured"
-	if publishTime.Before(g.cfg.WarmupDeadline) {
-		phase = "warmup"
 	}
 	connID := "0"
 	if g.cfg.ConnIDFor != nil {
