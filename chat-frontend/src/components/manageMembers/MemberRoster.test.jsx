@@ -11,9 +11,9 @@ import { useNats } from '../../context/NatsContext'
 const room = { id: 'r1', siteId: 'site-A', name: 'general' }
 
 const baseMembers = [
-  { id: 'rm1', rid: 'r1', member: { id: 'u-alice', type: 'individual', account: 'alice', engName: 'Alice A', isOwner: true } },
-  { id: 'rm2', rid: 'r1', member: { id: 'u-bob', type: 'individual', account: 'bob', engName: 'Bob B', isOwner: false } },
-  { id: 'rm3', rid: 'r1', member: { id: 'u-carol', type: 'individual', account: 'carol', engName: 'Carol C', isOwner: true } },
+  { id: 'rm1', rid: 'r1', member: { id: 'u-alice', type: 'individual', account: 'alice', engName: 'Alice A', chineseName: '王明', isOwner: true } },
+  { id: 'rm2', rid: 'r1', member: { id: 'u-bob', type: 'individual', account: 'bob', engName: 'Bob B', chineseName: '陳大文', isOwner: false } },
+  { id: 'rm3', rid: 'r1', member: { id: 'u-carol', type: 'individual', account: 'carol', engName: 'Carol C', chineseName: '李美', isOwner: true } },
   { id: 'rm4', rid: 'r1', member: { id: 'org-eng', type: 'org', sectName: 'Engineering', memberCount: 42 } },
 ]
 
@@ -56,15 +56,26 @@ describe('MemberRoster', () => {
     )
   })
 
-  it('renders individuals and orgs into separate sections', async () => {
+  it('renders orgs first then individuals in a single list, with EngName + ChineseName for individuals', async () => {
     setupContext()
     render(<MemberRoster room={room} />)
-    expect(await screen.findByText('Alice A')).toBeInTheDocument()
-    expect(screen.getByText('Bob B')).toBeInTheDocument()
+    await screen.findByText('Alice A')
     expect(screen.getByText('Engineering')).toBeInTheDocument()
-    // Owner badge on alice; not on bob.
-    expect(screen.getByText(/Alice A/).closest('li')).toHaveTextContent(/owner/i)
-    expect(screen.getByText(/Bob B/).closest('li')).not.toHaveTextContent(/owner/i)
+    expect(screen.getByText('Bob B')).toBeInTheDocument()
+    // Individuals show chineseName as the secondary text (replacing the
+    // old engName + accountName combo).
+    expect(screen.getByText('王明')).toBeInTheDocument()
+    expect(screen.getByText('陳大文')).toBeInTheDocument()
+    // Single roster-list, orgs ordered before individuals.
+    const listItems = screen.getAllByRole('listitem')
+    expect(listItems[0]).toHaveTextContent('Engineering')
+    expect(listItems[1]).toHaveTextContent('Alice A')
+    expect(listItems[2]).toHaveTextContent('Bob B')
+    expect(listItems[3]).toHaveTextContent('Carol C')
+    // Owner badge still appears on owners; not on regular members.
+    expect(listItems[1]).toHaveTextContent(/owner/i)
+    expect(listItems[2]).not.toHaveTextContent(/owner/i)
+    expect(listItems[3]).toHaveTextContent(/owner/i)
   })
 
   it('shows a loading indicator before the list resolves', async () => {
@@ -190,59 +201,12 @@ describe('MemberRoster', () => {
     resolveAction()
   })
 
-  it('Remove-by-ID accepts an arbitrary account not in the enriched roster', async () => {
-    const { requestWithAsyncResult } = setupContext()
+  it('does not render Remove-by-ID inputs (every row already has its own Remove button)', async () => {
+    setupContext()
     render(<MemberRoster room={room} />)
     await screen.findByText('Bob B')
-    fireEvent.change(screen.getByLabelText(/Remove individual by account/i), { target: { value: 'ghost' } })
-    fireEvent.click(screen.getByRole('button', { name: /Remove individual$/i }))
-    await waitFor(() =>
-      expect(requestWithAsyncResult).toHaveBeenCalledWith(
-        'chat.user.alice.request.room.r1.site-A.member.remove',
-        { roomId: 'r1', account: 'ghost' }
-      )
-    )
-  })
-
-  it('Remove-by-ID preserves the typed value when the action fails', async () => {
-    const requestWithAsyncResult = vi.fn().mockRejectedValue(new Error('only owners can remove members'))
-    useNats.mockReturnValue({
-      user: { account: 'alice', siteId: 'site-A' },
-      request: vi.fn().mockResolvedValue({ members: baseMembers }),
-      requestWithAsyncResult,
-    })
-    render(<MemberRoster room={room} />)
-    await screen.findByText('Bob B')
-    const input = screen.getByLabelText(/Remove individual by account/i)
-    fireEvent.change(input, { target: { value: 'ghost' } })
-    fireEvent.click(screen.getByRole('button', { name: /Remove individual$/i }))
-    expect(await screen.findByText(/only owners/i)).toBeInTheDocument()
-    expect(input.value).toBe('ghost')
-  })
-
-  it('Remove-by-ID clears the input on success', async () => {
-    const { requestWithAsyncResult } = setupContext()
-    render(<MemberRoster room={room} />)
-    await screen.findByText('Bob B')
-    const input = screen.getByLabelText(/Remove individual by account/i)
-    fireEvent.change(input, { target: { value: 'ghost' } })
-    fireEvent.click(screen.getByRole('button', { name: /Remove individual$/i }))
-    await waitFor(() => expect(requestWithAsyncResult).toHaveBeenCalled())
-    await waitFor(() => expect(input.value).toBe(''))
-  })
-
-  it('Remove-by-ID accepts an arbitrary org not in the enriched roster', async () => {
-    const { requestWithAsyncResult } = setupContext()
-    render(<MemberRoster room={room} />)
-    await screen.findByText('Engineering')
-    fireEvent.change(screen.getByLabelText(/Remove org by id/i), { target: { value: 'ghost-org' } })
-    fireEvent.click(screen.getByRole('button', { name: /Remove org$/i }))
-    await waitFor(() =>
-      expect(requestWithAsyncResult).toHaveBeenCalledWith(
-        'chat.user.alice.request.room.r1.site-A.member.remove',
-        { roomId: 'r1', orgId: 'ghost-org' }
-      )
-    )
+    expect(screen.queryByLabelText(/Remove individual by account/i)).toBeNull()
+    expect(screen.queryByLabelText(/Remove org by id/i)).toBeNull()
   })
 
   it('inline-button callers safely ignore runAction return value on both success and failure', async () => {
@@ -336,18 +300,6 @@ describe('MemberRoster', () => {
     expect(screen.queryByRole('button', { name: /^Remove/i })).toBeNull()
     // Bob still sees a Leave button on his own row.
     expect(screen.getByRole('button', { name: /^Leave$/i })).toBeInTheDocument()
-  })
-
-  it('hides the Remove-by-ID inputs when the current user is not an owner', async () => {
-    useNats.mockReturnValue({
-      user: { account: 'bob', siteId: 'site-A' },
-      request: vi.fn().mockResolvedValue({ members: baseMembers }),
-      requestWithAsyncResult: vi.fn(),
-    })
-    render(<MemberRoster room={room} />)
-    await screen.findByText('Alice A')
-    expect(screen.queryByLabelText(/Remove individual by account/i)).toBeNull()
-    expect(screen.queryByLabelText(/Remove org by id/i)).toBeNull()
   })
 
   it('surfaces a server error from an action as a banner', async () => {
