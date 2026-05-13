@@ -731,6 +731,16 @@ tests — no backend changes.
   (propagate), `message-worker` (dual-write `messages_by_room` when
   `tshow`), and `broadcast-worker` (filter live broadcast unless top-
   level or `tshow`). Spec out separately.
+- **Broadcast-worker thread-reply filter (server-side).** Verified
+  pipeline: client → gatekeeper → `MESSAGES_CANONICAL` stream →
+  `broadcast-worker` consumes directly (no intermediate FANOUT
+  despite the README), `publishChannelEvent` / `publishDMEvents` have
+  no thread-parent check. The right architectural fix is an early
+  return in `broadcast-worker/handler.go` when
+  `msg.ThreadParentMessageID != ""`. **Deliberately deferred** — for
+  v1 we filter client-side in `roomEventsReducer.MESSAGE_RECEIVED`
+  instead. Worth pairing with the `tshow` ticket since the same
+  function is touched.
 
 ## Open questions
 
