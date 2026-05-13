@@ -267,16 +267,19 @@ func (s *MongoStore) ListRoomsByIDs(ctx context.Context, ids []string) ([]model.
 	return rooms, nil
 }
 
-func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {
-	count, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID, "roles": model.RoleOwner})
-	if err != nil {
-		return 0, fmt.Errorf("count owners for room %q: %w", roomID, err)
+func (s *MongoStore) CountOwners(ctx context.Context, filter CountOwnersFilter) (int, error) {
+	if filter.ExcludeOrgID == "" {
+		count, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": filter.RoomID, "roles": model.RoleOwner})
+		if err != nil {
+			return 0, fmt.Errorf("count owners for room %q: %w", filter.RoomID, err)
+		}
+		return int(count), nil
 	}
-	return int(count), nil
+	return s.countOwnersExcludingOrg(ctx, filter.RoomID, filter.ExcludeOrgID)
 }
 
-// CountOwnersOutsideOrg returns owners of roomID whose users.sectId != orgID.
-func (s *MongoStore) CountOwnersOutsideOrg(ctx context.Context, roomID, orgID string) (int, error) {
+// countOwnersExcludingOrg counts owners of roomID whose users.sectId != orgID.
+func (s *MongoStore) countOwnersExcludingOrg(ctx context.Context, roomID, orgID string) (int, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"roomId": roomID, "roles": model.RoleOwner}}},
 		{{Key: "$lookup", Value: bson.M{

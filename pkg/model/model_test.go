@@ -2214,11 +2214,14 @@ func TestSyncCreateDMRequestJSON(t *testing.T) {
 		RoomType:         model.RoomTypeDM,
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
+		History:          model.HistoryConfig{Mode: model.HistoryModeNone},
 	}
 	b, err := json.Marshal(src)
 	require.NoError(t, err)
 
-	assert.JSONEq(t, `{"roomType":"dm","requesterAccount":"alice","otherAccount":"bob"}`, string(b))
+	assert.JSONEq(t,
+		`{"roomType":"dm","requesterAccount":"alice","otherAccount":"bob","history":{"mode":"none"}}`,
+		string(b))
 
 	var dst model.SyncCreateDMRequest
 	require.NoError(t, json.Unmarshal(b, &dst))

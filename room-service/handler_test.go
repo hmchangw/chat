@@ -309,7 +309,7 @@ func TestHandler_UpdateRole_LastOwnerCannotDemote(t *testing.T) {
 			HasIndividualMembership: true,
 		}, nil)
 	store.EXPECT().
-		CountOwners(gomock.Any(), "r1").
+		CountOwners(gomock.Any(), CountOwnersFilter{RoomID: "r1"}).
 		Return(1, nil)
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
@@ -430,7 +430,7 @@ func TestHandler_UpdateRole_CountOwnersError(t *testing.T) {
 		Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}},
 		HasIndividualMembership: true,
 	}, nil) // target lookup (same user, self-demote)
-	store.EXPECT().CountOwners(gomock.Any(), "r1").Return(0, fmt.Errorf("db error"))
+	store.EXPECT().CountOwners(gomock.Any(), CountOwnersFilter{RoomID: "r1"}).Return(0, fmt.Errorf("db error"))
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
 		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
 	}
@@ -686,7 +686,7 @@ func TestHandler_RemoveMember_OwnerRemovesOrg_Success(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
 	// At least one owner remains outside the org being removed.
-	store.EXPECT().CountOwnersOutsideOrg(gomock.Any(), "r1", "eng-org").Return(1, nil)
+	store.EXPECT().CountOwners(gomock.Any(), CountOwnersFilter{RoomID: "r1", ExcludeOrgID: "eng-org"}).Return(1, nil)
 	var publishedData []byte
 	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
 		publishedData = data
@@ -714,7 +714,7 @@ func TestHandler_RemoveMember_RemoveOrg_RejectsWhenWouldLeaveOwnerless(t *testin
 		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
 	}
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
-	store.EXPECT().CountOwnersOutsideOrg(gomock.Any(), "r1", "eng-org").Return(0, nil)
+	store.EXPECT().CountOwners(gomock.Any(), CountOwnersFilter{RoomID: "r1", ExcludeOrgID: "eng-org"}).Return(0, nil)
 
 	// publishToStream must NOT be called.
 	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(_ context.Context, _ string, _ []byte) error {
@@ -736,7 +736,7 @@ func TestHandler_RemoveMember_RemoveOrg_CountOwnersError(t *testing.T) {
 		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
 	}
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
-	store.EXPECT().CountOwnersOutsideOrg(gomock.Any(), "r1", "eng-org").
+	store.EXPECT().CountOwners(gomock.Any(), CountOwnersFilter{RoomID: "r1", ExcludeOrgID: "eng-org"}).
 		Return(0, fmt.Errorf("db down"))
 
 	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(_ context.Context, _ string, _ []byte) error {

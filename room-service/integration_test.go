@@ -261,7 +261,7 @@ func TestMongoStore_CountOwners_Integration(t *testing.T) {
 		t.Fatalf("seed subscriptions: %v", err)
 	}
 
-	count, err := store.CountOwners(ctx, "r1")
+	count, err := store.CountOwners(ctx, CountOwnersFilter{RoomID: "r1"})
 	if err != nil {
 		t.Fatalf("CountOwners: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestMongoStore_CountOwners_Integration(t *testing.T) {
 		t.Errorf("CountOwners(r1) = %d, want 2", count)
 	}
 
-	count, err = store.CountOwners(ctx, "r2")
+	count, err = store.CountOwners(ctx, CountOwnersFilter{RoomID: "r2"})
 	if err != nil {
 		t.Fatalf("CountOwners: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestMongoStore_CountOwners_Integration(t *testing.T) {
 		t.Errorf("CountOwners(r2) = %d, want 1", count)
 	}
 
-	count, err = store.CountOwners(ctx, "nonexistent")
+	count, err = store.CountOwners(ctx, CountOwnersFilter{RoomID: "nonexistent"})
 	if err != nil {
 		t.Fatalf("CountOwners: %v", err)
 	}

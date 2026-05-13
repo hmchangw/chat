@@ -3124,6 +3124,62 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	assert.Equal(t, "01970a4f-8c2d-7c9a-abcd-e0123456789f:site-b", outbox.msgID)
 }
 
+// HistoryModeNone on the sync DM request must stamp HistorySharedSince
+// on both subs and propagate to the cross-site outbox payload.
+func TestHandleSyncCreateDM_CrossSite_RestrictedHistory(t *testing.T) {
+	h, store, capture := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+
+	var insertedSubs []*model.Subscription
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			insertedSubs = subs
+			return nil
+		})
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "bob").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+	}, nil)
+
+	req := model.SyncCreateDMRequest{
+		RoomType:         model.RoomTypeDM,
+		RequesterAccount: "alice",
+		OtherAccount:     "bob",
+		History:          model.HistoryConfig{Mode: model.HistoryModeNone},
+	}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+
+	require.Len(t, insertedSubs, 2)
+	for _, sub := range insertedSubs {
+		require.NotNil(t, sub.HistorySharedSince,
+			"HistoryModeNone must stamp HistorySharedSince on the persisted sub")
+	}
+
+	var outbox *dmCapturedPublish
+	for i := range capture.captured {
+		if capture.captured[i].subject == subject.Outbox("site-a", "site-b", model.OutboxTypeRoomCreated) {
+			outbox = &capture.captured[i]
+			break
+		}
+	}
+	require.NotNil(t, outbox, "expected an outbox publish to site-b")
+
+	var env model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outbox.data, &env))
+	var payload model.RoomCreatedOutbox
+	require.NoError(t, json.Unmarshal(env.Payload, &payload))
+	require.NotNil(t, payload.HistorySharedSince,
+		"RoomCreatedOutbox.HistorySharedSince must propagate for restricted DMs")
+}
+
 func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 	h, store, capture := newSyncDMTestHandler(t)
 
