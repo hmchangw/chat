@@ -10,6 +10,9 @@ export const initialState = {
   roomState: {},
   activeRoomId: null,
   roomsError: null,
+  favoriteIds: new Set(),
+  appIds: new Set(),
+  channelDmIds: new Set(),
 }
 
 function sortByLastMsgDesc(summaries) {
@@ -74,12 +77,47 @@ export function roomEventsReducer(state, action) {
     case 'ROOM_ADDED': {
       if (state.summaries.some((r) => r.id === action.room.id)) return state
       const summaries = sortByLastMsgDesc([...state.summaries, toSummary(action.room)])
-      return { ...state, summaries }
+      const roomId = action.room.id
+      let appIds = state.appIds
+      let channelDmIds = state.channelDmIds
+      if (action.room.type === 'botDM') {
+        if (!appIds.has(roomId)) {
+          appIds = new Set(appIds)
+          appIds.add(roomId)
+        }
+      } else if (!channelDmIds.has(roomId)) {
+        channelDmIds = new Set(channelDmIds)
+        channelDmIds.add(roomId)
+      }
+      return { ...state, summaries, appIds, channelDmIds }
     }
     case 'ROOM_REMOVED': {
       const summaries = state.summaries.filter((r) => r.id !== action.roomId)
       const { [action.roomId]: _removed, ...rest } = state.roomState
-      return { ...state, summaries, roomState: rest }
+      let favoriteIds = state.favoriteIds
+      let appIds = state.appIds
+      let channelDmIds = state.channelDmIds
+      if (favoriteIds.has(action.roomId)) {
+        favoriteIds = new Set(favoriteIds)
+        favoriteIds.delete(action.roomId)
+      }
+      if (appIds.has(action.roomId)) {
+        appIds = new Set(appIds)
+        appIds.delete(action.roomId)
+      }
+      if (channelDmIds.has(action.roomId)) {
+        channelDmIds = new Set(channelDmIds)
+        channelDmIds.delete(action.roomId)
+      }
+      return { ...state, summaries, roomState: rest, favoriteIds, appIds, channelDmIds }
+    }
+    case 'BUCKETS_LOADED': {
+      return {
+        ...state,
+        favoriteIds: new Set(action.favoriteIds),
+        appIds: new Set(action.appIds),
+        channelDmIds: new Set(action.channelDmIds),
+      }
     }
     case 'ROOM_METADATA_UPDATED': {
       const existing = state.summaries.find((r) => r.id === action.roomId)
