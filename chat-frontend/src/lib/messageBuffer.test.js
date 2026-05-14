@@ -42,12 +42,15 @@ describe('mergeById', () => {
     expect(result[1]).not.toHaveProperty('_local')
   })
 
-  it('caps total length at MAX_CACHED, dropping oldest', () => {
+  it('caps total length at MAX_CACHED by slicing the oldest off the front', () => {
+    // existing = the newer tail (e0..e199); incoming = an older history page.
+    // After merge the order is [hist-1, hist-2, e0..e199] (length 202).
+    // The cap drops the front, so the older history page is what gets sliced.
     const existing = Array.from({ length: MAX_CACHED }, (_, i) => ({ id: `e${i}` }))
-    const incoming = [{ id: 'new-1' }, { id: 'new-2' }]
+    const incoming = [{ id: 'hist-1' }, { id: 'hist-2' }]
     const result = mergeById(existing, incoming)
     expect(result).toHaveLength(MAX_CACHED)
-    expect(result[0]).toEqual({ id: 'new-2' })
+    expect(result[0]).toEqual({ id: 'e0' })
     expect(result[result.length - 1]).toEqual({ id: `e${MAX_CACHED - 1}` })
   })
 })

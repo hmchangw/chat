@@ -88,12 +88,15 @@ describe('mergeById', () => {
     expect(result[1]).not.toHaveProperty('_local')
   })
 
-  it('caps total length at MAX_CACHED, dropping oldest', () => {
+  it('caps total length at MAX_CACHED by slicing the oldest off the front', () => {
+    // existing = the newer tail (e0..e199); incoming = an older history page.
+    // After merge the order is [hist-1, hist-2, e0..e199] (length 202). The
+    // cap drops the front, so the older history page is what gets sliced.
     const existing = Array.from({ length: MAX_CACHED }, (_, i) => ({ id: `e${i}` }))
-    const incoming = [{ id: 'new-1' }, { id: 'new-2' }]
+    const incoming = [{ id: 'hist-1' }, { id: 'hist-2' }]
     const result = mergeById(existing, incoming)
     expect(result).toHaveLength(MAX_CACHED)
-    expect(result[0]).toEqual({ id: 'new-2' })
+    expect(result[0]).toEqual({ id: 'e0' })
     expect(result[result.length - 1]).toEqual({ id: `e${MAX_CACHED - 1}` })
   })
 })
@@ -122,12 +125,12 @@ export function appendBounded(messages, msg) {
 
 // mergeById merges `incoming` ahead of `existing`, dedupes by `id`, and
 // preserves any `_local` / `_status` markers that live only on the existing
-// rows (the server doesn't know about them). Order: incoming rows keep their
-// relative order at the front; existing rows that aren't in incoming follow.
+// rows (the server doesn't know about them). Caller convention: `incoming`
+// is the older slice (e.g. a fresh history page) and `existing` is the
+// newer tail. Order: incoming first (in their natural order), then existing
+// rows that aren't in incoming. When the merged length exceeds MAX_CACHED,
+// the front (oldest) is sliced off — which means incoming is dropped first.
 export function mergeById(existing, incoming) {
-  const incomingById = new Map()
-  for (const m of incoming) incomingById.set(m.id, m)
-
   const merged = []
   const seen = new Set()
   for (const m of incoming) {
