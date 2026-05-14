@@ -3668,12 +3668,13 @@ const room = { id: 'r1', name: 'general', type: 'channel', siteId: 's1', userCou
 describe('RoomMessageArea — click-to-jump', () => {
   beforeEach(() => jumpToMessage.mockClear())
 
-  it('clicking the in-bubble QuotedBlock fires jumpToMessage(room.id, snapshot.id)', () => {
+  it('clicking the in-bubble QuotedBlock fires the per-room jumpToMessage(snapshot.id)', () => {
+    // useRoomEvents(roomId).jumpToMessage is the curried 1-arg form.
     const { container } = render(<RoomMessageArea room={room} onThread={() => {}} onReply={() => {}} />)
     const bubble = container.querySelector('.quoted-block-bubble')
     expect(bubble).not.toBeNull()
     fireEvent.click(bubble)
-    expect(jumpToMessage).toHaveBeenCalledWith('r1', 'orig-1')
+    expect(jumpToMessage).toHaveBeenCalledWith('orig-1')
   })
 })
 ```
