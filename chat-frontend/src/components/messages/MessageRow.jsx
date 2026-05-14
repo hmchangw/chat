@@ -15,6 +15,11 @@ function senderName(msg) {
   return msg.userAccount || msg.userId || 'Unknown'
 }
 
+function senderInitial(msg) {
+  const name = senderName(msg)
+  return (name.charAt(0) || '?').toUpperCase()
+}
+
 function messageContent(msg) {
   return msg.content || msg.msg || ''
 }
@@ -41,61 +46,74 @@ export default function MessageRow({
     setDraft(messageContent(message))
   }, [message, editing])
 
-  if (message.deleted) {
-    return (
-      <div className="message-row message-row-deleted" data-message-id={message.id} tabIndex={0}>
-        <div className="message-content message-content-deleted">[message deleted]</div>
-      </div>
-    )
-  }
+  // Deleted messages are removed from the feed entirely.
+  if (message.deleted) return null
+
+  const rowClasses = ['message-row']
+  if (editing) rowClasses.push('message-row-editing')
+  if (isOwn) rowClasses.push('message-row-own')
 
   return (
     <div
-      className={`message-row${editing ? ' message-row-editing' : ''}`}
+      className={rowClasses.join(' ')}
       data-message-id={message.id}
       tabIndex={0}
     >
-      {message.quotedParentMessage && (
-        <QuotedBlock
-          variant="bubble"
-          snapshot={message.quotedParentMessage}
-          onClick={onJumpToMessage}
-        />
-      )}
-      <div className="message-header">
-        <span className="message-sender">{senderName(message)}</span>
-        <span className="message-time">{formatTime(message.createdAt)}</span>
-        {message.editedAt && <span className="message-edited"> (edited)</span>}
+      {/* Default avatar — a colored circle with the sender's initial. Replace
+          with a real image once the avatar service lands. */}
+      <div className="message-row-avatar" aria-hidden="true">
+        {senderInitial(message)}
       </div>
-      {editing ? (
-        <input
-          type="text"
-          className="message-edit-input"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              if (draft.trim()) onEditSubmit?.(message, draft.trim())
-            } else if (e.key === 'Escape') {
-              e.preventDefault()
-              onEditCancel?.()
-            }
-          }}
-          autoFocus
-        />
-      ) : (
-        <div className="message-content">{messageContent(message)}</div>
-      )}
-      {message.tcount > 0 && context !== 'thread' && context !== 'thread-parent' && (
-        <button
-          type="button"
-          className="message-reply-badge"
-          onClick={() => onThread?.(message)}
-        >
-          💬 {message.tcount} {message.tcount === 1 ? 'reply' : 'replies'}
-        </button>
-      )}
+      <div className="message-row-body">
+        <div className="message-header">
+          <span className="message-sender">{senderName(message)}</span>
+          <span className="message-time">{formatTime(message.createdAt)}</span>
+          {message.editedAt && <span className="message-edited"> (edited)</span>}
+        </div>
+        {message.quotedParentMessage && (
+          <QuotedBlock
+            variant="bubble"
+            snapshot={message.quotedParentMessage}
+            onClick={onJumpToMessage}
+          />
+        )}
+        {editing ? (
+          <input
+            type="text"
+            className="message-edit-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                if (draft.trim()) onEditSubmit?.(message, draft.trim())
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                onEditCancel?.()
+              }
+            }}
+            autoFocus
+          />
+        ) : (
+          <div className="message-bubble">{messageContent(message)}</div>
+        )}
+        {message.tcount > 0 && context !== 'thread' && context !== 'thread-parent' && (
+          <button
+            type="button"
+            className="message-reply-badge"
+            onClick={() => onThread?.(message)}
+          >
+            💬 {message.tcount} {message.tcount === 1 ? 'reply' : 'replies'}
+          </button>
+        )}
+        {message._status === 'failed' && !editing && (
+          <div className="message-row-failed">
+            <span className="message-row-failed-label">Failed to send.</span>
+            <button type="button" aria-label="Retry sending message" onClick={() => onRetry?.(message.id)}>⟳</button>
+            <button type="button" aria-label="Dismiss failed message" onClick={() => onDismiss?.(message.id)}>✕</button>
+          </div>
+        )}
+      </div>
       {!editing && (
         <MessageActions
           message={message}
@@ -109,13 +127,6 @@ export default function MessageRow({
       )}
       {/* Read-receipt kebab — separate from MessageActions; rendered in non-edit state. */}
       {!editing && <MessageActionMenu message={message} room={room} />}
-      {message._status === 'failed' && !editing && (
-        <div className="message-row-failed">
-          <span className="message-row-failed-label">Failed to send.</span>
-          <button type="button" aria-label="Retry sending message" onClick={() => onRetry?.(message.id)}>⟳</button>
-          <button type="button" aria-label="Dismiss failed message" onClick={() => onDismiss?.(message.id)}>✕</button>
-        </div>
-      )}
     </div>
   )
 }

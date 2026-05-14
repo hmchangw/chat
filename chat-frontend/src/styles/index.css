@@ -1289,28 +1289,127 @@ body {
   white-space: nowrap;
 }
 
+/* ---------------------------------------------------------------
+   Message row (new design: avatar + body, own messages mirror right).
+   Each row is a flex row with an avatar circle on the left and a
+   body column on the right containing header + bubble + extras.
+   `.message-row-own` reverses the layout so own messages appear
+   right-aligned with the avatar on the right side of the screen.
+--------------------------------------------------------------- */
 .message-row {
   position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   padding: 6px 12px;
 }
 .message-row:hover,
 .message-row:focus-within {
   background: var(--bg-hover);
 }
+
+.message-row-avatar {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.message-row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.message-row .message-header {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.message-bubble {
+  display: inline-block;
+  max-width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-radius: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Own messages: avatar on the right, body content right-aligned, blue bubble. */
+.message-row-own {
+  flex-direction: row-reverse;
+}
+.message-row-own .message-row-body {
+  align-items: flex-end;
+}
+.message-row-own .message-header {
+  flex-direction: row-reverse;
+}
+.message-row-own .message-bubble {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+/* Inline edit input replaces the bubble while editing — give it bubble-ish
+   chrome so the row's visual rhythm doesn't break mid-edit. */
+.message-edit-input {
+  display: inline-block;
+  max-width: 100%;
+  min-width: 200px;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-soft);
+  border-radius: 10px;
+  font: inherit;
+  line-height: 1.4;
+}
+.message-edit-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-selected);
+}
+
+.message-edited {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+/* Hover-revealed action toolbar (Reply / Edit / Delete / Thread). Floats
+   over the row's top edge. For own messages we mirror to the left so the
+   group sits next to the bubble's top-LEFT (the bubble is right-aligned). */
 .message-row .message-actions {
   position: absolute;
-  /* Sit flush with the new kebab (which is also absolute, right: 6px).
-     Pull the action toolbar left of the kebab with extra room so the
-     two groups don't visually collide. */
   top: 4px;
-  right: 36px;
+  right: 44px;
   display: none;
   gap: 4px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 2px 4px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  z-index: 2;
+}
+.message-row-own .message-actions {
+  right: auto;
+  left: 44px;
 }
 .message-row:hover .message-actions,
 .message-row:focus-within .message-actions {
@@ -1327,6 +1426,21 @@ body {
 }
 .message-action:hover {
   background: var(--bg-hover);
+}
+
+/* Mirror the kebab for own messages (it lives at the original right edge
+   for others'; for own it moves to the left edge to stay near the bubble). */
+.message-row-own .message-action-menu {
+  right: auto;
+  left: 6px;
+}
+.message-row-own .message-action-popover {
+  right: auto;
+  left: 0;
+}
+.message-row-own .read-receipt-tooltip {
+  right: auto;
+  left: 0;
 }
 .quoted-block {
   border-left: 3px solid var(--border-subtle, #ccc);

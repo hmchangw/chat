@@ -141,8 +141,8 @@ describe('MessageRow — inline edit mode', () => {
     expect(screen.queryByText(/\(edited\)/i)).not.toBeInTheDocument()
   })
 
-  it('renders "[message deleted]" placeholder when message.deleted is true', () => {
-    render(
+  it('renders nothing when message.deleted is true (row removed entirely)', () => {
+    const { container } = render(
       <MessageRow
         message={{ ...msg, deleted: true }}
         room={room}
@@ -150,8 +150,8 @@ describe('MessageRow — inline edit mode', () => {
         onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
       />
     )
-    expect(screen.getByText(/message deleted/i)).toBeInTheDocument()
-    expect(screen.queryByText('hello world')).not.toBeInTheDocument()
+    expect(container.firstChild).toBeNull()
+    expect(screen.queryByText(/message deleted/i)).not.toBeInTheDocument()
   })
 })
 
