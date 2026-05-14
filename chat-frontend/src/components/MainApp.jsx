@@ -1,0 +1,65 @@
+import { useCallback, useEffect, useState } from 'react'
+import { useRoomSummaries } from '../context/RoomEventsContext'
+import AppHeader from './AppHeader'
+import Sidebar from './Sidebar'
+import ChatPage from '../pages/ChatPage'
+import SearchResultsPane from '../pages/SearchResultsPane'
+
+export default function MainApp() {
+  const { summaries, setActiveRoom, jumpToMessage } = useRoomSummaries()
+  const [selectedRoom, setSelectedRoom] = useState(null)
+  const [searchQuery, setSearchQuery] = useState(null)
+
+  // Clear selection if the room disappears from summaries (left / kicked).
+  // Guard: only act once summaries has been loaded (non-empty) to avoid
+  // clearing on startup when summaries is still an empty array.
+  useEffect(() => {
+    if (selectedRoom && summaries.length > 0 && !summaries.some((r) => r.id === selectedRoom.id)) {
+      setSelectedRoom(null)
+      setActiveRoom(null)
+    }
+  }, [summaries, selectedRoom, setActiveRoom])
+
+  const handleSelectRoom = useCallback(
+    (room) => {
+      setSelectedRoom(room)
+      setActiveRoom(room?.id ?? null)
+      setSearchQuery(null)
+    },
+    [setActiveRoom]
+  )
+
+  const handleEnterSearch = useCallback((q) => setSearchQuery(q), [])
+
+  const handleJumpToMessage = useCallback(
+    (roomId, messageId) => {
+      const room = summaries.find((r) => r.id === roomId)
+      if (room) {
+        setSelectedRoom(room)
+        setActiveRoom(room.id)
+      }
+      setSearchQuery(null)
+      if (jumpToMessage) jumpToMessage(roomId, messageId)?.catch?.(() => {})
+    },
+    [summaries, setActiveRoom, jumpToMessage]
+  )
+
+  return (
+    <div className="app-shell">
+      <AppHeader onSelectRoom={handleSelectRoom} onEnterSearch={handleEnterSearch} />
+      <div className="app-row">
+        <Sidebar selectedRoomId={selectedRoom?.id ?? null} onSelectRoom={handleSelectRoom} />
+        {searchQuery ? (
+          <SearchResultsPane
+            query={searchQuery}
+            onClose={() => setSearchQuery(null)}
+            onSelectRoom={handleSelectRoom}
+            onJumpToMessage={handleJumpToMessage}
+          />
+        ) : (
+          <ChatPage selectedRoom={selectedRoom} onSelectRoom={handleSelectRoom} />
+        )}
+      </div>
+    </div>
+  )
+}
