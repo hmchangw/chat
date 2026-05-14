@@ -2870,6 +2870,7 @@ Replace `chat-frontend/src/components/messages/MessageRow.jsx` with:
 
 ```jsx
 import { useEffect, useState } from 'react'
+import MessageActionMenu from '../MessageActionMenu'
 import MessageActions from './MessageActions'
 import QuotedBlock from './QuotedBlock'
 
@@ -2891,6 +2892,7 @@ function messageContent(msg) {
 
 export default function MessageRow({
   message,
+  room,
   context,
   isOwn,
   editing,
@@ -2965,6 +2967,8 @@ export default function MessageRow({
           onDelete={onDelete}
         />
       )}
+      {/* Read-receipt kebab — separate from MessageActions; rendered in non-edit state. */}
+      {!editing && <MessageActionMenu message={message} room={room} />}
     </div>
   )
 }
