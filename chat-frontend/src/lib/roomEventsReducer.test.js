@@ -542,3 +542,86 @@ describe('MESSAGE_DELETED_LOCAL', () => {
     expect(out).toBe(seed)
   })
 })
+
+describe('MESSAGE_RECEIVED — thread-reply filter', () => {
+  it('drops events whose message.threadParentMessageId is non-empty', () => {
+    const seed = {
+      ...initialState,
+      summaries: [{ id: 'r1', name: 'general', type: 'channel', siteId: 's', userCount: 1, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false }],
+      activeRoomId: 'r1',
+      roomState: {
+        r1: {
+          messages: [{ id: 'm-existing' }],
+          hasLoadedHistory: true, historyError: null,
+          unreadCount: 0, hasMention: false, mentionAll: false,
+          lastMsgAt: null, lastMsgId: null,
+          bufferMode: 'live', pendingLiveMessages: [], focusMessageId: null,
+        },
+      },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_RECEIVED',
+      event: {
+        roomId: 'r1',
+        message: { id: 'reply-1', content: 'thread', threadParentMessageId: 'parent-1' },
+      },
+    })
+    expect(out).toBe(seed)
+  })
+
+  it('still appends events whose threadParentMessageId is empty', () => {
+    const seed = {
+      ...initialState,
+      summaries: [{ id: 'r1', name: 'general', type: 'channel', siteId: 's', userCount: 1, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false }],
+      activeRoomId: 'r1',
+      roomState: {
+        r1: {
+          messages: [],
+          hasLoadedHistory: true, historyError: null,
+          unreadCount: 0, hasMention: false, mentionAll: false,
+          lastMsgAt: null, lastMsgId: null,
+          bufferMode: 'live', pendingLiveMessages: [], focusMessageId: null,
+        },
+      },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_RECEIVED',
+      event: { roomId: 'r1', message: { id: 'm-1', content: 'top-level' } },
+    })
+    expect(out.roomState.r1.messages.map((m) => m.id)).toEqual(['m-1'])
+  })
+})
+
+describe('OWN_THREAD_REPLY_SENT', () => {
+  it('increments tcount on the parent message in roomState[roomId].messages', () => {
+    const seed = {
+      ...initialState,
+      roomState: {
+        r1: {
+          messages: [{ id: 'p1', content: 'parent', tcount: 0 }],
+          hasLoadedHistory: true, historyError: null,
+          unreadCount: 0, hasMention: false, mentionAll: false,
+          lastMsgAt: null, lastMsgId: null,
+          bufferMode: 'live', pendingLiveMessages: [], focusMessageId: null,
+        },
+      },
+    }
+    const out = roomEventsReducer(seed, { type: 'OWN_THREAD_REPLY_SENT', roomId: 'r1', parentId: 'p1' })
+    expect(out.roomState.r1.messages[0].tcount).toBe(1)
+  })
+
+  it('initialises tcount to 1 if previously undefined', () => {
+    const seed = {
+      ...initialState,
+      roomState: { r1: { messages: [{ id: 'p1' }] } },
+    }
+    const out = roomEventsReducer(seed, { type: 'OWN_THREAD_REPLY_SENT', roomId: 'r1', parentId: 'p1' })
+    expect(out.roomState.r1.messages[0].tcount).toBe(1)
+  })
+
+  it('is a no-op when the parent isn\'t in the room buffer', () => {
+    const seed = { ...initialState, roomState: { r1: { messages: [] } } }
+    const out = roomEventsReducer(seed, { type: 'OWN_THREAD_REPLY_SENT', roomId: 'r1', parentId: 'p1' })
+    expect(out).toBe(seed)
+  })
+})

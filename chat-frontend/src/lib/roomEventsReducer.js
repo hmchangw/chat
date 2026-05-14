@@ -117,6 +117,12 @@ export function roomEventsReducer(state, action) {
         }
       }
       if (!msg || !msg.id) return state
+      // Thread replies are written to thread tables only, but broadcast-worker
+      // publishes them on the main subject too. Filter them here so they don't
+      // flicker into the main feed.
+      if (msg.threadParentMessageId) {
+        return state
+      }
       const roomId = evt.roomId
       const prev = state.roomState[roomId] ?? emptyRoomState()
       const isActive = state.activeRoomId === roomId
@@ -309,6 +315,19 @@ export function roomEventsReducer(state, action) {
       const idx = prev.messages.findIndex((m) => m.id === action.messageId)
       if (idx < 0) return state
       const updatedMsg = { ...prev.messages[idx], deleted: true }
+      const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+      return {
+        ...state,
+        roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+      }
+    }
+    case 'OWN_THREAD_REPLY_SENT': {
+      const prev = state.roomState[action.roomId]
+      if (!prev) return state
+      const idx = prev.messages.findIndex((m) => m.id === action.parentId)
+      if (idx < 0) return state
+      const tcount = (prev.messages[idx].tcount ?? 0) + 1
+      const updatedMsg = { ...prev.messages[idx], tcount }
       const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
       return {
         ...state,
