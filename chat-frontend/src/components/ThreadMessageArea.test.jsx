@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import ThreadMessageArea from './ThreadMessageArea'
 
@@ -40,7 +40,7 @@ vi.mock('../context/NatsContext', () => ({
 }))
 vi.mock('./messages/MessageList', () => ({
   default: ({ messages, emptyText, context, onReply, onRetry, onDismiss,
-              onEdit, onEditSubmit, onEditCancel, onDelete, onJumpToMessage, historyLoading, historyError }) => (
+              onEdit, onDelete, onJumpToMessage, historyLoading, historyError }) => (
     <div data-testid="list">
       <span>context:{context}</span>
       <span>count:{messages.length}</span>
@@ -54,12 +54,9 @@ vi.mock('./messages/MessageList', () => ({
       <button type="button" onClick={() => onRetry?.('reply-2')}>fire-retry</button>
       <button type="button" onClick={() => onDismiss?.('reply-2')}>fire-dismiss</button>
       <button type="button" onClick={() => onJumpToMessage?.('quoted-orig')}>fire-jump</button>
-      <button type="button" onClick={() => onEdit?.({ id: 'reply-1' })}>fire-edit-reply</button>
-      <button type="button" onClick={() => onEditSubmit?.({ id: 'reply-1', createdAt: '2026-05-13T10:01:00Z' }, 'edited')}>fire-edit-reply-submit</button>
-      <button type="button" onClick={() => onEditCancel?.()}>fire-edit-cancel</button>
+      <button type="button" onClick={() => onEdit?.({ id: 'reply-1', content: 'original reply' })}>fire-edit-reply</button>
       <button type="button" onClick={() => onDelete?.({ id: 'reply-1', createdAt: '2026-05-13T10:01:00Z' })}>fire-delete-reply</button>
-      <button type="button" onClick={() => onEdit?.({ id: 'p1' })}>fire-edit-parent</button>
-      <button type="button" onClick={() => onEditSubmit?.({ id: 'p1', createdAt: '2026-05-13T10:00:00Z' }, 'edited-parent')}>fire-edit-parent-submit</button>
+      <button type="button" onClick={() => onEdit?.({ id: 'p1', content: 'original parent' })}>fire-edit-parent</button>
       <button type="button" onClick={() => onDelete?.({ id: 'p1', createdAt: '2026-05-13T10:00:00Z' })}>fire-delete-parent</button>
     </div>
   ),
@@ -103,10 +100,13 @@ describe('ThreadMessageArea', () => {
 describe('ThreadMessageArea — Edit / Delete on thread reply', () => {
   beforeEach(() => { publish.mockClear(); threadDispatch.mockClear(); roomDispatch.mockClear() })
 
-  it('submitting edit on a reply publishes msg.edit and dispatches REPLY_EDITED_LOCAL', () => {
+  it('saving the edit dialog on a reply publishes msg.edit and dispatches REPLY_EDITED_LOCAL', () => {
     render(<ThreadMessageArea onReply={() => {}} />)
     fireEvent.click(screen.getByText('fire-edit-reply'))
-    fireEvent.click(screen.getByText('fire-edit-reply-submit'))
+    const dialog = screen.getByRole('dialog')
+    const input = within(dialog).getByDisplayValue('original reply')
+    fireEvent.change(input, { target: { value: 'edited' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /save/i }))
     expect(publish).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.edit',
       { messageId: 'reply-1', newMsg: 'edited' }
@@ -127,10 +127,13 @@ describe('ThreadMessageArea — Edit / Delete on thread reply', () => {
     expect(threadDispatch).toHaveBeenCalledWith({ type: 'REPLY_DELETED_LOCAL', messageId: 'reply-1' })
   })
 
-  it('edit on the PARENT dispatches MESSAGE_EDITED_LOCAL to the ROOM reducer, not the thread reducer', () => {
+  it('saving the edit dialog on the PARENT dispatches MESSAGE_EDITED_LOCAL to the ROOM reducer', () => {
     render(<ThreadMessageArea onReply={() => {}} />)
     fireEvent.click(screen.getByText('fire-edit-parent'))
-    fireEvent.click(screen.getByText('fire-edit-parent-submit'))
+    const dialog = screen.getByRole('dialog')
+    const input = within(dialog).getByDisplayValue('original parent')
+    fireEvent.change(input, { target: { value: 'edited-parent' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /save/i }))
     expect(publish).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.edit',
       { messageId: 'p1', newMsg: 'edited-parent' }

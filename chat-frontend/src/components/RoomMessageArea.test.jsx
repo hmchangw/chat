@@ -31,17 +31,14 @@ vi.mock('../context/NatsContext', () => ({
 }))
 
 vi.mock('./messages/MessageList', () => ({
-  default: ({ messages, onEdit, onDelete, onEditSubmit, onEditCancel, editingMessageId, onThread, onReply, onJumpToMessage }) => (
+  default: ({ messages, onEdit, onDelete, onThread, onReply, onJumpToMessage }) => (
     <div data-testid="list">
       <span>count:{messages.length}</span>
-      <span>editing:{editingMessageId ?? 'none'}</span>
       <button type="button" onClick={() => onThread?.({ id: 'a' })}>fire-thread</button>
       <button type="button" onClick={() => onReply?.({ id: 'a' })}>fire-reply</button>
       <button type="button" onClick={() => onJumpToMessage?.('a')}>fire-jump</button>
-      <button type="button" onClick={() => onEdit?.({ id: 'a' })}>fire-edit</button>
+      <button type="button" onClick={() => onEdit?.({ id: 'a', content: 'original text' })}>fire-edit</button>
       <button type="button" onClick={() => onDelete?.({ id: 'a', createdAt: '2026-05-13T10:00:00Z' })}>fire-delete</button>
-      <button type="button" onClick={() => onEditSubmit?.({ id: 'a', createdAt: '2026-05-13T10:00:00Z' }, 'new text')}>fire-edit-submit</button>
-      <button type="button" onClick={() => onEditCancel?.()}>fire-edit-cancel</button>
     </div>
   ),
 }))
@@ -84,26 +81,32 @@ describe('RoomMessageArea', () => {
   })
 })
 
-describe('RoomMessageArea — Edit', () => {
+describe('RoomMessageArea — Edit (modal)', () => {
   beforeEach(() => { publish.mockClear(); dispatch.mockClear() })
 
-  it('entering edit mode passes editingMessageId to MessageList', () => {
+  it('clicking edit opens the TextInputDialog prefilled with the message content', () => {
     render(<RoomMessageArea room={room} />)
     fireEvent.click(screen.getByText('fire-edit'))
-    expect(screen.getByText('editing:a')).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByDisplayValue('original text')).toBeInTheDocument()
   })
 
-  it('cancelling edit mode resets editingMessageId', () => {
+  it('cancelling the edit dialog leaves no publish and no dispatch', () => {
     render(<RoomMessageArea room={room} />)
     fireEvent.click(screen.getByText('fire-edit'))
-    fireEvent.click(screen.getByText('fire-edit-cancel'))
-    expect(screen.getByText('editing:none')).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /cancel/i }))
+    expect(publish).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('submitting edit publishes msg.edit and dispatches MESSAGE_EDITED_LOCAL', () => {
+  it('saving the edit dialog publishes msg.edit and dispatches MESSAGE_EDITED_LOCAL', () => {
     render(<RoomMessageArea room={room} />)
     fireEvent.click(screen.getByText('fire-edit'))
-    fireEvent.click(screen.getByText('fire-edit-submit'))
+    const dialog = screen.getByRole('dialog')
+    const input = within(dialog).getByDisplayValue('original text')
+    fireEvent.change(input, { target: { value: 'new text' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /save/i }))
     expect(publish).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.edit',
       { messageId: 'a', newMsg: 'new text' }
@@ -111,7 +114,7 @@ describe('RoomMessageArea — Edit', () => {
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
       type: 'MESSAGE_EDITED_LOCAL', roomId: 'r1', messageId: 'a', content: 'new text',
     }))
-    expect(screen.getByText('editing:none')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })
 

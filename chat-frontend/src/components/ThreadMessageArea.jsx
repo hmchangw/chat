@@ -5,6 +5,7 @@ import { useRoomEvents, useRoomDispatch, useRoomSummaries } from '../context/Roo
 import { msgEdit, msgDelete } from '../lib/subjects'
 import MessageList from './messages/MessageList'
 import DeleteConfirmDialog from './messages/DeleteConfirmDialog'
+import TextInputDialog from './messages/TextInputDialog'
 
 export default function ThreadMessageArea({ onReply }) {
   const { activeParent, messages, hasLoadedHistory, historyLoading, historyError,
@@ -17,7 +18,7 @@ export default function ThreadMessageArea({ onReply }) {
   const { jumpToMessage } = useRoomSummaries()
   const { user, publish } = useNats()
   const bottomRef = useRef(null)
-  const [editingMessageId, setEditingMessageId] = useState(null)
+  const [editingMessage, setEditingMessage] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
 
   // Resolve parent live from main feed buffer; fall back to a thin stub if scrolled out.
@@ -44,24 +45,25 @@ export default function ThreadMessageArea({ onReply }) {
 
   const isParent = (msgId) => activeParent && msgId === activeParent.messageId
 
-  const handleEdit = (msg) => setEditingMessageId(msg.id)
-  const handleEditCancel = () => setEditingMessageId(null)
-  const handleEditSubmit = (msg, newContent) => {
+  const handleEdit = (msg) => setEditingMessage(msg)
+  const handleEditCancel = () => setEditingMessage(null)
+  const handleEditSave = (newContent) => {
+    if (!editingMessage) return
     publish(msgEdit(user.account, activeParent.roomId, activeParent.siteId), {
-      messageId: msg.id, newMsg: newContent,
+      messageId: editingMessage.id, newMsg: newContent,
     })
-    if (isParent(msg.id)) {
+    if (isParent(editingMessage.id)) {
       roomDispatch({
         type: 'MESSAGE_EDITED_LOCAL', roomId: activeParent.roomId,
-        messageId: msg.id, content: newContent, editedAt: new Date().toISOString(),
+        messageId: editingMessage.id, content: newContent, editedAt: new Date().toISOString(),
       })
     } else {
       threadDispatch({
-        type: 'REPLY_EDITED_LOCAL', messageId: msg.id,
+        type: 'REPLY_EDITED_LOCAL', messageId: editingMessage.id,
         content: newContent, editedAt: new Date().toISOString(),
       })
     }
-    setEditingMessageId(null)
+    setEditingMessage(null)
   }
 
   const handleDelete = (msg) => setPendingDelete(msg)
@@ -93,12 +95,9 @@ export default function ThreadMessageArea({ onReply }) {
         context="thread"
         parentMessageId={activeParent.messageId}
         currentUserAccount={user?.account}
-        editingMessageId={editingMessageId}
         emptyText={empty ? 'No replies yet — be the first to reply' : undefined}
         onReply={onReply}
         onEdit={handleEdit}
-        onEditSubmit={handleEditSubmit}
-        onEditCancel={handleEditCancel}
         onDelete={handleDelete}
         onRetry={retryReply}
         onDismiss={dismissReply}
@@ -108,6 +107,15 @@ export default function ThreadMessageArea({ onReply }) {
       />
       {pendingDelete && (
         <DeleteConfirmDialog onConfirm={handleDeleteConfirm} onCancel={handleDeleteCancel} />
+      )}
+      {editingMessage && (
+        <TextInputDialog
+          title="Edit message"
+          initialValue={editingMessage.content || editingMessage.msg || ''}
+          confirmLabel="Save"
+          onSave={handleEditSave}
+          onCancel={handleEditCancel}
+        />
       )}
     </div>
   )

@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import MessageActions from './MessageActions'
 import QuotedBlock from './QuotedBlock'
 
@@ -28,9 +27,6 @@ export default function MessageRow({
   room,
   context,
   isOwn,
-  editing,
-  onEditSubmit,
-  onEditCancel,
   onThread,
   onReply,
   onEdit,
@@ -39,19 +35,12 @@ export default function MessageRow({
   onRetry,
   onDismiss,
 }) {
-  const [draft, setDraft] = useState(messageContent(message))
-
-  useEffect(() => {
-    setDraft(messageContent(message))
-  }, [message, editing])
-
   // Deleted messages are removed from the feed entirely. (Also filtered at
   // MessageList — this is defense-in-depth in case a caller bypasses the
   // list and renders a row directly.)
   if (message.deleted) return null
 
   const rowClasses = ['message-row']
-  if (editing) rowClasses.push('message-row-editing')
   if (isOwn) rowClasses.push('message-row-own')
 
   return (
@@ -86,38 +75,17 @@ export default function MessageRow({
             on the whole row — so the visible chrome (avatar / header) stays
             inert as the cursor passes through. */}
         <div className="message-bubble-wrap">
-          {editing ? (
-            <input
-              type="text"
-              className="message-edit-input"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  if (draft.trim()) onEditSubmit?.(message, draft.trim())
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  onEditCancel?.()
-                }
-              }}
-              autoFocus
-            />
-          ) : (
-            <div className="message-bubble">{messageContent(message)}</div>
-          )}
-          {!editing && (
-            <MessageActions
-              message={message}
-              room={room}
-              context={context}
-              isOwn={isOwn}
-              onThread={onThread}
-              onReply={onReply}
-              onEdit={onEdit}
-              onDelete={onDelete}
-            />
-          )}
+          <div className="message-bubble">{messageContent(message)}</div>
+          <MessageActions
+            message={message}
+            room={room}
+            context={context}
+            isOwn={isOwn}
+            onThread={onThread}
+            onReply={onReply}
+            onEdit={onEdit}
+            onDelete={onDelete}
+          />
         </div>
         {message.tcount > 0 && context !== 'thread' && context !== 'thread-parent' && (
           <button
@@ -128,7 +96,7 @@ export default function MessageRow({
             💬 {message.tcount} {message.tcount === 1 ? 'reply' : 'replies'}
           </button>
         )}
-        {message._status === 'failed' && !editing && (
+        {message._status === 'failed' && (
           <div className="message-row-failed">
             <span className="message-row-failed-label">Failed to send.</span>
             <button type="button" aria-label="Retry sending message" onClick={() => onRetry?.(message.id)}>⟳</button>

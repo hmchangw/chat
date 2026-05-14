@@ -11,12 +11,9 @@ export default function MessageList({
   context,
   focusMessageId,
   currentUserAccount,
-  editingMessageId,
   onThread,
   onReply,
   onEdit,
-  onEditSubmit,
-  onEditCancel,
   onDelete,
   onJumpToMessage,
   bottomRef,
@@ -65,12 +62,9 @@ export default function MessageList({
             room={room}
             context={rowContext}
             isOwn={!!currentUserAccount && msg.sender?.account === currentUserAccount}
-            editing={editingMessageId === msg.id}
             onThread={onThread}
             onReply={onReply}
             onEdit={onEdit}
-            onEditSubmit={onEditSubmit}
-            onEditCancel={onEditCancel}
             onDelete={onDelete}
             onJumpToMessage={onJumpToMessage}
             onRetry={onRetry}
