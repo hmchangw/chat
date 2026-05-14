@@ -63,19 +63,22 @@ export default function MessageRow({
           <span className="message-time">{formatTime(message.createdAt)}</span>
           {message.editedAt && <span className="message-edited"> (edited)</span>}
         </div>
-        {message.quotedParentMessage && (
-          <QuotedBlock
-            variant="bubble"
-            snapshot={message.quotedParentMessage}
-            onClick={onJumpToMessage}
-          />
-        )}
-        {/* The bubble + hover-revealed action group share a positioned wrapper.
-            Hover/focus on this wrapper is what toggles the actions, NOT hover
-            on the whole row — so the visible chrome (avatar / header) stays
-            inert as the cursor passes through. */}
+        {/* Bubble + hover-revealed action toolbar share a positioned wrapper.
+            Hover/focus on the wrapper toggles the actions, NOT hover on the
+            whole row — so the avatar / header stay inert. The QuotedBlock is
+            rendered INSIDE the bubble (when present) so the bubble auto-sizes
+            to include it. */}
         <div className="message-bubble-wrap">
-          <div className="message-bubble">{messageContent(message)}</div>
+          <div className="message-bubble">
+            {message.quotedParentMessage && (
+              <QuotedBlock
+                variant="bubble"
+                snapshot={message.quotedParentMessage}
+                onClick={onJumpToMessage}
+              />
+            )}
+            <div className="message-bubble-content">{messageContent(message)}</div>
+          </div>
           <MessageActions
             message={message}
             room={room}

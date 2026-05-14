@@ -8,6 +8,7 @@ export default function MessageInputForm({
   disabled,
   quotedTarget,
   onClearQuote,
+  inputRef,
 }) {
   const handleSubmit = (e) => {
     e?.preventDefault?.()
@@ -32,6 +33,7 @@ export default function MessageInputForm({
       )}
       <div className="message-input-row">
         <input
+          ref={inputRef}
           type="text"
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}

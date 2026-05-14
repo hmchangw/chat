@@ -205,6 +205,9 @@ body {
 .message-list {
   flex: 1;
   overflow-y: auto;
+  /* Clip any horizontal overflow caused by the hover toolbar floating
+     slightly outside the bubble's bounding box on narrow rows. */
+  overflow-x: hidden;
   padding: 1rem;
 }
 
@@ -1340,6 +1343,43 @@ body {
   color: var(--text-primary);
   border-radius: 10px;
   line-height: 1.4;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Quote rendered INSIDE the bubble — visually inset card, full width of
+   the bubble's content area, with a subtle border-left + faded bg so it
+   reads as "the message being replied to". */
+.message-bubble .quoted-block-bubble {
+  display: block;
+  margin: 0 0 4px 0;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.06);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.message-row-own .message-bubble .quoted-block-bubble {
+  background: rgba(255, 255, 255, 0.12);
+}
+.message-bubble .quoted-block-sender {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-primary);
+  opacity: 0.85;
+}
+.message-bubble .quoted-block-content {
+  font-size: 0.9em;
+  color: var(--text-primary);
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.message-bubble-content {
+  display: block;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1389,12 +1429,22 @@ body {
 }
 
 /* Hover-revealed action toolbar (Reply / Edit / Delete / Thread). Lives
-   inside .message-bubble-wrap and appears on hover/focus of the bubble
-   area only. */
+   inside .message-bubble-wrap. Positioned so it overlaps the bubble's
+   top corner (so the cursor never crosses an "invisible gap" between
+   bubble and toolbar) AND uses a 250ms delayed hide so the user has
+   time to travel from bubble to toolbar without losing hover.
+
+   For OTHERS' messages: anchored right-of-bubble — slightly to the
+   right of the bubble's right edge so it doesn't cover content.
+   For OWN messages: mirrored to left-of-bubble — the bubble lives at
+   the right edge of the row, so a right-anchored toolbar would
+   overflow the viewport. */
 .message-bubble-wrap .message-actions {
   position: absolute;
-  top: -14px;
-  right: 8px;
+  /* Overlap the bubble's top edge by 8px — eliminates the hover gap
+     while still showing the toolbar mostly above the bubble. */
+  top: -16px;
+  right: -2px;
   display: flex;
   gap: 4px;
   background: var(--bg-elevated);
@@ -1404,19 +1454,22 @@ body {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 80ms ease;
+  /* Delayed hide (250ms) so the user can move mouse from bubble to
+     toolbar without losing hover. Immediate show (80ms) for snap. */
+  transition: opacity 80ms ease 250ms;
   z-index: 2;
 }
-/* Mirror to the left for own messages (the bubble is right-aligned in the
-   body, so its top-left is the closer corner). */
 .message-row-own .message-bubble-wrap .message-actions {
   right: auto;
-  left: 8px;
+  left: -2px;
 }
 .message-bubble-wrap:hover .message-actions,
-.message-bubble-wrap:focus-within .message-actions {
+.message-bubble-wrap:focus-within .message-actions,
+.message-actions:hover,
+.message-actions:focus-within {
   opacity: 1;
   pointer-events: auto;
+  transition: opacity 80ms ease 0ms;
 }
 .message-action {
   padding: 2px 6px;

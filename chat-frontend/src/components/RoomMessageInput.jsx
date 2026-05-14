@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '../context/NatsContext'
 import { useRoomDispatch } from '../context/RoomEventsContext'
@@ -11,6 +11,16 @@ export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
   const { user, publish } = useNats()
   const dispatch = useRoomDispatch()
   const [text, setText] = useState('')
+  const inputRef = useRef(null)
+
+  // Auto-focus the input when a quote is freshly staged (e.g., user clicked
+  // Reply on a message) so they can start typing immediately without an
+  // extra click. Re-runs whenever the staged target changes id.
+  useEffect(() => {
+    if (quotedTarget?.id) {
+      inputRef.current?.focus()
+    }
+  }, [quotedTarget?.id])
 
   const placeholder = room
     ? `Message ${roomPrefix(room.type)}${roomDisplayName(room)}`
@@ -53,6 +63,7 @@ export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
 
   return (
     <MessageInputForm
+      inputRef={inputRef}
       value={text}
       onChange={setText}
       onSubmit={handleSubmit}
