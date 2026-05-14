@@ -6027,21 +6027,40 @@ git commit -m "feat(chat-frontend): reply-count badge on parent messages"
 
 - [ ] **Step 1: Failing test**
 
-Append to `chat-frontend/src/pages/ChatPage.test.jsx`:
+Replace the existing top-level `'../context/ThreadEventsContext'` mock in `chat-frontend/src/pages/ChatPage.test.jsx` (added in Task 7.6) with a module-scoped-mutable form so individual tests can vary `activeParent` without `vi.doMock` + dynamic-import gymnastics:
+
+```jsx
+const openThread = vi.fn()
+const closeThread = vi.fn()
+let mockActiveParent = null
+vi.mock('../context/ThreadEventsContext', () => ({
+  useThreadEvents: () => ({ openThread, closeThread, activeParent: mockActiveParent }),
+}))
+```
+
+(The `mockActiveParent` is captured by reference inside the factory closure; reading it happens each time `useThreadEvents()` is invoked.)
+
+Append the test:
 
 ```jsx
 describe('ChatPage — close thread on room switch', () => {
+  beforeEach(() => {
+    closeThread.mockClear()
+    mockActiveParent = { roomId: channel.id, messageId: 'p1' }
+  })
+  afterEach(() => { mockActiveParent = null })
+
   it('changing selectedRoom calls closeThread', () => {
-    const closeThread = vi.fn()
-    vi.doMock('../context/ThreadEventsContext', () => ({
-      useThreadEvents: () => ({ openThread: vi.fn(), closeThread, activeParent: { messageId: 'p1' } }),
-    }))
-    // Re-import after mock.
-    return import('./ChatPage').then(({ default: Re }) => {
-      const { rerender } = render(<Re selectedRoom={channel} onSelectRoom={() => {}} />)
-      rerender(<Re selectedRoom={dm} onSelectRoom={() => {}} />)
-      expect(closeThread).toHaveBeenCalled()
-    })
+    const { rerender } = render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    rerender(<ChatPage selectedRoom={dm} onSelectRoom={() => {}} />)
+    expect(closeThread).toHaveBeenCalled()
+  })
+
+  it('does NOT call closeThread when re-rendering with the same room', () => {
+    const { rerender } = render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    closeThread.mockClear()
+    rerender(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    expect(closeThread).not.toHaveBeenCalled()
   })
 })
 ```
