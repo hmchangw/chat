@@ -16,9 +16,10 @@ export default function MessageActions({
           type="button"
           className="message-action message-action-thread"
           aria-label="Reply in thread"
+          title="Reply in thread"
           onClick={() => onThread?.(message)}
         >
-          💬
+          Thread
         </button>
       )}
       {showReply && (
@@ -26,9 +27,10 @@ export default function MessageActions({
           type="button"
           className="message-action message-action-reply"
           aria-label="Quote this message"
+          title="Quote this message"
           onClick={() => onReply?.(message)}
         >
-          ↩
+          Quote
         </button>
       )}
       {showEdit && (
@@ -36,9 +38,10 @@ export default function MessageActions({
           type="button"
           className="message-action message-action-edit"
           aria-label="Edit message"
+          title="Edit message"
           onClick={() => onEdit?.(message)}
         >
-          ✎
+          Edit
         </button>
       )}
       {showDelete && (
@@ -46,9 +49,10 @@ export default function MessageActions({
           type="button"
           className="message-action message-action-delete"
           aria-label="Delete message"
+          title="Delete message"
           onClick={() => onDelete?.(message)}
         >
-          🗑
+          Delete
         </button>
       )}
       {/* Read-receipt kebab — only renders on own messages (handled inside
