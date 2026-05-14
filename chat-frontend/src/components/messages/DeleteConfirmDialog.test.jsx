@@ -28,4 +28,20 @@ describe('DeleteConfirmDialog', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onCancel).toHaveBeenCalled()
   })
+
+  it('Esc inside a parent with its own onKeyDown does NOT bubble to that parent (no double-fire)', () => {
+    // Simulates the dialog living inside ThreadRightBar: the aside has its own
+    // onKeyDown(closeThread). The dialog must claim Esc and stop propagation
+    // so closing the dialog doesn't also close the thread.
+    const onCancel = vi.fn()
+    const parentKeyDown = vi.fn()
+    render(
+      <div onKeyDown={parentKeyDown}>
+        <DeleteConfirmDialog onConfirm={() => {}} onCancel={onCancel} />
+      </div>
+    )
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalled()
+    expect(parentKeyDown).not.toHaveBeenCalled()
+  })
 })
