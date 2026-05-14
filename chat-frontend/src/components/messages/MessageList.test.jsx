@@ -3,7 +3,11 @@ import { describe, it, expect, vi } from 'vitest'
 import MessageList from './MessageList'
 
 vi.mock('./MessageRow', () => ({
-  default: ({ message }) => <div data-testid={`row-${message.id}`}>{message.content}</div>,
+  default: ({ message, context }) => (
+    <div data-testid={`row-${message.id}`} data-context={context}>
+      {message.content}
+    </div>
+  ),
 }))
 
 const msgs = [
@@ -45,5 +49,19 @@ describe('MessageList', () => {
       <MessageList messages={msgs} hasLoadedHistory context="main" emptyText="None" />
     )
     expect(screen.queryByText('None')).not.toBeInTheDocument()
+  })
+
+  it('marks the parent row context as thread-parent inside a thread list', () => {
+    const list = [{ id: 'p1', content: 'parent' }, { id: 'r1', content: 'reply' }]
+    render(
+      <MessageList
+        messages={list}
+        hasLoadedHistory
+        context="thread"
+        parentMessageId="p1"
+      />
+    )
+    expect(screen.getByTestId('row-p1').getAttribute('data-context')).toBe('thread-parent')
+    expect(screen.getByTestId('row-r1').getAttribute('data-context')).toBe('thread')
   })
 })

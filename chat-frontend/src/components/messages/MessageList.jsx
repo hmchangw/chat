@@ -21,6 +21,9 @@ export default function MessageList({
   onJumpToMessage,
   bottomRef,
   ariaLive,
+  onRetry,
+  onDismiss,
+  parentMessageId,
 }) {
   const listRef = useRef(null)
   const localBottomRef = useRef(null)
@@ -47,23 +50,29 @@ export default function MessageList({
     >
       {historyLoading && <div className="message-loading">Loading messages…</div>}
       {historyError && <div className="message-error">{historyError}</div>}
-      {messages.map((msg) => (
-        <MessageRow
-          key={msg.id}
-          message={msg}
-          room={room}
-          context={context}
-          isOwn={!!currentUserAccount && msg.sender?.account === currentUserAccount}
-          editing={editingMessageId === msg.id}
-          onThread={onThread}
-          onReply={onReply}
-          onEdit={onEdit}
-          onEditSubmit={onEditSubmit}
-          onEditCancel={onEditCancel}
-          onDelete={onDelete}
-          onJumpToMessage={onJumpToMessage}
-        />
-      ))}
+      {messages.map((msg) => {
+        const isParent = context === 'thread' && parentMessageId === msg.id
+        const rowContext = isParent ? 'thread-parent' : context
+        return (
+          <MessageRow
+            key={msg.id}
+            message={msg}
+            room={room}
+            context={rowContext}
+            isOwn={!!currentUserAccount && msg.sender?.account === currentUserAccount}
+            editing={editingMessageId === msg.id}
+            onThread={onThread}
+            onReply={onReply}
+            onEdit={onEdit}
+            onEditSubmit={onEditSubmit}
+            onEditCancel={onEditCancel}
+            onDelete={onDelete}
+            onJumpToMessage={onJumpToMessage}
+            onRetry={onRetry}
+            onDismiss={onDismiss}
+          />
+        )
+      })}
       {empty && emptyText && <div className="message-empty">{emptyText}</div>}
       <div ref={effectiveBottomRef} />
     </div>
