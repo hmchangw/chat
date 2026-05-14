@@ -2438,16 +2438,20 @@ Capture the same details for delete.
 
 - [ ] **Step 3: Document the shapes**
 
-Add a short note to the top of `chat-frontend/src/components/RoomMessageArea.jsx` (or a new `// payloads:` comment block near the new edit/delete handlers in Task 4.6) listing the verified field names. Example:
+**Verified shapes (from `history-service/internal/models/message.go:60-77`):**
 
 ```js
-// msg.edit request: { messageId: string, createdAt: string, content: string, requestId: string }
-// msg.edit response: { ok: true } | { error: string }
-// msg.delete request: { messageId: string, createdAt: string, requestId: string }
-// msg.delete response: { ok: true } | { error: string }
+// msg.edit  request:  { messageId: string, newMsg: string }
+// msg.edit  response: { messageId: string, editedAt: number /* UTC millis */ }
+// msg.delete request:  { messageId: string }
+// msg.delete response: { messageId: string, deletedAt: number /* UTC millis */ }
 ```
 
-If the actual shapes differ, use the actual shapes. The example above is **a guess** — confirm in Steps 1–2 before pasting.
+Notes:
+- `newMsg` (NOT `content`) is the new body field — must match the Go struct tag exactly or the server will see an empty string.
+- There is NO `createdAt` in the request — the server looks up the message by id.
+- There is NO `requestId` in either struct. NATS request/reply propagates the X-Request-ID via headers (set by the broker layer); we don't include it in the JSON body.
+- `editedAt` / `deletedAt` come back as int64 UTC millis. The client converts to ISO string for the optimistic dispatch (`new Date().toISOString()`).
 
 - [ ] **Step 4: No commit**
 
@@ -3164,7 +3168,7 @@ describe('RoomMessageArea — Edit', () => {
     fireEvent.click(screen.getByText('fire-edit-submit'))
     expect(publish).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.edit',
-      { messageId: 'a', createdAt: '2026-05-13T10:00:00Z', content: 'new text', requestId: 'req-id' }
+      { messageId: 'a', newMsg: 'new text' }
     )
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
       type: 'MESSAGE_EDITED_LOCAL', roomId: 'r1', messageId: 'a', content: 'new text',
@@ -3196,7 +3200,7 @@ describe('RoomMessageArea — Delete', () => {
     fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
     expect(publish).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.delete',
-      { messageId: 'a', createdAt: '2026-05-13T10:00:00Z', requestId: 'req-id' }
+      { messageId: 'a' }
     )
     expect(dispatch).toHaveBeenCalledWith({
       type: 'MESSAGE_DELETED_LOCAL', roomId: 'r1', messageId: 'a',
@@ -3216,7 +3220,6 @@ Replace `chat-frontend/src/components/RoomMessageArea.jsx`:
 
 ```jsx
 import { useEffect, useRef, useState } from 'react'
-import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '../context/NatsContext'
 import { useRoomEvents } from '../context/RoomEventsContext'
 import { BUFFER_MODE } from '../lib/roomEventsReducer'
@@ -3263,11 +3266,11 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
   const handleEdit = (msg) => setEditingMessageId(msg.id)
   const handleEditCancel = () => setEditingMessageId(null)
   const handleEditSubmit = (msg, newContent) => {
+    // Server struct: EditMessageRequest{ MessageID, NewMsg }. No createdAt,
+    // no requestId — request-id propagates via NATS headers.
     publish(msgEdit(user.account, room.id, user.siteId), {
       messageId: msg.id,
-      createdAt: msg.createdAt,
-      content: newContent,
-      requestId: uuidv4(),
+      newMsg: newContent,
     })
     dispatch({
       type: 'MESSAGE_EDITED_LOCAL',
@@ -3283,10 +3286,9 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
   const handleDeleteCancel = () => setPendingDelete(null)
   const handleDeleteConfirm = () => {
     if (!pendingDelete) return
+    // Server struct: DeleteMessageRequest{ MessageID }.
     publish(msgDelete(user.account, room.id, user.siteId), {
       messageId: pendingDelete.id,
-      createdAt: pendingDelete.createdAt,
-      requestId: uuidv4(),
     })
     dispatch({
       type: 'MESSAGE_DELETED_LOCAL',
@@ -4851,7 +4853,7 @@ describe('ThreadMessageArea — Edit / Delete on thread reply', () => {
     fireEvent.click(screen.getByText('fire-edit-reply-submit'))
     expect(publish).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.edit',
-      { messageId: 'reply-1', createdAt: '2026-05-13T10:01:00Z', content: 'edited', requestId: 'req-id' }
+      { messageId: 'reply-1', newMsg: 'edited' }
     )
     expect(threadDispatch).toHaveBeenCalledWith(expect.objectContaining({
       type: 'REPLY_EDITED_LOCAL', messageId: 'reply-1', content: 'edited',
@@ -4864,7 +4866,7 @@ describe('ThreadMessageArea — Edit / Delete on thread reply', () => {
     fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
     expect(publish).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.delete',
-      { messageId: 'reply-1', createdAt: '2026-05-13T10:01:00Z', requestId: 'req-id' }
+      { messageId: 'reply-1' }
     )
     expect(threadDispatch).toHaveBeenCalledWith({ type: 'REPLY_DELETED_LOCAL', messageId: 'reply-1' })
   })
@@ -4875,7 +4877,7 @@ describe('ThreadMessageArea — Edit / Delete on thread reply', () => {
     fireEvent.click(screen.getByText('fire-edit-parent-submit'))
     expect(publish).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.edit',
-      { messageId: 'p1', createdAt: '2026-05-13T10:00:00Z', content: 'edited-parent', requestId: 'req-id' }
+      { messageId: 'p1', newMsg: 'edited-parent' }
     )
     expect(roomDispatch).toHaveBeenCalledWith(expect.objectContaining({
       type: 'MESSAGE_EDITED_LOCAL', roomId: 'r1', messageId: 'p1', content: 'edited-parent',
@@ -4905,7 +4907,6 @@ Replace `chat-frontend/src/components/ThreadMessageArea.jsx`:
 
 ```jsx
 import { useEffect, useRef, useState } from 'react'
-import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '../context/NatsContext'
 import { useThreadEvents } from '../context/ThreadEventsContext'
 import { useRoomEvents, useRoomDispatch } from '../context/RoomEventsContext'
@@ -4947,8 +4948,9 @@ export default function ThreadMessageArea({ onReply }) {
   const handleEdit = (msg) => setEditingMessageId(msg.id)
   const handleEditCancel = () => setEditingMessageId(null)
   const handleEditSubmit = (msg, newContent) => {
+    // Server: EditMessageRequest{ MessageID, NewMsg }. No createdAt, no requestId.
     publish(msgEdit(user.account, activeParent.roomId, activeParent.siteId), {
-      messageId: msg.id, createdAt: msg.createdAt, content: newContent, requestId: uuidv4(),
+      messageId: msg.id, newMsg: newContent,
     })
     if (isParent(msg.id)) {
       roomDispatch({
@@ -4968,8 +4970,9 @@ export default function ThreadMessageArea({ onReply }) {
   const handleDeleteCancel = () => setPendingDelete(null)
   const handleDeleteConfirm = () => {
     if (!pendingDelete) return
+    // Server: DeleteMessageRequest{ MessageID }.
     publish(msgDelete(user.account, activeParent.roomId, activeParent.siteId), {
-      messageId: pendingDelete.id, createdAt: pendingDelete.createdAt, requestId: uuidv4(),
+      messageId: pendingDelete.id,
     })
     if (isParent(pendingDelete.id)) {
       roomDispatch({ type: 'MESSAGE_DELETED_LOCAL', roomId: activeParent.roomId, messageId: pendingDelete.id })
