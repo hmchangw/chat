@@ -36,9 +36,8 @@ popover. This spec covers only the read-receipt item.
 
 ## 3. Non-goals
 
-- No backend or `pkg/` changes — the RPC ships as-is. Cross-site read state is
-  already replicated by `inbox-worker`, so no federation work is needed in this
-  spec.
+- No backend or `pkg/` changes — both the `message.read-receipt` and
+  `message.read` RPCs ship as-is.
 - No edit / delete / reply actions in this spec — only the menu shell that will
   host them later.
 - No mobile/touch UX redesign. Hover semantics target desktop browsers; keyboard
@@ -61,7 +60,16 @@ popover. This spec covers only the read-receipt item.
    fresh fetch.
 6. Pending/unsent messages: not applicable. `MessageInput` does not insert
    optimistic rows — it publishes and waits for the broadcast event. Every
-   message in the buffer therefore has a server-confirmed `id` already.
+   message in the buffer therefore has a server-confirmed id already.
+
+The read-receipt query only returns a reader after that reader's
+`subscription.lastSeenAt` has been advanced past the target message's
+`createdAt`. To make that happen, `RoomEventsProvider` fires the
+`message.read` RPC whenever the user activates a room and whenever a new
+message lands in the currently-active room from a non-self sender (see §6.7).
+Without this client-side wiring `X` would stay at 0 forever — the backend's
+`message.read` handler exists precisely so the frontend can advance
+`lastSeenAt`.
 
 ## 5. Architecture
 
@@ -80,18 +88,27 @@ popover. This spec covers only the read-receipt item.
 ### 5.2 Modified files
 
 - `chat-frontend/src/lib/subjects.js` — add `readReceipt(account, roomId,
-  siteId)` builder mirroring `pkg/subject/subject.go`:
+  siteId)` and `messageRead(account, roomId, siteId)` builders mirroring
+  `pkg/subject/subject.go`:
   ```js
   export function readReceipt(account, roomId, siteId) {
     return `chat.user.${account}.request.room.${roomId}.${siteId}.message.read-receipt`
   }
+  export function messageRead(account, roomId, siteId) {
+    return `chat.user.${account}.request.room.${roomId}.${siteId}.message.read`
+  }
   ```
-- `chat-frontend/src/lib/subjects.test.js` — case for the new builder.
+- `chat-frontend/src/lib/subjects.test.js` — cases for the new builders.
 - `chat-frontend/src/components/MessageArea.jsx` — for own-messages
   (`msg.sender?.account === user.account`), render `<MessageActionMenu>` inside
   the `.message` row. Pass `room` and the message in.
 - `chat-frontend/src/components/MessageArea.test.jsx` — assert kebab presence
   for own messages and absence for others.
+- `chat-frontend/src/context/RoomEventsContext.jsx` — wire the `message.read`
+  RPC (see §6.7). `setActiveRoom(roomId)` and the DM/channel `new_message`
+  subscribers call a `markRoomRead(roomId)` helper.
+- `chat-frontend/src/context/RoomEventsContext.test.jsx` — cases for the
+  `message.read` wiring (see §7.4).
 - `chat-frontend/src/styles/index.css` — styles (see §5.4).
 
 ### 5.3 Data flow
@@ -110,7 +127,10 @@ MessageArea
 
 The component reads `user` and `request` from `useNats()`. RPC subject is
 `readReceipt(user.account, room.id, room.siteId ?? user.siteId)`. Request body
-is `{ messageId: msg.id }`. Response shape per
+is `{ messageId: msg.id ?? msg.messageId }` — the live `new_message` event
+serialises the id as `id` (`pkg/model/Message`) but `msg.history` returns
+`pkg/model/cassandra/Message` which uses `messageId`; both shapes coexist in
+the message buffer (live tail vs. history). Response shape per
 `docs/client-api.md` §Read Message Receipts:
 
 ```ts
@@ -204,12 +224,52 @@ initial values.
 - Reader list is rendered inside `.read-receipt-tooltip` as a `<ul>` of
   formatted names.
 
+### 6.7 `message.read` wiring in `RoomEventsProvider`
+
+This is cross-cutting state required for read-receipts to be meaningful — it
+lives in `RoomEventsContext`, not the menu component.
+
+A `markRoomRead(roomId)` helper inside the provider calls the `message.read`
+RPC fire-and-forget:
+
+```js
+const markRoomRead = useCallback((roomId) => {
+  if (!user || !roomId) return
+  const summary = stateRef.current.summaries.find((r) => r.id === roomId)
+  const siteId = summary?.siteId ?? user.siteId
+  request(messageRead(user.account, roomId, siteId), {}).catch(() => {})
+}, [user, request])
+```
+
+`markRoomRead` fires from two places:
+
+1. `setActiveRoom(roomId)` — when `roomId` is non-null. Activating a room is
+   the user's signal that they've seen everything up to "now"; the server
+   sets `subscription.lastSeenAt = now`.
+2. `new_message` subscribers (both the user-scoped DM subscription and each
+   channel-scoped subscription) — when the event's `roomId` matches
+   `stateRef.current.activeRoomId` **and** the sender is not the current user.
+   This keeps `lastSeenAt` advancing while the user has the room open.
+
+Self-read is filtered to avoid a meaningless extra round-trip: the sender's
+own `subscription.lastSeenAt` is irrelevant to read-receipts (the sender is
+always excluded from the result on the server side anyway).
+
+Request body is `{}` — `docs/client-api.md` §Mark Messages Read says the
+handler ignores any body content. Errors are swallowed; failure to update a
+read receipt is not a user-facing problem.
+
+The `useEffect` that owns the NATS subscriptions includes `markRoomRead` in
+its dependency array because the maybeMarkActiveRead helper closes over it.
+
 ## 7. Test plan
 
 ### 7.1 `subjects.test.js`
 
-- New case: `readReceipt('alice', 'room1', 'site1')` returns
+- `readReceipt('alice', 'room1', 'site1')` returns
   `chat.user.alice.request.room.room1.site1.message.read-receipt`.
+- `messageRead('alice', 'room1', 'site1')` returns
+  `chat.user.alice.request.room.room1.site1.message.read`.
 
 ### 7.2 `MessageActionMenu.test.jsx`
 
@@ -239,6 +299,9 @@ Cases:
 12. Subject-builder integration: assert `request` is called with the subject
     string from `readReceipt(user.account, room.id, room.siteId)` and the
     payload `{ messageId: msg.id }`.
+13. History-shape compatibility: a message with `messageId` but no `id`
+    (the `pkg/model/cassandra/Message` JSON shape returned by `msg.history`)
+    still produces `{ messageId: <id> }` in the RPC call.
 
 ### 7.3 `MessageArea.test.jsx`
 
@@ -247,7 +310,21 @@ Cases:
 - Other person's message → kebab is **not** rendered.
 - Existing message-rendering tests continue to pass.
 
-### 7.4 Out of scope
+### 7.4 `RoomEventsContext.test.jsx`
+
+Cases covering the `message.read` wiring described in §6.7:
+
+1. `setActiveRoom('g1')` fires the `message.read` RPC on
+   `chat.user.alice.request.room.g1.site-A.message.read` with body `{}`.
+2. `setActiveRoom(null)` does **not** fire `message.read`.
+3. A `new_message` event arriving in the active channel room fires
+   `message.read`.
+4. A `new_message` event arriving in a *non-active* room does **not** fire
+   `message.read`.
+5. A `new_message` event in the active room from the current user (self) does
+   **not** fire `message.read` (self-read filter).
+
+### 7.5 Out of scope
 
 - No NATS integration test. The RPC itself is covered in `room-service`'s
   integration tests.
@@ -273,9 +350,12 @@ Cases:
 | `chat-frontend/src/components/MessageActionMenu.test.jsx` | New |
 | `chat-frontend/src/components/MessageArea.jsx` | Render menu for own-messages |
 | `chat-frontend/src/components/MessageArea.test.jsx` | Kebab visibility cases |
-| `chat-frontend/src/lib/subjects.js` | Add `readReceipt` builder |
-| `chat-frontend/src/lib/subjects.test.js` | Case for `readReceipt` |
+| `chat-frontend/src/context/RoomEventsContext.jsx` | Wire `message.read` on activate / new-msg-in-active |
+| `chat-frontend/src/context/RoomEventsContext.test.jsx` | Cases for `message.read` wiring |
+| `chat-frontend/src/lib/subjects.js` | Add `readReceipt` + `messageRead` builders |
+| `chat-frontend/src/lib/subjects.test.js` | Cases for the new builders |
 | `chat-frontend/src/styles/index.css` | Menu / popover / tooltip styles |
 
-No backend, `pkg/`, or `docs/client-api.md` changes — the API doc already
-documents this RPC.
+No backend, `pkg/`, or `docs/client-api.md` changes — both RPCs are already
+documented (`message.read` in §Mark Messages Read; `message.read-receipt` in
+§Read Message Receipts).

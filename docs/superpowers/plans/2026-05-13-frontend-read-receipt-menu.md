@@ -1145,4 +1145,60 @@ Do NOT open a pull request unless the user explicitly asks. The branch is now re
 - **TDD discipline:** every task follows Red → Green → Commit. If a Red step accidentally passes, the test is wrong — fix it before implementing.
 - **Hooks rules:** all `useState` / `useEffect` / `useCallback` calls in `MessageActionMenu` must appear before the `if (!isOwnMessage) return null` early-return. The provided code already respects this; keep it that way if you refactor.
 - **`docs/client-api.md`:** no change is required. The RPC is already documented and the frontend is the consumer side. `CLAUDE.md` §5 only requires updating that doc when a *handler* changes.
-- **Out of scope:** no backend changes, no other message actions (Edit/Delete/Reply), no live read-receipt updates after the menu opens. These are all left for future work per the spec.
+- **Out of scope:** no other message actions (Edit/Delete/Reply), no live read-receipt updates after the menu opens. These are left for future work per the spec.
+
+---
+
+## Follow-up: Task 9 (post-#177 fixes, shipped in PR #180)
+
+Two bugs surfaced during the manual smoke-test of the merged PR #177 and were fixed in a follow-up PR (#180). Documented here so the spec → plan trail stays complete.
+
+**Files:**
+- Modify: `chat-frontend/src/lib/subjects.js`
+- Modify: `chat-frontend/src/lib/subjects.test.js`
+- Modify: `chat-frontend/src/components/MessageActionMenu.jsx`
+- Modify: `chat-frontend/src/components/MessageActionMenu.test.jsx`
+- Modify: `chat-frontend/src/context/RoomEventsContext.jsx`
+- Modify: `chat-frontend/src/context/RoomEventsContext.test.jsx`
+
+### Bug 1: Recipients' `lastSeenAt` never advanced
+
+Symptom: in a 3-person channel, Alice sends a message; Bob opens the channel; Alice re-clicks her kebab — still `Read by 0 of 2`.
+
+Cause: the web client never called the `message.read` RPC. The backend handler exists (`pkg/subject.MessageRead`) but had no caller in the frontend.
+
+Fix: `RoomEventsProvider` now fires `message.read` fire-and-forget when (a) `setActiveRoom(roomId)` selects a room, and (b) a `new_message` event arrives in the active room from a non-self sender. Implementation in spec §6.7. Tests in §7.4.
+
+- [x] **Step 1:** Add `messageRead(account, roomId, siteId)` to `subjects.js` and a unit test in `subjects.test.js`.
+- [x] **Step 2:** In `RoomEventsContext.jsx`:
+  - Import `messageRead` from `../lib/subjects`.
+  - Add a `markRoomRead` callback at provider scope (see spec §6.7 for the implementation).
+  - Inside the subscriptions `useEffect`, add a `maybeMarkActiveRead(roomId, senderAccount)` helper that calls `markRoomRead` only when `roomId === stateRef.current.activeRoomId` and `senderAccount !== user.account`.
+  - Call `maybeMarkActiveRead(evt.roomId, evt.message?.sender?.account)` inside both the DM and channel `new_message` handlers (after `safeDispatch`).
+  - Wrap `setActiveRoom` so it calls `markRoomRead(roomId)` when `roomId` is non-null.
+  - Add `markRoomRead` to the subscriptions `useEffect`'s dependency array.
+- [x] **Step 3:** Add 5 cases to `RoomEventsContext.test.jsx` per spec §7.4.
+
+### Bug 2: `invalid request: messageId is required` after reload
+
+Symptom: after refresh + login, clicking the kebab on a previously-sent message returned the server error `invalid request: messageId is required`.
+
+Cause: `msg.history` returns `pkg/model/cassandra/Message` whose id serialises as `json:"messageId"`. Live `new_message` events use `pkg/model/Message` (id serialises as `json:"id"`). The kebab handler sent `{ messageId: message.id }`, which was `undefined` for history-loaded rows.
+
+Fix: `MessageActionMenu.jsx` now reads `message.id ?? message.messageId`. Add a regression test that passes a history-shape message and asserts the RPC payload still contains the id.
+
+- [x] **Step 1:** Add a regression test in `MessageActionMenu.test.jsx` — render with `message={{ messageId: 'h1', sender: { account: 'alice' } }}` and assert the request is called with `{ messageId: 'h1' }`.
+- [x] **Step 2:** Change the request payload in `MessageActionMenu.jsx`:
+  ```js
+  const messageId = message.id ?? message.messageId
+  Promise.resolve(request(subject, { messageId }))
+  ```
+
+### Verification
+
+- [x] `npx vitest run` — 275/275 passing on the fix branch (the count is higher than this plan's 184/184 baseline because PR #178 added unrelated tests on `main`).
+- [ ] Manual smoke-test on the local stack:
+  1. Channel with Alice, Bob, Dave. Alice sends a message → kebab shows `Read by 0 of 2`.
+  2. Bob switches to the channel → `message.read` fires automatically.
+  3. Alice re-clicks her kebab → expect `Read by 1 of 2` with Bob in the tooltip.
+  4. Reload, log in as Alice, click kebab on the historical message → expect no `messageId is required` error.
