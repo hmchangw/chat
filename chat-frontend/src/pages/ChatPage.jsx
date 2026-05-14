@@ -44,6 +44,7 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
     const handler = (e) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault()
+        if (activeParent) closeThread()
         setInRoomSearchOpen(true)
       } else if (e.key === 'Escape') {
         setInRoomSearchOpen(false)
@@ -51,7 +52,7 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedRoom])
+  }, [selectedRoom, activeParent, closeThread])
 
   const handleInRoomJump = (msgId) => {
     if (selectedRoom && jumpToMessage) {
@@ -61,6 +62,7 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
 
   const handleThread = (msg) => {
     if (!selectedRoom || !msg) return
+    setInRoomSearchOpen(false)
     openThread({
       roomId: selectedRoom.id,
       siteId: selectedRoom.siteId,

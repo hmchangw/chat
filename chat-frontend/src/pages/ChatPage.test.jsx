@@ -210,6 +210,26 @@ describe('ChatPage — opening a thread', () => {
   })
 })
 
+describe('ChatPage — mutual exclusion', () => {
+  beforeEach(() => { closeThread.mockClear() })
+  afterEach(() => { mockActiveParent = null })
+
+  it('opening InRoomSearch (Ctrl-F) closes any open thread', () => {
+    mockActiveParent = { roomId: channel.id, messageId: 'p1' }
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    expect(closeThread).toHaveBeenCalled()
+  })
+
+  it('opening a thread closes InRoomSearch', () => {
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    expect(screen.getByText('in-room-search')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('fire-thread'))
+    expect(screen.queryByText('in-room-search')).not.toBeInTheDocument()
+  })
+})
+
 describe('ChatPage — close thread on room switch', () => {
   beforeEach(() => {
     closeThread.mockClear()
