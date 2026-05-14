@@ -5,13 +5,13 @@ vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 
-vi.mock('@/lib/oidcClient', () => ({
+vi.mock('@/api/auth/oidcClient', () => ({
   getOidcManager: vi.fn(),
 }))
 
 import OidcCallback from './OidcCallback'
 import { useNats } from '@/context/NatsContext'
-import { getOidcManager } from '@/lib/oidcClient'
+import { getOidcManager } from '@/api/auth/oidcClient'
 
 beforeEach(() => {
   useNats.mockReset()

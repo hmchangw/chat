@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNats } from '@/context/NatsContext'
 import { DEFAULT_SITE_ID, DEV_MODE } from '@/lib/runtimeConfig'
-import { getOidcManager } from '@/lib/oidcClient'
+import { getOidcManager } from '@/api/auth/oidcClient'
 import './style.css'
 
 export default function LoginPage() {

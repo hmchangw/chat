@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNats } from '@/context/NatsContext'
-import { getOidcManager } from '@/lib/oidcClient'
+import { getOidcManager } from '@/api/auth/oidcClient'
 
 // OidcCallback handles the post-redirect leg of the OIDC authorization-code
 // flow. It pulls the access token from oidc-client-ts, then hands it off to

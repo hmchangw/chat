@@ -1,7 +1,7 @@
 // OIDC client singleton for Keycloak (or any OIDC-compliant) login.
 // Uses authorization code flow with PKCE.
 import { UserManager, WebStorageStateStore } from 'oidc-client-ts'
-import { OIDC_CLIENT_ID, OIDC_ISSUER_URL } from './runtimeConfig'
+import { OIDC_CLIENT_ID, OIDC_ISSUER_URL } from '@/lib/runtimeConfig'
 
 let manager = null
 

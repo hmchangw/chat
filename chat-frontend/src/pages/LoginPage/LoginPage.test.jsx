@@ -10,14 +10,14 @@ vi.mock('@/lib/runtimeConfig', () => ({
   DEV_MODE: true,
 }))
 
-vi.mock('@/lib/oidcClient', () => ({
+vi.mock('@/api/auth/oidcClient', () => ({
   getOidcManager: vi.fn(),
 }))
 
 import LoginPage from './LoginPage'
 import { useNats } from '@/context/NatsContext'
 import * as runtimeConfig from '@/lib/runtimeConfig'
-import { getOidcManager } from '@/lib/oidcClient'
+import { getOidcManager } from '@/api/auth/oidcClient'
 
 beforeEach(() => {
   useNats.mockReset()
