@@ -134,6 +134,7 @@ export function ThreadEventsProvider({ children }) {
     sendReply,
     retryReply,
     dismissReply,
+    dispatch,
   }
 
   return <ThreadEventsContext.Provider value={value}>{children}</ThreadEventsContext.Provider>

@@ -1,14 +1,20 @@
-import { useEffect, useRef } from 'react'
-import { useThreadEvents } from '../context/ThreadEventsContext'
-import { useRoomEvents } from '../context/RoomEventsContext'
+import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../context/NatsContext'
+import { useThreadEvents } from '../context/ThreadEventsContext'
+import { useRoomEvents, useRoomDispatch } from '../context/RoomEventsContext'
+import { msgEdit, msgDelete } from '../lib/subjects'
 import MessageList from './messages/MessageList'
+import DeleteConfirmDialog from './messages/DeleteConfirmDialog'
 
 export default function ThreadMessageArea({ onReply }) {
-  const { activeParent, messages, hasLoadedHistory, historyLoading, historyError, retryReply, dismissReply } = useThreadEvents()
+  const { activeParent, messages, hasLoadedHistory, historyLoading, historyError,
+          retryReply, dismissReply, dispatch: threadDispatch } = useThreadEvents()
   const { messages: roomMessages } = useRoomEvents(activeParent?.roomId ?? null)
-  const { user } = useNats()
+  const roomDispatch = useRoomDispatch()
+  const { user, publish } = useNats()
   const bottomRef = useRef(null)
+  const [editingMessageId, setEditingMessageId] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
 
   // Resolve parent live from main feed buffer; fall back to a thin stub if scrolled out.
   const parent = activeParent
@@ -32,6 +38,43 @@ export default function ThreadMessageArea({ onReply }) {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages.length])
 
+  const isParent = (msgId) => activeParent && msgId === activeParent.messageId
+
+  const handleEdit = (msg) => setEditingMessageId(msg.id)
+  const handleEditCancel = () => setEditingMessageId(null)
+  const handleEditSubmit = (msg, newContent) => {
+    publish(msgEdit(user.account, activeParent.roomId, activeParent.siteId), {
+      messageId: msg.id, newMsg: newContent,
+    })
+    if (isParent(msg.id)) {
+      roomDispatch({
+        type: 'MESSAGE_EDITED_LOCAL', roomId: activeParent.roomId,
+        messageId: msg.id, content: newContent, editedAt: new Date().toISOString(),
+      })
+    } else {
+      threadDispatch({
+        type: 'REPLY_EDITED_LOCAL', messageId: msg.id,
+        content: newContent, editedAt: new Date().toISOString(),
+      })
+    }
+    setEditingMessageId(null)
+  }
+
+  const handleDelete = (msg) => setPendingDelete(msg)
+  const handleDeleteCancel = () => setPendingDelete(null)
+  const handleDeleteConfirm = () => {
+    if (!pendingDelete) return
+    publish(msgDelete(user.account, activeParent.roomId, activeParent.siteId), {
+      messageId: pendingDelete.id,
+    })
+    if (isParent(pendingDelete.id)) {
+      roomDispatch({ type: 'MESSAGE_DELETED_LOCAL', roomId: activeParent.roomId, messageId: pendingDelete.id })
+    } else {
+      threadDispatch({ type: 'REPLY_DELETED_LOCAL', messageId: pendingDelete.id })
+    }
+    setPendingDelete(null)
+  }
+
   if (!activeParent) return null
 
   const empty = hasLoadedHistory && !historyLoading && !historyError && messages.length === 0
@@ -44,14 +87,23 @@ export default function ThreadMessageArea({ onReply }) {
         historyLoading={historyLoading}
         historyError={historyError}
         context="thread"
+        parentMessageId={activeParent.messageId}
         currentUserAccount={user?.account}
+        editingMessageId={editingMessageId}
         emptyText={empty ? 'No replies yet — be the first to reply' : undefined}
         onReply={onReply}
+        onEdit={handleEdit}
+        onEditSubmit={handleEditSubmit}
+        onEditCancel={handleEditCancel}
+        onDelete={handleDelete}
         onRetry={retryReply}
         onDismiss={dismissReply}
         bottomRef={bottomRef}
         ariaLive="polite"
       />
+      {pendingDelete && (
+        <DeleteConfirmDialog onConfirm={handleDeleteConfirm} onCancel={handleDeleteCancel} />
+      )}
     </div>
   )
 }
