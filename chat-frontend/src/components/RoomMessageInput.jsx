@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '../context/NatsContext'
+import { useRoomDispatch } from '../context/RoomEventsContext'
 import { msgSend } from '../lib/subjects'
 import { generateMessageID } from '../lib/idgen'
 import { roomPrefix, roomDisplayName } from '../lib/roomFormat'
@@ -8,6 +9,7 @@ import MessageInputForm from './messages/MessageInputForm'
 
 export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
   const { user, publish } = useNats()
+  const dispatch = useRoomDispatch()
   const [text, setText] = useState('')
 
   const placeholder = room
@@ -17,12 +19,33 @@ export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
 
   const handleSubmit = () => {
     if (disabled || !text.trim()) return
+    const id = generateMessageID()
+    const content = text.trim()
     const payload = {
-      id: generateMessageID(),
-      content: text.trim(),
+      id,
+      content,
       requestId: uuidv4(),
     }
-    if (quotedTarget?.id) payload.quotedParentMessageId = quotedTarget.id
+    // Build an optimistic message that mirrors the server's broadcast shape
+    // (so MessageRow / QuotedBlock render it identically). The snapshot uses
+    // the server-side cassandra.QuotedParentMessage field names (messageId,
+    // sender.engName, msg) so a later broadcast for the same id is a no-op.
+    const optimistic = {
+      id,
+      content,
+      createdAt: new Date().toISOString(),
+      sender: { account: user.account, engName: user.engName },
+      _local: true,
+    }
+    if (quotedTarget?.id) {
+      payload.quotedParentMessageId = quotedTarget.id
+      optimistic.quotedParentMessage = {
+        messageId: quotedTarget.id,
+        sender: { engName: quotedTarget.senderName, account: quotedTarget.senderName },
+        msg: quotedTarget.content,
+      }
+    }
+    dispatch({ type: 'MESSAGE_SENT_LOCAL', roomId: room.id, message: optimistic })
     publish(msgSend(user.account, room.id, user.siteId), payload)
     setText('')
     onClearQuote?.()

@@ -297,6 +297,24 @@ export function roomEventsReducer(state, action) {
     case 'ROOMS_FAILED': {
       return { ...state, roomsError: action.error }
     }
+    case 'MESSAGE_SENT_LOCAL': {
+      // Optimistic append for the local user's own send. Dedupes by id so a
+      // later MESSAGE_RECEIVED for the same message is a no-op (appendBounded
+      // already handles this — the optimistic row stays put). The shape
+      // mirrors a real broadcast message but carries `_local: true` so any
+      // UI affordance can distinguish pending-server-confirm rows.
+      const msg = action.message
+      if (!msg || !msg.id) return state
+      const roomId = action.roomId
+      if (!roomId) return state
+      const prev = state.roomState[roomId] ?? emptyRoomState()
+      if (prev.messages.some((m) => m.id === msg.id)) return state
+      const messages = appendBounded(prev.messages, msg)
+      return {
+        ...state,
+        roomState: { ...state.roomState, [roomId]: { ...prev, messages } },
+      }
+    }
     case 'MESSAGE_EDITED_LOCAL': {
       const prev = state.roomState[action.roomId]
       if (!prev) return state

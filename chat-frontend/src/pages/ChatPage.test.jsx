@@ -65,6 +65,7 @@ vi.mock('../components/RoomMembersBadge', () => ({
 }))
 vi.mock('../context/RoomEventsContext', () => ({
   useRoomSummaries: () => ({ jumpToMessage: vi.fn() }),
+  useRoomDispatch: () => vi.fn(),
 }))
 const openThread = vi.fn()
 const closeThread = vi.fn()
@@ -167,6 +168,7 @@ describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
     viE2E.doMock('../components/LeaveRoomButton', () => ({ default: () => null }))
     viE2E.doMock('../context/RoomEventsContext', () => ({
       useRoomSummaries: () => ({ jumpToMessage: viE2E.fn() }),
+      useRoomDispatch: () => viE2E.fn(),
     }))
     viE2E.doMock('../components/RoomMembersBadge', () => ({ default: () => null }))
     // Use the real RoomMessageInput so we can assert on the publish payload.

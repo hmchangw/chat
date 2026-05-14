@@ -10,9 +10,13 @@ function excerpt(snapshot) {
 export default function QuotedBlock({ variant, snapshot, onClear, onClick }) {
   if (!snapshot) return null
   const deleted = !!snapshot.deleted
+  // Server-side snapshots (cassandra.QuotedParentMessage) carry `messageId`;
+  // optimistic / client-staged snapshots use `id`. Accept either so the
+  // click-to-jump works regardless of source.
+  const targetId = snapshot.messageId || snapshot.id
   const handleClick = () => {
-    if (deleted || !onClick) return
-    onClick(snapshot.id)
+    if (deleted || !onClick || !targetId) return
+    onClick(targetId)
   }
 
   if (variant === 'chip') {

@@ -475,6 +475,37 @@ describe('roomEventsReducer: buffer mode (jump-to-message)', () => {
   })
 })
 
+describe('MESSAGE_SENT_LOCAL', () => {
+  it('appends an optimistic message to the room buffer (creating room state if absent)', () => {
+    const out = roomEventsReducer(initialState, {
+      type: 'MESSAGE_SENT_LOCAL',
+      roomId: 'r1',
+      message: { id: 'opt-1', content: 'hi', _local: true },
+    })
+    expect(out.roomState.r1.messages).toEqual([{ id: 'opt-1', content: 'hi', _local: true }])
+  })
+
+  it('is a no-op when message.id already exists in the buffer (dedupe)', () => {
+    const seed = {
+      ...initialState,
+      roomState: { r1: { messages: [{ id: 'opt-1', content: 'first' }] } },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_SENT_LOCAL',
+      roomId: 'r1',
+      message: { id: 'opt-1', content: 'second' },
+    })
+    expect(out.roomState.r1.messages).toEqual([{ id: 'opt-1', content: 'first' }])
+  })
+
+  it('is a no-op when action.message has no id', () => {
+    const out = roomEventsReducer(initialState, {
+      type: 'MESSAGE_SENT_LOCAL', roomId: 'r1', message: { content: 'no id' },
+    })
+    expect(out).toBe(initialState)
+  })
+})
+
 describe('MESSAGE_EDITED_LOCAL', () => {
   it('replaces content + editedAt on the matching message in roomState[roomId].messages', () => {
     const seed = {
