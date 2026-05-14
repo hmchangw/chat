@@ -183,8 +183,8 @@ export function RoomEventsProvider({ children }) {
   }, [])
 
   const value = useMemo(
-    () => ({ state, loadHistory, setActiveRoom, jumpToMessage, resetToLiveTail }),
-    [state, loadHistory, setActiveRoom, jumpToMessage, resetToLiveTail]
+    () => ({ state, dispatch, loadHistory, setActiveRoom, jumpToMessage, resetToLiveTail }),
+    [state, dispatch, loadHistory, setActiveRoom, jumpToMessage, resetToLiveTail]
   )
 
   return <RoomEventsContext.Provider value={value}>{children}</RoomEventsContext.Provider>
@@ -197,7 +197,7 @@ function useRoomEventsInternal() {
 }
 
 export function useRoomEvents(roomId) {
-  const { state, loadHistory, jumpToMessage, resetToLiveTail } = useRoomEventsInternal()
+  const { state, dispatch, loadHistory, jumpToMessage, resetToLiveTail } = useRoomEventsInternal()
   const room = state.roomState[roomId]
   const load = useCallback(() => loadHistory(roomId), [loadHistory, roomId])
   const jump = useCallback(
@@ -216,8 +216,9 @@ export function useRoomEvents(roomId) {
       focusMessageId: room?.focusMessageId ?? null,
       jumpToMessage: jump,
       resetToLiveTail: reset,
+      dispatch,
     }),
-    [room, load, jump, reset]
+    [room, load, jump, reset, dispatch]
   )
 }
 
@@ -229,4 +230,10 @@ export function useRoomSummaries() {
     jumpToMessage,
     error: state.roomsError,
   }
+}
+
+export function useRoomDispatch() {
+  const ctx = useContext(RoomEventsContext)
+  if (!ctx) throw new Error('useRoomDispatch must be used inside RoomEventsProvider')
+  return ctx.dispatch
 }
