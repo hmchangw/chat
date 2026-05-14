@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useRoomSummaries } from '../context/RoomEventsContext'
+import { useThreadEvents } from '../context/ThreadEventsContext'
 import AppHeader from './AppHeader'
 import Sidebar from './Sidebar'
 import ChatPage from '../pages/ChatPage'
 import SearchResultsPane from '../pages/SearchResultsPane'
+import ThreadRightBar from './ThreadRightBar'
 
 export default function MainApp() {
   const { summaries, setActiveRoom, jumpToMessage } = useRoomSummaries()
+  const { activeParent } = useThreadEvents()
   const [selectedRoom, setSelectedRoom] = useState(null)
   const [searchQuery, setSearchQuery] = useState(null)
 
@@ -57,6 +60,7 @@ export default function MainApp() {
         ) : (
           <ChatPage selectedRoom={selectedRoom} onSelectRoom={handleSelectRoom} />
         )}
+        {activeParent && <ThreadRightBar />}
       </div>
     </div>
   )

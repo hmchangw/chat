@@ -1,6 +1,14 @@
 import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import MainApp from './MainApp'
+
+let mockActiveParent = null
+vi.mock('../context/ThreadEventsContext', () => ({
+  useThreadEvents: () => ({ activeParent: mockActiveParent }),
+}))
+vi.mock('./ThreadRightBar', () => ({
+  default: () => <aside>RIGHT-BAR</aside>,
+}))
 
 vi.mock('./AppHeader', () => ({
   default: ({ onSelectRoom, onEnterSearch }) => (
@@ -76,5 +84,21 @@ describe('MainApp', () => {
     fireEvent.click(screen.getByText('header-enter-search'))
     fireEvent.click(screen.getByText('close-results'))
     expect(screen.getByText('page:none')).toBeInTheDocument()
+  })
+})
+
+describe('MainApp — ThreadRightBar mount', () => {
+  beforeEach(() => { mockActiveParent = null })
+
+  it('does not mount ThreadRightBar when no thread is active', () => {
+    mockActiveParent = null
+    render(<MainApp />)
+    expect(screen.queryByText('RIGHT-BAR')).not.toBeInTheDocument()
+  })
+
+  it('mounts ThreadRightBar when activeParent is set', () => {
+    mockActiveParent = { messageId: 'p1' }
+    render(<MainApp />)
+    expect(screen.getByText('RIGHT-BAR')).toBeInTheDocument()
   })
 })

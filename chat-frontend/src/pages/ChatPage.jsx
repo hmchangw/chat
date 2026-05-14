@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useRoomSummaries } from '../context/RoomEventsContext'
+import { useThreadEvents } from '../context/ThreadEventsContext'
 import RoomMessageArea from '../components/RoomMessageArea'
 import RoomMessageInput from '../components/RoomMessageInput'
 import ManageMembersDialog from '../components/ManageMembersDialog'
@@ -10,6 +11,7 @@ import { roomPrefix, roomDisplayName } from '../lib/roomFormat'
 
 export default function ChatPage({ selectedRoom, onSelectRoom }) {
   const { jumpToMessage } = useRoomSummaries()
+  const { openThread } = useThreadEvents()
   const [showMembers, setShowMembers] = useState(false)
   const [inRoomSearchOpen, setInRoomSearchOpen] = useState(false)
   // Bumped each time ManageMembersDialog closes so RoomMembersBadge refetches
@@ -50,6 +52,16 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
     }
   }
 
+  const handleThread = (msg) => {
+    if (!selectedRoom || !msg) return
+    openThread({
+      roomId: selectedRoom.id,
+      siteId: selectedRoom.siteId,
+      messageId: msg.id,
+      createdAtMs: new Date(msg.createdAt).getTime(),
+    })
+  }
+
   const handleReply = (msg) => {
     setQuotedTarget({
       id: msg.id,
@@ -80,7 +92,7 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
         <div className="chat-main-content">
           <RoomMessageArea
             room={selectedRoom}
-            onThread={() => { /* wired in Chapter 7 */ }}
+            onThread={handleThread}
             onReply={handleReply}
           />
           <RoomMessageInput room={selectedRoom} quotedTarget={quotedTarget} onClearQuote={() => setQuotedTarget(null)} />

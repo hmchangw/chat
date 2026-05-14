@@ -1,14 +1,20 @@
 import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import ChatPage from './ChatPage'
 import { vi as viE2E } from 'vitest'
 
 vi.mock('../components/RoomMessageArea', () => ({
-  default: ({ onReply }) => (
+  default: ({ onReply, onThread }) => (
     <div>
       area
       <button type="button" onClick={() => onReply?.({ id: 'm-orig', sender: { account: 'alice' }, content: 'hello there' })}>
         fire-reply
+      </button>
+      <button
+        type="button"
+        onClick={() => onThread?.({ id: 'm-thread', createdAt: '2026-05-13T10:00:00.000Z' })}
+      >
+        fire-thread
       </button>
     </div>
   ),
@@ -63,8 +69,12 @@ vi.mock('../components/RoomMembersBadge', () => ({
 vi.mock('../context/RoomEventsContext', () => ({
   useRoomSummaries: () => ({ jumpToMessage: vi.fn() }),
 }))
+const openThread = vi.fn()
+vi.mock('../context/ThreadEventsContext', () => ({
+  useThreadEvents: () => ({ openThread, activeParent: null }),
+}))
 
-const channel = { id: 'r1', name: 'general', type: 'channel', userCount: 7 }
+const channel = { id: 'r1', name: 'general', type: 'channel', userCount: 7, siteId: 's1' }
 const dm = { id: 'r2', name: 'alice & bob', type: 'dm', userCount: 2 }
 
 describe('ChatPage (middle column)', () => {
@@ -180,5 +190,20 @@ describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
         quotedParentMessageId: 'orig',
       }
     )
+  })
+})
+
+describe('ChatPage — opening a thread', () => {
+  beforeEach(() => openThread.mockClear())
+
+  it('clicking Thread on a message calls openThread with full parent identity', () => {
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.click(screen.getByText('fire-thread'))
+    expect(openThread).toHaveBeenCalledWith({
+      roomId: 'r1',
+      siteId: channel.siteId,
+      messageId: 'm-thread',
+      createdAtMs: Date.parse('2026-05-13T10:00:00.000Z'),
+    })
   })
 })
