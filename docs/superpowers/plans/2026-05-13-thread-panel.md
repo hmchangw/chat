@@ -5825,7 +5825,7 @@ describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
 
   it('on successful sendReply, dispatches OWN_THREAD_REPLY_SENT to RoomEventsContext', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    publish.mockResolvedValue()
+    // publish is sync void — default no-op is success.
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
@@ -5836,9 +5836,9 @@ describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
     })
   })
 
-  it('does NOT dispatch when publish fails', async () => {
+  it('does NOT dispatch when publish throws synchronously', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    publish.mockRejectedValue(new Error('nope'))
+    publish.mockImplementation(() => { throw new Error('Not connected') })
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
@@ -5861,11 +5861,13 @@ Inside `ThreadEventsProvider`:
 const roomDispatch = useRoomDispatch()
 ```
 
-Inside `sendReply`, after the `await publishReply` succeeds:
+Inside `sendReply` — `publishReply` is SYNCHRONOUS (sync `publish` wrapped in try/catch). After it returns successfully (no sync throw), dispatch the cross-context action:
 
 ```jsx
 try {
-  await publishReply(id, content.trim(), opts)
+  publishReply(id, content.trim(), opts)
+  // Cross-dispatch on the reducer of the room that owns this thread parent.
+  // No await — publish is sync void in NatsContext.
   if (parent) {
     roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', roomId: parent.roomId, parentId: parent.messageId })
   }
@@ -5878,14 +5880,15 @@ Same for `retryReply`:
 
 ```jsx
 try {
-  await publishReply(messageId, row.content, …)
+  publishReply(messageId, row.content, row.quotedParentMessage ? { quotedParentMessageId: row.quotedParentMessage.id } : undefined)
+  const parent = stateRef.current.activeParent
   if (parent) {
     roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', roomId: parent.roomId, parentId: parent.messageId })
   }
 } catch (err) { … }
 ```
 
-(Read the active parent at the top of each function from `stateRef.current.activeParent`.)
+`parent` is read from `stateRef.current.activeParent` at the top of each function (sendReply already does this; retryReply needs it too — add a `const parent = stateRef.current.activeParent` line at the top of retryReply if not present).
 
 - [ ] **Step 4: Run the tests**
 
