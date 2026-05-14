@@ -15,7 +15,10 @@ export default function ThreadMessageArea({ onReply }) {
   // useRoomSummaries exposes the unbound 2-arg jumpToMessage(roomId, msgId);
   // we need that here because the click target's room is activeParent.roomId,
   // which may differ from whatever room the user is currently viewing.
-  const { jumpToMessage } = useRoomSummaries()
+  // We also resolve the room summary here so MessageList can pass it down
+  // to MessageActionMenu (the kebab needs room.id + siteId for read-receipts).
+  const { summaries, jumpToMessage } = useRoomSummaries()
+  const room = (summaries ?? []).find((r) => r.id === activeParent?.roomId) ?? null
   const { user, publish } = useNats()
   const bottomRef = useRef(null)
   const [editingMessage, setEditingMessage] = useState(null)
@@ -89,6 +92,7 @@ export default function ThreadMessageArea({ onReply }) {
     <div className="thread-message-area">
       <MessageList
         messages={combined}
+        room={room}
         hasLoadedHistory={hasLoadedHistory}
         historyLoading={historyLoading}
         historyError={historyError}
