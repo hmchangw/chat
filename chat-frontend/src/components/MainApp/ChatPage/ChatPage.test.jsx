@@ -98,16 +98,18 @@ describe('ChatPage (middle column)', () => {
     expect(screen.queryByRole('button', { name: /leave/i })).not.toBeInTheDocument()
   })
 
-  it('clicking the badge opens the members dialog', () => {
+  // ManageMembersDialog + InRoomSearch are lazy-loaded — assertions
+  // after the opening event use findBy* to await the chunk resolving.
+  it('clicking the badge opens the members dialog', async () => {
     render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /^members \(7\)$/i }))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
   })
 
-  it('Ctrl-F opens InRoomSearch; Esc closes it', () => {
+  it('Ctrl-F opens InRoomSearch; Esc closes it', async () => {
     render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
     fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
-    expect(screen.getByText('in-room-search')).toBeInTheDocument()
+    expect(await screen.findByText('in-room-search')).toBeInTheDocument()
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.queryByText('in-room-search')).not.toBeInTheDocument()
   })
@@ -222,10 +224,10 @@ describe('ChatPage — mutual exclusion', () => {
     expect(closeThread).toHaveBeenCalled()
   })
 
-  it('opening a thread closes InRoomSearch', () => {
+  it('opening a thread closes InRoomSearch', async () => {
     render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
     fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
-    expect(screen.getByText('in-room-search')).toBeInTheDocument()
+    expect(await screen.findByText('in-room-search')).toBeInTheDocument()
     fireEvent.click(screen.getByText('fire-thread'))
     expect(screen.queryByText('in-room-search')).not.toBeInTheDocument()
   })

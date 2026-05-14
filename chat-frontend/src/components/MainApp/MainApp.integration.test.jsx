@@ -126,9 +126,10 @@ describe('MainApp — integration: Thread button → ThreadRightBar mount (REAL 
     })
 
     // ThreadRightBar should now be in the DOM, with the real ThreadMessageArea
-    // and ThreadMessageInput mounted inside it. If a real renderer throws,
-    // jsdom surfaces the error and this test fails with a stack trace.
+    // and ThreadMessageInput mounted inside it. Lazy-loaded so we await the
+    // chunk. If a real renderer throws, jsdom surfaces the error and this
+    // test fails with a stack trace.
+    expect(await screen.findByRole('button', { name: /close thread/i })).toBeInTheDocument()
     expect(container.querySelector('aside.thread-rightbar')).not.toBeNull()
-    expect(screen.getByRole('button', { name: /close thread/i })).toBeInTheDocument()
   })
 })

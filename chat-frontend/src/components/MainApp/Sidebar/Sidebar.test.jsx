@@ -26,20 +26,23 @@ describe('Sidebar', () => {
     expect(onSelectRoom).toHaveBeenCalledWith({ id: 'r1' })
   })
 
-  it('opens CreateRoomDialog when "+ Create Room" is clicked, closes via dialog', () => {
+  // CreateRoomDialog is lazy-loaded — fireEvent.click triggers the
+  // import but the dialog only mounts after the promise resolves, so
+  // the assertions below use findByRole/findByText to await it.
+  it('opens CreateRoomDialog when "+ Create Room" is clicked, closes via dialog', async () => {
     render(<Sidebar selectedRoomId={null} onSelectRoom={() => {}} />)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /create room/i }))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
     fireEvent.click(screen.getByText('close-create'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('after CreateRoomDialog reports onCreated, dispatches onSelectRoom with the new room', () => {
+  it('after CreateRoomDialog reports onCreated, dispatches onSelectRoom with the new room', async () => {
     const onSelectRoom = vi.fn()
     render(<Sidebar selectedRoomId={null} onSelectRoom={onSelectRoom} />)
     fireEvent.click(screen.getByRole('button', { name: /create room/i }))
-    fireEvent.click(screen.getByText('did-create'))
+    fireEvent.click(await screen.findByText('did-create'))
     expect(onSelectRoom).toHaveBeenCalledWith({ id: 'new-room' })
   })
 })

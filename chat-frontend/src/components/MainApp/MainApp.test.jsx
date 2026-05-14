@@ -72,17 +72,19 @@ describe('MainApp', () => {
     expect(screen.getByText('page:r-from-side')).toBeInTheDocument()
   })
 
-  it('entering a search query swaps ChatPage for SearchResultsPane', () => {
+  // SearchResultsPane + ThreadRightBar are lazy-loaded — assertions
+  // that follow the opening event use findBy* to await the chunk.
+  it('entering a search query swaps ChatPage for SearchResultsPane', async () => {
     render(<MainApp />)
     fireEvent.click(screen.getByText('header-enter-search'))
-    expect(screen.getByText('results:hello')).toBeInTheDocument()
+    expect(await screen.findByText('results:hello')).toBeInTheDocument()
     expect(screen.queryByText(/^page:/)).not.toBeInTheDocument()
   })
 
-  it('closing search results restores ChatPage', () => {
+  it('closing search results restores ChatPage', async () => {
     render(<MainApp />)
     fireEvent.click(screen.getByText('header-enter-search'))
-    fireEvent.click(screen.getByText('close-results'))
+    fireEvent.click(await screen.findByText('close-results'))
     expect(screen.getByText('page:none')).toBeInTheDocument()
   })
 })
@@ -96,9 +98,9 @@ describe('MainApp — ThreadRightBar mount', () => {
     expect(screen.queryByText('RIGHT-BAR')).not.toBeInTheDocument()
   })
 
-  it('mounts ThreadRightBar when activeParent is set', () => {
+  it('mounts ThreadRightBar when activeParent is set', async () => {
     mockActiveParent = { messageId: 'p1' }
     render(<MainApp />)
-    expect(screen.getByText('RIGHT-BAR')).toBeInTheDocument()
+    expect(await screen.findByText('RIGHT-BAR')).toBeInTheDocument()
   })
 })

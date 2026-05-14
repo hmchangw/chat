@@ -1,7 +1,10 @@
-import { useState } from 'react'
+import { Suspense, lazy, useState } from 'react'
 import RoomList from './RoomList/RoomList'
-import CreateRoomDialog from './CreateRoomDialog/CreateRoomDialog'
 import './style.css'
+
+// CreateRoomDialog pulls in MemberPicker + its search + the dialog
+// primitives — split it out so it only ships when the user opens it.
+const CreateRoomDialog = lazy(() => import('./CreateRoomDialog/CreateRoomDialog'))
 
 export default function Sidebar({ selectedRoomId, onSelectRoom }) {
   const [showCreateRoom, setShowCreateRoom] = useState(false)
@@ -22,10 +25,12 @@ export default function Sidebar({ selectedRoomId, onSelectRoom }) {
         + Create Room
       </button>
       {showCreateRoom && (
-        <CreateRoomDialog
-          onClose={() => setShowCreateRoom(false)}
-          onCreated={handleCreated}
-        />
+        <Suspense fallback={null}>
+          <CreateRoomDialog
+            onClose={() => setShowCreateRoom(false)}
+            onCreated={handleCreated}
+          />
+        </Suspense>
       )}
     </aside>
   )

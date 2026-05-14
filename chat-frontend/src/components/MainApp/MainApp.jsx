@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 import { useRoomSummaries } from '@/context/RoomEventsContext'
 import { useThreadEvents } from '@/context/ThreadEventsContext'
 import AppHeader from './AppHeader/AppHeader'
 import Sidebar from './Sidebar/Sidebar'
 import ChatPage from './ChatPage/ChatPage'
-import SearchResultsPane from './SearchResultsPane/SearchResultsPane'
-import ThreadRightBar from './ThreadRightBar/ThreadRightBar'
 import './style.css'
+
+// SearchResultsPane and ThreadRightBar are conditional: only rendered
+// when the user opens search or expands a thread. Splitting them out
+// keeps them out of the initial JS bundle — first paint ships only
+// header / sidebar / chat.
+const SearchResultsPane = lazy(() => import('./SearchResultsPane/SearchResultsPane'))
+const ThreadRightBar = lazy(() => import('./ThreadRightBar/ThreadRightBar'))
 
 export default function MainApp() {
   const { summaries, setActiveRoom, jumpToMessage } = useRoomSummaries()
@@ -52,16 +57,22 @@ export default function MainApp() {
       <div className="app-row">
         <Sidebar selectedRoomId={selectedRoom?.id ?? null} onSelectRoom={handleSelectRoom} />
         {searchQuery ? (
-          <SearchResultsPane
-            query={searchQuery}
-            onClose={() => setSearchQuery(null)}
-            onSelectRoom={handleSelectRoom}
-            onJumpToMessage={handleJumpToMessage}
-          />
+          <Suspense fallback={null}>
+            <SearchResultsPane
+              query={searchQuery}
+              onClose={() => setSearchQuery(null)}
+              onSelectRoom={handleSelectRoom}
+              onJumpToMessage={handleJumpToMessage}
+            />
+          </Suspense>
         ) : (
           <ChatPage selectedRoom={selectedRoom} onSelectRoom={handleSelectRoom} />
         )}
-        {activeParent && <ThreadRightBar />}
+        {activeParent && (
+          <Suspense fallback={null}>
+            <ThreadRightBar />
+          </Suspense>
+        )}
       </div>
     </div>
   )

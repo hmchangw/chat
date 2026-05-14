@@ -1,13 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { useRoomSummaries } from '@/context/RoomEventsContext'
 import { useThreadEvents } from '@/context/ThreadEventsContext'
 import RoomMessageArea from './RoomMessageArea/RoomMessageArea'
 import RoomMessageInput from './RoomMessageInput/RoomMessageInput'
-import ManageMembersDialog from './ManageMembersDialog/ManageMembersDialog'
-import InRoomSearch from './InRoomSearch/InRoomSearch'
 import RoomMembersBadge from './RoomMembersBadge/RoomMembersBadge'
 import { roomPrefix, roomDisplayName } from '@/lib/roomFormat'
 import './style.css'
+
+// Gated panels: only render after the user opens them. Splitting these
+// keeps the member-roster + search-results trees out of the initial
+// chat bundle.
+const ManageMembersDialog = lazy(() => import('./ManageMembersDialog/ManageMembersDialog'))
+const InRoomSearch = lazy(() => import('./InRoomSearch/InRoomSearch'))
 
 export default function ChatPage({ selectedRoom, onSelectRoom }) {
   const { jumpToMessage } = useRoomSummaries()
@@ -115,21 +119,25 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
           <RoomMessageInput room={selectedRoom} quotedTarget={quotedTarget} onClearQuote={() => setQuotedTarget(null)} />
         </div>
         {inRoomSearchOpen && selectedRoom && (
-          <InRoomSearch
-            roomId={selectedRoom.id}
-            onClose={() => setInRoomSearchOpen(false)}
-            onJumpToMessage={handleInRoomJump}
-          />
+          <Suspense fallback={null}>
+            <InRoomSearch
+              roomId={selectedRoom.id}
+              onClose={() => setInRoomSearchOpen(false)}
+              onJumpToMessage={handleInRoomJump}
+            />
+          </Suspense>
         )}
       </div>
       {showMembers && selectedRoom && (
-        <ManageMembersDialog
-          room={selectedRoom}
-          onClose={() => {
-            setShowMembers(false)
-            setMembersRefreshKey((k) => k + 1)
-          }}
-        />
+        <Suspense fallback={null}>
+          <ManageMembersDialog
+            room={selectedRoom}
+            onClose={() => {
+              setShowMembers(false)
+              setMembersRefreshKey((k) => k + 1)
+            }}
+          />
+        </Suspense>
       )}
     </main>
   )
