@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import RoomMessageArea from './RoomMessageArea'
 import { BUFFER_MODE } from '../lib/roomEventsReducer'
@@ -6,10 +6,13 @@ import { BUFFER_MODE } from '../lib/roomEventsReducer'
 const loadHistory = vi.fn(async () => {})
 const resetToLiveTail = vi.fn()
 const jumpToMessage = vi.fn()
+const dispatch = vi.fn()
 
 vi.mock('../context/RoomEventsContext', () => ({
   useRoomEvents: (roomId) => ({
-    messages: roomId === 'r1' ? [{ id: 'a', content: 'hi', createdAt: '2026-05-13T10:00:00Z' }] : [],
+    messages: roomId === 'r1' ? [
+      { id: 'a', content: 'hi', createdAt: '2026-05-13T10:00:00Z', sender: { account: 'alice' } },
+    ] : [],
     hasLoadedHistory: roomId === 'r1',
     historyError: null,
     loadHistory,
@@ -18,16 +21,27 @@ vi.mock('../context/RoomEventsContext', () => ({
     focusMessageId: null,
     resetToLiveTail,
     jumpToMessage,
+    dispatch,
   }),
 }))
+
+const publish = vi.fn()
+vi.mock('../context/NatsContext', () => ({
+  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
+}))
+
 vi.mock('./messages/MessageList', () => ({
-  default: ({ messages, emptyText, onThread, onReply, onJumpToMessage }) => (
+  default: ({ messages, onEdit, onDelete, onEditSubmit, onEditCancel, editingMessageId, onThread, onReply, onJumpToMessage }) => (
     <div data-testid="list">
       <span>count:{messages.length}</span>
+      <span>editing:{editingMessageId ?? 'none'}</span>
       <button type="button" onClick={() => onThread?.({ id: 'a' })}>fire-thread</button>
       <button type="button" onClick={() => onReply?.({ id: 'a' })}>fire-reply</button>
       <button type="button" onClick={() => onJumpToMessage?.('a')}>fire-jump</button>
-      <span>empty:{emptyText}</span>
+      <button type="button" onClick={() => onEdit?.({ id: 'a' })}>fire-edit</button>
+      <button type="button" onClick={() => onDelete?.({ id: 'a', createdAt: '2026-05-13T10:00:00Z' })}>fire-delete</button>
+      <button type="button" onClick={() => onEditSubmit?.({ id: 'a', createdAt: '2026-05-13T10:00:00Z' }, 'new text')}>fire-edit-submit</button>
+      <button type="button" onClick={() => onEditCancel?.()}>fire-edit-cancel</button>
     </div>
   ),
 }))
@@ -67,5 +81,68 @@ describe('RoomMessageArea', () => {
     render(<RoomMessageArea room={room} onThread={() => {}} onReply={() => {}} />)
     fireEvent.click(screen.getByText('fire-jump'))
     expect(jumpToMessage).toHaveBeenCalledWith('a')
+  })
+})
+
+describe('RoomMessageArea — Edit', () => {
+  beforeEach(() => { publish.mockClear(); dispatch.mockClear() })
+
+  it('entering edit mode passes editingMessageId to MessageList', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-edit'))
+    expect(screen.getByText('editing:a')).toBeInTheDocument()
+  })
+
+  it('cancelling edit mode resets editingMessageId', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-edit'))
+    fireEvent.click(screen.getByText('fire-edit-cancel'))
+    expect(screen.getByText('editing:none')).toBeInTheDocument()
+  })
+
+  it('submitting edit publishes msg.edit and dispatches MESSAGE_EDITED_LOCAL', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-edit'))
+    fireEvent.click(screen.getByText('fire-edit-submit'))
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.request.room.r1.s1.msg.edit',
+      { messageId: 'a', newMsg: 'new text' }
+    )
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'MESSAGE_EDITED_LOCAL', roomId: 'r1', messageId: 'a', content: 'new text',
+    }))
+    expect(screen.getByText('editing:none')).toBeInTheDocument()
+  })
+})
+
+describe('RoomMessageArea — Delete', () => {
+  beforeEach(() => { publish.mockClear(); dispatch.mockClear() })
+
+  it('clicking delete opens the confirm dialog', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-delete'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('cancelling the dialog leaves no RPC and no dispatch', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-delete'))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /cancel/i }))
+    expect(publish).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
+  it('confirming publishes msg.delete and dispatches MESSAGE_DELETED_LOCAL', () => {
+    render(<RoomMessageArea room={room} />)
+    fireEvent.click(screen.getByText('fire-delete'))
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.request.room.r1.s1.msg.delete',
+      { messageId: 'a' }
+    )
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'MESSAGE_DELETED_LOCAL', roomId: 'r1', messageId: 'a',
+    })
   })
 })

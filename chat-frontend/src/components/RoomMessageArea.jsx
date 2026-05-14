@@ -1,9 +1,13 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useNats } from '../context/NatsContext'
 import { useRoomEvents } from '../context/RoomEventsContext'
 import { BUFFER_MODE } from '../lib/roomEventsReducer'
+import { msgEdit, msgDelete } from '../lib/subjects'
 import MessageList from './messages/MessageList'
+import DeleteConfirmDialog from './messages/DeleteConfirmDialog'
 
 export default function RoomMessageArea({ room, onThread, onReply }) {
+  const { user, publish } = useNats()
   const {
     messages,
     hasLoadedHistory,
@@ -14,8 +18,13 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
     focusMessageId,
     resetToLiveTail,
     jumpToMessage,
+    dispatch,
   } = useRoomEvents(room?.id ?? null)
   const bottomRef = useRef(null)
+  const [editingMessageId, setEditingMessageId] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
+
+  useEffect(() => { setEditingMessageId(null); setPendingDelete(null) }, [room?.id])
 
   useEffect(() => {
     if (!room) return
@@ -32,6 +41,40 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [bufferMode])
+
+  const handleEdit = (msg) => setEditingMessageId(msg.id)
+  const handleEditCancel = () => setEditingMessageId(null)
+  const handleEditSubmit = (msg, newContent) => {
+    // Server: EditMessageRequest{ MessageID, NewMsg }. No createdAt, no requestId.
+    publish(msgEdit(user.account, room.id, user.siteId), {
+      messageId: msg.id,
+      newMsg: newContent,
+    })
+    dispatch({
+      type: 'MESSAGE_EDITED_LOCAL',
+      roomId: room.id,
+      messageId: msg.id,
+      content: newContent,
+      editedAt: new Date().toISOString(),
+    })
+    setEditingMessageId(null)
+  }
+
+  const handleDelete = (msg) => setPendingDelete(msg)
+  const handleDeleteCancel = () => setPendingDelete(null)
+  const handleDeleteConfirm = () => {
+    if (!pendingDelete) return
+    // Server: DeleteMessageRequest{ MessageID }.
+    publish(msgDelete(user.account, room.id, user.siteId), {
+      messageId: pendingDelete.id,
+    })
+    dispatch({
+      type: 'MESSAGE_DELETED_LOCAL',
+      roomId: room.id,
+      messageId: pendingDelete.id,
+    })
+    setPendingDelete(null)
+  }
 
   if (!room) {
     return (
@@ -50,8 +93,14 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
         historyError={historyError}
         context="main"
         focusMessageId={focusMessageId}
+        currentUserAccount={user?.account}
+        editingMessageId={editingMessageId}
         onThread={onThread}
         onReply={onReply}
+        onEdit={handleEdit}
+        onEditSubmit={handleEditSubmit}
+        onEditCancel={handleEditCancel}
+        onDelete={handleDelete}
         onJumpToMessage={(msgId) => jumpToMessage?.(msgId)?.catch?.(() => {})}
         bottomRef={bottomRef}
       />
@@ -61,6 +110,9 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
             Jump to latest ({pendingCount} new)
           </button>
         </div>
+      )}
+      {pendingDelete && (
+        <DeleteConfirmDialog onConfirm={handleDeleteConfirm} onCancel={handleDeleteCancel} />
       )}
     </div>
   )

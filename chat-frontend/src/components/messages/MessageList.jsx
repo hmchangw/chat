@@ -10,8 +10,14 @@ export default function MessageList({
   emptyText,
   context,
   focusMessageId,
+  currentUserAccount,
+  editingMessageId,
   onThread,
   onReply,
+  onEdit,
+  onEditSubmit,
+  onEditCancel,
+  onDelete,
   onJumpToMessage,
   bottomRef,
   ariaLive,
@@ -47,8 +53,14 @@ export default function MessageList({
           message={msg}
           room={room}
           context={context}
+          isOwn={!!currentUserAccount && msg.sender?.account === currentUserAccount}
+          editing={editingMessageId === msg.id}
           onThread={onThread}
           onReply={onReply}
+          onEdit={onEdit}
+          onEditSubmit={onEditSubmit}
+          onEditCancel={onEditCancel}
+          onDelete={onDelete}
           onJumpToMessage={onJumpToMessage}
         />
       ))}
