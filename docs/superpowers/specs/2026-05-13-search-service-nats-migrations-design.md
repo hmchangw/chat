@@ -18,7 +18,7 @@ The four endpoints, with their target NATS subjects:
 | `GET /api/v3/apps` | `chat.user.{account}.request.search.apps` | **new** |
 | `GET /api/v3/messages` | `chat.user.{account}.request.search.messages` | extend existing |
 | `GET /api/v3/users` | `chat.user.{account}.request.search.users` | **new** |
-| `GET /api/v3/subscriptions` | `chat.user.{account}.request.search.subscriptions` | rename + reshape existing `search.rooms` |
+| `GET /api/v3/subscriptions` | `chat.user.{account}.request.search.rooms` | reshape existing endpoint (subject unchanged) |
 
 All four migrations land on the same branch as one unit of work.
 
@@ -33,7 +33,7 @@ All four migrations land on the same branch as one unit of work.
 | `search.apps` | `model.App` | apps the caller has subscribed to (enforced via pipeline `$lookup subscriptions`) | name + optional `assistant.enabled` |
 | `search.messages` | `model.SearchMessage` | rooms the caller is a member of (enforced via Valkey restricted-rooms cache + ES user-room index) | content (+ optional `RoomIDs` scope) |
 | `search.users` | `model.SearchUser` | the caller's company (enforced by the third-party HR endpoint) | name/account (third-party-defined) |
-| `search.subscriptions` | `model.SearchSubscription` | the caller's room subscriptions (enforced by ES `spotlight` index doc-routing) | name + `RoomType` |
+| `search.rooms` | `model.SearchRoom` | the caller's room subscriptions (enforced by ES `spotlight` index doc-routing) | name + `RoomType` |
 
 No search RPC ever returns data outside the caller's reach. There is no
 "global" search — the access guard is part of the query, not a separate
@@ -61,7 +61,7 @@ handler {
 | `search.apps` | Mongo (only) |
 | `search.messages` | ES + Valkey + Mongo (hydrate users/rooms) |
 | `search.users` | Resty HTTP (third-party) |
-| `search.subscriptions` | ES + Mongo (hydrate `SearchSubscription`) |
+| `search.rooms` | ES + Mongo (hydrate `SearchRoom`) |
 
 ## 4. Decisions
 
@@ -76,7 +76,7 @@ handler {
 | D7 | `model.App` not extended in this branch. | User will extend the model in a follow-up. The pipeline's terminal `$project` mirrors whatever `model.App` exposes at the time. |
 | D8 | `search.messages` does ES + Mongo enrichment + final transformation in a single RPC. `MessageSearchHit` becomes internal-only. | Avoids forcing the caller into two round-trips (one for ES, one to enrich users/rooms). Same architectural pattern as the apps pipeline (`$lookup` enrichment inside the search call). |
 | D9 | `search.users` is a thin proxy to a third-party HR endpoint. No Mongo read; no `employee` collection involvement in this spec. | The third-party owns the search index and the company-scoping logic. |
-| D10 | `search.subscriptions` renames the existing `search.rooms` subject and response type. **Breaking change** accepted (no live consumers). | Avoids landing the new `[]*SearchSubscription` response shape under the misleading `rooms` name. Cheaper to rename now than after wider adoption. |
+| D10 | `search.rooms` reshapes the existing endpoint — subject stays `search.rooms`; the response wire shape changes to `{rooms: []SearchRoom}` (Mongo-hydrated). **Breaking change to the response shape only** (subject unchanged). | Preserves the existing subject name for client continuity; only the per-hit projection (Mongo-hydrated SearchRoom) and envelope key (`rooms`) change. |
 
 ## 5. Wire Contracts
 
@@ -169,13 +169,13 @@ into a top-level JSON array.
 **Validation:** `strings.TrimSpace(Query)` — if empty, return
 `natsrouter.ErrBadRequest("query is required")`.
 
-### 5.4 `search.subscriptions` (renamed from `search.rooms`)
+### 5.4 `search.rooms` (response reshape; subject unchanged)
 
-**Subject:** `chat.user.{account}.request.search.subscriptions`
+**Subject:** `chat.user.{account}.request.search.rooms`
 
 **Request (`pkg/model/search.go`, renamed and reshaped):**
 ```go
-type SearchSubscriptionsRequest struct {
+type SearchRoomsRequest struct {
     Query    string `json:"query"`
     RoomType string `json:"roomType,omitempty"`  // "all" (default) | "channel" | "dm"
     Size     int    `json:"size,omitempty"`
@@ -185,8 +185,8 @@ type SearchSubscriptionsRequest struct {
 
 **Response:**
 ```go
-type SearchSubscriptionsResponse struct {
-    Subscriptions []model.SearchSubscription `json:"subscriptions"`
+type SearchRoomsResponse struct {
+    Subscriptions []model.SearchRoom `json:"subscriptions"`
 }
 ```
 
@@ -204,31 +204,31 @@ the same commit as the rename.)
 
 | File | Action | Notes |
 |---|---|---|
-| `pkg/model/search.go` | edit | Add `SearchAppsRequest`/`SearchAppsResponse`. Add `SearchUsersRequest`. Rename `SearchRoomsRequest`/`SearchRoomsResponse` → `SearchSubscriptionsRequest`/`SearchSubscriptionsResponse` (with `Query`/`RoomType` field renames). Reshape `SearchMessagesResponse` to `{Messages, Total}`. Add new projection types `SearchMessage`, `SearchUser`, `SearchSubscription` (field lists per the user's legacy HTTP shapes — supplied by the user during implementation). Delete `RoomSearchHit` (fully dead after the subscription reshape). Move `MessageSearchHit` into `search-service` as an unexported internal staging type used between the ES query and the Mongo hydration step (no longer a public `pkg/model` type). |
+| `pkg/model/search.go` | edit | Add `SearchAppsRequest`/`SearchAppsResponse`. Add `SearchUsersRequest`. Rename `SearchRoomsRequest`/`SearchRoomsResponse` → `SearchRoomsRequest`/`SearchRoomsResponse` (with `Query`/`RoomType` field renames). Reshape `SearchMessagesResponse` to `{Messages, Total}`. Add new projection types `SearchMessage`, `SearchUser`, `SearchRoom` (field lists per the user's legacy HTTP shapes — supplied by the user during implementation). Delete `RoomSearchHit` (fully dead after the subscription reshape). Move `MessageSearchHit` into `search-service` as an unexported internal staging type used between the ES query and the Mongo hydration step (no longer a public `pkg/model` type). |
 | `pkg/model/model_test.go` | edit | Add round-trip tests for every new and reshaped type. |
 
 ### `pkg/subject/`
 
 | File | Action | Notes |
 |---|---|---|
-| `pkg/subject/subject.go` | edit | Add `SearchApps(account)` + `SearchAppsPattern()`. Add `SearchUsers(account)` + `SearchUsersPattern()`. Rename `SearchRooms` / `SearchRoomsPattern` → `SearchSubscriptions` / `SearchSubscriptionsPattern` (subject token changes from `rooms` to `subscriptions`). |
+| `pkg/subject/subject.go` | edit | Add `SearchApps(account)` + `SearchAppsPattern()`. Add `SearchUsers(account)` + `SearchUsersPattern()`. Rename `SearchRooms` / `SearchRoomsPattern` → `SearchRooms` / `SearchRoomsPattern` (subject token changes from `rooms` to `subscriptions`). |
 | `pkg/subject/subject_test.go` | edit | Update existing room-search test name + add tests for the new builders. |
 
 ### `search-service/`
 
 | File | Action | Notes |
 |---|---|---|
-| `search-service/store.go` | edit | Add `MongoStore` interface (methods: `SearchAppsByName`, `FindUsersByIDs`, `FindRoomsByIDs`, `HydrateSubscriptions`). Add `SearchUsersClient` interface (single method `SearchUsers(ctx, query) ([]model.SearchUser, error)`). Keep existing `SearchStore` and `RestrictedRoomCache` interfaces. Update `//go:generate mockgen` directive. |
+| `search-service/store.go` | edit | Add `MongoStore` interface (methods: `SearchAppsByName`, `FindUsersByIDs`, `FindRoomsByIDs`, `HydrateRooms`). Add `SearchUsersClient` interface (single method `SearchUsers(ctx, query) ([]model.SearchUser, error)`). Keep existing `SearchStore` and `RestrictedRoomCache` interfaces. Update `//go:generate mockgen` directive. |
 | `search-service/store_mongo.go` | **new** | `mongoStore` struct + implementations for all four `MongoStore` methods. Binds `apps` collection; aggregations on subs/rooms/users referenced by string name in pipelines. |
 | `search-service/query_apps.go` | **new** | `buildSearchAppsPipeline(nameQuery, account, assistantEnabled, limit)` — pipeline body **authored by the user**; the spec provides the function signature and a placeholder `[]bson.M{}`. Pipeline shape: `$match name+assistantEnabled` → `$lookup subscriptions` (the access guard) → `$group` → `$lookup rooms` → `$limit` → `$project` matching `model.App`. |
 | `search-service/query_apps_test.go` | **new** | Table-driven pipeline-builder tests against expected BSON shape. Verifies regex escaping (`regexp.QuoteMeta` on `nameQuery`), optional stages present/absent based on `assistantEnabled` being `nil` / `true` / `false`, and `$limit` reflecting `Size`. |
 | `search-service/users_client.go` | **new** | `httpUsersClient` Resty adapter implementing `SearchUsersClient`. Wraps the outbound HTTP call to the third-party HR endpoint. **Third-party request/response wire shape: TBD** — fill in when implementing; the interface boundary keeps the handler tests independent of it. |
-| `search-service/handler.go` | edit | Inject `mongo MongoStore` and `users SearchUsersClient` into `handler`. Add `searchApps`, `searchUsers` handler methods. Refactor existing `searchMessages` for ES → Mongo enrichment → `SearchMessage` transformation. Refactor existing `searchRooms` → `searchSubscriptions` (subject rename, request/response reshape, Mongo hydration). Register all four routes on `Router`. |
+| `search-service/handler.go` | edit | Inject `mongo MongoStore` and `users SearchUsersClient` into `handler`. Add `searchApps`, `searchUsers` handler methods. Refactor existing `searchMessages` for ES → Mongo enrichment → `SearchMessage` transformation. Refactor existing `searchRooms` → `searchRooms` (subject rename, request/response reshape, Mongo hydration). Register all four routes on `Router`. |
 | `search-service/handler_test.go` | edit | New table-driven test groups for each of the four endpoints, using mocked stores. Cover: happy path; empty input rejection; pagination clamping; backend errors; access-guard behavior (restricted-rooms classification for `/messages` with supplied `RoomIDs`); `assistantEnabled` pass-through for `/apps`. |
 | `search-service/integration_test.go` | edit | Add testcontainers Mongo. Seed `apps`/`subscriptions`/`rooms`/`users` docs. Stub the third-party HR HTTP endpoint with `httptest.Server`. Run each handler end-to-end through `natsrouter`. |
 | `search-service/main.go` | edit | Add `MongoConfig{URI, DB}` and `UsersAPIConfig{URL, Timeout, Token}`. Wire `mongoutil.Connect`, construct `mongoStore` and `httpUsersClient`, pass all four stores into `newHandler`. Add Mongo `Disconnect` to `shutdown.Wait`. |
-| `search-service/metrics.go` | edit | Add `metricKindApps`, `metricKindUsers`, `metricKindSubscriptions` constants. Rename `metricKindRooms` → `metricKindSubscriptions`. |
-| `search-service/response.go` | edit | Relocate `MessageSearchHit` from `pkg/model` into this file as an unexported staging type (e.g., `messageSearchHit`). Delete the public-API exposure of `RoomSearchHit`. Add transformation helpers from ES projection → `model.SearchMessage` / `model.SearchSubscription`. |
+| `search-service/metrics.go` | edit | Add `metricKindApps`, `metricKindUsers`, `metricKindRooms` constants. Rename `metricKindRooms` → `metricKindRooms`. |
+| `search-service/response.go` | edit | Relocate `MessageSearchHit` from `pkg/model` into this file as an unexported staging type (e.g., `messageSearchHit`). Delete the public-API exposure of `RoomSearchHit`. Add transformation helpers from ES projection → `model.SearchMessage` / `model.SearchRoom`. |
 | `search-service/response_test.go` | edit | Update for the transformation helpers; cover edge cases (empty hits, partial enrichment data). |
 | `search-service/deploy/docker-compose.yml` | edit | Add `mongo` service; add `USERS_API_URL` env (point at a mock service for local dev). |
 | `search-service/mock_store_test.go` | regenerate | Via `make generate SERVICE=search-service`. |
@@ -278,15 +278,15 @@ the same commit as the rename.)
    - Bad request from third-party (4xx) → log + `ErrInternal` (do not leak third-party messages).
 4. Return `users` (raw `[]model.SearchUser`).
 
-### 7.4 `search.subscriptions`
+### 7.4 `search.rooms`
 
 1. Account from subject.
 2. `normalizePagination` (size capped at 100); reject empty `Query`; validate `RoomType`.
-3. `body, err := buildSubscriptionQuery(req, account)` — existing room-query builder, reused with the renamed field names.
-4. ES query on `spotlight` index → produces internal `[]subscriptionSearchHit` (room IDs + minimal metadata).
+3. `body, err := buildRoomQuery(req, account)` — existing room-query builder, reused with the renamed field names.
+4. ES query on `spotlight` index → produces internal `[]roomSearchHit` (room IDs + minimal metadata).
 5. Extract distinct `roomIDs`.
-6. `subs, err := h.mongo.HydrateSubscriptions(ctx, account, roomIDs)` — fetch the caller's `Subscription` docs for those rooms, build `[]model.SearchSubscription`.
-7. Return `&SearchSubscriptionsResponse{Subscriptions: subs}`.
+6. `subs, err := h.mongo.HydrateRooms(ctx, account, roomIDs)` — fetch the caller's `Subscription` docs for those rooms, build `[]model.SearchRoom`.
+7. Return `&SearchRoomsResponse{Subscriptions: subs}`.
 
 ## 8. `RoomIDs` Classification (for `/messages` v2)
 
@@ -387,11 +387,11 @@ const (
     metricKindMessages      = "messages"
     metricKindApps          = "apps"           // NEW
     metricKindUsers         = "users"          // NEW
-    metricKindSubscriptions = "subscriptions"  // renamed from metricKindRooms
+    metricKindRooms = "rooms"
 )
 ```
 
-Existing `metricKindRooms` is renamed to `metricKindSubscriptions` in the
+Existing `metricKindRooms` is renamed to `metricKindRooms` in the
 same commit as the subject rename. Operators with dashboards keyed on
 `kind="rooms"` need to update.
 
@@ -424,10 +424,10 @@ Each phase below follows Red → Green → Refactor → Commit.
 4. Stub third-party in integration test with `httptest.Server`. Green.
 5. Commit.
 
-**Phase 3 — `search.subscriptions` (rename + reshape):**
+**Phase 3 — `search.rooms` (response reshape):**
 1. Rename subject + type tests (Phase 0 covers most of this). Verify red→green flips.
 2. Rewrite handler tests for the new request fields + response shape. Red.
-3. Implement reshaped `searchSubscriptions` handler + `MongoStore.HydrateSubscriptions`. Green.
+3. Implement reshaped `searchRooms` handler + `MongoStore.HydrateRooms`. Green.
 4. Commit.
 
 **Phase 4 — `search.messages` v2:**
@@ -458,7 +458,7 @@ Each phase below follows Red → Green → Refactor → Commit.
 Captured here so they don't get lost; **not** part of this spec's implementation:
 
 1. **Extend `model.App`** to expose the full provisioned field set (avatar URL, categories, version, etc.) so `search.apps` returns richer documents without further code changes in `search-service`.
-2. **Decide on `model.SearchMessage` / `SearchUser` / `SearchSubscription` field lists** — the spec assumes the user supplies these from the legacy HTTP response shapes. They live in `pkg/model/search.go`.
+2. **Decide on `model.SearchMessage` / `SearchUser` / `SearchRoom` field lists** — the spec assumes the user supplies these from the legacy HTTP response shapes. They live in `pkg/model/search.go`.
 3. **Document `USERS_API_TOKEN` auth scheme** once the third-party endpoint's auth requirements are known.
-4. **Operator dashboard update** for the `metricKindRooms` → `metricKindSubscriptions` rename.
+4. **Operator dashboard update** for the `metricKindRooms` → `metricKindRooms` rename.
 5. **Surface `editedAt` / `updatedAt` on `SearchMessage`** — REQUIRED follow-up. Today the Cassandra message model carries `EditedAt` + `UpdatedAt` (`pkg/model/cassandra/message.go:99-100`) but `model.Message` (the NATS event payload) does not, and `MessageSearchIndex` (`search-sync-worker/messages.go`) does not index either field. Plumbing them through requires a cross-service change in three places: (a) add `EditedAt` and `UpdatedAt` to `model.Message` and propagate them through the event flow (message-gatekeeper → message-worker → search-sync-worker); (b) add both fields to `MessageSearchIndex` and the index template; (c) extend `messageSearchHit` + `SearchMessage` to project them. Out of scope for the current branch — track this as a follow-up PR.

@@ -17,7 +17,7 @@
 **Branch state at start of Plan 4:**
 - Plan 1 (apps): `MongoStore` interface + `mongoStore` impl + Mongo wiring in `main.go` + handler injection are all in place.
 - Plan 2 (users): `SearchUsersClient` interface + `httpUsersClient` + `users` field on handler may be present if Plan 2 ran first. Plan 4 is independent.
-- Plan 3 (subscriptions): `HydrateSubscriptions` on `MongoStore` + `subscriptions` collection field on `mongoStore` may be present if Plan 3 ran first. Plan 4 is independent.
+- Plan 3 (subscriptions): `HydrateRooms` on `MongoStore` + `subscriptions` collection field on `mongoStore` may be present if Plan 3 ran first. Plan 4 is independent.
 
 ---
 
@@ -238,7 +238,7 @@ git commit -m "feat(model): reshape SearchMessagesResponse to {messages, total};
 
 - [ ] **Step 1: Read `store.go` and identify the current `MongoStore` interface**
 
-Confirm the current interface methods. By the time Plan 4 runs, the interface may already include `HydrateSubscriptions` (added by Plan 3). Add the two new methods without disturbing existing ones.
+Confirm the current interface methods. By the time Plan 4 runs, the interface may already include `HydrateRooms` (added by Plan 3). Add the two new methods without disturbing existing ones.
 
 - [ ] **Step 2: Add the methods to the interface**
 
@@ -798,7 +798,7 @@ This is the largest task. It wires together the work from Tasks 3, 4, and 5 insi
 
 - [ ] **Step 1: Extend `fakeMongo` in `handler_test.go`**
 
-Find the existing `fakeMongo` struct (around line 271 in `handler_test.go`). It currently implements only `SearchAppsByName`. Extend it with the two new methods. Also add `HydrateSubscriptions` if Plan 3 already added it — do not remove it:
+Find the existing `fakeMongo` struct (around line 271 in `handler_test.go`). It currently implements only `SearchAppsByName`. Extend it with the two new methods. Also add `HydrateRooms` if Plan 3 already added it — do not remove it:
 
 ```go
 type fakeMongo struct {
@@ -807,9 +807,9 @@ type fakeMongo struct {
     searchAppsResults []model.App
     searchAppsErr     error
 
-    // HydrateSubscriptions fields — keep if added by Plan 3
-    // hydrateSubsCalls   []hydrateSubsCall
-    // hydrateSubsResults []model.SearchSubscription
+    // HydrateRooms fields — keep if added by Plan 3
+    // hydrateRoomsCalls   []hydrateRoomsCall
+    // hydrateSubsResults []model.SearchRoom
     // hydrateSubsErr     error
 
     // NEW (Plan 4)
@@ -1528,6 +1528,6 @@ Expected: only intentional changes from Plans 1–4. No stray debug output, no c
 ## Out of Scope (Follow-ups)
 
 - **Extending `SearchMessage` with additional legacy HTTP fields** — the spec defers the exact field list to the implementer. Inspect the legacy HTTP search-messages handler's response struct and add any fields present there that are missing from the current `SearchMessage` definition. This is noted with a `TODO` comment in `pkg/model/search.go`.
-- **Operator dashboard update** — `metricKindRooms` → `metricKindSubscriptions` rename (Plan 3) affects dashboards. Separate ops ticket.
+- **Operator dashboard update** — `metricKindRooms` → `metricKindRooms` rename (Plan 3) affects dashboards. Separate ops ticket.
 - **Frontend migration guide** — the `{total, results}` → `{messages, total}` breaking change requires coordinating with all frontend consumers. Document the migration path in the PR description.
 - **`observeMongo` timing metric** — the spec's §11 mentions a `observeMongo()` equivalent for Mongo call timing. This can be added as a follow-up without changing the handler interface.

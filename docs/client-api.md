@@ -1561,14 +1561,12 @@ See [Error envelope](#5-error-envelope-reference).
 
 ---
 
-#### Search Subscriptions
+#### Search Rooms
 
-**Subject:** `chat.user.{account}.request.search.subscriptions`
+**Subject:** `chat.user.{account}.request.search.rooms`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-**Breaking change:** This endpoint replaces the former `chat.user.{account}.request.search.rooms` subject (removed). Clients sending to the old subject will receive no reply. Update all callers before deploying this version.
-
-Full-text search across rooms the requester is subscribed to. Results are returned as `SearchSubscription` projections hydrated from MongoDB (the caller's per-room subscription documents), not raw ES index fields.
+Full-text search across rooms the requester is subscribed to. Results are returned as `SearchRoom` projections hydrated from MongoDB (the caller's per-room subscription documents), not raw ES index fields.
 
 ##### Request body
 
@@ -1589,11 +1587,11 @@ Full-text search across rooms the requester is subscribed to. Results are return
 
 ##### Success response
 
-| Field           | Type                      | Notes |
-|-----------------|---------------------------|-------|
-| `subscriptions` | array<SearchSubscription> | Page of subscription results. Empty slice when no matches, never null. |
+| Field   | Type              | Notes |
+|---------|-------------------|-------|
+| `rooms` | array<SearchRoom> | Page of room results. Empty slice when no matches, never null. |
 
-`SearchSubscription` (field list mirrors the legacy HTTP shape — see implementation):
+`SearchRoom` (field list mirrors the legacy HTTP shape — see implementation):
 
 | Field      | Type   | Notes |
 |------------|--------|-------|
@@ -1603,7 +1601,7 @@ Full-text search across rooms the requester is subscribed to. Results are return
 
 ```json
 {
-  "subscriptions": [
+  "rooms": [
     {
       "roomId": "01970a4f8c2d7c9aQ",
       "name": "engineering-announcements",

@@ -41,16 +41,16 @@ type MongoStore interface {
 		offset, limit int,
 	) ([]model.App, error)
 
-	// HydrateSubscriptions fetches the caller's Subscription documents for
-	// the given room IDs and returns them as SearchSubscription projections.
+	// HydrateRooms fetches the caller's Subscription documents for
+	// the given room IDs and returns them as SearchRoom projections.
 	// The returned slice preserves the ordering of roomIDs. Room IDs for
 	// which no subscription exists in Mongo are silently omitted (the user
 	// may have left the room between the ES query and the Mongo fetch).
-	HydrateSubscriptions(
+	HydrateRooms(
 		ctx context.Context,
 		account string,
 		roomIDs []string,
-	) ([]model.SearchSubscription, error)
+	) ([]model.SearchRoom, error)
 }
 
 // SearchUsersClient is the outbound HTTP interface for user search.

@@ -383,9 +383,9 @@ func SearchMessages(account string) string {
 	return fmt.Sprintf("chat.user.%s.request.search.messages", account)
 }
 
-// SearchSubscriptions builds the concrete subject for a subscription search request.
-func SearchSubscriptions(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.search.subscriptions", account)
+// SearchRooms builds the concrete subject for a subscription search request.
+func SearchRooms(account string) string {
+	return fmt.Sprintf("chat.user.%s.request.search.rooms", account)
 }
 
 // SearchMessagesPattern is the natsrouter pattern for message search, used
@@ -394,9 +394,9 @@ func SearchMessagesPattern() string {
 	return "chat.user.{account}.request.search.messages"
 }
 
-// SearchSubscriptionsPattern is the natsrouter pattern for subscription search.
-func SearchSubscriptionsPattern() string {
-	return "chat.user.{account}.request.search.subscriptions"
+// SearchRoomsPattern is the natsrouter pattern for subscription search.
+func SearchRoomsPattern() string {
+	return "chat.user.{account}.request.search.rooms"
 }
 
 // SearchApps builds the concrete subject for an app search request.

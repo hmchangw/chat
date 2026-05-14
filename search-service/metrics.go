@@ -37,17 +37,17 @@ var (
 // requests_total is resolved lazily (5 values × 2 kinds = 10 perms would
 // clutter here); the duration handles are fully bound.
 const (
-	metricKindMessages      = "messages"
-	metricKindSubscriptions = "subscriptions"
-	metricKindApps          = "apps"
-	metricKindUsers         = "users"
+	metricKindMessages = "messages"
+	metricKindRooms    = "subscriptions"
+	metricKindApps     = "apps"
+	metricKindUsers    = "users"
 )
 
 var (
-	durMessages      = metricRequestDuration.WithLabelValues(metricKindMessages)
-	durSubscriptions = metricRequestDuration.WithLabelValues(metricKindSubscriptions)
-	durApps          = metricRequestDuration.WithLabelValues(metricKindApps)
-	durUsers         = metricRequestDuration.WithLabelValues(metricKindUsers)
+	durMessages = metricRequestDuration.WithLabelValues(metricKindMessages)
+	durRooms    = metricRequestDuration.WithLabelValues(metricKindRooms)
+	durApps     = metricRequestDuration.WithLabelValues(metricKindApps)
+	durUsers    = metricRequestDuration.WithLabelValues(metricKindUsers)
 )
 
 // observeRequest captures a handler's total latency and terminal status.
@@ -78,8 +78,8 @@ func observeES() func() {
 // nil-observer panic at fire time.
 func durFor(kind string) prometheus.Observer {
 	switch kind {
-	case metricKindSubscriptions:
-		return durSubscriptions
+	case metricKindRooms:
+		return durRooms
 	case metricKindApps:
 		return durApps
 	case metricKindUsers:

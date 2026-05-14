@@ -1,10 +1,10 @@
-# search.subscriptions Migration Implementation Plan
+# search.rooms Reshape Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rename the existing `search.rooms` NATS endpoint to `search.subscriptions` and reshape both its request and response types. The old subject `chat.user.{account}.request.search.rooms` is **replaced** — this is a **breaking change** with no live consumers at the time of merging. Coordinate with frontend teams before deploying. The new endpoint queries the same ES `spotlight` index for room IDs, then hydrates per-user `Subscription` documents from MongoDB so the response reflects the caller's subscription state rather than raw ES index fields.
+**Goal:** Rename the existing `search.rooms` NATS endpoint to `search.rooms` and reshape both its request and response types. The old subject `chat.user.{account}.request.search.rooms` is **replaced** — this is a **breaking change** with no live consumers at the time of merging. Coordinate with frontend teams before deploying. The new endpoint queries the same ES `spotlight` index for room IDs, then hydrates per-user `Subscription` documents from MongoDB so the response reflects the caller's subscription state rather than raw ES index fields.
 
-**Architecture:** Rename `searchRooms` → `searchSubscriptions`; replace public `SearchRoomsRequest`/`SearchRoomsResponse`/`RoomSearchHit` model types with `SearchSubscriptionsRequest`/`SearchSubscriptionsResponse`/`SearchSubscription`; rename subject builders in `pkg/subject`; rename query file and internal staging type; add `HydrateSubscriptions` to the `MongoStore` interface and implement in `mongoStore`; update metrics constants; update `docs/client-api.md`.
+**Architecture:** Rename `searchRooms` → `searchRooms`; replace public `SearchRoomsRequest`/`SearchRoomsResponse`/`RoomSearchHit` model types with `SearchRoomsRequest`/`SearchRoomsResponse`/`SearchRoom`; rename subject builders in `pkg/subject`; rename query file and internal staging type; add `HydrateRooms` to the `MongoStore` interface and implement in `mongoStore`; update metrics constants; update `docs/client-api.md`.
 
 **Tech Stack:** Go 1.25, NATS request/reply (`pkg/natsrouter`), MongoDB driver v2 (`Find` on `subscriptions` collection), Elasticsearch `spotlight` index, `pkg/mongoutil`, mockgen, testify, testcontainers.
 
@@ -19,22 +19,22 @@
 ## File Structure
 
 **Modified:**
-- `pkg/model/search.go` — add `SearchSubscriptionsRequest`, `SearchSubscriptionsResponse`, `SearchSubscription`. Delete `SearchRoomsRequest`, `SearchRoomsResponse`, `RoomSearchHit`.
+- `pkg/model/search.go` — add `SearchRoomsRequest`, `SearchRoomsResponse`, `SearchRoom`. Delete `SearchRoomsRequest`, `SearchRoomsResponse`, `RoomSearchHit`.
 - `pkg/model/model_test.go` — replace `TestSearchRoomsRequestJSON` / `TestSearchRoomsResponseJSON` with new round-trip tests for the new types.
-- `pkg/subject/subject.go` — add `SearchSubscriptions(account)` + `SearchSubscriptionsPattern()`. Delete `SearchRooms` + `SearchRoomsPattern`.
+- `pkg/subject/subject.go` — add `SearchRooms(account)` + `SearchRoomsPattern()`. Delete `SearchRooms` + `SearchRoomsPattern`.
 - `pkg/subject/subject_test.go` — replace old `SearchRooms`/`SearchRoomsPattern` rows with new ones.
-- `search-service/store.go` — add `HydrateSubscriptions(...)` to `MongoStore` interface.
-- `search-service/store_mongo.go` — add `HydrateSubscriptions` method body; also add the `subscriptions` collection field to `mongoStore`.
-- `search-service/handler.go` — rename `searchRooms` → `searchSubscriptions`; adapt to new request/response types; ES → Mongo hydration flow; rename route registration.
-- `search-service/handler_test.go` — rewrite `TestHandler_SearchRooms_*` tests → `TestHandler_SearchSubscriptions_*`; extend `fakeMongo` with `hydrateSubscriptionsCalls`/`Results`/`Err`.
-- `search-service/metrics.go` — rename `metricKindRooms` → `metricKindSubscriptions`; rename `durRooms` → `durSubscriptions`; update `durFor` switch.
-- `search-service/integration_test.go` — add `TestIntegration_SearchSubscriptions_*` tests with Mongo subscription seeding.
+- `search-service/store.go` — add `HydrateRooms(...)` to `MongoStore` interface.
+- `search-service/store_mongo.go` — add `HydrateRooms` method body; also add the `subscriptions` collection field to `mongoStore`.
+- `search-service/handler.go` — rename `searchRooms` → `searchRooms`; adapt to new request/response types; ES → Mongo hydration flow; rename route registration.
+- `search-service/handler_test.go` — rewrite `TestHandler_SearchRooms_*` tests → `TestHandler_SearchRooms_*`; extend `fakeMongo` with `hydrateRoomsCalls`/`Results`/`Err`.
+- `search-service/metrics.go` — rename `metricKindRooms` → `metricKindRooms`; rename `durRooms` → `durRooms`; update `durFor` switch.
+- `search-service/integration_test.go` — add `TestIntegration_SearchRooms_*` tests with Mongo subscription seeding.
 
 **Renamed + modified:**
-- `search-service/query_rooms.go` → `search-service/query_subscriptions.go` — rename file; adapt `buildRoomQuery` (or rename to `buildSubscriptionQuery`) to accept `SearchSubscriptionsRequest` with new field names `Query`/`RoomType`. Keep `scopeFilterClause` logic but update constant names.
+- `search-service/query_rooms.go` → `search-service/query_subscriptions.go` — rename file; adapt `buildRoomQuery` (or rename to `buildRoomQuery`) to accept `SearchRoomsRequest` with new field names `Query`/`RoomType`. Keep `scopeFilterClause` logic but update constant names.
 - `search-service/query_rooms_test.go` → `search-service/query_subscriptions_test.go` — rename file; update all test cases for new field names.
-- `search-service/response.go` — internalize `roomSource` staging type, add `subscriptionSearchHit` internal type, add `toSearchSubscription` transformation helper; rename `parseRoomsResponse` → `parseSubscriptionRoomIDs` (returns `[]string` of room IDs for Mongo hydration). The raw `roomSource` type and `parseRoomsResponse` function are replaced.
-- `search-service/response_test.go` — update `TestParseRoomsResponse_*` → `TestParseSubscriptionRoomIDs_*`; add tests for `toSearchSubscription`.
+- `search-service/response.go` — internalize `roomSource` staging type, add `roomSearchHit` internal type, add `toSearchRoom` transformation helper; rename `parseRoomsResponse` → `parseRoomIDs` (returns `[]string` of room IDs for Mongo hydration). The raw `roomSource` type and `parseRoomsResponse` function are replaced.
+- `search-service/response_test.go` — update `TestParseRoomsResponse_*` → `TestParseSubscriptionRoomIDs_*`; add tests for `toSearchRoom`.
 - `docs/client-api.md` — replace the "Search Rooms" section with "Search Subscriptions"; document the subject rename as a breaking change.
 
 **Generated (do not hand-edit):**
@@ -64,7 +64,7 @@ Expected: all PASS. Any failure here is pre-existing and must be investigated be
 
 ---
 
-## Task 1: Replace `SearchRooms*` model types with `SearchSubscriptions*`
+## Task 1: Replace `SearchRooms*` model types with `SearchRooms*`
 
 **Files:**
 - Modify: `pkg/model/search.go`
@@ -77,19 +77,19 @@ This is the foundational type change; all other tasks depend on it compiling.
 In `pkg/model/model_test.go`, find the existing `TestSearchRoomsRequestJSON` function (around line 1547) and the `TestSearchRoomsResponseJSON` function (around line 1569). **Replace both** with the following:
 
 ```go
-func TestSearchSubscriptionsRequestJSON(t *testing.T) {
+func TestSearchRoomsRequestJSON(t *testing.T) {
 	t.Run("full", func(t *testing.T) {
-		req := model.SearchSubscriptionsRequest{
+		req := model.SearchRoomsRequest{
 			Query:    "engineering",
 			RoomType: "channel",
 			Size:     25,
 			Offset:   5,
 		}
-		roundTrip(t, &req, &model.SearchSubscriptionsRequest{})
+		roundTrip(t, &req, &model.SearchRoomsRequest{})
 	})
 
 	t.Run("roomType omitted when empty", func(t *testing.T) {
-		req := model.SearchSubscriptionsRequest{Query: "x"}
+		req := model.SearchRoomsRequest{Query: "x"}
 		data, err := json.Marshal(&req)
 		require.NoError(t, err)
 		var raw map[string]any
@@ -99,7 +99,7 @@ func TestSearchSubscriptionsRequestJSON(t *testing.T) {
 	})
 
 	t.Run("size and offset omitted when zero", func(t *testing.T) {
-		req := model.SearchSubscriptionsRequest{Query: "x"}
+		req := model.SearchRoomsRequest{Query: "x"}
 		data, err := json.Marshal(&req)
 		require.NoError(t, err)
 		var raw map[string]any
@@ -111,18 +111,18 @@ func TestSearchSubscriptionsRequestJSON(t *testing.T) {
 	})
 }
 
-func TestSearchSubscriptionsResponseJSON(t *testing.T) {
-	resp := model.SearchSubscriptionsResponse{
-		Subscriptions: []model.SearchSubscription{
+func TestSearchRoomsResponseJSON(t *testing.T) {
+	resp := model.SearchRoomsResponse{
+		Subscriptions: []model.SearchRoom{
 			{RoomID: "r1", Name: "engineering-announcements", RoomType: "channel"},
 			{RoomID: "r2", Name: "alice-bob", RoomType: "dm"},
 		},
 	}
-	roundTrip(t, &resp, &model.SearchSubscriptionsResponse{})
+	roundTrip(t, &resp, &model.SearchRoomsResponse{})
 }
 
-func TestSearchSubscriptionsResponseJSON_EmptySubscriptions(t *testing.T) {
-	resp := model.SearchSubscriptionsResponse{Subscriptions: []model.SearchSubscription{}}
+func TestSearchRoomsResponseJSON_EmptySubscriptions(t *testing.T) {
+	resp := model.SearchRoomsResponse{Subscriptions: []model.SearchRoom{}}
 	data, err := json.Marshal(&resp)
 	require.NoError(t, err)
 	assert.Equal(t, `{"subscriptions":[]}`, string(data), "empty slice must marshal as [] not null")
@@ -133,9 +133,9 @@ func TestSearchSubscriptionsResponseJSON_EmptySubscriptions(t *testing.T) {
 
 Run:
 ```bash
-go test -race -run 'TestSearchSubscriptionsRequestJSON|TestSearchSubscriptionsResponseJSON' ./pkg/model/...
+go test -race -run 'TestSearchRoomsRequestJSON|TestSearchRoomsResponseJSON' ./pkg/model/...
 ```
-Expected: FAIL with `undefined: model.SearchSubscriptionsRequest` / `undefined: model.SearchSubscriptionsResponse` / `undefined: model.SearchSubscription`.
+Expected: FAIL with `undefined: model.SearchRoomsRequest` / `undefined: model.SearchRoomsResponse` / `undefined: model.SearchRoom`.
 
 - [ ] **Step 3: Replace the types in `pkg/model/search.go`**
 
@@ -149,31 +149,31 @@ type RoomSearchHit struct { ... }
 Delete all three. In their place, append after the `SearchMessagesResponse`/`MessageSearchHit` block (before the `SearchAppsRequest` block):
 
 ```go
-// SearchSubscriptionsRequest is the NATS payload for
-// `chat.user.{account}.request.search.subscriptions`.
+// SearchRoomsRequest is the NATS payload for
+// `chat.user.{account}.request.search.rooms`.
 //
 // Query is a non-empty substring match on room name (case-insensitive prefix).
 // RoomType filters by subscription type: "all" (default, same as empty),
 // "channel", or "dm". The value "app" and any other value are rejected with
 // ErrBadRequest.
-type SearchSubscriptionsRequest struct {
+type SearchRoomsRequest struct {
 	Query    string `json:"query"`
 	RoomType string `json:"roomType,omitempty"`
 	Size     int    `json:"size,omitempty"`
 	Offset   int    `json:"offset,omitempty"`
 }
 
-// SearchSubscriptionsResponse is the NATS reply for `search.subscriptions`.
+// SearchRoomsResponse is the NATS reply for `search.rooms`.
 // Subscriptions is always non-nil (empty slice marshals as []).
-type SearchSubscriptionsResponse struct {
-	Subscriptions []SearchSubscription `json:"subscriptions"`
+type SearchRoomsResponse struct {
+	Subscriptions []SearchRoom `json:"subscriptions"`
 }
 
-// SearchSubscription is the per-user-room projection returned by
-// search.subscriptions. Field list mirrors the legacy HTTP shape for
-// the /subscriptions endpoint — fill in additional fields per the legacy
+// SearchRoom is the per-user-room projection returned by
+// search.rooms. Field list mirrors the legacy HTTP shape for
+// the /rooms endpoint — fill in additional fields per the legacy
 // response during implementation.
-type SearchSubscription struct {
+type SearchRoom struct {
 	RoomID   string `json:"roomId"             bson:"roomId"`
 	Name     string `json:"name"               bson:"name"`
 	RoomType string `json:"roomType,omitempty" bson:"roomType,omitempty"`
@@ -184,7 +184,7 @@ type SearchSubscription struct {
 
 Run:
 ```bash
-go test -race -run 'TestSearchSubscriptionsRequestJSON|TestSearchSubscriptionsResponseJSON' ./pkg/model/...
+go test -race -run 'TestSearchRoomsRequestJSON|TestSearchRoomsResponseJSON' ./pkg/model/...
 ```
 Expected: PASS (all four subtests).
 
@@ -200,7 +200,7 @@ Expected: no output (all old types gone from `pkg/model`).
 
 ```bash
 git add pkg/model/search.go pkg/model/model_test.go
-git commit -m "feat(model): replace SearchRooms* types with SearchSubscriptions* and SearchSubscription"
+git commit -m "feat(model): replace SearchRooms* types with SearchRooms* and SearchRoom"
 ```
 
 ---
@@ -222,10 +222,10 @@ In `pkg/subject/subject_test.go`, locate the test table (inside `TestSubjectBuil
 ```
 **Replace them** with:
 ```go
-{"SearchSubscriptions", subject.SearchSubscriptions("alice"),
-    "chat.user.alice.request.search.subscriptions"},
-{"SearchSubscriptionsPattern", subject.SearchSubscriptionsPattern(),
-    "chat.user.{account}.request.search.subscriptions"},
+{"SearchRooms", subject.SearchRooms("alice"),
+    "chat.user.alice.request.search.rooms"},
+{"SearchRoomsPattern", subject.SearchRoomsPattern(),
+    "chat.user.{account}.request.search.rooms"},
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -234,7 +234,7 @@ Run:
 ```bash
 go test -race ./pkg/subject/...
 ```
-Expected: FAIL with `undefined: subject.SearchSubscriptions` / `undefined: subject.SearchSubscriptionsPattern`.
+Expected: FAIL with `undefined: subject.SearchRooms` / `undefined: subject.SearchRoomsPattern`.
 
 - [ ] **Step 3: Update `pkg/subject/subject.go`**
 
@@ -253,14 +253,14 @@ func SearchRoomsPattern() string {
 
 **Replace them** with:
 ```go
-// SearchSubscriptions builds the concrete subject for a subscription search request.
-func SearchSubscriptions(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.search.subscriptions", account)
+// SearchRooms builds the concrete subject for a subscription search request.
+func SearchRooms(account string) string {
+	return fmt.Sprintf("chat.user.%s.request.search.rooms", account)
 }
 
-// SearchSubscriptionsPattern is the natsrouter pattern for subscription search.
-func SearchSubscriptionsPattern() string {
-	return "chat.user.{account}.request.search.subscriptions"
+// SearchRoomsPattern is the natsrouter pattern for subscription search.
+func SearchRoomsPattern() string {
+	return "chat.user.{account}.request.search.rooms"
 }
 ```
 
@@ -276,7 +276,7 @@ Expected: PASS.
 
 ```bash
 git add pkg/subject/subject.go pkg/subject/subject_test.go
-git commit -m "feat(subject): rename SearchRooms/SearchRoomsPattern to SearchSubscriptions/SearchSubscriptionsPattern"
+git commit -m "feat(subject): rename SearchRooms/SearchRoomsPattern to SearchRooms/SearchRoomsPattern"
 ```
 
 ---
@@ -302,7 +302,7 @@ Replace with:
 ```go
 const (
 	metricKindMessages      = "messages"
-	metricKindSubscriptions = "subscriptions"
+	metricKindRooms = "subscriptions"
 	metricKindApps          = "apps"
 )
 ```
@@ -319,7 +319,7 @@ Replace with:
 ```go
 var (
 	durMessages      = metricRequestDuration.WithLabelValues(metricKindMessages)
-	durSubscriptions = metricRequestDuration.WithLabelValues(metricKindSubscriptions)
+	durRooms = metricRequestDuration.WithLabelValues(metricKindRooms)
 	durApps          = metricRequestDuration.WithLabelValues(metricKindApps)
 )
 ```
@@ -341,8 +341,8 @@ Replace with:
 ```go
 func durFor(kind string) prometheus.Observer {
 	switch kind {
-	case metricKindSubscriptions:
-		return durSubscriptions
+	case metricKindRooms:
+		return durRooms
 	case metricKindApps:
 		return durApps
 	default:
@@ -357,7 +357,7 @@ Run:
 ```bash
 go build ./search-service/...
 ```
-Expected: FAIL — `handler.go` still references `metricKindRooms`. This is expected at this step; the handler rename in Task 7 will fix it. However, if you want a clean build before Task 7, you can temporarily patch `handler.go` to reference `metricKindSubscriptions` now and finish in Task 7. Either sequence is fine; just make sure `go build` passes before committing.
+Expected: FAIL — `handler.go` still references `metricKindRooms`. This is expected at this step; the handler rename in Task 7 will fix it. However, if you want a clean build before Task 7, you can temporarily patch `handler.go` to reference `metricKindRooms` now and finish in Task 7. Either sequence is fine; just make sure `go build` passes before committing.
 
 For simplicity, proceed to the `handler.go` edit in this same task:
 
@@ -366,10 +366,10 @@ In `search-service/handler.go`, find:
 func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsRequest) (resp *model.SearchRoomsResponse, err error) {
 	defer observeRequest(metricKindRooms, &err)()
 ```
-Change only the `metricKindRooms` reference to `metricKindSubscriptions` (do not yet rename the function or its parameter types — Task 7 does the full rename):
+Change only the `metricKindRooms` reference to `metricKindRooms` (do not yet rename the function or its parameter types — Task 7 does the full rename):
 ```go
 func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsRequest) (resp *model.SearchRoomsResponse, err error) {
-	defer observeRequest(metricKindSubscriptions, &err)()
+	defer observeRequest(metricKindRooms, &err)()
 ```
 
 - [ ] **Step 3: Verify compilation**
@@ -392,7 +392,7 @@ Expected: PASS (no behavior change, only a rename).
 
 ```bash
 git add search-service/metrics.go search-service/handler.go
-git commit -m "refactor(search-service): rename metricKindRooms -> metricKindSubscriptions and durRooms -> durSubscriptions"
+git commit -m "refactor(search-service): rename metricKindRooms -> metricKindRooms and durRooms -> durRooms"
 ```
 
 ---
@@ -405,7 +405,7 @@ git commit -m "refactor(search-service): rename metricKindRooms -> metricKindSub
 - Delete: `search-service/query_rooms_test.go`
 - Create: `search-service/query_subscriptions_test.go`
 
-The ES query logic is unchanged; only the input type and field names change. `buildRoomQuery` is renamed to `buildSubscriptionQuery` and adapted to read from `SearchSubscriptionsRequest.Query` (was `SearchText`) and `SearchSubscriptionsRequest.RoomType` (was `Scope`). The internal scope constants are renamed to reduce confusion.
+The ES query logic is unchanged; only the input type and field names change. `buildRoomQuery` is renamed to `buildRoomQuery` and adapted to read from `SearchRoomsRequest.Query` (was `SearchText`) and `SearchRoomsRequest.RoomType` (was `Scope`). The internal scope constants are renamed to reduce confusion.
 
 - [ ] **Step 1: Write the failing tests first (new file)**
 
@@ -432,8 +432,8 @@ func subscriptionFilters(t *testing.T, q map[string]any) []any {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeAll(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "general", Size: 10, Offset: 0}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "general", Size: 10, Offset: 0}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	q := parseQuery(t, raw)
@@ -448,8 +448,8 @@ func TestBuildSubscriptionQuery_RoomTypeAll(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeExplicitAll(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "general", RoomType: "all"}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "general", RoomType: "all"}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	filters := subscriptionFilters(t, parseQuery(t, raw))
@@ -457,8 +457,8 @@ func TestBuildSubscriptionQuery_RoomTypeExplicitAll(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeChannel(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "general", RoomType: "channel"}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "general", RoomType: "channel"}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	filters := subscriptionFilters(t, parseQuery(t, raw))
@@ -468,8 +468,8 @@ func TestBuildSubscriptionQuery_RoomTypeChannel(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeDM(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "alice", RoomType: "dm"}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "alice", RoomType: "dm"}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	filters := subscriptionFilters(t, parseQuery(t, raw))
@@ -479,8 +479,8 @@ func TestBuildSubscriptionQuery_RoomTypeDM(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeAppRejected(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "bot", RoomType: "app"}
-	_, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "bot", RoomType: "app"}
+	_, err := buildRoomQuery(req, "alice")
 	require.Error(t, err)
 
 	var rerr *natsrouter.RouteError
@@ -490,8 +490,8 @@ func TestBuildSubscriptionQuery_RoomTypeAppRejected(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_UnknownRoomTypeRejected(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "x", RoomType: "orb"}
-	_, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "x", RoomType: "orb"}
+	_, err := buildRoomQuery(req, "alice")
 	require.Error(t, err)
 
 	var rerr *natsrouter.RouteError
@@ -501,8 +501,8 @@ func TestBuildSubscriptionQuery_UnknownRoomTypeRejected(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_SortByScoreThenJoinedAtDesc(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "x"}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "x"}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	sort := parseQuery(t, raw)["sort"].([]any)
@@ -513,8 +513,8 @@ func TestBuildSubscriptionQuery_SortByScoreThenJoinedAtDesc(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_QueryFieldUsedAsSearchText(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "engineering", Size: 5}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "engineering", Size: 5}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	q := parseQuery(t, raw)
@@ -531,7 +531,7 @@ Run:
 ```bash
 go test -race -run TestBuildSubscriptionQuery ./search-service/...
 ```
-Expected: FAIL with `undefined: buildSubscriptionQuery`.
+Expected: FAIL with `undefined: buildRoomQuery`.
 
 - [ ] **Step 3: Create `query_subscriptions.go`**
 
@@ -548,7 +548,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
-// roomType filter values accepted on SearchSubscriptionsRequest.RoomType.
+// roomType filter values accepted on SearchRoomsRequest.RoomType.
 const (
 	roomTypeAll     = "all"
 	roomTypeChannel = "channel"
@@ -556,11 +556,11 @@ const (
 	roomTypeApp     = "app"
 )
 
-// buildSubscriptionQuery composes the ES `_search` body for a subscription
+// buildRoomQuery composes the ES `_search` body for a subscription
 // search against the spotlight index. It returns a *natsrouter.RouteError
 // (user-facing) on invalid/unsupported roomType values and a plain error on
 // marshalling failures.
-func buildSubscriptionQuery(req model.SearchSubscriptionsRequest, account string) (json.RawMessage, error) {
+func buildRoomQuery(req model.SearchRoomsRequest, account string) (json.RawMessage, error) {
 	roomTypeFilter, rerr := roomTypeFilterClause(req.RoomType)
 	if rerr != nil {
 		return nil, rerr
@@ -663,7 +663,7 @@ This step is deferred to Task 7 to keep the commit tree clean. See Task 7 Step 9
 - Modify: `search-service/response.go`
 - Modify: `search-service/response_test.go`
 
-The existing `parseRoomsResponse` function returned a full `*model.SearchRoomsResponse`. Under the new flow, the ES step only needs to produce a list of room IDs (for Mongo hydration). We replace it with `parseSubscriptionRoomIDs` which returns `[]string`. The `roomSource` staging type is kept but renamed `subscriptionSearchHit` for clarity, and a `toSearchSubscription` helper is added that takes a hydrated Mongo `SearchSubscription` and returns it as-is (identity transform for now — the field mapping from `bson:"..."` tags on the Mongo `Find` projection handles the shape already).
+The existing `parseRoomsResponse` function returned a full `*model.SearchRoomsResponse`. Under the new flow, the ES step only needs to produce a list of room IDs (for Mongo hydration). We replace it with `parseRoomIDs` which returns `[]string`. The `roomSource` staging type is kept but renamed `roomSearchHit` for clarity, and a `toSearchRoom` helper is added that takes a hydrated Mongo `SearchRoom` and returns it as-is (identity transform for now — the field mapping from `bson:"..."` tags on the Mongo `Find` projection handles the shape already).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -689,7 +689,7 @@ func TestParseSubscriptionRoomIDs_HappyPath(t *testing.T) {
 		}
 	}`)
 
-	ids, err := parseSubscriptionRoomIDs(body)
+	ids, err := parseRoomIDs(body)
 	require.NoError(t, err)
 	require.Len(t, ids, 2)
 	assert.Equal(t, "r1", ids[0])
@@ -698,13 +698,13 @@ func TestParseSubscriptionRoomIDs_HappyPath(t *testing.T) {
 
 func TestParseSubscriptionRoomIDs_Empty(t *testing.T) {
 	body := json.RawMessage(`{"hits":{"total":{"value":0},"hits":[]}}`)
-	ids, err := parseSubscriptionRoomIDs(body)
+	ids, err := parseRoomIDs(body)
 	require.NoError(t, err)
 	assert.Empty(t, ids)
 }
 
 func TestParseSubscriptionRoomIDs_Malformed(t *testing.T) {
-	_, err := parseSubscriptionRoomIDs(json.RawMessage(`{`))
+	_, err := parseRoomIDs(json.RawMessage(`{`))
 	assert.Error(t, err)
 }
 
@@ -719,7 +719,7 @@ func TestParseSubscriptionRoomIDs_PreservesOrder(t *testing.T) {
 			]
 		}
 	}`)
-	ids, err := parseSubscriptionRoomIDs(body)
+	ids, err := parseRoomIDs(body)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"r3", "r1", "r2"}, ids, "ES hit order must be preserved for Mongo hydration")
 }
@@ -731,7 +731,7 @@ Run:
 ```bash
 go test -race -run TestParseSubscriptionRoomIDs ./search-service/...
 ```
-Expected: FAIL with `undefined: parseSubscriptionRoomIDs`.
+Expected: FAIL with `undefined: parseRoomIDs`.
 
 - [ ] **Step 3: Update `response.go`**
 
@@ -742,18 +742,18 @@ In `search-service/response.go`:
 3. **Replace** the `roomSource` type and `parseRoomsResponse` function with:
 
 ```go
-// subscriptionSearchHit is the ES `_source` shape for a spotlight hit used
+// roomSearchHit is the ES `_source` shape for a spotlight hit used
 // during the subscription search flow. Only `roomId` is extracted; the other
 // fields are present in the index but unused after the Mongo hydration step.
-type subscriptionSearchHit struct {
+type roomSearchHit struct {
 	RoomID string `json:"roomId"`
 }
 
-// parseSubscriptionRoomIDs extracts the ordered list of room IDs from a
-// spotlight ES response. The caller passes these IDs to HydrateSubscriptions
+// parseRoomIDs extracts the ordered list of room IDs from a
+// spotlight ES response. The caller passes these IDs to HydrateRooms
 // for Mongo enrichment.
-func parseSubscriptionRoomIDs(raw json.RawMessage) ([]string, error) {
-	var rr rawResponse[subscriptionSearchHit]
+func parseRoomIDs(raw json.RawMessage) ([]string, error) {
+	var rr rawResponse[roomSearchHit]
 	if err := json.Unmarshal(raw, &rr); err != nil {
 		return nil, fmt.Errorf("parse subscription room IDs: %w", err)
 	}
@@ -766,7 +766,7 @@ func parseSubscriptionRoomIDs(raw json.RawMessage) ([]string, error) {
 }
 ```
 
-Note: `toSearchSubscription` is intentionally omitted — the `HydrateSubscriptions` Mongo method returns `[]model.SearchSubscription` directly (the bson projection on the `Find` cursor maps the fields). No intermediate transform function is needed in `response.go`.
+Note: `toSearchRoom` is intentionally omitted — the `HydrateRooms` Mongo method returns `[]model.SearchRoom` directly (the bson projection on the `Find` cursor maps the fields). No intermediate transform function is needed in `response.go`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -786,7 +786,7 @@ Expected: PASS (the rest of the handler tests will fail until Task 7).
 
 ---
 
-## Task 6: Add `HydrateSubscriptions` to `MongoStore` interface and implement it
+## Task 6: Add `HydrateRooms` to `MongoStore` interface and implement it
 
 **Files:**
 - Modify: `search-service/store.go`
@@ -806,16 +806,16 @@ type MongoStore interface {
 		offset, limit int,
 	) ([]model.App, error)
 
-	// HydrateSubscriptions fetches the caller's Subscription documents for
-	// the given room IDs and returns them as SearchSubscription projections.
+	// HydrateRooms fetches the caller's Subscription documents for
+	// the given room IDs and returns them as SearchRoom projections.
 	// The returned slice preserves the ordering of roomIDs. Room IDs for
 	// which no subscription exists in Mongo are silently omitted (the user
 	// may have left the room between the ES query and the Mongo fetch).
-	HydrateSubscriptions(
+	HydrateRooms(
 		ctx context.Context,
 		account string,
 		roomIDs []string,
-	) ([]model.SearchSubscription, error)
+	) ([]model.SearchRoom, error)
 }
 ```
 
@@ -825,7 +825,7 @@ Run:
 ```bash
 make generate SERVICE=search-service
 ```
-Expected: `search-service/mock_store_test.go` updates to include a `HydrateSubscriptions` method on `MockMongoStore`.
+Expected: `search-service/mock_store_test.go` updates to include a `HydrateRooms` method on `MockMongoStore`.
 
 - [ ] **Step 3: Verify build (will fail until `store_mongo.go` implements the method)**
 
@@ -833,9 +833,9 @@ Run:
 ```bash
 go build ./search-service/...
 ```
-Expected: FAIL — `mongoStore` does not yet satisfy `MongoStore` (missing `HydrateSubscriptions`). Expected at this step.
+Expected: FAIL — `mongoStore` does not yet satisfy `MongoStore` (missing `HydrateRooms`). Expected at this step.
 
-- [ ] **Step 4: Implement `HydrateSubscriptions` in `store_mongo.go`**
+- [ ] **Step 4: Implement `HydrateRooms` in `store_mongo.go`**
 
 In `search-service/store_mongo.go`, first add the `subscriptions` collection field to `mongoStore`:
 
@@ -853,22 +853,22 @@ func newMongoStore(db *mongo.Database) *mongoStore {
 }
 ```
 
-Then append the `HydrateSubscriptions` method:
+Then append the `HydrateRooms` method:
 
 ```go
-// HydrateSubscriptions fetches the caller's subscription documents for the
+// HydrateRooms fetches the caller's subscription documents for the
 // given room IDs from the `subscriptions` collection and projects them into
-// []model.SearchSubscription. Documents are matched by `u.account` (caller's
+// []model.SearchRoom. Documents are matched by `u.account` (caller's
 // account) and `roomId` (one of the provided IDs). Missing subscriptions are
-// silently omitted. The bson projection maps directly onto model.SearchSubscription
+// silently omitted. The bson projection maps directly onto model.SearchRoom
 // via the `bson:"..."` tags on that struct.
-func (s *mongoStore) HydrateSubscriptions(
+func (s *mongoStore) HydrateRooms(
 	ctx context.Context,
 	account string,
 	roomIDs []string,
-) ([]model.SearchSubscription, error) {
+) ([]model.SearchRoom, error) {
 	if len(roomIDs) == 0 {
-		return []model.SearchSubscription{}, nil
+		return []model.SearchRoom{}, nil
 	}
 
 	filter := bson.D{
@@ -882,7 +882,7 @@ func (s *mongoStore) HydrateSubscriptions(
 	}
 	defer cur.Close(ctx)
 
-	results := make([]model.SearchSubscription, 0)
+	results := make([]model.SearchRoom, 0)
 	if err := cur.All(ctx, &results); err != nil {
 		return nil, fmt.Errorf("decode subscriptions: %w", err)
 	}
@@ -892,11 +892,11 @@ func (s *mongoStore) HydrateSubscriptions(
 	// surviving the hydration step). Subscriptions missing from Mongo
 	// (e.g. the user left between the ES query and this lookup) are
 	// silently omitted.
-	byRoomID := make(map[string]model.SearchSubscription, len(results))
+	byRoomID := make(map[string]model.SearchRoom, len(results))
 	for _, sub := range results {
 		byRoomID[sub.RoomID] = sub
 	}
-	ordered := make([]model.SearchSubscription, 0, len(results))
+	ordered := make([]model.SearchRoom, 0, len(results))
 	for _, roomID := range roomIDs {
 		if sub, ok := byRoomID[roomID]; ok {
 			ordered = append(ordered, sub)
@@ -941,18 +941,18 @@ Commit this change together with the Task 7 handler commit — see Task 7 Step 9
 
 ---
 
-## Task 7: Rename `searchRooms` → `searchSubscriptions` and wire ES → Mongo hydration
+## Task 7: Rename `searchRooms` → `searchRooms` and wire ES → Mongo hydration
 
 **Files:**
 - Modify: `search-service/handler.go`
 - Modify: `search-service/handler_test.go`
 
-This is the core behavioral change. The new `searchSubscriptions` handler:
+This is the core behavioral change. The new `searchRooms` handler:
 1. Validates `Query` (non-empty after trim) and `RoomType`.
-2. Calls ES `buildSubscriptionQuery` on the spotlight index.
-3. Parses room IDs with `parseSubscriptionRoomIDs`.
-4. Calls `h.mongo.HydrateSubscriptions(ctx, account, roomIDs)`.
-5. Returns `&model.SearchSubscriptionsResponse{Subscriptions: subs}`.
+2. Calls ES `buildRoomQuery` on the spotlight index.
+3. Parses room IDs with `parseRoomIDs`.
+4. Calls `h.mongo.HydrateRooms(ctx, account, roomIDs)`.
+5. Returns `&model.SearchRoomsResponse{Subscriptions: subs}`.
 
 - [ ] **Step 1: Extend `fakeMongo` in `handler_test.go`**
 
@@ -964,9 +964,9 @@ type fakeMongo struct {
 	searchAppsResults []model.App
 	searchAppsErr     error
 
-	hydrateSubscriptionsCalls   []hydrateSubsCall
-	hydrateSubscriptionsResults []model.SearchSubscription
-	hydrateSubscriptionsErr     error
+	hydrateRoomsCalls   []hydrateRoomsCall
+	hydrateRoomsResults []model.SearchRoom
+	hydrateRoomsErr     error
 }
 
 type searchAppsCall struct {
@@ -977,7 +977,7 @@ type searchAppsCall struct {
 	limit            int
 }
 
-type hydrateSubsCall struct {
+type hydrateRoomsCall struct {
 	account string
 	roomIDs []string
 }
@@ -997,39 +997,39 @@ func (f *fakeMongo) SearchAppsByName(
 	return f.searchAppsResults, nil
 }
 
-func (f *fakeMongo) HydrateSubscriptions(
+func (f *fakeMongo) HydrateRooms(
 	_ context.Context,
 	account string,
 	roomIDs []string,
-) ([]model.SearchSubscription, error) {
-	f.hydrateSubscriptionsCalls = append(f.hydrateSubscriptionsCalls, hydrateSubsCall{
+) ([]model.SearchRoom, error) {
+	f.hydrateRoomsCalls = append(f.hydrateRoomsCalls, hydrateRoomsCall{
 		account: account, roomIDs: roomIDs,
 	})
-	if f.hydrateSubscriptionsErr != nil {
-		return nil, f.hydrateSubscriptionsErr
+	if f.hydrateRoomsErr != nil {
+		return nil, f.hydrateRoomsErr
 	}
-	return f.hydrateSubscriptionsResults, nil
+	return f.hydrateRoomsResults, nil
 }
 ```
 
-- [ ] **Step 2: Write failing `searchSubscriptions` handler tests**
+- [ ] **Step 2: Write failing `searchRooms` handler tests**
 
 In `search-service/handler_test.go`, find all `TestHandler_SearchRooms_*` tests (around line 227). **Replace all of them** with the following table-driven + individual tests:
 
 ```go
-func TestHandler_SearchSubscriptions_HappyPath(t *testing.T) {
+func TestHandler_SearchRooms_HappyPath(t *testing.T) {
 	store := &fakeStore{
 		searchBody: json.RawMessage(`{"hits":{"total":{"value":2},"hits":[{"_source":{"roomId":"r1"}},{"_source":{"roomId":"r2"}}]}}`),
 	}
 	mongo := &fakeMongo{
-		hydrateSubscriptionsResults: []model.SearchSubscription{
+		hydrateRoomsResults: []model.SearchRoom{
 			{RoomID: "r1", Name: "general", RoomType: "channel"},
 			{RoomID: "r2", Name: "alice-bob", RoomType: "dm"},
 		},
 	}
 	h := newTestHandler(store, mongo, newFakeCache())
 
-	resp, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "general"})
+	resp, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "general"})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	require.Len(t, resp.Subscriptions, 2)
@@ -1039,33 +1039,33 @@ func TestHandler_SearchSubscriptions_HappyPath(t *testing.T) {
 	require.Len(t, store.searchCalls, 1)
 	assert.Equal(t, []string{testSpotlightIndex}, store.searchCalls[0].indices)
 
-	require.Len(t, mongo.hydrateSubscriptionsCalls, 1)
-	call := mongo.hydrateSubscriptionsCalls[0]
+	require.Len(t, mongo.hydrateRoomsCalls, 1)
+	call := mongo.hydrateRoomsCalls[0]
 	assert.Equal(t, "alice", call.account)
 	assert.Equal(t, []string{"r1", "r2"}, call.roomIDs)
 }
 
-func TestHandler_SearchSubscriptions_EmptyQueryRejected(t *testing.T) {
+func TestHandler_SearchRooms_EmptyQueryRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
 	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
 }
 
-func TestHandler_SearchSubscriptions_WhitespaceQueryRejected(t *testing.T) {
+func TestHandler_SearchRooms_WhitespaceQueryRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "   "})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "   "})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
 	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
 }
 
-func TestHandler_SearchSubscriptions_RoomTypeAppRejected(t *testing.T) {
+func TestHandler_SearchRooms_RoomTypeAppRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "x", RoomType: "app"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x", RoomType: "app"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -1073,19 +1073,19 @@ func TestHandler_SearchSubscriptions_RoomTypeAppRejected(t *testing.T) {
 	assert.Contains(t, rerr.Message, "invalid roomType")
 }
 
-func TestHandler_SearchSubscriptions_UnknownRoomTypeRejected(t *testing.T) {
+func TestHandler_SearchRooms_UnknownRoomTypeRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "x", RoomType: "zzz"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x", RoomType: "zzz"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
 	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
 }
 
-func TestHandler_SearchSubscriptions_ESErrorSanitized(t *testing.T) {
+func TestHandler_SearchRooms_ESErrorSanitized(t *testing.T) {
 	store := &fakeStore{searchErr: errors.New("es failed")}
 	h := newTestHandler(store, &fakeMongo{}, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "general"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "general"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -1093,13 +1093,13 @@ func TestHandler_SearchSubscriptions_ESErrorSanitized(t *testing.T) {
 	assert.NotContains(t, rerr.Message, "es failed")
 }
 
-func TestHandler_SearchSubscriptions_MongoErrorSanitized(t *testing.T) {
+func TestHandler_SearchRooms_MongoErrorSanitized(t *testing.T) {
 	store := &fakeStore{
 		searchBody: json.RawMessage(`{"hits":{"total":{"value":1},"hits":[{"_source":{"roomId":"r1"}}]}}`),
 	}
-	mongo := &fakeMongo{hydrateSubscriptionsErr: errors.New("mongo down")}
+	mongo := &fakeMongo{hydrateRoomsErr: errors.New("mongo down")}
 	h := newTestHandler(store, mongo, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "general"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "general"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -1107,26 +1107,26 @@ func TestHandler_SearchSubscriptions_MongoErrorSanitized(t *testing.T) {
 	assert.NotContains(t, rerr.Message, "mongo down")
 }
 
-func TestHandler_SearchSubscriptions_EmptyESResultSkipsMongo(t *testing.T) {
+func TestHandler_SearchRooms_EmptyESResultSkipsMongo(t *testing.T) {
 	store := &fakeStore{
 		searchBody: json.RawMessage(`{"hits":{"total":{"value":0},"hits":[]}}`),
 	}
 	mongo := &fakeMongo{}
 	h := newTestHandler(store, mongo, newFakeCache())
 
-	resp, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "nope"})
+	resp, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "nope"})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.NotNil(t, resp.Subscriptions, "must be empty slice, not nil")
 	assert.Empty(t, resp.Subscriptions)
-	assert.Len(t, mongo.hydrateSubscriptionsCalls, 0, "no Mongo call when ES returns no hits")
+	assert.Len(t, mongo.hydrateRoomsCalls, 0, "no Mongo call when ES returns no hits")
 }
 
-func TestHandler_SearchSubscriptions_SizeClamped(t *testing.T) {
+func TestHandler_SearchRooms_SizeClamped(t *testing.T) {
 	store := &fakeStore{}
 	h := newTestHandler(store, &fakeMongo{}, newFakeCache())
 
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{
 		Query: "general",
 		Size:  500,
 	})
@@ -1138,19 +1138,19 @@ func TestHandler_SearchSubscriptions_SizeClamped(t *testing.T) {
 	assert.Equal(t, float64(100), body["size"], "Size > MaxDocCounts must be clamped")
 }
 
-func TestHandler_SearchSubscriptions_NegativeSizeRejected(t *testing.T) {
+func TestHandler_SearchRooms_NegativeSizeRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "x", Size: -1})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x", Size: -1})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
 	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
 }
 
-func TestHandler_SearchSubscriptions_UsesSpotlightIndex(t *testing.T) {
+func TestHandler_SearchRooms_UsesSpotlightIndex(t *testing.T) {
 	store := &fakeStore{}
 	h := newTestHandler(store, &fakeMongo{}, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "x"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x"})
 	require.NoError(t, err)
 
 	require.Len(t, store.searchCalls, 1)
@@ -1163,11 +1163,11 @@ func TestHandler_SearchSubscriptions_UsesSpotlightIndex(t *testing.T) {
 
 Run:
 ```bash
-go test -race -run TestHandler_SearchSubscriptions ./search-service/...
+go test -race -run TestHandler_SearchRooms ./search-service/...
 ```
-Expected: FAIL with `h.searchSubscriptions undefined`.
+Expected: FAIL with `h.searchRooms undefined`.
 
-- [ ] **Step 4: Implement `searchSubscriptions` in `handler.go`**
+- [ ] **Step 4: Implement `searchRooms` in `handler.go`**
 
 In `search-service/handler.go`:
 
@@ -1177,16 +1177,16 @@ In `search-service/handler.go`:
 ```go
 func (h *handler) Register(r *natsrouter.Router) {
 	natsrouter.Register(r, subject.SearchMessagesPattern(), h.searchMessages)
-	natsrouter.Register(r, subject.SearchSubscriptionsPattern(), h.searchSubscriptions)
+	natsrouter.Register(r, subject.SearchRoomsPattern(), h.searchRooms)
 	natsrouter.Register(r, subject.SearchAppsPattern(), h.searchApps)
 }
 ```
 
-3. Append the new `searchSubscriptions` method after `searchMessages`:
+3. Append the new `searchRooms` method after `searchMessages`:
 
 ```go
-func (h *handler) searchSubscriptions(c *natsrouter.Context, req model.SearchSubscriptionsRequest) (resp *model.SearchSubscriptionsResponse, err error) {
-	defer observeRequest(metricKindSubscriptions, &err)()
+func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsRequest) (resp *model.SearchRoomsResponse, err error) {
+	defer observeRequest(metricKindRooms, &err)()
 
 	account, rerr := c.Params.Require("account")
 	if rerr != nil {
@@ -1206,7 +1206,7 @@ func (h *handler) searchSubscriptions(c *natsrouter.Context, req model.SearchSub
 	ctx, cancel := h.withRequestTimeout(c)
 	defer cancel()
 
-	body, err := buildSubscriptionQuery(req, account)
+	body, err := buildRoomQuery(req, account)
 	if err != nil {
 		// RouteError (invalid roomType) passes through;
 		// anything else (marshal failure — unreachable) gets sanitized.
@@ -1226,26 +1226,26 @@ func (h *handler) searchSubscriptions(c *natsrouter.Context, req model.SearchSub
 		return nil, natsrouter.ErrInternal("search backend unavailable")
 	}
 
-	roomIDs, err := parseSubscriptionRoomIDs(raw)
+	roomIDs, err := parseRoomIDs(raw)
 	if err != nil {
 		slog.Error("parse subscription room IDs failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("unexpected search response")
 	}
 
 	if len(roomIDs) == 0 {
-		return &model.SearchSubscriptionsResponse{Subscriptions: []model.SearchSubscription{}}, nil
+		return &model.SearchRoomsResponse{Subscriptions: []model.SearchRoom{}}, nil
 	}
 
-	subs, err := h.mongo.HydrateSubscriptions(ctx, account, roomIDs)
+	subs, err := h.mongo.HydrateRooms(ctx, account, roomIDs)
 	if err != nil {
 		slog.Error("subscription hydration failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("subscription hydration unavailable")
 	}
 
 	if subs == nil {
-		subs = []model.SearchSubscription{}
+		subs = []model.SearchRoom{}
 	}
-	return &model.SearchSubscriptionsResponse{Subscriptions: subs}, nil
+	return &model.SearchRoomsResponse{Subscriptions: subs}, nil
 }
 ```
 
@@ -1253,7 +1253,7 @@ func (h *handler) searchSubscriptions(c *natsrouter.Context, req model.SearchSub
 
 Run:
 ```bash
-go test -race -run TestHandler_SearchSubscriptions ./search-service/...
+go test -race -run TestHandler_SearchRooms ./search-service/...
 ```
 Expected: PASS (all ten subtests).
 
@@ -1294,17 +1294,17 @@ git add \
   search-service/store_mongo.go \
   search-service/handler.go \
   search-service/handler_test.go
-git commit -m "feat(search-service): rename searchRooms -> searchSubscriptions with ES->Mongo hydration"
+git commit -m "feat(search-service): rename searchRooms -> searchRooms with ES->Mongo hydration"
 ```
 
 ---
 
-## Task 8: Add `SearchSubscriptions` integration tests
+## Task 8: Add `SearchRooms` integration tests
 
 **Files:**
 - Modify: `search-service/integration_test.go`
 
-This task adds a Mongo-seeded integration test that exercises the full ES → room-IDs → Mongo hydration flow. The existing `ccsFixture` wires ES+Valkey+NATS; the new `subsFixture` reuses the existing NATS+Mongo infrastructure pattern from the `search.apps` tests already in this file.
+This task adds a Mongo-seeded integration test that exercises the full ES → room-IDs → Mongo hydration flow. The existing `ccsFixture` wires ES+Valkey+NATS; the new `roomsFixture` reuses the existing NATS+Mongo infrastructure pattern from the `search.apps` tests already in this file.
 
 - [ ] **Step 1: Survey the existing integration test structure**
 
@@ -1314,25 +1314,25 @@ grep -n 'func Test\|func setup\|type .* struct\|fixture' /home/user/chat/search-
 ```
 Identify the existing fixture-setup helpers. Do not refactor any existing code — only append the new fixture and tests.
 
-- [ ] **Step 2: Append `subsFixture` and tests to `integration_test.go`**
+- [ ] **Step 2: Append `roomsFixture` and tests to `integration_test.go`**
 
 Append to the end of `search-service/integration_test.go`:
 
 ```go
-// --- search.subscriptions integration ----------------------------------------
+// --- search.rooms integration ----------------------------------------
 
-// subsFixture wires a real Mongo container alongside a real ES container
+// roomsFixture wires a real Mongo container alongside a real ES container
 // (for the spotlight index) and NATS. ES is needed to seed spotlight docs;
 // Mongo is needed to seed subscription docs for hydration.
-type subsFixture struct {
+type roomsFixture struct {
 	clientNATS *nats.Conn
 	mongoDB    *mongo.Database
 	esURL      string
 }
 
-// setupSubsFixture stands up ES (spotlight index), Mongo (subscriptions), and
+// setupRoomsFixture stands up ES (spotlight index), Mongo (subscriptions), and
 // NATS. It registers t.Cleanup for all containers and returns a ready fixture.
-func setupSubsFixture(t *testing.T) *subsFixture {
+func setupRoomsFixture(t *testing.T) *roomsFixture {
 	t.Helper()
 	ctx := context.Background()
 
@@ -1399,7 +1399,7 @@ func setupSubsFixture(t *testing.T) *subsFixture {
 	h.Register(router)
 	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
 
-	return &subsFixture{clientNATS: clientNC, mongoDB: mongoDB, esURL: esURL}
+	return &roomsFixture{clientNATS: clientNC, mongoDB: mongoDB, esURL: esURL}
 }
 
 // newSubsValkeyClient starts a Valkey testcontainer and returns a connected
@@ -1449,8 +1449,8 @@ func putTestSpotlightIndex(t *testing.T, esURL, index string) {
 		"create spotlight index: status=%d body=%s", resp.StatusCode, b)
 }
 
-func TestIntegration_SearchSubscriptions_HappyPath(t *testing.T) {
-	f := setupSubsFixture(t)
+func TestIntegration_SearchRooms_HappyPath(t *testing.T) {
+	f := setupRoomsFixture(t)
 	ctx := context.Background()
 
 	const account = "alice"
@@ -1493,13 +1493,13 @@ func TestIntegration_SearchSubscriptions_HappyPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBytes, err := json.Marshal(model.SearchSubscriptionsRequest{Query: "engineering"})
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "engineering"})
 	require.NoError(t, err)
 
-	msg, err := f.clientNATS.Request(subject.SearchSubscriptions(account), reqBytes, 10*time.Second)
+	msg, err := f.clientNATS.Request(subject.SearchRooms(account), reqBytes, 10*time.Second)
 	require.NoError(t, err)
 
-	var resp model.SearchSubscriptionsResponse
+	var resp model.SearchRoomsResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 
 	assert.Len(t, resp.Subscriptions, 2, "both rooms matching 'engineering' must be returned")
@@ -1508,8 +1508,8 @@ func TestIntegration_SearchSubscriptions_HappyPath(t *testing.T) {
 	assert.Contains(t, roomIDs, "r2")
 }
 
-func TestIntegration_SearchSubscriptions_RoomTypeChannelFilter(t *testing.T) {
-	f := setupSubsFixture(t)
+func TestIntegration_SearchRooms_RoomTypeChannelFilter(t *testing.T) {
+	f := setupRoomsFixture(t)
 	ctx := context.Background()
 
 	const account = "bob"
@@ -1538,26 +1538,26 @@ func TestIntegration_SearchSubscriptions_RoomTypeChannelFilter(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBytes, err := json.Marshal(model.SearchSubscriptionsRequest{Query: "bob", RoomType: "channel"})
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "bob", RoomType: "channel"})
 	require.NoError(t, err)
 
-	msg, err := f.clientNATS.Request(subject.SearchSubscriptions(account), reqBytes, 10*time.Second)
+	msg, err := f.clientNATS.Request(subject.SearchRooms(account), reqBytes, 10*time.Second)
 	require.NoError(t, err)
 
-	var resp model.SearchSubscriptionsResponse
+	var resp model.SearchRoomsResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 
 	require.Len(t, resp.Subscriptions, 1)
 	assert.Equal(t, "b-r2", resp.Subscriptions[0].RoomID, "only the channel room must match roomType=channel filter")
 }
 
-func TestIntegration_SearchSubscriptions_EmptyQueryReturnsBadRequest(t *testing.T) {
-	f := setupSubsFixture(t)
+func TestIntegration_SearchRooms_EmptyQueryReturnsBadRequest(t *testing.T) {
+	f := setupRoomsFixture(t)
 
-	reqBytes, err := json.Marshal(model.SearchSubscriptionsRequest{Query: ""})
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: ""})
 	require.NoError(t, err)
 
-	msg, err := f.clientNATS.Request(subject.SearchSubscriptions("alice"), reqBytes, 5*time.Second)
+	msg, err := f.clientNATS.Request(subject.SearchRooms("alice"), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
 	var envelope map[string]any
@@ -1566,13 +1566,13 @@ func TestIntegration_SearchSubscriptions_EmptyQueryReturnsBadRequest(t *testing.
 	assert.Equal(t, natsrouter.CodeBadRequest, envelope["code"])
 }
 
-func TestIntegration_SearchSubscriptions_RoomTypeAppReturnsBadRequest(t *testing.T) {
-	f := setupSubsFixture(t)
+func TestIntegration_SearchRooms_RoomTypeAppReturnsBadRequest(t *testing.T) {
+	f := setupRoomsFixture(t)
 
-	reqBytes, err := json.Marshal(model.SearchSubscriptionsRequest{Query: "x", RoomType: "app"})
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "x", RoomType: "app"})
 	require.NoError(t, err)
 
-	msg, err := f.clientNATS.Request(subject.SearchSubscriptions("alice"), reqBytes, 5*time.Second)
+	msg, err := f.clientNATS.Request(subject.SearchRooms("alice"), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
 	var envelope map[string]any
@@ -1595,7 +1595,7 @@ Expected: all four new tests PASS; existing integration tests continue to PASS.
 
 ```bash
 git add search-service/integration_test.go
-git commit -m "test(search-service): add search.subscriptions integration tests"
+git commit -m "test(search-service): add search.rooms integration tests"
 ```
 
 ---
@@ -1605,7 +1605,7 @@ git commit -m "test(search-service): add search.subscriptions integration tests"
 **Files:**
 - Modify: `docs/client-api.md`
 
-CLAUDE.md §5 requires `docs/client-api.md` to be updated in the same PR when a client-facing handler changes. `search.subscriptions` replaces `search.rooms`, which is a breaking change.
+CLAUDE.md §5 requires `docs/client-api.md` to be updated in the same PR when a client-facing handler changes. `search.rooms` replaces `search.rooms`, which is a breaking change.
 
 - [ ] **Step 1: Replace the "Search Rooms" section**
 
@@ -1614,12 +1614,12 @@ In `docs/client-api.md`, locate the "Search Rooms" section (around line 1548, su
 ````markdown
 #### Search Subscriptions
 
-**Subject:** `chat.user.{account}.request.search.subscriptions`
+**Subject:** `chat.user.{account}.request.search.rooms`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
 **Breaking change:** This endpoint replaces the former `chat.user.{account}.request.search.rooms` subject (removed). Clients sending to the old subject will receive no reply. Update all callers before deploying this version.
 
-Full-text search across rooms the requester is subscribed to. Results are returned as `SearchSubscription` projections hydrated from MongoDB (the caller's per-room subscription documents), not raw ES index fields.
+Full-text search across rooms the requester is subscribed to. Results are returned as `SearchRoom` projections hydrated from MongoDB (the caller's per-room subscription documents), not raw ES index fields.
 
 ##### Request body
 
@@ -1642,9 +1642,9 @@ Full-text search across rooms the requester is subscribed to. Results are return
 
 | Field           | Type                      | Notes |
 |-----------------|---------------------------|-------|
-| `subscriptions` | array<SearchSubscription> | Page of subscription results. Empty slice when no matches, never null. |
+| `subscriptions` | array<SearchRoom> | Page of subscription results. Empty slice when no matches, never null. |
 
-`SearchSubscription` (field list mirrors the legacy HTTP shape — see implementation):
+`SearchRoom` (field list mirrors the legacy HTTP shape — see implementation):
 
 | Field      | Type   | Notes |
 |------------|--------|-------|
@@ -1696,7 +1696,7 @@ The ToC anchor for the section is auto-generated from the heading; if the doc ha
 
 ```bash
 git add docs/client-api.md
-git commit -m "docs(client-api): replace search.rooms with search.subscriptions; document breaking change"
+git commit -m "docs(client-api): replace search.rooms with search.rooms; document breaking change"
 ```
 
 ---
@@ -1724,9 +1724,9 @@ Expected: no output. Any hit indicates a missed rename.
 
 ```bash
 go test -coverprofile=/tmp/cov.out ./search-service/... \
-  && go tool cover -func=/tmp/cov.out | grep -E 'query_subscriptions\.go|store_mongo\.go|searchSubscriptions'
+  && go tool cover -func=/tmp/cov.out | grep -E 'query_subscriptions\.go|store_mongo\.go|searchRooms'
 ```
-Expected: `query_subscriptions.go` functions ≥80% covered; `searchSubscriptions` lines covered by the new handler tests. `store_mongo.go` `HydrateSubscriptions` is covered by integration tests (won't show in unit-test profile — expected).
+Expected: `query_subscriptions.go` functions ≥80% covered; `searchRooms` lines covered by the new handler tests. `store_mongo.go` `HydrateRooms` is covered by integration tests (won't show in unit-test profile — expected).
 
 - [ ] **Step 4: Confirm the old file is gone**
 
@@ -1748,7 +1748,7 @@ Expected: a sequence of focused commits from this plan plus the earlier Plan 1 c
 ```bash
 make test-integration SERVICE=search-service
 ```
-Expected: all tests PASS (including the new `TestIntegration_SearchSubscriptions_*` and the pre-existing `TestSearchService_SearchMessages_CCS_*`).
+Expected: all tests PASS (including the new `TestIntegration_SearchRooms_*` and the pre-existing `TestSearchService_SearchMessages_CCS_*`).
 
 ---
 
@@ -1759,4 +1759,4 @@ These remain for subsequent plans on the same `claude/migrate-search-nats-eHDjs`
 - **`/users` migration plan** — Resty client to third-party HR endpoint; new `SearchUsersClient` interface; `chat.user.{account}.request.search.users` subject; raw `[]SearchUser` reply.
 - **`/messages` v2 plan** — add `RoomIDs []string` request field; `classifyRoomIDs` access-guard helper; refactor `searchMessages` to do ES → Mongo enrichment; demote `MessageSearchHit` to internal staging type; response envelope reshape.
 
-**SearchSubscription field list:** The `SearchSubscription` struct currently carries `RoomID`, `Name`, and `RoomType` (with `bson:"..."` tags). During implementation, compare the legacy HTTP `/subscriptions` response shape and extend the struct fields before merging. Any new fields added to `SearchSubscription` must have both `json` and `bson` tags (per CLAUDE.md §3 Struct Tags) and must be added to the `model_test.go` round-trip test.
+**SearchRoom field list:** The `SearchRoom` struct currently carries `RoomID`, `Name`, and `RoomType` (with `bson:"..."` tags). During implementation, compare the legacy HTTP `/subscriptions` response shape and extend the struct fields before merging. Any new fields added to `SearchRoom` must have both `json` and `bson` tags (per CLAUDE.md §3 Struct Tags) and must be added to the `model_test.go` round-trip test.

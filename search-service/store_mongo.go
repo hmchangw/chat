@@ -43,19 +43,19 @@ func (s *mongoStore) SearchAppsByName(
 	return results, nil
 }
 
-// HydrateSubscriptions fetches the caller's subscription documents for the
+// HydrateRooms fetches the caller's subscription documents for the
 // given room IDs from the `subscriptions` collection and projects them into
-// []model.SearchSubscription. Documents are matched by `u.account` (caller's
+// []model.SearchRoom. Documents are matched by `u.account` (caller's
 // account) and `roomId` (one of the provided IDs). Missing subscriptions are
-// silently omitted. The bson projection maps directly onto model.SearchSubscription
+// silently omitted. The bson projection maps directly onto model.SearchRoom
 // via the `bson:"..."` tags on that struct.
-func (s *mongoStore) HydrateSubscriptions(
+func (s *mongoStore) HydrateRooms(
 	ctx context.Context,
 	account string,
 	roomIDs []string,
-) ([]model.SearchSubscription, error) {
+) ([]model.SearchRoom, error) {
 	if len(roomIDs) == 0 {
-		return []model.SearchSubscription{}, nil
+		return []model.SearchRoom{}, nil
 	}
 
 	filter := bson.D{
@@ -69,7 +69,7 @@ func (s *mongoStore) HydrateSubscriptions(
 	}
 	defer cur.Close(ctx)
 
-	results := make([]model.SearchSubscription, 0)
+	results := make([]model.SearchRoom, 0)
 	if err := cur.All(ctx, &results); err != nil {
 		return nil, fmt.Errorf("decode subscriptions: %w", err)
 	}
@@ -79,11 +79,11 @@ func (s *mongoStore) HydrateSubscriptions(
 	// surviving the hydration step). Subscriptions missing from Mongo
 	// (e.g. the user left between the ES query and this lookup) are
 	// silently omitted.
-	byRoomID := make(map[string]model.SearchSubscription, len(results))
+	byRoomID := make(map[string]model.SearchRoom, len(results))
 	for _, sub := range results {
 		byRoomID[sub.RoomID] = sub
 	}
-	ordered := make([]model.SearchSubscription, 0, len(results))
+	ordered := make([]model.SearchRoom, 0, len(results))
 	for _, roomID := range roomIDs {
 		if sub, ok := byRoomID[roomID]; ok {
 			ordered = append(ordered, sub)

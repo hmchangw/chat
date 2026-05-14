@@ -49,31 +49,31 @@ type SearchMessage struct {
 	ThreadParentMessageCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty"`
 }
 
-// SearchSubscriptionsRequest is the NATS payload for
-// `chat.user.{account}.request.search.subscriptions`.
+// SearchRoomsRequest is the NATS payload for
+// `chat.user.{account}.request.search.rooms`.
 //
 // Query is a non-empty substring match on room name (case-insensitive prefix).
 // RoomType filters by subscription type: "all" (default, same as empty),
 // "channel", or "dm". The value "app" and any other value are rejected with
 // ErrBadRequest.
-type SearchSubscriptionsRequest struct {
+type SearchRoomsRequest struct {
 	Query    string `json:"query"`
 	RoomType string `json:"roomType,omitempty"`
 	Size     int    `json:"size,omitempty"`
 	Offset   int    `json:"offset,omitempty"`
 }
 
-// SearchSubscriptionsResponse is the NATS reply for `search.subscriptions`.
-// Subscriptions is always non-nil (empty slice marshals as []).
-type SearchSubscriptionsResponse struct {
-	Subscriptions []SearchSubscription `json:"subscriptions"`
+// SearchRoomsResponse is the NATS reply for `search.rooms`.
+// Rooms is always non-nil (empty slice marshals as []).
+type SearchRoomsResponse struct {
+	Rooms []SearchRoom `json:"rooms"`
 }
 
-// SearchSubscription is the per-user-room projection returned by
-// search.subscriptions. Field list mirrors the legacy HTTP shape for
-// the /subscriptions endpoint — fill in additional fields per the legacy
+// SearchRoom is the per-user-room projection returned by
+// search.rooms. Field list mirrors the legacy HTTP shape for
+// the /rooms endpoint — fill in additional fields per the legacy
 // response during implementation.
-type SearchSubscription struct {
+type SearchRoom struct {
 	RoomID   string `json:"roomId"             bson:"roomId"`
 	Name     string `json:"name"               bson:"name"`
 	RoomType string `json:"roomType,omitempty" bson:"roomType,omitempty"`

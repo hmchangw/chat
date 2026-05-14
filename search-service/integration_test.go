@@ -887,20 +887,20 @@ func TestIntegration_SearchUsers_ThirdPartyErrorReturnsInternal(t *testing.T) {
 	assert.NotContains(t, envelope.Error, "503", "status code from third-party must not leak")
 }
 
-// --- search.subscriptions integration ----------------------------------------
+// --- search.rooms integration ----------------------------------------
 
-// subsFixture wires a real Mongo container alongside a real ES container
+// roomsFixture wires a real Mongo container alongside a real ES container
 // (for the spotlight index) and NATS. ES is needed to seed spotlight docs;
 // Mongo is needed to seed subscription docs for hydration.
-type subsFixture struct {
+type roomsFixture struct {
 	clientNATS *nats.Conn
 	mongoDB    *mongo.Database
 	esURL      string
 }
 
-// setupSubsFixture stands up ES (spotlight index), Mongo (subscriptions), and
+// setupRoomsFixture stands up ES (spotlight index), Mongo (subscriptions), and
 // NATS. It registers t.Cleanup for all containers and returns a ready fixture.
-func setupSubsFixture(t *testing.T) *subsFixture {
+func setupRoomsFixture(t *testing.T) *roomsFixture {
 	t.Helper()
 	ctx := context.Background()
 
@@ -969,7 +969,7 @@ func setupSubsFixture(t *testing.T) *subsFixture {
 	require.NoError(t, serverNC.NatsConn().Flush())
 	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
 
-	return &subsFixture{clientNATS: clientNC, mongoDB: mongoDB, esURL: esURL}
+	return &roomsFixture{clientNATS: clientNC, mongoDB: mongoDB, esURL: esURL}
 }
 
 // newSubsValkeyClient starts a Valkey testcontainer and returns a connected
@@ -1019,8 +1019,8 @@ func putTestSpotlightIndex(t *testing.T, esURL, index string) {
 		"create spotlight index: status=%d body=%s", resp.StatusCode, b)
 }
 
-func TestIntegration_SearchSubscriptions_HappyPath(t *testing.T) {
-	f := setupSubsFixture(t)
+func TestIntegration_SearchRooms_HappyPath(t *testing.T) {
+	f := setupRoomsFixture(t)
 	ctx := context.Background()
 
 	const account = "alice"
@@ -1063,23 +1063,23 @@ func TestIntegration_SearchSubscriptions_HappyPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBytes, err := json.Marshal(model.SearchSubscriptionsRequest{Query: "engineering"})
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "engineering"})
 	require.NoError(t, err)
 
-	msg, err := f.clientNATS.Request(subject.SearchSubscriptions(account), reqBytes, 10*time.Second)
+	msg, err := f.clientNATS.Request(subject.SearchRooms(account), reqBytes, 10*time.Second)
 	require.NoError(t, err)
 
-	var resp model.SearchSubscriptionsResponse
+	var resp model.SearchRoomsResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 
-	assert.Len(t, resp.Subscriptions, 2, "both rooms matching 'engineering' must be returned")
-	roomIDs := []string{resp.Subscriptions[0].RoomID, resp.Subscriptions[1].RoomID}
+	assert.Len(t, resp.Rooms, 2, "both rooms matching 'engineering' must be returned")
+	roomIDs := []string{resp.Rooms[0].RoomID, resp.Rooms[1].RoomID}
 	assert.Contains(t, roomIDs, "r1")
 	assert.Contains(t, roomIDs, "r2")
 }
 
-func TestIntegration_SearchSubscriptions_RoomTypeChannelFilter(t *testing.T) {
-	f := setupSubsFixture(t)
+func TestIntegration_SearchRooms_RoomTypeChannelFilter(t *testing.T) {
+	f := setupRoomsFixture(t)
 	ctx := context.Background()
 
 	const account = "bob"
@@ -1108,26 +1108,26 @@ func TestIntegration_SearchSubscriptions_RoomTypeChannelFilter(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBytes, err := json.Marshal(model.SearchSubscriptionsRequest{Query: "bob", RoomType: "channel"})
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "bob", RoomType: "channel"})
 	require.NoError(t, err)
 
-	msg, err := f.clientNATS.Request(subject.SearchSubscriptions(account), reqBytes, 10*time.Second)
+	msg, err := f.clientNATS.Request(subject.SearchRooms(account), reqBytes, 10*time.Second)
 	require.NoError(t, err)
 
-	var resp model.SearchSubscriptionsResponse
+	var resp model.SearchRoomsResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 
-	require.Len(t, resp.Subscriptions, 1)
-	assert.Equal(t, "b-r2", resp.Subscriptions[0].RoomID, "only the channel room must match roomType=channel filter")
+	require.Len(t, resp.Rooms, 1)
+	assert.Equal(t, "b-r2", resp.Rooms[0].RoomID, "only the channel room must match roomType=channel filter")
 }
 
-func TestIntegration_SearchSubscriptions_EmptyQueryReturnsBadRequest(t *testing.T) {
-	f := setupSubsFixture(t)
+func TestIntegration_SearchRooms_EmptyQueryReturnsBadRequest(t *testing.T) {
+	f := setupRoomsFixture(t)
 
-	reqBytes, err := json.Marshal(model.SearchSubscriptionsRequest{Query: ""})
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: ""})
 	require.NoError(t, err)
 
-	msg, err := f.clientNATS.Request(subject.SearchSubscriptions("alice"), reqBytes, 5*time.Second)
+	msg, err := f.clientNATS.Request(subject.SearchRooms("alice"), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
 	var envelope model.ErrorResponse
@@ -1136,13 +1136,13 @@ func TestIntegration_SearchSubscriptions_EmptyQueryReturnsBadRequest(t *testing.
 	assert.Equal(t, natsrouter.CodeBadRequest, envelope.Code)
 }
 
-func TestIntegration_SearchSubscriptions_RoomTypeAppReturnsBadRequest(t *testing.T) {
-	f := setupSubsFixture(t)
+func TestIntegration_SearchRooms_RoomTypeAppReturnsBadRequest(t *testing.T) {
+	f := setupRoomsFixture(t)
 
-	reqBytes, err := json.Marshal(model.SearchSubscriptionsRequest{Query: "x", RoomType: "app"})
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "x", RoomType: "app"})
 	require.NoError(t, err)
 
-	msg, err := f.clientNATS.Request(subject.SearchSubscriptions("alice"), reqBytes, 5*time.Second)
+	msg, err := f.clientNATS.Request(subject.SearchRooms("alice"), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
 	var envelope model.ErrorResponse

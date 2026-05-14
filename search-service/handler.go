@@ -50,7 +50,7 @@ func newHandler(store SearchStore, mongo MongoStore, users SearchUsersClient, ca
 
 func (h *handler) Register(r *natsrouter.Router) {
 	natsrouter.Register(r, subject.SearchMessagesPattern(), h.searchMessages)
-	natsrouter.Register(r, subject.SearchSubscriptionsPattern(), h.searchSubscriptions)
+	natsrouter.Register(r, subject.SearchRoomsPattern(), h.searchRooms)
 	natsrouter.Register(r, subject.SearchAppsPattern(), h.searchApps)
 	natsrouter.Register(r, subject.SearchUsersPattern(), h.searchUsers)
 }
@@ -118,8 +118,8 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 	return &model.SearchMessagesResponse{Messages: messages, Total: total}, nil
 }
 
-func (h *handler) searchSubscriptions(c *natsrouter.Context, req model.SearchSubscriptionsRequest) (resp *model.SearchSubscriptionsResponse, err error) {
-	defer observeRequest(metricKindSubscriptions, &err)()
+func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsRequest) (resp *model.SearchRoomsResponse, err error) {
+	defer observeRequest(metricKindRooms, &err)()
 
 	account, rerr := c.Params.Require("account")
 	if rerr != nil {
@@ -139,7 +139,7 @@ func (h *handler) searchSubscriptions(c *natsrouter.Context, req model.SearchSub
 	ctx, cancel := h.withRequestTimeout(c)
 	defer cancel()
 
-	body, err := buildSubscriptionQuery(req, account)
+	body, err := buildRoomQuery(req, account)
 	if err != nil {
 		// RouteError (invalid roomType) passes through;
 		// anything else (marshal failure — unreachable) gets sanitized.
@@ -159,26 +159,26 @@ func (h *handler) searchSubscriptions(c *natsrouter.Context, req model.SearchSub
 		return nil, natsrouter.ErrInternal("search backend unavailable")
 	}
 
-	roomIDs, err := parseSubscriptionRoomIDs(raw)
+	roomIDs, err := parseRoomIDs(raw)
 	if err != nil {
 		slog.Error("parse subscription room IDs failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("unexpected search response")
 	}
 
 	if len(roomIDs) == 0 {
-		return &model.SearchSubscriptionsResponse{Subscriptions: []model.SearchSubscription{}}, nil
+		return &model.SearchRoomsResponse{Rooms: []model.SearchRoom{}}, nil
 	}
 
-	subs, err := h.mongo.HydrateSubscriptions(ctx, account, roomIDs)
+	subs, err := h.mongo.HydrateRooms(ctx, account, roomIDs)
 	if err != nil {
 		slog.Error("subscription hydration failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("subscription hydration unavailable")
 	}
 
 	if subs == nil {
-		subs = []model.SearchSubscription{}
+		subs = []model.SearchRoom{}
 	}
-	return &model.SearchSubscriptionsResponse{Subscriptions: subs}, nil
+	return &model.SearchRoomsResponse{Rooms: subs}, nil
 }
 
 // loadRestricted implements the 2-tier Valkey → ES read. Cache errors

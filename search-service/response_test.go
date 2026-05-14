@@ -113,7 +113,7 @@ func TestParseSubscriptionRoomIDs_HappyPath(t *testing.T) {
 		}
 	}`)
 
-	ids, err := parseSubscriptionRoomIDs(body)
+	ids, err := parseRoomIDs(body)
 	require.NoError(t, err)
 	require.Len(t, ids, 2)
 	assert.Equal(t, "r1", ids[0])
@@ -122,13 +122,13 @@ func TestParseSubscriptionRoomIDs_HappyPath(t *testing.T) {
 
 func TestParseSubscriptionRoomIDs_Empty(t *testing.T) {
 	body := json.RawMessage(`{"hits":{"total":{"value":0},"hits":[]}}`)
-	ids, err := parseSubscriptionRoomIDs(body)
+	ids, err := parseRoomIDs(body)
 	require.NoError(t, err)
 	assert.Empty(t, ids)
 }
 
 func TestParseSubscriptionRoomIDs_Malformed(t *testing.T) {
-	_, err := parseSubscriptionRoomIDs(json.RawMessage(`{`))
+	_, err := parseRoomIDs(json.RawMessage(`{`))
 	assert.Error(t, err)
 }
 
@@ -143,7 +143,7 @@ func TestParseSubscriptionRoomIDs_PreservesOrder(t *testing.T) {
 			]
 		}
 	}`)
-	ids, err := parseSubscriptionRoomIDs(body)
+	ids, err := parseRoomIDs(body)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"r3", "r1", "r2"}, ids, "ES hit order must be preserved for Mongo hydration")
 }

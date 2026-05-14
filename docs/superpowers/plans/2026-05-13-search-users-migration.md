@@ -1265,7 +1265,7 @@ Confirm each spec requirement from `docs/superpowers/specs/2026-05-13-search-ser
 
 These remain for the subsequent plans on `claude/migrate-search-nats-eHDjs`:
 
-- **Plan 3 — `search.subscriptions`** — rename `search.rooms` → `search.subscriptions`; new `SearchSubscriptionsRequest` fields (`Query`, `RoomType`); new response type `SearchSubscriptionsResponse`; ES spotlight query + Mongo hydration; `MongoStore.HydrateSubscriptions`.
+- **Plan 3 — `search.rooms`** — reshape `search.rooms` response (subject unchanged); new `SearchRoomsRequest` fields (`Query`, `RoomType`); new response type `SearchRoomsResponse`; ES spotlight query + Mongo hydration; `MongoStore.HydrateRooms`.
 - **Plan 4 — `search.messages` v2** — `RoomIDs []string` request field; `classifyRoomIDs` access-guard helper; ES → Mongo enrichment → `SearchMessage` transformation; `MongoStore.FindUsersByIDs` / `FindRoomsByIDs`; response reshape from `{total, results}` to `{messages, total}`.
 
 **Third-party wire shape**: the `TODO(searchUsers-thirdparty)` placeholder in `users_client.go` must be replaced with the real request body and URL path when the HR endpoint spec is available. The `SearchUsersClient` interface boundary means this is a confined change: update `users_client.go` and `model.SearchUser`, re-run `make test-integration SERVICE=search-service`, and ship.

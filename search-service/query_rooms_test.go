@@ -18,8 +18,8 @@ func subscriptionFilters(t *testing.T, q map[string]any) []any {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeAll(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "general", Size: 10, Offset: 0}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "general", Size: 10, Offset: 0}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	q := parseQuery(t, raw)
@@ -34,8 +34,8 @@ func TestBuildSubscriptionQuery_RoomTypeAll(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeExplicitAll(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "general", RoomType: "all"}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "general", RoomType: "all"}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	filters := subscriptionFilters(t, parseQuery(t, raw))
@@ -43,8 +43,8 @@ func TestBuildSubscriptionQuery_RoomTypeExplicitAll(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeChannel(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "general", RoomType: "channel"}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "general", RoomType: "channel"}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	filters := subscriptionFilters(t, parseQuery(t, raw))
@@ -54,8 +54,8 @@ func TestBuildSubscriptionQuery_RoomTypeChannel(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeDM(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "alice", RoomType: "dm"}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "alice", RoomType: "dm"}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	filters := subscriptionFilters(t, parseQuery(t, raw))
@@ -65,8 +65,8 @@ func TestBuildSubscriptionQuery_RoomTypeDM(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_RoomTypeAppRejected(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "bot", RoomType: "app"}
-	_, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "bot", RoomType: "app"}
+	_, err := buildRoomQuery(req, "alice")
 	require.Error(t, err)
 
 	var rerr *natsrouter.RouteError
@@ -76,8 +76,8 @@ func TestBuildSubscriptionQuery_RoomTypeAppRejected(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_UnknownRoomTypeRejected(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "x", RoomType: "orb"}
-	_, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "x", RoomType: "orb"}
+	_, err := buildRoomQuery(req, "alice")
 	require.Error(t, err)
 
 	var rerr *natsrouter.RouteError
@@ -87,8 +87,8 @@ func TestBuildSubscriptionQuery_UnknownRoomTypeRejected(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_SortByScoreThenJoinedAtDesc(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "x"}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "x"}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	sort := parseQuery(t, raw)["sort"].([]any)
@@ -99,8 +99,8 @@ func TestBuildSubscriptionQuery_SortByScoreThenJoinedAtDesc(t *testing.T) {
 }
 
 func TestBuildSubscriptionQuery_QueryFieldUsedAsSearchText(t *testing.T) {
-	req := model.SearchSubscriptionsRequest{Query: "engineering", Size: 5}
-	raw, err := buildSubscriptionQuery(req, "alice")
+	req := model.SearchRoomsRequest{Query: "engineering", Size: 5}
+	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
 
 	q := parseQuery(t, raw)

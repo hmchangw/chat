@@ -233,7 +233,7 @@ In `search-service/store.go`, append after the existing `UserRoomDoc` struct:
 ```go
 // MongoStore is the Mongo-backed store interface for search-service.
 // Currently exposes only `SearchAppsByName`; additional methods
-// (FindUsersByIDs, FindRoomsByIDs, HydrateSubscriptions) land in later
+// (FindUsersByIDs, FindRoomsByIDs, HydrateRooms) land in later
 // migrations.
 type MongoStore interface {
 	SearchAppsByName(
@@ -1391,7 +1391,7 @@ Expected: a sequence of focused commits from Tasks 1–11. Confirm each spec req
 These remain for the next plans on the same `claude/migrate-search-nats-eHDjs` branch:
 
 - **`/users` migration plan** — Resty client to third-party HR endpoint; new `SearchUsersClient` interface; `chat.user.{account}.request.search.users` subject; raw `[]SearchUser` reply.
-- **`/subscriptions` migration plan** — rename `search.rooms` → `search.subscriptions`; new request fields (`Query`, `RoomType`); new response type `SearchSubscription`; ES `spotlight` query + Mongo hydration.
+- **`/rooms` v2 migration plan** — reshape `search.rooms` response (subject unchanged); new request fields (`Query`, `RoomType`); new response type `SearchRoom`; ES `spotlight` query + Mongo hydration.
 - **`/messages` v2 plan** — add `RoomIDs []string` request field; `classifyRoomIDs` access-guard helper; refactor `searchMessages` to do ES → Mongo enrichment → `SearchMessage` transformation; demote `MessageSearchHit` to internal staging type; response envelope reshape.
 
 The real `buildSearchAppsPipeline` body (replacing the prototype `$match + $limit`) is owned by you — extend the function inside `query_apps.go` per the TODO comment block (`$lookup subscriptions` access guard → `$group` → `$lookup rooms` → `$project`). The tests in `query_apps_test.go` assert the contract that survives any pipeline-body change; add new tests as you add stages.

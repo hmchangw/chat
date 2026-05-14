@@ -229,9 +229,9 @@ type fakeMongo struct {
 	searchAppsResults []model.App
 	searchAppsErr     error
 
-	hydrateSubscriptionsCalls   []hydrateSubsCall
-	hydrateSubscriptionsResults []model.SearchSubscription
-	hydrateSubscriptionsErr     error
+	hydrateRoomsCalls   []hydrateRoomsCall
+	hydrateRoomsResults []model.SearchRoom
+	hydrateRoomsErr     error
 }
 
 type searchAppsCall struct {
@@ -242,7 +242,7 @@ type searchAppsCall struct {
 	limit            int
 }
 
-type hydrateSubsCall struct {
+type hydrateRoomsCall struct {
 	account string
 	roomIDs []string
 }
@@ -262,69 +262,69 @@ func (f *fakeMongo) SearchAppsByName(
 	return f.searchAppsResults, nil
 }
 
-func (f *fakeMongo) HydrateSubscriptions(
+func (f *fakeMongo) HydrateRooms(
 	_ context.Context,
 	account string,
 	roomIDs []string,
-) ([]model.SearchSubscription, error) {
-	f.hydrateSubscriptionsCalls = append(f.hydrateSubscriptionsCalls, hydrateSubsCall{
+) ([]model.SearchRoom, error) {
+	f.hydrateRoomsCalls = append(f.hydrateRoomsCalls, hydrateRoomsCall{
 		account: account, roomIDs: roomIDs,
 	})
-	if f.hydrateSubscriptionsErr != nil {
-		return nil, f.hydrateSubscriptionsErr
+	if f.hydrateRoomsErr != nil {
+		return nil, f.hydrateRoomsErr
 	}
-	return f.hydrateSubscriptionsResults, nil
+	return f.hydrateRoomsResults, nil
 }
 
-func TestHandler_SearchSubscriptions_HappyPath(t *testing.T) {
+func TestHandler_SearchRooms_HappyPath(t *testing.T) {
 	store := &fakeStore{
 		searchBody: json.RawMessage(`{"hits":{"total":{"value":2},"hits":[{"_source":{"roomId":"r1"}},{"_source":{"roomId":"r2"}}]}}`),
 	}
 	mongo := &fakeMongo{
-		hydrateSubscriptionsResults: []model.SearchSubscription{
+		hydrateRoomsResults: []model.SearchRoom{
 			{RoomID: "r1", Name: "general", RoomType: "channel"},
 			{RoomID: "r2", Name: "alice-bob", RoomType: "dm"},
 		},
 	}
 	h := newTestHandler(store, mongo, nil, newFakeCache())
 
-	resp, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "general"})
+	resp, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "general"})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	require.Len(t, resp.Subscriptions, 2)
-	assert.Equal(t, "r1", resp.Subscriptions[0].RoomID)
-	assert.Equal(t, "general", resp.Subscriptions[0].Name)
+	require.Len(t, resp.Rooms, 2)
+	assert.Equal(t, "r1", resp.Rooms[0].RoomID)
+	assert.Equal(t, "general", resp.Rooms[0].Name)
 
 	require.Len(t, store.searchCalls, 1)
 	assert.Equal(t, []string{testSpotlightIndex}, store.searchCalls[0].indices)
 
-	require.Len(t, mongo.hydrateSubscriptionsCalls, 1)
-	call := mongo.hydrateSubscriptionsCalls[0]
+	require.Len(t, mongo.hydrateRoomsCalls, 1)
+	call := mongo.hydrateRoomsCalls[0]
 	assert.Equal(t, "alice", call.account)
 	assert.Equal(t, []string{"r1", "r2"}, call.roomIDs)
 }
 
-func TestHandler_SearchSubscriptions_EmptyQueryRejected(t *testing.T) {
+func TestHandler_SearchRooms_EmptyQueryRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
 	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
 }
 
-func TestHandler_SearchSubscriptions_WhitespaceQueryRejected(t *testing.T) {
+func TestHandler_SearchRooms_WhitespaceQueryRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "   "})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "   "})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
 	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
 }
 
-func TestHandler_SearchSubscriptions_RoomTypeAppRejected(t *testing.T) {
+func TestHandler_SearchRooms_RoomTypeAppRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "x", RoomType: "app"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x", RoomType: "app"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -332,19 +332,19 @@ func TestHandler_SearchSubscriptions_RoomTypeAppRejected(t *testing.T) {
 	assert.Contains(t, rerr.Message, "invalid roomType")
 }
 
-func TestHandler_SearchSubscriptions_UnknownRoomTypeRejected(t *testing.T) {
+func TestHandler_SearchRooms_UnknownRoomTypeRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "x", RoomType: "zzz"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x", RoomType: "zzz"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
 	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
 }
 
-func TestHandler_SearchSubscriptions_ESErrorSanitized(t *testing.T) {
+func TestHandler_SearchRooms_ESErrorSanitized(t *testing.T) {
 	store := &fakeStore{searchErr: errors.New("es failed")}
 	h := newTestHandler(store, &fakeMongo{}, nil, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "general"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "general"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -352,13 +352,13 @@ func TestHandler_SearchSubscriptions_ESErrorSanitized(t *testing.T) {
 	assert.NotContains(t, rerr.Message, "es failed")
 }
 
-func TestHandler_SearchSubscriptions_MongoErrorSanitized(t *testing.T) {
+func TestHandler_SearchRooms_MongoErrorSanitized(t *testing.T) {
 	store := &fakeStore{
 		searchBody: json.RawMessage(`{"hits":{"total":{"value":1},"hits":[{"_source":{"roomId":"r1"}}]}}`),
 	}
-	mongo := &fakeMongo{hydrateSubscriptionsErr: errors.New("mongo down")}
+	mongo := &fakeMongo{hydrateRoomsErr: errors.New("mongo down")}
 	h := newTestHandler(store, mongo, nil, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "general"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "general"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -366,26 +366,26 @@ func TestHandler_SearchSubscriptions_MongoErrorSanitized(t *testing.T) {
 	assert.NotContains(t, rerr.Message, "mongo down")
 }
 
-func TestHandler_SearchSubscriptions_EmptyESResultSkipsMongo(t *testing.T) {
+func TestHandler_SearchRooms_EmptyESResultSkipsMongo(t *testing.T) {
 	store := &fakeStore{
 		searchBody: json.RawMessage(`{"hits":{"total":{"value":0},"hits":[]}}`),
 	}
 	mongo := &fakeMongo{}
 	h := newTestHandler(store, mongo, nil, newFakeCache())
 
-	resp, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "nope"})
+	resp, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "nope"})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	assert.NotNil(t, resp.Subscriptions, "must be empty slice, not nil")
-	assert.Empty(t, resp.Subscriptions)
-	assert.Len(t, mongo.hydrateSubscriptionsCalls, 0, "no Mongo call when ES returns no hits")
+	assert.NotNil(t, resp.Rooms, "must be empty slice, not nil")
+	assert.Empty(t, resp.Rooms)
+	assert.Len(t, mongo.hydrateRoomsCalls, 0, "no Mongo call when ES returns no hits")
 }
 
-func TestHandler_SearchSubscriptions_SizeClamped(t *testing.T) {
+func TestHandler_SearchRooms_SizeClamped(t *testing.T) {
 	store := &fakeStore{}
 	h := newTestHandler(store, &fakeMongo{}, nil, newFakeCache())
 
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{
 		Query: "general",
 		Size:  500,
 	})
@@ -397,19 +397,19 @@ func TestHandler_SearchSubscriptions_SizeClamped(t *testing.T) {
 	assert.Equal(t, float64(100), body["size"], "Size > MaxDocCounts must be clamped")
 }
 
-func TestHandler_SearchSubscriptions_NegativeSizeRejected(t *testing.T) {
+func TestHandler_SearchRooms_NegativeSizeRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "x", Size: -1})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x", Size: -1})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
 	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
 }
 
-func TestHandler_SearchSubscriptions_UsesSpotlightIndex(t *testing.T) {
+func TestHandler_SearchRooms_UsesSpotlightIndex(t *testing.T) {
 	store := &fakeStore{}
 	h := newTestHandler(store, &fakeMongo{}, nil, newFakeCache())
-	_, err := h.searchSubscriptions(ctxWithAccount("alice"), model.SearchSubscriptionsRequest{Query: "x"})
+	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x"})
 	require.NoError(t, err)
 
 	require.Len(t, store.searchCalls, 1)

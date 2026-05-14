@@ -43,10 +43,10 @@ type messageSearchHit struct {
 	ThreadParentCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty"`
 }
 
-// subscriptionSearchHit is the ES `_source` shape for a spotlight hit used
+// roomSearchHit is the ES `_source` shape for a spotlight hit used
 // during the subscription search flow. Only `roomId` is extracted; the other
 // fields are present in the index but unused after the Mongo hydration step.
-type subscriptionSearchHit struct {
+type roomSearchHit struct {
 	RoomID string `json:"roomId"`
 }
 
@@ -80,11 +80,11 @@ func toSearchMessage(hit *messageSearchHit) model.SearchMessage {
 	}
 }
 
-// parseSubscriptionRoomIDs extracts the ordered list of room IDs from a
-// spotlight ES response. The caller passes these IDs to HydrateSubscriptions
+// parseRoomIDs extracts the ordered list of room IDs from a
+// spotlight ES response. The caller passes these IDs to HydrateRooms
 // for Mongo enrichment.
-func parseSubscriptionRoomIDs(raw json.RawMessage) ([]string, error) {
-	var rr rawResponse[subscriptionSearchHit]
+func parseRoomIDs(raw json.RawMessage) ([]string, error) {
+	var rr rawResponse[roomSearchHit]
 	if err := json.Unmarshal(raw, &rr); err != nil {
 		return nil, fmt.Errorf("parse subscription room IDs: %w", err)
 	}

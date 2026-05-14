@@ -1570,19 +1570,19 @@ func TestSearchMessagesRequestJSON_WithRoomIDs(t *testing.T) {
 		"nil RoomIDs must be omitted via omitempty")
 }
 
-func TestSearchSubscriptionsRequestJSON(t *testing.T) {
+func TestSearchRoomsRequestJSON(t *testing.T) {
 	t.Run("full", func(t *testing.T) {
-		req := model.SearchSubscriptionsRequest{
+		req := model.SearchRoomsRequest{
 			Query:    "engineering",
 			RoomType: "channel",
 			Size:     25,
 			Offset:   5,
 		}
-		roundTrip(t, &req, &model.SearchSubscriptionsRequest{})
+		roundTrip(t, &req, &model.SearchRoomsRequest{})
 	})
 
 	t.Run("roomType omitted when empty", func(t *testing.T) {
-		req := model.SearchSubscriptionsRequest{Query: "x"}
+		req := model.SearchRoomsRequest{Query: "x"}
 		data, err := json.Marshal(&req)
 		require.NoError(t, err)
 		var raw map[string]any
@@ -1592,7 +1592,7 @@ func TestSearchSubscriptionsRequestJSON(t *testing.T) {
 	})
 
 	t.Run("size and offset omitted when zero", func(t *testing.T) {
-		req := model.SearchSubscriptionsRequest{Query: "x"}
+		req := model.SearchRoomsRequest{Query: "x"}
 		data, err := json.Marshal(&req)
 		require.NoError(t, err)
 		var raw map[string]any
@@ -1604,21 +1604,21 @@ func TestSearchSubscriptionsRequestJSON(t *testing.T) {
 	})
 }
 
-func TestSearchSubscriptionsResponseJSON(t *testing.T) {
-	resp := model.SearchSubscriptionsResponse{
-		Subscriptions: []model.SearchSubscription{
+func TestSearchRoomsResponseJSON(t *testing.T) {
+	resp := model.SearchRoomsResponse{
+		Rooms: []model.SearchRoom{
 			{RoomID: "r1", Name: "engineering-announcements", RoomType: "channel"},
 			{RoomID: "r2", Name: "alice-bob", RoomType: "dm"},
 		},
 	}
-	roundTrip(t, &resp, &model.SearchSubscriptionsResponse{})
+	roundTrip(t, &resp, &model.SearchRoomsResponse{})
 }
 
-func TestSearchSubscriptionsResponseJSON_EmptySubscriptions(t *testing.T) {
-	resp := model.SearchSubscriptionsResponse{Subscriptions: []model.SearchSubscription{}}
+func TestSearchRoomsResponseJSON_EmptySubscriptions(t *testing.T) {
+	resp := model.SearchRoomsResponse{Rooms: []model.SearchRoom{}}
 	data, err := json.Marshal(&resp)
 	require.NoError(t, err)
-	assert.Equal(t, `{"subscriptions":[]}`, string(data), "empty slice must marshal as [] not null")
+	assert.Equal(t, `{"rooms":[]}`, string(data), "empty slice must marshal as [] not null")
 }
 
 func TestChannelRefJSONBSON(t *testing.T) {

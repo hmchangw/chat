@@ -8,7 +8,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
-// roomType filter values accepted on SearchSubscriptionsRequest.RoomType.
+// roomType filter values accepted on SearchRoomsRequest.RoomType.
 const (
 	roomTypeAll     = "all"
 	roomTypeChannel = "channel"
@@ -16,11 +16,11 @@ const (
 	roomTypeApp     = "app"
 )
 
-// buildSubscriptionQuery composes the ES `_search` body for a subscription
+// buildRoomQuery composes the ES `_search` body for a subscription
 // search against the spotlight index. It returns a *natsrouter.RouteError
 // (user-facing) on invalid/unsupported roomType values and a plain error on
 // marshalling failures.
-func buildSubscriptionQuery(req model.SearchSubscriptionsRequest, account string) (json.RawMessage, error) {
+func buildRoomQuery(req model.SearchRoomsRequest, account string) (json.RawMessage, error) {
 	roomTypeFilter, rerr := roomTypeFilterClause(req.RoomType)
 	if rerr != nil {
 		return nil, rerr
