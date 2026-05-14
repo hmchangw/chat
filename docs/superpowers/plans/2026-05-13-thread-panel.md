@@ -3314,6 +3314,7 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
     <div className="message-area">
       <MessageList
         messages={messages}
+        room={room}
         hasLoadedHistory={hasLoadedHistory}
         historyError={historyError}
         context="main"
@@ -3326,7 +3327,7 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
         onEditSubmit={handleEditSubmit}
         onEditCancel={handleEditCancel}
         onDelete={handleDelete}
-        onJumpToMessage={(msgId) => jumpToMessage?.(room.id, msgId)?.catch?.(() => {})}
+        onJumpToMessage={(msgId) => jumpToMessage?.(msgId)?.catch?.(() => {})}
         bottomRef={bottomRef}
       />
       {bufferMode === BUFFER_MODE.HISTORICAL && pendingCount > 0 && (
@@ -3344,15 +3345,20 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
 }
 ```
 
+Two preserved-from-Task-3.6 details (don't drop them):
+- `room={room}` forwarded to MessageList (so each MessageRow can pass it to the read-receipt kebab).
+- `onJumpToMessage` uses the per-room CURRIED form `jumpToMessage?.(msgId)` — single arg.
+
 - [ ] **Step 4: Extend `MessageList` to forward the new props**
 
-In `chat-frontend/src/components/messages/MessageList.jsx`, update the props destructure and the row render to forward `editingMessageId`, `currentUserAccount`, `onEdit`, `onEditSubmit`, `onEditCancel`, `onDelete`. Compute `isOwn` per row:
+In `chat-frontend/src/components/messages/MessageList.jsx`, update the props destructure and the row render to forward `editingMessageId`, `currentUserAccount`, `onEdit`, `onEditSubmit`, `onEditCancel`, `onDelete`. Compute `isOwn` per row. **Keep `room` forwarding** (was added in Task 3.4 / A3) — without it MessageRow can't render the read-receipt kebab.
 
 ```jsx
 {messages.map((msg) => (
   <MessageRow
     key={msg.id}
     message={msg}
+    room={room}
     context={context}
     isOwn={!!currentUserAccount && msg.sender?.account === currentUserAccount}
     editing={editingMessageId === msg.id}
@@ -3367,7 +3373,7 @@ In `chat-frontend/src/components/messages/MessageList.jsx`, update the props des
 ))}
 ```
 
-…and add `currentUserAccount`, `editingMessageId`, `onEdit`, `onEditSubmit`, `onEditCancel`, `onDelete` to `MessageList`'s props.
+…and add `currentUserAccount`, `editingMessageId`, `onEdit`, `onEditSubmit`, `onEditCancel`, `onDelete` to `MessageList`'s props (the existing `room`, `messages`, `context`, etc. props stay).
 
 Add `MessageList` test updates as appropriate (the existing `MessageList.test.jsx` mocked rows so it shouldn't break).
 
