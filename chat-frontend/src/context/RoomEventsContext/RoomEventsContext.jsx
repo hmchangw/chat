@@ -11,15 +11,13 @@ export function RoomEventsProvider({ children }) {
   const { user } = nats
   const [state, dispatch] = useReducer(roomEventsReducer, initialState)
 
-  // Refs threaded into the subscription hook + the async callbacks below
-  // so a fetch started in connection cycle N drops its dispatch if cycle
-  // N+1 has already begun. See useRoomSubscriptions for the full story.
-  const generationRef = useRef(0)
   const inflightHistory = useRef(new Map())
   const stateRef = useRef(state)
   stateRef.current = state
 
-  useRoomSubscriptions(nats, dispatch, generationRef)
+  // The hook owns the generation counter that gates stale dispatches
+  // from this provider's async callbacks below.
+  const { currentGeneration } = useRoomSubscriptions(nats, dispatch)
 
   const loadHistory = useCallback(
     async (roomId) => {
@@ -28,7 +26,7 @@ export function RoomEventsProvider({ children }) {
       if (prev?.hasLoadedHistory) return
       if (inflightHistory.current.has(roomId)) return inflightHistory.current.get(roomId)
 
-      const gen = generationRef.current
+      const gen = currentGeneration()
       const promise = (async () => {
         try {
           const resp = await fetchMessageHistory(nats, { roomId, siteId: user.siteId, limit: 50 })
@@ -36,9 +34,9 @@ export function RoomEventsProvider({ children }) {
           // Normalisation to the broadcast `Message` shape now happens inside
           // the api op.
           const asc = [...(resp.messages ?? [])].reverse()
-          if (generationRef.current === gen) dispatch({ type: 'HISTORY_LOADED', roomId, messages: asc })
+          if (currentGeneration() === gen) dispatch({ type: 'HISTORY_LOADED', roomId, messages: asc })
         } catch (err) {
-          if (generationRef.current === gen) dispatch({ type: 'HISTORY_FAILED', roomId, error: err.message })
+          if (currentGeneration() === gen) dispatch({ type: 'HISTORY_FAILED', roomId, error: err.message })
           throw err
         } finally {
           inflightHistory.current.delete(roomId)
@@ -47,7 +45,7 @@ export function RoomEventsProvider({ children }) {
       inflightHistory.current.set(roomId, promise)
       return promise
     },
-    [user, nats]
+    [user, nats, currentGeneration]
   )
 
   const setActiveRoom = useCallback((roomId) => {
@@ -59,10 +57,10 @@ export function RoomEventsProvider({ children }) {
       if (!user || !roomId || !messageId) return
       const summary = stateRef.current.summaries.find((r) => r.id === roomId)
       const siteId = summary?.siteId ?? user.siteId
-      const gen = generationRef.current
+      const gen = currentGeneration()
       try {
         const resp = await fetchSurroundingMessages(nats, { roomId, siteId, messageId })
-        if (generationRef.current !== gen) return
+        if (currentGeneration() !== gen) return
         dispatch({
           type: 'REPLACE_ROOM_BUFFER',
           roomId,
@@ -70,13 +68,13 @@ export function RoomEventsProvider({ children }) {
           focusMessageId: messageId,
         })
       } catch (err) {
-        if (generationRef.current === gen) {
+        if (currentGeneration() === gen) {
           dispatch({ type: 'HISTORY_FAILED', roomId, error: err.message })
         }
         throw err
       }
     },
-    [user, nats]
+    [user, nats, currentGeneration]
   )
 
   const resetToLiveTail = useCallback((roomId) => {
