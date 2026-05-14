@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
-import { ThemeProvider } from '../../../../context/ThemeContext'
+import { ThemeProvider } from '@/context/ThemeContext'
 import ThemeToggle from './ThemeToggle'
 import { setMatchMedia, resetThemeState } from '../../../../../test/themeTestUtils'
 

@@ -2,7 +2,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import AppHeader from './AppHeader'
 
-vi.mock('../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: () => ({
     user: { account: 'alice', siteId: 'site-1' },
     disconnect: vi.fn(),
@@ -26,7 +26,7 @@ describe('AppHeader', () => {
   it('clicking Logout invokes disconnect', async () => {
     const disconnect = vi.fn()
     vi.resetModules()
-    vi.doMock('../../../context/NatsContext', () => ({
+    vi.doMock('@/context/NatsContext', () => ({
       useNats: () => ({ user: { account: 'a', siteId: 's' }, disconnect }),
     }))
     // re-import after re-mock

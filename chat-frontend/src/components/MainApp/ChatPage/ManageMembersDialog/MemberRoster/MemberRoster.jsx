@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNats } from '../../../../../context/NatsContext'
+import { useNats } from '@/context/NatsContext'
 import {
   listRoomMembers,
   listOrgMembers,
   removeMember,
   updateMemberRole,
-} from '../../../../../api'
-import { ROLE_OWNER, ROLE_MEMBER } from '../../../../../lib/constants'
-import { formatAsyncJobError } from '../../../../../api/_transport/asyncJob'
+} from '@/api'
+import { ROLE_OWNER, ROLE_MEMBER } from '@/lib/constants'
+import { formatAsyncJobError } from '@/api/_transport/asyncJob'
 import './style.css'
 
 export default function MemberRoster({ room }) {

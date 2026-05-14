@@ -1,23 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
-vi.mock('../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 
-vi.mock('../../lib/runtimeConfig', () => ({
+vi.mock('@/lib/runtimeConfig', () => ({
   DEFAULT_SITE_ID: 'site-local',
   DEV_MODE: true,
 }))
 
-vi.mock('../../lib/oidcClient', () => ({
+vi.mock('@/lib/oidcClient', () => ({
   getOidcManager: vi.fn(),
 }))
 
 import LoginPage from './LoginPage'
-import { useNats } from '../../context/NatsContext'
-import * as runtimeConfig from '../../lib/runtimeConfig'
-import { getOidcManager } from '../../lib/oidcClient'
+import { useNats } from '@/context/NatsContext'
+import * as runtimeConfig from '@/lib/runtimeConfig'
+import { getOidcManager } from '@/lib/oidcClient'
 
 beforeEach(() => {
   useNats.mockReset()

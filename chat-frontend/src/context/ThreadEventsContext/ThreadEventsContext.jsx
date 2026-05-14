@@ -2,10 +2,10 @@ import { createContext, useCallback, useContext, useEffect, useReducer, useRef }
 import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '../NatsContext/NatsContext'
 import { useRoomDispatch } from '../RoomEventsContext/RoomEventsContext'
-import { generateMessageID } from '../../lib/idgen'
-import { fetchThreadMessages, sendMessage } from '../../api'
+import { generateMessageID } from '@/lib/idgen'
+import { fetchThreadMessages, sendMessage } from '@/api'
 import { threadEventsReducer, initialState } from './reducer'
-import { normalizeHistoricalMessages } from '../../lib/normalizeMessage'
+import { normalizeHistoricalMessages } from '@/lib/normalizeMessage'
 
 const ThreadEventsContext = createContext(null)
 

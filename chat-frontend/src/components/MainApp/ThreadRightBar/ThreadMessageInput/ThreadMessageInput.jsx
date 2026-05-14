@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { useThreadEvents } from '../../../../context/ThreadEventsContext'
-import MessageInputForm from '../../../shared/MessageInputForm/MessageInputForm'
+import { useThreadEvents } from '@/context/ThreadEventsContext'
+import MessageInputForm from '@/components/shared/MessageInputForm/MessageInputForm'
 
 export default function ThreadMessageInput({ quotedTarget, onClearQuote }) {
   const { sendReply, activeParent } = useThreadEvents()

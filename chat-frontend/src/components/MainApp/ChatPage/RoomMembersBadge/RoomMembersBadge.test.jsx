@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import RoomMembersBadge from './RoomMembersBadge'
 
-vi.mock('../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 
-import { useNats } from '../../../../context/NatsContext'
+import { useNats } from '@/context/NatsContext'
 
 function setupNats(overrides = {}) {
   const request = vi.fn().mockResolvedValue({ members: [{}, {}, {}] })

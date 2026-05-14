@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useRoomSummaries } from '../../context/RoomEventsContext'
-import { useThreadEvents } from '../../context/ThreadEventsContext'
+import { useRoomSummaries } from '@/context/RoomEventsContext'
+import { useThreadEvents } from '@/context/ThreadEventsContext'
 import AppHeader from './AppHeader/AppHeader'
 import Sidebar from './Sidebar/Sidebar'
 import ChatPage from './ChatPage/ChatPage'

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useNats } from '../../../context/NatsContext'
-import { searchRooms, searchMessages } from '../../../api'
-import { roomFromSearchHit, searchRoomPrefix } from '../../../lib/roomFormat'
+import { useNats } from '@/context/NatsContext'
+import { searchRooms, searchMessages } from '@/api'
+import { roomFromSearchHit, searchRoomPrefix } from '@/lib/roomFormat'
 
 export default function SearchResultsPane({
   query,

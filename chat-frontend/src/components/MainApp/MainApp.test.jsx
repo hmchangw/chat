@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import MainApp from './MainApp'
 
 let mockActiveParent = null
-vi.mock('../../context/ThreadEventsContext', () => ({
+vi.mock('@/context/ThreadEventsContext', () => ({
   useThreadEvents: () => ({ activeParent: mockActiveParent }),
 }))
 vi.mock('./ThreadRightBar/ThreadRightBar', () => ({
@@ -47,7 +47,7 @@ vi.mock('./SearchResultsPane/SearchResultsPane', () => ({
 // MainApp's "evict on summary disappearance" effect compares selectedRoom
 // against summaries; without the rooms here the effect would clear the
 // selection mid-test.
-vi.mock('../../context/RoomEventsContext', () => ({
+vi.mock('@/context/RoomEventsContext', () => ({
   useRoomSummaries: () => ({
     summaries: [
       { id: 'r-from-side', name: 's' },

@@ -10,7 +10,7 @@ vi.mock('../NatsContext/NatsContext', () => ({
     request, publish,
   }),
 }))
-vi.mock('../../lib/idgen', () => ({ generateMessageID: () => 'OPT-000000000000000000' }))
+vi.mock('@/lib/idgen', () => ({ generateMessageID: () => 'OPT-000000000000000000' }))
 vi.mock('uuid', () => ({ v4: () => 'req-uuid' }))
 
 const roomDispatch = vi.fn()

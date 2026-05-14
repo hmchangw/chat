@@ -4,13 +4,13 @@ import RoomMessageInput from './RoomMessageInput'
 
 const publish = vi.fn()
 const dispatch = vi.fn()
-vi.mock('../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
 }))
-vi.mock('../../../../context/RoomEventsContext', () => ({
+vi.mock('@/context/RoomEventsContext', () => ({
   useRoomDispatch: () => dispatch,
 }))
-vi.mock('../../../../lib/idgen', () => ({ generateMessageID: () => '12345678901234567890' }))
+vi.mock('@/lib/idgen', () => ({ generateMessageID: () => '12345678901234567890' }))
 vi.mock('uuid', () => ({ v4: () => 'req-uuid' }))
 
 const room = { id: 'r1', name: 'general', type: 'channel' }

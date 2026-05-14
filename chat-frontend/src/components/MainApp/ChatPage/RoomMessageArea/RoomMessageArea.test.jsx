@@ -1,14 +1,14 @@
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import RoomMessageArea from './RoomMessageArea'
-import { BUFFER_MODE } from '../../../../context/RoomEventsContext/reducer'
+import { BUFFER_MODE } from '@/context/RoomEventsContext/reducer'
 
 const loadHistory = vi.fn(async () => {})
 const resetToLiveTail = vi.fn()
 const jumpToMessage = vi.fn()
 const dispatch = vi.fn()
 
-vi.mock('../../../../context/RoomEventsContext', () => ({
+vi.mock('@/context/RoomEventsContext', () => ({
   useRoomEvents: (roomId) => ({
     messages: roomId === 'r1' ? [
       { id: 'a', content: 'hi', createdAt: '2026-05-13T10:00:00Z', sender: { account: 'alice' } },
@@ -26,11 +26,11 @@ vi.mock('../../../../context/RoomEventsContext', () => ({
 }))
 
 const publish = vi.fn()
-vi.mock('../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
 }))
 
-vi.mock('../../../shared/MessageList/MessageList', () => ({
+vi.mock('@/components/shared/MessageList/MessageList', () => ({
   default: ({ messages, onEdit, onDelete, onThread, onReply, onJumpToMessage }) => (
     <div data-testid="list">
       <span>count:{messages.length}</span>

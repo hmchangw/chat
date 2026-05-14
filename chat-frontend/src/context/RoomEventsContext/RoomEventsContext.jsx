@@ -10,8 +10,8 @@ import {
   subscribeToRoomMetadataUpdates,
   subscribeToSubscriptionUpdates,
   subscribeToUserRoomEvents,
-} from '../../api'
-import { normalizeHistoricalMessages } from '../../lib/normalizeMessage'
+} from '@/api'
+import { normalizeHistoricalMessages } from '@/lib/normalizeMessage'
 
 const RoomEventsContext = createContext(null)
 

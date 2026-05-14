@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import LeaveRoomButton from './LeaveRoomButton'
 
-vi.mock('../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 
-import { useNats } from '../../../../context/NatsContext'
+import { useNats } from '@/context/NatsContext'
 
 const channelRoom = { id: 'r1', siteId: 'site-A', name: 'general', type: 'channel' }
 const dmRoom = { id: 'r2', siteId: 'site-A', name: 'bob-dm', type: 'dm' }

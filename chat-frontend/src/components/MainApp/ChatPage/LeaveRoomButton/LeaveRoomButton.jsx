@@ -1,5 +1,5 @@
-import { useNats } from '../../../../context/NatsContext'
-import { leaveRoom } from '../../../../api'
+import { useNats } from '@/context/NatsContext'
+import { leaveRoom } from '@/api'
 
 export default function LeaveRoomButton({ room }) {
   const nats = useNats()

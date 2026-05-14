@@ -1,7 +1,7 @@
 import { useState, useCallback, forwardRef, useImperativeHandle, useRef } from 'react'
-import { useNats } from '../../../../../context/NatsContext'
-import { useDebouncedSearch } from '../../../../../hooks/useDebouncedSearch'
-import { searchRooms } from '../../../../../api'
+import { useNats } from '@/context/NatsContext'
+import { useDebouncedSearch } from '@/hooks/useDebouncedSearch'
+import { searchRooms } from '@/api'
 import './style.css'
 
 // Split a typed string into individual entries on commas, trim each segment,

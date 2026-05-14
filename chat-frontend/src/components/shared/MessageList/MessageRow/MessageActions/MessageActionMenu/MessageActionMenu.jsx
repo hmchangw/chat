@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNats } from '../../../../../../context/NatsContext'
-import { fetchReadReceipt } from '../../../../../../api'
+import { useNats } from '@/context/NatsContext'
+import { fetchReadReceipt } from '@/api'
 import './style.css'
 
 function formatReaderName(r) {

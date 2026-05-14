@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import ManageMembersDialog from './ManageMembersDialog'
 
-vi.mock('../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 
-import { useNats } from '../../../../context/NatsContext'
+import { useNats } from '@/context/NatsContext'
 
 const room = { id: 'r1', siteId: 'site-A', name: 'general', type: 'channel' }
 

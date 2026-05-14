@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useNats } from '../../../../context/NatsContext'
-import { listRoomMembers } from '../../../../api'
+import { useNats } from '@/context/NatsContext'
+import { listRoomMembers } from '@/api'
 import './style.css'
 
 // Clickable "N members" widget that lives at the top of the chat-main pane

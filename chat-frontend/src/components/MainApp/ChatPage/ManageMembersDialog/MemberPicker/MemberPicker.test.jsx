@@ -3,11 +3,11 @@ import { createRef } from 'react'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import MemberPicker from './MemberPicker'
 
-vi.mock('../../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 
-import { useNats } from '../../../../../context/NatsContext'
+import { useNats } from '@/context/NatsContext'
 
 function setup(overrides = {}) {
   const request = vi.fn().mockResolvedValue({ results: [] })

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import CreateRoomDialog from './CreateRoomDialog'
 
-vi.mock('../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 // useRoomSummaries is consumed by the dialog so it can wait for the
@@ -10,12 +10,12 @@ vi.mock('../../../../context/NatsContext', () => ({
 // subscription.update event to arrive) before closing. Tests default the
 // mock to summaries already containing every roomId the various success
 // fixtures return; tests that exercise the wait path override this.
-vi.mock('../../../../context/RoomEventsContext', () => ({
+vi.mock('@/context/RoomEventsContext', () => ({
   useRoomSummaries: vi.fn(),
 }))
 
-import { useNats } from '../../../../context/NatsContext'
-import { useRoomSummaries } from '../../../../context/RoomEventsContext'
+import { useNats } from '@/context/NatsContext'
+import { useRoomSummaries } from '@/context/RoomEventsContext'
 
 // Pre-populate summaries with the roomIds the success fixtures return so
 // the dialog's "wait for subscription.update" useEffect resolves on the

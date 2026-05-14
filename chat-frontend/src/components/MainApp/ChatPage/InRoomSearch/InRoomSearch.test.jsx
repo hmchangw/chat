@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import InRoomSearch from './InRoomSearch'
 
-vi.mock('../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 
-import { useNats } from '../../../../context/NatsContext'
+import { useNats } from '@/context/NatsContext'
 
 describe('InRoomSearch', () => {
   beforeEach(() => {

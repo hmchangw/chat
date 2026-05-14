@@ -1,17 +1,17 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import RoomMessageArea from './RoomMessageArea'
-import { BUFFER_MODE } from '../../../../context/RoomEventsContext/reducer'
+import { BUFFER_MODE } from '@/context/RoomEventsContext/reducer'
 
 // jsdom does not implement scrollIntoView; stub it to avoid the error thrown
 // by RoomMessageArea's useEffect that calls bottomRef.current.scrollIntoView.
 window.HTMLElement.prototype.scrollIntoView = vi.fn()
 
 const jumpToMessage = vi.fn(async () => {})
-vi.mock('../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish: vi.fn() }),
 }))
-vi.mock('../../../../context/RoomEventsContext', () => ({
+vi.mock('@/context/RoomEventsContext', () => ({
   useRoomEvents: () => ({
     messages: [
       {

@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import AddMembersForm from './AddMembersForm'
 
-vi.mock('../../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 
-import { useNats } from '../../../../../context/NatsContext'
+import { useNats } from '@/context/NatsContext'
 
 const room = { id: 'r1', siteId: 'site-A', name: 'general' }
 

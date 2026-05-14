@@ -63,14 +63,14 @@ vi.mock('./RoomMembersBadge/RoomMembersBadge', () => ({
     </button>
   ),
 }))
-vi.mock('../../../context/RoomEventsContext', () => ({
+vi.mock('@/context/RoomEventsContext', () => ({
   useRoomSummaries: () => ({ jumpToMessage: vi.fn() }),
   useRoomDispatch: () => vi.fn(),
 }))
 const openThread = vi.fn()
 const closeThread = vi.fn()
 let mockActiveParent = null
-vi.mock('../../../context/ThreadEventsContext', () => ({
+vi.mock('@/context/ThreadEventsContext', () => ({
   useThreadEvents: () => ({ openThread, closeThread, activeParent: mockActiveParent }),
 }))
 
@@ -148,10 +148,10 @@ describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
     viE2E.resetModules()
     const publish = viE2E.fn()
 
-    viE2E.doMock('../../../context/NatsContext', () => ({
+    viE2E.doMock('@/context/NatsContext', () => ({
       useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
     }))
-    viE2E.doMock('../../../lib/idgen', () => ({ generateMessageID: () => '12345678901234567890' }))
+    viE2E.doMock('@/lib/idgen', () => ({ generateMessageID: () => '12345678901234567890' }))
     viE2E.doMock('uuid', () => ({ v4: () => 'req-1' }))
     viE2E.doMock('./RoomMessageArea/RoomMessageArea', () => ({
       default: ({ onReply }) => (
@@ -166,7 +166,7 @@ describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
     viE2E.doMock('./InRoomSearch/InRoomSearch', () => ({ default: () => null }))
     viE2E.doMock('./ManageMembersDialog/ManageMembersDialog', () => ({ default: () => null }))
     viE2E.doMock('./LeaveRoomButton/LeaveRoomButton', () => ({ default: () => null }))
-    viE2E.doMock('../../../context/RoomEventsContext', () => ({
+    viE2E.doMock('@/context/RoomEventsContext', () => ({
       useRoomSummaries: () => ({ jumpToMessage: viE2E.fn() }),
       useRoomDispatch: () => viE2E.fn(),
     }))

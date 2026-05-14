@@ -1,4 +1,4 @@
-import { useNats } from '../../../context/NatsContext'
+import { useNats } from '@/context/NatsContext'
 import SearchBar from './SearchBar/SearchBar'
 import ThemeToggle from './ThemeToggle/ThemeToggle'
 import './style.css'

@@ -14,7 +14,7 @@ const roomDispatch = vi.fn()
 const publish = vi.fn()
 const jumpToMessage = vi.fn()
 
-vi.mock('../../../../context/ThreadEventsContext', () => ({
+vi.mock('@/context/ThreadEventsContext', () => ({
   useThreadEvents: () => ({
     activeParent,
     messages: [
@@ -28,17 +28,17 @@ vi.mock('../../../../context/ThreadEventsContext', () => ({
     dispatch: threadDispatch,
   }),
 }))
-vi.mock('../../../../context/RoomEventsContext', () => ({
+vi.mock('@/context/RoomEventsContext', () => ({
   useRoomEvents: () => ({
     messages: [{ id: 'p1', content: 'parent body', createdAt: '2026-05-13T10:00:00Z', sender: { account: 'alice' } }],
   }),
   useRoomDispatch: () => roomDispatch,
   useRoomSummaries: () => ({ jumpToMessage }),
 }))
-vi.mock('../../../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
 }))
-vi.mock('../../../shared/MessageList/MessageList', () => ({
+vi.mock('@/components/shared/MessageList/MessageList', () => ({
   default: ({ messages, emptyText, context, onReply, onRetry, onDismiss,
               onEdit, onDelete, onJumpToMessage, historyLoading, historyError }) => (
     <div data-testid="list">

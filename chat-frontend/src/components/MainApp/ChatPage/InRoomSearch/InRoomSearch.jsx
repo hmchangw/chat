@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
-import { useNats } from '../../../../context/NatsContext'
-import { searchMessages } from '../../../../api'
+import { useNats } from '@/context/NatsContext'
+import { searchMessages } from '@/api'
 import './style.css'
 
 // Submit-on-Enter (no search-as-you-type). The header's global search bar

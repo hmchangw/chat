@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNats } from '../../../../context/NatsContext'
-import { useRoomSummaries } from '../../../../context/RoomEventsContext'
-import { createRoom } from '../../../../api'
-import { isDMExistsReply } from '../../../../lib/constants'
-import { formatAsyncJobError } from '../../../../api/_transport/asyncJob'
-import MemberPicker from '../../ChatPage/ManageMembersDialog/MemberPicker/MemberPicker'
+import { useNats } from '@/context/NatsContext'
+import { useRoomSummaries } from '@/context/RoomEventsContext'
+import { createRoom } from '@/api'
+import { isDMExistsReply } from '@/lib/constants'
+import { formatAsyncJobError } from '@/api/_transport/asyncJob'
+import MemberPicker from '@/components/MainApp/ChatPage/ManageMembersDialog/MemberPicker/MemberPicker'
 
 // How long to wait for the server's subscription.update event before
 // giving up and closing the dialog anyway. With the event the user lands

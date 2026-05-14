@@ -9,9 +9,9 @@ beforeAll(() => {
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
   }
 })
-import { NatsContext } from '../../context/NatsContext'
-import { RoomEventsProvider, useRoomDispatch } from '../../context/RoomEventsContext'
-import { ThreadEventsProvider } from '../../context/ThreadEventsContext'
+import { NatsContext } from '@/context/NatsContext'
+import { RoomEventsProvider, useRoomDispatch } from '@/context/RoomEventsContext'
+import { ThreadEventsProvider } from '@/context/ThreadEventsContext'
 import MainApp from './MainApp'
 
 // Real ThreadEventsContext + RoomEventsContext; only NATS is mocked at the

@@ -2,11 +2,11 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import RoomList from './RoomList'
 
-vi.mock('../../../../context/RoomEventsContext', () => ({
+vi.mock('@/context/RoomEventsContext', () => ({
   useRoomSummaries: vi.fn(),
 }))
 
-import { useRoomSummaries } from '../../../../context/RoomEventsContext'
+import { useRoomSummaries } from '@/context/RoomEventsContext'
 
 function summary(id, overrides = {}) {
   return {

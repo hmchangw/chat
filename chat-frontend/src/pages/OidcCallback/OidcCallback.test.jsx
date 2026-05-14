@@ -1,17 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 
-vi.mock('../../context/NatsContext', () => ({
+vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
 }))
 
-vi.mock('../../lib/oidcClient', () => ({
+vi.mock('@/lib/oidcClient', () => ({
   getOidcManager: vi.fn(),
 }))
 
 import OidcCallback from './OidcCallback'
-import { useNats } from '../../context/NatsContext'
-import { getOidcManager } from '../../lib/oidcClient'
+import { useNats } from '@/context/NatsContext'
+import { getOidcManager } from '@/lib/oidcClient'
 
 beforeEach(() => {
   useNats.mockReset()

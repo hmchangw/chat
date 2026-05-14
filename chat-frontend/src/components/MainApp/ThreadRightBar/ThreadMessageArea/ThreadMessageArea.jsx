@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNats } from '../../../../context/NatsContext'
-import { useThreadEvents } from '../../../../context/ThreadEventsContext'
-import { useRoomEvents, useRoomDispatch, useRoomSummaries } from '../../../../context/RoomEventsContext'
-import { editMessage, deleteMessage } from '../../../../api'
-import MessageList from '../../../shared/MessageList/MessageList'
-import DeleteConfirmDialog from '../../../shared/DeleteConfirmDialog/DeleteConfirmDialog'
-import TextInputDialog from '../../../shared/TextInputDialog/TextInputDialog'
+import { useNats } from '@/context/NatsContext'
+import { useThreadEvents } from '@/context/ThreadEventsContext'
+import { useRoomEvents, useRoomDispatch, useRoomSummaries } from '@/context/RoomEventsContext'
+import { editMessage, deleteMessage } from '@/api'
+import MessageList from '@/components/shared/MessageList/MessageList'
+import DeleteConfirmDialog from '@/components/shared/DeleteConfirmDialog/DeleteConfirmDialog'
+import TextInputDialog from '@/components/shared/TextInputDialog/TextInputDialog'
 import './style.css'
 
 export default function ThreadMessageArea({ onReply }) {

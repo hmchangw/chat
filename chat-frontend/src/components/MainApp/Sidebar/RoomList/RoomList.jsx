@@ -1,5 +1,5 @@
-import { useRoomSummaries } from '../../../../context/RoomEventsContext'
-import { roomPrefix, roomDisplayName } from '../../../../lib/roomFormat'
+import { useRoomSummaries } from '@/context/RoomEventsContext'
+import { roomPrefix, roomDisplayName } from '@/lib/roomFormat'
 import './style.css'
 
 function mentionBadge(summary) {

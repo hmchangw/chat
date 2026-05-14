@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNats } from '../../../../context/NatsContext'
-import { useRoomEvents } from '../../../../context/RoomEventsContext'
-import { BUFFER_MODE } from '../../../../context/RoomEventsContext/reducer'
-import { editMessage, deleteMessage } from '../../../../api'
-import MessageList from '../../../shared/MessageList/MessageList'
-import DeleteConfirmDialog from '../../../shared/DeleteConfirmDialog/DeleteConfirmDialog'
-import TextInputDialog from '../../../shared/TextInputDialog/TextInputDialog'
+import { useNats } from '@/context/NatsContext'
+import { useRoomEvents } from '@/context/RoomEventsContext'
+import { BUFFER_MODE } from '@/context/RoomEventsContext/reducer'
+import { editMessage, deleteMessage } from '@/api'
+import MessageList from '@/components/shared/MessageList/MessageList'
+import DeleteConfirmDialog from '@/components/shared/DeleteConfirmDialog/DeleteConfirmDialog'
+import TextInputDialog from '@/components/shared/TextInputDialog/TextInputDialog'
 import './style.css'
 
 export default function RoomMessageArea({ room, onThread, onReply }) {

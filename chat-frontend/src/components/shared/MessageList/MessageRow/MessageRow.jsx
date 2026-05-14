@@ -1,6 +1,6 @@
 import MessageActions from './MessageActions/MessageActions'
-import QuotedBlock from '../../QuotedBlock/QuotedBlock'
-import useHoverWithDelay from '../../../../hooks/useHoverWithDelay'
+import QuotedBlock from '@/components/shared/QuotedBlock/QuotedBlock'
+import useHoverWithDelay from '@/hooks/useHoverWithDelay'
 import './style.css'
 
 function formatTime(dateStr) {

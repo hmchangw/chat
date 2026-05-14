@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useThreadEvents } from '../../../context/ThreadEventsContext'
+import { useThreadEvents } from '@/context/ThreadEventsContext'
 import ThreadMessageArea from './ThreadMessageArea/ThreadMessageArea'
 import ThreadMessageInput from './ThreadMessageInput/ThreadMessageInput'
 import './style.css'

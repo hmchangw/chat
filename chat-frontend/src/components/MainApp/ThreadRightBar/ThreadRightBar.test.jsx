@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import ThreadRightBar from './ThreadRightBar'
 
 const closeThread = vi.fn()
-vi.mock('../../../context/ThreadEventsContext', () => ({
+vi.mock('@/context/ThreadEventsContext', () => ({
   useThreadEvents: () => ({ activeParent: { messageId: 'p1' }, closeThread }),
 }))
 vi.mock('./ThreadMessageArea/ThreadMessageArea', () => ({

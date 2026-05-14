@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import ThreadMessageInput from './ThreadMessageInput'
 
 const sendReply = vi.fn()  // sync void; throws on failure
-vi.mock('../../../../context/ThreadEventsContext', () => ({
+vi.mock('@/context/ThreadEventsContext', () => ({
   useThreadEvents: () => ({ sendReply, activeParent: { messageId: 'p1' } }),
 }))
 

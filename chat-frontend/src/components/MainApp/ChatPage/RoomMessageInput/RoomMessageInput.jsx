@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
-import { useNats } from '../../../../context/NatsContext'
-import { useRoomDispatch } from '../../../../context/RoomEventsContext'
-import { sendMessage } from '../../../../api'
-import { generateMessageID } from '../../../../lib/idgen'
-import { roomPrefix, roomDisplayName } from '../../../../lib/roomFormat'
-import MessageInputForm from '../../../shared/MessageInputForm/MessageInputForm'
+import { useNats } from '@/context/NatsContext'
+import { useRoomDispatch } from '@/context/RoomEventsContext'
+import { sendMessage } from '@/api'
+import { generateMessageID } from '@/lib/idgen'
+import { roomPrefix, roomDisplayName } from '@/lib/roomFormat'
+import MessageInputForm from '@/components/shared/MessageInputForm/MessageInputForm'
 
 export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
   const nats = useNats()
