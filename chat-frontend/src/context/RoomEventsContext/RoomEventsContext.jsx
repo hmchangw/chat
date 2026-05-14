@@ -1,16 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react'
-import { useNats } from '../NatsContext/NatsContext'
+import { createContext, useCallback, useContext, useMemo, useReducer, useRef } from 'react'
+import { useNats } from '@/context/NatsContext'
 import { BUFFER_MODE, initialState, roomEventsReducer } from './reducer'
-import {
-  fetchMessageHistory,
-  fetchSurroundingMessages,
-  getRoom,
-  listRooms,
-  subscribeToRoomEvents,
-  subscribeToRoomMetadataUpdates,
-  subscribeToSubscriptionUpdates,
-  subscribeToUserRoomEvents,
-} from '@/api'
+import { useRoomSubscriptions } from './useRoomSubscriptions'
+import { fetchMessageHistory, fetchSurroundingMessages } from '@/api'
 import { normalizeHistoricalMessages } from '@/lib/normalizeMessage'
 
 const RoomEventsContext = createContext(null)
@@ -19,108 +11,16 @@ export function RoomEventsProvider({ children }) {
   const nats = useNats()
   const { user } = nats
   const [state, dispatch] = useReducer(roomEventsReducer, initialState)
+
+  // Refs threaded into the subscription hook + the async callbacks below
+  // so a fetch started in connection cycle N drops its dispatch if cycle
+  // N+1 has already begun. See useRoomSubscriptions for the full story.
+  const generationRef = useRef(0)
   const inflightHistory = useRef(new Map())
   const stateRef = useRef(state)
   stateRef.current = state
 
-  const channelSubs = useRef(new Map())
-  const cancelledRef = useRef(false)
-  const generationRef = useRef(0)
-
-  useEffect(() => {
-    if (!user) return
-    cancelledRef.current = false
-    const generation = ++generationRef.current
-
-    const safeDispatch = (action) => {
-      if (cancelledRef.current) return
-      dispatch(action)
-    }
-
-    const dmSub = subscribeToUserRoomEvents(nats, (evt) => {
-      if (evt?.type === 'new_message') {
-        safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
-      }
-    })
-
-    const openChannelSub = (roomId) => {
-      if (channelSubs.current.has(roomId)) return
-      const sub = subscribeToRoomEvents(nats, { roomId }, (evt) => {
-        if (evt?.type === 'new_message') {
-          const hasMention = (evt.mentions ?? []).some(
-            (p) => p.account === user.account
-          )
-          safeDispatch({ type: 'MESSAGE_RECEIVED', event: { ...evt, hasMention } })
-        }
-      })
-      channelSubs.current.set(roomId, sub)
-    }
-
-    const closeChannelSub = (roomId) => {
-      const sub = channelSubs.current.get(roomId)
-      if (sub) {
-        sub.unsubscribe()
-        channelSubs.current.delete(roomId)
-      }
-    }
-
-    const subUpdate = subscribeToSubscriptionUpdates(nats, (evt) => {
-      if (cancelledRef.current) return
-      if (evt.action === 'added' && evt.subscription?.roomId) {
-        getRoom(nats, { roomId: evt.subscription.roomId })
-          .then((room) => {
-            if (cancelledRef.current || !room) return
-            // DM rooms have no canonical Room.Name server-side — the friendly
-            // text lives on the user's Subscription. Stash that here so the
-            // sidebar + header can fall back to it via roomDisplayName(room).
-            const merged = evt.subscription?.name
-              ? { ...room, subscriptionName: evt.subscription.name }
-              : room
-            safeDispatch({ type: 'ROOM_ADDED', room: merged })
-            if (room.type === 'channel') openChannelSub(room.id)
-          })
-          .catch(() => {})
-      } else if (evt.action === 'removed') {
-        const roomId = evt.subscription?.roomId
-        if (!roomId) return
-        closeChannelSub(roomId)
-        safeDispatch({ type: 'ROOM_REMOVED', roomId })
-      }
-    })
-
-    const metaUpdate = subscribeToRoomMetadataUpdates(nats, (evt) => {
-      safeDispatch({
-        type: 'ROOM_METADATA_UPDATED',
-        roomId: evt.roomId,
-        name: evt.name,
-        userCount: evt.userCount,
-        lastMsgAt: evt.lastMsgAt,
-      })
-    })
-
-    listRooms(nats)
-      .then((resp) => {
-        if (cancelledRef.current) return
-        const rooms = resp.rooms ?? []
-        safeDispatch({ type: 'ROOMS_LOADED', rooms })
-        for (const r of rooms) {
-          if (r.type === 'channel') openChannelSub(r.id)
-        }
-      })
-      .catch((err) => {
-        if (!cancelledRef.current) safeDispatch({ type: 'ROOMS_FAILED', error: err.message })
-      })
-
-    return () => {
-      cancelledRef.current = true
-      dmSub.unsubscribe()
-      subUpdate.unsubscribe()
-      metaUpdate.unsubscribe()
-      for (const sub of channelSubs.current.values()) sub.unsubscribe()
-      channelSubs.current.clear()
-      dispatch({ type: 'RESET' })   // RESET runs even when cancelled — it's the cleanup itself
-    }
-  }, [user, nats])
+  useRoomSubscriptions(nats, dispatch, generationRef)
 
   const loadHistory = useCallback(
     async (roomId) => {
