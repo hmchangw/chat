@@ -6111,25 +6111,23 @@ Append to `chat-frontend/src/pages/ChatPage.test.jsx`:
 
 ```jsx
 describe('ChatPage — mutual exclusion', () => {
-  it('opening InRoomSearch (Ctrl-F) closes any open thread', async () => {
-    const closeThread = vi.fn()
-    vi.doMock('../context/ThreadEventsContext', () => ({
-      useThreadEvents: () => ({ openThread: vi.fn(), closeThread, activeParent: { messageId: 'p1' } }),
-    }))
-    const { default: Re } = await import('./ChatPage')
-    render(<Re selectedRoom={channel} onSelectRoom={() => {}} />)
+  beforeEach(() => { closeThread.mockClear() })
+  afterEach(() => { mockActiveParent = null })
+
+  it('opening InRoomSearch (Ctrl-F) closes any open thread', () => {
+    mockActiveParent = { roomId: channel.id, messageId: 'p1' }
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
     fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
     expect(closeThread).toHaveBeenCalled()
   })
 
-  it('opening a thread closes InRoomSearch', async () => {
-    // Simulate state by toggling InRoomSearch on first then firing onThread.
-    // We rely on the existing fire-thread mock in this file.
+  it('opening a thread closes InRoomSearch', () => {
     render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
     fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
     expect(screen.getByText('in-room-search')).toBeInTheDocument()
-    // openThread is dispatched by the existing handler; check that the
-    // search panel goes away. (Test verifies the effect, not the cause.)
+    // Firing the thread-icon (via the existing fire-thread mock button) runs
+    // ChatPage.handleThread, which closes in-room search BEFORE calling
+    // openThread.
     fireEvent.click(screen.getByText('fire-thread'))
     expect(screen.queryByText('in-room-search')).not.toBeInTheDocument()
   })
