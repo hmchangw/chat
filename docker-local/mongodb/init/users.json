@@ -1,0 +1,32 @@
+[
+  {
+    "_id": "alice",
+    "account": "alice",
+    "siteId": "site-local",
+    "sectId": "eng",
+    "sectName": "Engineering",
+    "engName": "Alice Engineer",
+    "chineseName": "愛麗絲",
+    "employeeId": "E001"
+  },
+  {
+    "_id": "bob",
+    "account": "bob",
+    "siteId": "site-local",
+    "sectId": "eng",
+    "sectName": "Engineering",
+    "engName": "Bob Developer",
+    "chineseName": "鮑勃",
+    "employeeId": "E002"
+  },
+  {
+    "_id": "dave",
+    "account": "dave",
+    "siteId": "site-local",
+    "sectId": "ops",
+    "sectName": "Operations",
+    "engName": "Dave Ops",
+    "chineseName": "戴夫",
+    "employeeId": "E003"
+  }
+]

@@ -1,0 +1,72 @@
+[
+  {
+    "_id": "01900000000000000000000000000a01",
+    "u": {"_id": "alice", "account": "alice"},
+    "roomId": "general0000000000",
+    "siteId": "site-local",
+    "roles": ["owner"],
+    "name": "general",
+    "roomType": "channel",
+    "isSubscribed": true,
+    "joinedAt": {"$date": "2026-05-01T00:00:00Z"},
+    "lastSeenAt": {"$date": "2026-05-14T00:00:00Z"},
+    "hasMention": false,
+    "alert": true
+  },
+  {
+    "_id": "01900000000000000000000000000b01",
+    "u": {"_id": "bob", "account": "bob"},
+    "roomId": "general0000000000",
+    "siteId": "site-local",
+    "roles": ["member"],
+    "name": "general",
+    "roomType": "channel",
+    "isSubscribed": true,
+    "joinedAt": {"$date": "2026-05-01T00:00:00Z"},
+    "lastSeenAt": {"$date": "2026-05-14T00:00:00Z"},
+    "hasMention": false,
+    "alert": true
+  },
+  {
+    "_id": "01900000000000000000000000000d01",
+    "u": {"_id": "dave", "account": "dave"},
+    "roomId": "general0000000000",
+    "siteId": "site-local",
+    "roles": ["member"],
+    "name": "general",
+    "roomType": "channel",
+    "isSubscribed": true,
+    "joinedAt": {"$date": "2026-05-01T00:00:00Z"},
+    "lastSeenAt": {"$date": "2026-05-14T00:00:00Z"},
+    "hasMention": false,
+    "alert": true
+  },
+  {
+    "_id": "01900000000000000000000000000a02",
+    "u": {"_id": "alice", "account": "alice"},
+    "roomId": "alicebob",
+    "siteId": "site-local",
+    "roles": ["owner"],
+    "name": "bob",
+    "roomType": "dm",
+    "isSubscribed": true,
+    "joinedAt": {"$date": "2026-05-01T00:00:00Z"},
+    "lastSeenAt": {"$date": "2026-05-14T00:00:00Z"},
+    "hasMention": false,
+    "alert": true
+  },
+  {
+    "_id": "01900000000000000000000000000b02",
+    "u": {"_id": "bob", "account": "bob"},
+    "roomId": "alicebob",
+    "siteId": "site-local",
+    "roles": ["owner"],
+    "name": "alice",
+    "roomType": "dm",
+    "isSubscribed": true,
+    "joinedAt": {"$date": "2026-05-01T00:00:00Z"},
+    "lastSeenAt": {"$date": "2026-05-14T00:00:00Z"},
+    "hasMention": false,
+    "alert": true
+  }
+]

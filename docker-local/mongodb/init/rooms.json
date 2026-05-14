@@ -1,0 +1,26 @@
+[
+  {
+    "_id": "general0000000000",
+    "name": "general",
+    "type": "channel",
+    "createdBy": "alice",
+    "siteId": "site-local",
+    "userCount": 3,
+    "appCount": 0,
+    "lastMsgId": "",
+    "createdAt": {"$date": "2026-05-01T00:00:00Z"},
+    "updatedAt": {"$date": "2026-05-01T00:00:00Z"}
+  },
+  {
+    "_id": "alicebob",
+    "name": "",
+    "type": "dm",
+    "createdBy": "alice",
+    "siteId": "site-local",
+    "userCount": 2,
+    "appCount": 0,
+    "lastMsgId": "",
+    "createdAt": {"$date": "2026-05-01T00:00:00Z"},
+    "updatedAt": {"$date": "2026-05-01T00:00:00Z"}
+  }
+]

@@ -53,8 +53,9 @@ endif
 
 # --- Local dev docker targets -------------------------------------------------
 # Start third-party deps (NATS, Mongo, Cassandra, ES, Keycloak) in the background.
-# Runs setup.sh on first use. Blocks until every dep's healthcheck passes,
-# then runs the cassandra-init one-shot to create the keyspace + tables.
+# Runs setup.sh on first use. Blocks until every dep's healthcheck passes, then
+# runs the cassandra-init one-shot to create the keyspace + tables, and the
+# mongodb-init one-shot to load smoke-test seed data (alice/bob/dave).
 deps-up:
 	@if [ ! -f $(NATS_CREDS) ] || [ ! -f $(NATS_CONF) ]; then \
 	  echo "First-time setup: generating nats.conf + backend.creds..."; \
@@ -62,6 +63,7 @@ deps-up:
 	fi
 	docker compose -f $(DEPS_COMPOSE) up -d --wait
 	docker compose -f $(DEPS_COMPOSE) --profile init run --rm cassandra-init
+	docker compose -f $(DEPS_COMPOSE) --profile init run --rm mongodb-init
 
 # Stop third-party deps.
 deps-down:
