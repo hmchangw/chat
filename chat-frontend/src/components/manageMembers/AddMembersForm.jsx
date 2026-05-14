@@ -7,7 +7,7 @@ import MemberPicker from '../MemberPicker'
 
 const SUCCESS_BANNER_MS = 3000
 
-export default function AddMembersForm({ room }) {
+export default function AddMembersForm({ room, onClose }) {
   const { user, requestWithAsyncResult } = useNats()
   const [users, setUsers] = useState([])
   const [orgs, setOrgs] = useState([])
@@ -86,6 +86,11 @@ export default function AddMembersForm({ room }) {
       {success && <div className="dialog-success">Added</div>}
 
       <div className="dialog-actions">
+        {onClose && (
+          <button type="button" className="dialog-cancel" onClick={onClose}>
+            Close
+          </button>
+        )}
         <button type="submit" disabled={loading}>
           {loading ? 'Adding…' : 'Add'}
         </button>

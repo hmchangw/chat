@@ -529,7 +529,7 @@ a:focus-visible,
   color: var(--text-secondary);
 }
 
-.dialog input,
+.dialog input:not([type='checkbox']):not([type='radio']),
 .dialog select,
 .dialog textarea {
   display: block;
@@ -544,10 +544,10 @@ a:focus-visible,
   transition: background var(--motion-fast) var(--easing),
               border-color var(--motion-fast) var(--easing);
 }
-.dialog input:hover,
+.dialog input:not([type='checkbox']):not([type='radio']):hover,
 .dialog select:hover,
 .dialog textarea:hover { background: var(--bg-input-hover); }
-.dialog input:focus,
+.dialog input:not([type='checkbox']):not([type='radio']):focus,
 .dialog select:focus,
 .dialog textarea:focus {
   outline: none;
@@ -618,6 +618,11 @@ a:focus-visible,
   background: transparent !important;
   color: var(--text-secondary) !important;
   border-color: var(--border-strong) !important;
+  /* When the cancel button shares its row with a primary action, push the
+     primary to the right and keep cancel on the left. With justify-content:
+     flex-end on .dialog-actions, margin-right: auto on cancel inverts the
+     pair to "cancel left, primary right" without restructuring the row. */
+  margin-right: auto;
 }
 .dialog-cancel:hover:not(:disabled) {
   background: var(--bg-hover) !important;

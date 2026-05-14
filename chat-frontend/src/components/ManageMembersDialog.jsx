@@ -30,13 +30,22 @@ export default function ManageMembersDialog({ room, onClose }) {
           ))}
         </div>
 
-        {mode === 'roster' ? <MemberRoster room={room} /> : <AddMembersForm room={room} />}
+        {mode === 'roster' ? (
+          <MemberRoster room={room} />
+        ) : (
+          <AddMembersForm room={room} onClose={onClose} />
+        )}
 
-        <div className="dialog-actions manage-members-footer">
-          <button type="button" className="dialog-cancel" onClick={onClose}>
-            Close
-          </button>
-        </div>
+        {/* Members tab has no inner action row, so the dialog owns Close.
+            The Add tab's AddMembersForm renders its own Close + Add row
+            so the two buttons sit side-by-side. */}
+        {mode === 'roster' && (
+          <div className="dialog-actions manage-members-footer">
+            <button type="button" className="dialog-cancel" onClick={onClose}>
+              Close
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
