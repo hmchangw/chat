@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import MessageRow from './MessageRow/MessageRow'
+import SystemMessage from './SystemMessage/SystemMessage'
 import './style.css'
 
 export default function MessageList({
@@ -60,6 +61,13 @@ export default function MessageList({
       {historyLoading && <div className="message-loading">Loading messages…</div>}
       {historyError && <div className="message-error">{historyError}</div>}
       {visibleMessages.map((msg) => {
+        // Messages with a `type` field are server-emitted system events
+        // (room_created, members_added, …) — render them as a centered
+        // strip instead of a normal sender/bubble row. Anything else
+        // flows through MessageRow.
+        if (msg.type) {
+          return <SystemMessage key={msg.id} message={msg} />
+        }
         const isParent = context === 'thread' && parentMessageId === msg.id
         const rowContext = isParent ? 'thread-parent' : context
         return (
