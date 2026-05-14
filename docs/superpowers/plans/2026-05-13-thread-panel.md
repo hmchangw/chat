@@ -3872,7 +3872,7 @@ git commit -m "feat(chat-frontend): add threadEventsReducer"
 
 Wraps the reducer, fires the `msg.thread` RPC on `openThread`, exposes `openThread / closeThread / sendReply / retryReply / dismissReply`. Race-discard pattern mirrors `RoomEventsContext`.
 
-**`publish` is synchronous.** Verified at `chat-frontend/src/context/NatsContext.jsx:74-78`: `publish` returns `undefined` and throws synchronously if not connected. **Do not `await` it.** Wrap the call in `try/catch` for the sync throw. There is no broker-ack signal in v1; a publish that the broker eventually rejects (gatekeeper validation failure, etc.) cannot be detected client-side — the optimistic reply stays in the panel until the user re-opens the thread, at which point the authoritative `msg.thread` response excludes it. This is acceptable for v1.
+**`publish` is synchronous.** Verified at `chat-frontend/src/context/NatsContext.jsx:129-133`: `publish` returns `undefined` and throws synchronously if not connected. **Do not `await` it.** Wrap the call in `try/catch` for the sync throw. There is no broker-ack signal in v1; a publish that the broker eventually rejects (gatekeeper validation failure, etc.) cannot be detected client-side — the optimistic reply stays in the panel until the user re-opens the thread, at which point the authoritative `msg.thread` response excludes it. This is acceptable for v1.
 
 `sendReply(content, { quotedParentMessageId })`:
 1. Generate `id = generateMessageID()` and an optimistic local message.
