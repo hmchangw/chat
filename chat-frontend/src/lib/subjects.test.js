@@ -10,6 +10,7 @@ import {
   searchMessages,
   msgSurrounding,
   readReceipt,
+  messageRead,
   roomCreate,
   userResponse,
   orgMembers,
@@ -59,6 +60,12 @@ describe('subjects', () => {
   it('readReceipt builds the request subject for the read-receipt RPC', () => {
     expect(readReceipt('alice', 'room1', 'site1')).toBe(
       'chat.user.alice.request.room.room1.site1.message.read-receipt'
+    )
+  })
+
+  it('messageRead builds the mark-room-read RPC subject', () => {
+    expect(messageRead('alice', 'room1', 'site1')).toBe(
+      'chat.user.alice.request.room.room1.site1.message.read'
     )
   })
 
