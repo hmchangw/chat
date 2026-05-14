@@ -569,6 +569,7 @@ describe('RoomEventsProvider sidebar buckets bootstrap', () => {
     await waitFor(() => expect(request).toHaveBeenCalledTimes(4))
     expect(screen.getByTestId('count').textContent).toBe('0')
   })
+
 })
 
 describe('useSidebarSections', () => {
@@ -663,5 +664,49 @@ describe('useSidebarSections', () => {
       expect(screen.getByTestId('section-favorite').textContent).toContain('f1')
     )
     expect(screen.getByTestId('section-favorite').textContent).toMatch(/c1.*f1/)
+  })
+
+  it('merges subscription name and hrInfo from the bucket RPCs into each room', async () => {
+    const rooms = [
+      { id: 'c1', name: 'old-room-name', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T10:00:00Z' },
+      { id: 'd1', name: '', type: 'dm', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T11:00:00Z' },
+    ]
+    const nats = mockNats({
+      request: vi.fn().mockImplementation((subject) => {
+        if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms })
+        if (subject.endsWith('.subscription.getCurrent'))
+          return Promise.resolve({ subscriptions: [] })
+        if (subject.endsWith('.subscription.getApps'))
+          return Promise.resolve({ subscriptions: [] })
+        if (subject.endsWith('.subscription.getRooms'))
+          return Promise.resolve({
+            subscriptions: [
+              { roomId: 'c1', name: 'frontend-team' },
+              { roomId: 'd1', name: 'bob-dm', hrInfo: { engName: 'Bob Chen', name: '鮑勃' } },
+            ],
+          })
+        throw new Error('unexpected subject: ' + subject)
+      }),
+    })
+
+    function MergeProbe() {
+      const sections = useSidebarSections()
+      const channelDm = sections.find((s) => s.key === 'channelDm')
+      return (
+        <ul>
+          {channelDm.rooms.map((r) => (
+            <li key={r.id} data-testid={`room-${r.id}`}>
+              name={r.subscriptionName ?? '∅'};hrEng={r.hrInfo?.engName ?? '∅'};hrName={r.hrInfo?.name ?? '∅'}
+            </li>
+          ))}
+        </ul>
+      )
+    }
+
+    render(wrap(<MergeProbe />, nats))
+    await waitFor(() => expect(screen.queryByTestId('room-c1')).toBeInTheDocument())
+    expect(screen.getByTestId('room-c1').textContent).toContain('name=frontend-team')
+    expect(screen.getByTestId('room-d1').textContent).toContain('hrEng=Bob Chen')
+    expect(screen.getByTestId('room-d1').textContent).toContain('hrName=鮑勃')
   })
 })

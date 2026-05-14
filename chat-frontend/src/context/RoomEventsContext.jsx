@@ -120,11 +120,24 @@ export function RoomEventsProvider({ children }) {
     ])
       .then(([favResp, appResp, roomResp]) => {
         if (cancelledRef.current) return
+        const subscriptionData = {}
+        const collect = (resp) => {
+          for (const s of resp?.subscriptions ?? []) {
+            if (!s?.roomId) continue
+            // Later sources overwrite earlier ones, but the three responses
+            // describe the same Subscription record so collisions are benign.
+            subscriptionData[s.roomId] = { name: s.name, hrInfo: s.hrInfo }
+          }
+        }
+        collect(favResp)
+        collect(appResp)
+        collect(roomResp)
         safeDispatch({
           type: 'BUCKETS_LOADED',
           favoriteIds: (favResp?.subscriptions ?? []).map((s) => s.roomId),
           appIds: (appResp?.subscriptions ?? []).map((s) => s.roomId),
           channelDmIds: (roomResp?.subscriptions ?? []).map((s) => s.roomId),
+          subscriptionData,
         })
       })
       .catch((err) => {
@@ -256,20 +269,32 @@ export function useRoomSummaries() {
 
 export function useSidebarSections() {
   const { state } = useRoomEventsInternal()
-  const { summaries, favoriteIds, appIds, channelDmIds } = state
+  const { summaries, favoriteIds, appIds, channelDmIds, subscriptionData } = state
   return useMemo(() => {
+    // Merge per-room subscription metadata (name + hrInfo) from the
+    // user-service RPCs onto each summary so roomDisplayName can render
+    // subscription.Name for channels/botDM/discussion and HRInfo for DMs.
+    const enrich = (room) => {
+      const data = subscriptionData[room.id]
+      if (!data) return room
+      return {
+        ...room,
+        subscriptionName: data.name ?? room.subscriptionName,
+        hrInfo: data.hrInfo ?? room.hrInfo,
+      }
+    }
     const favorite = []
     const apps = []
     const channelDm = []
     for (const room of summaries) {
-      if (favoriteIds.has(room.id)) favorite.push(room)
-      else if (appIds.has(room.id)) apps.push(room)
-      else if (channelDmIds.has(room.id)) channelDm.push(room)
+      if (favoriteIds.has(room.id)) favorite.push(enrich(room))
+      else if (appIds.has(room.id)) apps.push(enrich(room))
+      else if (channelDmIds.has(room.id)) channelDm.push(enrich(room))
     }
     return [
       { key: 'favorite',  title: 'Favorite',          rooms: favorite },
       { key: 'apps',      title: 'Apps',              rooms: apps },
       { key: 'channelDm', title: 'Channels and DMs',  rooms: channelDm },
     ]
-  }, [summaries, favoriteIds, appIds, channelDmIds])
+  }, [summaries, favoriteIds, appIds, channelDmIds, subscriptionData])
 }

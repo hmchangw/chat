@@ -13,6 +13,12 @@ export const initialState = {
   favoriteIds: new Set(),
   appIds: new Set(),
   channelDmIds: new Set(),
+  // Per-roomId subscription metadata sourced from the user-service RPCs.
+  // Shape: { [roomId]: { name?: string, hrInfo?: { engName, name } } }.
+  // Merged into rooms at read time by useSidebarSections so display logic
+  // (roomDisplayName) can use subscription.Name / HRInfo without changing
+  // the underlying summary structure.
+  subscriptionData: {},
 }
 
 function sortByLastMsgDesc(summaries) {
@@ -97,6 +103,7 @@ export function roomEventsReducer(state, action) {
       let favoriteIds = state.favoriteIds
       let appIds = state.appIds
       let channelDmIds = state.channelDmIds
+      let subscriptionData = state.subscriptionData
       if (favoriteIds.has(action.roomId)) {
         favoriteIds = new Set(favoriteIds)
         favoriteIds.delete(action.roomId)
@@ -109,7 +116,19 @@ export function roomEventsReducer(state, action) {
         channelDmIds = new Set(channelDmIds)
         channelDmIds.delete(action.roomId)
       }
-      return { ...state, summaries, roomState: rest, favoriteIds, appIds, channelDmIds }
+      if (subscriptionData[action.roomId]) {
+        const { [action.roomId]: _drop, ...restData } = subscriptionData
+        subscriptionData = restData
+      }
+      return {
+        ...state,
+        summaries,
+        roomState: rest,
+        favoriteIds,
+        appIds,
+        channelDmIds,
+        subscriptionData,
+      }
     }
     case 'BUCKETS_LOADED': {
       return {
@@ -117,6 +136,7 @@ export function roomEventsReducer(state, action) {
         favoriteIds: new Set(action.favoriteIds),
         appIds: new Set(action.appIds),
         channelDmIds: new Set(action.channelDmIds),
+        subscriptionData: action.subscriptionData ?? {},
       }
     }
     case 'ROOM_METADATA_UPDATED': {
