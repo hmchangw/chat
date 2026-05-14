@@ -31,3 +31,51 @@ describe('MessageActions', () => {
     expect(onReply).toHaveBeenCalledWith(msg)
   })
 })
+
+describe('MessageActions — Edit / Delete visibility', () => {
+  it('renders Edit and Delete on own messages', () => {
+    render(
+      <MessageActions
+        message={msg}
+        context="main"
+        isOwn
+        onThread={() => {}} onReply={() => {}}
+        onEdit={() => {}} onDelete={() => {}}
+      />
+    )
+    expect(screen.getByRole('button', { name: /edit message/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /delete message/i })).toBeInTheDocument()
+  })
+
+  it('omits Edit and Delete on other users\' messages', () => {
+    render(
+      <MessageActions
+        message={msg}
+        context="main"
+        isOwn={false}
+        onThread={() => {}} onReply={() => {}}
+        onEdit={() => {}} onDelete={() => {}}
+      />
+    )
+    expect(screen.queryByRole('button', { name: /edit message/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /delete message/i })).not.toBeInTheDocument()
+  })
+
+  it('clicking Edit / Delete invokes the handlers with the message', () => {
+    const onEdit = vi.fn()
+    const onDelete = vi.fn()
+    render(
+      <MessageActions
+        message={msg}
+        context="main"
+        isOwn
+        onThread={() => {}} onReply={() => {}}
+        onEdit={onEdit} onDelete={onDelete}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /edit message/i }))
+    expect(onEdit).toHaveBeenCalledWith(msg)
+    fireEvent.click(screen.getByRole('button', { name: /delete message/i }))
+    expect(onDelete).toHaveBeenCalledWith(msg)
+  })
+})
