@@ -32,6 +32,8 @@ export default function MessageRow({
   onEdit,
   onDelete,
   onJumpToMessage,
+  onRetry,
+  onDismiss,
 }) {
   const [draft, setDraft] = useState(messageContent(message))
 
@@ -98,6 +100,13 @@ export default function MessageRow({
       )}
       {/* Read-receipt kebab — separate from MessageActions; rendered in non-edit state. */}
       {!editing && <MessageActionMenu message={message} room={room} />}
+      {message._status === 'failed' && !editing && (
+        <div className="message-row-failed">
+          <span className="message-row-failed-label">Failed to send.</span>
+          <button type="button" aria-label="Retry sending message" onClick={() => onRetry?.(message.id)}>⟳</button>
+          <button type="button" aria-label="Dismiss failed message" onClick={() => onDismiss?.(message.id)}>✕</button>
+        </div>
+      )}
     </div>
   )
 }

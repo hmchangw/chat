@@ -154,3 +154,46 @@ describe('MessageRow — inline edit mode', () => {
     expect(screen.queryByText('hello world')).not.toBeInTheDocument()
   })
 })
+
+describe('MessageRow — failed-row UI', () => {
+  it('renders Retry and Dismiss when _status is failed', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, _status: 'failed', _local: true }}
+        room={room}
+        context="thread"
+        onRetry={() => {}}
+        onDismiss={() => {}}
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /dismiss/i })).toBeInTheDocument()
+  })
+
+  it('clicking Retry calls onRetry with message id; Dismiss calls onDismiss', () => {
+    const onRetry = vi.fn()
+    const onDismiss = vi.fn()
+    render(
+      <MessageRow
+        message={{ ...msg, _status: 'failed', _local: true }}
+        room={room}
+        context="thread"
+        onRetry={onRetry}
+        onDismiss={onDismiss}
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(onRetry).toHaveBeenCalledWith('m1')
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(onDismiss).toHaveBeenCalledWith('m1')
+  })
+
+  it('does not render Retry/Dismiss when _status is not failed', () => {
+    render(
+      <MessageRow message={msg} room={room} context="thread" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />
+    )
+    expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
+  })
+})
