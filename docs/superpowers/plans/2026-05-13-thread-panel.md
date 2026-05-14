@@ -5821,7 +5821,15 @@ Append:
 
 ```jsx
 describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
-  beforeEach(() => roomDispatch.mockClear())
+  // Sibling describes don't inherit the outer beforeEach. Reset request +
+  // publish here too — otherwise a prior test's mockImplementation
+  // (e.g. the sync-throw publish from the failure test) leaks in and
+  // silently routes the success case through the catch branch.
+  beforeEach(() => {
+    roomDispatch.mockClear()
+    request.mockReset()
+    publish.mockReset()
+  })
 
   it('on successful sendReply, dispatches OWN_THREAD_REPLY_SENT to RoomEventsContext', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
