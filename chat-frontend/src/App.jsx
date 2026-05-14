@@ -3,7 +3,7 @@ import { NatsProvider, useNats } from './context/NatsContext'
 import { RoomEventsProvider } from './context/RoomEventsContext'
 import { ThreadEventsProvider } from './context/ThreadEventsContext'
 import LoginPage from './pages/LoginPage'
-import MainApp from './components/MainApp'
+import MainApp from './components/MainApp/MainApp'
 import OidcCallback from './pages/OidcCallback'
 
 function AppContent() {
