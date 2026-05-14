@@ -987,7 +987,9 @@ describe('ChatPage (middle column)', () => {
 
   it('renders room-header with room name, RoomMembersBadge, and Leave for channels', () => {
     render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
-    expect(screen.getByText(/general/)).toBeInTheDocument()
+    // Match the "# " prefix from roomPrefix(type='channel') so we don't
+    // collide with the LeaveRoomButton mock's "Leave general" text.
+    expect(screen.getByText(/# general/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^members \(7\)$/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /leave/i })).toBeInTheDocument()
   })
