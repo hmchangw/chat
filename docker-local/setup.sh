@@ -104,10 +104,24 @@ chmod 600 "$ENV_FILE"
 
 # chat-frontend/.env.local feeds `npm run dev` (Vite). Written only on first
 # run so devs can edit it (e.g. point at staging) without losing changes.
+#
+# In GitHub Codespaces the browser runs on the user's laptop and `localhost`
+# from there doesn't reach the codespace — each forwarded port is exposed at
+# `https://<name>-<port>.<domain>`. Write those URLs into .env.local so
+# `npm run dev` connects through the public forwarders.
 if [ ! -f "$FRONTEND_ENV_FILE" ]; then
+  if [ -n "${CODESPACES:-}" ] && [ -n "${CODESPACE_NAME:-}" ] && \
+     [ -n "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" ]; then
+    FRONTEND_AUTH_URL="https://${CODESPACE_NAME}-8080.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}"
+    FRONTEND_NATS_URL="wss://${CODESPACE_NAME}-9222.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}"
+    echo "Codespaces detected — writing forwarded URLs into $FRONTEND_ENV_FILE"
+  else
+    FRONTEND_AUTH_URL="http://localhost:8080"
+    FRONTEND_NATS_URL="ws://localhost:9222"
+  fi
   cat > "$FRONTEND_ENV_FILE" <<EOF
-VITE_AUTH_URL=http://localhost:8080
-VITE_NATS_URL=ws://localhost:9222
+VITE_AUTH_URL=${FRONTEND_AUTH_URL}
+VITE_NATS_URL=${FRONTEND_NATS_URL}
 VITE_DEFAULT_SITE_ID=site-local
 EOF
 fi
