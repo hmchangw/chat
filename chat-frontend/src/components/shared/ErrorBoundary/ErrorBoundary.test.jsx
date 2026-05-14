@@ -46,7 +46,7 @@ describe('ErrorBoundary', () => {
     expect(screen.getByTestId('custom')).toHaveTextContent('My fallback')
   })
 
-  it('passes error + reload to a function fallback', () => {
+  it('passes error + reset + reload to a function fallback', () => {
     const fallback = vi.fn(({ error }) => <div>err: {error.message}</div>)
     render(
       <ErrorBoundary fallback={fallback}>
@@ -56,10 +56,31 @@ describe('ErrorBoundary', () => {
     expect(fallback).toHaveBeenCalledWith(
       expect.objectContaining({
         error: expect.any(Error),
+        reset: expect.any(Function),
         reload: expect.any(Function),
       })
     )
     expect(screen.getByText('err: oh no')).toBeInTheDocument()
+  })
+
+  it('Try Again button clears the error and remounts children', () => {
+    // Stateful child: throws the first render, succeeds on the second.
+    let shouldThrow = true
+    function Flaky() {
+      if (shouldThrow) throw new Error('first-render-bug')
+      return <div>recovered</div>
+    }
+    render(
+      <ErrorBoundary>
+        <Flaky />
+      </ErrorBoundary>
+    )
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    // Flip the source of the bug, then click Try Again.
+    shouldThrow = false
+    fireEvent.click(screen.getByRole('button', { name: /Try Again/i }))
+    expect(screen.getByText('recovered')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('Reload button calls window.location.reload()', () => {

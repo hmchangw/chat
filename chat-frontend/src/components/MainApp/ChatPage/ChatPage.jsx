@@ -4,6 +4,7 @@ import { useThreadEvents } from '@/context/ThreadEventsContext'
 import RoomMessageArea from './RoomMessageArea/RoomMessageArea'
 import RoomMessageInput from './RoomMessageInput/RoomMessageInput'
 import RoomMembersBadge from './RoomMembersBadge/RoomMembersBadge'
+import LazyFallback from '@/components/shared/LazyFallback'
 import { roomPrefix, roomDisplayName } from '@/lib/roomFormat'
 import './style.css'
 
@@ -52,6 +53,9 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
   }, [activeParent])
 
   // Ctrl/Cmd-F opens the in-room side panel; Esc closes it.
+  // Dep on `selectedRoom?.id` rather than the object — a parent re-render
+  // that hands us an equivalent-but-new room reference would otherwise
+  // rebind the global listener on every render.
   useEffect(() => {
     if (!selectedRoom) return
     const handler = (e) => {
@@ -65,7 +69,7 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedRoom, activeParent, closeThread])
+  }, [selectedRoom?.id, activeParent, closeThread])
 
   const handleInRoomJump = (msgId) => {
     if (selectedRoom && jumpToMessage) {
@@ -119,7 +123,7 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
           <RoomMessageInput room={selectedRoom} quotedTarget={quotedTarget} onClearQuote={() => setQuotedTarget(null)} />
         </div>
         {inRoomSearchOpen && selectedRoom && (
-          <Suspense fallback={null}>
+          <Suspense fallback={<LazyFallback />}>
             <InRoomSearch
               roomId={selectedRoom.id}
               onClose={() => setInRoomSearchOpen(false)}
@@ -129,7 +133,7 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
         )}
       </div>
       {showMembers && selectedRoom && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<LazyFallback variant="dialog" />}>
           <ManageMembersDialog
             room={selectedRoom}
             onClose={() => {

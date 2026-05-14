@@ -61,11 +61,14 @@ export default function MessageList({
       {historyLoading && <div className="message-loading">Loading messages…</div>}
       {historyError && <div className="message-error">{historyError}</div>}
       {visibleMessages.map((msg) => {
-        // Messages with a `type` field are server-emitted system events
-        // (room_created, members_added, …) — render them as a centered
-        // strip instead of a normal sender/bubble row. Anything else
-        // flows through MessageRow.
-        if (msg.type) {
+        // Messages with a `sysMsgData` payload are server-emitted system
+        // events (room_created, members_added, …) — render them as a
+        // centered strip instead of a normal sender/bubble row. The
+        // discriminator is the payload, not just `type`, because a
+        // future broadcast rename to e.g. `type: "text"` on user
+        // messages would otherwise silently route every message through
+        // SystemMessage.
+        if (msg.sysMsgData != null) {
           return <SystemMessage key={msg.id} message={msg} />
         }
         const isParent = context === 'thread' && parentMessageId === msg.id

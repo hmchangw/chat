@@ -5,14 +5,18 @@ import './style.css'
  *
  * Go's `[]byte` JSON serialisation produces base64. The payload contents
  * are always JSON (room-worker / room-service marshal a typed struct
- * before base64ing). Returns null on any failure so callers can fall
- * back gracefully.
+ * before base64ing). The decode goes via `TextDecoder` so multi-byte
+ * UTF-8 (e.g. CJK names in `members_added`) survives intact — a raw
+ * `atob().JSON.parse()` would mangle anything outside Latin-1. Returns
+ * null on any failure so callers can fall back gracefully.
  */
 function decodeSysData(b64) {
   if (!b64 || typeof b64 !== 'string') return null
   try {
     const bin = atob(b64)
-    return JSON.parse(bin)
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+    const json = new TextDecoder('utf-8').decode(bytes)
+    return JSON.parse(json)
   } catch {
     return null
   }

@@ -4,6 +4,7 @@ import { useThreadEvents } from '@/context/ThreadEventsContext'
 import AppHeader from './AppHeader/AppHeader'
 import Sidebar from './Sidebar/Sidebar'
 import ChatPage from './ChatPage/ChatPage'
+import LazyFallback from '@/components/shared/LazyFallback'
 import './style.css'
 
 // SearchResultsPane and ThreadRightBar are conditional: only rendered
@@ -57,7 +58,7 @@ export default function MainApp() {
       <div className="app-row">
         <Sidebar selectedRoomId={selectedRoom?.id ?? null} onSelectRoom={handleSelectRoom} />
         {searchQuery ? (
-          <Suspense fallback={null}>
+          <Suspense fallback={<LazyFallback />}>
             <SearchResultsPane
               query={searchQuery}
               onClose={() => setSearchQuery(null)}
@@ -69,7 +70,7 @@ export default function MainApp() {
           <ChatPage selectedRoom={selectedRoom} onSelectRoom={handleSelectRoom} />
         )}
         {activeParent && (
-          <Suspense fallback={null}>
+          <Suspense fallback={<LazyFallback />}>
             <ThreadRightBar />
           </Suspense>
         )}

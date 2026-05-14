@@ -34,6 +34,12 @@
   line-height: var(--line-normal);
 }
 
+.error-boundary-actions {
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: flex-end;
+}
+
 /* The literal Error.message string. Kept monospace + scrollable so a
    stack-trace-y message doesn't blow out the card width. */
 .error-boundary-detail {

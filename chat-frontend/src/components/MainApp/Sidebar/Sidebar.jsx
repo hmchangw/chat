@@ -1,5 +1,6 @@
 import { Suspense, lazy, useState } from 'react'
 import RoomList from './RoomList/RoomList'
+import LazyFallback from '@/components/shared/LazyFallback'
 import './style.css'
 
 // CreateRoomDialog pulls in MemberPicker + its search + the dialog
@@ -25,7 +26,7 @@ export default function Sidebar({ selectedRoomId, onSelectRoom }) {
         + Create Room
       </button>
       {showCreateRoom && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<LazyFallback variant="dialog" />}>
           <CreateRoomDialog
             onClose={() => setShowCreateRoom(false)}
             onCreated={handleCreated}
