@@ -2,9 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Wire room encryption keys end-to-end across `room-service`, `room-worker`, and `inbox-worker`. After this plan ships, every newly-created room has a P-256 keypair stored in Valkey, channel `member.remove` rotates the key, channel `member.add` distributes the current key to new members, and remote sites replicate the keypair via a server-to-server NATS RPC so the keypair never enters JetStream.
+> **Post-review amendment (2026-05-14):** Cross-site key replication has
+> been removed from the shipped implementation. A room only ever exists on
+> its origin site, so the broadcast pipeline runs there and reads the key
+> from the origin's local Valkey only. `inbox-worker` no longer holds a
+> Valkey/`RoomKeyStore` dependency and only replicates subscription/room
+> metadata; the `chat.server.request.roomkey.{siteID}.get` RPC is no
+> longer called. Tasks below that describe inter-site key fetching are
+> obsolete — the corresponding code has been deleted. The
+> `RoomKeyMaxRedeliver` cap is also gone (it existed solely to bound the
+> NAK-loop on that RPC).
 
-**Architecture:** `room-service` is the sole writer of fresh keys (`Set` on create, `Rotate` on remove). `room-worker` (origin) reads the current key from local Valkey, gates Mongo writes on key presence, fans out `RoomKeyEvent` to **every** room member (local + remote) via `roomkeysender.Send` — the NATS supercluster routes `chat.user.{account}.event.*` to home sites — and serves the cross-site `chat.server.request.roomkey.{siteID}.get` RPC. `inbox-worker` on remote sites mirrors origin's key bytes and exact version into local Valkey via the RPC + `SetWithVersion` (no local `Rotate`, no user-side `Send` — origin `room-worker` already published).
+**Goal:** Wire room encryption keys end-to-end across `room-service`, `room-worker`, and `inbox-worker`. After this plan ships, every newly-created room has a P-256 keypair stored in Valkey, channel `member.remove` rotates the key, and channel `member.add` distributes the current key to new members. Cross-site clients receive `RoomKeyEvent` directly from the origin `room-worker`'s user-subject fan-out, routed by the NATS supercluster — there is no server-side key replication.
+
+**Architecture:** `room-service` is the sole writer of fresh keys (`Set` on create, `Rotate` on remove). `room-worker` (origin) reads the current key from local Valkey, gates Mongo writes on key presence, and fans out `RoomKeyEvent` to **every** room member (local + remote) via `roomkeysender.Send` — the NATS supercluster routes `chat.user.{account}.event.*` to home sites. `inbox-worker` on remote sites replicates subscription and room metadata only; it does not hold or replicate the room key.
 
 > **Implementation drift — read before following any task literally.** The
 > sections below were written in TDD-style as the design evolved. The

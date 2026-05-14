@@ -4,9 +4,20 @@
 **Status:** Shipped (Sprint 0 + Sprint 1)
 **Branch:** `claude/room-encryption-keys-5vlQ2`
 
+> **Post-review amendment (2026-05-14):** Cross-site key replication has been
+> removed. A room only ever exists on its origin site, so the broadcast
+> pipeline runs there and reads the key from the origin's local Valkey only.
+> `inbox-worker` no longer calls `chat.server.request.roomkey.{siteID}.get`,
+> no longer holds a Valkey/`RoomKeyStore` dependency, and only replicates
+> subscription/room metadata. Cross-site clients still receive `RoomKeyEvent`
+> directly from origin `room-worker`'s user-subject fan-out, routed by the
+> NATS supercluster. Sections below that describe the old replication flow
+> are retained for historical context; the actual code matches this
+> amendment, not the original spec.
+
 ## Summary
 
-Wires the existing `pkg/roomkeystore` (Valkey-backed key storage) and `pkg/roomkeysender` (NATS key delivery) libraries into the room lifecycle. After this spec ships, every room has a P-256 key pair generated at create time, replicated to every participating site, and pushed to every member's NATS subject so clients can decrypt messages encrypted by `broadcast-worker`. Removing a channel member rotates the key so the removed user can no longer decrypt messages sent after their removal.
+Wires the existing `pkg/roomkeystore` (Valkey-backed key storage) and `pkg/roomkeysender` (NATS key delivery) libraries into the room lifecycle. After this spec ships, every room has a P-256 key pair generated at create time and pushed to every member's NATS subject so clients can decrypt messages encrypted by `broadcast-worker`. Removing a channel member rotates the key so the removed user can no longer decrypt messages sent after their removal.
 
 The current state of the codebase has the libraries built and tested, but no service writes keys yet — `broadcast-worker` reads keys that nothing produces. This spec closes that loop.
 
@@ -35,7 +46,7 @@ In scope:
 - **Create-room** (all room types: `dm`, `botDM`, `channel`): `room-service` generates a P-256 key pair, writes it to local Valkey via `keyStore.Set`, then publishes the canonical create event. `room-worker` reads the key back from Valkey and gates its Mongo writes on the key being present, then fans out `RoomKeyEvent` to every initial member via `roomkeysender`.
 - **Add-member** (channel only — DM/botDM blocked at `room-service`): worker reads the current key from local Valkey and fans out `RoomKeyEvent` to each newly-added account. No rotation; no version bump. Add-member does NOT create a key for un-keyed rooms — backfill behavior deferred to a follow-up.
 - **Remove-member** (channel only — DM/botDM blocked at `room-service`): `room-service` rotates the room key via `keyStore.Rotate` after validation passes, **unless** the target has both individual and org membership (dual-membership), in which case rotation is skipped because the user remains in the room via their org membership. `room-worker` performs Mongo deletes, then fans out the new `RoomKeyEvent` to every surviving subscriber via `fanOutRoomKeyToSurvivors`. A single rotation per `RemoveMemberRequest` for non-dual-membership cases, regardless of org-vs-individual or removed-count.
-- **Cross-site replication** (channels only — DM/botDM never spans sites except via the existing federated DM creation path which falls under create-room above): origin's `room-worker` publishes the existing outbox events (`room_created`, `member_added`, `member_removed`) without keypair bytes — and *also* publishes `RoomKeyEvent` to **every** room member's user subject (`chat.user.{account}.event.room.key`) so the NATS supercluster delivers the key to clients across sites. Each remote `inbox-worker`, after replicating its slice of subscriptions, makes a NATS request/reply RPC (`chat.server.request.roomkey.{originSiteID}.get`) to the origin's `room-worker` and writes the keypair into its local Valkey via `SetWithVersion(roomID, pair, originVersion)` so the local broadcast-worker's on-wire envelopes carry the same version every client already holds. **inbox-worker does NOT call `Set`/`Rotate` and does NOT fan out `RoomKeyEvent`** — that ownership is the origin `room-worker`'s.
+- **Cross-site replication** (channels only — DM/botDM never spans sites except via the existing federated DM creation path which falls under create-room above): origin's `room-worker` publishes the existing outbox events (`room_created`, `member_added`, `member_removed`) without keypair bytes — and *also* publishes `RoomKeyEvent` to **every** room member's user subject (`chat.user.{account}.event.room.key`) so the NATS supercluster delivers the key to clients across sites. Remote `inbox-worker` instances replicate only subscription and room metadata; they do not hold a copy of the room key. The broadcast pipeline for any given room runs on the origin site (where the room lives), so only the origin's Valkey is consulted at encrypt time. Pre-amendment versions of this spec described a remote-Valkey replication path via `chat.server.request.roomkey.{originSiteID}.get`; that path has been removed.
 - **Defensive room-type guards** in `room-worker` for the add/remove paths. `RemoveMemberRequest` now carries a `RoomType` field (`pkg/model/member.go`). The worker reads it from the canonical event directly and asserts `room.Type == model.RoomTypeChannel`. As a backward-compatibility gate, an empty `RoomType` value is tolerated (federation redeliveries from pre-Batch-3 senders). A non-empty, non-channel `RoomType` fails as a permanent error (treated as a malformed canonical event since `room-service` is responsible for blocking these). For `processAddMembers`, `GetRoom` is still called for other reasons; the type guard on the add path continues to use that result.
 
 Out of scope:
