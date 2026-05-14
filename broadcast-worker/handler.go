@@ -45,8 +45,6 @@ func NewHandler(store Store, userStore userstore.UserStore, pub Publisher, keySt
 }
 
 // HandleMessage processes a single MESSAGES_CANONICAL message payload.
-// Empty Event is treated as EventCreated because the field is omitempty on
-// the wire and older producers may not set it.
 func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
@@ -54,7 +52,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 
 	switch evt.Event {
-	case "", model.EventCreated:
+	case model.EventCreated:
 		return h.handleCreated(ctx, &evt)
 	case model.EventUpdated:
 		return h.handleUpdated(ctx, &evt)

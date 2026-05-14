@@ -59,6 +59,7 @@ var (
 
 func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 	evt := model.MessageEvent{
+		Event:  model.EventCreated,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "msg-1", RoomID: roomID, UserID: "user-1", UserAccount: "sender",
@@ -78,11 +79,6 @@ func TestHandleMessage_DispatchesByEvent(t *testing.T) {
 		wantErr     bool
 		wantErrText string
 	}{
-		{
-			name:    "empty event treated as created",
-			event:   "",
-			wantErr: false,
-		},
 		{
 			name:    "created event",
 			event:   model.EventCreated,
@@ -286,6 +282,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			pub := &mockPublisher{}
 
 			evt := model.MessageEvent{
+				Event:  model.EventCreated,
 				SiteID: "site-a",
 				Message: model.Message{
 					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice",
@@ -437,6 +434,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		h := NewHandler(store, us, pub, keyStore, true)
 		evt := model.MessageEvent{
+			Event:  model.EventCreated,
 			SiteID: "site-a",
 			Message: model.Message{
 				ID: "msg-1", RoomID: "dm-1", UserID: "user-1", UserAccount: "sender",
@@ -534,6 +532,7 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	keyStore := NewMockRoomKeyProvider(ctrl)
 	h := NewHandler(store, us, pub, keyStore, true)
 	evt := model.MessageEvent{
+		Event:  model.EventCreated,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice",

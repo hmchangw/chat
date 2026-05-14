@@ -113,12 +113,10 @@ func indexName(prefix string, createdAt time.Time) string {
 
 func buildMessageAction(evt *model.MessageEvent, indexPrefix string) searchengine.BulkAction {
 	index := indexName(indexPrefix, evt.Message.CreatedAt)
-	eventType := evt.Event
-	if eventType == "" {
-		eventType = model.EventCreated
-	}
 
-	if eventType == model.EventDeleted {
+	// Only an explicit EventDeleted removes the doc; created/updated (and any
+	// unstamped legacy/replayed event) take the index upsert path.
+	if evt.Event == model.EventDeleted {
 		return searchengine.BulkAction{
 			Action:  searchengine.ActionDelete,
 			Index:   index,
