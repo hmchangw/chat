@@ -253,3 +253,23 @@ export function useRoomSummaries() {
     error: state.roomsError,
   }
 }
+
+export function useSidebarSections() {
+  const { state } = useRoomEventsInternal()
+  const { summaries, favoriteIds, appIds, channelDmIds } = state
+  return useMemo(() => {
+    const favorite = []
+    const apps = []
+    const channelDm = []
+    for (const room of summaries) {
+      if (favoriteIds.has(room.id)) favorite.push(room)
+      else if (appIds.has(room.id)) apps.push(room)
+      else if (channelDmIds.has(room.id)) channelDm.push(room)
+    }
+    return [
+      { key: 'favorite',  title: 'Favorite',          rooms: favorite },
+      { key: 'apps',      title: 'Apps',              rooms: apps },
+      { key: 'channelDm', title: 'Channels and DMs',  rooms: channelDm },
+    ]
+  }, [summaries, favoriteIds, appIds, channelDmIds])
+}

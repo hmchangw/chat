@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { NatsContext } from './NatsContext'
-import { RoomEventsProvider, useRoomEvents, useRoomSummaries } from './RoomEventsContext'
+import { RoomEventsProvider, useRoomEvents, useRoomSummaries, useSidebarSections } from './RoomEventsContext'
 import { BUFFER_MODE } from '../lib/roomEventsReducer'
 // jumpToMessage / resetToLiveTail tests — see suite below
 
@@ -568,5 +568,100 @@ describe('RoomEventsProvider sidebar buckets bootstrap', () => {
     render(wrap(<SummariesProbe />, nats))
     await waitFor(() => expect(request).toHaveBeenCalledTimes(4))
     expect(screen.getByTestId('count').textContent).toBe('0')
+  })
+})
+
+describe('useSidebarSections', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  function bootstrapNats({ buckets }) {
+    const rooms = [
+      { id: 'f1', name: 'fav-channel', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: '2026-04-17T10:00:00Z' },
+      { id: 'a1', name: 'app-bot',     type: 'botDM',   siteId: 'site-A', userCount: 1, lastMsgAt: '2026-04-17T11:00:00Z' },
+      { id: 'c1', name: 'general',     type: 'channel', siteId: 'site-A', userCount: 5, lastMsgAt: '2026-04-17T12:00:00Z' },
+      { id: 'u1', name: 'unbucketed',  type: 'channel', siteId: 'site-A', userCount: 1, lastMsgAt: '2026-04-17T09:00:00Z' },
+    ]
+    return mockNats({
+      request: vi.fn().mockImplementation((subject) => {
+        if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms })
+        if (subject.endsWith('.subscription.getCurrent'))
+          return Promise.resolve({ subscriptions: buckets.favoriteIds.map((id) => ({ roomId: id })) })
+        if (subject.endsWith('.subscription.getApps'))
+          return Promise.resolve({ subscriptions: buckets.appIds.map((id) => ({ roomId: id })) })
+        if (subject.endsWith('.subscription.getRooms'))
+          return Promise.resolve({ subscriptions: buckets.channelDmIds.map((id) => ({ roomId: id })) })
+        throw new Error('unexpected subject: ' + subject)
+      }),
+    })
+  }
+
+  function SectionsProbe() {
+    const sections = useSidebarSections()
+    return (
+      <ul>
+        {sections.map((s) => (
+          <li key={s.key} data-testid={`section-${s.key}`}>
+            {s.title}: {s.rooms.map((r) => r.id).join(',')}
+          </li>
+        ))}
+      </ul>
+    )
+  }
+
+  it('returns three sections in fixed order', async () => {
+    const nats = bootstrapNats({ buckets: { favoriteIds: ['f1'], appIds: ['a1'], channelDmIds: ['c1'] } })
+    render(wrap(<SectionsProbe />, nats))
+    await waitFor(() =>
+      expect(screen.getByTestId('section-channelDm').textContent).toContain('c1')
+    )
+    const items = screen.getAllByRole('listitem').map((li) => li.getAttribute('data-testid'))
+    expect(items).toEqual(['section-favorite', 'section-apps', 'section-channelDm'])
+  })
+
+  it('puts favorited rooms only in Favorite (favorite > apps > channelDm exclusivity)', async () => {
+    const nats = bootstrapNats({
+      buckets: { favoriteIds: ['f1', 'a1'], appIds: ['a1'], channelDmIds: ['c1', 'a1'] },
+    })
+    render(wrap(<SectionsProbe />, nats))
+    await waitFor(() =>
+      expect(screen.getByTestId('section-favorite').textContent).toContain('a1')
+    )
+    expect(screen.getByTestId('section-apps').textContent).not.toContain('a1')
+    expect(screen.getByTestId('section-channelDm').textContent).not.toContain('a1')
+  })
+
+  it('puts apps in Apps (apps > channelDm exclusivity)', async () => {
+    const nats = bootstrapNats({
+      buckets: { favoriteIds: [], appIds: ['a1'], channelDmIds: ['a1', 'c1'] },
+    })
+    render(wrap(<SectionsProbe />, nats))
+    await waitFor(() => expect(screen.getByTestId('section-apps').textContent).toContain('a1'))
+    expect(screen.getByTestId('section-channelDm').textContent).not.toContain('a1')
+    expect(screen.getByTestId('section-channelDm').textContent).toContain('c1')
+  })
+
+  it('does not render rooms that are in summaries but in no bucket Set', async () => {
+    const nats = bootstrapNats({
+      buckets: { favoriteIds: ['f1'], appIds: ['a1'], channelDmIds: ['c1'] },
+    })
+    render(wrap(<SectionsProbe />, nats))
+    await waitFor(() =>
+      expect(screen.getByTestId('section-channelDm').textContent).toContain('c1')
+    )
+    expect(screen.getByTestId('section-favorite').textContent).not.toContain('u1')
+    expect(screen.getByTestId('section-apps').textContent).not.toContain('u1')
+    expect(screen.getByTestId('section-channelDm').textContent).not.toContain('u1')
+  })
+
+  it('preserves summaries recency order within each section', async () => {
+    // bootstrapNats rooms in lastMsgAt order: c1 (12:00) > a1 (11:00) > f1 (10:00) > u1 (09:00)
+    const nats = bootstrapNats({
+      buckets: { favoriteIds: ['f1', 'c1'], appIds: ['a1'], channelDmIds: [] },
+    })
+    render(wrap(<SectionsProbe />, nats))
+    await waitFor(() =>
+      expect(screen.getByTestId('section-favorite').textContent).toContain('f1')
+    )
+    expect(screen.getByTestId('section-favorite').textContent).toMatch(/c1.*f1/)
   })
 })
