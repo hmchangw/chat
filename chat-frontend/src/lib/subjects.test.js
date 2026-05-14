@@ -9,6 +9,9 @@ import {
   searchRooms,
   searchMessages,
   msgSurrounding,
+  msgThread,
+  msgEdit,
+  msgDelete,
   readReceipt,
   roomCreate,
   userResponse,
@@ -53,6 +56,24 @@ describe('subjects', () => {
   it('msgSurrounding builds the surrounding-messages request subject', () => {
     expect(msgSurrounding('alice', 'r1', 'site-A')).toBe(
       'chat.user.alice.request.room.r1.site-A.msg.surrounding'
+    )
+  })
+
+  it('msgThread builds the thread RPC subject', () => {
+    expect(msgThread('alice', 'r1', 'site-1')).toBe(
+      'chat.user.alice.request.room.r1.site-1.msg.thread'
+    )
+  })
+
+  it('msgEdit builds the edit RPC subject', () => {
+    expect(msgEdit('alice', 'r1', 'site-1')).toBe(
+      'chat.user.alice.request.room.r1.site-1.msg.edit'
+    )
+  })
+
+  it('msgDelete builds the delete RPC subject', () => {
+    expect(msgDelete('alice', 'r1', 'site-1')).toBe(
+      'chat.user.alice.request.room.r1.site-1.msg.delete'
     )
   })
 

@@ -13,6 +13,18 @@ export function msgSurrounding(account, roomId, siteId) {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.surrounding`
 }
 
+export function msgThread(account, roomId, siteId) {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.thread`
+}
+
+export function msgEdit(account, roomId, siteId) {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.edit`
+}
+
+export function msgDelete(account, roomId, siteId) {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.delete`
+}
+
 export function roomEvent(roomId) {
   return `chat.room.${roomId}.event`
 }
