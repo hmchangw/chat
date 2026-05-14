@@ -164,4 +164,24 @@ describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
     await act(async () => { screen.getByText('send').click() })
     expect(roomDispatch).not.toHaveBeenCalled()
   })
+
+  it('retryReply does NOT re-dispatch OWN_THREAD_REPLY_SENT (the original send already counted)', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    // First send fails synchronously so retryReply has something to retry.
+    publish.mockImplementationOnce(() => { throw new Error('Not connected') })
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('send').click() })
+    // The initial send failed — no roomDispatch fired (covered by the test above).
+    expect(roomDispatch).not.toHaveBeenCalled()
+    // Now succeed on retry.
+    publish.mockImplementation(() => {})
+    await act(async () => { screen.getByText('retry').click() })
+    // Even though the retry succeeded, the tcount should not be bumped by the
+    // retry path — the room reducer assumes one increment per logical send,
+    // and the initial sendReply already owned that responsibility (it just
+    // happened to fail; the next successful send is a continuation, not a new
+    // reply).
+    expect(roomDispatch).not.toHaveBeenCalled()
+  })
 })

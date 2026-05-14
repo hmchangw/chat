@@ -12,6 +12,7 @@ const dismissReply = vi.fn()
 const threadDispatch = vi.fn()
 const roomDispatch = vi.fn()
 const publish = vi.fn()
+const jumpToMessage = vi.fn()
 
 vi.mock('../context/ThreadEventsContext', () => ({
   useThreadEvents: () => ({
@@ -32,13 +33,14 @@ vi.mock('../context/RoomEventsContext', () => ({
     messages: [{ id: 'p1', content: 'parent body', createdAt: '2026-05-13T10:00:00Z', sender: { account: 'alice' } }],
   }),
   useRoomDispatch: () => roomDispatch,
+  useRoomSummaries: () => ({ jumpToMessage }),
 }))
 vi.mock('../context/NatsContext', () => ({
   useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
 }))
 vi.mock('./messages/MessageList', () => ({
   default: ({ messages, emptyText, context, onReply, onRetry, onDismiss,
-              onEdit, onEditSubmit, onEditCancel, onDelete, historyLoading, historyError }) => (
+              onEdit, onEditSubmit, onEditCancel, onDelete, onJumpToMessage, historyLoading, historyError }) => (
     <div data-testid="list">
       <span>context:{context}</span>
       <span>count:{messages.length}</span>
@@ -51,6 +53,7 @@ vi.mock('./messages/MessageList', () => ({
       <button type="button" onClick={() => onReply?.({ id: 'reply-1', sender: { account: 'bob' }, content: 'first reply' })}>fire-reply</button>
       <button type="button" onClick={() => onRetry?.('reply-2')}>fire-retry</button>
       <button type="button" onClick={() => onDismiss?.('reply-2')}>fire-dismiss</button>
+      <button type="button" onClick={() => onJumpToMessage?.('quoted-orig')}>fire-jump</button>
       <button type="button" onClick={() => onEdit?.({ id: 'reply-1' })}>fire-edit-reply</button>
       <button type="button" onClick={() => onEditSubmit?.({ id: 'reply-1', createdAt: '2026-05-13T10:01:00Z' }, 'edited')}>fire-edit-reply-submit</button>
       <button type="button" onClick={() => onEditCancel?.()}>fire-edit-cancel</button>
@@ -87,6 +90,13 @@ describe('ThreadMessageArea', () => {
     expect(retryReply).toHaveBeenCalledWith('reply-2')
     fireEvent.click(screen.getByText('fire-dismiss'))
     expect(dismissReply).toHaveBeenCalledWith('reply-2')
+  })
+
+  it('forwards onJumpToMessage to useRoomSummaries().jumpToMessage with activeParent.roomId', () => {
+    jumpToMessage.mockClear()
+    render(<ThreadMessageArea onReply={() => {}} />)
+    fireEvent.click(screen.getByText('fire-jump'))
+    expect(jumpToMessage).toHaveBeenCalledWith('r1', 'quoted-orig')
   })
 })
 

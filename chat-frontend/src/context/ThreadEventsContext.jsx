@@ -108,7 +108,6 @@ export function ThreadEventsProvider({ children }) {
     (messageId) => {
       const row = stateRef.current.messages.find((m) => m.id === messageId)
       if (!row) return
-      const parent = stateRef.current.activeParent
       dispatch({ type: 'REPLY_RETRIED', messageId })
       try {
         publishReply(
@@ -116,14 +115,16 @@ export function ThreadEventsProvider({ children }) {
           row.content,
           row.quotedParentMessage ? { quotedParentMessageId: row.quotedParentMessage.id } : undefined
         )
-        if (parent) {
-          roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', roomId: parent.roomId, parentId: parent.messageId })
-        }
+        // Intentionally NOT dispatching OWN_THREAD_REPLY_SENT here. A retry is
+        // the continuation of a logical send, not a new one; double-bumping the
+        // parent's tcount would inflate the badge across repeated failures and
+        // recoveries. The optimistic count stays at 0 until the next
+        // msg.thread reload reconciles from the authoritative server state.
       } catch (err) {
         dispatch({ type: 'REPLY_SEND_FAILED', messageId, error: err?.message ?? String(err) })
       }
     },
-    [publishReply, roomDispatch]
+    [publishReply]
   )
 
   const dismissReply = useCallback((messageId) => {

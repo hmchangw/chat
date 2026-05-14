@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../context/NatsContext'
 import { useThreadEvents } from '../context/ThreadEventsContext'
-import { useRoomEvents, useRoomDispatch } from '../context/RoomEventsContext'
+import { useRoomEvents, useRoomDispatch, useRoomSummaries } from '../context/RoomEventsContext'
 import { msgEdit, msgDelete } from '../lib/subjects'
 import MessageList from './messages/MessageList'
 import DeleteConfirmDialog from './messages/DeleteConfirmDialog'
@@ -11,6 +11,10 @@ export default function ThreadMessageArea({ onReply }) {
           retryReply, dismissReply, dispatch: threadDispatch } = useThreadEvents()
   const { messages: roomMessages } = useRoomEvents(activeParent?.roomId ?? null)
   const roomDispatch = useRoomDispatch()
+  // useRoomSummaries exposes the unbound 2-arg jumpToMessage(roomId, msgId);
+  // we need that here because the click target's room is activeParent.roomId,
+  // which may differ from whatever room the user is currently viewing.
+  const { jumpToMessage } = useRoomSummaries()
   const { user, publish } = useNats()
   const bottomRef = useRef(null)
   const [editingMessageId, setEditingMessageId] = useState(null)
@@ -98,6 +102,7 @@ export default function ThreadMessageArea({ onReply }) {
         onDelete={handleDelete}
         onRetry={retryReply}
         onDismiss={dismissReply}
+        onJumpToMessage={(msgId) => jumpToMessage?.(activeParent.roomId, msgId)?.catch?.(() => {})}
         bottomRef={bottomRef}
         ariaLive="polite"
       />
