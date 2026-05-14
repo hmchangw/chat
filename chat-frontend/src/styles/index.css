@@ -1277,3 +1277,79 @@ body {
   padding: 2px 0;
   white-space: nowrap;
 }
+
+.message-row {
+  position: relative;
+  padding: 6px 12px;
+}
+.message-row:hover,
+.message-row:focus-within {
+  background: var(--bg-hover, rgba(0,0,0,0.03));
+}
+.message-row .message-actions {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  display: none;
+  gap: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+.message-row:hover .message-actions,
+.message-row:focus-within .message-actions {
+  display: flex;
+}
+.message-action {
+  padding: 2px 6px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 0.95em;
+}
+.message-action:hover {
+  background: var(--bg-hover, rgba(0,0,0,0.06));
+}
+.quoted-block {
+  border-left: 3px solid var(--border-subtle, #ccc);
+  padding: 2px 8px;
+  margin: 2px 0;
+  background: var(--bg-quoted, rgba(0,0,0,0.03));
+}
+.quoted-block-sender {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.quoted-block-content {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.quoted-block-chip {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.quoted-block-chip .quoted-block-body {
+  flex: 1;
+  min-width: 0;
+}
+.quoted-block-bubble {
+  cursor: pointer;
+}
+.quoted-block-bubble:hover {
+  background: var(--bg-hover, rgba(0,0,0,0.05));
+}
+.quoted-block-deleted {
+  cursor: default;
+  font-style: italic;
+  color: var(--text-muted);
+}
+.message-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 12px;
+}

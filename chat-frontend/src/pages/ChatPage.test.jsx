@@ -2,10 +2,10 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import ChatPage from './ChatPage'
 
-vi.mock('../components/MessageArea', () => ({
+vi.mock('../components/RoomMessageArea', () => ({
   default: ({ room }) => <div>area:{room?.id ?? 'none'}</div>,
 }))
-vi.mock('../components/MessageInput', () => ({
+vi.mock('../components/RoomMessageInput', () => ({
   default: ({ room }) => <div>input:{room?.id ?? 'none'}</div>,
 }))
 vi.mock('../components/InRoomSearch', () => ({

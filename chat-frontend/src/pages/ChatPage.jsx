@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useRoomSummaries } from '../context/RoomEventsContext'
-import MessageArea from '../components/MessageArea'
-import MessageInput from '../components/MessageInput'
+import RoomMessageArea from '../components/RoomMessageArea'
+import RoomMessageInput from '../components/RoomMessageInput'
 import ManageMembersDialog from '../components/ManageMembersDialog'
 import LeaveRoomButton from '../components/LeaveRoomButton'
 import InRoomSearch from '../components/InRoomSearch'
@@ -64,12 +64,12 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
       )}
       <div className="chat-page-body">
         <div className="chat-main-content">
-          <MessageArea
+          <RoomMessageArea
             room={selectedRoom}
-            onOpenMembers={() => setShowMembers(true)}
-            membersRefreshKey={membersRefreshKey}
+            onThread={() => { /* wired in Chapter 7 */ }}
+            onReply={() => { /* wired in Chapter 5 */ }}
           />
-          <MessageInput room={selectedRoom} />
+          <RoomMessageInput room={selectedRoom} />
         </div>
         {inRoomSearchOpen && selectedRoom && (
           <InRoomSearch
